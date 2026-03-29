@@ -1,0 +1,1863 @@
+import json
+import os
+import shutil
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from uuid import uuid4
+
+from core.context_policy import DEFAULT_CONTEXT_POLICY, normalize_context_policy
+from core.runtime.supervisor_tool_policy import sanitize_supervisor_allowed_tools
+from core.v8_agent_os_identity import default_system_identity, normalize_system_identity
+from core.v8_agent_os_paths import (
+    COMPUTER_USE_JSON_PATH,
+    CONFIG_JSON_PATH,
+    LEGACY_CONFIG_BACKUP_ROOT,
+    OPENCLAW_DEFAULT_STATE_ROOT,
+    PLUGIN_INSTALL_LOG_ROOT,
+    PLUGIN_JSON_PATH,
+    WORKSPACE_HOME,
+    protected_runtime_paths,
+)
+
+
+def _default_workspace_path() -> str:
+    return str(WORKSPACE_HOME)
+
+
+def _normalize_http_base_url(value: Any, fallback: str) -> str:
+    normalized = str(value or "").strip() or fallback
+    return normalized.rstrip("/")
+
+
+def _derive_ws_base_url(http_base_url: str) -> str:
+    normalized = _normalize_http_base_url(http_base_url, "http://127.0.0.1:9530/v1")
+    if normalized.startswith("https://"):
+        return normalized.replace("https://", "wss://", 1)
+    if normalized.startswith("http://"):
+        return normalized.replace("http://", "ws://", 1)
+    if normalized.startswith("ws://") or normalized.startswith("wss://"):
+        return normalized
+    return f"ws://{normalized.lstrip('/')}"
+
+
+def _normalize_admin_public_base_url(value: Any) -> str:
+    normalized = _normalize_http_base_url(value, "http://127.0.0.1:9528/api")
+    if normalized.endswith("/api"):
+        return normalized[:-4]
+    return normalized
+
+
+def _default_supervisor_avatar_url(admin_base_url: Any) -> str:
+    return f"{_normalize_admin_public_base_url(admin_base_url)}/Avatar/default-supervisor.svg"
+
+
+def _normalize_allowed_origins(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        candidate = str(item or "").strip().rstrip("/")
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
+    "models": {
+        "version": 2,
+        "providers": {},
+        "roles": {
+            "default": "",
+            "supervisor": "",
+            "summary": "",
+            "extraction": "",
+            "vision": "",
+            "embedding": "",
+            "reranker": "",
+            "extensions_reranker": "",
+            "channel": "",
+            "automation": "",
+            "computer_use_planner": "",
+            "computer_use_visual_judge": "",
+            "computer_use_candidate_reranker": "",
+            "rpa_discovery": "",
+        },
+        "bindings": {"agents": {}},
+        "governance": {
+            "enabled": True,
+            "stickyRunModel": True,
+            "allowSameCapabilityFailover": True,
+            "strictCapabilityMatch": True,
+            "maxLocalRetries": 1,
+            "maxProviderSwitches": 2,
+            "defaultStreaming": True,
+        },
+        "routingPolicies": {
+            "chat": "supervisor",
+            "channel": "channel",
+            "automation": "automation",
+            "summary": "summary",
+            "memoryExtraction": "extraction",
+            "visionAnalysis": "vision",
+            "embedding": "embedding",
+            "reranker": "reranker",
+            "computerUsePlanner": "computer_use_planner",
+            "computerUseVisualJudge": "computer_use_visual_judge",
+            "rpaDiscovery": "rpa_discovery",
+        },
+    },
+    "mcp": {"mcpServers": {}},
+    "memory": {
+        "extraction_temperature": 0.1,
+        "recall_strategy": "balanced",
+        "recall_top_k": 3,
+        "retrieval_threshold": 0.0,
+        "passive_injection_enabled": True,
+        "max_recent_days": 2,
+        "max_context_tokens": 2000,
+        "extraction_enabled": True,
+        "preference_importance_threshold": 70,
+        "preference_confidence_threshold": 0.75,
+        "knowledge_importance_threshold": 60,
+        "knowledge_confidence_threshold": 0.70,
+        "graph_enabled": True,
+        "fts_enabled": True,
+    },
+    "extensions": {
+        "rerankPolicy": {
+            "enabled": False,
+        },
+    },
+    "supervisor": {
+        "allowed_tools": None,
+        "profile": {
+            "name": "智能主管",
+            "roleLabel": "主理人",
+            "avatar": "",
+        },
+    },
+    "workspace": {"agent_workspace_path": _default_workspace_path()},
+    "hooks": {"hooks": []},
+    "cron": {"jobs": []},
+    "automationRuntime": {
+        "supervisorHeartbeat": {
+            "enabled": False,
+            "intervalMinutes": 30,
+            "messageTemplate": "What did you do today? How is the task going? Why are you not continuing right now?",
+            "onlyWhenIdle": True,
+            "suppressWhenActiveRun": True,
+        },
+    },
+    "context": DEFAULT_CONTEXT_POLICY,
+    "audio": {
+        "stt": {
+            "active_provider": "baidu",
+            "providers": {
+                "baidu": {"api_key": "", "secret_key": ""},
+                "volcengine": {"app_id": "", "access_token": "", "cluster": ""},
+                "custom": {"endpoint": "", "api_key": ""},
+            },
+        },
+        "tts": {
+            "active_provider": "edge-tts",
+            "edge_tts": {"voice": "zh-CN-XiaoxiaoNeural", "rate": "+0%", "volume": "+0%"},
+            "custom": {"endpoint": "", "api_key": "", "voice": ""},
+        },
+    },
+    "pluginHost": {
+        "enabled": True,
+        "allowedFamilies": ["channel", "plugin"],
+        "scanOnStartup": True,
+        "hostMode": "managed_local",
+        "managedLocal": {
+            "rootDir": str(OPENCLAW_DEFAULT_STATE_ROOT),
+            "toolingRoot": "",
+            "launcherPath": "",
+            "autoStart": True,
+        },
+        "externalHost": {
+            "baseUrl": "",
+            "gatewayBaseUrl": "",
+            "authToken": "",
+        },
+    },
+    "computerUse": {
+        "candidateRerankEnabled": False,
+    },
+    "runtimeStability": {"version": 1, "strictSupervisorDurability": True, "sessionLanePolicy": "queue"},
+    "safety": {
+        "enabled": True,
+        "protectedPaths": [*protected_runtime_paths(include_home=True), str(Path.home() / ".ssh")],
+        "blockedCommandPatterns": [
+            "shutdown",
+            "reboot",
+            "poweroff",
+            "diskpart",
+            "mkfs",
+            "format ",
+            "rm -rf /",
+            "remove-item",
+        ],
+        "reviewCommandPatterns": [
+            "taskkill",
+            "pkill",
+            "kill ",
+            "git push",
+            "curl -x post",
+            "invoke-webrequest",
+            "pip install",
+            "npm install",
+            "pnpm add",
+            "yarn add",
+        ],
+        "protectedProcessPatterns": ["v8-agent-os", "uvicorn main:app", "next dev", "next start"],
+        "localHosts": ["127.0.0.1", "localhost", "::1"],
+    },
+    "projects": {"version": 1, "defaultProjectId": None, "projects": []},
+    "music": {"tracks": []},
+    "webFetchProfiles": {"version": 1, "sites": {}},
+    "mediaDownloadProfiles": {"version": 1, "platforms": {}},
+    "runtimeRegistry": {"version": 1, "policies": {}},
+}
+
+
+LEGACY_STRUCTURED_FILE_TO_DOMAIN = {
+    "models.json": "models",
+    "mcp_servers.json": "mcp",
+    "memory_config.json": "memory",
+    "supervisor_config.json": "supervisor",
+    "workspace_config.json": "workspace",
+    "hooks_config.json": "hooks",
+    "cron_config.json": "cron",
+    "automation_runtime.json": "automationRuntime",
+    "context_config.json": "context",
+    "audio_config.json": "audio",
+    "runtime_stability.json": "runtimeStability",
+    "safety_guardian.json": "safety",
+    "projects.json": "projects",
+    "music.json": "music",
+    "web_fetch_profiles.json": "webFetchProfiles",
+    "media_download_profiles.json": "mediaDownloadProfiles",
+    "runtime_registry.json": "runtimeRegistry",
+}
+
+EXTERNAL_IMPORT_FILE_TO_DOMAIN = {
+    "models.json": "models",
+    "mcp_servers.json": "mcp",
+    "memory_config.json": "memory",
+    "supervisor_config.json": "supervisor",
+    "workspace_config.json": "workspace",
+    "hooks_config.json": "hooks",
+    "cron_config.json": "cron",
+    "automation_runtime.json": "automationRuntime",
+    "context_config.json": "context",
+    "audio_config.json": "audio",
+    "runtime_stability.json": "runtimeStability",
+    "safety_guardian.json": "safety",
+    "projects.json": "projects",
+    "music.json": "music",
+    "runtime_registry.json": "runtimeRegistry",
+}
+
+class StorageManager:
+    """
+    Manages the `~/.v8-agent-os` directory structure and unified file I/O operations.
+    Replaces the Prisma database with local Markdown and JSONL file persistence.
+    """
+    def __init__(self):
+        # Resolve the absolute path to `~/.v8-agent-os`
+        self.base_dir = CONFIG_JSON_PATH.parent
+        self._legacy_model_bindings_migrated = False
+        self._initialize_structure()
+        
+    def _initialize_structure(self):
+        """Ensures all required directories and default files exist."""
+        dirs_to_create = [
+            self.base_dir,
+            self.base_dir / "core",
+            self.base_dir / "core" / "oauth",
+            self.base_dir / "core" / "oauth" / "providers",
+            self.base_dir / "workspace",
+            self.base_dir / "agents",
+            self.base_dir / "commands",
+            self.base_dir / "sessions",
+            self.base_dir / "computer_use_traces",
+            self.base_dir / "web_fetch",
+            self.base_dir / "plugins",
+            PLUGIN_INSTALL_LOG_ROOT,
+            self.base_dir / "rpa",
+            self.base_dir / "rpa" / "drafts",
+            self.base_dir / "rpa" / "scripts",
+            self.base_dir / "rpa" / "templates",
+        ]
+        for d in dirs_to_create:
+            d.mkdir(parents=True, exist_ok=True)
+        defaults = {
+            "V8_AGENT_OS.md": (
+                "# V8 Agent OS Runtime Orchestration Prompt\n\n"
+                "You are V8 Agent OS, a runtime orchestrator for a multi-runtime AI operating system.\n"
+                "You are not a generic chat bot. Your primary responsibility is to keep work correct, recoverable, observable, and well-routed across runtimes.\n\n"
+                "## Primary Goal\n"
+                "- Solve user tasks with the smallest stable plan that still preserves recoverability.\n"
+                "- Prefer runtime-managed execution over ad-hoc tool chaos.\n"
+                "- Keep long tasks resumable, inspectable, and approval-safe.\n\n"
+                "## Runtime Worldview\n"
+                "Think in terms of runtime boundaries and coordination:\n"
+                "- CHAT RUNTIME: conversation, decomposition, orchestration, delegation.\n"
+                "- MEMORY RUNTIME: long-term knowledge, preferences, recall, graph, artifacts.\n"
+                "- AUTOMATION RUNTIME: hooks, cron, recurring jobs, durable automation.\n"
+                "- WORKFLOW RUNTIME: multi-step structured execution and stateful task flows.\n"
+                "- PLUGIN HOST RUNTIME: external channels, OpenClaw tools, plugin-host routing.\n"
+                "- COMPUTER USE RUNTIME: desktop/UI execution with guarded escalation.\n"
+                "- RPA RUNTIME: deterministic scripted operational flows.\n\n"
+                "## Tool Discipline\n"
+                "Tool priority order:\n"
+                "1. Use the most appropriate runtime-managed path.\n"
+                "2. Use skills / MCP / plugin_host candidates selected for the current route.\n"
+                "3. Use baseline system tools for reading, writing, searching, commands, media inspection, and web access.\n"
+                "4. Use low-level or destructive tools only when clearly necessary and safe.\n\n"
+                "Do not assume that a route miss means a capability is forbidden. If the task is blocked or stale, expand carefully and switch capabilities deliberately.\n\n"
+                "## Delegation Discipline\n"
+                "- If a task is small and local, solve it directly.\n"
+                "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"
+                "- Use `create_agent` to create durable specialists for future turns.\n"
+                "- Use `delegate_parallel` only for bounded fan-out, at most two subtasks, with isolated scopes.\n"
+                "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n"
+                "## Todo Discipline\n"
+                "- For non-trivial tasks, create and maintain todos.\n"
+                "- A plan is not decoration: keep it updated.\n"
+                "- Prefer one `in_progress` item at a time unless parallel work is explicit.\n"
+                "- If progress stalls, explain the blocker and adjust the plan.\n\n"
+                "## Recoverability And Observability\n"
+                "- Prefer paths that preserve pause/resume, retry, approval, snapshots, run ledgers, and event trails.\n"
+                "- Do not fake completion. If something is blocked, state what is blocked, what is done, and what should happen next.\n"
+                "- When interacting with external channels or plugins, care about the real runtime state, not just the last message projection.\n\n"
+                "## Language Protocol\n"
+                "- Think and structure plans in English by default.\n"
+                "- Reply to the user in the language they used most recently.\n"
+                "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n"
+                "## Collaboration Style\n"
+                "- Be decisive, but do not guess when a runtime fact can be observed.\n"
+                "- Prefer small, reversible changes over clever but brittle jumps.\n"
+                "- When a task spans multiple runtimes, route intentionally instead of collapsing everything into one response.\n"
+                "- When a user asks for implementation, move forward unless a choice is truly architecture-breaking.\n"
+            ),
+            "users.json": json.dumps({"users": []}, indent=2, ensure_ascii=False),
+        }
+
+        for filename, content in defaults.items():
+            filepath = self.base_dir / filename
+            if filepath.exists():
+                continue
+            try:
+                with open(filepath, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(content)
+            except PermissionError:
+                continue
+
+        self._ensure_config_json_exists()
+        self._migrate_computer_use_storage()
+        self._ensure_plugin_json_exists()
+        self._migrate_legacy_structured_files()
+
+    def _default_system_base_config(self) -> dict[str, Any]:
+        engine_base_url = _normalize_http_base_url(
+            os.getenv("V8_AGENT_OS_ENGINE_URL") or os.getenv("PYTHON_ENGINE_URL"),
+            "http://127.0.0.1:9530/v1",
+        )
+        admin_base_url = _normalize_http_base_url(
+            os.getenv("NEXT_PUBLIC_API_BASE_URL"),
+            "http://127.0.0.1:9528/api",
+        )
+        cache_dir = str(self.base_dir / "web_fetch")
+        return {
+            "identity": default_system_identity(),
+            "bridge": {
+                "engineBaseUrl": engine_base_url,
+                "engineWsBaseUrl": _derive_ws_base_url(
+                    os.getenv("V8_AGENT_OS_ENGINE_WS_URL")
+                    or os.getenv("NEXT_PUBLIC_V8_AGENT_OS_ENGINE_WS_URL")
+                    or engine_base_url
+                ),
+                "adminBaseUrl": admin_base_url,
+                "desktopLiveBridgeBaseUrl": _normalize_http_base_url(
+                    os.getenv("V8_AGENT_OS_DESKTOP_LIVE_BRIDGE_URL"),
+                    "http://127.0.0.1:8011/v1",
+                ),
+                "internalSecret": str(os.getenv("V8_AGENT_OS_INTERNAL_SECRET") or uuid4().hex),
+                "allowedOrigins": [],
+            },
+            "webFetch": {
+                "bypassProxyEnv": str(os.getenv("V8_AGENT_OS_WEB_FETCH_BYPASS_PROXY_ENV") or "").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "cacheDir": str(os.getenv("V8_AGENT_OS_WEB_FETCH_CACHE_DIR") or cache_dir),
+                "adaptiveStorageFile": str(
+                    os.getenv("V8_AGENT_OS_WEB_FETCH_ADAPTIVE_STORAGE_FILE")
+                    or (Path(cache_dir) / "adaptive" / "global.db")
+                ),
+            },
+            "desktopTools": {
+                "tesseractPath": str(os.getenv("TESSERACT_PATH") or ""),
+                "tessdataPrefix": str(os.getenv("TESSDATA_PREFIX") or ""),
+                "omniParserRoot": str(os.getenv("V8_AGENT_OS_OMNIPARSER_ROOT") or ""),
+                "omniParserSomModelPath": str(os.getenv("V8_AGENT_OS_OMNIPARSER_SOM_MODEL_PATH") or ""),
+                "omniParserCaptionModelPath": str(os.getenv("V8_AGENT_OS_OMNIPARSER_CAPTION_MODEL_PATH") or ""),
+                "omniParserCaptionModelName": str(os.getenv("V8_AGENT_OS_OMNIPARSER_CAPTION_MODEL_NAME") or ""),
+                "omniParserDevice": str(os.getenv("V8_AGENT_OS_OMNIPARSER_DEVICE") or ""),
+            },
+            "desktopLive": {
+                "enabled": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_ENABLED") or "true").strip().lower() not in {"0", "false", "no", "off"},
+                "maxWidth": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_MAX_WIDTH") or "960")),
+                "maxHeight": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_MAX_HEIGHT") or "540")),
+                "targetFps": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_TARGET_FPS") or "10")),
+                "singleViewerOnly": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_SINGLE_VIEWER_ONLY") or "true").strip().lower() not in {"0", "false", "no", "off"},
+                "idleReleaseSeconds": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_IDLE_RELEASE_SECONDS") or "15")),
+                "captureDisplay": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_CAPTURE_DISPLAY") or "primary"),
+            },
+            "s3": {},
+            "legacySettings": [],
+        }
+
+    def _default_config_payload(self) -> dict[str, Any]:
+        payload = {key: deepcopy(value) for key, value in STRUCTURED_CONFIG_DEFAULTS.items()}
+        payload["systemBase"] = self._default_system_base_config()
+        supervisor_profile = dict((payload.get("supervisor") or {}).get("profile") or {})
+        if not str(supervisor_profile.get("avatar") or "").strip():
+            supervisor_profile["avatar"] = _default_supervisor_avatar_url(
+                ((payload.get("systemBase") or {}).get("bridge") or {}).get("adminBaseUrl")
+            )
+        payload.setdefault("supervisor", {})["profile"] = supervisor_profile
+        return payload
+
+    def _default_computer_use_payload(self) -> dict[str, Any]:
+        return {"version": 1, "apps": {}}
+
+    def _default_plugin_payload(self) -> dict[str, Any]:
+        plugin_host_root, plugin_extensions_root = self._plugin_registry_roots()
+        return {
+            "version": 1,
+            "pluginRoot": str(plugin_host_root),
+            "pluginExtensionsRoot": str(plugin_extensions_root),
+            "pluginInstallLogRoot": str(PLUGIN_INSTALL_LOG_ROOT),
+            "plugins": {},
+            "installJobs": {},
+        }
+
+    def _plugin_registry_roots(self) -> tuple[Path, Path]:
+        plugin_host_config = self.get_plugin_host_config()
+        managed_local = dict(plugin_host_config.get("managedLocal") or {})
+        plugin_root = Path(str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT))
+        return plugin_root, plugin_root / "extensions"
+
+    def _deep_merge(self, base: Any, incoming: Any) -> Any:
+        if isinstance(base, dict) and isinstance(incoming, dict):
+            merged = {key: deepcopy(value) for key, value in base.items()}
+            for key, value in incoming.items():
+                merged[key] = self._deep_merge(merged.get(key), value) if key in merged else deepcopy(value)
+            return merged
+        if isinstance(base, list) and isinstance(incoming, list):
+            return deepcopy(incoming)
+        return deepcopy(incoming if incoming is not None else base)
+
+    def _is_semantically_empty(self, value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) == 0
+        return False
+
+    def _merge_external_preserving_current(
+        self,
+        current: Any,
+        incoming: Any,
+        *,
+        path: list[str],
+        conflicts: list[dict[str, Any]],
+    ) -> Any:
+        if isinstance(current, dict) and isinstance(incoming, dict):
+            merged = {key: deepcopy(value) for key, value in current.items()}
+            for key, incoming_value in incoming.items():
+                next_path = [*path, str(key)]
+                if key not in merged:
+                    merged[key] = deepcopy(incoming_value)
+                    continue
+                merged[key] = self._merge_external_preserving_current(
+                    merged.get(key),
+                    incoming_value,
+                    path=next_path,
+                    conflicts=conflicts,
+                )
+            return merged
+
+        if isinstance(current, list) and isinstance(incoming, list):
+            if not current and incoming:
+                return deepcopy(incoming)
+            if current and incoming and current != incoming:
+                conflicts.append(
+                    {
+                        "path": ".".join(path),
+                        "current": deepcopy(current),
+                        "incoming": deepcopy(incoming),
+                    }
+                )
+            return deepcopy(current)
+
+        if self._is_semantically_empty(current) and not self._is_semantically_empty(incoming):
+            return deepcopy(incoming)
+
+        if not self._is_semantically_empty(current) and not self._is_semantically_empty(incoming) and current != incoming:
+            conflicts.append(
+                {
+                    "path": ".".join(path),
+                    "current": deepcopy(current),
+                    "incoming": deepcopy(incoming),
+                }
+            )
+        return deepcopy(current)
+
+    def _read_raw_config_payload(self) -> dict[str, Any]:
+        if not CONFIG_JSON_PATH.exists():
+            return {}
+        try:
+            payload = self._read_json_file(CONFIG_JSON_PATH)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _ensure_config_json_exists(self):
+        if CONFIG_JSON_PATH.exists():
+            return
+        try:
+            self.write_json("config.json", self._default_config_payload())
+        except PermissionError:
+            pass
+
+    def _read_config_payload(self) -> dict[str, Any]:
+        if not CONFIG_JSON_PATH.exists():
+            self._ensure_config_json_exists()
+        try:
+            payload = self._read_json_file(CONFIG_JSON_PATH) if CONFIG_JSON_PATH.exists() else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = {}
+        merged = self._deep_merge(self._default_config_payload(), payload if isinstance(payload, dict) else {})
+        return merged
+
+    def _write_config_payload(self, payload: dict[str, Any]):
+        self.write_json("config.json", payload)
+
+    def _read_computer_use_payload(self) -> dict[str, Any]:
+        if not COMPUTER_USE_JSON_PATH.exists():
+            self._migrate_computer_use_storage()
+        try:
+            payload = self._read_json_file(COMPUTER_USE_JSON_PATH) if COMPUTER_USE_JSON_PATH.exists() else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = {}
+        merged = self._deep_merge(
+            self._default_computer_use_payload(),
+            payload if isinstance(payload, dict) else {},
+        )
+        return merged
+
+    def _write_computer_use_payload(self, payload: dict[str, Any]):
+        filepath = COMPUTER_USE_JSON_PATH
+        data = self._deep_merge(self._default_computer_use_payload(), dict(payload or {}))
+        serialized = json.dumps(data, indent=2, ensure_ascii=False)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
+        with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(serialized)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.replace(temp_path, filepath)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+        backup_path = self._json_backup_path(filepath)
+        backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
+        try:
+            with open(backup_temp_path, "w", encoding="utf-8", newline="\n") as backup_file:
+                backup_file.write(serialized)
+                backup_file.flush()
+                os.fsync(backup_file.fileno())
+            os.replace(backup_temp_path, backup_path)
+        finally:
+            if backup_temp_path.exists():
+                try:
+                    backup_temp_path.unlink()
+                except OSError:
+                    pass
+
+    def _ensure_plugin_json_exists(self):
+        if PLUGIN_JSON_PATH.exists():
+            return
+        try:
+            self._write_plugin_payload(self._default_plugin_payload())
+        except PermissionError:
+            pass
+
+    def _read_plugin_payload(self) -> dict[str, Any]:
+        if not PLUGIN_JSON_PATH.exists():
+            self._ensure_plugin_json_exists()
+        try:
+            payload = self._read_json_file(PLUGIN_JSON_PATH) if PLUGIN_JSON_PATH.exists() else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = {}
+        return self._deep_merge(
+            self._default_plugin_payload(),
+            payload if isinstance(payload, dict) else {},
+        )
+
+    def _write_plugin_payload(self, payload: dict[str, Any]):
+        filepath = PLUGIN_JSON_PATH
+        data = self._deep_merge(self._default_plugin_payload(), dict(payload or {}))
+        serialized = json.dumps(data, indent=2, ensure_ascii=False)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
+        with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(serialized)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.replace(temp_path, filepath)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+        backup_path = self._json_backup_path(filepath)
+        backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
+        try:
+            with open(backup_temp_path, "w", encoding="utf-8", newline="\n") as backup_file:
+                backup_file.write(serialized)
+                backup_file.flush()
+                os.fsync(backup_file.fileno())
+            os.replace(backup_temp_path, backup_path)
+        finally:
+            if backup_temp_path.exists():
+                try:
+                    backup_temp_path.unlink()
+                except OSError:
+                    pass
+
+    def _migrate_computer_use_storage(self):
+        default_payload = self._default_computer_use_payload()
+        current_payload = {}
+        if COMPUTER_USE_JSON_PATH.exists():
+            try:
+                current_payload = self._read_json_file(COMPUTER_USE_JSON_PATH)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                current_payload = {}
+
+        config_payload = self._read_config_payload()
+        legacy_domain_payload = (
+            deepcopy(config_payload.get("computerUseMemory"))
+            if isinstance(config_payload.get("computerUseMemory"), dict)
+            else {}
+        )
+
+        legacy_file_path = self.base_dir / "computer_use_memory.json"
+        legacy_file_payload = {}
+        if legacy_file_path.exists():
+            try:
+                legacy_file_payload = self._read_json_file(legacy_file_path)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                legacy_file_payload = {}
+
+        merged_payload = self._deep_merge(default_payload, current_payload if isinstance(current_payload, dict) else {})
+        if isinstance(legacy_domain_payload, dict) and legacy_domain_payload:
+            merged_payload = self._deep_merge(merged_payload, legacy_domain_payload)
+        if isinstance(legacy_file_payload, dict) and legacy_file_payload:
+            merged_payload = self._deep_merge(merged_payload, legacy_file_payload)
+
+        if merged_payload != current_payload or not COMPUTER_USE_JSON_PATH.exists():
+            self._write_computer_use_payload(merged_payload)
+
+        config_changed = False
+        if "computerUseMemory" in config_payload:
+            config_payload.pop("computerUseMemory", None)
+            config_changed = True
+        if config_changed:
+            self._write_config_payload(config_payload)
+
+        if legacy_file_path.exists():
+            backup_dir = self._legacy_backup_dir()
+            self._archive_legacy_file(legacy_file_path, backup_dir)
+
+    def _legacy_backup_dir(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_dir = LEGACY_CONFIG_BACKUP_ROOT / timestamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        return backup_dir
+
+    def _archive_legacy_file(self, filepath: Path, backup_dir: Path):
+        if not filepath.exists():
+            return
+        target = backup_dir / filepath.name
+        if target.exists():
+            target = backup_dir / f"{filepath.stem}-{uuid4().hex[:8]}{filepath.suffix}"
+        shutil.move(str(filepath), str(target))
+
+    def _legacy_settings_to_system_base(self, raw: dict[str, Any]) -> dict[str, Any]:
+        current = self._default_system_base_config()
+        if isinstance(raw.get("s3"), dict):
+            current["s3"] = deepcopy(raw.get("s3"))
+        elif isinstance(raw.get("s3_config"), dict):
+            current["s3"] = deepcopy(raw.get("s3_config"))
+        settings_list = raw.get("settings")
+        if isinstance(settings_list, list):
+            current["legacySettings"] = deepcopy(settings_list)
+        return current
+
+    def _system_base_to_legacy_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "s3": deepcopy((data or {}).get("s3") or {}),
+            "settings": deepcopy((data or {}).get("legacySettings") or []),
+        }
+        return payload
+
+    def _migrate_legacy_structured_files(self):
+        backup_dir: Optional[Path] = None
+        config_payload = self._read_config_payload()
+        changed = False
+
+        settings_path = self.base_dir / "settings.json"
+        if settings_path.exists():
+            try:
+                raw_settings = self._read_json_file(settings_path)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raw_settings = {}
+            merged = self._deep_merge(config_payload.get("systemBase", {}), self._legacy_settings_to_system_base(raw_settings))
+            if merged != config_payload.get("systemBase"):
+                config_payload["systemBase"] = merged
+                changed = True
+            backup_dir = backup_dir or self._legacy_backup_dir()
+            self._archive_legacy_file(settings_path, backup_dir)
+
+        for filename, domain in LEGACY_STRUCTURED_FILE_TO_DOMAIN.items():
+            filepath = self.base_dir / filename
+            if not filepath.exists():
+                continue
+            try:
+                incoming = self._read_json_file(filepath)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                incoming = {}
+            merged = self._deep_merge(config_payload.get(domain), incoming)
+            if merged != config_payload.get(domain):
+                config_payload[domain] = merged
+                changed = True
+            backup_dir = backup_dir or self._legacy_backup_dir()
+            self._archive_legacy_file(filepath, backup_dir)
+
+        if changed:
+            self._write_config_payload(config_payload)
+
+    def import_external_legacy_root(self, source_root: str | Path) -> dict[str, Any]:
+        source_base = Path(source_root).expanduser()
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_dir = LEGACY_CONFIG_BACKUP_ROOT / f"external_v8_agent_os_{timestamp}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_config = self._read_raw_config_payload()
+        changed = False
+        imported_domains: list[dict[str, Any]] = []
+        skipped_files: list[dict[str, Any]] = []
+        conflicts: list[dict[str, Any]] = []
+
+        def _copy_source_file(filepath: Path):
+            if not filepath.exists() or not filepath.is_file():
+                return
+            target = backup_dir / filepath.name
+            if target.exists():
+                target = backup_dir / f"{filepath.stem}-{uuid4().hex[:8]}{filepath.suffix}"
+            shutil.copy2(filepath, target)
+
+        settings_path = source_base / "settings.json"
+        if settings_path.exists():
+            try:
+                raw_settings = self._read_json_file(settings_path)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                skipped_files.append(
+                    {
+                        "file": str(settings_path),
+                        "reason": f"invalid_json:{exc.__class__.__name__}",
+                    }
+                )
+            else:
+                _copy_source_file(settings_path)
+                before = deepcopy(raw_config.get("systemBase") or {})
+                domain_conflicts: list[dict[str, Any]] = []
+                incoming = self._legacy_settings_to_system_base(raw_settings)
+                merged = self._merge_external_preserving_current(
+                    before,
+                    incoming,
+                    path=["systemBase"],
+                    conflicts=domain_conflicts,
+                )
+                if merged != before:
+                    raw_config["systemBase"] = merged
+                    changed = True
+                imported_domains.append(
+                    {
+                        "domain": "systemBase",
+                        "sourceFile": str(settings_path),
+                        "updated": merged != before,
+                        "conflictCount": len(domain_conflicts),
+                    }
+                )
+                conflicts.extend(domain_conflicts)
+        else:
+            skipped_files.append({"file": str(settings_path), "reason": "missing"})
+
+        for filename, domain in EXTERNAL_IMPORT_FILE_TO_DOMAIN.items():
+            filepath = source_base / filename
+            if not filepath.exists():
+                skipped_files.append({"file": str(filepath), "reason": "missing"})
+                continue
+            try:
+                incoming = self._read_json_file(filepath)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                skipped_files.append(
+                    {
+                        "file": str(filepath),
+                        "reason": f"invalid_json:{exc.__class__.__name__}",
+                    }
+                )
+                continue
+
+            _copy_source_file(filepath)
+            before = deepcopy(raw_config.get(domain) or {})
+            domain_conflicts: list[dict[str, Any]] = []
+            merged = self._merge_external_preserving_current(
+                before,
+                incoming,
+                path=[domain],
+                conflicts=domain_conflicts,
+            )
+            if merged != before:
+                raw_config[domain] = merged
+                changed = True
+            imported_domains.append(
+                {
+                    "domain": domain,
+                    "sourceFile": str(filepath),
+                    "updated": merged != before,
+                    "conflictCount": len(domain_conflicts),
+                }
+            )
+            conflicts.extend(domain_conflicts)
+
+        computer_use_imported = False
+        for filename in ("computer_use.json", "computer_use_memory.json"):
+            filepath = source_base / filename
+            if not filepath.exists():
+                continue
+            try:
+                incoming = self._read_json_file(filepath)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                skipped_files.append(
+                    {
+                        "file": str(filepath),
+                        "reason": f"invalid_json:{exc.__class__.__name__}",
+                    }
+                )
+                continue
+            _copy_source_file(filepath)
+            before = deepcopy(self.get_computer_use_memory() or {})
+            merged = self._deep_merge(before, incoming if isinstance(incoming, dict) else {})
+            if merged != before:
+                self.save_computer_use_memory(merged)
+                changed = True
+            imported_domains.append(
+                {
+                    "domain": "computerUse",
+                    "sourceFile": str(filepath),
+                    "updated": merged != before,
+                    "conflictCount": 0,
+                }
+            )
+            computer_use_imported = True
+            break
+        if not computer_use_imported:
+            skipped_files.append({"file": str(source_base / "computer_use.json"), "reason": "missing"})
+            skipped_files.append({"file": str(source_base / "computer_use_memory.json"), "reason": "missing"})
+
+        if changed:
+            self.write_json("config.json", raw_config)
+
+        return {
+            "sourceRoot": str(source_base),
+            "configPath": str(CONFIG_JSON_PATH),
+            "backupDir": str(backup_dir),
+            "changed": changed,
+            "importedDomains": imported_domains,
+            "skippedFiles": skipped_files,
+            "conflicts": conflicts,
+        }
+
+    def _ensure_legacy_model_bindings_migrated(self):
+        if self._legacy_model_bindings_migrated:
+            return
+
+        self._legacy_model_bindings_migrated = True
+
+        models_config = self.read_json("models.json") or {}
+        roles = dict(models_config.get("roles") or {})
+        bindings = dict(models_config.get("bindings") or {})
+        agent_bindings = dict(bindings.get("agents") or {})
+        models_changed = False
+
+        def _normalize_model_id(value: Any) -> str:
+            normalized = str(value or "").strip()
+            if not normalized or normalized.lower() in {"__empty__", "none", "null"}:
+                return ""
+            return normalized
+
+        def _assign_role_if_missing(role: str, value: Any):
+            nonlocal models_changed
+            normalized = _normalize_model_id(value)
+            if not normalized:
+                return
+            if _normalize_model_id(roles.get(role)):
+                return
+            roles[role] = normalized
+            models_changed = True
+
+        settings_config = self.read_json("settings.json") or {}
+        settings_list = list(settings_config.get("settings") or [])
+        default_agent_setting = next((item.get("value") for item in settings_list if item.get("key") == "DEFAULT_AGENT_MODEL_ID"), "")
+        vision_setting = next((item.get("value") for item in settings_list if item.get("key") == "VISION_MODEL_ID"), "") or settings_config.get("vision_model_id")
+        _assign_role_if_missing("default", default_agent_setting)
+        _assign_role_if_missing("vision", vision_setting)
+        next_settings = [item for item in settings_list if item.get("key") not in {"DEFAULT_AGENT_MODEL_ID", "VISION_MODEL_ID"}]
+        settings_changed = next_settings != settings_list or "vision_model_id" in settings_config
+        if settings_changed:
+            settings_payload = dict(settings_config)
+            settings_payload["settings"] = next_settings
+            settings_payload.pop("vision_model_id", None)
+            self.write_json("settings.json", settings_payload)
+
+        memory_config = self.read_json("memory_config.json") or {}
+        _assign_role_if_missing("extraction", memory_config.get("extraction_model") or memory_config.get("model_id"))
+        _assign_role_if_missing("embedding", memory_config.get("embedding_model"))
+        _assign_role_if_missing("reranker", memory_config.get("reranker_model"))
+        memory_changed = False
+        if memory_config.get("temperature") is not None and memory_config.get("extraction_temperature") is None:
+            memory_config["extraction_temperature"] = memory_config.get("temperature")
+            memory_changed = True
+        for legacy_key in ("model_id", "extraction_model", "embedding_model", "reranker_model", "temperature"):
+            if legacy_key in memory_config:
+                memory_config.pop(legacy_key, None)
+                memory_changed = True
+        if memory_changed:
+            self.write_json("memory_config.json", memory_config)
+
+        context_config = self.read_json("context_config.json") or {}
+        compression = dict(context_config.get("compression") or {})
+        _assign_role_if_missing("summary", compression.get("summary_model"))
+        context_changed = False
+        if "summary_model" in compression:
+            compression.pop("summary_model", None)
+            context_changed = True
+        if context_changed:
+            context_payload = dict(context_config)
+            context_payload["compression"] = compression
+            self.write_json("context_config.json", context_payload)
+
+        supervisor_config = self.read_json("supervisor_config.json") or {}
+        _assign_role_if_missing("supervisor", supervisor_config.get("model_id"))
+        supervisor_changed = False
+        if "model_id" in supervisor_config:
+            supervisor_config.pop("model_id", None)
+            supervisor_changed = True
+        if supervisor_changed:
+            self.write_json("supervisor_config.json", supervisor_config)
+
+        try:
+            from core.agents import parse_agent_md
+
+            agents_dir = self.base_dir / "agents"
+            for file_path in agents_dir.glob("*.md"):
+                with open(file_path, "r", encoding="utf-8") as handle:
+                    agent_content = handle.read()
+                parsed = parse_agent_md(agent_content, file_path.name)
+                normalized = _normalize_model_id(parsed.model)
+                if not normalized:
+                    continue
+                existing = agent_bindings.get(parsed.id)
+                existing_model = ""
+                if isinstance(existing, dict):
+                    existing_model = _normalize_model_id(existing.get("model_id") or existing.get("modelId"))
+                else:
+                    existing_model = _normalize_model_id(existing)
+                if existing_model:
+                    continue
+                agent_bindings[parsed.id] = {"model_id": normalized}
+                models_changed = True
+        except Exception as e:
+            print(f"[Storage] Legacy agent model binding migration skipped: {e}")
+
+        if models_changed:
+            models_payload = dict(models_config)
+            models_payload["roles"] = roles
+            bindings["agents"] = agent_bindings
+            models_payload["bindings"] = bindings
+            self.save_models_config(models_payload)
+
+    # --- Generic JSON helpers ---
+    def read_json(self, filename: str) -> Dict[str, Any]:
+        """Reads a JSON file from the base directory."""
+        normalized_name = str(filename or "").replace("\\", "/").strip()
+        if normalized_name == "config.json":
+            return self._read_config_payload()
+        if normalized_name in {"computer_use.json", "computer_use_memory.json"}:
+            return self._read_computer_use_payload()
+        if normalized_name == "plugin.json":
+            return self._read_plugin_payload()
+        if normalized_name == "settings.json":
+            return self._system_base_to_legacy_settings(self.get_system_base_config())
+        mapped_domain = LEGACY_STRUCTURED_FILE_TO_DOMAIN.get(normalized_name)
+        if mapped_domain:
+            return deepcopy(self._read_config_payload().get(mapped_domain) or {})
+
+        filepath = self.base_dir / filename
+        if not filepath.exists():
+            return {}
+        try:
+            return self._read_json_file(filepath)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            backup_path = self._json_backup_path(filepath)
+            quarantine_path = self._quarantine_corrupt_json(filepath)
+            if backup_path.exists():
+                try:
+                    recovered = self._read_json_file(backup_path)
+                    self.write_json(filename, recovered)
+                    print(
+                        f"[Storage] JSON 文件 {filepath.name} 已损坏，已从备份 {backup_path.name} 自动恢复。"
+                    )
+                    return recovered
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+            print(
+                f"[Storage] JSON 文件 {filepath.name} 读取失败：{exc}。"
+                f"{' 已隔离到 ' + str(quarantine_path) + '。' if quarantine_path else ''}"
+            )
+            return {}
+
+    def write_json(self, filename: str, data: Dict[str, Any]):
+        """Writes data to a JSON file in the base directory."""
+        normalized_name = str(filename or "").replace("\\", "/").strip()
+        if normalized_name == "config.json":
+            filepath = CONFIG_JSON_PATH
+            payload = self._deep_merge(self._default_config_payload(), dict(data or {}))
+            serialized = json.dumps(payload, indent=2, ensure_ascii=False)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
+            with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(serialized)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.replace(temp_path, filepath)
+            finally:
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+            backup_path = self._json_backup_path(filepath)
+            backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
+            try:
+                with open(backup_temp_path, "w", encoding="utf-8", newline="\n") as backup_file:
+                    backup_file.write(serialized)
+                    backup_file.flush()
+                    os.fsync(backup_file.fileno())
+                os.replace(backup_temp_path, backup_path)
+            finally:
+                if backup_temp_path.exists():
+                    try:
+                        backup_temp_path.unlink()
+                    except OSError:
+                        pass
+            return
+
+        if normalized_name in {"computer_use.json", "computer_use_memory.json"}:
+            self._write_computer_use_payload(data)
+            return
+        if normalized_name == "plugin.json":
+            self._write_plugin_payload(data)
+            return
+
+        if normalized_name == "settings.json":
+            config_payload = self._read_config_payload()
+            incoming = self._legacy_settings_to_system_base(dict(data or {}))
+            config_payload["systemBase"] = self._deep_merge(config_payload.get("systemBase", {}), incoming)
+            self._write_config_payload(config_payload)
+            return
+
+        mapped_domain = LEGACY_STRUCTURED_FILE_TO_DOMAIN.get(normalized_name)
+        if mapped_domain:
+            config_payload = self._read_config_payload()
+            config_payload[mapped_domain] = self._deep_merge(config_payload.get(mapped_domain), dict(data or {}))
+            self._write_config_payload(config_payload)
+            return
+
+        filepath = self.base_dir / filename
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(data, indent=2, ensure_ascii=False)
+        temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
+        with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(serialized)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.replace(temp_path, filepath)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+        backup_path = self._json_backup_path(filepath)
+        backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
+        try:
+            with open(backup_temp_path, "w", encoding="utf-8", newline="\n") as backup_file:
+                backup_file.write(serialized)
+                backup_file.flush()
+                os.fsync(backup_file.fileno())
+            os.replace(backup_temp_path, backup_path)
+        finally:
+            if backup_temp_path.exists():
+                try:
+                    backup_temp_path.unlink()
+                except OSError:
+                    pass
+
+    def _read_json_file(self, filepath: Path) -> Dict[str, Any]:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _json_backup_path(self, filepath: Path) -> Path:
+        return filepath.with_name(f"{filepath.name}.bak")
+
+    def _quarantine_corrupt_json(self, filepath: Path) -> Optional[Path]:
+        if not filepath.exists():
+            return None
+        quarantine_path = filepath.with_name(
+            f"{filepath.stem}.corrupt_{uuid4().hex[:10]}{filepath.suffix}"
+        )
+        try:
+            shutil.copy2(filepath, quarantine_path)
+            return quarantine_path
+        except OSError:
+            return None
+
+    def read_text(self, filename: str) -> str:
+        filepath = self.base_dir / filename
+        if not filepath.exists():
+            return ""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def write_text(self, filename: str, content: str):
+        filepath = self.base_dir / filename
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content or "")
+            
+    def get_supervisor_prompt(self) -> str:
+        """Reads the global V8_AGENT_OS.md supervisor system prompt."""
+        filepath = self.base_dir / "V8_AGENT_OS.md"
+        if filepath.exists():
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+
+    def get_system_identity(self) -> Dict[str, Any]:
+        system_base = self.get_system_base_config()
+        return normalize_system_identity(system_base.get("identity"))
+
+    def get_default_agent_model_id(self) -> Optional[str]:
+        """Reads the default agent model ID, preferring models.json roles.default."""
+        config = self.get_models_config()
+        roles = config.get("roles", {})
+        default_model_id = roles.get("default")
+        if default_model_id:
+            return default_model_id
+        return None
+
+
+            
+    # --- Specialized Accessors ---
+    @property
+    def mcp_config_path(self) -> Path:
+        return CONFIG_JSON_PATH
+        
+    def get_models_config(self) -> Dict[str, Any]:
+        """Reads the unified models.json (model catalog + role assignments)."""
+        self._ensure_legacy_model_bindings_migrated()
+        return self.read_json("models.json")
+    
+    def save_models_config(self, data: Dict[str, Any]):
+        """Saves the unified models.json."""
+        payload = self._read_config_payload()
+        payload["models"] = deepcopy(dict(data or {}))
+        self._write_config_payload(payload)
+    
+    def get_role_model_id(self, role: str) -> str:
+        """Get the model ID assigned to a specific role from models.json."""
+        try:
+            from core.model_control_plane import model_control_plane
+
+            return model_control_plane.get_role_model_id(role)
+        except Exception:
+            config = self.get_models_config()
+            roles = config.get("roles", {})
+            return roles.get(role) or roles.get("default", "")
+
+    def get_agent_model_bindings(self) -> Dict[str, str]:
+        config = self.get_models_config()
+        bindings = ((config.get("bindings") or {}).get("agents") or {})
+        normalized: Dict[str, str] = {}
+        for agent_id, payload in bindings.items():
+            if isinstance(payload, dict):
+                model_id = str(payload.get("model_id") or payload.get("modelId") or "").strip()
+            else:
+                model_id = str(payload or "").strip()
+            if model_id:
+                normalized[str(agent_id)] = model_id
+        return normalized
+
+    def get_agent_model_binding(self, agent_id: str) -> str:
+        return self.get_agent_model_bindings().get(agent_id, "")
+
+    def set_agent_model_binding(self, agent_id: str, model_id: Optional[str]):
+        config = self.get_models_config() or {}
+        bindings = config.setdefault("bindings", {})
+        agents = bindings.setdefault("agents", {})
+        resolved_model_id = str(model_id or "").strip()
+        if resolved_model_id:
+            agents[agent_id] = {"model_id": resolved_model_id}
+        else:
+            agents.pop(agent_id, None)
+        self.save_models_config(config)
+    
+    # Backward compat aliases
+    def get_routes(self) -> Dict[str, Any]:
+        return self.get_models_config()
+    def save_routes(self, data: Dict[str, Any]):
+        self.save_models_config(data)
+
+    # --- Memory Config Accessors ---
+    def get_memory_config(self) -> Dict[str, Any]:
+        self._ensure_legacy_model_bindings_migrated()
+        return self.read_json("memory_config.json")
+        
+    def save_memory_config(self, data: Dict[str, Any]):
+        self.write_json("memory_config.json", data)
+
+    # --- Extensions Config Accessors ---
+    def get_extensions_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("extensions") or {}
+        return self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["extensions"], data if isinstance(data, dict) else {})
+
+    def save_extensions_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["extensions"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["extensions"], dict(data or {}))
+        self._write_config_payload(payload)
+        
+    # --- Supervisor Config Accessors ---
+    def get_supervisor_config(self) -> Dict[str, Any]:
+        self._ensure_legacy_model_bindings_migrated()
+        config = dict(self.read_json("supervisor_config.json") or {})
+        sanitized_allowed_tools = sanitize_supervisor_allowed_tools(config.get("allowed_tools"))
+        if sanitized_allowed_tools != config.get("allowed_tools"):
+            config["allowed_tools"] = sanitized_allowed_tools
+            self.write_json("supervisor_config.json", config)
+        return config
+        
+    def save_supervisor_config(self, data: Dict[str, Any]):
+        next_payload = dict(data or {})
+        next_payload["allowed_tools"] = sanitize_supervisor_allowed_tools(next_payload.get("allowed_tools"))
+        self.write_json("supervisor_config.json", next_payload)
+
+    def _get_legacy_setting_value(self, key: str) -> Any:
+        system_base = self.get_system_base_config()
+        legacy_settings = system_base.get("legacySettings") or []
+        if not isinstance(legacy_settings, list):
+            return None
+        for item in legacy_settings:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("key") or "").strip() == key:
+                return item.get("value")
+        return None
+
+    def get_supervisor_profile(self) -> Dict[str, str]:
+        supervisor_config = self.get_supervisor_config() or {}
+        profile = dict(supervisor_config.get("profile") or {})
+        legacy_agent = self.get_agent("supervisor") or {}
+        bridge = (self.get_system_base_config() or {}).get("bridge") or {}
+        default_avatar = _default_supervisor_avatar_url(bridge.get("adminBaseUrl"))
+        legacy_avatar = self._get_legacy_setting_value("SUPERVISOR_AVATAR")
+        return {
+            "name": str(profile.get("name") or legacy_agent.get("name") or "智能主管"),
+            "roleLabel": str(profile.get("roleLabel") or legacy_agent.get("description") or "主理人"),
+            "avatar": str(profile.get("avatar") or legacy_avatar or legacy_agent.get("avatar") or default_avatar),
+        }
+
+    def save_supervisor_profile(self, profile: Dict[str, Any]):
+        supervisor_config = self.get_supervisor_config() or {}
+        bridge = (self.get_system_base_config() or {}).get("bridge") or {}
+        current = self.get_supervisor_profile()
+        next_profile = {
+            "name": str(profile.get("name") or current.get("name") or "智能主管"),
+            "roleLabel": str(profile.get("roleLabel") or current.get("roleLabel") or "主理人"),
+            "avatar": str(profile.get("avatar") or current.get("avatar") or _default_supervisor_avatar_url(bridge.get("adminBaseUrl"))),
+        }
+        supervisor_config["profile"] = next_profile
+        self.save_supervisor_config(supervisor_config)
+
+    def get_agent_runtime_profile(self, agent_id: str) -> Dict[str, str]:
+        if agent_id == "supervisor":
+            return self.get_supervisor_profile()
+
+        default_name = agent_id
+        default_role = "Specialist Agent"
+        default_avatar = f"https://api.dicebear.com/9.x/bottts-neutral/svg?seed={agent_id}"
+        custom_agent = self.get_agent(agent_id)
+        if custom_agent:
+            return {
+                "name": custom_agent.get("name") or default_name,
+                "roleLabel": custom_agent.get("description") or default_role,
+                "avatar": custom_agent.get("avatar") or default_avatar,
+            }
+        return {
+            "name": default_name,
+            "roleLabel": default_role,
+            "avatar": default_avatar,
+        }
+        
+    # --- Workspace Config Accessors ---
+    def get_workspace_config(self) -> Dict[str, Any]:
+        return self.read_json("workspace_config.json")
+        
+    def save_workspace_config(self, data: Dict[str, Any]):
+        self.write_json("workspace_config.json", data)
+
+    def get_system_base_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("systemBase") or {}
+        normalized = self._deep_merge(self._default_system_base_config(), data if isinstance(data, dict) else {})
+        normalized["identity"] = normalize_system_identity(normalized.get("identity"))
+        bridge = normalized.setdefault("bridge", {})
+        bridge["engineBaseUrl"] = _normalize_http_base_url(bridge.get("engineBaseUrl"), "http://127.0.0.1:9530/v1")
+        bridge["engineWsBaseUrl"] = _normalize_http_base_url(
+            bridge.get("engineWsBaseUrl"),
+            _derive_ws_base_url(bridge["engineBaseUrl"]),
+        )
+        bridge["adminBaseUrl"] = _normalize_http_base_url(bridge.get("adminBaseUrl"), "http://127.0.0.1:9528/api")
+        bridge["internalSecret"] = str(bridge.get("internalSecret") or uuid4().hex)
+        bridge["allowedOrigins"] = _normalize_allowed_origins(bridge.get("allowedOrigins"))
+        normalized.pop("skills", None)
+        normalized.setdefault("webFetch", {}).setdefault("cacheDir", str(self.base_dir / "web_fetch"))
+        normalized["webFetch"].setdefault(
+            "adaptiveStorageFile",
+            str(Path(normalized["webFetch"]["cacheDir"]) / "adaptive" / "global.db"),
+        )
+        normalized.setdefault("desktopTools", {})
+        normalized.pop("channels", None)
+        normalized.setdefault("desktopLive", {})
+        desktop_live = normalized["desktopLive"]
+        desktop_live["enabled"] = bool(desktop_live.get("enabled", True))
+        desktop_live["maxWidth"] = max(320, int(desktop_live.get("maxWidth") or 960))
+        desktop_live["maxHeight"] = max(180, int(desktop_live.get("maxHeight") or 540))
+        desktop_live["targetFps"] = max(1, min(15, int(desktop_live.get("targetFps") or 10)))
+        desktop_live["singleViewerOnly"] = bool(desktop_live.get("singleViewerOnly", True))
+        desktop_live["idleReleaseSeconds"] = max(5, int(desktop_live.get("idleReleaseSeconds") or 15))
+        capture_display = str(desktop_live.get("captureDisplay") or "primary").strip().lower()
+        desktop_live["captureDisplay"] = capture_display if capture_display in {"primary"} else "primary"
+        normalized.setdefault("s3", {})
+        normalized.setdefault("legacySettings", [])
+        if normalized != data:
+            payload = self._read_config_payload()
+            payload["systemBase"] = normalized
+            self._write_config_payload(payload)
+        return normalized
+
+    def save_system_base_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        merged = self._deep_merge(self.get_system_base_config(), dict(data or {}))
+        merged.pop("channels", None)
+        payload["systemBase"] = merged
+        self._write_config_payload(payload)
+
+    def get_system_settings(self) -> Dict[str, Any]:
+        return self._system_base_to_legacy_settings(self.get_system_base_config())
+
+    def save_system_settings(self, data: Dict[str, Any]):
+        self.save_system_base_config(self._legacy_settings_to_system_base(dict(data or {})))
+
+    # --- Hooks Config Accessors ---
+    def get_hooks_config(self) -> Dict[str, Any]:
+        return self.read_json("hooks_config.json")
+        
+    def save_hooks_config(self, data: Dict[str, Any]):
+        self.write_json("hooks_config.json", data)
+
+    # --- Cron Config Accessors ---
+    def get_cron_config(self) -> Dict[str, Any]:
+        return self.read_json("cron_config.json")
+        
+    def save_cron_config(self, data: Dict[str, Any]):
+        self.write_json("cron_config.json", data)
+
+    # --- Automation Runtime Config Accessors ---
+    def get_automation_runtime_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("automationRuntime") or {}
+        return self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["automationRuntime"],
+            data if isinstance(data, dict) else {},
+        )
+
+    def save_automation_runtime_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["automationRuntime"] = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["automationRuntime"],
+            dict(data or {}),
+        )
+        self._write_config_payload(payload)
+
+    # --- Context Config Accessors ---
+    def get_context_config(self) -> Dict[str, Any]:
+        self._ensure_legacy_model_bindings_migrated()
+        raw = self.read_json("context_config.json")
+        normalized = normalize_context_policy(raw)
+        if raw != normalized:
+            self.write_json("context_config.json", normalized)
+        return normalized
+        
+    def save_context_config(self, data: Dict[str, Any]):
+        self.write_json("context_config.json", normalize_context_policy(data))
+
+    # --- Computer Use Runtime Config Accessors ---
+    def get_computer_use_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("computerUse") or {}
+        return self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["computerUse"], data if isinstance(data, dict) else {})
+
+    def save_computer_use_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["computerUse"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["computerUse"], dict(data or {}))
+        self._write_config_payload(payload)
+
+    # --- Plugin Host Runtime Config Accessors ---
+    def get_plugin_host_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("pluginHost") or {}
+        normalized = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["pluginHost"], data if isinstance(data, dict) else {})
+        raw_allowed_families = data.get("allowedFamilies") if isinstance(data, dict) else None
+        if raw_allowed_families is None:
+            normalized["allowedFamilies"] = list(STRUCTURED_CONFIG_DEFAULTS["pluginHost"]["allowedFamilies"])
+        else:
+            normalized["allowedFamilies"] = [str(item).strip() for item in list(raw_allowed_families or []) if str(item).strip()]
+        normalized["enabled"] = bool(normalized.get("enabled", True))
+        normalized["scanOnStartup"] = bool(normalized.get("scanOnStartup", True))
+        host_mode = str(normalized.get("hostMode") or "managed_local").strip().lower()
+        normalized["hostMode"] = host_mode if host_mode in {"managed_local", "external"} else "managed_local"
+        managed_local = dict(normalized.get("managedLocal") or {})
+        tooling_root = managed_local.get("toolingRoot")
+        launcher_path = managed_local.get("launcherPath")
+        normalized["managedLocal"] = {
+            "rootDir": str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT),
+            "toolingRoot": "" if tooling_root is None else str(tooling_root).strip(),
+            "launcherPath": "" if launcher_path is None else str(launcher_path).strip(),
+            "autoStart": bool(managed_local.get("autoStart", True)),
+        }
+        external_host = dict(normalized.get("externalHost") or {})
+        normalized["externalHost"] = {
+            "baseUrl": str(external_host.get("baseUrl") or "").strip(),
+            "gatewayBaseUrl": str(external_host.get("gatewayBaseUrl") or "").strip(),
+            "authToken": str(external_host.get("authToken") or "").strip(),
+        }
+        return normalized
+
+    def save_plugin_host_config(self, data: Dict[str, Any]):
+        current = self.get_plugin_host_config()
+        merged = self._deep_merge(current, dict(data or {}))
+        if merged.get("allowedFamilies") is None:
+            merged["allowedFamilies"] = list(STRUCTURED_CONFIG_DEFAULTS["pluginHost"]["allowedFamilies"])
+        else:
+            merged["allowedFamilies"] = [str(item).strip() for item in list(merged.get("allowedFamilies") or []) if str(item).strip()]
+        merged["enabled"] = bool(merged.get("enabled", True))
+        merged["scanOnStartup"] = bool(merged.get("scanOnStartup", True))
+        host_mode = str(merged.get("hostMode") or "managed_local").strip().lower()
+        merged["hostMode"] = host_mode if host_mode in {"managed_local", "external"} else "managed_local"
+        managed_local = dict(merged.get("managedLocal") or {})
+        tooling_root = managed_local.get("toolingRoot")
+        launcher_path = managed_local.get("launcherPath")
+        merged["managedLocal"] = {
+            "rootDir": str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT),
+            "toolingRoot": "" if tooling_root is None else str(tooling_root).strip(),
+            "launcherPath": "" if launcher_path is None else str(launcher_path).strip(),
+            "autoStart": bool(managed_local.get("autoStart", True)),
+        }
+        external_host = dict(merged.get("externalHost") or {})
+        merged["externalHost"] = {
+            "baseUrl": str(external_host.get("baseUrl") or "").strip(),
+            "gatewayBaseUrl": str(external_host.get("gatewayBaseUrl") or "").strip(),
+            "authToken": str(external_host.get("authToken") or "").strip(),
+        }
+        payload = self._read_config_payload()
+        payload["pluginHost"] = merged
+        self._write_config_payload(payload)
+
+    # --- Computer Use Memory Accessors ---
+    def get_computer_use_memory(self) -> Dict[str, Any]:
+        data = self.read_json("computer_use.json")
+        if not data:
+            data = {"version": 1, "apps": {}}
+        data.setdefault("version", 1)
+        data.setdefault("apps", {})
+        return data
+
+    def save_computer_use_memory(self, data: Dict[str, Any]):
+        payload = dict(data or {})
+        payload.setdefault("version", 1)
+        payload.setdefault("apps", {})
+        self.write_json("computer_use.json", payload)
+
+    # --- Plugin Host Registry Accessors ---
+    def get_plugin_registry(self) -> Dict[str, Any]:
+        data = self.read_json("plugin.json")
+        if not data:
+            data = self._default_plugin_payload()
+        plugin_host_root, plugin_extensions_root = self._plugin_registry_roots()
+        data.setdefault("version", 1)
+        data["pluginRoot"] = str(plugin_host_root)
+        data["pluginExtensionsRoot"] = str(plugin_extensions_root)
+        data.setdefault("pluginInstallLogRoot", str(PLUGIN_INSTALL_LOG_ROOT))
+        data.setdefault("plugins", {})
+        data.setdefault("installJobs", {})
+        return data
+
+    def save_plugin_registry(self, data: Dict[str, Any]):
+        payload = dict(data or {})
+        plugin_host_root, plugin_extensions_root = self._plugin_registry_roots()
+        payload.setdefault("version", 1)
+        payload["pluginRoot"] = str(plugin_host_root)
+        payload["pluginExtensionsRoot"] = str(plugin_extensions_root)
+        payload.setdefault("pluginInstallLogRoot", str(PLUGIN_INSTALL_LOG_ROOT))
+        payload.setdefault("plugins", {})
+        payload.setdefault("installJobs", {})
+        self.write_json("plugin.json", payload)
+
+    # --- Web Fetch Profile Accessors ---
+    def get_web_fetch_profiles(self) -> Dict[str, Any]:
+        data = self.read_json("web_fetch_profiles.json")
+        if not data:
+            data = {"version": 1, "sites": {}}
+        data.setdefault("version", 1)
+        data.setdefault("sites", {})
+        return data
+
+    def save_web_fetch_profiles(self, data: Dict[str, Any]):
+        payload = dict(data or {})
+        payload.setdefault("version", 1)
+        payload.setdefault("sites", {})
+        self.write_json("web_fetch_profiles.json", payload)
+
+    # --- Runtime Registry Config Accessors ---
+    def get_runtime_registry_config(self) -> Dict[str, Any]:
+        data = self.read_json("runtime_registry.json")
+        if not data:
+            data = {"version": 1, "policies": {}}
+        data.setdefault("version", 1)
+        data.setdefault("policies", {})
+        return data
+
+    def save_runtime_registry_config(self, data: Dict[str, Any]):
+        payload = dict(data or {})
+        payload.setdefault("version", 1)
+        payload.setdefault("policies", {})
+        self.write_json("runtime_registry.json", payload)
+
+    # --- Runtime Stability Config Accessors ---
+    def get_runtime_stability_config(self) -> Dict[str, Any]:
+        data = self.read_json("runtime_stability.json")
+        if not data:
+            data = {
+                "version": 1,
+                "strictSupervisorDurability": True,
+                "sessionLanePolicy": "queue",
+            }
+        data.setdefault("version", 1)
+        data.setdefault("strictSupervisorDurability", True)
+        data.setdefault("sessionLanePolicy", "queue")
+        return data
+
+    def save_runtime_stability_config(self, data: Dict[str, Any]):
+        payload = dict(data or {})
+        payload.setdefault("version", 1)
+        payload.setdefault("strictSupervisorDurability", True)
+        payload.setdefault("sessionLanePolicy", "queue")
+        self.write_json("runtime_stability.json", payload)
+
+    # --- Safety Guardian Config Accessors ---
+    def _normalize_safety_guardian_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
+        payload = deepcopy(dict(data or {}))
+        runtime_rules = dict(payload.get("runtimeRules") or {})
+        legacy_channel_rules = runtime_rules.pop("channel_chat", None)
+        if isinstance(legacy_channel_rules, dict) and not isinstance(runtime_rules.get("plugin_host"), dict):
+            runtime_rules["plugin_host"] = legacy_channel_rules
+        if runtime_rules:
+            payload["runtimeRules"] = runtime_rules
+        elif "runtimeRules" in payload:
+            payload["runtimeRules"] = {}
+        return payload
+
+    def get_safety_guardian_config(self) -> Dict[str, Any]:
+        data = self.read_json("safety_guardian.json")
+        normalized = self._normalize_safety_guardian_config(data)
+        if normalized != data:
+            self.write_json("safety_guardian.json", normalized)
+        return normalized
+
+    def save_safety_guardian_config(self, data: Dict[str, Any]):
+        self.write_json("safety_guardian.json", self._normalize_safety_guardian_config(data))
+
+    def get_music_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("music") or {}
+        normalized = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["music"],
+            data if isinstance(data, dict) else {},
+        )
+        normalized.setdefault("tracks", [])
+        return normalized
+
+    def save_music_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["music"] = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["music"],
+            dict(data or {}),
+        )
+        payload["music"].setdefault("tracks", [])
+        self._write_config_payload(payload)
+
+    # --- Project Registry Accessors ---
+    def get_projects_registry(self) -> Dict[str, Any]:
+        data = self.read_json("projects.json")
+        if not data:
+            data = {"version": 1, "defaultProjectId": None, "projects": []}
+        data.setdefault("version", 1)
+        data.setdefault("defaultProjectId", None)
+        data.setdefault("projects", [])
+        return data
+
+    def save_projects_registry(self, data: Dict[str, Any]):
+        payload = {
+            "version": data.get("version", 1),
+            "defaultProjectId": data.get("defaultProjectId"),
+            "projects": data.get("projects", []),
+        }
+        self.write_json("projects.json", payload)
+
+    # --- Agent Accessors ---
+    def get_all_agents(self) -> List[Dict[str, Any]]:
+        from core.runtime.agents import parse_agent_md
+        self._ensure_legacy_model_bindings_migrated()
+        agents_dir = self.base_dir / "agents"
+        agents = []
+        model_bindings = self.get_agent_model_bindings()
+        for file_path in agents_dir.glob("*.md"):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                agent_config = parse_agent_md(content, file_path.name)
+                agent_payload = agent_config.model_dump()
+                bound_model_id = model_bindings.get(agent_payload["id"])
+                agent_payload["model"] = bound_model_id or ""
+                agents.append(agent_payload)
+            except Exception as e:
+                print(f"Error reading agent file {file_path}: {e}")
+        return agents
+
+    def get_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        from core.runtime.agents import parse_agent_md
+        self._ensure_legacy_model_bindings_migrated()
+        agent_path = self.base_dir / "agents" / f"{agent_id}.md"
+        if not agent_path.exists():
+            return None
+        try:
+            with open(agent_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            payload = parse_agent_md(content, f"{agent_id}.md").model_dump()
+            bound_model_id = self.get_agent_model_binding(agent_id)
+            payload["model"] = bound_model_id or ""
+            return payload
+        except Exception as e:
+            print(f"Error reading agent file {agent_path}: {e}")
+            return None
+
+    def save_agent(self, agent_config_dict: Dict[str, Any]):
+        from core.runtime.agents import dump_agent_md, AgentConfig
+        agent_config = AgentConfig(**agent_config_dict)
+        agent_path = self.base_dir / "agents" / f"{agent_config.id}.md"
+        md_content = dump_agent_md(agent_config)
+        with open(agent_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        self.set_agent_model_binding(agent_config.id, agent_config.model)
+
+    def delete_agent(self, agent_id: str) -> bool:
+        agent_path = self.base_dir / "agents" / f"{agent_id}.md"
+        if agent_path.exists():
+            agent_path.unlink()
+            self.set_agent_model_binding(agent_id, "")
+            return True
+        return False
+
+    # --- Todos Accessors ---
+    def _todos_root(self) -> Path:
+        root = self.base_dir / "todos"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _todo_tasks_root(self) -> Path:
+        root = self._todos_root() / "tasks"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _todo_sessions_root(self) -> Path:
+        root = self._todos_root() / "sessions"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _todo_task_name_slug(self, task_name: str) -> str:
+        normalized = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in str(task_name or "").strip())
+        normalized = "-".join(part for part in normalized.split("-") if part)
+        return normalized or "unnamed-task"
+
+    def _todo_task_snapshot_payload(self, task_info: Dict[str, Any], resolved_todos: List[Dict[str, Any]]) -> Dict[str, Any]:
+        snapshot = {
+            "taskId": str(task_info.get("taskId") or "").strip(),
+            "taskName": str(task_info.get("name") or "").strip(),
+            "planMarkdown": str(task_info.get("plan") or ""),
+            "runId": task_info.get("runId"),
+            "sessionId": task_info.get("sessionId"),
+            "createdAt": task_info.get("createdAt"),
+            "updatedAt": task_info.get("updatedAt"),
+            "isActive": bool(task_info.get("isActive", False)),
+            "isStale": bool(task_info.get("isStale", False)),
+            "items": [dict(item) for item in list(resolved_todos or [])],
+        }
+        snapshot["allCompleted"] = bool(snapshot["items"]) and all(
+            str(item.get("status") or "") in ("done", "skipped") for item in snapshot["items"]
+        )
+        return snapshot
+
+    def save_active_todos(self, task_info: Dict[str, Any], resolved_todos: List[Dict[str, Any]]):
+        """Persist the latest task snapshot using taskId as the canonical key."""
+        task_id = str((task_info or {}).get("taskId") or "").strip()
+        task_name = str((task_info or {}).get("name") or "").strip()
+        if not task_id:
+            return
+
+        snapshot = self._todo_task_snapshot_payload(task_info, resolved_todos)
+        tasks_root = self._todo_tasks_root()
+        sessions_root = self._todo_sessions_root()
+        snapshot_path = tasks_root / f"{task_id}.json"
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+        session_id = str(snapshot.get("sessionId") or "").strip()
+        if session_id:
+            session_index_path = sessions_root / f"{session_id}.json"
+            index_payload = {
+                "sessionId": session_id,
+                "activeTaskId": task_id if snapshot.get("isActive") else None,
+                "latestTaskId": task_id,
+                "updatedAt": snapshot.get("updatedAt") or snapshot.get("createdAt") or datetime.utcnow().isoformat(),
+            }
+            with open(session_index_path, "w", encoding="utf-8") as f:
+                json.dump(index_payload, f, indent=2, ensure_ascii=False)
+
+        if task_name:
+            task_dir = self._todos_root() / self._todo_task_name_slug(task_name)
+            task_dir.mkdir(parents=True, exist_ok=True)
+            if snapshot.get("planMarkdown"):
+                plan_path = task_dir / "计划文档.md"
+                with open(plan_path, "w", encoding="utf-8") as f:
+                    f.write(str(snapshot["planMarkdown"]))
+
+            compat_todos_path = task_dir / "todos.json"
+            with open(compat_todos_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot["items"], f, indent=2, ensure_ascii=False)
+
+            compat_meta_path = task_dir / "task.json"
+            with open(compat_meta_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+    def get_active_todo_snapshot(
+        self,
+        *,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        tasks_root = self._todo_tasks_root()
+        candidate_task_id: str | None = None
+
+        normalized_session_id = str(session_id or "").strip()
+        if normalized_session_id:
+            session_index_path = self._todo_sessions_root() / f"{normalized_session_id}.json"
+            if session_index_path.exists():
+                try:
+                    payload = json.loads(session_index_path.read_text(encoding="utf-8"))
+                    candidate_task_id = str(
+                        payload.get("activeTaskId") or payload.get("latestTaskId") or ""
+                    ).strip() or None
+                except Exception:
+                    candidate_task_id = None
+
+        if candidate_task_id:
+            task_path = tasks_root / f"{candidate_task_id}.json"
+            if task_path.exists():
+                try:
+                    return json.loads(task_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+        normalized_run_id = str(run_id or "").strip()
+        snapshots: list[Dict[str, Any]] = []
+        for task_path in tasks_root.glob("*.json"):
+            try:
+                payload = json.loads(task_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if normalized_session_id and str(payload.get("sessionId") or "").strip() != normalized_session_id:
+                continue
+            if normalized_run_id and str(payload.get("runId") or "").strip() != normalized_run_id:
+                continue
+            snapshots.append(payload)
+
+        if not snapshots:
+            return None
+
+        snapshots.sort(
+            key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""),
+            reverse=True,
+        )
+        return snapshots[0]
+
+
+storage = StorageManager()

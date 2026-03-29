@@ -1,0 +1,299 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        /* Base - Zinc (clean, modern, neutral) */
+        --background: 0 0% 100%;
+        --foreground: 240 10% 3.9%;
+
+        /* Card - Slightly warmer white for depth */
+        --card: 0 0% 100%;
+        --card-foreground: 240 10% 3.9%;
+
+        --popover: 0 0% 100%;
+        --popover-foreground: 240 10% 3.9%;
+
+        /* Primary - Violet (Deep, tech-focused) */
+        --primary: 262.1 83.3% 57.8%;
+        --primary-foreground: 210 40% 98%;
+
+        /* Secondary - Zinc 100 */
+        --secondary: 240 4.8% 95.9%;
+        --secondary-foreground: 240 5.9% 10%;
+
+        /* Muted - Zinc 100 */
+        --muted: 240 4.8% 95.9%;
+        --muted-foreground: 240 3.8% 46.1%;
+
+        /* Accent - Zinc 100 with a tint */
+        --accent: 240 4.8% 95.9%;
+        --accent-foreground: 240 5.9% 10%;
+
+        /* Destructive - Red 500 */
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 0 0% 98%;
+
+        --border: 240 5.9% 90%;
+        --input: 240 5.9% 90%;
+        --ring: 262.1 83.3% 57.8%;
+
+        --radius: 0.75rem;
+    }
+
+    .dark {
+        /* Base - Zinc 950 (Deep, rich black-blue) */
+        --background: 240 10% 3.9%;
+        --foreground: 0 0% 98%;
+
+        /* Card - Zinc 900 */
+        --card: 240 10% 3.9%;
+        --card-foreground: 0 0% 98%;
+
+        --popover: 240 10% 3.9%;
+        --popover-foreground: 0 0% 98%;
+
+        /* Primary - Violet 500 (Vibrant in dark mode) */
+        --primary: 263.4 70% 50.4%;
+        --primary-foreground: 210 40% 98%;
+
+        /* Secondary - Zinc 800 */
+        --secondary: 240 3.7% 15.9%;
+        --secondary-foreground: 0 0% 98%;
+
+        /* Muted - Zinc 800 */
+        --muted: 240 3.7% 15.9%;
+        --muted-foreground: 240 5% 64.9%;
+
+        /* Accent - Zinc 800 */
+        --accent: 240 3.7% 15.9%;
+        --accent-foreground: 0 0% 98%;
+
+        --destructive: 0 62.8% 30.6%;
+        --destructive-foreground: 0 0% 98%;
+
+        --border: 240 3.7% 15.9%;
+        --input: 240 3.7% 15.9%;
+        --ring: 263.4 70% 50.4%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground antialiased selection:bg-primary/20 selection:text-primary;
+        font-feature-settings: "rlig" 1, "calt" 1;
+    }
+
+    /* Subtle background pattern for visual texture */
+    body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        z-index: -1;
+        background-image:
+            radial-gradient(circle at center, hsla(var(--primary) / 0.03) 0, transparent 70%);
+    }
+
+    .dark body::before {
+        background-image:
+            radial-gradient(circle at center, hsla(var(--primary) / 0.08) 0, transparent 60%);
+    }
+}
+
+@layer utilities {
+
+    /* Premium Glassmorphism */
+    .glass-card {
+        @apply bg-white/70 dark:bg-zinc-900/60 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-xl shadow-black/5;
+    }
+
+    /* Sleek Panel - for Sidebars */
+    .glass-panel {
+        @apply bg-zinc-50/80 dark:bg-zinc-950/80 backdrop-blur-2xl border-r border-border/40;
+    }
+
+    /* Input Fields */
+    .glass-input {
+        @apply bg-white/50 dark:bg-black/20 border-black/5 dark:border-white/10 focus:bg-white/80 dark:focus:bg-black/40 transition-all duration-300 backdrop-blur-sm;
+    }
+
+    .typing-indicator {
+        @apply flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-muted/50 w-fit;
+    }
+
+    .typing-indicator span {
+        @apply w-1.5 h-1.5 bg-foreground/40 rounded-full inline-block;
+        animation: bounce 1.4s infinite ease-in-out both;
+    }
+
+    .typing-indicator span:nth-child(1) {
+        animation-delay: -0.32s;
+    }
+
+    .typing-indicator span:nth-child(2) {
+        animation-delay: -0.16s;
+    }
+
+    @keyframes bounce {
+
+        0%,
+        80%,
+        100% {
+            transform: scale(0);
+            opacity: 0.5;
+        }
+
+        40% {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+
+    /* Modern Scrollbar */
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+        background-color: hsl(var(--muted-foreground) / 0.2);
+        border-radius: 9999px;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background-color: hsl(var(--muted-foreground) / 0.4);
+    }
+
+    /* Hide Scrollbar explicitly */
+    .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+    }
+    .scrollbar-hide {
+        -ms-overflow-style: none; /* IE and Edge */
+        scrollbar-width: none; /* Firefox */
+    }
+
+    .v8os-wordmark {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        line-height: 1;
+        flex-shrink: 0;
+        isolation: isolate;
+    }
+
+    .v8os-wordmark__glow,
+    .v8os-wordmark__shine,
+    .v8os-wordmark__text {
+        position: relative;
+        display: inline-block;
+        min-width: 5.25rem;
+        font-size: 1.05rem;
+        font-weight: 900;
+        letter-spacing: -0.06em;
+    }
+
+    .v8os-wordmark__text {
+        color: transparent;
+        background-image: linear-gradient(120deg,
+                #8b5cf6 0%,
+                #38bdf8 16%,
+                #34d399 34%,
+                #f59e0b 52%,
+                #fb7185 70%,
+                #a855f7 86%,
+                #8b5cf6 100%);
+        background-size: 220% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.25)) drop-shadow(0 8px 18px rgba(99, 102, 241, 0.14));
+        animation: v8os-gradient-flow 8s linear infinite;
+        z-index: 2;
+    }
+
+    .v8os-wordmark__glow,
+    .v8os-wordmark__shine {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+    }
+
+    .v8os-wordmark__glow {
+        z-index: -1;
+        color: rgba(99, 102, 241, 0.18);
+        filter: blur(16px);
+        transform: translateY(2px);
+    }
+
+    .v8os-wordmark__shine {
+        color: transparent;
+        background-image: linear-gradient(112deg,
+                transparent 0%,
+                transparent 34%,
+                rgba(255, 255, 255, 0.16) 42%,
+                rgba(255, 255, 255, 0.98) 48%,
+                rgba(255, 255, 255, 0.22) 54%,
+                transparent 64%,
+                transparent 100%);
+        background-size: 240% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        mix-blend-mode: screen;
+        opacity: 0.95;
+        animation: v8os-laser-sweep 3.9s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+        z-index: 3;
+    }
+
+    @keyframes v8os-gradient-flow {
+        0% {
+            background-position: 0% 50%;
+        }
+        100% {
+            background-position: 220% 50%;
+        }
+    }
+
+    @keyframes v8os-laser-sweep {
+        0%,
+        18% {
+            background-position: 180% 50%;
+            opacity: 0;
+        }
+        28% {
+            opacity: 0.98;
+        }
+        55% {
+            background-position: -80% 50%;
+            opacity: 0.85;
+        }
+        70%,
+        100% {
+            background-position: -120% 50%;
+            opacity: 0;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .v8os-wordmark__text,
+        .v8os-wordmark__shine {
+            animation: none;
+        }
+
+        .v8os-wordmark__shine {
+            opacity: 0.25;
+            background-position: 50% 50%;
+        }
+    }
+}

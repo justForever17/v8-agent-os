@@ -1,0 +1,202 @@
+import os
+from pathlib import Path
+import json
+import csv
+import zipfile
+import tarfile
+import tempfile
+import logging
+
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
+try:
+    from docx import Document
+except ImportError:
+    Document = None
+
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+
+logger = logging.getLogger(__name__)
+
+class DocumentParser:
+    """
+    Unified parser for multiple document formats.
+    Attempts to return content in Markdown format to leverage Semantic Chunking later.
+    """
+    
+    @classmethod
+    def parse_file(cls, file_path: Path) -> str:
+        """Parse a single file and return its textual/markdown content."""
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+            
+        ext = file_path.suffix.lower()
+        
+        try:
+            if ext in ['.txt', '.md', '.mdx']:
+                return cls._parse_text(file_path)
+            elif ext in ['.csv']:
+                return cls._parse_csv(file_path)
+            elif ext in ['.xls', '.xlsx']:
+                return cls._parse_excel(file_path)
+            elif ext == '.pdf':
+                return cls._parse_pdf(file_path)
+            elif ext in ['.doc', '.docx']:
+                return cls._parse_docx(file_path)
+            elif ext in ['.ppt', '.pptx']:
+                return cls._parse_pptx(file_path)
+            elif ext in ['.html', '.htm']:
+                return cls._parse_html(file_path)
+            elif ext == '.json':
+                return cls._parse_json(file_path)
+            elif ext == '.xml':
+                return cls._parse_text(file_path)
+            elif ext in ['.zip', '.tar', '.gz']:
+                return cls._parse_archive(file_path)
+            else:
+                logger.warning(f"[DocumentParser] Unsupported extension '{ext}', falling back to plain text.")
+                return cls._parse_text(file_path)
+        except Exception as e:
+            logger.error(f"[DocumentParser] Error parsing {file_path}: {e}")
+            return f"Error parsing document {file_path.name}: {e}"
+
+    @staticmethod
+    def _parse_text(file_path: Path) -> str:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+
+    @staticmethod
+    def _parse_json(file_path: Path) -> str:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            data = json.load(f)
+            return json.dumps(data, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _parse_csv(file_path: Path) -> str:
+        if pd:
+            df = pd.read_csv(file_path)
+            return df.to_markdown(index=False)
+        else:
+            # Fallback
+            result = []
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    result.append(" | ".join(row))
+            return "\n".join(result)
+
+    @staticmethod
+    def _parse_excel(file_path: Path) -> str:
+        if pd:
+            df = pd.read_excel(file_path)
+            return df.to_markdown(index=False)
+        else:
+            return f"[Pandas not installed for Excel parsing of {file_path.name}]"
+
+    @staticmethod
+    def _parse_pdf(file_path: Path) -> str:
+        if not fitz:
+            return f"[PyMuPDF not installed for PDF parsing of {file_path.name}]"
+        
+        doc = fitz.open(file_path)
+        text_blocks = []
+        for page in doc:
+            text_blocks.append(page.get_text())
+        return "\n\n".join(text_blocks)
+
+    @staticmethod
+    def _parse_docx(file_path: Path) -> str:
+        if not Document:
+            return f"[python-docx not installed for DOCX parsing of {file_path.name}]"
+        
+        doc = Document(file_path)
+        text_blocks = []
+        for para in doc.paragraphs:
+            if para.style.name.startswith('Heading'):
+                level = para.style.name.replace('Heading ', '')
+                prefix = '#' * int(level) if level.isdigit() else '#'
+                text_blocks.append(f"{prefix} {para.text}")
+            else:
+                text_blocks.append(para.text)
+        return "\n\n".join(text_blocks)
+
+    @staticmethod
+    def _parse_pptx(file_path: Path) -> str:
+        if not Presentation:
+            return f"[python-pptx not installed for PPTX parsing of {file_path.name}]"
+            
+        prs = Presentation(file_path)
+        text_blocks = []
+        for i, slide in enumerate(prs.slides):
+            text_blocks.append(f"## Slide {i+1}")
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text_blocks.append(shape.text)
+        return "\n\n".join(text_blocks)
+
+    @staticmethod
+    def _parse_html(file_path: Path) -> str:
+        if not BeautifulSoup:
+            return DocumentParser._parse_text(file_path)
+            
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            soup = BeautifulSoup(f.read(), "html.parser")
+            
+            # Simple conversion to markdown headers
+            for i in range(1, 7):
+                for tag in soup.find_all(f'h{i}'):
+                    tag.replace_with(f"{'#' * i} {tag.get_text().strip()}\n")
+            
+            return soup.get_text(separator="\n\n").strip()
+
+    @classmethod
+    def _parse_archive(cls, file_path: Path) -> str:
+        combined_text = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            if file_path.suffix.lower() == '.zip':
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    zip_ref.extractall(temp_dir)
+            elif file_path.suffix.lower() in ['.tar', '.gz']:
+                with tarfile.open(file_path, 'r:*') as tar_ref:
+                    def is_within_directory(directory, target):
+                        abs_directory = os.path.abspath(directory)
+                        abs_target = os.path.abspath(target)
+                        prefix = os.path.commonprefix([abs_directory, abs_target])
+                        return prefix == abs_directory
+
+                    def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+                        for member in tar.getmembers():
+                            member_path = os.path.join(path, member.name)
+                            if not is_within_directory(path, member_path):
+                                raise Exception("Attempted Path Traversal in Tar File")
+                        tar.extractall(path, members, numeric_owner=numeric_owner)
+                    
+                    safe_extract(tar_ref, path=temp_dir)
+            
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    extracted_path = Path(root) / file
+                    # Only parse supported extensions to avoid binary garbage
+                    if extracted_path.suffix.lower() in ['.txt', '.md', '.mdx', '.csv', '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.html', '.htm', '.json', '.xml']:
+                        content = cls.parse_file(extracted_path)
+                        combined_text.append(f"# File: {file}\n\n{content}")
+                        
+        return "\n\n---\n\n".join(combined_text)
+
+document_parser = DocumentParser()

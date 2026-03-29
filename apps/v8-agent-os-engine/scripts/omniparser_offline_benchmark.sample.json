@@ -1,0 +1,42 @@
+{
+  "cases": [
+    {
+      "caseId": "media_results_overlay",
+      "appId": "generic_media_app",
+      "sceneId": "media.results_overlay",
+      "imagePath": "E:/Projects/v8chat/benchmark_assets/media_results_overlay.png",
+      "tags": ["windows", "generic_media", "results_overlay", "offline_visual_validation"],
+      "pageIdentityCandidates": ["media.results_overlay"],
+      "requiredElements": [
+        {
+          "role": "primary_input",
+          "bbox": [0.32, 0.03, 0.53, 0.09],
+          "minIou": 0.3
+        }
+      ],
+      "requiredHitZones": [
+        {
+          "role": "primary_result",
+          "bbox": [0.33, 0.23, 0.73, 0.47],
+          "minIou": 0.2,
+          "gesture": "click"
+        },
+        {
+          "role": "primary_activation_lane",
+          "bbox": [0.23, 0.47, 0.49, 0.55],
+          "minIou": 0.2,
+          "gesture": "double_click"
+        }
+      ],
+      "forbiddenBlockers": ["login_dialog", "upgrade_popup"],
+      "notes": [
+        "验证结果浮层中的主输入区识别能力",
+        "验证可激活结果文本通道的双击热区识别能力"
+      ],
+      "metadata": {
+        "priority": "high",
+        "benchmarkLabel": "media_result_hit_zone"
+      }
+    }
+  ]
+}

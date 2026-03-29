@@ -1,0 +1,61 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+.idea/
+.vscode/
+
+# Root bootstrap workspace
+.bootstrap-workspace/
+
+# Logs and coverage
+*.log
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+playwright-report/
+test-results/
+
+# Python artifacts
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.hypothesis/
+**/.tox/
+**/.venv/
+**/venv/
+*.pyc
+*.pyo
+
+# Node / Next artifacts
+**/node_modules/
+**/.next/
+**/dist/
+**/build/
+**/.turbo/
+
+# Local environment files
+**/.env
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+
+# Temporary runtime output
+**/logs/
+**/tmp/
+**/temp/
+
+# Keep committed templates and docs
+!**/env.template
+!docs/
+!bootstrap.ps1
+!bootstrap.sh
+!bootstrap.command

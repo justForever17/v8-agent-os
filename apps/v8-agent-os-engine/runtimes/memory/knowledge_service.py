@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+from core.knowledge_db import knowledge_db
+from core.memory.store import memory_store
+
+
+class KnowledgeService:
+    """封装知识 CRUD、FTS 与图谱统计。"""
+
+    def query_knowledge(
+        self,
+        *,
+        query: Optional[str] = None,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict]:
+        return memory_store.query_knowledge(
+            query=query,
+            scope=scope,
+            scopes=scopes,
+            category=category,
+            limit=limit,
+        )
+
+    def add_knowledge(
+        self,
+        *,
+        fact: str,
+        category: str = "general",
+        scope: str = "global",
+        source_session: Optional[str] = None,
+    ) -> str:
+        return memory_store.add_knowledge(
+            fact=fact,
+            category=category,
+            scope=scope,
+            source_session=source_session,
+        )
+
+    def update_knowledge(
+        self,
+        *,
+        fact_id: str,
+        new_fact: str,
+        category: Optional[str] = None,
+        scope: Optional[str] = None,
+    ) -> bool:
+        return memory_store.update_knowledge(
+            fact_id=fact_id,
+            new_fact=new_fact,
+            category=category,
+            scope=scope,
+        )
+
+    def delete_knowledge(self, *, fact_id: str) -> bool:
+        deleted = memory_store.delete_knowledge(fact_id)
+        if deleted:
+            knowledge_db.hard_delete_knowledge(fact_id)
+        return deleted
+
+    def search_full_text(
+        self,
+        *,
+        query: str,
+        scope: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict]:
+        return knowledge_db.fts_search(query, scope=scope, limit=limit)
+
+    def list_recent_knowledge(self, *, scope: Optional[str] = None, limit: int = 50) -> List[Dict]:
+        return self.query_knowledge(scope=scope, limit=limit)
+
+    def get_knowledge_count(self) -> int:
+        return knowledge_db.get_knowledge_count()
+
+    def get_graph_stats(self) -> Dict:
+        return knowledge_db.get_graph_stats()
+
+    def get_full_graph(self, *, limit: int = 100) -> Dict:
+        return knowledge_db.get_full_graph(limit=limit)
+
+    def query_entity(self, *, entity: str) -> List[Dict]:
+        return knowledge_db.query_entity(entity)
+
+    def add_entity(self, *, name: str, entity_type: str = "concept") -> None:
+        knowledge_db.add_entity(name, entity_type)
+
+    def delete_entity(self, *, name: str) -> bool:
+        return knowledge_db.delete_entity(name)
+
+    def add_relation(
+        self,
+        *,
+        subject: str,
+        predicate: str,
+        object_name: str,
+        confidence: float = 1.0,
+    ) -> None:
+        knowledge_db.add_relation(subject, predicate, object_name, confidence=confidence)
+
+    def delete_relation(self, *, subject: str, predicate: str, object_name: str) -> bool:
+        return knowledge_db.delete_relation(subject, predicate, object_name)
+
+    def query_multi_hop(self, *, entity: str, hops: int = 2) -> List[Dict]:
+        return knowledge_db.multi_hop_query(entity, hops)
+
+    def search_entities(self, *, keyword: str, limit: int = 20) -> List[Dict]:
+        return knowledge_db.search_entities(keyword, limit)
+
+
+knowledge_service = KnowledgeService()

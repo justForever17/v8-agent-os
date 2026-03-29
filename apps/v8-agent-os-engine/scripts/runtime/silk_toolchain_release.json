@@ -1,0 +1,14 @@
+{
+  "channel": "stable",
+  "version": "kn007-silk-v3-decoder-20160922",
+  "platforms": {
+    "windows-x64": {
+      "sourceType": "prebuilt_file_set",
+      "sourceName": "kn007-silk-v3-decoder",
+      "encoderUrl": "https://raw.githubusercontent.com/kn007/silk-v3-decoder/master/windows/silk_v3_encoder.exe",
+      "decoderUrl": "https://raw.githubusercontent.com/kn007/silk-v3-decoder/master/windows/silk_v3_decoder.exe",
+      "readmeUrl": "https://raw.githubusercontent.com/kn007/silk-v3-decoder/master/windows/README.md",
+      "notes": "V8-maintained Windows-first Silk contract. The default backend downloads prebuilt encoder/decoder binaries and generates canonical silk_v3 entrypoints under the target tool root."
+    }
+  }
+}

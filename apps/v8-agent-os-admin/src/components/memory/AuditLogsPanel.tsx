@@ -1,0 +1,308 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Loader2, RefreshCw, Activity } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { formatLocalDateTime } from "@/lib/time";
+import { useT } from "@/components/providers/LocaleProvider";
+
+interface AuditLog {
+    id: string;
+    timestamp: string;
+    source_type: string;
+    action: string;
+    status: string;
+    details?: string;
+}
+
+const POLL_INTERVAL_MS = 30_000; // 30 seconds
+
+export default function AuditLogsPanel() {
+    const t = useT();
+    const [logs, setLogs] = useState<AuditLog[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(0);
+    const [hasMore, setHasMore] = useState(false);
+    const pageSize = 20;
+    
+    // Filters
+    const [sourceType, setSourceType] = useState<string>("ALL");
+    const [statusFilter, setStatusFilter] = useState<string>("ALL");
+    
+    // Auto-refresh
+    const [autoRefresh, setAutoRefresh] = useState(true);
+    const [countdown, setCountdown] = useState(POLL_INTERVAL_MS / 1000);
+    const intervalRef = useRef<NodeJS.Timeout | null>(null);
+    const countdownRef = useRef<NodeJS.Timeout | null>(null);
+
+    // New-entry highlight: track IDs from previous fetch
+    const prevLogIdsRef = useRef<Set<string>>(new Set());
+    const [newLogIds, setNewLogIds] = useState<Set<string>>(new Set());
+    const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+
+    const fetchLogs = useCallback(async (isLoadMore = false) => {
+        try {
+            setLoading(true);
+            const currentPage = isLoadMore ? page + 1 : 0;
+            if (!isLoadMore) setPage(0);
+            
+            const params = new URLSearchParams({
+                limit: pageSize.toString(),
+                offset: (currentPage * pageSize).toString()
+            });
+            
+            if (sourceType !== "ALL") params.append("source_type", sourceType);
+            if (statusFilter !== "ALL") params.append("status", statusFilter);
+
+            const res = await fetch(`/api/audit/logs?${params.toString()}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (isLoadMore) {
+                    setLogs(prev => [...prev, ...data.logs]);
+                } else {
+                    // Compute newly appeared IDs
+                    const incomingIds = new Set<string>((data.logs as AuditLog[]).map((l: AuditLog) => l.id));
+                    if (prevLogIdsRef.current.size > 0) {
+                        const freshIds = new Set<string>();
+                        incomingIds.forEach(id => {
+                            if (!prevLogIdsRef.current.has(id)) freshIds.add(id);
+                        });
+                        setNewLogIds(freshIds);
+                    }
+                    prevLogIdsRef.current = incomingIds;
+                    setLogs(data.logs);
+                }
+                setHasMore(data.logs.length === pageSize);
+                if (isLoadMore) setPage(currentPage);
+            }
+        } catch (err) {
+            console.error("Failed to load audit logs", err);
+        } finally {
+            setLoading(false);
+        }
+    }, [page, sourceType, statusFilter, pageSize]);
+
+    // Initial fetch + filter change
+    useEffect(() => {
+        fetchLogs(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sourceType, statusFilter]);
+
+    // Auto-refresh polling
+    useEffect(() => {
+        const clearTimers = () => {
+            if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+            if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+        };
+
+        if (autoRefresh) {
+            setCountdown(POLL_INTERVAL_MS / 1000);
+            intervalRef.current = setInterval(() => {
+                fetchLogs(false);
+                setCountdown(POLL_INTERVAL_MS / 1000);
+            }, POLL_INTERVAL_MS);
+            countdownRef.current = setInterval(() => {
+                setCountdown(prev => (prev > 0 ? prev - 1 : POLL_INTERVAL_MS / 1000));
+            }, 1000);
+        } else {
+            clearTimers();
+        }
+
+        // Pause when tab hidden
+        const handleVisibility = () => {
+            if (document.hidden) {
+                clearTimers();
+            } else if (autoRefresh) {
+                fetchLogs(false);
+                setCountdown(POLL_INTERVAL_MS / 1000);
+                intervalRef.current = setInterval(() => {
+                    fetchLogs(false);
+                    setCountdown(POLL_INTERVAL_MS / 1000);
+                }, POLL_INTERVAL_MS);
+                countdownRef.current = setInterval(() => {
+                    setCountdown(prev => (prev > 0 ? prev - 1 : POLL_INTERVAL_MS / 1000));
+                }, 1000);
+            }
+        };
+        document.addEventListener("visibilitychange", handleVisibility);
+
+        return () => {
+            clearTimers();
+            document.removeEventListener("visibilitychange", handleVisibility);
+        };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoRefresh]);
+
+    const getStatusBadge = (status: string) => {
+        const s = status.toUpperCase();
+        if (s === "SUCCESS" || s === "COMPLETED") return <Badge variant="outline" className="text-green-500 bg-green-500/10 border-green-500/20">{s}</Badge>;
+        if (s === "FAILED" || s === "ERROR") return <Badge variant="destructive" className="bg-red-500/10 text-red-500 border-red-500/20">{s}</Badge>;
+        if (s === "SKIPPED") return <Badge variant="outline" className="text-yellow-500 bg-yellow-500/10 border-yellow-500/20">{s}</Badge>;
+        if (s === "RUNNING") return <Badge variant="outline" className="text-blue-500 bg-blue-500/10 border-blue-500/20">{s}</Badge>;
+        return <Badge variant="outline" className="text-muted-foreground">{s}</Badge>;
+    };
+
+    const getSourceTypeBadge = (type: string) => {
+        const t = type.toUpperCase();
+        if (t === "HOOK") return <Badge variant="outline" className="bg-purple-500/10 text-purple-600 border-purple-500/20">HOOK</Badge>;
+        if (t === "CRON") return <Badge variant="outline" className="bg-orange-500/10 text-orange-600 border-orange-500/20">CRON</Badge>;
+        return <Badge variant="secondary">{t}</Badge>;
+    };
+
+    return (
+        <Card className="flex h-[760px] min-h-0 flex-col">
+            <CardHeader className="flex flex-row items-center justify-between pb-4">
+                <div>
+                    <CardTitle className="text-lg flex items-center gap-2">
+                        <Activity className="w-5 h-5 text-primary" />
+                        {t("运行日志")}
+                    </CardTitle>
+                    <CardDescription>
+                        {t("查看后台任务、钩子、定时任务和系统动作的详细执行记录。")}
+                    </CardDescription>
+                </div>
+                <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            id="auto-refresh"
+                            checked={autoRefresh}
+                            onCheckedChange={setAutoRefresh}
+                        />
+                        <Label htmlFor="auto-refresh" className="text-xs text-muted-foreground cursor-pointer">
+                            {autoRefresh ? `${t("自动刷新")} (${countdown}s)` : t("自动刷新")}
+                        </Label>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => { fetchLogs(false); setCountdown(POLL_INTERVAL_MS / 1000); }} disabled={loading}>
+                        <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+                        {t("刷新")}
+                    </Button>
+                </div>
+            </CardHeader>
+            <CardContent className="flex-1 min-h-0">
+                <div className="flex gap-4 mb-4">
+                    <div className="w-[180px]">
+                        <Select value={sourceType} onValueChange={setSourceType}>
+                            <SelectTrigger>
+                                <SelectValue placeholder={t("触发来源")} />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="ALL">{t("全部来源 (All)")}</SelectItem>
+                                <SelectItem value="CRON">{t("定时任务")}</SelectItem>
+                                <SelectItem value="HOOK">{t("动作钩子")}</SelectItem>
+                                <SelectItem value="SYSTEM">{t("系统动作")}</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="w-[180px]">
+                        <Select value={statusFilter} onValueChange={setStatusFilter}>
+                            <SelectTrigger>
+                                <SelectValue placeholder={t("执行状态")} />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="ALL">{t("全部状态 (All)")}</SelectItem>
+                                <SelectItem value="SUCCESS">{t("成功")}</SelectItem>
+                                <SelectItem value="FAILED">{t("失败")}</SelectItem>
+                                <SelectItem value="SKIPPED">{t("跳过")}</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
+
+                <div className="min-h-0 overflow-auto rounded-md border">
+                    <Table className="table-fixed">
+                        <TableHeader className="sticky top-0 z-10 bg-background">
+                            <TableRow>
+                                <TableHead className="w-[180px]">{t("执行时间")}</TableHead>
+                                <TableHead className="w-[100px]">{t("来源")}</TableHead>
+                                <TableHead className="w-[200px]">{t("执行动作")}</TableHead>
+                                <TableHead className="w-[100px]">{t("状态")}</TableHead>
+                                <TableHead>{t("详情")}</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {logs.length === 0 && !loading ? (
+                                <TableRow>
+                                    <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                                        {t("暂无日志记录")}
+                                    </TableCell>
+                                </TableRow>
+                            ) : (
+                                logs.map((log) => (
+                                    <TableRow key={log.id} className={newLogIds.has(log.id) ? "bg-primary/5 border-l-2 border-l-primary" : ""}>
+                                        <TableCell className="font-mono text-xs text-muted-foreground align-top">
+                                            {formatLocalDateTime(log.timestamp)}
+                                        </TableCell>
+                                        <TableCell className="align-top">
+                                            {getSourceTypeBadge(log.source_type)}
+                                        </TableCell>
+                                        <TableCell className="align-top font-medium text-sm break-words">
+                                            {log.action}
+                                        </TableCell>
+                                        <TableCell className="align-top">
+                                            {getStatusBadge(log.status)}
+                                        </TableCell>
+                                        <TableCell className="align-top text-xs text-muted-foreground">
+                                            {log.details ? (
+                                                <div className="space-y-2">
+                                                    <p className="line-clamp-4 whitespace-pre-wrap break-words text-xs leading-5">
+                                                        {log.details}
+                                                    </p>
+                                                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSelectedLog(log)}>
+                                                        {t("查看详情")}
+                                                    </Button>
+                                                </div>
+                                            ) : (
+                                                "-"
+                                            )}
+                                        </TableCell>
+                                    </TableRow>
+                                ))
+                            )}
+                        </TableBody>
+                    </Table>
+                </div>
+                
+                {hasMore && (
+                    <div className="mt-4 flex justify-center">
+                        <Button 
+                            variant="secondary" 
+                            size="sm" 
+                            onClick={() => fetchLogs(true)}
+                            disabled={loading}
+                        >
+                            {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                            {t("加载更多记录")}
+                        </Button>
+                    </div>
+                )}
+            </CardContent>
+            <Dialog open={Boolean(selectedLog)} onOpenChange={(open) => { if (!open) setSelectedLog(null); }}>
+                <DialogContent className="max-w-3xl">
+                    <DialogHeader>
+                        <DialogTitle>{t("日志详情")}</DialogTitle>
+                    </DialogHeader>
+                    {selectedLog ? (
+                        <div className="space-y-4">
+                            <div className="grid gap-3 text-sm text-slate-600 md:grid-cols-2">
+                                <div>{t("执行时间：")}{formatLocalDateTime(selectedLog.timestamp)}</div>
+                                <div>{t("来源：")}{selectedLog.source_type}</div>
+                                <div>{t("动作：")}{selectedLog.action}</div>
+                                <div>{t("状态：")}{selectedLog.status}</div>
+                            </div>
+                            <div className="max-h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-6 text-slate-700">
+                                <pre className="whitespace-pre-wrap break-words font-sans">{selectedLog.details || "-"}</pre>
+                            </div>
+                        </div>
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+}

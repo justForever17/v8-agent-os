@@ -1,0 +1,15 @@
+# Optional OmniParser full extras copied from the official repository requirements.
+transformers==4.44.1
+torch
+torchvision
+ultralytics==8.3.70
+opencv-python
+supervision==0.18.0
+easyocr
+numpy==1.26.4
+ollama
+accelerate
+timm
+einops
+paddlepaddle
+paddleocr==2.10.0

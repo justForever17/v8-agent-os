@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+workspace/
+*.pyc
+*.pyo
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log

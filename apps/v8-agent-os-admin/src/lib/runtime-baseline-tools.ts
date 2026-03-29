@@ -1,0 +1,18 @@
+export const BASELINE_SYSTEM_TOOLS = [
+    "list_native_directory",
+    "read_native_file",
+    "write_native_file",
+    "grep_search",
+    "execute_system_command",
+    "start_background_command",
+    "read_background_output",
+    "send_background_input",
+    "terminate_background_command",
+    "inspect_and_move_media",
+    "download_media_for_vision",
+    "vision_media_analyzer",
+    "web_search",
+    "web_read",
+    "web_extract",
+    "http_request",
+] as const;

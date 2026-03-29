@@ -1,0 +1,361 @@
+{
+  "name": "primitive_live_baseline_browser",
+  "description": "基础桌面原语 live 基线矩阵。默认只包含低风险浏览器窗口原语，避免应用剧情污染。",
+  "expectedDisplay": {
+    "resolution": [2560, 1440]
+  },
+  "sharedSetup": [
+    {
+      "action": "create_temp_dir",
+      "key": "primitiveLiveSourceDir",
+      "prefix": "v8chat-primitive-live-src-"
+    },
+    {
+      "action": "create_temp_dir",
+      "key": "primitiveLiveTargetDir",
+      "prefix": "v8chat-primitive-live-target-"
+    },
+    {
+      "action": "create_temp_file",
+      "key": "primitiveLiveSourceFile",
+      "parent": "{{primitiveLiveSourceDir}}",
+      "name": "primitive-live-file.txt",
+      "content": "primitive live file"
+    }
+  ],
+  "sharedCleanup": [
+    {
+      "action": "remove_path",
+      "path": "{{primitiveLiveTargetDir}}"
+    },
+    {
+      "action": "remove_path",
+      "path": "{{primitiveLiveSourceDir}}"
+    }
+  ],
+  "stopOnFailure": false,
+  "cases": [
+    {
+      "id": "browser_launch_app",
+      "label": "打开通用浏览器",
+      "primitive": "launch_app",
+      "runtimeActions": ["open_app"],
+      "required": true,
+      "payload": {
+        "app": "browser",
+        "wait_timeout_ms": 12000
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "continue_without_repeating"],
+        "verificationStatusIn": ["verified", "already_in_target_state"],
+        "budgetWithin": true,
+        "maxElapsedMs": 12000,
+        "windowTitleNotContains": ["Visual Studio Code", "Codex"]
+      },
+      "notes": [
+        "验证 open_app 的窗口唤起、前台绑定和基础预算收敛。"
+      ]
+    },
+    {
+      "id": "browser_ensure_window",
+      "label": "确保浏览器窗口绑定",
+      "primitive": "ensure_window",
+      "runtimeActions": ["focus_window"],
+      "required": true,
+      "payload": {
+        "app": "browser"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "continue_without_repeating"],
+        "verificationStatusIn": ["verified", "already_in_target_state"],
+        "budgetWithin": true,
+        "maxElapsedMs": 3000,
+        "windowTitleNotContains": ["Visual Studio Code", "Codex"]
+      }
+    },
+    {
+      "id": "browser_observe_scene",
+      "label": "观察浏览器场景",
+      "primitive": "observe_scene",
+      "runtimeActions": ["observe"],
+      "required": true,
+      "payload": {
+        "app": "browser",
+        "depth_limit": 2,
+        "element_limit": 20,
+        "no_screenshot": true
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "budgetWithin": true,
+        "maxElapsedMs": 4000,
+        "windowTitleNotContains": ["Visual Studio Code", "Codex"]
+      }
+    },
+    {
+      "id": "browser_click_address_bar",
+      "label": "点击浏览器地址栏",
+      "primitive": "click_target",
+      "runtimeActions": ["click"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "target": "address_bar"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence", "reobserve_before_retry"],
+        "budgetWithin": true,
+        "maxElapsedMs": 10500
+      },
+      "notes": [
+        "验证 click 原语在低风险地址栏场景下的可用性与预算。"
+      ]
+    },
+    {
+      "id": "browser_hover_address_bar",
+      "label": "悬停浏览器地址栏",
+      "primitive": "hover_target",
+      "runtimeActions": ["hover"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "target": "address_bar"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence", "reobserve_before_retry"],
+        "budgetWithin": true,
+        "maxElapsedMs": 5000
+      }
+    },
+    {
+      "id": "browser_right_click_address_bar",
+      "label": "右键浏览器地址栏",
+      "primitive": "right_click_target",
+      "runtimeActions": ["right_click"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "target": "address_bar"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence", "reobserve_before_retry"],
+        "budgetWithin": true,
+        "maxElapsedMs": 9500
+      }
+    },
+    {
+      "id": "browser_input_address_bar",
+      "label": "向地址栏输入文本",
+      "primitive": "input_text",
+      "runtimeActions": ["type_text", "find_and_type"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "target": "address_bar",
+        "text": "primitive baseline input"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence"],
+        "budgetWithin": true,
+        "maxElapsedMs": 7000
+      }
+    },
+    {
+      "id": "browser_paste_address_bar",
+      "label": "向地址栏粘贴文本",
+      "primitive": "paste_text",
+      "runtimeActions": ["type_text"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "target": "address_bar",
+        "text": "primitive baseline paste"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence"],
+        "budgetWithin": true,
+        "maxElapsedMs": 8000
+      }
+    },
+    {
+      "id": "browser_scroll_view",
+      "label": "滚动浏览器视图",
+      "primitive": "scroll_view",
+      "runtimeActions": ["scroll", "page_scroll", "scroll_list"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "amount": 3
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence", "reobserve_before_retry"],
+        "budgetWithin": true,
+        "maxElapsedMs": 6000
+      }
+    },
+    {
+      "id": "browser_page_scroll",
+      "label": "浏览器分页滚动",
+      "primitive": "scroll_view",
+      "runtimeActions": ["page_scroll"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "amount": 1,
+        "by_page": true
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence", "reobserve_before_retry"],
+        "budgetWithin": true,
+        "maxElapsedMs": 6000
+      }
+    },
+    {
+      "id": "browser_focus_hotkey",
+      "label": "浏览器地址栏快捷键",
+      "primitive": "send_hotkey",
+      "runtimeActions": ["hotkey"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "browser",
+        "sequence": "^l"
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "budgetWithin": true,
+        "maxElapsedMs": 4000
+      },
+      "notes": [
+        "验证高层热键原语是否能在已绑定窗口里稳定收敛。"
+      ]
+    },
+    {
+      "id": "browser_drag_pointer_short",
+      "label": "浏览器窗口内短拖拽",
+      "primitive": "drag_pointer",
+      "runtimeActions": ["drag"],
+      "required": false,
+      "enabled": true,
+      "prepareActions": [
+        {
+          "action": "resolve_window_point",
+          "key": "browserDragStart",
+          "app": "browser",
+          "x": 0.46,
+          "y": 0.40
+        },
+        {
+          "action": "resolve_window_point",
+          "key": "browserDragEnd",
+          "app": "browser",
+          "x": 0.54,
+          "y": 0.46
+        }
+      ],
+      "payload": {
+        "app": "browser",
+        "start_point": "{{browserDragStart}}",
+        "end_point": "{{browserDragEnd}}",
+        "drag_steps": 10
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence"],
+        "budgetWithin": true,
+        "maxElapsedMs": 7000
+      },
+      "notes": [
+        "验证 drag 原语在已绑定窗口内的基础动作闭环。"
+      ]
+    },
+    {
+      "id": "explorer_launch_target_dir",
+      "label": "打开临时资源管理器目录",
+      "primitive": "launch_app",
+      "runtimeActions": ["open_app"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "explorer",
+        "target": "{{primitiveLiveTargetDir}}",
+        "wait_timeout_ms": 12000
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "continue_without_repeating"],
+        "verificationStatusIn": ["verified", "already_in_target_state"],
+        "budgetWithin": true,
+        "maxElapsedMs": 12000
+      }
+    },
+    {
+      "id": "explorer_paste_file_into_temp_dir",
+      "label": "向临时目录粘贴文件",
+      "primitive": "paste_files",
+      "runtimeActions": ["type_text"],
+      "required": false,
+      "enabled": true,
+      "payload": {
+        "app": "explorer",
+        "target": "content_receiver",
+        "target_path": "{{primitiveLiveTargetDir}}",
+        "paths": ["{{primitiveLiveSourceFile}}"]
+      },
+      "expectation": {
+        "ok": true,
+        "blocked": false,
+        "statusIn": ["completed"],
+        "recommendedNextActionIn": ["continue", "inspect_evidence"],
+        "budgetWithin": true,
+        "maxElapsedMs": 12000,
+        "pathExistsAll": ["{{primitiveLiveTargetDir}}\\primitive-live-file.txt"]
+      },
+      "notes": [
+        "使用系统临时目录验证文件载荷粘贴，不向仓库工作区写入测试文件。"
+      ]
+    }
+  ]
+}

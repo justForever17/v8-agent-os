@@ -32,17 +32,8 @@ from core.system_base import get_engine_origin
 async def _upload_to_temp_s3(file_path: Path) -> str:
     from core.storage import storage
 
-    settings_raw = storage.read_json("settings.json")
-
-    settings_list = settings_raw.get("settings", [])
-    s3_config = None
-    for item in settings_list:
-        if item.get("key") == "S3_CONFIG":
-            s3_config = item.get("value")
-            break
-            
-    if not s3_config:
-        s3_config = settings_raw.get("s3")
+    system_base = storage.get_system_base_config()
+    s3_config = system_base.get("s3") if isinstance(system_base.get("s3"), dict) else None
     
     if not s3_config or not s3_config.get("accessKeyId"):
         raise ValueError("S3 is not configured. Vision models require a public URL to process local media. Please configure S3 credentials in the Admin UI first.")

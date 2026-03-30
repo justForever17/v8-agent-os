@@ -16,7 +16,7 @@ router = APIRouter()
 @router.get("/mcp/config")
 async def get_mcp_config():
     try:
-        return storage.read_json("mcp_servers.json") or {"mcpServers": {}}
+        return storage.get_mcp_config() or {"mcpServers": {}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -33,10 +33,10 @@ async def get_mcp_status():
 async def update_mcp_config(config: dict = Body(...)):
     try:
         new_servers = config["mcpServers"] if "mcpServers" in config else config
-        existing = storage.read_json("mcp_servers.json") or {"mcpServers": {}}
+        existing = storage.get_mcp_config() or {"mcpServers": {}}
         existing_servers = existing.get("mcpServers", {})
         existing_servers.update(new_servers)
-        storage.write_json("mcp_servers.json", {"mcpServers": existing_servers})
+        storage.save_mcp_config({"mcpServers": existing_servers})
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

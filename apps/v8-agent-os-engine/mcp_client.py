@@ -68,7 +68,7 @@ class MCPManager:
             self._last_refresh_error = None
 
             try:
-                config = storage.read_json("mcp_servers.json")
+                config = storage.get_mcp_config()
             except Exception as e:
                 print(f"[MCP] Error parsing {self.config_path}: {e}")
                 self._startup_state = "error"
@@ -404,7 +404,7 @@ class MCPManager:
 
     def get_status(self) -> dict:
         try:
-            config = storage.read_json("mcp_servers.json") or {}
+            config = storage.get_mcp_config() or {}
         except Exception:
             config = {}
         configured_servers = config.get("mcpServers", {})

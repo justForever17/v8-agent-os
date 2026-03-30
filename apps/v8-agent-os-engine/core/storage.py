@@ -369,7 +369,6 @@ LEGACY_STRUCTURED_FILE_TO_DOMAIN = {
     "runtime_stability.json": "runtimeStability",
     "safety_guardian.json": "safety",
     "projects.json": "projects",
-    "music.json": "music",
     "web_fetch_profiles.json": "webFetchProfiles",
     "media_download_profiles.json": "mediaDownloadProfiles",
     "runtime_registry.json": "runtimeRegistry",
@@ -390,7 +389,6 @@ EXTERNAL_IMPORT_FILE_TO_DOMAIN = {
     "runtime_stability.json": "runtimeStability",
     "safety_guardian.json": "safety",
     "projects.json": "projects",
-    "music.json": "music",
     "runtime_registry.json": "runtimeRegistry",
 }
 
@@ -852,7 +850,17 @@ class StorageManager:
             current["s3"] = deepcopy(raw.get("s3_config"))
         settings_list = raw.get("settings")
         if isinstance(settings_list, list):
-            current["legacySettings"] = deepcopy(settings_list)
+            filtered_settings: list[dict[str, Any]] = []
+            for item in settings_list:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key") or "").strip()
+                value = item.get("value")
+                if key == "S3_CONFIG" and isinstance(value, dict):
+                    current["s3"] = self._deep_merge(current.get("s3") or {}, value)
+                    continue
+                filtered_settings.append(deepcopy(item))
+            current["legacySettings"] = filtered_settings
         return current
 
     def _system_base_to_legacy_settings(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -1073,9 +1081,46 @@ class StorageManager:
         settings_list = list(settings_config.get("settings") or [])
         default_agent_setting = next((item.get("value") for item in settings_list if item.get("key") == "DEFAULT_AGENT_MODEL_ID"), "")
         vision_setting = next((item.get("value") for item in settings_list if item.get("key") == "VISION_MODEL_ID"), "") or settings_config.get("vision_model_id")
+        supervisor_setting = next((item.get("value") for item in settings_list if item.get("key") == "SUPERVISOR_MODEL_ID"), "")
         _assign_role_if_missing("default", default_agent_setting)
         _assign_role_if_missing("vision", vision_setting)
-        next_settings = [item for item in settings_list if item.get("key") not in {"DEFAULT_AGENT_MODEL_ID", "VISION_MODEL_ID"}]
+        _assign_role_if_missing("supervisor", supervisor_setting)
+
+        raw_config_payload = self._read_config_payload()
+        current_supervisor = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["supervisor"],
+            raw_config_payload.get("supervisor") if isinstance(raw_config_payload.get("supervisor"), dict) else {},
+        )
+        current_profile = dict(current_supervisor.get("profile") or {})
+        bridge = (self.get_system_base_config() or {}).get("bridge") or {}
+        legacy_profile_map = {
+            "supervisor-name": "name",
+            "supervisor-role": "roleLabel",
+            "SUPERVISOR_AVATAR": "avatar",
+        }
+        next_settings = []
+        profile_changed = False
+        for item in settings_list:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if key in {"DEFAULT_AGENT_MODEL_ID", "VISION_MODEL_ID", "SUPERVISOR_MODEL_ID"}:
+                continue
+            target_field = legacy_profile_map.get(key)
+            if not target_field:
+                next_settings.append(item)
+                continue
+            legacy_value = str(item.get("value") or "").strip()
+            if legacy_value and not str(current_profile.get(target_field) or "").strip():
+                current_profile[target_field] = legacy_value
+                profile_changed = True
+        if not str(current_profile.get("avatar") or "").strip():
+            current_profile["avatar"] = _default_supervisor_avatar_url(bridge.get("adminBaseUrl"))
+            profile_changed = True
+        if profile_changed:
+            current_supervisor["profile"] = current_profile
+            raw_config_payload["supervisor"] = current_supervisor
+            self._write_config_payload(raw_config_payload)
         settings_changed = next_settings != settings_list or "vision_model_id" in settings_config
         if settings_changed:
             settings_payload = dict(settings_config)
@@ -1284,7 +1329,13 @@ class StorageManager:
             return json.load(f)
 
     def _json_backup_path(self, filepath: Path) -> Path:
-        return filepath.with_name(f"{filepath.name}.bak")
+        try:
+            relative = filepath.relative_to(self.base_dir)
+        except ValueError:
+            relative = Path(filepath.name)
+        backup_root = self.base_dir / "backups" / "json" / relative.parent
+        backup_root.mkdir(parents=True, exist_ok=True)
+        return backup_root / f"{relative.name}.bak"
 
     def _quarantine_corrupt_json(self, filepath: Path) -> Optional[Path]:
         if not filepath.exists():
@@ -1341,6 +1392,24 @@ class StorageManager:
     @property
     def mcp_config_path(self) -> Path:
         return CONFIG_JSON_PATH
+
+    def get_mcp_config(self) -> Dict[str, Any]:
+        payload = self._read_config_payload().get("mcp") or {}
+        normalized = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["mcp"],
+            payload if isinstance(payload, dict) else {},
+        )
+        normalized.setdefault("mcpServers", {})
+        return normalized
+
+    def save_mcp_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["mcp"] = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["mcp"],
+            dict(data or {}),
+        )
+        payload["mcp"].setdefault("mcpServers", {})
+        self._write_config_payload(payload)
         
     def get_models_config(self) -> Dict[str, Any]:
         """Reads the unified models.json (model catalog + role assignments)."""
@@ -1418,41 +1487,32 @@ class StorageManager:
     # --- Supervisor Config Accessors ---
     def get_supervisor_config(self) -> Dict[str, Any]:
         self._ensure_legacy_model_bindings_migrated()
-        config = dict(self.read_json("supervisor_config.json") or {})
+        config = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["supervisor"],
+            self._read_config_payload().get("supervisor") if isinstance(self._read_config_payload().get("supervisor"), dict) else {},
+        )
         sanitized_allowed_tools = sanitize_supervisor_allowed_tools(config.get("allowed_tools"))
         if sanitized_allowed_tools != config.get("allowed_tools"):
             config["allowed_tools"] = sanitized_allowed_tools
-            self.write_json("supervisor_config.json", config)
+            self.save_supervisor_config(config)
         return config
         
     def save_supervisor_config(self, data: Dict[str, Any]):
-        next_payload = dict(data or {})
+        next_payload = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["supervisor"], dict(data or {}))
         next_payload["allowed_tools"] = sanitize_supervisor_allowed_tools(next_payload.get("allowed_tools"))
-        self.write_json("supervisor_config.json", next_payload)
-
-    def _get_legacy_setting_value(self, key: str) -> Any:
-        system_base = self.get_system_base_config()
-        legacy_settings = system_base.get("legacySettings") or []
-        if not isinstance(legacy_settings, list):
-            return None
-        for item in legacy_settings:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("key") or "").strip() == key:
-                return item.get("value")
-        return None
+        payload = self._read_config_payload()
+        payload["supervisor"] = next_payload
+        self._write_config_payload(payload)
 
     def get_supervisor_profile(self) -> Dict[str, str]:
         supervisor_config = self.get_supervisor_config() or {}
         profile = dict(supervisor_config.get("profile") or {})
-        legacy_agent = self.get_agent("supervisor") or {}
         bridge = (self.get_system_base_config() or {}).get("bridge") or {}
         default_avatar = _default_supervisor_avatar_url(bridge.get("adminBaseUrl"))
-        legacy_avatar = self._get_legacy_setting_value("SUPERVISOR_AVATAR")
         return {
-            "name": str(profile.get("name") or legacy_agent.get("name") or "智能主管"),
-            "roleLabel": str(profile.get("roleLabel") or legacy_agent.get("description") or "主理人"),
-            "avatar": str(profile.get("avatar") or legacy_avatar or legacy_agent.get("avatar") or default_avatar),
+            "name": str(profile.get("name") or "智能主管"),
+            "roleLabel": str(profile.get("roleLabel") or "主理人"),
+            "avatar": str(profile.get("avatar") or default_avatar),
         }
 
     def save_supervisor_profile(self, profile: Dict[str, Any]):
@@ -1526,7 +1586,20 @@ class StorageManager:
         capture_display = str(desktop_live.get("captureDisplay") or "primary").strip().lower()
         desktop_live["captureDisplay"] = capture_display if capture_display in {"primary"} else "primary"
         normalized.setdefault("s3", {})
-        normalized.setdefault("legacySettings", [])
+        legacy_settings = normalized.get("legacySettings")
+        if not isinstance(legacy_settings, list):
+            legacy_settings = []
+        filtered_legacy_settings: list[dict[str, Any]] = []
+        for item in legacy_settings:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            value = item.get("value")
+            if key == "S3_CONFIG" and isinstance(value, dict):
+                normalized["s3"] = self._deep_merge(normalized.get("s3") or {}, value)
+                continue
+            filtered_legacy_settings.append(dict(item))
+        normalized["legacySettings"] = filtered_legacy_settings
         if normalized != data:
             payload = self._read_config_payload()
             payload["systemBase"] = normalized

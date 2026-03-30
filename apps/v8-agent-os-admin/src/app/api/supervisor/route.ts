@@ -1,10 +1,5 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-import { getBaseDir } from '@/lib/storage';
 import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
-
-const getSupervisorPath = () => path.join(getBaseDir(), 'V8_AGENT_OS.md');
 
 type SupervisorRegistryData = {
     systemPrompt?: string;
@@ -37,25 +32,18 @@ export async function GET() {
         const unauthorized = await requireAdminIdentity();
         if (unauthorized) return unauthorized;
 
-        const filePath = getSupervisorPath();
         const { response, data } = await proxyEngineJson("/config-registry/supervisor");
         if (!response.ok) {
             return NextResponse.json(data, { status: response.status });
         }
         const supervisorData = (data as { data?: SupervisorRegistryData }).data || {};
 
-        let systemPrompt = String(supervisorData.systemPrompt || "");
-        if (!systemPrompt && fs.existsSync(filePath)) {
-            systemPrompt = fs.readFileSync(filePath, 'utf-8');
-        }
-
         const profile = supervisorData.profile || {};
 
         return NextResponse.json({
-            systemPrompt,
+            systemPrompt: String(supervisorData.systemPrompt || ""),
             model_id: supervisorData.bindings?.supervisorModel || null,
-            default_model_id: supervisorData.bindings?.defaultReplyModel || null,
-            binding_source: "models.json.roles.supervisor",
+            binding_source: "config.json#models.roles.supervisor",
             allowed_tools: supervisorData.allowedTools ?? null,
             locked_native_tools: supervisorData.lockedNativeTools ?? [],
             runtime_managed_tools: supervisorData.runtimeManagedTools ?? [],
@@ -102,7 +90,7 @@ export async function POST(req: Request) {
             success: true,
             systemPrompt,
             model_id: model_id ?? null,
-            binding_source: "models.json.roles.supervisor",
+            binding_source: "config.json#models.roles.supervisor",
             allowed_tools,
             name,
             roleLabel,

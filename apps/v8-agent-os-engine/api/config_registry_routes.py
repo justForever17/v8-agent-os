@@ -84,7 +84,7 @@ def _build_supervisor_domain() -> dict[str, Any]:
     return {
         "domain": "supervisor",
         "title": "主理人",
-        "summary": "设置主理人的系统指令、默认模型和公开资料。",
+        "summary": "设置主理人的系统指令、角色绑定和公开资料。",
         "data": {
             "systemPrompt": storage.get_supervisor_prompt(),
             "identity": storage.get_system_identity(),
@@ -122,21 +122,23 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
     if "identity" in data and isinstance(data.get("identity"), dict):
         storage.save_system_base_config({"identity": dict(data.get("identity") or {})})
 
-    allowed_tools = data.get("allowedTools")
     supervisor_config = dict(storage.get_supervisor_config() or {})
-    supervisor_config["allowed_tools"] = allowed_tools if allowed_tools is not None else None
-    storage.save_supervisor_config(supervisor_config)
+    if "allowedTools" in data:
+        allowed_tools = data.get("allowedTools")
+        supervisor_config["allowed_tools"] = allowed_tools if allowed_tools is not None else None
+        storage.save_supervisor_config(supervisor_config)
 
-    profile = dict(data.get("profile") or {})
-    storage.save_supervisor_profile(profile)
+    if "profile" in data and isinstance(data.get("profile"), dict):
+        storage.save_supervisor_profile(dict(data.get("profile") or {}))
 
     bindings = dict(data.get("bindings") or {})
-    supervisor_model = str(bindings.get("supervisorModel") or "").strip()
-    default_model = str(bindings.get("defaultReplyModel") or "").strip()
-    _update_role_bindings({
-        "supervisor": supervisor_model,
-        "default": default_model,
-    })
+    role_updates: dict[str, Any] = {}
+    if "supervisorModel" in bindings:
+        role_updates["supervisor"] = str(bindings.get("supervisorModel") or "").strip()
+    if "defaultReplyModel" in bindings:
+        role_updates["default"] = str(bindings.get("defaultReplyModel") or "").strip()
+    if role_updates:
+        _update_role_bindings(role_updates)
     return _build_supervisor_domain()
 
 
@@ -596,7 +598,7 @@ def _save_rpa_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_mcp_domain() -> dict[str, Any]:
-    mcp_config = storage.read_json("mcp_servers.json") or {"mcpServers": {}}
+    mcp_config = storage.get_mcp_config() or {"mcpServers": {}}
     return {
         "domain": "mcp",
         "title": "扩展生态",
@@ -615,7 +617,7 @@ def _build_mcp_domain() -> dict[str, Any]:
 def _save_mcp_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
     config = dict(data.get("config") or data or {})
-    storage.write_json("mcp_servers.json", config)
+    storage.save_mcp_config(config)
     return _build_mcp_domain()
 
 

@@ -105,14 +105,14 @@ export default function SupervisorPage() {
             fetch("/api/models"),
             fetch("/api/mcp/tools"),
             fetch("/api/settings/vision-model"),
+            fetch("/api/settings/default-agent-model"),
         ])
-        .then(async ([supRes, modRes, mcpRes, visionRes]) => {
+        .then(async ([supRes, modRes, mcpRes, visionRes, defaultModelRes]) => {
             if (supRes.ok) {
                 const data = await supRes.json();
                 if (data.systemPrompt !== undefined) setSystemPrompt(data.systemPrompt);
                 if (data.model_id) setSelectedModelId(data.model_id);
                 else setSelectedModelId("default");
-                if (data.default_model_id) setDefaultModelId(data.default_model_id);
                 if (data.allowed_tools) setSelectedTools(data.allowed_tools);
                 else setSelectedTools([]);
                 setLockedNativeTools(Array.isArray(data.locked_native_tools) ? data.locked_native_tools : []);
@@ -130,6 +130,10 @@ export default function SupervisorPage() {
                 const data = await visionRes.json();
                 setVisionModelId(data.value || "__empty__");
                 setVisionModelSource(typeof data.source === "string" ? data.source : null);
+            }
+            if (defaultModelRes.ok) {
+                const data = await defaultModelRes.json();
+                setDefaultModelId(typeof data.modelId === "string" && data.modelId ? data.modelId : null);
             }
             setIsLoading(false);
         })
@@ -251,7 +255,7 @@ export default function SupervisorPage() {
                     {t("主理人")}
                 </h1>
                 <p className="text-muted-foreground mt-2">
-                    {t("这里设置主理人的昵称、头像、默认模型、runtime orchestration prompt 和可用工具。当前真实 prompt 来源仍是 ~/.v8chat/V8CHAT.md。")}
+                    {t("这里设置主理人的昵称、头像、主理人模型、runtime orchestration prompt 和可用工具。Prompt 真相源是 ~/.v8-agent-os/V8_AGENT_OS.md；显示资料来自 config.json#supervisor；默认回复模型独立绑定到 config.json#models.roles.default。")}
                 </p>
             </div>
 

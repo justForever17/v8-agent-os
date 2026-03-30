@@ -38,13 +38,23 @@ Engine 是执行平面。
 
 优先看：
 
-- `~/.v8chat/config.json`
-- `~/.v8chat/V8CHAT.md`
-- `~/.v8chat/plugin.json`
+- `~/.v8-agent-os/config.json`
+- `~/.v8-agent-os/V8_AGENT_OS.md`
+- `~/.v8-agent-os/plugin.json`
+- `~/.v8-agent-os/computer_use.json`
+- `~/.v8-agent-os/users.json`（仅 Admin 用户与认证数据）
 
-如果你在兼容壳里看到旧 home 路径，把它当作遗留痕迹即可。新的安装说明和公开文档统一使用 `~/.v8chat/`。
+`~/.v8chat/` 只应视为迁移来源或历史归档，不再是当前真相源。
 
-不要为了图省事再做第二份真相源。
+多数结构化配置已归一到 `config.json` 的域中，例如：
+
+- `config.json#models`
+- `config.json#supervisor`
+- `config.json#music`
+- `config.json#runtimeStability`
+- `config.json#systemBase`
+
+不要因为看到 `settings.json`、`models.json`、`music.json`、`*_config.json` 这类旧名字，就把它们当成当前运行时事实。
 
 ## 稳定本地验证
 

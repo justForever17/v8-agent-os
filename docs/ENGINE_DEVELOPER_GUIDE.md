@@ -38,13 +38,23 @@ ask these questions first:
 
 Look at:
 
-- `~/.v8chat/config.json`
-- `~/.v8chat/V8CHAT.md`
-- `~/.v8chat/plugin.json`
+- `~/.v8-agent-os/config.json`
+- `~/.v8-agent-os/V8_AGENT_OS.md`
+- `~/.v8-agent-os/plugin.json`
+- `~/.v8-agent-os/computer_use.json`
+- `~/.v8-agent-os/users.json` (Admin auth/user records only)
 
-If you still see an older home path inside a compatibility shell, treat it as legacy. New setup notes and public docs should use `~/.v8chat/`.
+Treat `~/.v8chat/` as migration input or archived legacy state, not as current truth.
 
-Do not create a second truth source just because a UI page is easier to wire.
+Most structured settings now live under domains inside `config.json`, for example:
+
+- `config.json#models`
+- `config.json#supervisor`
+- `config.json#music`
+- `config.json#runtimeStability`
+- `config.json#systemBase`
+
+Do not treat `settings.json`, `models.json`, `music.json`, or `*_config.json` as canonical truth just because a compatibility shim still knows how to read them.
 
 ## Stable local validation
 

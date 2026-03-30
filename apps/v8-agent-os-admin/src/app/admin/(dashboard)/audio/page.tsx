@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -79,7 +79,7 @@ export default function AudioPage() {
                 title: t(lt("配置已保存", "Saved")),
                 description: t(lt("多模态语音配置更新成功，并在引擎侧重载生效。", "Audio settings were updated and reloaded in the engine.")),
             });
-        } catch (error) {
+        } catch {
             toast({
                 title: t(lt("保存失败", "Save failed")),
                 description: t(lt("请检查引擎连通性", "Please check engine connectivity.")),
@@ -314,7 +314,7 @@ export default function AudioPage() {
             </div>
             
             <p className="text-sm text-muted-foreground mt-4 text-center">
-                {t(lt("配置保存在 ~/.v8chat/config.json 的 audio 域", "Settings are stored in the audio section of ~/.v8chat/config.json"))}
+                {t(lt("配置保存在 ~/.v8-agent-os/config.json 的 audio 域", "Settings are stored in the audio section of ~/.v8-agent-os/config.json"))}
             </p>
         </div>
     );

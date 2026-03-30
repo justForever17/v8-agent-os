@@ -174,7 +174,7 @@ export function RuntimeStabilityPanel() {
 
                         <div className="rounded-xl border border-border/60 bg-background px-4 py-3 text-sm">
                             <div className="font-medium">当前配置文件</div>
-                            <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.configPath || "~/.v8chat/config.json#runtimeStability"}</div>
+                            <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.configPath || "~/.v8-agent-os/config.json#runtimeStability"}</div>
                         </div>
                     </CardContent>
                 </Card>
@@ -190,11 +190,11 @@ export function RuntimeStabilityPanel() {
                     <CardContent className="space-y-3 text-sm">
                         <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
                             <div className="font-medium">运行账本</div>
-                            <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.stateDbPath || "~/.v8chat/state.db"}</div>
+                            <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.stateDbPath || "~/.v8-agent-os/state.db"}</div>
                         </div>
                         <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
                             <div className="font-medium">Graph Checkpoint</div>
-                            <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.checkpointDbPath || "~/.v8chat/checkpoints.db"}</div>
+                            <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.checkpointDbPath || "~/.v8-agent-os/checkpoints.db"}</div>
                         </div>
                     </CardContent>
                 </Card>

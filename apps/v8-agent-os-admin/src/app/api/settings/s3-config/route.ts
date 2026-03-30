@@ -1,52 +1,72 @@
 import { NextResponse } from "next/server";
-import { readJson, writeJson } from "@/lib/storage";
+
+import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
+
+type SystemBaseRegistryData = {
+    bridge?: Record<string, unknown>;
+    webFetch?: Record<string, unknown>;
+    desktopTools?: Record<string, unknown>;
+    desktopLive?: Record<string, unknown>;
+    s3?: Record<string, unknown>;
+};
+
+async function readSystemBaseDomain() {
+    const { response, data } = await proxyEngineJson("/config-registry/system-base");
+    return {
+        response,
+        data: ((data as { data?: SystemBaseRegistryData })?.data || {}) as SystemBaseRegistryData,
+    };
+}
 
 export async function GET() {
-    try {
-        const settingsData = readJson<{ settings?: { key: string, value: unknown }[], s3?: unknown }>("settings.json", { settings: [] });
-        const setting = settingsData.settings?.find((s) => s.key === "S3_CONFIG")?.value || settingsData.s3 || {
+    const unauthorized = await requireAdminIdentity();
+    if (unauthorized) return unauthorized;
+
+    const { response, data } = await readSystemBaseDomain();
+    if (!response.ok) {
+        return NextResponse.json(data, { status: response.status });
+    }
+    return NextResponse.json({
+        value: data.s3 || {
             endpoint: "",
             region: "",
             bucket: "",
             accessKeyId: "",
-            secretAccessKey: ""
-        };
-        return NextResponse.json({ value: setting });
-    } catch (error) {
-        console.error("Error reading S3 config setting:", error);
-        return NextResponse.json({ error: "Failed to read setting" }, { status: 500 });
-    }
+            secretAccessKey: "",
+        },
+    });
 }
 
 export async function POST(request: Request) {
-    try {
-        const { value } = await request.json();
-        
-        if (!value) {
-            return NextResponse.json({ error: "Value is required" }, { status: 400 });
-        }
+    const unauthorized = await requireAdminIdentity();
+    if (unauthorized) return unauthorized;
 
-        const settingsData = readJson<{ settings?: { key: string, value: unknown }[], s3?: unknown }>("settings.json", { settings: [] });
-        
-        if (!settingsData.settings) {
-            settingsData.settings = [];
-        }
-
-        const index = settingsData.settings.findIndex((s) => s.key === "S3_CONFIG");
-        if (index > -1) {
-            settingsData.settings[index].value = value;
-        } else {
-            settingsData.settings.push({ key: "S3_CONFIG", value });
-        }
-
-        // Also save a raw "s3" top-level key for backward compatibility with older Engine versions
-        (settingsData as Record<string, unknown>).s3 = value;
-
-        writeJson("settings.json", settingsData);
-
-        return NextResponse.json({ success: true, value });
-    } catch (error) {
-        console.error("Error saving S3 config setting:", error);
-        return NextResponse.json({ error: "Failed to save setting" }, { status: 500 });
+    const { value } = await request.json();
+    if (!value) {
+        return NextResponse.json({ error: "Value is required" }, { status: 400 });
     }
+
+    const current = await readSystemBaseDomain();
+    if (!current.response.ok) {
+        return NextResponse.json(current.data, { status: current.response.status });
+    }
+
+    const { response, data } = await proxyEngineJson("/config-registry/system-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            data: {
+                bridge: current.data.bridge || {},
+                webFetch: current.data.webFetch || {},
+                desktopTools: current.data.desktopTools || {},
+                desktopLive: current.data.desktopLive || {},
+                s3: value,
+            },
+        }),
+    });
+    if (!response.ok) {
+        return NextResponse.json(data, { status: response.status });
+    }
+
+    return NextResponse.json({ success: true, value });
 }

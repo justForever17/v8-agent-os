@@ -1,36 +1,53 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readJson, writeJson } from "@/lib/storage";
+
+import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
+
+type SupervisorRegistryData = {
+    bindings?: {
+        supervisorModel?: string | null;
+    };
+};
 
 export async function GET() {
-    try {
-        const settingsData = readJson<{ settings: { key: string, value: string }[] }>("settings.json", { settings: [] });
-        const setting = settingsData.settings.find(s => s.key === "SUPERVISOR_MODEL_ID");
-        return NextResponse.json({ modelId: setting?.value || null });
-    } catch {
-        return NextResponse.json({ error: "Failed to fetch setting" }, { status: 500 });
+    const unauthorized = await requireAdminIdentity();
+    if (unauthorized) return unauthorized;
+
+    const { response, data } = await proxyEngineJson("/config-registry/supervisor");
+    if (!response.ok) {
+        return NextResponse.json(data, { status: response.status });
     }
+    const supervisorData = ((data as { data?: SupervisorRegistryData })?.data || {}) as SupervisorRegistryData;
+    return NextResponse.json({
+        modelId: supervisorData.bindings?.supervisorModel || null,
+        source: "config.json#models.roles.supervisor",
+    });
 }
 
 export async function POST(req: NextRequest) {
-    try {
-        const { modelId } = await req.json();
+    const unauthorized = await requireAdminIdentity();
+    if (unauthorized) return unauthorized;
 
-        if (!modelId) {
-            return NextResponse.json({ error: "Model ID is required" }, { status: 400 });
-        }
-
-        const settingsData = readJson<{ settings: { key: string, value: string }[] }>("settings.json", { settings: [] });
-        const settingIndex = settingsData.settings.findIndex(s => s.key === "SUPERVISOR_MODEL_ID");
-        
-        if (settingIndex !== -1) {
-            settingsData.settings[settingIndex].value = modelId;
-        } else {
-            settingsData.settings.push({ key: "SUPERVISOR_MODEL_ID", value: modelId });
-        }
-        writeJson("settings.json", settingsData);
-
-        return NextResponse.json({ key: "SUPERVISOR_MODEL_ID", value: modelId });
-    } catch {
-        return NextResponse.json({ error: "Failed to save setting" }, { status: 500 });
+    const { modelId } = await req.json();
+    const { response, data } = await proxyEngineJson("/config-registry/supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            data: {
+                bindings: {
+                    supervisorModel: modelId ?? null,
+                },
+            },
+        }),
+    });
+    if (!response.ok) {
+        return NextResponse.json(data, { status: response.status });
     }
+
+    const supervisorData = ((data as { data?: SupervisorRegistryData })?.data || {}) as SupervisorRegistryData;
+    return NextResponse.json({
+        key: "SUPERVISOR_MODEL_ID",
+        modelId: supervisorData.bindings?.supervisorModel || null,
+        value: supervisorData.bindings?.supervisorModel || null,
+        source: "config.json#models.roles.supervisor",
+    });
 }

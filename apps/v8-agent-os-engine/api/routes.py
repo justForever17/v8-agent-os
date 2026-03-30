@@ -21,6 +21,7 @@ from . import computer_use_routes as computer_use_routes_module
 from . import desktop_live_routes as desktop_live_routes_module
 from . import extensions_routes as extensions_routes_module
 from . import knowledge_routes as knowledge_routes_module
+from . import network_supervisor_routes as network_supervisor_routes_module
 from . import ops_routes as ops_routes_module
 from . import platform_routes as platform_routes_module
 from . import rpa_routes as rpa_routes_module
@@ -38,6 +39,7 @@ router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(platform_routes_module.router)
 router.include_router(knowledge_routes_module.router)
+router.include_router(network_supervisor_routes_module.router)
 router.include_router(computer_use_routes_module.router)
 router.include_router(desktop_live_routes_module.router)
 router.include_router(rpa_routes_module.router)

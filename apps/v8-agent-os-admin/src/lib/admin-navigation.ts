@@ -116,7 +116,7 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/network-supervisor-runtime",
                 icon: Globe2,
                 description: lt("局域网/广域网组网协作入口。", "LAN/WAN supervisor collaboration entry."),
-                badge: { label: lt("dev", "dev"), tone: "dev" },
+                badge: { label: lt("beta", "beta"), tone: "beta" },
             },
         ],
     },

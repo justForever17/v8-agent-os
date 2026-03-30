@@ -5353,6 +5353,31 @@ def computer_use_drag_pointer(
         return f"Error dragging pointer: {e}"
 
 
+@tool
+async def delegate_network_task(
+    peer_id: str,
+    task: str,
+    timeout_seconds: Optional[int] = None,
+    project_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+    scope_hint: Optional[str] = None,
+) -> str:
+    """向受信任的远端 V8 节点显式委派任务，并等待最终结果返回。"""
+    from runtimes.network_supervisor.service import network_supervisor_service
+
+    result = await network_supervisor_service.delegate_task(
+        peer_id=str(peer_id or "").strip(),
+        task=str(task or "").strip(),
+        timeout_seconds=int(timeout_seconds) if timeout_seconds is not None else None,
+        project_id=str(project_id or "").strip() or None,
+        workspace_id=str(workspace_id or "").strip() or None,
+        workspace_path=str(workspace_path or "").strip() or None,
+        scope_hint=str(scope_hint or "").strip() or None,
+    )
+    return str(result.get("result") or "").strip()
+
+
 from core.tools.vision_media_analyzer import vision_media_analyzer
 
 # Export all tools for easier binding
@@ -5407,6 +5432,7 @@ NATIVE_TOOLS = [
     web_search,
     web_read,
     web_extract,
+    delegate_network_task,
     http_request,
     wait,
     list_processes,

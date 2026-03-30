@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
-const ENGINE_URL = resolveEngineBaseUrl();
-
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
@@ -14,7 +12,7 @@ export async function GET(req: NextRequest) {
 
     try {
         const days = req.nextUrl.searchParams.get("days") || "7";
-        const response = await fetch(`${ENGINE_URL}/telemetry/overview?days=${encodeURIComponent(days)}`, {
+        const response = await fetch(`${resolveEngineBaseUrl()}/telemetry/overview?days=${encodeURIComponent(days)}`, {
             cache: "no-store",
         });
         const data = await response.json().catch(() => ({}));

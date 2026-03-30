@@ -1,22 +1,11 @@
 import type { NextConfig } from "next";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { readCanonicalBridge } from "./src/lib/server/bridge-config";
 
 function resolveEngineOrigin() {
   try {
-    const candidates = [
-      path.join(os.homedir(), ".v8chat", "config.json"),
-      path.join(os.homedir(), ".v8-agent-os", "config.json"),
-    ];
-    const configPath = candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
-    if (fs.existsSync(configPath)) {
-      const raw = fs.readFileSync(configPath, "utf-8");
-      const parsed = JSON.parse(raw) as { systemBase?: { bridge?: { engineBaseUrl?: string } } };
-      const base = String(parsed?.systemBase?.bridge?.engineBaseUrl || "").trim().replace(/\/$/, "");
-      if (base) {
-        return base.replace(/\/v1$/, "");
-      }
+    const base = String(readCanonicalBridge().engineBaseUrl || "").trim().replace(/\/$/, "");
+    if (base) {
+      return base.replace(/\/v1$/, "");
     }
   } catch {}
   return "http://127.0.0.1:9530";

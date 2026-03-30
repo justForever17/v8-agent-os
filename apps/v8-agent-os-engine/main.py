@@ -34,6 +34,7 @@ from core.plugin_host import plugin_host_service
 from core.plugin_host.silk_codec import silk_toolchain_status
 from core.plugin_host import routes as plugin_host_routes
 from core.models.provider_compatibility import install_provider_compatibility_patches
+from runtimes.network_supervisor import network_supervisor_runtime, network_supervisor_service
 from core.storage import storage
 from core.system_base import get_allowed_origins
 from skills.loader import SkillLoader
@@ -45,6 +46,9 @@ from erc.session_admission_service import session_admission_service
 from erc.workflow_ledger import workflow_ledger_service
 
 install_provider_compatibility_patches()
+
+# Import side effect: register network_supervisor runtime into runtime_registry/capability_registry.
+_ = network_supervisor_runtime
 
 
 def _build_cors_allow_origins() -> list[str]:
@@ -177,11 +181,13 @@ async def lifespan(app: FastAPI):
     
     # Start Plugin Host before optional runtimes so plugin registry and host state are ready.
     await plugin_host_service.start()
+    await network_supervisor_service.start()
     
     yield
     # Shutdown logic
     print("[Engine] Shutting down V8 Agent OS Engine...")
     cron_manager.shutdown()
+    await network_supervisor_service.stop()
     await extensions_runtime_service.stop()
     await plugin_host_service.stop()
     skills_task = getattr(app.state, "skills_refresh_task", None)

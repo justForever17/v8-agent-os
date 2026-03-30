@@ -1,7 +1,5 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
 import { cookies } from "next/headers";
+import { readCanonicalBridge } from "@/lib/server/bridge-config";
 
 type BridgeConfig = {
     engineBaseUrl?: string;
@@ -14,37 +12,9 @@ type BridgeConfig = {
     reachable?: boolean;
 };
 
-type CanonicalConfig = {
-    systemBase?: {
-        bridge?: BridgeConfig;
-    };
-};
-
-function resolveCanonicalConfigPath() {
-    const candidates = [
-        path.join(os.homedir(), ".v8chat", "config.json"),
-        path.join(os.homedir(), ".v8-agent-os", "config.json"),
-    ];
-    return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
-}
-
-const CONFIG_PATH = resolveCanonicalConfigPath();
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
 const DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9528/api";
 export const ADMIN_CONNECTION_COOKIE = "v8-agent-os_admin_connection";
-
-function readCanonicalConfig(): CanonicalConfig {
-    try {
-        if (!fs.existsSync(CONFIG_PATH)) {
-            return {};
-        }
-        const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-        const parsed = JSON.parse(raw) as CanonicalConfig;
-        return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-        return {};
-    }
-}
 
 function normalizeUrl(value: unknown, fallback: string) {
     const normalized = String(value || "").trim() || fallback;
@@ -52,7 +22,7 @@ function normalizeUrl(value: unknown, fallback: string) {
 }
 
 function getBridge(): BridgeConfig {
-    return readCanonicalConfig().systemBase?.bridge || {};
+    return readCanonicalBridge();
 }
 
 async function readRequestScopedBridge(): Promise<BridgeConfig> {

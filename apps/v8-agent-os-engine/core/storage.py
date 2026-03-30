@@ -67,6 +67,103 @@ def _normalize_allowed_origins(value: Any) -> list[str]:
     return normalized
 
 
+LEGACY_LOCAL_ENGINE_BASES = {
+    "http://127.0.0.1:8000/v1": "http://127.0.0.1:9530/v1",
+    "http://localhost:8000/v1": "http://127.0.0.1:9530/v1",
+}
+
+LEGACY_LOCAL_ENGINE_WS_BASES = {
+    "ws://127.0.0.1:8000/v1": "ws://127.0.0.1:9530/v1",
+    "ws://localhost:8000/v1": "ws://127.0.0.1:9530/v1",
+}
+
+LEGACY_LOCAL_ADMIN_BASES = {
+    "http://127.0.0.1:5001/api": "http://127.0.0.1:9528/api",
+    "http://localhost:5001/api": "http://127.0.0.1:9528/api",
+}
+
+LEGACY_NETWORK_BASES = {
+    "http://127.0.0.1:8000": "http://127.0.0.1:9530",
+    "http://localhost:8000": "http://127.0.0.1:9530",
+}
+
+LEGACY_NETWORK_WS_BASES = {
+    "ws://127.0.0.1:8000": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+    "ws://localhost:8000": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+    "ws://127.0.0.1:8000/v1/network-supervisor/peer/ws": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+    "ws://localhost:8000/v1/network-supervisor/peer/ws": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+    "ws://127.0.0.1:9530": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+    "ws://localhost:9530": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+}
+
+LEGACY_ADMIN_ORIGINS = {
+    "http://127.0.0.1:5001",
+    "http://localhost:5001",
+}
+
+
+def _replace_if_exact(value: Any, replacements: Dict[str, str]) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    return replacements.get(normalized, normalized)
+
+
+def _maybe_migrate_legacy_local_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    next_payload = deepcopy(dict(payload or {}))
+    bridge = (
+        next_payload.setdefault("systemBase", {}).setdefault("bridge", {})
+        if isinstance(next_payload.get("systemBase"), dict)
+        else None
+    )
+    if bridge is None:
+        next_payload["systemBase"] = {"bridge": {}}
+        bridge = next_payload["systemBase"]["bridge"]
+
+    changed = False
+
+    current_engine_base = _replace_if_exact(bridge.get("engineBaseUrl"), LEGACY_LOCAL_ENGINE_BASES)
+    current_engine_ws_base = _replace_if_exact(bridge.get("engineWsBaseUrl"), LEGACY_LOCAL_ENGINE_WS_BASES)
+    current_admin_base = _replace_if_exact(bridge.get("adminBaseUrl"), LEGACY_LOCAL_ADMIN_BASES)
+
+    if current_engine_base and current_engine_base != str(bridge.get("engineBaseUrl") or "").strip().rstrip("/"):
+        bridge["engineBaseUrl"] = current_engine_base
+        changed = True
+    if current_engine_ws_base and current_engine_ws_base != str(bridge.get("engineWsBaseUrl") or "").strip().rstrip("/"):
+        bridge["engineWsBaseUrl"] = current_engine_ws_base
+        changed = True
+    if current_admin_base and current_admin_base != str(bridge.get("adminBaseUrl") or "").strip().rstrip("/"):
+        bridge["adminBaseUrl"] = current_admin_base
+        changed = True
+
+    network_node = (
+        next_payload.get("networkSupervisorRuntime", {}).get("node", {})
+        if isinstance(next_payload.get("networkSupervisorRuntime"), dict)
+        else {}
+    )
+    if isinstance(network_node, dict):
+        advertised_base = _replace_if_exact(network_node.get("advertisedBaseUrl"), LEGACY_NETWORK_BASES)
+        advertised_ws = _replace_if_exact(network_node.get("advertisedWsUrl"), LEGACY_NETWORK_WS_BASES)
+        if advertised_base and advertised_base != str(network_node.get("advertisedBaseUrl") or "").strip().rstrip("/"):
+            network_node["advertisedBaseUrl"] = advertised_base
+            changed = True
+        if advertised_ws and advertised_ws != str(network_node.get("advertisedWsUrl") or "").strip().rstrip("/"):
+            network_node["advertisedWsUrl"] = advertised_ws
+            changed = True
+
+    supervisor = next_payload.get("supervisor")
+    profile = supervisor.get("profile") if isinstance(supervisor, dict) else None
+    avatar = str(profile.get("avatar") or "").strip() if isinstance(profile, dict) else ""
+    if avatar:
+        for legacy_origin in LEGACY_ADMIN_ORIGINS:
+            if avatar.startswith(f"{legacy_origin}/Avatar/"):
+                profile["avatar"] = avatar.replace(legacy_origin, "http://127.0.0.1:9528", 1)
+                changed = True
+                break
+
+    if changed:
+        return next_payload
+    return payload
+
+
 STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "models": {
         "version": 2,
@@ -153,6 +250,37 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "suppressWhenActiveRun": True,
         },
     },
+    "networkSupervisorRuntime": {
+        "enabled": False,
+        "node": {
+            "displayName": "V8 Node",
+            "peerId": "",
+            "advertisedBaseUrl": "http://127.0.0.1:9530",
+            "advertisedWsUrl": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+        },
+        "discovery": {
+            "lanEnabled": False,
+            "multicastGroup": "239.8.8.8",
+            "multicastPort": 19530,
+            "announceIntervalSeconds": 15,
+            "peerExpirySeconds": 60,
+            "wanBootstrapPeers": [],
+        },
+        "trust": {
+            "enrollmentMode": "manual",
+            "allowedScopes": [],
+            "trustedPeers": [],
+        },
+        "wake": {
+            "enabled": True,
+            "ackTimeoutSeconds": 10,
+        },
+        "delegation": {
+            "enabled": True,
+            "maxConcurrent": 2,
+            "defaultTimeoutSeconds": 120,
+        },
+    },
     "context": DEFAULT_CONTEXT_POLICY,
     "audio": {
         "stt": {
@@ -235,6 +363,7 @@ LEGACY_STRUCTURED_FILE_TO_DOMAIN = {
     "hooks_config.json": "hooks",
     "cron_config.json": "cron",
     "automation_runtime.json": "automationRuntime",
+    "network_supervisor_runtime.json": "networkSupervisorRuntime",
     "context_config.json": "context",
     "audio_config.json": "audio",
     "runtime_stability.json": "runtimeStability",
@@ -255,6 +384,7 @@ EXTERNAL_IMPORT_FILE_TO_DOMAIN = {
     "hooks_config.json": "hooks",
     "cron_config.json": "cron",
     "automation_runtime.json": "automationRuntime",
+    "network_supervisor_runtime.json": "networkSupervisorRuntime",
     "context_config.json": "context",
     "audio_config.json": "audio",
     "runtime_stability.json": "runtimeStability",
@@ -546,6 +676,11 @@ class StorageManager:
             payload = self._read_json_file(CONFIG_JSON_PATH) if CONFIG_JSON_PATH.exists() else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
             payload = {}
+        if isinstance(payload, dict):
+            migrated_payload = _maybe_migrate_legacy_local_config(payload)
+            if migrated_payload != payload:
+                payload = migrated_payload
+                self._write_config_payload(payload)
         merged = self._deep_merge(self._default_config_payload(), payload if isinstance(payload, dict) else {})
         return merged
 
@@ -1437,6 +1572,22 @@ class StorageManager:
         payload = self._read_config_payload()
         payload["automationRuntime"] = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["automationRuntime"],
+            dict(data or {}),
+        )
+        self._write_config_payload(payload)
+
+    # --- Network Supervisor Runtime Config Accessors ---
+    def get_network_supervisor_runtime_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("networkSupervisorRuntime") or {}
+        return self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["networkSupervisorRuntime"],
+            data if isinstance(data, dict) else {},
+        )
+
+    def save_network_supervisor_runtime_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["networkSupervisorRuntime"] = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["networkSupervisorRuntime"],
             dict(data or {}),
         )
         self._write_config_payload(payload)

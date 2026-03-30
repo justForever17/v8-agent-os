@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, HTTPException
 
 from core.audio.audio_config import AudioConfigManager
 from core.plugin_host import plugin_host_service
+from runtimes.network_supervisor.service import network_supervisor_service
 from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
@@ -717,6 +718,42 @@ def _save_system_base_domain(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_system_base_domain()
 
 
+def _build_network_supervisor_runtime_domain() -> dict[str, Any]:
+    config = storage.get_network_supervisor_runtime_config()
+    status = network_supervisor_service.status_payload()
+    return {
+        "domain": "network-supervisor-runtime",
+        "title": "NETWORK SUPERVISOR RUNTIME",
+        "summary": "管理多 Supervisor 组网、发现、信任、定向唤醒与显式远程委派。",
+        "data": config,
+        "status": status,
+        "source": (
+            f"{_config_source('networkSupervisorRuntime')} + "
+            "~/.v8-agent-os/network_supervisor_secrets.json + "
+            "~/.v8-agent-os/network_supervisor_state.json"
+        ),
+        "savePath": _config_save_path("networkSupervisorRuntime"),
+        "reloadRequired": False,
+        "warnings": [
+            "私钥和 peer token 不会写入 config.json，只会保存到本地 secret 文件。",
+            "首版远程 delegation 仍然是显式能力，不会自动把任务路由到远端节点。",
+        ],
+        "advancedFields": ["node", "discovery", "trust", "wake", "delegation"],
+    }
+
+
+def _save_network_supervisor_runtime_domain(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload.get("data") or payload or {})
+    storage.save_network_supervisor_runtime_config(data)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(network_supervisor_service.reload())
+    return _build_network_supervisor_runtime_domain()
+
+
 DOMAIN_REGISTRY: dict[str, tuple[ConfigBuilder, ConfigSaver]] = {
     "models": (_build_models_domain, _save_models_domain),
     "supervisor": (_build_supervisor_domain, _save_supervisor_domain),
@@ -737,6 +774,7 @@ DOMAIN_REGISTRY: dict[str, tuple[ConfigBuilder, ConfigSaver]] = {
     "mcp": (_build_mcp_domain, _save_mcp_domain),
     "projects": (_build_projects_domain, _save_projects_domain),
     "music": (_build_music_domain, _save_music_domain),
+    "network-supervisor-runtime": (_build_network_supervisor_runtime_domain, _save_network_supervisor_runtime_domain),
     "system-base": (_build_system_base_domain, _save_system_base_domain),
     "system-misc": (_build_system_base_domain, _save_system_base_domain),
 }

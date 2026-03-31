@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import importlib
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -9,8 +10,6 @@ from typing import Any, Callable
 from fastapi import APIRouter, Body, HTTPException
 
 from core.audio.audio_config import AudioConfigManager
-from core.plugin_host import plugin_host_service
-from runtimes.network_supervisor.service import network_supervisor_service
 from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
@@ -20,7 +19,6 @@ from core.v8_agent_os_identity import render_system_identity_block
 from core.v8_agent_os_paths import COMPUTER_USE_JSON_PATH, CONFIG_JSON_PATH, V8_AGENT_OS_HOME
 from erc.runtime_stability import runtime_stability_service
 from erc.safety_guardian import safety_guardian
-from runtimes.memory.project_registry import project_registry_service
 
 
 router = APIRouter()
@@ -28,6 +26,18 @@ router = APIRouter()
 
 ConfigBuilder = Callable[[], dict[str, Any]]
 ConfigSaver = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def _get_plugin_host_service():
+    return importlib.import_module("core.plugin_host").plugin_host_service
+
+
+def _get_network_supervisor_service():
+    return importlib.import_module("runtimes.network_supervisor.service").network_supervisor_service
+
+
+def _get_project_registry_service():
+    return importlib.import_module("runtimes.memory.project_registry").project_registry_service
 
 
 def _config_source(domain_path: str) -> str:
@@ -269,7 +279,7 @@ def _save_context_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_plugin_host_domain() -> dict[str, Any]:
     config = storage.get_plugin_host_config()
-    snapshot = plugin_host_service.build_snapshot()
+    snapshot = _get_plugin_host_service().build_snapshot()
     warnings: list[str] = []
     if not config.get("enabled", True):
         warnings.append("PluginHostRuntime 当前已关闭；插件仍可扫描与安装，但不会接管渠道入站与出站。")
@@ -300,9 +310,9 @@ def _save_plugin_host_domain(payload: dict[str, Any]) -> dict[str, Any]:
     storage.save_plugin_host_config(config)
     current = storage.get_plugin_host_config()
     if previous != current:
-        asyncio.run(plugin_host_service.stop())
+        asyncio.run(_get_plugin_host_service().stop())
         if bool(current.get("enabled", True)):
-            asyncio.run(plugin_host_service.start())
+            asyncio.run(_get_plugin_host_service().start())
     return _build_plugin_host_domain()
 
 
@@ -628,7 +638,7 @@ def _build_projects_domain() -> dict[str, Any]:
         "summary": "管理项目注册表、默认项目和工作区绑定关系。",
         "data": {
             "defaultProjectId": storage.get_projects_registry().get("defaultProjectId"),
-            "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in project_registry_service.list_projects()],
+            "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in _get_project_registry_service().list_projects()],
         },
         "source": _config_source("projects"),
         "savePath": _config_save_path("projects"),
@@ -686,7 +696,6 @@ def _build_system_base_domain() -> dict[str, Any]:
             "desktopReadiness": {
                 "status": desktop_readiness.get("status"),
                 "ocrReady": desktop_readiness.get("ocrReady"),
-                "omniParserReady": desktop_readiness.get("omniParserReady"),
                 "imageLocatorReady": desktop_readiness.get("imageLocatorReady"),
                 "pointLocatorReady": desktop_readiness.get("pointLocatorReady"),
                 "missingItems": list(desktop_readiness.get("missingItems") or []),
@@ -722,7 +731,7 @@ def _save_system_base_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_network_supervisor_runtime_domain() -> dict[str, Any]:
     config = storage.get_network_supervisor_runtime_config()
-    status = network_supervisor_service.status_payload()
+    status = _get_network_supervisor_service().status_payload()
     return {
         "domain": "network-supervisor-runtime",
         "title": "NETWORK SUPERVISOR RUNTIME",
@@ -752,7 +761,7 @@ def _save_network_supervisor_runtime_domain(payload: dict[str, Any]) -> dict[str
     except RuntimeError:
         loop = None
     if loop is not None:
-        loop.create_task(network_supervisor_service.reload())
+        loop.create_task(_get_network_supervisor_service().reload())
     return _build_network_supervisor_runtime_domain()
 
 

@@ -12,7 +12,7 @@
 
 - `cleanup_obsolete_runtime_artifacts.py` -> `tools/cleanup_obsolete_runtime_artifacts.py`（已迁移，顶层兼容壳已删除）
 - `repair_memory_index.py` -> `tools/repair_memory_index.py`（已迁移，顶层兼容壳已删除）
-- `omniparser_doctor.py` -> `tools/omniparser_doctor.py`（已迁移，顶层保留兼容壳）
+- `offline_visual_parser_doctor.py` -> `tools/offline_visual_parser_doctor.py`（已迁移，顶层保留兼容壳）
 - `tools/import_external_legacy_v8chat.py`
 
 ## regression

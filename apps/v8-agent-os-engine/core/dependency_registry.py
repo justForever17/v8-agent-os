@@ -54,15 +54,6 @@ DEPENDENCY_REGISTRY: list[dict[str, Any]] = [
         "installHint": "OCR 识别与桌面视觉能力需要。",
     },
     {
-        "id": "omniparser",
-        "label": "OmniParser",
-        "requiredness": "conditional",
-        "category": "desktop",
-        "platforms": ["windows", "macos", "linux"],
-        "usedBy": ["computer_use", "desktop_automation"],
-        "installHint": "桌面控件解析与图像定位增强能力需要。",
-    },
-    {
         "id": "robotframework",
         "label": "Robot Framework",
         "requiredness": "conditional",
@@ -112,8 +103,6 @@ def _build_detection_snapshot(entry: dict[str, Any], desktop_readiness: dict[str
         return {"detected": _detect_binary("ffmpeg"), "detail": "检测 ffmpeg 命令是否可执行"}
     if dep_id == "tesseract":
         return {"detected": bool(desktop_readiness.get("ocrReady")), "detail": desktop_readiness.get("tesseractPath") or desktop_readiness.get("reason") or ""}
-    if dep_id == "omniparser":
-        return {"detected": bool(desktop_readiness.get("omniParserReady")), "detail": desktop_readiness.get("omniParserRoot") or desktop_readiness.get("reason") or ""}
     if dep_id == "robotframework":
         return {"detected": _detect_binary("robot"), "detail": "检测 Robot Framework CLI 是否可执行"}
     if dep_id == "playwright":

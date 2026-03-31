@@ -358,8 +358,8 @@ def build_agent_node(
                     f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n"
                     f"{env_context}{active_plan_context}{route_bundle.prompt_addition}\n\n"
                     "[Interactive CLI Rule]\n"
-                    "If you need to use an interactive CLI or REPL (examples: qwen, python REPL, node REPL, powershell, bash, cmd), NEVER use `execute_system_command`.\n"
-                    "You MUST use `start_background_command`, then inspect with `read_background_output`, send replies with `send_background_input`, and clean up with `terminate_background_command`.\n"
+                    "If you need to use an interactive CLI or REPL (examples: qwen, python REPL, node REPL, powershell, bash, cmd), NEVER use sync mode.\n"
+                    "You MUST use `run_system_command` with `mode=session`, then inspect with `read_background_output`, send replies with `send_background_input`, and clean up with `terminate_background_command`.\n"
                     "If the environment reports that TTY/interactive automation is unavailable, stop retrying and return a concise failure summary to the supervisor.\n\n"
                     "When you have fully completed your assigned task, respond with your findings or status to return control to the supervisor."
                 )

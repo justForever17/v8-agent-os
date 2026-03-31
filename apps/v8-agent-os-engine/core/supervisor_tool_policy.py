@@ -9,8 +9,7 @@ from core.computer_use_tool_surface import (
 )
 
 FALLBACK_NATIVE_TOOL_NAMES = {
-    "execute_system_command",
-    "start_background_command",
+    "run_system_command",
     "read_background_output",
     "send_background_input",
     "terminate_background_command",
@@ -54,11 +53,8 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "read_native_file",
     "write_native_file",
     "grep_search",
-    "inspect_and_move_media",
     "download_media_for_vision",
-    "web_search",
-    "web_read",
-    "web_extract",
+    "web_fetch",
     "http_request",
     "wait",
     "list_processes",

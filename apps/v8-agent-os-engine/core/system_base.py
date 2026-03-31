@@ -162,51 +162,27 @@ def detect_desktop_tools_readiness() -> dict[str, Any]:
 
     tesseract_path = _detect_tesseract_path(desktop_tools)
     tessdata_prefix = _existing_path(desktop_tools.get("tessdataPrefix")) or _existing_path(os.getenv("TESSDATA_PREFIX"))
-    omni_root = _existing_path(desktop_tools.get("omniParserRoot")) or _existing_path(os.getenv("V8_AGENT_OS_OMNIPARSER_ROOT"))
-    som_model_path = _existing_path(desktop_tools.get("omniParserSomModelPath")) or _existing_path(os.getenv("V8_AGENT_OS_OMNIPARSER_SOM_MODEL_PATH"))
-    caption_model_path = _existing_path(desktop_tools.get("omniParserCaptionModelPath")) or _existing_path(os.getenv("V8_AGENT_OS_OMNIPARSER_CAPTION_MODEL_PATH"))
-    caption_model_name = str(
-        desktop_tools.get("omniParserCaptionModelName")
-        or os.getenv("V8_AGENT_OS_OMNIPARSER_CAPTION_MODEL_NAME")
-        or ""
-    ).strip()
-    device = str(desktop_tools.get("omniParserDevice") or os.getenv("V8_AGENT_OS_OMNIPARSER_DEVICE") or "").strip()
     ocr_ready = bool(tesseract_path)
-    omni_ready = bool(omni_root and som_model_path and caption_model_path)
-    image_locator_ready = omni_ready
+    image_locator_ready = True
     point_locator_ready = True
 
-    if ocr_ready and omni_ready:
+    if ocr_ready:
         status = "ready"
-    elif ocr_ready or omni_ready:
-        status = "partial"
     else:
-        status = "missing"
+        status = "partial"
 
     missing_items: list[str] = []
     if not tesseract_path:
         missing_items.append("未检测到 Tesseract")
-    if not omni_root:
-        missing_items.append("未检测到 OmniParser 根目录")
-    if omni_root and not som_model_path:
-        missing_items.append("缺少 SOM 模型")
-    if omni_root and not caption_model_path:
-        missing_items.append("缺少 Caption 模型")
     return {
         "status": status,
         "ocrReady": ocr_ready,
-        "omniParserReady": omni_ready,
         "imageLocatorReady": image_locator_ready,
         "pointLocatorReady": point_locator_ready,
         "missingItems": missing_items,
         "detectedDesktopTools": {
             "tesseractPath": tesseract_path,
             "tessdataPrefix": tessdata_prefix,
-            "omniParserRoot": omni_root,
-            "omniParserSomModelPath": som_model_path,
-            "omniParserCaptionModelPath": caption_model_path,
-            "omniParserCaptionModelName": caption_model_name,
-            "omniParserDevice": device,
         },
         "identity": storage.get_system_identity(),
         "homeDir": str(V8_AGENT_OS_HOME),

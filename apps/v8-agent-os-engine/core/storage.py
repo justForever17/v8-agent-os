@@ -350,7 +350,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "music": {"tracks": []},
     "webFetchProfiles": {"version": 1, "sites": {}},
     "mediaDownloadProfiles": {"version": 1, "platforms": {}},
-    "runtimeRegistry": {"version": 1, "policies": {}},
+    "runtimeRegistry": {"version": 1, "startupProfile": "standard", "policies": {}},
 }
 
 
@@ -532,11 +532,6 @@ class StorageManager:
             "desktopTools": {
                 "tesseractPath": str(os.getenv("TESSERACT_PATH") or ""),
                 "tessdataPrefix": str(os.getenv("TESSDATA_PREFIX") or ""),
-                "omniParserRoot": str(os.getenv("V8_AGENT_OS_OMNIPARSER_ROOT") or ""),
-                "omniParserSomModelPath": str(os.getenv("V8_AGENT_OS_OMNIPARSER_SOM_MODEL_PATH") or ""),
-                "omniParserCaptionModelPath": str(os.getenv("V8_AGENT_OS_OMNIPARSER_CAPTION_MODEL_PATH") or ""),
-                "omniParserCaptionModelName": str(os.getenv("V8_AGENT_OS_OMNIPARSER_CAPTION_MODEL_NAME") or ""),
-                "omniParserDevice": str(os.getenv("V8_AGENT_OS_OMNIPARSER_DEVICE") or ""),
             },
             "desktopLive": {
                 "enabled": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_ENABLED") or "true").strip().lower() not in {"0", "false", "no", "off"},
@@ -1806,14 +1801,22 @@ class StorageManager:
     def get_runtime_registry_config(self) -> Dict[str, Any]:
         data = self.read_json("runtime_registry.json")
         if not data:
-            data = {"version": 1, "policies": {}}
+            data = {"version": 1, "startupProfile": "standard", "policies": {}}
         data.setdefault("version", 1)
+        startup_profile = str(data.get("startupProfile") or "standard").strip().lower()
+        if startup_profile not in {"minimal", "standard", "desktop"}:
+            startup_profile = "standard"
+        data["startupProfile"] = startup_profile
         data.setdefault("policies", {})
         return data
 
     def save_runtime_registry_config(self, data: Dict[str, Any]):
         payload = dict(data or {})
         payload.setdefault("version", 1)
+        startup_profile = str(payload.get("startupProfile") or "standard").strip().lower()
+        if startup_profile not in {"minimal", "standard", "desktop"}:
+            startup_profile = "standard"
+        payload["startupProfile"] = startup_profile
         payload.setdefault("policies", {})
         self.write_json("runtime_registry.json", payload)
 

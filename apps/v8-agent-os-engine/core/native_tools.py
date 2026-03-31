@@ -6,6 +6,7 @@ import mimetypes
 import platform
 import re
 import time
+import importlib
 from datetime import datetime, timezone
 import httpx
 import psutil
@@ -37,15 +38,10 @@ from core.computer_use_execution_route import (
     build_compact_execution_route,
 )
 from core.storage import StorageManager
-from runtimes.memory.runtime import memory_runtime
 from runtimes.computer_use.primitives import list_computer_use_primitives, primitive_validation_matrix
-from runtimes.computer_use.runtime import computer_use_runtime
 from runtimes.rpa.promotion_gate import draft_environment_signal_summary, draft_timing_signal_summary
-from runtimes.rpa.runtime import rpa_runtime
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
-from core.tools.media_downloader import download_media_for_vision
-from core.tools.web_fetcher import web_extract, web_read, web_search
 from core.workspace_resolution import workspace_resolution_service
 from runtimes.computer_use.verification_contract import (
     build_evidence_summary_payload,
@@ -63,6 +59,46 @@ _COMPUTER_USE_POINT_TAG_PATTERN = re.compile(
     r"<point>\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*</point>",
     re.IGNORECASE,
 )
+
+
+class _LazyAttributeProxy:
+    def __init__(self, module_name: str, attr_name: str):
+        self._module_name = module_name
+        self._attr_name = attr_name
+        self._resolved = None
+
+    def _resolve(self):
+        if self._resolved is None:
+            self._resolved = getattr(importlib.import_module(self._module_name), self._attr_name)
+        return self._resolved
+
+    def __getattr__(self, item):
+        return getattr(self._resolve(), item)
+
+    def __call__(self, *args, **kwargs):
+        return self._resolve()(*args, **kwargs)
+
+
+memory_runtime = _LazyAttributeProxy("runtimes.memory.runtime", "memory_runtime")
+computer_use_runtime = _LazyAttributeProxy("runtimes.computer_use.runtime", "computer_use_runtime")
+rpa_runtime = _LazyAttributeProxy("runtimes.rpa.runtime", "rpa_runtime")
+download_media_for_vision = _LazyAttributeProxy("core.tools.media_downloader", "download_media_for_vision")
+web_fetch = _LazyAttributeProxy("core.tools.web_fetcher", "web_fetch")
+web_read = _LazyAttributeProxy("core.tools.web_fetcher", "web_read")
+web_extract = _LazyAttributeProxy("core.tools.web_fetcher", "web_extract")
+web_search = _LazyAttributeProxy("core.tools.web_fetcher", "web_search")
+vision_media_analyzer = _LazyAttributeProxy("core.tools.vision_media_analyzer", "vision_media_analyzer")
+
+
+def _invoke_tool(tool_ref, **kwargs):
+    target = tool_ref._resolve() if isinstance(tool_ref, _LazyAttributeProxy) else tool_ref
+    if hasattr(target, "func") and callable(getattr(target, "func")):
+        return target.func(**kwargs)
+    if hasattr(target, "invoke") and callable(getattr(target, "invoke")):
+        return target.invoke(kwargs)
+    if callable(target):
+        return target(**kwargs)
+    raise RuntimeError(f"Tool '{getattr(target, 'name', target)}' is not invokable.")
 
 
 def _enforce_safety_decision(
@@ -178,6 +214,31 @@ def _detect_interactive_command(command: str) -> str | None:
     if head in {"qwen", "claude", "gemini"}:
         return f"检测到 `{head}` 可能需要 TTY 或交互输入。"
 
+    return None
+
+
+def _detect_session_preferred_command(command: str) -> str | None:
+    lowered = str(command or "").strip().lower()
+    if not lowered:
+        return None
+    long_running_markers = (
+        "uvicorn ",
+        "gunicorn ",
+        "npm run dev",
+        "pnpm dev",
+        "yarn dev",
+        "npm start",
+        "pnpm start",
+        "yarn start",
+        "next dev",
+        "vite",
+        "tail -f",
+        "watch ",
+        "python -m http.server",
+        "python -m uvicorn",
+    )
+    if any(marker in lowered for marker in long_running_markers):
+        return f"检测到 `{command}` 更像长驻进程，建议进入 session 模式以便轮询和中断。"
     return None
 
 
@@ -1930,7 +1991,7 @@ def execute_system_command(
     CRITICAL USAGE RULES:
     1. This tool blocks execution. If the command asks for user input (e.g., 'y/n', selecting from a menu), IT WILL HANG AND TIMEOUT.
     2. Therefore, you MUST ALWAYS provide non-interactive flags (like `-y`, `--no-fund`, `--silent`) when using this tool.
-    3. If you CANNOT avoid interaction, or if the command is a long-running server/process, you MUST use `start_background_command` instead.
+    3. If you CANNOT avoid interaction, or if the command is a long-running server/process, you MUST use `run_system_command(mode="session")` instead.
     
     Arguments:
         command (str): The command to execute natively.
@@ -1940,7 +2001,7 @@ def execute_system_command(
         if interactive_reason:
             return (
                 f"Error: {interactive_reason}\n"
-                "请改用 `start_background_command` 启动它，随后配合 "
+                "请改用 `run_system_command` 并设置 `mode=session` 启动它，随后配合 "
                 "`read_background_output`、`send_background_input` 和 "
                 "`terminate_background_command` 完成交互与收尾。"
             )
@@ -2029,7 +2090,11 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
             return f"Error: File '{path}' does not exist or is not a file."
             
         if is_binary(str(target_path)):
-            return f"Error: '{path}' appears to be a binary file. Use `inspect_and_move_media` if it's an image/video/audio meant for the user."
+            return (
+                f"Error: '{path}' appears to be a binary file. "
+                "如果这是图片，请优先用 `vision_media_analyzer`；如果是分享页或视频，请优先用 "
+                "`download_media_for_vision`。"
+            )
             
         with open(target_path, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
@@ -2176,7 +2241,7 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
 
 @tool
 def inspect_and_move_media(path: str) -> str:
-    """Inspect a binary media file (image/video/audio) and safely move it to the workspace for Web UI rendering.
+    """[Compatibility] Inspect a binary media file and move it into the workspace.
     
     If the user asks you to analyze or show an image/video located randomly on their OS, 
     use this tool. It will extract its size, and copy it into the active workspace so you 
@@ -2235,6 +2300,72 @@ def inspect_and_move_media(path: str) -> str:
             
     except Exception as e:
         return f"Error moving media file: {str(e)}"
+
+
+def _launch_background_command(
+    command: str,
+    *,
+    tool_call_id: str = "",
+) -> dict[str, Any]:
+    interactive_reason = _detect_interactive_command(command)
+    interactive_mode = interactive_reason is not None
+    if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
+        raise RuntimeError(
+            "当前 Windows 环境缺少 `winpty/PTY` 适配层，无法稳定自动化交互式 CLI。"
+        )
+
+    runtime_context = get_runtime_context()
+    allowed, error_message = _enforce_safety_decision(
+        safety_guardian.assess_background_command(command, runtime_context=runtime_context),
+        tool_call_id=tool_call_id,
+        question=f"Safety Guardian 检测到后台命令需要确认，是否继续？\n\n命令：{command}",
+    )
+    if not allowed:
+        raise RuntimeError(error_message or "Safety Guardian 已阻止后台命令启动。")
+
+    cmd_id = str(uuid.uuid4())[:8]
+    bg_proc = BackgroundProcess(
+        command,
+        run_id=runtime_context.get("run_id"),
+        interactive=interactive_mode,
+    )
+    _bg_processes[cmd_id] = bg_proc
+
+    initial_chunks = []
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        chunk = bg_proc.get_new_output()
+        if chunk:
+            initial_chunks.append(chunk)
+            if len("".join(initial_chunks)) >= 512:
+                break
+        if not bg_proc.is_running:
+            break
+        time.sleep(0.2)
+    initial_out = "".join(initial_chunks).strip()
+    status = bg_proc.status_snapshot()
+    tty_label = "pty" if bg_proc.uses_tty else "pipe"
+    safety_guardian.observe_post_action(
+        action_family="background_command",
+        summary=f"已启动后台命令：{command}",
+        details={
+            "command": command,
+            "command_id": cmd_id,
+            "interactive": interactive_mode,
+            "tty": tty_label,
+            "run_id": runtime_context.get("run_id"),
+        },
+        runtime_context=runtime_context,
+    )
+    return {
+        "commandId": cmd_id,
+        "mode": "interactive" if interactive_mode else "background",
+        "tty": tty_label,
+        "runId": runtime_context.get("run_id"),
+        "status": status,
+        "interactive": interactive_mode,
+        "initialOutput": initial_out,
+    }
 
 # ==========================================
 # New OS & Orchestration Tools
@@ -2993,6 +3124,8 @@ def start_background_command(
     1. The command requires interactive input (like `npx skills find` asking for selection).
     2. The command takes a long time and you want to poll it.
     3. Interactive CLIs such as `qwen`, `python`, `node`, `bash`, `pwsh/powershell`, or shells/REPLs.
+
+    新主入口建议优先使用 `run_system_command(mode="session")`，这个工具保留为兼容薄壳。
     
     Returns a CommandId. You MUST subsequently use `read_background_output` to check its progress, 
     and `send_background_input` (like 'y\\n' or arrow keys) to interact with it.
@@ -3000,82 +3133,84 @@ def start_background_command(
     Arguments:
         command (str): The interactive or long-running command to execute.
     """
-    cmd_id = str(uuid.uuid4())[:8]
     try:
-        interactive_reason = _detect_interactive_command(command)
-        interactive_mode = interactive_reason is not None
-        if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
-            return (
-                "Error: 当前 Windows 环境缺少 `winpty/PTY` 适配层，无法稳定自动化交互式 CLI。\n"
-                f"命令：{command}\n"
-                "建议先安装 `pywinpty/winpty` 或改成非交互模式。"
-            )
-
-        runtime_context = get_runtime_context()
-        allowed, error_message = _enforce_safety_decision(
-            safety_guardian.assess_background_command(command, runtime_context=runtime_context),
-            tool_call_id=tool_call_id,
-            question=f"Safety Guardian 检测到后台命令需要确认，是否继续？\n\n命令：{command}",
-        )
-        if not allowed:
-            return error_message or "Safety Guardian 已阻止后台命令启动。"
-
-        bg_proc = BackgroundProcess(
-            command,
-            run_id=getattr(runtime_context, "run_id", None),
-            interactive=interactive_mode,
-        )
-        _bg_processes[cmd_id] = bg_proc
-        initial_chunks = []
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            chunk = bg_proc.get_new_output()
-            if chunk:
-                initial_chunks.append(chunk)
-                if len("".join(initial_chunks)) >= 512:
-                    break
-            if not bg_proc.is_running:
-                break
-            time.sleep(0.2)
-        initial_out = "".join(initial_chunks).strip()
-        status = bg_proc.status_snapshot()
-        tty_label = "pty" if bg_proc.uses_tty else "pipe"
-        safety_guardian.observe_post_action(
-            action_family="background_command",
-            summary=f"已启动后台命令：{command}",
-            details={
-                "command": command,
-                "command_id": cmd_id,
-                "interactive": interactive_mode,
-                "tty": tty_label,
-                "run_id": getattr(runtime_context, "run_id", None),
-            },
-            runtime_context=runtime_context,
-        )
+        launched = _launch_background_command(command, tool_call_id=tool_call_id)
         guidance = (
             "\nNext step: 使用 `read_background_output` 观察输出；若 CLI 等待输入，使用 "
             "`send_background_input` 发送文本或回车；结束时使用 `terminate_background_command`。"
-            if interactive_mode
+            if launched["interactive"]
             else ""
         )
-        initial_section = initial_out if initial_out else "[No initial output yet]"
+        initial_section = launched["initialOutput"] if launched["initialOutput"] else "[No initial output yet]"
         return (
-            f"Command started in background with ID: {cmd_id}\n"
-            f"Mode: {'interactive' if interactive_mode else 'background'}\n"
-            f"TTY: {tty_label}\n"
-            f"RunId: {getattr(runtime_context, 'run_id', None) or 'n/a'}\n"
-            f"Status: {json.dumps(status, ensure_ascii=False)}\n"
+            f"Command started in background with ID: {launched['commandId']}\n"
+            f"Mode: {launched['mode']}\n"
+            f"TTY: {launched['tty']}\n"
+            f"RunId: {launched['runId'] or 'n/a'}\n"
+            f"Status: {json.dumps(launched['status'], ensure_ascii=False)}\n"
             f"Initial output:\n{initial_section}{guidance}"
         )
     except Exception as e:
         return f"Error starting background command: {e}"
+
+
+@tool
+def run_system_command(
+    command: str,
+    mode: str = "auto",
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    """Run a system command through a unified command surface.
+
+    mode=auto:
+    - 短命令/非交互命令直接同步执行并返回结果
+    - 交互式或长驻命令自动切到 session 模式并返回 commandId
+
+    mode=sync:
+    - 强制同步执行，适合短命令
+
+    mode=session:
+    - 强制后台/交互模式，返回 commandId
+    """
+    normalized_mode = str(mode or "auto").strip().lower()
+    if normalized_mode not in {"auto", "sync", "session"}:
+        return "Error: mode 必须是 auto、sync 或 session。"
+
+    interactive_reason = _detect_interactive_command(command)
+    session_reason = _detect_session_preferred_command(command)
+    prefer_session = interactive_reason is not None or session_reason is not None
+    effective_mode = normalized_mode
+    if normalized_mode == "auto":
+        effective_mode = "session" if prefer_session else "sync"
+
+    if effective_mode == "sync":
+        return execute_system_command.func(command=command, tool_call_id=tool_call_id)
+
+    if effective_mode == "session":
+        try:
+            launched = _launch_background_command(command, tool_call_id=tool_call_id)
+            payload = {
+                "mode": "session",
+                "commandId": launched["commandId"],
+                "interactive": bool(launched["interactive"]),
+                "tty": launched["tty"],
+                "runId": launched["runId"],
+                "reason": interactive_reason or session_reason or "显式 session 模式",
+            }
+            if launched["initialOutput"]:
+                payload["initialOutput"] = launched["initialOutput"]
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return f"Error starting session command: {exc}"
+
+    return "Error: 未能解析命令执行模式。"
 
 @tool
 def read_background_output(command_id: str) -> str:
     """Read the latest output from a background command.
     
     Arguments:
-        command_id (str): The ID of the command returned by `start_background_command`.
+        command_id (str): The ID returned by `run_system_command(mode="session")` or `start_background_command`.
     """
     if command_id not in _bg_processes:
         return f"Error: No active background command with ID {command_id}."
@@ -5378,15 +5513,14 @@ async def delegate_network_task(
     return str(result.get("result") or "").strip()
 
 
-from core.tools.vision_media_analyzer import vision_media_analyzer
-
 # Export all tools for easier binding
 NATIVE_TOOLS = [
-    execute_system_command,
-    start_background_command,
+    run_system_command,
     read_background_output,
     send_background_input,
     terminate_background_command,
+    execute_system_command,
+    start_background_command,
     rpa_list_robot_scripts,
     rpa_run_draft,
     rpa_run_existing_flow,
@@ -5429,9 +5563,10 @@ NATIVE_TOOLS = [
     grep_search,
     inspect_and_move_media,
     download_media_for_vision,
-    web_search,
+    web_fetch,
     web_read,
     web_extract,
+    web_search,
     delegate_network_task,
     http_request,
     wait,

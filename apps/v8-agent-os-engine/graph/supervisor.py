@@ -1,7 +1,7 @@
 from typing import Annotated, Sequence, TypedDict
 import operator
+import importlib
 
-from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.scope_resolution import scope_resolution_service
 from core.models.provider_compatibility import install_provider_compatibility_patches
 from core.response_normalizer import ensure_reasoning_content
@@ -33,6 +33,24 @@ class AgentState(TypedDict):
 from core.context_orchestrator import context_orchestrator
 
 _build_agent_runtime_failure_command = build_agent_runtime_failure_command
+
+
+class _LazyRuntimeProxy:
+    def __init__(self, module_name: str, attr_name: str):
+        self._module_name = module_name
+        self._attr_name = attr_name
+        self._resolved = None
+
+    def _resolve(self):
+        if self._resolved is None:
+            self._resolved = getattr(importlib.import_module(self._module_name), self._attr_name)
+        return self._resolved
+
+    def __getattr__(self, item):
+        return getattr(self._resolve(), item)
+
+
+memory_runtime = _LazyRuntimeProxy("runtimes.memory.runtime", "memory_runtime")
 
 
 def create_supervisor_graph(config: EngineConfig, checkpointer=None):

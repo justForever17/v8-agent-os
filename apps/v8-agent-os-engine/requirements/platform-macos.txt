@@ -1,0 +1,5 @@
+# macOS desktop runtime extras for AX tree inspection, Quartz helpers and native bridges.
+pyobjc-core>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.3 ; sys_platform == "darwin"

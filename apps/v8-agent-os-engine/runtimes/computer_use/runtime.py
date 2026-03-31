@@ -161,18 +161,15 @@ class ComputerUseRuntime:
             "parserAdapters": [
                 "precomputed_visual_parser",
                 "rpa_desktop_visual_locator",
-                "omniparser_visual_parser",
                 "null_visual_parser",
             ],
-            "script": str(Path(__file__).resolve().parents[2] / "scripts" / "omniparser_offline_benchmark.py"),
-            "sampleManifest": str(Path(__file__).resolve().parents[2] / "scripts" / "omniparser_offline_benchmark.sample.json"),
-            "doctorScript": str(Path(__file__).resolve().parents[2] / "scripts" / "omniparser_doctor.py"),
-            "optionalRequirements": str(Path(__file__).resolve().parents[2] / "requirements-omniparser.txt"),
+            "script": str(Path(__file__).resolve().parents[2] / "scripts" / "offline_visual_benchmark.py"),
+            "sampleManifest": str(Path(__file__).resolve().parents[2] / "scripts" / "offline_visual_benchmark.sample.json"),
+            "doctorScript": str(Path(__file__).resolve().parents[2] / "scripts" / "offline_visual_parser_doctor.py"),
             "notes": [
                 "当前只支持离线截图解析 benchmark，不接入主执行链。",
                 "适用于验证 page identity / blocker / hit zone / affordance 设计。",
                 "支持将 RPA.Desktop 作为统一视觉定位层做离线预计算 benchmark 接线。",
-                "真实 OmniParser 适配器需要单独安装官方仓库与模型权重。",
             ],
         }
 
@@ -226,7 +223,7 @@ class ComputerUseRuntime:
                 {
                     "key": "computer_use.offline_visual_benchmark",
                     "label": "离线视觉解析验证",
-                    "summary": "对 OmniParser 等纯视觉解析器做离线截图 benchmark，不驱动在线动作。",
+                    "summary": "对离线视觉解析器做截图 benchmark，不驱动在线动作。",
                     "accepts": ["benchmark manifest", "precomputed predictions", "screenshots"],
                     "outputs": ["benchmark report", "page identity candidates", "candidate hit zones"],
                     "examples": ["验证顶部输入区的可解析性", "验证内容接收区与主操作区的视觉语义"],

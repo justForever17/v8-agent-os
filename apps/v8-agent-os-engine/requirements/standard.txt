@@ -1,0 +1,20 @@
+-r base.txt
+
+edge_tts
+pandas
+beautifulsoup4
+scrapling
+curl_cffi
+browserforge
+apify-fingerprint-datapoints
+msgspec
+playwright
+patchright
+yt-dlp
+python-docx
+python-pptx
+PyMuPDF
+jieba
+chromadb
+langchain
+langchain-text-splitters

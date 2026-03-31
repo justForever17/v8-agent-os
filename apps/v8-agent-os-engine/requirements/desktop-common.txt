@@ -1,0 +1,12 @@
+-r standard.txt
+
+robotframework
+robotframework-seleniumlibrary
+rpaframework
+rpaframework-recognition
+pyperclip
+openpyxl
+mss
+Pillow
+av
+aiortc

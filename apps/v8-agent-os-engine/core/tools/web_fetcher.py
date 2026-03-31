@@ -27,6 +27,8 @@ from erc.safety_guardian import safety_guardian
 WebFetchMode = Literal["auto", "static", "dynamic", "stealth"]
 WebExtractMode = Literal["article", "links", "metadata", "media"]
 WebRefererMode = Literal["none", "google", "custom"]
+WebFetchIntent = Literal["auto", "read", "extract", "search"]
+WebSearchEngine = Literal["auto", "bing", "google", "baidu", "duckduckgo"]
 WEB_CONTAINER_SELECTOR = "main, article, [role='main'], body"
 MAX_SELECTOR_CANDIDATES = 12
 DEFAULT_CONTAINER_SELECTORS = (
@@ -72,7 +74,13 @@ EXTRACT_CONTAINER_SELECTORS: dict[str, tuple[str, ...]] = {
 MAX_TEXT_CHARS = 12000
 MAX_LINKS = 20
 MAX_MEDIA = 12
-DUCKDUCKGO_HTML_SEARCH = "https://html.duckduckgo.com/html/?q={query}"
+SEARCH_PROVIDER_URLS: dict[str, str] = {
+    "bing": "https://www.bing.com/search?q={query}",
+    "google": "https://www.google.com/search?q={query}&hl=en",
+    "baidu": "https://www.baidu.com/s?wd={query}",
+    "duckduckgo": "https://html.duckduckgo.com/html/?q={query}",
+}
+SEARCH_PROVIDER_ORDER = ("bing", "google", "baidu", "duckduckgo")
 WINDOWS_CA_BUNDLE_NAME = "windows-system-ca.pem"
 WINDOWS_CA_BUNDLE_MAX_AGE_SECONDS = 24 * 60 * 60
 PROXY_ENV_KEYS = (
@@ -1123,6 +1131,48 @@ def _render_error_payload(
     )
 
 
+def _looks_like_url(value: str) -> bool:
+    normalized = _safe_text(value).lower()
+    return normalized.startswith("http://") or normalized.startswith("https://")
+
+
+def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -> list[dict[str, str]]:
+    selectors = {
+        "bing": [
+            ("li.b_algo", "h2 a", ".b_caption p"),
+        ],
+        "google": [
+            ("div.g", "a", ".VwiC3b, .yXK7lf, .MUxGbd"),
+        ],
+        "baidu": [
+            ("div.result, div.c-container, div.result-op", "h3 a", ".c-abstract, .content-right_8Zs40, .c-span-last"),
+        ],
+        "duckduckgo": [
+            (".result", ".result__a", ".result__snippet"),
+        ],
+    }.get(provider, [])
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for node_selector, anchor_selector, snippet_selector in selectors:
+        for result_node in soup.select(node_selector):
+            anchor = result_node.select_one(anchor_selector) or result_node.select_one("a[href]")
+            if not anchor:
+                continue
+            href = _safe_text(anchor.get("href"))
+            title = _safe_text(anchor.get_text(" ", strip=True))
+            if not href or href in seen:
+                continue
+            seen.add(href)
+            snippet_node = result_node.select_one(snippet_selector) if snippet_selector else None
+            snippet = _safe_text(snippet_node.get_text(" ", strip=True) if snippet_node else "")
+            results.append({"title": title[:300], "url": href, "snippet": snippet[:600]})
+            if len(results) >= max(1, min(limit, 10)):
+                return results
+        if results:
+            return results
+    return results
+
+
 @tool
 def web_read(
     url: str,
@@ -1280,75 +1330,155 @@ def web_extract(
 def web_search(
     query: str,
     limit: int = 5,
+    search_engine: WebSearchEngine = "auto",
     mode: WebFetchMode = "auto",
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Search the public web with a lightweight HTML search page and return structured results."""
-    search_url = DUCKDUCKGO_HTML_SEARCH.format(query=quote_plus(query))
-    allowed, error_message = _guard_url(search_url, tool_call_id=tool_call_id)
-    if not allowed:
-        return _render_error_payload(
-            url=search_url,
-            requested_mode=mode,
-            referer_mode=referer_mode,
-            referer_url=referer_url,
-            error=error_message or "Safety Guardian 已阻止网页搜索。",
-            blocked=True,
-        )
+    requested_provider = str(search_engine or "auto").strip().lower()
+    providers = [requested_provider] if requested_provider != "auto" else list(SEARCH_PROVIDER_ORDER)
+    attempted_providers: list[dict[str, Any]] = []
+    last_error_payload: str | None = None
 
-    try:
-        payload = _fetch_with_scrapling_internal(
-            search_url,
-            mode=mode,
-            headless=True,
-            referer_mode=referer_mode,
-            referer_url=referer_url,
-        )
-        soup = BeautifulSoup(payload.html, "html.parser")
-        results: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for result_node in soup.select(".result"):
-            anchor = result_node.select_one(".result__a") or result_node.select_one("a[href]")
-            if not anchor:
-                continue
-            href = _safe_text(anchor.get("href"))
-            title = _safe_text(anchor.get_text(" ", strip=True))
-            if not href or href in seen:
-                continue
-            seen.add(href)
-            snippet_node = result_node.select_one(".result__snippet")
-            snippet = _safe_text(snippet_node.get_text(" ", strip=True) if snippet_node else "")
-            results.append({"title": title[:300], "url": href, "snippet": snippet[:600]})
-            if len(results) >= max(1, min(limit, 10)):
-                break
+    for provider in providers:
+        search_url = SEARCH_PROVIDER_URLS[provider].format(query=quote_plus(query))
+        allowed, error_message = _guard_url(search_url, tool_call_id=tool_call_id)
+        if not allowed:
+            attempted_providers.append({"provider": provider, "status": "blocked", "reason": error_message or "blocked"})
+            last_error_payload = _render_error_payload(
+                url=search_url,
+                requested_mode=mode,
+                referer_mode=referer_mode,
+                referer_url=referer_url,
+                error=error_message or "Safety Guardian 已阻止网页搜索。",
+                blocked=True,
+            )
+            continue
 
-        response = {
-            "ok": True,
+        try:
+            payload = _fetch_with_scrapling_internal(
+                search_url,
+                mode=mode,
+                headless=True,
+                referer_mode=referer_mode,
+                referer_url=referer_url,
+            )
+            soup = BeautifulSoup(payload.html, "html.parser")
+            results = _extract_search_results(soup, provider=provider, limit=limit)
+            attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
+            if not results and requested_provider == "auto":
+                continue
+
+            response = {
+                "ok": True,
+                "query": query,
+                "provider": provider,
+                "requestedProvider": requested_provider,
+                "attemptedProviders": attempted_providers,
+                "searchUrl": search_url,
+                "requestedMode": payload.requested_mode,
+                "refererMode": payload.referer_mode,
+                "refererUrl": payload.referer_url,
+                "fetchMode": payload.fetch_mode,
+                "tlsStrategy": payload.tls_strategy,
+                "caBundlePath": payload.ca_bundle_path,
+                "proxyBypassUsed": payload.proxy_bypass_used,
+                "attemptedModes": payload.attempted_modes,
+                "availableModes": payload.available_modes,
+                "fallbackUsed": payload.requested_mode == "auto" and payload.fetch_mode != "static",
+                "warnings": payload.warnings,
+                "analysisHints": _build_analysis_hints(payload),
+                "resultCount": len(results),
+                "results": results,
+            }
+            return json.dumps(response, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            attempted_providers.append({"provider": provider, "status": "error", "reason": str(exc)})
+            last_error_payload = _render_error_payload(
+                url=search_url,
+                requested_mode=mode,
+                referer_mode=referer_mode,
+                referer_url=referer_url,
+                error=f"Error searching the web with Scrapling: {exc}",
+            )
+
+    return last_error_payload or json.dumps(
+        {
+            "ok": False,
             "query": query,
-            "searchUrl": search_url,
-            "requestedMode": payload.requested_mode,
-            "refererMode": payload.referer_mode,
-            "refererUrl": payload.referer_url,
-            "fetchMode": payload.fetch_mode,
-            "tlsStrategy": payload.tls_strategy,
-            "caBundlePath": payload.ca_bundle_path,
-            "proxyBypassUsed": payload.proxy_bypass_used,
-            "attemptedModes": payload.attempted_modes,
-            "availableModes": payload.available_modes,
-            "fallbackUsed": payload.requested_mode == "auto" and payload.fetch_mode != "static",
-            "warnings": payload.warnings,
-            "analysisHints": _build_analysis_hints(payload),
-            "resultCount": len(results),
-            "results": results,
-        }
-        return json.dumps(response, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        return _render_error_payload(
-            url=search_url,
-            requested_mode=mode,
+            "requestedProvider": requested_provider,
+            "attemptedProviders": attempted_providers,
+            "error": "No search provider returned usable results.",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@tool
+def web_fetch(
+    target: str,
+    intent: WebFetchIntent = "auto",
+    extract: WebExtractMode = "article",
+    search_engine: WebSearchEngine = "auto",
+    mode: WebFetchMode = "auto",
+    headless: bool = True,
+    referer_mode: WebRefererMode = "none",
+    referer_url: str = "",
+    adaptive: bool = False,
+    adaptive_id: str = "",
+    adaptive_threshold: int = 70,
+    limit: int = 5,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    """Unified web entrypoint for read / extract / search.
+
+    intent:
+    - auto: URL 走 read，非 URL 走 search
+    - read: 返回网页摘要
+    - extract: 返回结构化内容
+    - search: 返回公开搜索结果
+    """
+    normalized_intent = str(intent or "auto").strip().lower()
+    if normalized_intent == "auto":
+        normalized_intent = "read" if _looks_like_url(target) else "search"
+
+    if normalized_intent == "read":
+        return web_read.func(
+            url=target,
+            mode=mode,
+            headless=headless,
             referer_mode=referer_mode,
             referer_url=referer_url,
-            error=f"Error searching the web with Scrapling: {exc}",
+            tool_call_id=tool_call_id,
         )
+    if normalized_intent == "extract":
+        return web_extract.func(
+            url=target,
+            extract=extract,
+            mode=mode,
+            headless=headless,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            adaptive=adaptive,
+            adaptive_id=adaptive_id,
+            adaptive_threshold=adaptive_threshold,
+            tool_call_id=tool_call_id,
+        )
+    if normalized_intent == "search":
+        return web_search.func(
+            query=target,
+            limit=limit,
+            search_engine=search_engine,
+            mode=mode,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            tool_call_id=tool_call_id,
+        )
+    return json.dumps(
+        {"ok": False, "intent": normalized_intent, "error": f"Unsupported web_fetch intent: {normalized_intent}"},
+        ensure_ascii=False,
+        indent=2,
+    )

@@ -124,6 +124,14 @@ def _non_image_error_for_local(media_kind: str) -> str:
     return "当前本地模型只支持图片识别。"
 
 
+def _document_redirect_message(media_kind: str) -> str:
+    if media_kind == "video":
+        return "当前视觉分析只保留视频 URL/S3 通道。"
+    if media_kind in {"document", "file"}:
+        return "当前 vision_media_analyzer 不再承担文档直读，请改用 web_fetch 或文本抽取链路。"
+    return "当前 vision_media_analyzer 只处理图片和视频。"
+
+
 @tool
 def vision_media_analyzer(
     file_path: str = "",
@@ -143,7 +151,7 @@ def vision_media_analyzer(
     
     Arguments:
         file_path (str): The absolute local filesystem path to the uploaded image or video.
-        source_url (str): 远程图片/视频/文档 URL，可直接消费 web_read/web_extract 返回的 visionCandidates。
+        source_url (str): 远程图片/视频/文档 URL，可直接消费 web_fetch 返回的 visionCandidates。
         mime_type_hint (str): 远程媒体的 MIME 类型提示，可选。
         prompt (str): Your specific instructions to the Vision LLM (e.g., "Extract the error code from this screenshot").
     """
@@ -182,7 +190,7 @@ def vision_media_analyzer(
         media_kind = infer_media_kind(mime)
 
         if is_local_provider(resolved_provider):
-            if media_kind in {"video", "document"}:
+            if media_kind == "video":
                 return _non_image_error_for_local(media_kind)
 
             probe = probe_local_multimodal_capability(
@@ -200,8 +208,6 @@ def vision_media_analyzer(
                 except Exception:
                     return _non_image_error_for_local(media_kind)
             else:
-                if media_kind in {"file"} and mime_type_hint:
-                    return _non_image_error_for_local(media_kind)
                 allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
                 if not allowed:
                     return error_message or "Safety Guardian 已阻止远程媒体分析。"
@@ -216,18 +222,35 @@ def vision_media_analyzer(
             mime = str((inline_image_payload or {}).get("mimeType") or "image/png")
             media_kind = "image"
         else:
-            if resolved_url:
-                allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
-                if not allowed:
-                    return error_message or "Safety Guardian 已阻止远程媒体分析。"
-            elif path is not None:
-                import asyncio
+            if media_kind == "video":
+                if resolved_url:
+                    allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
+                    if not allowed:
+                        return error_message or "Safety Guardian 已阻止远程媒体分析。"
+                elif path is not None:
+                    import asyncio
+                    try:
+                        resolved_url = asyncio.run(_upload_to_temp_s3(path))
+                    except Exception:
+                        resolved_url = asyncio.run(_mount_in_workspace(path))
+                    print(f"[VisionMediaAnalyzer] Media temporarily mapped to URL: {resolved_url}")
+                payload_media_ref = resolved_url
+            else:
                 try:
-                    resolved_url = asyncio.run(_upload_to_temp_s3(path))
+                    if path is not None:
+                        inline_image_payload = build_inline_image_data_from_file(path)
+                    else:
+                        allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
+                        if not allowed:
+                            return error_message or "Safety Guardian 已阻止远程媒体分析。"
+                        remote_bytes = download_remote_image_bytes(resolved_url)
+                        inline_image_payload = build_inline_image_data_from_bytes(remote_bytes)
+                    transport_mode = "inline_base64_image"
+                    payload_media_ref = str((inline_image_payload or {}).get("dataUrl") or "")
+                    mime = str((inline_image_payload or {}).get("mimeType") or "image/png")
+                    media_kind = "image"
                 except Exception:
-                    resolved_url = asyncio.run(_mount_in_workspace(path))
-                print(f"[VisionMediaAnalyzer] Media temporarily mapped to URL: {resolved_url}")
-            payload_media_ref = resolved_url
+                    return _document_redirect_message(media_kind)
 
         # 2. Get the Vision model via llm_factory's role-based resolution (reads models.json → roles.vision)
         try:

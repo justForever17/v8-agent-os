@@ -1,11 +1,16 @@
+import importlib
+
 from fastapi import APIRouter, Body, HTTPException, Request
 
-from core.extensions_runtime import extensions_runtime_service
-from core.memory.backend_health import inspect_memory_backend
-from core.plugin_host.silk_codec import silk_toolchain_status
+from core.runtime.startup_profile import (
+    resolve_startup_profile,
+    service_enabled,
+    service_state,
+    startup_bundle_diagnostics,
+    startup_bundle_summary,
+)
 from core.storage import storage
 from erc.kernel import erc_kernel
-from mcp_client import mcp_manager
 from skills.loader import SkillLoader
 from runtimes.memory.prompts import (
     render_memory_admin_chat_prompt,
@@ -17,33 +22,119 @@ from runtimes.memory.prompts import (
 from . import chat_realtime_routes as chat_realtime_routes_module
 from . import command_preset_routes as command_preset_routes_module
 from . import config_registry_routes as config_registry_routes_module
-from . import computer_use_routes as computer_use_routes_module
-from . import desktop_live_routes as desktop_live_routes_module
-from . import extensions_routes as extensions_routes_module
-from . import knowledge_routes as knowledge_routes_module
-from . import network_supervisor_routes as network_supervisor_routes_module
-from . import ops_routes as ops_routes_module
 from . import platform_routes as platform_routes_module
-from . import rpa_routes as rpa_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import session_workflow_routes as session_workflow_routes_module
 from .models import RunCommandPayload
 
 
 router = APIRouter()
+_STARTUP_PROFILE = resolve_startup_profile()
+
+
+def _load_router_module(module_name: str):
+    return importlib.import_module(f"{__package__}.{module_name}")
+
+
+def _include_optional_router(module_name: str) -> None:
+    module = _load_router_module(module_name)
+    router.include_router(module.router)
+
+
+def _get_extensions_runtime_service():
+    return importlib.import_module("core.extensions_runtime").extensions_runtime_service
+
+
+def _get_mcp_manager():
+    return importlib.import_module("mcp_client").mcp_manager
+
+
+def _get_memory_backend_health():
+    return importlib.import_module("core.memory.backend_health").inspect_memory_backend
+
+
+def _get_silk_toolchain_status():
+    return importlib.import_module("core.plugin_host.silk_codec").silk_toolchain_status
+
+
+def _plugin_host_enabled() -> bool:
+    try:
+        return bool(storage.get_plugin_host_config().get("enabled", True))
+    except Exception:
+        return True
+
+
+def _network_supervisor_enabled() -> bool:
+    try:
+        return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
+    except Exception:
+        return False
+
+
+def _desktop_live_enabled() -> bool:
+    try:
+        return bool((storage.get_system_base_config().get("desktopLive") or {}).get("enabled", True))
+    except Exception:
+        return True
+
+
+def _service_states(profile: str = _STARTUP_PROFILE) -> dict[str, dict[str, object]]:
+    return {
+        "extensions": service_state("extensions", profile=profile),
+        "knowledge": service_state("knowledge", profile=profile),
+        "network_supervisor": service_state(
+            "network_supervisor",
+            profile=profile,
+            runtime_kind="network_supervisor",
+            config_enabled=_network_supervisor_enabled(),
+        ),
+        "computer_use": service_state(
+            "computer_use",
+            profile=profile,
+            runtime_kind="computer_use",
+        ),
+        "desktop_live": service_state(
+            "desktop_live",
+            profile=profile,
+            config_enabled=_desktop_live_enabled(),
+        ),
+        "rpa": service_state(
+            "rpa",
+            profile=profile,
+            runtime_kind="rpa",
+        ),
+        "ops": service_state("ops", profile=profile),
+        "mcp": service_state("mcp", profile=profile),
+        "plugin_host": service_state(
+            "plugin_host",
+            profile=profile,
+            runtime_kind="plugin_host",
+            config_enabled=_plugin_host_enabled(),
+        ),
+    }
+
+
 router.include_router(chat_realtime_routes_module.router)
 router.include_router(command_preset_routes_module.router)
 router.include_router(config_registry_routes_module.router)
-router.include_router(extensions_routes_module.router)
 router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(platform_routes_module.router)
-router.include_router(knowledge_routes_module.router)
-router.include_router(network_supervisor_routes_module.router)
-router.include_router(computer_use_routes_module.router)
-router.include_router(desktop_live_routes_module.router)
-router.include_router(rpa_routes_module.router)
-router.include_router(ops_routes_module.router)
+
+if service_enabled("extensions", profile=_STARTUP_PROFILE):
+    _include_optional_router("extensions_routes")
+if service_enabled("knowledge", profile=_STARTUP_PROFILE):
+    _include_optional_router("knowledge_routes")
+if service_enabled("network_supervisor", profile=_STARTUP_PROFILE, runtime_kind="network_supervisor"):
+    _include_optional_router("network_supervisor_routes")
+if service_enabled("computer_use", profile=_STARTUP_PROFILE, runtime_kind="computer_use"):
+    _include_optional_router("computer_use_routes")
+if service_enabled("desktop_live", profile=_STARTUP_PROFILE):
+    _include_optional_router("desktop_live_routes")
+if service_enabled("rpa", profile=_STARTUP_PROFILE, runtime_kind="rpa"):
+    _include_optional_router("rpa_routes")
+if service_enabled("ops", profile=_STARTUP_PROFILE):
+    _include_optional_router("ops_routes")
 
 
 def _get_agent_profile(agent_id: str) -> dict[str, str]:
@@ -52,20 +143,32 @@ def _get_agent_profile(agent_id: str) -> dict[str, str]:
 
 @router.get("/health")
 async def health():
+    service_states = _service_states()
     skills_status = SkillLoader.get_startup_status()
-    mcp_status = mcp_manager.get_startup_status()
-    extensions_status = extensions_runtime_service.get_startup_status()
+    mcp_enabled = service_enabled("mcp", profile=_STARTUP_PROFILE)
+    extensions_enabled = service_enabled("extensions", profile=_STARTUP_PROFILE)
+    mcp_status = _get_mcp_manager().get_startup_status() if mcp_enabled else {"startupState": "disabled"}
+    extensions_status = (
+        _get_extensions_runtime_service().get_startup_status()
+        if extensions_enabled
+        else {"startupState": "disabled"}
+    )
+    inspect_memory_backend = _get_memory_backend_health()
     return {
         "status": "ok",
-        "mcp_tools": len(mcp_manager.get_tools()),
-        "mcp": mcp_manager.get_health_summary(),
+        "mcp_tools": len(_get_mcp_manager().get_tools()) if mcp_enabled else 0,
+        "mcp": _get_mcp_manager().get_health_summary() if mcp_enabled else {"status": "disabled"},
         "skillsStartupState": skills_status.get("startupState"),
         "extensionsStartupState": extensions_status.get("startupState"),
         "mcpStartupState": mcp_status.get("startupState"),
+        "startupProfile": _STARTUP_PROFILE,
+        "startupBundle": startup_bundle_summary(_STARTUP_PROFILE),
+        "startupDiagnostics": startup_bundle_diagnostics(_STARTUP_PROFILE),
+        "serviceStates": service_states,
         "skillsRuntime": skills_status,
         "extensionsRuntime": extensions_status,
         "mcpRuntime": mcp_status,
-        "silk": silk_toolchain_status(),
+        "silk": _get_silk_toolchain_status() if service_enabled("plugin_host", profile=_STARTUP_PROFILE) else {"status": "disabled"},
         "memory": inspect_memory_backend(),
         "identity": storage.get_system_identity(),
     }

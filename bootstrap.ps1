@@ -1,6 +1,51 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$ProfileMode = "standard"
+$ServicesMode = "engine+admin"
+$PlatformMode = "auto"
+
+for ($i = 0; $i -lt $args.Count; $i++) {
+    switch ($args[$i]) {
+        "--profile" {
+            $i++
+            $ProfileMode = if ($i -lt $args.Count) { $args[$i] } else { "" }
+        }
+        "--services" {
+            $i++
+            $ServicesMode = if ($i -lt $args.Count) { $args[$i] } else { "" }
+        }
+        "--platform" {
+            $i++
+            $PlatformMode = if ($i -lt $args.Count) { $args[$i] } else { "" }
+        }
+        default {
+            throw "Unknown argument '$($args[$i])'."
+        }
+    }
+}
+
+if ($ProfileMode -notin @("minimal", "standard", "desktop")) {
+    throw "Unsupported --profile value: $ProfileMode"
+}
+if ($ServicesMode -notin @("engine", "engine+admin")) {
+    throw "Unsupported --services value: $ServicesMode"
+}
+
+function Resolve-Platform([string]$Requested) {
+    if ($Requested -and $Requested -ne "auto") {
+        if ($Requested -notin @("windows", "macos", "linux")) {
+            throw "Unsupported --platform value: $Requested"
+        }
+        return $Requested
+    }
+    if ($IsWindows) { return "windows" }
+    if ($IsMacOS) { return "macos" }
+    return "linux"
+}
+
+$PlatformMode = Resolve-Platform $PlatformMode
+
 $ScriptPath = $MyInvocation.MyCommand.Path
 $ScriptRoot = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { $null }
 $UsingCurrentCheckout =
@@ -56,10 +101,79 @@ function Ensure-AdminEnv([string]$TargetDir) {
     ) | Set-Content -Path $EnvFile -Encoding UTF8
 }
 
-function Start-Detached([string]$WorkingDir, [string]$FilePath, [string[]]$ArgumentList, [string]$LogName) {
+function Get-RequirementsForProfile([string]$EngineDir) {
+    $items = [System.Collections.Generic.List[string]]::new()
+    $items.Add((Join-Path $EngineDir "requirements\base.txt"))
+    if ($ProfileMode -in @("standard", "desktop")) {
+        $items.Add((Join-Path $EngineDir "requirements\standard.txt"))
+    }
+    if ($ProfileMode -eq "desktop") {
+        $items.Add((Join-Path $EngineDir "requirements\desktop-common.txt"))
+        $items.Add((Join-Path $EngineDir "requirements\platform-$PlatformMode.txt"))
+    }
+    return $items
+}
+
+function Invoke-DesktopPreflight {
+    if ($ProfileMode -ne "desktop") {
+        return
+    }
+
+    if ($PlatformMode -eq "macos") {
+        Write-Step "macOS desktop preflight"
+        $SwiftReady = [bool](Get-Command swiftc -ErrorAction SilentlyContinue)
+        $OsascriptReady = [bool](Get-Command osascript -ErrorAction SilentlyContinue)
+        Write-Host ("[{0}] swiftc / Xcode Command Line Tools" -f ($(if ($SwiftReady) { "ok" } else { "missing" })))
+        Write-Host ("[{0}] osascript / Apple Events bridge" -f ($(if ($OsascriptReady) { "ok" } else { "missing" })))
+        Write-Host "[manual] Accessibility permission"
+        Write-Host "[manual] Screen Recording permission"
+        Write-Host "[manual] Input Monitoring / synthetic input permission"
+        if (-not $SwiftReady) {
+            Write-Warning "swiftc not found. The macOS AX helper will not compile until Xcode Command Line Tools are installed."
+        }
+    }
+
+    if ($PlatformMode -eq "linux") {
+        Write-Step "Linux desktop preflight"
+        foreach ($candidate in @("gdbus", "dbus-send", "xdotool", "wmctrl", "grim", "gnome-screenshot")) {
+            $Found = [bool](Get-Command $candidate -ErrorAction SilentlyContinue)
+            Write-Host ("[{0}] {1}" -f ($(if ($Found) { "ok" } else { "missing" })), $candidate)
+        }
+        $SessionType = if ($env:XDG_SESSION_TYPE) { $env:XDG_SESSION_TYPE } else { "unset" }
+        Write-Host ("[{0}] XDG_SESSION_TYPE={1}" -f ($(if ($env:XDG_SESSION_TYPE) { "info" } else { "unknown" })), $SessionType)
+        Write-Host "[manual] portal / compositor screenshot permission"
+        Write-Host "[manual] AT-SPI accessibility bus availability"
+        if ($env:XDG_SESSION_TYPE -eq "wayland") {
+            Write-Warning "Wayland session detected. Screenshot/input fallbacks may require portal/compositor support."
+        }
+    }
+}
+
+function Start-Detached([string]$WorkingDir, [string]$FilePath, [string[]]$ArgumentList, [string]$LogName, [hashtable]$Environment = @{}) {
     $StdOut = Join-Path $LogDir "$LogName.stdout.log"
     $StdErr = Join-Path $LogDir "$LogName.stderr.log"
-    Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDir -RedirectStandardOutput $StdOut -RedirectStandardError $StdErr | Out-Null
+    $PreviousEnvironment = @{}
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $PreviousEnvironment[$entry.Key] = [Environment]::GetEnvironmentVariable($entry.Key, "Process")
+        [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, "Process")
+    }
+    try {
+        $Process = Start-Process `
+            -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -WorkingDirectory $WorkingDir `
+            -RedirectStandardOutput $StdOut `
+            -RedirectStandardError $StdErr `
+            -PassThru
+    } finally {
+        foreach ($entry in $PreviousEnvironment.GetEnumerator()) {
+            [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Process")
+        }
+    }
+    if (-not $Process) {
+        throw "Failed to start process '$FilePath'."
+    }
+    Write-Host ("Started {0} (PID {1})" -f $LogName, $Process.Id)
 }
 
 New-Item -ItemType Directory -Force -Path $Workspace, $LogDir | Out-Null
@@ -69,7 +183,9 @@ if (-not $UsingCurrentCheckout) {
     Ensure-Command git "Install Git first: https://git-scm.com/downloads"
 }
 Ensure-Command python "Install Python 3.11+ first."
-Ensure-Command npm "Install Node.js 20+ first."
+if ($ServicesMode -eq "engine+admin") {
+    Ensure-Command npm "Install Node.js 20+ first."
+}
 
 if ($UsingCurrentCheckout) {
     Write-Step "Using current checkout"
@@ -88,28 +204,50 @@ if ($env:V8_AGENT_OS_BOOTSTRAP_DRY_RUN -eq "1") {
     Write-Host "Repo dir   : $RepoDir"
     Write-Host "Workspace  : $Workspace"
     Write-Host "Log dir    : $LogDir"
+    Write-Host "Profile    : $ProfileMode"
+    Write-Host "Services   : $ServicesMode"
+    Write-Host "Platform   : $PlatformMode"
+    Write-Host "Requirements:"
+    Get-RequirementsForProfile $EngineDir | ForEach-Object { Write-Host " - $_" }
     exit 0
 }
+
+Invoke-DesktopPreflight
 
 Write-Step "Preparing engine"
 if (-not (Test-Path (Join-Path $EngineDir ".venv"))) {
     python -m venv (Join-Path $EngineDir ".venv")
 }
-& (Join-Path $EngineDir ".venv\Scripts\python.exe") -m pip install --upgrade pip | Out-Host
-& (Join-Path $EngineDir ".venv\Scripts\python.exe") -m pip install -r (Join-Path $EngineDir "requirements.txt") | Out-Host
+$PythonExe = Join-Path $EngineDir ".venv\Scripts\python.exe"
+& $PythonExe -m pip install --upgrade pip | Out-Host
+foreach ($RequirementFile in Get-RequirementsForProfile $EngineDir) {
+    if (Test-Path $RequirementFile) {
+        & $PythonExe -m pip install -r $RequirementFile | Out-Host
+    }
+}
 
-Write-Step "Preparing admin"
-npm --prefix $AdminDir install | Out-Host
-Ensure-AdminEnv $AdminDir
+if ($ServicesMode -eq "engine+admin") {
+    Write-Step "Preparing admin"
+    npm --prefix $AdminDir install | Out-Host
+    Ensure-AdminEnv $AdminDir
+}
 
-Write-Step "Starting engine and admin"
-Start-Detached $EngineDir (Join-Path $EngineDir ".venv\Scripts\python.exe") @("main.py") "engine"
-Start-Detached $AdminDir "npm.cmd" @("run", "dev") "admin"
+Write-Step "Starting services"
+Start-Detached $EngineDir $PythonExe @("main.py") "engine" @{ ENGINE_STARTUP_PROFILE = $ProfileMode }
+if ($ServicesMode -eq "engine+admin") {
+    Start-Detached $AdminDir "npm.cmd" @("run", "dev") "admin"
+}
 
 Write-Host ""
 Write-Host "V8 Agent OS is starting." -ForegroundColor Green
-Write-Host "Source: $RepoSource"
-Write-Host "Engine: http://127.0.0.1:9530"
-Write-Host "Admin : http://127.0.0.1:9528"
-Write-Host "Web   : install and package separately from apps/v8-agent-os-web"
-Write-Host "Logs  : $LogDir"
+Write-Host "Source  : $RepoSource"
+Write-Host "Profile : $ProfileMode"
+Write-Host "Platform: $PlatformMode"
+Write-Host "Engine  : http://127.0.0.1:9530"
+if ($ServicesMode -eq "engine+admin") {
+    Write-Host "Admin   : http://127.0.0.1:9528"
+} else {
+    Write-Host "Admin   : skipped"
+}
+Write-Host "Web     : install and package separately from apps/v8-agent-os-web"
+Write-Host "Logs    : $LogDir"

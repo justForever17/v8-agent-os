@@ -171,9 +171,11 @@ class CapabilityRegistry:
         try:
             from core.storage import storage
 
+            current = storage.get_runtime_registry_config()
             storage.save_runtime_registry_config(
                 {
-                    "version": 1,
+                    "version": int(current.get("version") or 1),
+                    "startupProfile": str(current.get("startupProfile") or "standard"),
                     "policies": {kind: policy.as_dict() for kind, policy in self._policies.items()},
                 }
             )

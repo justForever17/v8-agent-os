@@ -640,7 +640,7 @@ def download_media_for_vision(
     analysis_prompt: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Download platform media to local files so vision_media_analyzer can inspect stable local inputs."""
+    """Resolve share pages and download remote media to stable local files, primarily for videos and remote media artifacts."""
 
     raw_input = _safe_text(url)
     normalized_url = _extract_first_url(raw_input)

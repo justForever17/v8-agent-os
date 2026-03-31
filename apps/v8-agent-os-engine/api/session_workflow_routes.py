@@ -1,4 +1,5 @@
 import uuid
+import importlib
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +27,6 @@ from erc.runtime_stability import runtime_stability_service
 from erc.workflow_ledger import workflow_ledger_service
 from erc.workflow_projection import workflow_projection_service
 from core.storage import storage
-from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
@@ -34,6 +34,10 @@ from runtimes.memory.scope_resolution import (
 
 
 router = APIRouter()
+
+
+def _memory_runtime():
+    return importlib.import_module("runtimes.memory.runtime").memory_runtime
 
 
 def _format_db_session_messages(rows: list[dict]) -> list[dict]:
@@ -412,7 +416,7 @@ async def get_session_runtime_artifacts(session_id: str, run_id: str | None = No
         return {
             "artifacts": [
                 normalize_artifact_record(item)
-                for item in memory_runtime.list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
+                for item in _memory_runtime().list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
             ],
         }
     except Exception as e:
@@ -425,7 +429,7 @@ async def list_runtime_artifacts(session_id: str | None = None, run_id: str | No
         return {
             "artifacts": [
                 normalize_artifact_record(item)
-                for item in memory_runtime.list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
+                for item in _memory_runtime().list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
             ],
         }
     except Exception as e:
@@ -435,7 +439,7 @@ async def list_runtime_artifacts(session_id: str | None = None, run_id: str | No
 @router.get("/artifacts/{artifact_id}")
 async def get_runtime_artifact(artifact_id: str):
     try:
-        artifact = memory_runtime.get_artifact(artifact_id)
+        artifact = _memory_runtime().get_artifact(artifact_id)
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
         return normalize_artifact_record(artifact)
@@ -448,7 +452,7 @@ async def get_runtime_artifact(artifact_id: str):
 @router.get("/artifacts/{artifact_id}/content")
 async def get_runtime_artifact_content(artifact_id: str):
     try:
-        artifact = memory_runtime.get_artifact(artifact_id)
+        artifact = _memory_runtime().get_artifact(artifact_id)
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
         normalized = normalize_artifact_record(artifact)

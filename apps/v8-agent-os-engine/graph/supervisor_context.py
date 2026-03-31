@@ -250,7 +250,7 @@ def build_supervisor_system_content(
         "do not guess and do not fabricate a result. "
         "Clearly explain what confirmation, credential, or parameter is missing. "
         "For irreversible or sensitive work, prefer runtime-managed approval and handoff flows instead of trying to continue blindly.\n"
-        "When web_read or web_extract returns little text but includes media, analysisHints, or visionCandidates, "
+        "When `web_fetch` returns little text but includes media, analysisHints, or visionCandidates, "
         "prefer using vision_media_analyzer with the candidate sourceUrl instead of forcing a pure text summary.\n"
         "When a platform media page hides the real media source, or the URL likely requires browser cookies/session handling, "
         "prefer download_media_for_vision first so the media can be analyzed as a stable local file.\n"

@@ -354,7 +354,7 @@ const ADMIN_TEXT_MAP: Record<string, LocalizedText> = {
     "管理台地址": { "zh-CN": "管理台地址", en: "Admin URL" },
     "影响网页端连接管理台接口的地址。": { "zh-CN": "影响网页端连接管理台接口的地址。", en: "Affects how Web connects to Admin APIs." },
     "桌面依赖": { "zh-CN": "桌面依赖", en: "Desktop stack" },
-    "影响 OCR、OmniParser 和桌面自动化能力。": { "zh-CN": "影响 OCR、OmniParser 和桌面自动化能力。", en: "Affects OCR, OmniParser, and desktop automation." },
+    "影响 OCR 和桌面自动化能力。": { "zh-CN": "影响 OCR 和桌面自动化能力。", en: "Affects OCR and desktop automation." },
     "浏览器来源": { "zh-CN": "浏览器来源", en: "Browser origins" },
     "控制远端网页、局域网地址和反向代理域名的跨域访问。": { "zh-CN": "控制远端网页、局域网地址和反向代理域名的跨域访问。", en: "Controls browser access from remote web, LAN addresses, and reverse-proxy domains." },
     "未设置": { "zh-CN": "未设置", en: "Unset" },

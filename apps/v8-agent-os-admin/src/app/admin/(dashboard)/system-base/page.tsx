@@ -36,11 +36,6 @@ type SystemBaseData = {
     desktopTools?: {
         tesseractPath?: string;
         tessdataPrefix?: string;
-        omniParserRoot?: string;
-        omniParserSomModelPath?: string;
-        omniParserCaptionModelPath?: string;
-        omniParserCaptionModelName?: string;
-        omniParserDevice?: string;
     };
     desktopLive?: {
         enabled?: boolean;
@@ -66,7 +61,6 @@ type SystemBaseData = {
     desktopReadiness?: {
         status?: "ready" | "partial" | "missing";
         ocrReady?: boolean;
-        omniParserReady?: boolean;
         imageLocatorReady?: boolean;
         pointLocatorReady?: boolean;
         missingItems?: string[];
@@ -74,11 +68,6 @@ type SystemBaseData = {
     detectedDesktopTools?: {
         tesseractPath?: string;
         tessdataPrefix?: string;
-        omniParserRoot?: string;
-        omniParserSomModelPath?: string;
-        omniParserCaptionModelPath?: string;
-        omniParserCaptionModelName?: string;
-        omniParserDevice?: string;
     };
     dependencyStatus?: Array<{
         id: string;
@@ -214,7 +203,7 @@ export default function SystemBasePage() {
             {
                 label: t("桌面依赖"),
                 value: desktopStatusLabel(readiness?.status, t),
-                description: missingItems.length > 0 ? missingItems.slice(0, 2).join("，") : t("影响 OCR、OmniParser 和桌面自动化能力。"),
+                description: missingItems.length > 0 ? missingItems.slice(0, 2).join("，") : t("影响 OCR 和桌面自动化能力。"),
             },
             { label: t("浏览器来源"), value: formatOriginsSummary(bridge.allowedOrigins, t), description: t("控制远端网页、局域网地址和反向代理域名的跨域访问。") },
         ];
@@ -251,11 +240,6 @@ export default function SystemBasePage() {
                 ...(current.desktopTools || {}),
                 tesseractPath: detected.tesseractPath || current.desktopTools?.tesseractPath || "",
                 tessdataPrefix: detected.tessdataPrefix || current.desktopTools?.tessdataPrefix || "",
-                omniParserRoot: detected.omniParserRoot || current.desktopTools?.omniParserRoot || "",
-                omniParserSomModelPath: detected.omniParserSomModelPath || current.desktopTools?.omniParserSomModelPath || "",
-                omniParserCaptionModelPath: detected.omniParserCaptionModelPath || current.desktopTools?.omniParserCaptionModelPath || "",
-                omniParserCaptionModelName: detected.omniParserCaptionModelName || current.desktopTools?.omniParserCaptionModelName || "",
-                omniParserDevice: detected.omniParserDevice || current.desktopTools?.omniParserDevice || "",
             },
         }));
     };
@@ -278,16 +262,6 @@ export default function SystemBasePage() {
     const desktopReadiness = envelope.data.desktopReadiness || {};
     const detectedDesktopTools = envelope.data.detectedDesktopTools || {};
     const dependencyStatus = envelope.data.dependencyStatus || [];
-    const omniParserConfigured = Boolean(
-        desktopTools.omniParserRoot
-        || desktopTools.omniParserSomModelPath
-        || desktopTools.omniParserCaptionModelPath
-        || desktopTools.omniParserCaptionModelName
-        || desktopTools.omniParserDevice
-        || detectedDesktopTools.omniParserRoot
-        || detectedDesktopTools.omniParserSomModelPath
-        || detectedDesktopTools.omniParserCaptionModelPath
-    );
     const dependencyGroups = [
         { key: "core", title: lt("核心必需", "Core required") },
         { key: "desktop", title: lt("桌面能力", "Desktop features") },
@@ -480,9 +454,6 @@ export default function SystemBasePage() {
                                     {t(lt("OCR：", "OCR:"))}{desktopReadiness.ocrReady ? t("已就绪") : t(lt("未就绪", "Not ready"))}
                                 </div>
                                 <div className="rounded-xl border border-current/10 bg-white/70 px-3 py-2">
-                                    {t(lt("OmniParser（可选）：", "OmniParser (optional):"))}{desktopReadiness.omniParserReady ? t("已就绪") : t(lt("未就绪", "Not ready"))}
-                                </div>
-                                <div className="rounded-xl border border-current/10 bg-white/70 px-3 py-2">
                                     {t(lt("图像定位：", "Image locator:"))}{desktopReadiness.imageLocatorReady ? t("已就绪") : t(lt("未就绪", "Not ready"))}
                                 </div>
                             </div>
@@ -541,120 +512,6 @@ export default function SystemBasePage() {
                             </div>
                         </div>
 
-                        <AdvancedSection
-                            title={t(lt("OmniParser（可选本地方案）", "OmniParser (optional local path)"))}
-                            description={t(lt("只有在你明确要使用本地 OmniParser 时再展开。默认更推荐直接使用多模态 API，减少本地模型、设备和仓库维护负担。", "Only expand this section when you truly need local OmniParser. Multimodal APIs are still the recommended default for lower maintenance."))}
-                            defaultOpen={omniParserConfigured}
-                        >
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="rounded-2xl border border-sky-200 bg-sky-50/80 px-4 py-3 text-xs leading-5 text-sky-900">
-                                    <div className="font-medium">{t(lt("推荐策略", "Recommended path"))}</div>
-                                    <div className="mt-1">
-                                        {t(lt("普通使用优先走多模态 API。只有当你需要离线、本地化、可控设备推理，或明确在做 OmniParser benchmark / doctor 时，再配置下面这些字段。", "Prefer multimodal APIs for day-to-day use. Configure the fields below only for offline, local, or tightly controlled OmniParser workflows."))}
-                                    </div>
-                                </div>
-
-                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
-                                    <div className="mb-3 text-sm font-medium text-slate-900">{t(lt("当前检测到的 OmniParser 环境值", "Detected OmniParser values"))}</div>
-                                    <div className="grid gap-3 text-xs text-slate-600 md:grid-cols-2">
-                                        <div className="space-y-1">
-                                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">{t(lt("根目录", "Root"))}</div>
-                                            <div className="break-all">{detectedDesktopTools.omniParserRoot || t(lt("未检测到", "Not detected"))}</div>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">{t(lt("SOM 模型", "SOM model"))}</div>
-                                            <div className="break-all">{detectedDesktopTools.omniParserSomModelPath || t(lt("未检测到", "Not detected"))}</div>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">{t(lt("Caption 模型", "Caption model"))}</div>
-                                            <div className="break-all">{detectedDesktopTools.omniParserCaptionModelPath || t(lt("未检测到", "Not detected"))}</div>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">{t(lt("设备 / 模型名", "Device / model"))}</div>
-                                            <div className="break-all">
-                                                {[
-                                                    detectedDesktopTools.omniParserDevice,
-                                                    detectedDesktopTools.omniParserCaptionModelName,
-                                                ].filter(Boolean).join(" / ") || t(lt("未检测到", "Not detected"))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2 md:col-span-2">
-                                        <Label>{t(lt("OmniParser 根目录", "OmniParser root"))}</Label>
-                                        <Input
-                                            value={desktopTools.omniParserRoot || ""}
-                                            onChange={(event) =>
-                                                updateData((current) => ({
-                                                    ...current,
-                                                    desktopTools: { ...(current.desktopTools || {}), omniParserRoot: event.target.value },
-                                                }))
-                                            }
-                                            placeholder="D:\\models\\OmniParser"
-                                        />
-                                        <div className="text-xs leading-5 text-slate-500">{t(lt("填写 OmniParser 仓库根目录。代码会检查这里是否存在 util\\\\utils.py。", "Enter the OmniParser repo root. The runtime checks whether util\\\\utils.py exists here."))}</div>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>{t(lt("SOM 模型路径", "SOM model path"))}</Label>
-                                        <Input
-                                            value={desktopTools.omniParserSomModelPath || ""}
-                                            onChange={(event) =>
-                                                updateData((current) => ({
-                                                    ...current,
-                                                    desktopTools: { ...(current.desktopTools || {}), omniParserSomModelPath: event.target.value },
-                                                }))
-                                            }
-                                            placeholder="D:\\models\\omniparser\\som.pt"
-                                        />
-                                        <div className="text-xs leading-5 text-slate-500">{t(lt("本地检测模型权重路径，不装 OmniParser 时留空即可。", "Path to the local detection weights. Leave blank if OmniParser is not installed."))}</div>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>{t(lt("Caption 模型路径", "Caption model path"))}</Label>
-                                        <Input
-                                            value={desktopTools.omniParserCaptionModelPath || ""}
-                                            onChange={(event) =>
-                                                updateData((current) => ({
-                                                    ...current,
-                                                    desktopTools: { ...(current.desktopTools || {}), omniParserCaptionModelPath: event.target.value },
-                                                }))
-                                            }
-                                            placeholder="D:\\models\\florence2"
-                                        />
-                                        <div className="text-xs leading-5 text-slate-500">{t(lt("通常填写本地模型目录；如填写目录，应包含 config.json、generation_config.json、model.safetensors。", "Usually a local model directory. If you point to a folder, it should include config.json, generation_config.json, and model.safetensors."))}</div>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>{t(lt("Caption 模型名称", "Caption model name"))}</Label>
-                                        <Input
-                                            value={desktopTools.omniParserCaptionModelName || ""}
-                                            onChange={(event) =>
-                                                updateData((current) => ({
-                                                    ...current,
-                                                    desktopTools: { ...(current.desktopTools || {}), omniParserCaptionModelName: event.target.value },
-                                                }))
-                                            }
-                                            placeholder="florence2"
-                                        />
-                                        <div className="text-xs leading-5 text-slate-500">{t(lt("模型类型名。当前代码默认回退就是 florence2，不确定时保持这个值最稳。", "Model family name. The current fallback is florence2, so keeping that value is the safest default."))}</div>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>{t(lt("设备", "Device"))}</Label>
-                                        <Input
-                                            value={desktopTools.omniParserDevice || ""}
-                                            onChange={(event) =>
-                                                updateData((current) => ({
-                                                    ...current,
-                                                    desktopTools: { ...(current.desktopTools || {}), omniParserDevice: event.target.value },
-                                                }))
-                                            }
-                                            placeholder={t(lt("cpu 或 cuda", "cpu or cuda"))}
-                                        />
-                                        <div className="text-xs leading-5 text-slate-500">{t(lt("有稳定 CUDA 环境再填 cuda；不确定时先填 cpu，避免本地推理环境报错。", "Use cuda only when your CUDA setup is stable. Otherwise keep cpu to avoid local inference errors."))}</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </AdvancedSection>
                     </div>
                 </ConfigCard>
 

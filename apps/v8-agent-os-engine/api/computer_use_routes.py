@@ -12,10 +12,15 @@ from .models import (
     ComputerUseWaitPayload,
     ComputerUseWindowQueryPayload,
 )
-from runtimes.computer_use.runtime import computer_use_runtime
 
 
 router = APIRouter()
+
+
+def _computer_use_runtime():
+    from runtimes.computer_use.runtime import computer_use_runtime
+
+    return computer_use_runtime
 
 
 def _compat_invocation_metadata(endpoint: str) -> dict:
@@ -32,7 +37,7 @@ def _compat_invocation_metadata(endpoint: str) -> dict:
 @router.get("/computer-use/availability")
 async def get_computer_use_availability():
     try:
-        return computer_use_runtime.availability()
+        return _computer_use_runtime().availability()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -40,7 +45,7 @@ async def get_computer_use_availability():
 @router.post("/computer-use/apps")
 async def list_computer_use_apps(payload: ComputerUseAppQueryPayload):
     try:
-        return computer_use_runtime.list_apps(
+        return _computer_use_runtime().list_apps(
             query=payload.query,
             limit=max(1, min(payload.limit, 100)),
             include_running=payload.include_running,
@@ -53,7 +58,7 @@ async def list_computer_use_apps(payload: ComputerUseAppQueryPayload):
 @router.post("/computer-use/windows")
 async def list_computer_use_windows(payload: ComputerUseWindowQueryPayload):
     try:
-        return computer_use_runtime.list_windows(
+        return _computer_use_runtime().list_windows(
             title_filter=payload.title_filter,
             limit=max(1, min(payload.limit, 50)),
         )
@@ -64,7 +69,7 @@ async def list_computer_use_windows(payload: ComputerUseWindowQueryPayload):
 @router.post("/computer-use/observe")
 async def observe_computer_use(payload: ComputerUseObservePayload):
     try:
-        return computer_use_runtime.observe(
+        return _computer_use_runtime().observe(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",
@@ -86,7 +91,7 @@ async def observe_computer_use(payload: ComputerUseObservePayload):
 @router.post("/computer-use/find-elements")
 async def find_computer_use_elements(payload: ComputerUseElementQueryPayload):
     try:
-        return computer_use_runtime.find_elements(
+        return _computer_use_runtime().find_elements(
             window_title=payload.window_title,
             window_handle=payload.window_handle,
             name=payload.name,
@@ -104,7 +109,7 @@ async def find_computer_use_elements(payload: ComputerUseElementQueryPayload):
 @router.post("/computer-use/actions/click")
 async def computer_use_click(payload: ComputerUseClickPayload):
     try:
-        return computer_use_runtime.click(
+        return _computer_use_runtime().click(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",
@@ -130,7 +135,7 @@ async def computer_use_click(payload: ComputerUseClickPayload):
 @router.post("/computer-use/actions/type")
 async def computer_use_type(payload: ComputerUseTypePayload):
     try:
-        return computer_use_runtime.type_text(
+        return _computer_use_runtime().type_text(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",
@@ -157,7 +162,7 @@ async def computer_use_type(payload: ComputerUseTypePayload):
 @router.post("/computer-use/actions/hotkey")
 async def computer_use_hotkey(payload: ComputerUseHotkeyPayload):
     try:
-        return computer_use_runtime.hotkey(
+        return _computer_use_runtime().hotkey(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",
@@ -177,7 +182,7 @@ async def computer_use_hotkey(payload: ComputerUseHotkeyPayload):
 @router.post("/computer-use/actions/scroll")
 async def computer_use_scroll(payload: ComputerUseScrollPayload):
     try:
-        return computer_use_runtime.scroll(
+        return _computer_use_runtime().scroll(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",
@@ -198,7 +203,7 @@ async def computer_use_scroll(payload: ComputerUseScrollPayload):
 @router.post("/computer-use/actions/wait")
 async def computer_use_wait(payload: ComputerUseWaitPayload):
     try:
-        return computer_use_runtime.wait_for_element(
+        return _computer_use_runtime().wait_for_element(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",
@@ -225,7 +230,7 @@ async def computer_use_wait(payload: ComputerUseWaitPayload):
 @router.post("/computer-use/actions/screenshot")
 async def computer_use_screenshot(payload: ComputerUseScreenshotPayload):
     try:
-        return computer_use_runtime.capture_screenshot(
+        return _computer_use_runtime().capture_screenshot(
             session_id=payload.session_id,
             run_id=payload.run_id,
             user_id=payload.user_id or "anonymous",

@@ -3263,7 +3263,7 @@ class WindowsUIADriver:
                 "status": "focus_verified",
                 "reason": "点击后目标控件或其窗口已获得焦点。",
                 "details": details,
-                "level": "verified",
+                "level": "soft_verified",
             }
         return {
             "passed": True,
@@ -3289,7 +3289,7 @@ class WindowsUIADriver:
                 "status": "focus_verified",
                 "reason": f"{action_type} 后目标窗口保持焦点。",
                 "details": details,
-                "level": "verified",
+                "level": "soft_verified",
             }
         return {
             "passed": True,

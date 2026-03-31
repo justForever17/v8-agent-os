@@ -641,6 +641,7 @@ class RPATraceCompiler:
         verification = dict(step.get("verification") or {})
         recovery = dict(step.get("recovery") or {})
         scene = dict(step.get("scene") or {})
+        execution = dict(signals.get("execution") or metadata.get("executionRoute") or {})
         binding = dict(signals.get("binding") or {})
         preflight = dict(signals.get("preflight") or {})
         verification_signal = dict(signals.get("verification") or {})
@@ -701,6 +702,14 @@ class RPATraceCompiler:
                 or ("visual_fallback" if str(recovery.get("strategy") or "").strip().lower() == "visual" else "semantic_path"),
                 "fallbackOrder": list(recovery_signal.get("fallbackOrder") or recovery.get("fallbackOrder") or []),
             },
+            "execution": {
+                "route": str(execution.get("route") or "").strip().lower() or None,
+                "nativeCommand": bool(execution.get("nativeCommand")),
+                "structuredAccessibility": bool(execution.get("structuredAccessibility")),
+                "visualLocator": bool(execution.get("visualLocator")),
+                "coordinateFallback": bool(execution.get("coordinateFallback")),
+                "humanApprovalRequired": bool(execution.get("humanApprovalRequired")),
+            },
             "failureCategory": failure_category,
         }
 
@@ -715,6 +724,7 @@ class RPATraceCompiler:
         binding = dict(trace_signals.get("binding") or {})
         preflight = dict(trace_signals.get("preflight") or {})
         recovery = dict(trace_signals.get("recovery") or {})
+        execution = dict(trace_signals.get("execution") or {})
         failure_category = str(trace_signals.get("failureCategory") or "unknown")
         calibration_runs = int(calibration.get("runs") or 0)
         decision_reason_group = "compile_rule"
@@ -736,6 +746,7 @@ class RPATraceCompiler:
                 "binding": binding,
                 "preflight": preflight,
                 "recovery": recovery,
+                "execution": execution,
                 "failureCategory": failure_category,
                 "assessmentStatus": assessment_status,
             },
@@ -792,12 +803,19 @@ class RPATraceCompiler:
         visual_fallback_steps = 0
         controlled_fallback_steps = 0
         strict_verification_steps = 0
+        execution_route_counts: Dict[str, int] = {}
+        coordinate_fallback_steps = 0
+        human_approval_steps = 0
+        structured_accessibility_steps = 0
+        native_command_steps = 0
+        visual_locator_steps = 0
         failure_category_counts: Dict[str, int] = {}
         for step in steps:
             trace_signals = self._normalize_trace_signals(step)
             binding = dict(trace_signals.get("binding") or {})
             preflight = dict(trace_signals.get("preflight") or {})
             recovery = dict(trace_signals.get("recovery") or {})
+            execution = dict(trace_signals.get("execution") or {})
             if float(binding.get("bindingConfidence") or 0.0) < 0.6:
                 binding_low_confidence += 1
             if bool(preflight.get("blockerDetected")):
@@ -816,6 +834,19 @@ class RPATraceCompiler:
                 controlled_fallback_steps += 1
             if bool(recovery.get("strictVerificationApplied")):
                 strict_verification_steps += 1
+            route = str(execution.get("route") or "").strip().lower()
+            if route:
+                execution_route_counts[route] = int(execution_route_counts.get(route) or 0) + 1
+            if bool(execution.get("coordinateFallback")) or route == "coordinate_fallback":
+                coordinate_fallback_steps += 1
+            if bool(execution.get("humanApprovalRequired")) or route == "human_approval":
+                human_approval_steps += 1
+            if bool(execution.get("structuredAccessibility")) or route == "structured_accessibility":
+                structured_accessibility_steps += 1
+            if bool(execution.get("nativeCommand")) or route == "native_command":
+                native_command_steps += 1
+            if bool(execution.get("visualLocator")) or route == "visual_locator":
+                visual_locator_steps += 1
             failure_category = str(trace_signals.get("failureCategory") or "unknown")
             failure_category_counts[failure_category] = int(failure_category_counts.get(failure_category) or 0) + 1
         return {
@@ -836,6 +867,15 @@ class RPATraceCompiler:
                 "strictVerificationSteps": strict_verification_steps,
                 "failureCategoryCounts": failure_category_counts,
             },
+            "executionSummary": {
+                "routesUsed": sorted(execution_route_counts.keys()),
+                "routeCounts": execution_route_counts,
+                "coordinateFallbackSteps": coordinate_fallback_steps,
+                "humanApprovalSteps": human_approval_steps,
+                "structuredAccessibilitySteps": structured_accessibility_steps,
+                "nativeCommandSteps": native_command_steps,
+                "visualLocatorSteps": visual_locator_steps,
+            },
         }
 
     def _assessment_for_step(
@@ -852,6 +892,8 @@ class RPATraceCompiler:
         metadata = dict(step.get("metadata") or {}) if isinstance(step.get("metadata"), dict) else {}
         trace_phase = str(step.get("phase") or metadata.get("tracePhase") or "action").strip().lower() or "action"
         trace_signals = self._normalize_trace_signals(step)
+        execution = dict(trace_signals.get("execution") or metadata.get("executionRoute") or {})
+        execution_route = str(execution.get("route") or "").strip().lower()
         status = str(metadata.get("status") or "").strip().lower()
         reasons: List[str] = []
         score = 0.52
@@ -917,13 +959,16 @@ class RPATraceCompiler:
         verification_level = str(verification.get("level") or "").strip().lower()
         if verification_level == "verified":
             score += 0.2
+        elif verification_level == "executed_only":
+            score -= 0.12
+            reasons.append("动作只确认执行过，缺少稳定业务结果证据")
         elif verification_level == "soft_verified":
-            if verification_status == "soft_verified_editable_target":
+            if verification_status == "focus_verified" and compiled_use in {"focus_window", "open_app"}:
+                score += 0.12
+                reasons.append("窗口焦点已确认，按窗口级软验证保守接受")
+            elif verification_status == "soft_verified_editable_target":
                 score += 0.14
                 reasons.append("结构化验证为原生输入控件的保守确认")
-            elif verification_status == "coordinate_click_executed":
-                score += 0.08
-                reasons.append("依赖坐标回退完成点击，建议结合业务结果继续观察")
             else:
                 score += 0.06
                 reasons.append("结构化验证仅达到软确认")
@@ -935,6 +980,16 @@ class RPATraceCompiler:
             reasons.append(f"结构化验证未通过: {verification_status or 'unknown'}")
         elif verification_passed is True:
             score += 0.16
+        if execution_route == "coordinate_fallback":
+            score -= 0.1
+            reasons.append("执行路径依赖坐标兜底，跨端复现与提级应更保守")
+        elif execution_route == "human_approval":
+            score -= 0.08
+            reasons.append("执行路径依赖人工审批，不能视为稳定自动化主链")
+        elif execution_route == "structured_accessibility":
+            score += 0.03
+        elif execution_route == "native_command":
+            score += 0.04
 
         if status in {"completed", "success"}:
             score += 0.05
@@ -1305,6 +1360,7 @@ class RPATraceCompiler:
                 "bindingSummary": summaries["bindingSummary"],
                 "preflightSummary": summaries["preflightSummary"],
                 "recoverySummary": summaries["recoverySummary"],
+                "executionSummary": summaries["executionSummary"],
                 "profileAugmentedSteps": profile_augmented_steps,
                 "profileAugmentedRatio": round(profile_augmented_ratio, 3),
                 "highRiskSteps": high_risk_steps,
@@ -2283,6 +2339,7 @@ class RPATraceCompiler:
                     robot=robot_semantic,
                     metadata={
                         **(dict(step.get("metadata") or {}) if isinstance(step.get("metadata"), dict) else {}),
+                        "executionRoute": dict((dict(step.get("metadata") or {}) if isinstance(step.get("metadata"), dict) else {}).get("executionRoute") or {}),
                         "traceStepId": step.get("stepId"),
                         "traceIndex": step.get("index"),
                         "traceSchemaVersion": trace_schema_version,
@@ -2335,6 +2392,7 @@ class RPATraceCompiler:
                 "bindingSummary": trace_summaries["bindingSummary"],
                 "preflightSummary": trace_summaries["preflightSummary"],
                 "recoverySummary": trace_summaries["recoverySummary"],
+                "executionSummary": trace_summaries["executionSummary"],
                 "mergeMajorityThreshold": dict(trace.get("metadata") or {}).get("mergeMajorityThreshold"),
                 "droppedOptionalSteps": list(dict(trace.get("metadata") or {}).get("droppedOptionalSteps") or []),
                 "compileIssues": compile_issues,
@@ -2743,6 +2801,7 @@ class RPATraceCompiler:
                 "decisionScope": metadata.get("decisionScope"),
                 "decisionReasonGroup": metadata.get("decisionReasonGroup"),
                 "decisionSignals": dict(metadata.get("decisionSignals") or {}),
+                "executionSummary": dict(metadata.get("executionSummary") or {}),
                 "autoDiscoveredVariableKeys": auto_keys,
                 "targetStrategyKeys": target_strategy_keys,
                 "targetStrategyProfiles": target_strategy_profiles,
@@ -2829,6 +2888,9 @@ class RPATraceCompiler:
             promotion_gate,
             metadata=dict(template_payload.get("metadata") or {}),
         )
+        template_payload["metadata"]["executionRouteSummary"] = dict(
+            (template_payload.get("metadata") or {}).get("executionSummary") or {}
+        )
         template_payload["metadata"]["promotionGateVersion"] = promotion_gate.get("version")
         governance = self._template_governance(template_payload=template_payload, script_payload=script_payload)
         template_payload["governance"] = governance
@@ -2873,6 +2935,9 @@ class RPATraceCompiler:
         next_metadata["templateEnvironmentSignalSummary"] = draft_environment_signal_summary(
             template_promotion_gate,
             metadata=dict(template_payload.get("metadata") or {}),
+        )
+        next_metadata["templateExecutionRouteSummary"] = dict(
+            (template_payload.get("metadata") or {}).get("executionSummary") or {}
         )
         next_metadata["templateGovernance"] = template_governance
         next_metadata["templateGovernanceStage"] = template_governance.get("stage")

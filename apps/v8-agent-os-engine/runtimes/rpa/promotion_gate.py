@@ -171,6 +171,8 @@ def _step_gate_issues(
         issues.append(f"{step_label}: 坐标动作缺少页面身份约束")
     if verification_status == "focus_verified" and _normalize_status(primitive.get("id")) != "window.focus":
         issues.append(f"{step_label}: verification 仅证明聚焦成功，不足以支持动作提级")
+    # 兼容旧 trace / draft：当前主链已将 coordinate_*_executed 统一归到 executed_only，
+    # 这里继续拦截 soft_verified 只是为了防止历史载荷绕过 promotion gate。
     if verification_level == "soft_verified" and verification_status in {
         "soft_verified_target_only",
         "coordinate_click_executed",

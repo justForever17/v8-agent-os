@@ -148,9 +148,6 @@ from runtimes.computer_use.types import (
     ComputerUseVerification,
 )
 
-# 历史兼容别名：runtime 主链已统一按 DesktopDriverError 收口，
-# 旧分支中残留的 WindowsUIADriverError 名称继续映射到通用桌面错误。
-WindowsUIADriverError = DesktopDriverError
 from runtimes.computer_use.verification import normalize_verification_payload
 
 
@@ -1315,7 +1312,7 @@ class ComputerUseRuntime:
                 break
             time.sleep(0.18)
         if not ready:
-            raise WindowsUIADriverError(
+            raise DesktopDriverError(
                 str((profile.startup_transition_error_message if profile else "") or "启动后的主窗口仍未进入可交互状态。")
             )
         focused = dict(resolved_window or {})
@@ -1368,7 +1365,7 @@ class ComputerUseRuntime:
             return transitioned
         profile = self.app_profiles.get(app_id)
         if profile and str(profile.startup_transition_selector_key or "").strip():
-            raise WindowsUIADriverError(
+            raise DesktopDriverError(
                 str(profile.startup_transition_error_message or "当前窗口尚未进入可交互状态。")
             )
         return current_window
@@ -1455,7 +1452,7 @@ class ComputerUseRuntime:
             resolved["targetPathExpected"] = target_path_probe.get("expectedPath")
             resolved["targetPathMatched"] = bool(target_path_probe.get("matched"))
             if target_path_probe.get("matched") is not True:
-                raise WindowsUIADriverError(
+                raise DesktopDriverError(
                     f"Explorer 未绑定到目标目录。expected={normalized_target_path} actual={target_path_probe.get('actualPath') or 'unknown'}"
                 )
             run_handle.emit(
@@ -1969,13 +1966,7 @@ class ComputerUseRuntime:
         screenshot_missing_tokens = ("截图未显示", "screen does not show", "not visible in screenshot")
         if not any(token in reason for token in screenshot_missing_tokens):
             return False
-        strong_structured_statuses = {
-            "verified",
-            "text_verified",
-            "focus_verified",
-            "coordinate_text_executed",
-            "coordinate_click_executed",
-        }
+        strong_structured_statuses = {"verified", "text_verified", "scroll_verified"}
         return verification.status in strong_structured_statuses
 
     def _is_high_risk_action(self, *, app_id: str | None, action_name: str | None) -> bool:
@@ -2172,7 +2163,7 @@ class ComputerUseRuntime:
         launch_target_path: str | None = None,
     ):
         if not launch_command:
-            raise WindowsUIADriverError("缺少应用启动命令。")
+            raise DesktopDriverError("缺少应用启动命令。")
         normalized_target_path = str(launch_target_path or "").strip()
         if (
             str(app_id or "").strip().lower() == "explorer"
@@ -2425,7 +2416,7 @@ class ComputerUseRuntime:
         elif hasattr(tool, "invoke"):
             result = tool.invoke({"file_path": str(file_path), "prompt": prompt})
         else:
-            raise WindowsUIADriverError("vision fallback 工具不可调用。")
+            raise DesktopDriverError("vision fallback 工具不可调用。")
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=False)
         return str(result)
@@ -3799,7 +3790,7 @@ class ComputerUseRuntime:
         return bool(
             verification.passed
             and verification.level == "verified"
-            and verification.status in {"verified", "text_verified", "focus_verified", "scroll_verified"}
+            and verification.status in {"verified", "text_verified", "scroll_verified"}
         )
 
     def _fast_path_settle_evidence(
@@ -4576,7 +4567,7 @@ class ComputerUseRuntime:
             return "decision"
         if normalized_action in {"wait", "wait_for_element"}:
             return "verification"
-        if verification.level in {"verified", "soft_verified", "review_required", "failed"}:
+        if verification.level in {"verified", "soft_verified", "executed_only", "review_required", "failed"}:
             return "verification"
         return "action"
 
@@ -5026,7 +5017,7 @@ class ComputerUseRuntime:
         search_bounds: List[int] | None,
     ) -> Dict[str, Any]:
         if not locator_candidates:
-            raise WindowsUIADriverError("visual locator 候选为空。")
+            raise DesktopDriverError("visual locator 候选为空。")
         first_empty: Dict[str, Any] | None = None
         first_ambiguous: Dict[str, Any] | None = None
         successful_resolutions: List[Dict[str, Any]] = []
@@ -5107,8 +5098,8 @@ class ComputerUseRuntime:
                 first_empty["locatorChain"] = list(locator_candidates)
             return first_empty
         if errors:
-            raise WindowsUIADriverError(" ; ".join(errors))
-        raise WindowsUIADriverError("visual locator 未返回任何匹配结果。")
+            raise DesktopDriverError(" ; ".join(errors))
+        raise DesktopDriverError("visual locator 未返回任何匹配结果。")
 
     def _resolve_visual_locator_points(
         self,
@@ -5118,9 +5109,9 @@ class ComputerUseRuntime:
     ) -> tuple[List[List[int]], Dict[str, Any]]:
         request = self._visual_locator_request_from_payload(payload, prefix=prefix)
         if not request:
-            raise WindowsUIADriverError("visual locator 请求为空。")
+            raise DesktopDriverError("visual locator 请求为空。")
         if not self.visual_locator_runtime.is_available():
-            raise WindowsUIADriverError("在线视觉定位层当前不可用。")
+            raise DesktopDriverError("在线视觉定位层当前不可用。")
         locator = str(request.get("locator") or "")
         window_handle = payload.get("window_handle") or payload.get("windowHandle")
         window_title = payload.get("window_title") or payload.get("windowTitle")
@@ -5272,7 +5263,7 @@ class ComputerUseRuntime:
                         search_image_path = capture_image_path
                         search_bounds = list(scoped_bounds)
                 else:
-                    raise WindowsUIADriverError(f"visual locator scope 未命中：{scope_locator}")
+                    raise DesktopDriverError(f"visual locator scope 未命中：{scope_locator}")
             except Exception:
                 raise
         try:
@@ -5371,7 +5362,7 @@ class ComputerUseRuntime:
             except Exception:
                 continue
         if not absolute_points:
-            raise WindowsUIADriverError("visual locator 未解析到可用落点。")
+            raise DesktopDriverError("visual locator 未解析到可用落点。")
         return absolute_points, resolved
 
     def _expand_visual_locator_scope_bounds(
@@ -5682,7 +5673,7 @@ class ComputerUseRuntime:
             if absolute_point:
                 absolute_points.append([int(absolute_point[0]), int(absolute_point[1])])
         if not absolute_points:
-            raise WindowsUIADriverError("无法根据坐标锚点解析实际点击坐标。")
+            raise DesktopDriverError("无法根据坐标锚点解析实际点击坐标。")
         return absolute_points, observation, normalized_points, visual_locator_resolution
 
     def _resolve_runtime_click_point(self, payload: Dict[str, Any]) -> tuple[List[int], Dict[str, Any] | None]:
@@ -5697,14 +5688,14 @@ class ComputerUseRuntime:
     ) -> tuple[List[int], Dict[str, Any], str]:
         absolute_points, _, _, visual_locator_resolution = self._resolve_runtime_click_points(payload)
         if not isinstance(visual_locator_resolution, dict):
-            raise WindowsUIADriverError("显式 visual locator 未返回结构化解析结果。")
+            raise DesktopDriverError("显式 visual locator 未返回结构化解析结果。")
         matches = list(visual_locator_resolution.get("matches") or [])
         if not matches:
-            raise WindowsUIADriverError("显式 visual locator 未返回匹配结果。")
+            raise DesktopDriverError("显式 visual locator 未返回匹配结果。")
         primary = dict(matches[0] or {})
         fallback_center = list(absolute_points[0]) if absolute_points else list(primary.get("center") or [])
         if len(fallback_center) != 2:
-            raise WindowsUIADriverError("显式 visual locator 未返回可用中心点。")
+            raise DesktopDriverError("显式 visual locator 未返回可用中心点。")
         strategy = (
             str(
                 payload.get("focus_strategy")
@@ -6242,9 +6233,9 @@ class ComputerUseRuntime:
                 default_strategy="center",
             )
         if not isinstance(start_point, (list, tuple)) or len(start_point) != 2:
-            raise WindowsUIADriverError("drag 动作缺少 start_point。")
+            raise DesktopDriverError("drag 动作缺少 start_point。")
         if not isinstance(end_point, (list, tuple)) or len(end_point) != 2:
-            raise WindowsUIADriverError("drag 动作缺少 end_point。")
+            raise DesktopDriverError("drag 动作缺少 end_point。")
         result = self.driver.drag_between_points(
             start_point=[int(start_point[0]), int(start_point[1])],
             end_point=[int(end_point[0]), int(end_point[1])],
@@ -6302,7 +6293,7 @@ class ComputerUseRuntime:
                 status="coordinate_file_paste_executed",
                 reason="已在目标窗口内容区执行文件粘贴，建议结合文件系统或界面结果继续确认。",
                 details=details,
-                level="soft_verified",
+                level="executed_only",
             )
         if action_type == "type_text" and (
             bool(target_metadata.get("coordinateFallback")) or text_input_status == "coordinate_window_target"
@@ -6322,7 +6313,7 @@ class ComputerUseRuntime:
                 status="coordinate_text_executed",
                 reason="已通过窗口聚焦和坐标点击执行文本输入，建议结合业务结果继续观察。",
                 details=details,
-                level="soft_verified",
+                level="executed_only",
             )
         if action_type in {"click", "double_click"} and bool(target_metadata.get("coordinateFallback")):
             details = {
@@ -6340,7 +6331,7 @@ class ComputerUseRuntime:
                 status="coordinate_click_executed",
                 reason="已执行坐标回退点击，建议结合视觉确认或业务结果确认。",
                 details=details,
-                level="soft_verified",
+                level="executed_only",
             )
         if action_type in {"open_app", "focus_window"}:
             target = self._verification_target(action_payload, result)
@@ -6453,12 +6444,12 @@ class ComputerUseRuntime:
             return
         reason = str(update_request.get("reason") or "检测到页面结构变化，需要更新步骤。")
         run_handle.fail(reason, node="computer_use_runtime")
-        raise WindowsUIADriverError(reason)
+        raise DesktopDriverError(reason)
 
     def _extract_plan_payload(self, raw_text: str) -> List[Dict[str, Any]]:
         text = (raw_text or "").strip()
         if not text:
-            raise WindowsUIADriverError("Computer Use planner 没有返回可解析内容。")
+            raise DesktopDriverError("Computer Use planner 没有返回可解析内容。")
 
         candidates: List[str] = []
         fenced_matches = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
@@ -6487,7 +6478,7 @@ class ComputerUseRuntime:
                 steps = parsed.get("steps")
                 if isinstance(steps, list):
                     return [dict(step) for step in steps if isinstance(step, dict)]
-        raise WindowsUIADriverError("Computer Use planner 返回内容不是有效的 JSON steps。")
+        raise DesktopDriverError("Computer Use planner 返回内容不是有效的 JSON steps。")
 
     def _planner_response_text(self, response: Any) -> str:
         content = getattr(response, "content", response)
@@ -6617,7 +6608,7 @@ class ComputerUseRuntime:
             if len(steps) >= max(1, max_steps):
                 break
         if not steps:
-            raise WindowsUIADriverError("Planner 没有生成任何可执行的 Computer Use 步骤。")
+            raise DesktopDriverError("Planner 没有生成任何可执行的 Computer Use 步骤。")
         return steps
 
     def _profile_planner_context(self, *, profile_id: str | None) -> str:
@@ -6741,7 +6732,7 @@ class ComputerUseRuntime:
             user_id=run_handle.descriptor.user_id,
         )
         if decision.is_block():
-            raise WindowsUIADriverError(decision.reason)
+            raise DesktopDriverError(decision.reason)
         run_handle.emit(
             "safety.preflight.checked",
             {
@@ -7084,7 +7075,7 @@ class ComputerUseRuntime:
             profile=profile,
         )
         if not launch_command:
-            raise WindowsUIADriverError(
+            raise DesktopDriverError(
                 f"未提供可执行的应用启动命令。app_id={resolved_app_id or ''} app_name={str(app_name or '').strip()}".strip()
             )
         catalog_titles = list((catalog_entry or {}).get("titlePatterns") or [])
@@ -9377,7 +9368,7 @@ class ComputerUseRuntime:
                 window_title=step.get("window_title"),
                 window_handle=step.get("window_handle"),
             )
-        raise WindowsUIADriverError(f"不支持的 computer use 步骤类型：{action}")
+        raise DesktopDriverError(f"不支持的 computer use 步骤类型：{action}")
 
     def _find_observation_element(
         self,
@@ -9533,9 +9524,9 @@ class ComputerUseRuntime:
     ) -> Dict[str, Any]:
         self._ensure_runtime_ready()
         if not steps:
-            raise WindowsUIADriverError("执行计划不能为空。")
+            raise DesktopDriverError("执行计划不能为空。")
         if len(steps) > max_steps:
-            raise WindowsUIADriverError(f"单次短视距执行计划最多支持 {max_steps} 步。")
+            raise DesktopDriverError(f"单次短视距执行计划最多支持 {max_steps} 步。")
         invocation = self._classify_invocation(default_trigger_source="computer_use_api")
 
         run_handle = self.begin_or_attach_run(
@@ -9611,7 +9602,7 @@ class ComputerUseRuntime:
             step = dict(raw_step or {})
             action = str(step.get("action") or "").strip().lower()
             if not action:
-                raise WindowsUIADriverError(f"第 {index} 步缺少 action。")
+                raise DesktopDriverError(f"第 {index} 步缺少 action。")
 
             step = self._apply_observation_window_context(step=step, last_observation=last_observation)
             step_app_id = self._infer_app_id_from_payloads(step=step)
@@ -9997,7 +9988,7 @@ class ComputerUseRuntime:
         include_screenshot: bool = False,
     ) -> Dict[str, Any]:
         if not goal.strip():
-            raise WindowsUIADriverError("planner 目标不能为空。")
+            raise DesktopDriverError("planner 目标不能为空。")
 
         observation_result = self.observe(
             session_id=session_id,

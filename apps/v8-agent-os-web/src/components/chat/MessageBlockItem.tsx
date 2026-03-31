@@ -1,14 +1,26 @@
 import { memo } from "react";
+import dynamic from "next/dynamic";
 import { ContentBlock } from "@/lib/chat/content-detector";
 import { ArtifactCard } from "./ArtifactCard";
 import { CodeBlock } from "./CodeBlock";
 import { PPTCard } from "./PPTCard";
 import { HTMLFileCard } from "./HTMLFileCard";
 import { MermaidRenderer } from "./MermaidRenderer";
-import { ModelViewer } from "./ModelViewer";
 import { VoiceCard } from "./VoiceCard";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { useChatStore } from "@/store/chat-store";
+
+const ModelViewer = dynamic(
+    () => import("./ModelViewer").then((mod) => mod.ModelViewer),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="flex aspect-video w-full items-center justify-center rounded-lg border border-border bg-muted/30 text-sm text-muted-foreground">
+                正在加载 3D 预览...
+            </div>
+        ),
+    }
+);
 
 interface MessageBlockItemProps {
     block: ContentBlock;

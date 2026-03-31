@@ -163,6 +163,52 @@ class DesktopVerificationCapabilities:
 
 
 @dataclass(slots=True)
+class DesktopExecutionRouteCapabilities:
+    supports_native_command: bool = False
+    supports_semantic_route: bool = False
+    supports_visual_route: bool = False
+    supports_coordinate_fallback: bool = False
+    preferred_route_order: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "supportsNativeCommand": bool(self.supports_native_command),
+            "supportsSemanticRoute": bool(self.supports_semantic_route),
+            "supportsVisualRoute": bool(self.supports_visual_route),
+            "supportsCoordinateFallback": bool(self.supports_coordinate_fallback),
+            "preferredRouteOrder": list(self.preferred_route_order),
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(slots=True)
+class DesktopPermissionCapabilities:
+    accessibility_status: str = "unknown"
+    automation_status: str = "unknown"
+    screenshot_status: str = "unknown"
+    input_synthesis_status: str = "unknown"
+    portal_capture_status: str = "unsupported"
+    portal_input_status: str = "unsupported"
+    session_type: str = "unknown"
+    compositor: str = "unknown"
+    notes: List[str] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "accessibilityStatus": self.accessibility_status,
+            "automationStatus": self.automation_status,
+            "screenshotStatus": self.screenshot_status,
+            "inputSynthesisStatus": self.input_synthesis_status,
+            "portalCaptureStatus": self.portal_capture_status,
+            "portalInputStatus": self.portal_input_status,
+            "sessionType": self.session_type,
+            "compositor": self.compositor,
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(slots=True)
 class DesktopDriverCapabilities:
     platform: str
     backend: str
@@ -173,6 +219,8 @@ class DesktopDriverCapabilities:
     viewport: DesktopViewportCapabilities | None = None
     observation: DesktopObservationCapabilities | None = None
     verification: DesktopVerificationCapabilities | None = None
+    execution: DesktopExecutionRouteCapabilities | None = None
+    permission: DesktopPermissionCapabilities | None = None
 
     def as_dict(self) -> Dict[str, Any]:
         payload = {
@@ -191,6 +239,10 @@ class DesktopDriverCapabilities:
             payload["observation"] = self.observation.as_dict()
         if self.verification is not None:
             payload["verification"] = self.verification.as_dict()
+        if self.execution is not None:
+            payload["execution"] = self.execution.as_dict()
+        if self.permission is not None:
+            payload["permission"] = self.permission.as_dict()
         return payload
 
 

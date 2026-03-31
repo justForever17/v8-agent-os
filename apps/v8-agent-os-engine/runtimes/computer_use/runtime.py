@@ -56,7 +56,7 @@ from runtimes.computer_use.coordinate_anchor import (
     offset_relative_point,
     resolve_absolute_click_point,
 )
-from runtimes.computer_use.drivers import DesktopDriverError, WindowsUIADriverError, create_desktop_driver
+from runtimes.computer_use.drivers import DesktopDriverError, create_desktop_driver
 from runtimes.computer_use.environment_probes import (
     collect_environment_probe_snapshot,
     environment_probe_capabilities,
@@ -147,6 +147,10 @@ from runtimes.computer_use.types import (
     ComputerUseTraceVariable,
     ComputerUseVerification,
 )
+
+# 历史兼容别名：runtime 主链已统一按 DesktopDriverError 收口，
+# 旧分支中残留的 WindowsUIADriverError 名称继续映射到通用桌面错误。
+WindowsUIADriverError = DesktopDriverError
 from runtimes.computer_use.verification import normalize_verification_payload
 
 
@@ -4169,6 +4173,82 @@ class ComputerUseRuntime:
         if rollout_mode in {"candidate_shadow", "computer_use_first"}:
             return "hybrid_mode"
         return "learn_mode"
+
+    def _resolve_execution_route(
+        self,
+        *,
+        action_type: str,
+        action_payload: Dict[str, Any],
+        result: ComputerUseActionResult,
+        verification: ComputerUseVerification | None,
+        update_request: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        metadata = dict(result.metadata or {})
+        target_metadata = dict(result.target.get("metadata") or {}) if isinstance(result.target, dict) else {}
+        existing_payload = dict(metadata.get("executionRoute") or {})
+        route = str(
+            existing_payload.get("route")
+            or target_metadata.get("route")
+            or metadata.get("route")
+            or ""
+        ).strip().lower()
+        allowed_routes = {
+            "native_command",
+            "structured_accessibility",
+            "visual_locator",
+            "coordinate_fallback",
+            "human_approval",
+        }
+        if route not in allowed_routes:
+            route = ""
+        has_visual_locator = bool(
+            self._has_explicit_visual_locator(action_payload)
+            or metadata.get("visualLocator")
+            or metadata.get("startVisualLocator")
+            or metadata.get("endVisualLocator")
+            or metadata.get("postActionVisualLocator")
+            or target_metadata.get("visualLocator")
+        )
+        coordinate_fallback = bool(
+            target_metadata.get("coordinateFallback")
+            or metadata.get("coordinateFallback")
+            or target_metadata.get("coordinateSource")
+            or result.target.get("clickedPoint")
+            or action_payload.get("point")
+            or self._normalize_runtime_point_candidates(
+                action_payload.get("point_candidates"),
+                action_payload.get("pointCandidates"),
+            )
+        )
+        verification_status = str((verification.status if verification else "") or "").strip().lower()
+        human_approval_required = bool(
+            verification_status in {
+                "high_risk_visual_confirmation_required",
+                "high_risk_pre_action_confirmation_required",
+            }
+            or (isinstance(update_request, dict) and update_request.get("requested") and str(update_request.get("kind") or "").strip().lower() == "human_approval")
+        )
+        if not route:
+            if action_type == "open_app":
+                route = "native_command"
+            elif human_approval_required:
+                route = "human_approval"
+            elif has_visual_locator:
+                route = "visual_locator"
+            elif coordinate_fallback:
+                route = "coordinate_fallback"
+            else:
+                route = "structured_accessibility"
+        return {
+            "route": route,
+            "source": "existing_metadata" if existing_payload else "runtime_inference",
+            "visualLocatorBacked": has_visual_locator,
+            "coordinateFallback": coordinate_fallback,
+            "humanApprovalRequired": human_approval_required,
+            "windowHandle": result.target.get("windowHandle") or result.target.get("window_handle"),
+            "windowTitle": result.target.get("windowTitle") or result.target.get("window_title") or result.target.get("title"),
+            "primitiveId": str((metadata.get("primitive") or {}).get("id") or ""),
+        }
 
     def _learning_loop_summary(
         self,
@@ -8351,7 +8431,7 @@ class ComputerUseRuntime:
                     self.driver.invalidate_element_cache(
                         result.target.get("elementId") or result.target.get("element_id")
                     )
-                except WindowsUIADriverError as exc:
+                except DesktopDriverError as exc:
                     last_error = exc
                     if attempt_index >= max_attempts:
                         raise
@@ -8364,7 +8444,7 @@ class ComputerUseRuntime:
                         signal=dict(exc.signal),
                     )
             if result is None:
-                raise last_error or WindowsUIADriverError("computer use 动作未生成结果。")
+                raise last_error or DesktopDriverError("computer use 动作未生成结果。")
         final_elapsed_ms = int((time.time() - action_started_at) * 1000)
         if "primitive" not in result.metadata:
             result.metadata["primitive"] = dict(primitive_payload)
@@ -8422,6 +8502,13 @@ class ComputerUseRuntime:
             scene=scene_payload,
         )
         result.metadata["executionMode"] = execution_mode
+        result.metadata["executionRoute"] = self._resolve_execution_route(
+            action_type=action_type,
+            action_payload=normalized_payload,
+            result=result,
+            verification=normalized_verification,
+            update_request=normalized_update_request,
+        )
         result_contract = build_result_contract(
             action_type=action_type,
             execution_mode=execution_mode,

@@ -203,15 +203,6 @@ class RPATraceCompiler:
                 purpose="v8chat ComputerUse / RPA bridge keywords",
             )
         ]
-        step_uses = {step.use for step in steps}
-        if step_uses.intersection({"open_app", "focus_window", "find_and_type", "scroll_list", "click_toolbar_action", "capture_screenshot", "wait_for_element"}):
-            libraries.append(
-                RPARobotLibrary(
-                    name="RPA.Windows",
-                    required=False,
-                    purpose="desktop automation helpers",
-                )
-            )
         if app_id in {"browser_checkout", "browser", "chrome", "edge"}:
             libraries.append(
                 RPARobotLibrary(
@@ -1355,8 +1346,13 @@ class RPATraceCompiler:
         return app_id
 
     def _prefer_bridge_runtime(self, *, step: Dict[str, Any], params: Dict[str, Any]) -> bool:
+        if params.get("prefer_native_windows_semantics") is True or params.get("use_native_windows_semantics") is True:
+            return False
         risk = dict(step.get("risk") or {})
         risk_details = dict(risk.get("details") or {})
+        action = str(step.get("action") or "").strip().lower()
+        if action:
+            return True
         if params.get("target_text") not in (None, "") or risk_details.get("targetText") not in (None, ""):
             return True
         if params.get("file_path") not in (None, "") or list(params.get("file_paths") or []) or list(params.get("attachment_paths") or []):

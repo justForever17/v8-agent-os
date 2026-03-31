@@ -92,6 +92,7 @@ def build_evidence_summary_payload(
     observation_payload = dict(observation or {})
     metadata_payload = dict(metadata or {})
     primary_visual_locator = dict(metadata_payload.get("visualLocator") or {})
+    execution_route = dict(metadata_payload.get("executionRoute") or {})
     visual_observation = dict(primary_visual_locator.get("visualObservation") or {})
     visual_judge = dict(primary_visual_locator.get("visualJudge") or {})
     visual_semantic_candidates = [
@@ -113,6 +114,7 @@ def build_evidence_summary_payload(
         "selectorStats": metadata_payload.get("selectorStats"),
         "stabilityWait": metadata_payload.get("stabilityWait"),
         "focusedElementId": observation_payload.get("focusedElementId"),
+        "executionRoute": execution_route,
         "visualLocator": primary_visual_locator,
         "postActionVisualLocator": dict(metadata_payload.get("postActionVisualLocator") or {}),
         "startVisualLocator": dict(metadata_payload.get("startVisualLocator") or {}),
@@ -449,6 +451,7 @@ def build_runtime_control_payload(
     primitive_live_baseline: Mapping[str, Any] | None = None,
     visual_decision: Mapping[str, Any] | None = None,
     environment_signal_summary: Mapping[str, Any] | None = None,
+    execution_route: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     return {
         "blocked": bool(_lower(status) in {"blocked", "update_requested"}),
@@ -457,6 +460,7 @@ def build_runtime_control_payload(
         "primitiveLiveBaseline": dict(primitive_live_baseline or {}),
         "visualDecision": dict(visual_decision or {}),
         "environmentSignalSummary": dict(environment_signal_summary or {}),
+        "executionRoute": dict(execution_route or {}),
     }
 
 
@@ -499,6 +503,7 @@ def build_result_contract(
         evidence_summary=evidence_summary,
     )
     evidence_summary["environmentSignalSummary"] = dict(environment_signal_summary)
+    execution_route = dict(metadata_payload.get("executionRoute") or evidence_summary.get("executionRoute") or {})
     recommended_next_action = recommended_next_action_payload(
         action_type=action_type,
         status=result.status,
@@ -522,6 +527,7 @@ def build_result_contract(
             primitive_live_baseline=primitive_live_baseline,
             visual_decision=visual_decision,
             environment_signal_summary=environment_signal_summary,
+            execution_route=execution_route,
         ),
         "learningLoop": learning_loop_summary_payload(
             execution_mode=execution_mode,

@@ -536,6 +536,11 @@ class RobotFrameworkAdapter:
                     "notes": ["兼容旧 draft 的浏览器页面截图 native 语义。"],
                 }
             return {}
+        if not (
+            params.get("prefer_native_windows_semantics") is True
+            or params.get("use_native_windows_semantics") is True
+        ):
+            return {}
         locator = self._combined_windows_locator(step)
         if use == "open_app":
             launch_text = self._launch_text_for_app(script, step)
@@ -647,14 +652,6 @@ class RobotFrameworkAdapter:
                 "purpose": "v8chat ComputerUse / RPA bridge keywords",
             }
         ]
-        if step_uses.intersection({"open_app", "focus_window", "find_and_type", "scroll_list", "click_toolbar_action", "capture_screenshot", "wait_for_element"}):
-            libraries.append(
-                {
-                    "name": "RPA.Windows",
-                    "required": False,
-                    "purpose": "desktop automation helpers",
-                }
-            )
         if app_id in {"browser_checkout", "browser", "chrome", "edge"}:
             libraries.append(
                 {

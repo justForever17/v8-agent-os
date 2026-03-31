@@ -42,6 +42,3 @@ export function ModelViewer({ src, className }: ModelViewerProps) {
         </div>
     );
 }
-
-// Preload to avoid waterfall
-useGLTF.preload = (url: string) => useGLTF.preload(url);

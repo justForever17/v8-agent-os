@@ -5,16 +5,19 @@ from typing import Any, Dict
 from runtimes.computer_use.types import ComputerUseVerification
 
 
-VERIFICATION_LEVELS = {"verified", "soft_verified", "review_required", "failed"}
+VERIFICATION_LEVELS = {"verified", "soft_verified", "executed_only", "review_required", "failed"}
 
 _STATUS_TO_LEVEL = {
     "verified": "verified",
     "text_verified": "verified",
-    "focus_verified": "verified",
+    "focus_verified": "soft_verified",
     "scroll_verified": "verified",
     "window_verified": "verified",
     "soft_verified_target_only": "soft_verified",
     "target_verified": "soft_verified",
+    "coordinate_click_executed": "executed_only",
+    "coordinate_text_executed": "executed_only",
+    "coordinate_file_paste_executed": "executed_only",
     "review_required": "review_required",
     "review_required_dynamic_input": "review_required",
     "review_required_unconfirmed_input": "review_required",

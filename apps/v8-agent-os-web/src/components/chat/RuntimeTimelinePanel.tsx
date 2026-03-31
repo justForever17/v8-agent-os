@@ -174,7 +174,7 @@ function ActivityFeedItem({ activity }: { activity: RuntimeStageActivity }) {
                 </span>
             </div>
 
-            <div className="mb-2.5 text-[13px] font-medium leading-6 text-foreground/90">
+            <div className="mb-2.5 min-w-0 whitespace-pre-wrap break-all text-[13px] font-medium leading-6 text-foreground/90">
                 {activity.summary}
             </div>
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 
 PROMOTION_GATE_VERSION = "rpa-promotion-gate-v2"
@@ -84,6 +84,26 @@ def _visual_locator_metadata(
     }
 
 
+def _execution_route_metadata(
+    metadata: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    payload = dict(metadata.get("executionRoute") or {})
+    route = _normalize_status(payload.get("route"))
+    if not route:
+        if _string(params.get("visual_locator")) or _string(params.get("start_visual_locator")) or _string(params.get("end_visual_locator")):
+            route = "visual_locator"
+        elif params.get("point") not in (None, "") or list(params.get("point_candidates") or []):
+            route = "coordinate_fallback"
+    return {
+        "route": route or None,
+        "source": _string(payload.get("source")) or None,
+        "visualLocatorBacked": bool(payload.get("visualLocatorBacked")),
+        "coordinateFallback": bool(payload.get("coordinateFallback")),
+        "humanApprovalRequired": bool(payload.get("humanApprovalRequired")),
+    }
+
+
 def _step_gate_issues(
     step: Dict[str, Any],
     script_variables: Iterable[Dict[str, Any]],
@@ -100,14 +120,17 @@ def _step_gate_issues(
     variables = _step_variables(step, script_variables)
     step_label = _string(step.get("stepId") or step.get("use") or "step")
     visual_locator_metadata = _visual_locator_metadata(metadata, params)
+    execution_route_metadata = _execution_route_metadata(metadata, params)
     has_visual_locator = bool(visual_locator_metadata.get("visualLocatorBacked"))
     visual_locator_provider = _string(visual_locator_metadata.get("visualLocatorProvider"))
+    execution_route = _normalize_status(execution_route_metadata.get("route"))
     signals: Dict[str, Any] = {
         "visualLocatorBacked": has_visual_locator,
         "visualLocatorProvider": visual_locator_provider or None,
         "visualSemanticRole": _string(visual_locator_metadata.get("visualSemanticRole")) or None,
         "visualJudgeBacked": bool(visual_locator_metadata.get("visualJudgeBacked")),
         "visualJudgeSelected": bool(visual_locator_metadata.get("visualJudgeSelected")),
+        "executionRoute": execution_route or None,
     }
 
     if not primitive.get("id"):
@@ -124,6 +147,12 @@ def _step_gate_issues(
     primitive_affordances = {_normalize_status(item) for item in list(primitive.get("affordances") or []) if _normalize_status(item)}
     if verification_level in {"review_required", "failed"}:
         issues.append(f"{step_label}: verification level 为 {verification_level}")
+    if verification_level == "executed_only":
+        issues.append(f"{step_label}: verification 仅证明动作已执行，未形成稳定业务成功证据")
+    if execution_route == "coordinate_fallback":
+        issues.append(f"{step_label}: 当前步骤走 coordinate fallback，不满足稳定提级要求")
+    if execution_route == "human_approval":
+        issues.append(f"{step_label}: 当前步骤仍依赖 human approval，不满足自动化提级要求")
     if blocker_state not in {"", "none"}:
         issues.append(f"{step_label}: scene blockerState 为 {blocker_state}")
     if transition_state in {"unknown", "failed", "blocked", "update_requested"}:
@@ -140,10 +169,13 @@ def _step_gate_issues(
         issues.append(f"{step_label}: 存在未绑定变量占位符")
     if (params.get("point") not in (None, "") or list(params.get("point_candidates") or [])) and not _string(scene.get("pageIdentity")):
         issues.append(f"{step_label}: 坐标动作缺少页面身份约束")
+    if verification_status == "focus_verified" and _normalize_status(primitive.get("id")) != "window.focus":
+        issues.append(f"{step_label}: verification 仅证明聚焦成功，不足以支持动作提级")
     if verification_level == "soft_verified" and verification_status in {
         "soft_verified_target_only",
         "coordinate_click_executed",
         "coordinate_text_executed",
+        "coordinate_file_paste_executed",
     }:
         issues.append(f"{step_label}: verification 仅为弱 soft_verified 状态")
     if has_visual_locator and verification_level != "verified":

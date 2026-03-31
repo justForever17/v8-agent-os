@@ -12,4 +12,12 @@ def create_platform_discovery_providers(*, driver) -> List[ComputerUseAppDiscove
         from .windows_apps import WindowsAppDiscoveryProvider
 
         providers.append(WindowsAppDiscoveryProvider(driver=driver))
+    elif platform == "macos":
+        from .mac_apps import MacAppDiscoveryProvider
+
+        providers.append(MacAppDiscoveryProvider(driver=driver))
+    elif platform == "linux":
+        from .linux_apps import LinuxAppDiscoveryProvider
+
+        providers.append(LinuxAppDiscoveryProvider(driver=driver))
     return providers

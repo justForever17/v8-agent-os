@@ -95,9 +95,12 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             if (node.executionType === 'runtime_progress') {
                 const showTopicPrefix = node.topic && !String(node.topic).startsWith("extension.");
                 return (
-                    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-foreground/5 px-2.5 py-1 text-[11px] text-muted-foreground/80 shadow-sm dark:bg-foreground/10">
-                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400"></span>
-                        <span>{showTopicPrefix ? `[${node.topic}] ` : ''}{node.label || 'Running...'}</span>
+                    <div className="flex w-full min-w-0 items-start gap-1.5 rounded-md border border-border/50 bg-foreground/5 px-2.5 py-1 text-[11px] text-muted-foreground/80 shadow-sm dark:bg-foreground/10">
+                        <span className="mt-[0.28rem] h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-violet-400"></span>
+                        <span className="min-w-0 break-all leading-5">
+                            {showTopicPrefix ? `[${node.topic}] ` : ''}
+                            {node.label || 'Running...'}
+                        </span>
                     </div>
                 );
             }

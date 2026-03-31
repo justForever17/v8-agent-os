@@ -96,6 +96,18 @@ class V8ChatRPAKeywords:
         payload["double"] = True
         return self._ensure_success(computer_use_runtime.click(**self._base_kwargs(), **payload))
 
+    def right_click(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        payload = self._robot_kwargs(args, kwargs)
+        return self._ensure_success(computer_use_runtime.right_click(**self._base_kwargs(), **payload))
+
+    def hover(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        payload = self._robot_kwargs(args, kwargs)
+        return self._ensure_success(computer_use_runtime.hover(**self._base_kwargs(), **payload))
+
+    def drag(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        payload = self._robot_kwargs(args, kwargs)
+        return self._ensure_success(computer_use_runtime.drag(**self._base_kwargs(), **payload))
+
     def type_text(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         payload = self._robot_kwargs(args, kwargs)
         return self._ensure_success(computer_use_runtime.type_text(**self._base_kwargs(), **payload))
@@ -107,6 +119,10 @@ class V8ChatRPAKeywords:
     def scroll(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         payload = self._robot_kwargs(args, kwargs)
         return self._ensure_success(computer_use_runtime.scroll(**self._base_kwargs(), **payload))
+
+    def page_scroll(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        payload = self._robot_kwargs(args, kwargs)
+        return self._ensure_success(computer_use_runtime.page_scroll(**self._base_kwargs(), **payload))
 
     def scroll_list(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         payload = self._robot_kwargs(args, kwargs)

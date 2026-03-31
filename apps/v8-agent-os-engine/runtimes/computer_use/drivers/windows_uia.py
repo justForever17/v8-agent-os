@@ -32,8 +32,10 @@ from runtimes.computer_use.drivers.contracts import (
     DesktopAccessibilityCapabilities,
     DesktopDriverError,
     DesktopDriverCapabilities,
+    DesktopExecutionRouteCapabilities,
     DesktopInputCapabilities,
     DesktopObservationCapabilities,
+    DesktopPermissionCapabilities,
     DesktopPointerCapabilities,
     DesktopVerificationCapabilities,
     DesktopViewportCapabilities,
@@ -235,6 +237,35 @@ class WindowsUIADriver:
                 supports_file_verification=True,
                 supports_viewport_verification=True,
                 supports_business_verification=False,
+            ),
+            execution=DesktopExecutionRouteCapabilities(
+                supports_native_command=True,
+                supports_semantic_route=True,
+                supports_visual_route=mss is not None,
+                supports_coordinate_fallback=bool(self._sendinput_click_engine.is_available()),
+                preferred_route_order=[
+                    "native_command",
+                    "structured_accessibility",
+                    "visual_locator",
+                    "coordinate_fallback",
+                    "human_approval",
+                ],
+                notes=[
+                    "Windows 当前优先走 UIA/Win32 语义路径，视觉定位与坐标补偿只作为降级链。",
+                ],
+            ),
+            permission=DesktopPermissionCapabilities(
+                accessibility_status="granted" if self.is_available() else "unavailable",
+                automation_status="granted" if self.is_available() else "unavailable",
+                screenshot_status="granted" if mss is not None else "unavailable",
+                input_synthesis_status="granted" if self._sendinput_click_engine.is_available() else "partial",
+                portal_capture_status="unsupported",
+                portal_input_status="unsupported",
+                session_type="windows_desktop",
+                compositor="dwm",
+                notes=[
+                    "Windows 不走 portal 权限模型；可用性主要取决于 pywinauto / SendInput / mss 是否可用。",
+                ],
             ),
         ).as_dict()
 

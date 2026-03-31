@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORKSPACE_DIR="$ROOT_DIR/.bootstrap-workspace"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+SCRIPT_ROOT=""
+if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+  SCRIPT_ROOT="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+fi
+
+if [ -n "$SCRIPT_ROOT" ] && [ -d "$SCRIPT_ROOT/apps/v8-agent-os-engine" ] && [ -d "$SCRIPT_ROOT/apps/v8-agent-os-admin" ]; then
+  USE_CURRENT_CHECKOUT=1
+  WORKSPACE_DIR="$SCRIPT_ROOT/.bootstrap-workspace"
+  REPO_DIR="$SCRIPT_ROOT"
+  REPO_SOURCE="current checkout"
+else
+  USE_CURRENT_CHECKOUT=0
+  if [ -n "${V8_AGENT_OS_BOOTSTRAP_WORKSPACE:-}" ]; then
+    WORKSPACE_DIR="$V8_AGENT_OS_BOOTSTRAP_WORKSPACE"
+  elif [ -n "${HOME:-}" ]; then
+    WORKSPACE_DIR="$HOME/.bootstrap-workspace"
+  else
+    WORKSPACE_DIR="$PWD/.bootstrap-workspace"
+  fi
+  REPO_DIR="$WORKSPACE_DIR/v8-agent-os"
+  REPO_SOURCE="bootstrap workspace clone"
+fi
+
 LOG_DIR="$WORKSPACE_DIR/logs"
 
 REPO_URL="https://github.com/justForever17/v8-agent-os.git"
-REPO_DIR="$WORKSPACE_DIR/v8-agent-os"
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -51,15 +72,30 @@ EOF
 mkdir -p "$WORKSPACE_DIR" "$LOG_DIR"
 
 step "Checking prerequisites"
-ensure_command git "Install Git first."
+if [ "$USE_CURRENT_CHECKOUT" -ne 1 ]; then
+  ensure_command git "Install Git first."
+fi
 ensure_command python "Install Python 3.11+ first."
 ensure_command npm "Install Node.js 20+ first."
 
-step "Syncing repository"
-sync_repo "$REPO_URL" "$REPO_DIR"
+if [ "$USE_CURRENT_CHECKOUT" -eq 1 ]; then
+  step "Using current checkout"
+else
+  step "Syncing repository"
+  sync_repo "$REPO_URL" "$REPO_DIR"
+fi
 
 ENGINE_DIR="$REPO_DIR/apps/v8-agent-os-engine"
 ADMIN_DIR="$REPO_DIR/apps/v8-agent-os-admin"
+
+if [ "${V8_AGENT_OS_BOOTSTRAP_DRY_RUN:-0}" = "1" ]; then
+  printf "\nBootstrap dry run.\n"
+  printf "Repo source: %s\n" "$REPO_SOURCE"
+  printf "Repo dir   : %s\n" "$REPO_DIR"
+  printf "Workspace  : %s\n" "$WORKSPACE_DIR"
+  printf "Log dir    : %s\n" "$LOG_DIR"
+  exit 0
+fi
 
 step "Preparing engine"
 if [ ! -d "$ENGINE_DIR/.venv" ]; then
@@ -77,6 +113,7 @@ nohup "$ENGINE_DIR/.venv/bin/python" "$ENGINE_DIR/main.py" >"$LOG_DIR/engine.std
 nohup npm --prefix "$ADMIN_DIR" run dev >"$LOG_DIR/admin.stdout.log" 2>"$LOG_DIR/admin.stderr.log" &
 
 printf "\nV8 Agent OS is starting.\n"
+printf "Source: %s\n" "$REPO_SOURCE"
 printf "Engine: http://127.0.0.1:9530\n"
 printf "Admin : http://127.0.0.1:9528\n"
 printf "Web   : install and package separately from apps/v8-agent-os-web\n"

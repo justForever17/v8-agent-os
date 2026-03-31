@@ -1,12 +1,27 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Workspace = Join-Path $Root ".bootstrap-workspace"
+$ScriptPath = $MyInvocation.MyCommand.Path
+$ScriptRoot = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { $null }
+$UsingCurrentCheckout =
+    $ScriptRoot -and
+    (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-engine")) -and
+    (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-admin"))
+$Workspace =
+    if ($UsingCurrentCheckout) {
+        Join-Path $ScriptRoot ".bootstrap-workspace"
+    } elseif ($env:V8_AGENT_OS_BOOTSTRAP_WORKSPACE) {
+        $env:V8_AGENT_OS_BOOTSTRAP_WORKSPACE
+    } elseif ($HOME) {
+        Join-Path $HOME ".bootstrap-workspace"
+    } else {
+        Join-Path (Get-Location) ".bootstrap-workspace"
+    }
 $LogDir = Join-Path $Workspace "logs"
 
 $RepoUrl = "https://github.com/justForever17/v8-agent-os.git"
-$RepoDir = Join-Path $Workspace "v8-agent-os"
+$RepoDir = if ($UsingCurrentCheckout) { $ScriptRoot } else { Join-Path $Workspace "v8-agent-os" }
+$RepoSource = if ($UsingCurrentCheckout) { "current checkout" } else { "bootstrap workspace clone" }
 
 function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -50,15 +65,31 @@ function Start-Detached([string]$WorkingDir, [string]$FilePath, [string[]]$Argum
 New-Item -ItemType Directory -Force -Path $Workspace, $LogDir | Out-Null
 
 Write-Step "Checking prerequisites"
-Ensure-Command git "Install Git first: https://git-scm.com/downloads"
+if (-not $UsingCurrentCheckout) {
+    Ensure-Command git "Install Git first: https://git-scm.com/downloads"
+}
 Ensure-Command python "Install Python 3.11+ first."
 Ensure-Command npm "Install Node.js 20+ first."
 
-Write-Step "Syncing repository"
-Sync-Repo $RepoUrl $RepoDir
+if ($UsingCurrentCheckout) {
+    Write-Step "Using current checkout"
+} else {
+    Write-Step "Syncing repository"
+    Sync-Repo $RepoUrl $RepoDir
+}
 
 $EngineDir = Join-Path $RepoDir "apps\v8-agent-os-engine"
 $AdminDir = Join-Path $RepoDir "apps\v8-agent-os-admin"
+
+if ($env:V8_AGENT_OS_BOOTSTRAP_DRY_RUN -eq "1") {
+    Write-Host ""
+    Write-Host "Bootstrap dry run." -ForegroundColor Yellow
+    Write-Host "Repo source: $RepoSource"
+    Write-Host "Repo dir   : $RepoDir"
+    Write-Host "Workspace  : $Workspace"
+    Write-Host "Log dir    : $LogDir"
+    exit 0
+}
 
 Write-Step "Preparing engine"
 if (-not (Test-Path (Join-Path $EngineDir ".venv"))) {
@@ -77,6 +108,7 @@ Start-Detached $AdminDir "npm.cmd" @("run", "dev") "admin"
 
 Write-Host ""
 Write-Host "V8 Agent OS is starting." -ForegroundColor Green
+Write-Host "Source: $RepoSource"
 Write-Host "Engine: http://127.0.0.1:9530"
 Write-Host "Admin : http://127.0.0.1:9528"
 Write-Host "Web   : install and package separately from apps/v8-agent-os-web"

@@ -1,33 +1,58 @@
 # V8 Agent OS
 
-**V8 Agent OS** is a complete agent system built with token efficiency as a core goal.
+**V8 Agent OS** is for people who are tired of starting the same project conversation from zero.
 
-What it is really trying to solve are harder, more practical problems:
+The promise is simple: keep the useful context alive, keep the tool surface calm, keep long-running work visible, and let successful screen work harden into something reusable.
 
-- a truly powerful memory system should not rely on plain Markdown, and it should not let the agent write whatever it wants
-- MCP and skills should be exposed precisely for the current task, instead of becoming more dangerous as more of them get installed
-- desktop applications with APIs should be automated properly, and applications without APIs should still be handled efficiently and elegantly
-- OpenClaw is strong because of its ecosystem, but the real question is how to bring that ecosystem in while starting from a much stronger system foundation
+## Why it feels different
 
-If you want an agent system with stronger core capabilities, long-running stability, automatic progress, and full access to the OpenClaw ecosystem, this is the one official entry point.
+- **Less re-explaining.** Projects, workspaces, scoped memory, and durable recall mean tomorrow starts with continuity instead of amnesia.
+- **Less tool noise.** MCP and skills do not need to flood the model just because they are installed; V8 narrows the surface to what the current job actually needs.
+- **More visible work.** Workflow projection, artifacts, approvals, realtime updates, and operations-center views make long tasks easier to inspect and steer.
+- **Screen work that grows up.** Computer Use, desktop-live, and the path toward RPA turn “it worked once” into something that can become more repeatable.
 
-## What is in this repository
+## Where OpenClaw fits
 
-| Module | Path | Purpose |
-| --- | --- | --- |
-| Web | `apps/v8-agent-os-web` | User-facing chat UI and remote mobile app surface |
-| Admin | `apps/v8-agent-os-admin` | Configuration, control console, and runtime observability |
-| Engine | `apps/v8-agent-os-engine` | The real execution plane: runtimes, memory, automation, MCP, and skills |
+OpenClaw deserves real credit for making ecosystem breadth impossible to ignore.
 
-## Why it is worth using seriously
+V8 is not trying to win by saying “we also have plugins.” The stronger claim is about experience: **bring the ecosystem in, then keep the project context warmer, the tool surface quieter, and the running work easier to inspect and control.**
 
-- **Long-term memory is not decoration.** A true hybrid memory + RAG architecture that outclasses most alternatives on the market. It is easier to manage, and without deleting the database your agent can remember you for life.
-- **The built-in capability set is strong and complete.** It comes with many useful native tools, so you can leave behind the era where everything depends on burning tokens through `SKILL.md`.
-- **Skills and MCP are not handled by brute force.** No matter how large the catalogue gets, only the small slice that the current task actually needs is exposed.
-- **The OpenClaw ecosystem can be absorbed seamlessly.** Plugins, channels, and bridge capabilities remain available, and this system can still comfortably handle more agent skills and more tools.
-- **Runtime boundaries are real.** Chat, Memory, Extensions, Automation, Safety, Computer Use, Plugin Host, and RPA each do the kind of work they are best at.
+## Quick install
 
-That is the biggest difference between this system and a typical agent application.
+The public bootstrap entry is one command per platform. It syncs the official repo, installs dependencies, and starts Admin + Engine. Web still ships separately.
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.ps1 | iex"
+```
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.sh | bash
+```
+
+## Already inside a checkout?
+
+If you are already working inside a local checkout, the same bootstrap scripts still work as a secondary path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
+```
+
+```bash
+./bootstrap.sh
+```
+
+## After install
+
+1. Open **Admin**
+2. Finish the core configuration there
+3. Configure models, memory, plugin host, automation, and system base in that order
+4. Decide separately whether Web should run from source or ship as an app / release
+
+**Important:** V8 Agent OS relies heavily on reranker models. If you do not configure a reranker, memory quality and tool exposure quality will both suffer.
 
 ## Default local addresses
 
@@ -37,44 +62,24 @@ That is the biggest difference between this system and a typical agent applicati
 | Admin | `http://127.0.0.1:9528` |
 | Engine | `http://127.0.0.1:9530` |
 
-## Quick install
+## What ships in this repository
 
-### Windows
+| Module | Path | Purpose |
+| --- | --- | --- |
+| Web | `apps/v8-agent-os-web` | User-facing chat UI and mobile entry surface |
+| Admin | `apps/v8-agent-os-admin` | Configuration, control console, and runtime observability |
+| Engine | `apps/v8-agent-os-engine` | Execution plane for memory, automation, MCP, skills, safety, recovery, and runtime orchestration |
 
-```powershell
-git clone https://github.com/justForever17/v8-agent-os.git
-cd v8-agent-os
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
-```
+## Read next
 
-### Linux / macOS
-
-```bash
-git clone https://github.com/justForever17/v8-agent-os.git
-cd v8-agent-os
-./bootstrap.sh
-```
-
-## Recommended configuration order
-
-**Important:** V8 Agent OS makes heavy use of reranker models. If you do not configure a reranker, memory accuracy and tool exposure quality may both suffer.
-
-1. Start **Engine**
-2. Start **Admin**
-3. Finish the core configuration through Admin
-4. Configure models, memory, plugin host, automation, and system base in that order
-5. Only then decide whether Web should run from source or ship as an app / release
-
-## Very practical deployment advice
-
-- It is recommended to use a smaller model for memory-side work. That keeps cost much more stable.
-- It is recommended to build a full infrastructure stack if you can. If your hardware is limited, you can deploy rerankers, lightweight multimodal models, or helper models on the free servers provided by Hugging Face Spaces or ModelScope, then serve them through vLLM.
-- OpenClaw integration is optional. The core capabilities of V8 Agent OS are already strong enough on their own, but you can still bring in community tools if that matches your workflow.
+- [Engine API Reference](./docs/ENGINE_API_REFERENCE.md)
+- [Engine Core Directory Guide](./docs/ENGINE_CORE_DIRECTORY_GUIDE.md)
+- [Engine Developer Guide](./docs/ENGINE_DEVELOPER_GUIDE.md)
+- [Engine Developer Guide (Chinese)](./docs/ENGINE_DEVELOPER_GUIDE_ZH.md)
+- [Network Supervisor Runtime Plan](./docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN.md)
 
 ## Support V8 Agent OS
 
-> If V8 Agent OS truly saves you time, helps you survive complex work, or finally makes your agent system feel like a real system instead of a demo, you can support its continued growth here: [https://afdian.com/a/justforever17](https://afdian.com/a/justforever17)
+If V8 Agent OS helps your team repeat itself less, keep long-running work under control, or treat agent systems more like real systems than demos, you can support continued development here:
 
-> “We become what we behold. We shape our tools, and thereafter our tools shape us.”  
-> “我们眼之所见重塑了我们；我们塑造了工具，此后工具塑造了我们。”  
-> — Marshall McLuhan
+[https://afdian.com/a/justForever17](https://afdian.com/a/justforever17)

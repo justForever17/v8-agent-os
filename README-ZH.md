@@ -1,85 +1,107 @@
-# V8 Agent OS
+<div align="center">
+  <img src="./docs/assets/banner.svg" alt="V8 Agent OS Banner" width="800">
+</div>
 
-**V8 Agent OS** 适合那些已经受够了“同一个项目反复解释、同一批工具反复打扰、任务一跑起来就越来越黑盒”的人。
+<div align="center">
+  <strong>记住上下文 · 收束工具噪音 · 过程透明可视 · 强兜底可接管</strong>
+</div>
+<br>
 
-它想给你的不是另一页更聪明的聊天界面，而是一套更适合长期项目和持续任务的 Agent 系统：记得住、收得住、看得见，也接得住。
+<div align="center">
 
-## 为什么它会更省心
+[![OS](https://img.shields.io/badge/Platform-Win_|_Mac_|_Linux-green.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
+[![Node](https://img.shields.io/badge/Runtime-Node.js-orange.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
+[![Security](https://img.shields.io/badge/Security-Fail--Closed-red.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
 
-- **少重讲。** projects、workspaces、scoped memory 和 durable recall 让明天从上下文里接着来，而不是又从零开始。
-- **少工具噪音。** MCP 和 skills 不会因为已经安装就一股脑冲进上下文，系统会把注意力收在当前任务真正需要的那几样能力上。
-- **任务可见可接管。** workflow projection、artifacts、approvals、realtime updates 和 operations-center 让长任务更像你能盯住的工作流，而不是失控的黑盒。
-- **屏幕操作可沉淀。** Computer Use、desktop-live 和通往 RPA 的路径，能把“会点一次”慢慢长成更稳定的复用执行。
+</div>
+<br>
 
-## OpenClaw 在这里扮演什么角色
+> 🌐 [**English documentation available here**](./README.md)
 
-OpenClaw 值得认真对待，因为它把生态、插件、渠道和 dashboard 的广度拉到了大家都不能忽视的程度。
+## 🪐 划时代的 Agent 机器生态
 
-V8 不想和它比“有没有这些”。更关键的体验差异在于：**把生态接进来以后，这台机器是不是仍然更少重讲、更少工具噪音，也更容易在中途看见、审批和接管。**
+**V8 Agent OS** 并非另一页花哨的“聪明聊天界面”，而是一座有着极强防护装甲与跨端调度能力的 **Agent 运行生态 (Runtime)**。
 
-## 快速安装
+如果你受够了“同一个项目反复跟模型解释”、“未知 Skills 导致失控盲跑”以及“任务中途断裂无法干预接管”——V8 将为你打造一台拥有全局视野记忆、可观测、甚至可中途拔网线重来的企业级治理引擎。
 
-公开 bootstrap 入口现在已经统一成按平台的一条命令：同步官方仓库、安装依赖，并拉起 Admin + Engine。Web 端继续独立分发。
+---
 
-### Windows
+## 🛡️ 核心战争级抽象能力
 
+<table width="100%">
+  <tr>
+    <td width="50%">
+      <h3>1. 全自主 Auto-runtime</h3>
+      <p>彻底告别关闭浏览器就崩盘的虚假独立。结构上强隔离 <strong>Control Plane (Admin 9528)</strong> 与 <strong>Execution Core (Engine 9530)</strong>。这一硬核隔离让连续数日的无人值守任务能够在后台稳健存活、断点唤醒，并静候人工指令。</p>
+    </td>
+    <td width="50%">
+      <h3>2. 逆向接管 OpenClaw 生态</h3>
+      <p>抛弃重启炉灶。通过黑科技 <code>v8-bridge</code>，V8 原生劫持并全量兼容 OpenClaw 庞大的开源插件社区，将其化为你的前遣火力，并牢牢套上 V8 的安全约束与执行管线。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>3. 精算级成本路由</h3>
+      <p>系统原生拦截并向下路由至免费的本地小模型接管杂活与长文本摘要，避免 Token 账单爆炸，将最昂贵的前沿模型推理算力专门留给不可替代的核心锋刃。</p>
+    </td>
+    <td width="50%">
+      <h3>4. 白盒安全隔离审批</h3>
+      <p>盲猜死挂未知 Skills 约等于向黑客开门。遇到极危指令环境，V8 立刻在图层面挂起任务流，并在控制台强制请求人工安全越权审批。哪怕藏着的 <code>rm -rf</code> 也休想逃过你的凝视。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>5. MCP & Skills 归一化预筛</h3>
+      <p>一次加载海量插件也不怕污染上下文。顶层 Reranker 将数百个零散的 MCP 工具与原生 SKILLS 统一步调进行“归一预筛”，并在最恰当的时间向当前节点只暴露最精准的利刃。</p>
+    </td>
+    <td width="50%">
+      <h3>6. 干预节点的记忆手术床</h3>
+      <p>记忆不再是被动读取的单向文本流。V8 后座常驻专属 Memory Agent，并在前端提供可视化知识图谱。允许人类随时对特定记忆长链进行精细的手术级别调整与覆写。</p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## ⚡ 极速起飞 (Bootstrap)
+
+无需在一堆子模块中繁琐配置。引擎自带跨平台的单行命令即可拉起 Admin 控制台与 Execution Engine。
+
+### Windows (PowerShell)
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.ps1 | iex"
 ```
 
-### Linux / macOS
-
+### macOS / Linux (Bash)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.sh | bash
 ```
+> *(注：若已 clone 到本地目录，只需直接运行目录下的 `./bootstrap.ps1` 或 `./bootstrap.sh` 即可构建。Web UI需独立发版启动)*
 
-## 如果你已经在本地 checkout 里
+---
 
-如果你已经在本地 checkout 里工作，同一套 bootstrap 脚本仍可以作为次级路径直接运行：
+## ⚙️ 第一序列启动指南
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
-```
+1. 服务就绪后，**优先访问 Admin 治理中枢：** `http://127.0.0.1:9528`
+2. **必需动作**：配置主干大模型基座；
+3. **极度重要**：配置 Reranker 选项映射。如果不配置，工具挂载质量和长期记忆回流将呈现悬崖式断档；
+4. 保存配置，启动 Web 端 `http://127.0.0.1:9527` 开启你的协同之旅。
 
-```bash
-./bootstrap.sh
-```
+---
 
-## 安装后建议顺序
+## 📚 研发级军火库 (文档体系)
 
-1. 先打开 **Admin**
-2. 在 Admin 里完成核心配置
-3. 按顺序配置模型、记忆、插件宿主、自动化和系统基础
-4. 最后再决定 Web 是源码运行还是打成 app / release
+请按照下方顺序建立你对 V8 Engine 运行的全局认知：
 
-**注意：** V8 Agent OS 会大量使用 reranker 模型。如果你不配置 reranker，记忆质量和工具暴露质量都会一起掉下来。
+*   [🚀 快速入门 (Engine Quick Start)](./docs/ENGINE_QUICK_START_ZH.md)
+*   [📖 开发者指南 (Developer Guide)](./docs/ENGINE_DEVELOPER_GUIDE_ZH.md)
+*   [🔌 API 参考矩阵 (API Reference)](./docs/ENGINE_API_REFERENCE_ZH.md)
+*   [🎛️ 真相源配置解析 (Config Guide)](./docs/ENGINE_CONFIG_GUIDE_ZH.md)
 
-## 默认本地地址
+---
 
-| 服务 | 地址 |
-| --- | --- |
-| Web | `http://127.0.0.1:9527` |
-| Admin | `http://127.0.0.1:9528` |
-| Engine | `http://127.0.0.1:9530` |
-
-## 这个仓库里有什么
-
-| 模块 | 路径 | 作用 |
-| --- | --- | --- |
-| Web | `apps/v8-agent-os-web` | 用户侧聊天界面与移动端入口 |
-| Admin | `apps/v8-agent-os-admin` | 配置中心、控制台、运行时观测面 |
-| Engine | `apps/v8-agent-os-engine` | 记忆、自动化、MCP、skills、安全、恢复与 runtime orchestration 的执行平面 |
-
-## 继续读
-
-- [Engine API 参考](./docs/ENGINE_API_REFERENCE.md)
-- [Engine Core 目录导览](./docs/ENGINE_CORE_DIRECTORY_GUIDE.md)
-- [Engine 开发者指南](./docs/ENGINE_DEVELOPER_GUIDE.md)
-- [Engine 开发者指南（中文）](./docs/ENGINE_DEVELOPER_GUIDE_ZH.md)
-- [Network Supervisor Runtime 方案](./docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN_ZH.md)
-
-## 支持 V8 Agent OS
-
-如果 V8 Agent OS 真的帮你的团队少重讲、少折腾，并且更放心地把长任务交给 Agent，欢迎在这里支持后续开发：
-
-[https://afdian.com/a/justForever17](https://afdian.com/a/justforever17)
+<div align="center">
+  <h3>支持 V8 Agent OS 持续演进</h3>
+  <p>如果你希望这套系统继续向着更工业级、更深度的自动执行运转舱衍化，欢迎给予支持：</p>
+  <a href="https://afdian.com/a/justforever17"><strong>https://afdian.com/a/justforever17</strong></a>
+</div>

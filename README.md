@@ -1,85 +1,107 @@
-# V8 Agent OS
+<div align="center">
+  <img src="./docs/assets/banner.svg" alt="V8 Agent OS Banner" width="800">
+</div>
 
-**V8 Agent OS** is for people who are tired of starting the same project conversation from zero.
+<div align="center">
+  <strong>Context Resilience · Tool Pre-filtering · Visually Transparent · Strongly Recoverable</strong>
+</div>
+<br>
 
-The promise is simple: keep the useful context alive, keep the tool surface calm, keep long-running work visible, and let successful screen work harden into something reusable.
+<div align="center">
 
-## Why it feels different
+[![OS](https://img.shields.io/badge/Platform-Win_|_Mac_|_Linux-green.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
+[![Node](https://img.shields.io/badge/Runtime-Node.js-orange.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
+[![Security](https://img.shields.io/badge/Security-Fail--Closed-red.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
 
-- **Less re-explaining.** Projects, workspaces, scoped memory, and durable recall mean tomorrow starts with continuity instead of amnesia.
-- **Less tool noise.** MCP and skills do not need to flood the model just because they are installed; V8 narrows the surface to what the current job actually needs.
-- **More visible work.** Workflow projection, artifacts, approvals, realtime updates, and operations-center views make long tasks easier to inspect and steer.
-- **Screen work that grows up.** Computer Use, desktop-live, and the path toward RPA turn “it worked once” into something that can become more repeatable.
+</div>
+<br>
 
-## Where OpenClaw fits
+> 🌐 [**中文文档请点这里**](./README-ZH.md)
 
-OpenClaw deserves real credit for making ecosystem breadth impossible to ignore.
+## 🪐 The Epoch-Making Agent Runtime
 
-V8 is not trying to win by saying “we also have plugins.” The stronger claim is about experience: **bring the ecosystem in, then keep the project context warmer, the tool surface quieter, and the running work easier to inspect and control.**
+**V8 Agent OS** is not just another fancy "smart chat wrapper." It is fundamentally engineered as an **Agent Runtime Ecosystem** heavily fortified with security armor and cross-platform asynchronous orchestration capabilities.
 
-## Quick install
+If you are tired of "re-explaining your project context to the model," "blind-running tasks crashing midway," or "unknown third-party Skills creating supply-chain blind spots," V8 is built for you. We provide a global memory graph, highly observable task pipelines, and human-in-the-loop manual overrides to ensure long-running task survival.
 
-The public bootstrap entry is one command per platform. It syncs the official repo, installs dependencies, and starts Admin + Engine. Web still ships separately.
+---
 
-### Windows
+## 🛡️ Core Weapons-Grade Architecture
 
+<table width="100%">
+  <tr>
+    <td width="50%">
+      <h3>1. Fully Decoupled Auto-runtime</h3>
+      <p>Structurally isolate the <strong>Control Plane (Admin 9528)</strong> from the <strong>Execution Core (Engine 9530)</strong>. This robust decoupling allows massive background agent tasks to survive browser closes, system suspends, and hold patiently for human-prompt interventions over several days.</p>
+    </td>
+    <td width="50%">
+      <h3>2. Reverse OpenClaw Ecosystem Hijack</h3>
+      <p>Through the architectural black magic of <code>v8-bridge</code>, V8 natively hijacks and fully accommodates the massive OpenClaw open-source plugin community, pulling their firepower strictly within our zero-trust secure guardrails.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>3. Compute-Aware Model Routing</h3>
+      <p>Natively intercept and route trivial classification tasks and long-text data summatives to free, local small models on your hardware. This prevents API bill explosions, reserving your premium frontier AI requests solely for extreme reasoning edges.</p>
+    </td>
+    <td width="50%">
+      <h3>4. Zero-Trust Approval Firewalls</h3>
+      <p>Blindly attaching unknown Skills is an open door to hackers. Upon encountering destructive system commands, the backend graph instantly suspends execution, triggering a human-in-the-loop audit on the Control Board. Even a hidden <code>rm -rf</code> cannot escape your gaze.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>5. Omniscient MCP & SKILLS Pre-Filtering</h3>
+      <p>Load massive integrations without blowing out your token limits. A top-level Reranker dynamically normalizes and pre-filters hundreds of separate MCP modules and native Skills into one context window, exposing only the exact razor-sharp edges the task needs.</p>
+    </td>
+    <td width="50%">
+      <h3>6. Graph-Layered Memory Surgery</h3>
+      <p>True memory isn't just dumping a static markdown file. V8 employs a background Memory Agent and projects the data as an interactive UI Node Graph where operators can surgically sculpt, sever, and override individual knowledge clusters.</p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## ⚡ One-Command Bootstrap
+
+Skip the manual dependency hell. Start both the Admin console and the Execution Engine instantly using our cross-platform one-line command (Web UI handled separately).
+
+### Windows (PowerShell)
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.ps1 | iex"
 ```
 
-### Linux / macOS
-
+### macOS / Linux (Bash)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.sh | bash
 ```
+> *(Note: If you have already cloned the checkout locally, you only need to run `./bootstrap.ps1` or `./bootstrap.sh` inside the directory.)*
 
-## Already inside a checkout?
+---
 
-If you are already working inside a local checkout, the same bootstrap scripts still work as a secondary path:
+## ⚙️ Initial Startup Sequence
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
-```
+1. **Crucial First Step**: Access the Admin Control Center: `http://127.0.0.1:9528`
+2. **Mandatory Configuration**: Set up your primary main LLM models.
+3. **Absolutely Vital**: You MUST configure the Reranker settings. If left unconfigured, the precision of dynamic tool exposure and continuous memory retrieval will suffer a fatal dropdown.
+4. Save configurations and proceed to the Web interaction frontend: `http://127.0.0.1:9527` to begin your journey.
 
-```bash
-./bootstrap.sh
-```
+---
 
-## After install
+## 📚 Technical Arsenal (Documentation)
 
-1. Open **Admin**
-2. Finish the core configuration there
-3. Configure models, memory, plugin host, automation, and system base in that order
-4. Decide separately whether Web should run from source or ship as an app / release
+Establish your architectural mental model of the V8 Engine by consulting the guides below:
 
-**Important:** V8 Agent OS relies heavily on reranker models. If you do not configure a reranker, memory quality and tool exposure quality will both suffer.
+*   [🚀 Quick Start](./docs/ENGINE_QUICK_START.md)
+*   [📖 Developer Guide](./docs/ENGINE_DEVELOPER_GUIDE.md)
+*   [🔌 API Reference](./docs/ENGINE_API_REFERENCE.md)
+*   [🎛️ Configuration Guide](./docs/ENGINE_CONFIG_GUIDE.md)
 
-## Default local addresses
+---
 
-| Service | URL |
-| --- | --- |
-| Web | `http://127.0.0.1:9527` |
-| Admin | `http://127.0.0.1:9528` |
-| Engine | `http://127.0.0.1:9530` |
-
-## What ships in this repository
-
-| Module | Path | Purpose |
-| --- | --- | --- |
-| Web | `apps/v8-agent-os-web` | User-facing chat UI and mobile entry surface |
-| Admin | `apps/v8-agent-os-admin` | Configuration, control console, and runtime observability |
-| Engine | `apps/v8-agent-os-engine` | Execution plane for memory, automation, MCP, skills, safety, recovery, and runtime orchestration |
-
-## Read next
-
-- [Engine API Reference](./docs/ENGINE_API_REFERENCE.md)
-- [Engine Core Directory Guide](./docs/ENGINE_CORE_DIRECTORY_GUIDE.md)
-- [Engine Developer Guide](./docs/ENGINE_DEVELOPER_GUIDE.md)
-- [Engine Developer Guide (Chinese)](./docs/ENGINE_DEVELOPER_GUIDE_ZH.md)
-- [Network Supervisor Runtime Plan](./docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN.md)
-
-## Support V8 Agent OS
-
-If V8 Agent OS helps your team repeat itself less, keep long-running work under control, or treat agent systems more like real systems than demos, you can support continued development here:
-
-[https://afdian.com/a/justForever17](https://afdian.com/a/justforever17)
+<div align="center">
+  <h3>Support V8 Agent OS Continued Operations</h3>
+  <p>If this system helps your team repeat context less, govern background tasks flawlessly, and brings enterprise-scale safety to your automated operations, you can support us here:</p>
+  <a href="https://afdian.com/a/justforever17"><strong>https://afdian.com/a/justforever17</strong></a>
+</div>

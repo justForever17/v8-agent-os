@@ -196,12 +196,12 @@ export function TodosHUD({ sessionId }: { sessionId?: string | null }) {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.95, y: 20 }}
                     transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                    className="pointer-events-auto w-[min(20rem,calc(100vw-2rem))] max-w-full select-none"
+                    className="pointer-events-auto w-[min(19rem,calc(100vw-1.5rem))] max-w-full select-none"
                     layout
                 >
                     <div className="flex flex-col overflow-hidden rounded-2xl border border-white/30 bg-background/46 shadow-[0_18px_48px_rgba(15,23,42,0.12)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/42">
                         <div
-                            className="flex cursor-pointer items-center gap-2 border-b border-white/15 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent px-4 py-3 transition-colors hover:bg-primary/5"
+                            className="flex min-h-[36px] cursor-pointer items-center gap-2 border-b border-white/15 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent px-3 py-1.5 sm:min-h-[40px] sm:px-4 sm:py-2 transition-colors hover:bg-primary/5"
                             onClick={() => setIsCollapsed(!isCollapsed)}
                         >
                             <div className="rounded-md bg-primary/18 p-1.5 text-primary backdrop-blur-sm">
@@ -228,7 +228,7 @@ export function TodosHUD({ sessionId }: { sessionId?: string | null }) {
                                     animate={{ height: "auto", opacity: 1 }}
                                     exit={{ height: 0, opacity: 0 }}
                                     transition={{ duration: 0.2 }}
-                                    className="custom-scrollbar max-h-64 space-y-1.5 overflow-y-auto p-3"
+                                    className="custom-scrollbar max-h-[132px] sm:max-h-[208px] space-y-1.5 overflow-y-auto p-2 sm:p-2.5"
                                 >
                                     {todos.map((todo) => {
                                         const isDone = todo.status === "done";

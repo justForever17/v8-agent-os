@@ -29,7 +29,7 @@ export async function POST(req: Request) {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    return NextResponse.json(data);
+    return NextResponse.json(data, { status: res.status });
   } catch {
     return new NextResponse("Internal Error", { status: 500 });
   }

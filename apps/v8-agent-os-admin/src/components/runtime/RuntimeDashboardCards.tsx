@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { lt } from "@/lib/locale";
-import { CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayName, isCoreRuntimeKind } from "@/lib/runtime-admin";
+import { CANONICAL_RUNTIME_KINDS, CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind } from "@/lib/runtime-admin";
 import { cn } from "@/lib/utils";
 
 type RuntimePolicy = {
@@ -21,6 +21,7 @@ type RuntimeDescriptor = {
     kind: string;
     displayName: string;
     policy?: RuntimePolicy;
+    registered?: boolean;
 };
 
 type RuntimeSnapshot = {
@@ -28,6 +29,7 @@ type RuntimeSnapshot = {
 };
 
 const CORE_SORT_ORDER = new Map<string, number>(CORE_RUNTIME_KINDS.map((kind, index) => [kind, index]));
+const CANONICAL_SORT_ORDER = new Map<string, number>(CANONICAL_RUNTIME_KINDS.map((kind, index) => [kind, index]));
 
 function sortRuntimes(items: RuntimeDescriptor[]) {
     return [...items].sort((left, right) => {
@@ -44,8 +46,47 @@ function sortRuntimes(items: RuntimeDescriptor[]) {
         if (leftPriority !== rightPriority) {
             return leftPriority - rightPriority;
         }
+        const leftCanonical = CANONICAL_SORT_ORDER.get(left.kind);
+        const rightCanonical = CANONICAL_SORT_ORDER.get(right.kind);
+        if (leftCanonical !== undefined || rightCanonical !== undefined) {
+            return (leftCanonical ?? 999) - (rightCanonical ?? 999);
+        }
         return left.kind.localeCompare(right.kind);
     });
+}
+
+function mergeRuntimeSnapshot(items: RuntimeDescriptor[]) {
+    const byKind = new Map<string, RuntimeDescriptor>();
+    for (const item of items) {
+        const normalizedKind = String(item.kind || "").trim();
+        if (!normalizedKind) continue;
+        byKind.set(normalizedKind, {
+            ...item,
+            kind: normalizedKind,
+            registered: item.registered !== false,
+        });
+    }
+
+    const merged: RuntimeDescriptor[] = [];
+    for (const kind of CANONICAL_RUNTIME_KINDS) {
+        const existing = byKind.get(kind);
+        if (existing) {
+            merged.push(existing);
+            byKind.delete(kind);
+            continue;
+        }
+        merged.push({
+            kind,
+            displayName: getRuntimeDisplayName({ kind }),
+            policy: { enabled: true },
+            registered: false,
+        });
+    }
+
+    for (const runtime of byKind.values()) {
+        merged.push(runtime);
+    }
+    return sortRuntimes(merged);
 }
 
 function StatusDot({ enabled }: { enabled: boolean }) {
@@ -75,7 +116,7 @@ export function RuntimeDashboardCards() {
                 throw new Error(`Runtime capabilities failed: ${response.status}`);
             }
             const payload: RuntimeSnapshot = await response.json().catch(() => ({}));
-            setRuntimes(sortRuntimes(payload.runtimes || []));
+            setRuntimes(mergeRuntimeSnapshot(payload.runtimes || []));
         } catch (error) {
             console.error("Failed to load runtime cards:", error);
             toast({
@@ -101,6 +142,13 @@ export function RuntimeDashboardCards() {
         ].filter((group) => group.items.length > 0);
     }, [runtimes, t]);
 
+    const resolveRuntimeLabel = useCallback((runtime: RuntimeDescriptor) => {
+        if (isCanonicalRuntimeKind(runtime.kind)) {
+            return t(getRuntimeDisplayText(runtime.kind));
+        }
+        return getRuntimeDisplayName(runtime);
+    }, [t]);
+
     const handleToggle = useCallback(async (runtime: RuntimeDescriptor, checked: boolean) => {
         if (isCoreRuntimeKind(runtime.kind)) {
             return;
@@ -116,7 +164,7 @@ export function RuntimeDashboardCards() {
             if (!response.ok) {
                 throw new Error(String(payload?.detail || payload?.error || response.status));
             }
-            setRuntimes(sortRuntimes((payload?.snapshot?.runtimes as RuntimeDescriptor[] | undefined) || []));
+            setRuntimes(mergeRuntimeSnapshot((payload?.snapshot?.runtimes as RuntimeDescriptor[] | undefined) || []));
         } catch (error) {
             console.error("Failed to toggle runtime:", error);
             toast({
@@ -159,18 +207,23 @@ export function RuntimeDashboardCards() {
                                                         href={href}
                                                         className="block truncate text-sm font-semibold text-slate-900 transition hover:text-sky-700"
                                                     >
-                                                        {getRuntimeDisplayName(runtime)}
+                                                        {resolveRuntimeLabel(runtime)}
                                                     </Link>
                                                     <div className="flex items-center gap-2 text-xs text-slate-500">
                                                         <StatusDot enabled={enabled} />
-                                                        <span>{enabled ? "On" : "Off"}</span>
+                                                        <span>{enabled ? t(lt("启用", "On")) : t(lt("关闭", "Off"))}</span>
+                                                        {!runtime.registered && isCanonicalRuntimeKind(runtime.kind) ? (
+                                                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                                                                {t(lt("按需加载", "Lazy-loaded"))}
+                                                            </span>
+                                                        ) : null}
                                                     </div>
                                                 </div>
                                                 <Switch
                                                     checked={enabled}
                                                     disabled={disabled || pending}
                                                     onCheckedChange={(checked) => void handleToggle(runtime, checked)}
-                                                    aria-label={`${getRuntimeDisplayName(runtime)} toggle`}
+                                                    aria-label={`${resolveRuntimeLabel(runtime)} toggle`}
                                                     className={disabled ? "data-[state=checked]:bg-slate-300 data-[state=unchecked]:bg-slate-200" : undefined}
                                                 />
                                             </CardContent>

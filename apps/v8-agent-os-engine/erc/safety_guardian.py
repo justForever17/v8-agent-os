@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import psutil
 
@@ -140,6 +142,206 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
         "mutatingHttpMethods": ["POST", "PUT", "PATCH", "DELETE"],
     },
 }
+
+_SKILL_SCAN_TEXT_SUFFIXES = {
+    ".py",
+    ".sh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".command",
+    ".js",
+    ".ts",
+    ".mjs",
+    ".cjs",
+}
+_SKILL_SCAN_BINARY_SUFFIXES = {
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".bin",
+    ".jar",
+    ".com",
+    ".msi",
+    ".app",
+}
+_SKILL_SCAN_IGNORED_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "venv",
+    ".venv",
+}
+_SKILL_SCAN_MAX_FILES = 256
+_SKILL_SCAN_MAX_BYTES = 200_000
+_SKILL_SCAN_MAX_FLAGGED_FILES = 16
+_SKILL_SCAN_REASON_LIMIT = 8
+_SKILL_SCAN_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "download_then_execute",
+        "label": "下载后立即执行",
+        "severity": "high",
+        "score": 42,
+        "reason": "发现下载后立即执行的链式特征。",
+        "all_groups": (
+            (
+                "curl ",
+                "wget ",
+                "invoke-webrequest",
+                "invoke-restmethod",
+                "downloadstring",
+                "urlretrieve(",
+                "urllib.request.urlretrieve",
+                "requests.get(",
+                "httpx.get(",
+            ),
+            (
+                "| bash",
+                "| sh",
+                "invoke-expression",
+                " iex",
+                "subprocess.",
+                "os.system(",
+                "start-process",
+                "cmd.exe /c",
+                "powershell.exe -command",
+                "bash -c",
+                "sh -c",
+            ),
+        ),
+    },
+    {
+        "id": "encoded_payload",
+        "label": "编码载荷/反射执行",
+        "severity": "high",
+        "score": 36,
+        "reason": "发现编码载荷、反射执行或混淆执行特征。",
+        "any_tokens": (
+            "frombase64string",
+            "base64 -d",
+            "powershell -enc",
+            "encodedcommand",
+            "marshal.loads",
+            "exec(base64",
+            "eval(base64",
+            "reflection.assembly",
+            "add-type",
+            "rundll32",
+            "mshta ",
+        ),
+    },
+    {
+        "id": "credential_exfiltration",
+        "label": "敏感信息读取后外传",
+        "severity": "high",
+        "score": 38,
+        "reason": "发现凭证/环境变量读取后外传特征。",
+        "all_groups": (
+            (
+                ".ssh",
+                ".aws",
+                ".kube",
+                "id_rsa",
+                "known_hosts",
+                "os.environ",
+                "$env:",
+                "access_key",
+                "secret_key",
+                "api_key",
+                "token",
+            ),
+            (
+                "requests.post(",
+                "httpx.post(",
+                "urllib.request",
+                "invoke-webrequest",
+                "curl -d",
+                "curl --data",
+                "fetch(",
+                "axios.post(",
+                "webhook",
+            ),
+        ),
+    },
+    {
+        "id": "persistence",
+        "label": "持久化植入",
+        "severity": "medium",
+        "score": 24,
+        "reason": "发现计划任务、开机自启或持久化植入特征。",
+        "any_tokens": (
+            "schtasks",
+            "crontab",
+            "launchctl",
+            "launchagents",
+            "launchdaemons",
+            "reg add",
+            "currentversion\\run",
+            "systemctl enable",
+            "login item",
+        ),
+    },
+    {
+        "id": "destructive_fs",
+        "label": "大范围破坏性文件系统操作",
+        "severity": "high",
+        "score": 40,
+        "reason": "发现可能清空、格式化或批量破坏文件系统的特征。",
+        "any_tokens": (
+            "rm -rf",
+            "remove-item -recurse -force",
+            "del /f /s /q",
+            "rd /s /q",
+            "format ",
+            "mkfs",
+            "diskpart",
+            "cipher /w",
+            "shutil.rmtree(",
+        ),
+    },
+    {
+        "id": "hidden_shell_exec",
+        "label": "隐蔽 shell/PowerShell 执行",
+        "severity": "medium",
+        "score": 14,
+        "reason": "发现隐蔽 shell 或 PowerShell 执行特征。",
+        "any_tokens": (
+            "subprocess.popen(",
+            "subprocess.run(",
+            "os.system(",
+            "start-process",
+            "cmd.exe /c",
+            "powershell.exe -command",
+            "bash -c",
+            "sh -c",
+        ),
+    },
+    {
+        "id": "secret_material_access",
+        "label": "敏感材料读取",
+        "severity": "medium",
+        "score": 12,
+        "reason": "发现凭证、环境变量或敏感配置读取特征。",
+        "any_tokens": (
+            ".ssh",
+            ".aws",
+            ".kube",
+            "id_rsa",
+            "os.environ",
+            "$env:",
+            ".env",
+            "token",
+            "api_key",
+            "authorization",
+        ),
+    },
+)
 
 
 @dataclass(slots=True)
@@ -432,6 +634,7 @@ class SafetyGuardian:
         return {
             "question": question,
             "prompt": question,
+            "interactionKind": "approval",
             "approvalKind": "safety_review" if decision.is_review() else "safety_blocked",
             "runtime": {
                 "runtime_kind": runtime_kind,
@@ -840,6 +1043,325 @@ class SafetyGuardian:
                 "runtime_context": runtime_context,
             },
         )
+
+    def assess_skill_directory(
+        self,
+        *,
+        skill_name: str,
+        skill_root: str,
+        instruction_path: str | None = None,
+    ) -> Dict[str, Any]:
+        audit_id = f"skillscan_{uuid4().hex[:12]}"
+        root = self._normalize_path(skill_root)
+        excluded = {
+            path
+            for path in [self._normalize_path(instruction_path)]
+            if path is not None
+        }
+        if root is None or not root.exists() or not root.is_dir():
+            return {
+                "auditId": audit_id,
+                "verdict": "medium",
+                "confidence": 0.74,
+                "reasons": ["Skill 根目录不存在或不可访问，无法完成安全初筛。"],
+                "flaggedFiles": [],
+                "skillTrustScore": 35,
+                "scannedFiles": 0,
+                "candidateFiles": 0,
+                "skillName": skill_name,
+                "skillPath": skill_root,
+            }
+
+        candidates = self._collect_skill_scan_candidates(root, excluded_paths=excluded)
+        flagged_files: list[dict[str, Any]] = []
+        reason_hits: dict[str, int] = {}
+        total_score = 0
+        highest_severity_rank = 1
+
+        for candidate in candidates:
+            assessment = self._assess_skill_candidate(root, candidate)
+            if not assessment:
+                continue
+            flagged_files.append(assessment)
+            total_score = min(100, total_score + int(assessment.get("score") or 0))
+            highest_severity_rank = max(highest_severity_rank, self._severity_rank(str(assessment.get("severity") or "low")))
+            for finding in list(assessment.get("findings") or []):
+                label = str(finding.get("label") or "").strip()
+                if label:
+                    reason_hits[label] = reason_hits.get(label, 0) + 1
+
+        reasons: list[str] = []
+        for label, count in sorted(reason_hits.items(), key=lambda item: (-item[1], item[0])):
+            suffix = f"（{count} 个文件）" if count > 1 else ""
+            reasons.append(f"发现 {label}{suffix}。")
+            if len(reasons) >= _SKILL_SCAN_REASON_LIMIT:
+                break
+
+        if not reasons:
+            if candidates:
+                reasons.append(f"已扫描 {len(candidates)} 个候选文件，未发现高风险静态特征。")
+            else:
+                reasons.append("未发现需要扫描的可执行或高风险候选文件。")
+
+        verdict = self._skill_scan_verdict(total_score, highest_severity_rank)
+        confidence = self._skill_scan_confidence(total_score, len(flagged_files), highest_severity_rank)
+        trust_score = max(0, 100 - total_score)
+
+        return {
+            "auditId": audit_id,
+            "verdict": verdict,
+            "confidence": confidence,
+            "reasons": reasons,
+            "flaggedFiles": flagged_files[:_SKILL_SCAN_MAX_FLAGGED_FILES],
+            "skillTrustScore": trust_score,
+            "scannedFiles": len(candidates),
+            "candidateFiles": len(candidates),
+            "skillName": skill_name,
+            "skillPath": str(root),
+        }
+
+    def review_skill_scan_with_llm(
+        self,
+        *,
+        skill_name: str,
+        skill_root: str,
+        scan_payload: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
+        if static_verdict not in {"medium", "high"}:
+            return None
+
+        try:
+            from core.models.control_plane import model_control_plane
+            from core.llm_factory import llm_factory
+            from langchain_core.messages import HumanMessage, SystemMessage
+        except Exception as exc:
+            return {
+                "status": "error",
+                "decision": "unavailable",
+                "reason": f"无法加载安全复审依赖：{exc}",
+            }
+
+        model_id = str(model_control_plane.get_role_model_id("safety_review") or "").strip()
+        if not model_id:
+            return None
+
+        try:
+            review_llm = llm_factory.create_for_role("safety_review", temperature=0.0, streaming=False)
+        except Exception as exc:
+            return {
+                "status": "error",
+                "decision": "unavailable",
+                "modelId": model_id,
+                "reason": f"安全复审模型初始化失败：{exc}",
+            }
+
+        flagged_files = list(scan_payload.get("flaggedFiles") or [])[:8]
+        reasons = list(scan_payload.get("reasons") or [])[:6]
+        prompt_payload = {
+            "skillName": skill_name,
+            "skillRoot": skill_root,
+            "staticVerdict": static_verdict,
+            "confidence": scan_payload.get("confidence"),
+            "skillTrustScore": scan_payload.get("skillTrustScore"),
+            "reasons": reasons,
+            "flaggedFiles": flagged_files,
+        }
+        system_prompt = (
+            "你是 V8 Agent OS 的 Safety Review 模型。"
+            "你只根据提供的 skill 静态扫描结果做二次复审，不要臆造额外文件内容。"
+            "如果证据显示该 skill 很可能包含恶意执行、敏感信息外传、持久化植入或破坏性系统操作，请输出 block。"
+            "如果证据不足以认定为恶意、且更像合法自动化/开发辅助逻辑，则输出 allow。"
+            "只返回 JSON，不要带 Markdown 代码块。"
+            'JSON schema: {"decision":"allow|block","confidence":0.0,"summary":"...","notes":["..."]}'
+        )
+
+        try:
+            response = review_llm.invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=json.dumps(prompt_payload, ensure_ascii=False, indent=2)),
+                ],
+                config={"callbacks": []},
+            )
+            raw_text = self._extract_llm_text(response)
+            parsed = self._parse_skill_review_json(raw_text)
+            decision = str(parsed.get("decision") or "").strip().lower()
+            if decision not in {"allow", "block"}:
+                raise ValueError("decision must be allow or block")
+            confidence = parsed.get("confidence")
+            try:
+                normalized_confidence = round(min(0.99, max(0.0, float(confidence))), 2)
+            except (TypeError, ValueError):
+                normalized_confidence = 0.5
+            notes = parsed.get("notes")
+            return {
+                "status": "completed",
+                "decision": decision,
+                "confidence": normalized_confidence,
+                "summary": str(parsed.get("summary") or "").strip() or "安全复审未提供摘要。",
+                "notes": [str(item).strip() for item in list(notes or []) if str(item).strip()][:4],
+                "modelId": model_id,
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "decision": "unavailable",
+                "modelId": model_id,
+                "reason": f"安全复审模型返回不可解析结果：{exc}",
+            }
+
+    def _extract_llm_text(self, response: Any) -> str:
+        content = getattr(response, "content", response)
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+            return "\n".join(parts).strip()
+        return str(content or "").strip()
+
+    def _parse_skill_review_json(self, raw_text: str) -> Dict[str, Any]:
+        text = str(raw_text or "").strip()
+        if not text:
+            raise ValueError("empty review response")
+        fenced = re.search(r"\{.*\}", text, re.DOTALL)
+        candidate = fenced.group(0) if fenced else text
+        parsed = json.loads(candidate)
+        if not isinstance(parsed, dict):
+            raise ValueError("review response must be a JSON object")
+        return parsed
+
+    def _collect_skill_scan_candidates(self, root: Path, *, excluded_paths: set[Path]) -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[str] = set()
+
+        for current_root, dir_names, file_names in os.walk(root, topdown=True):
+            dir_names[:] = [name for name in dir_names if name not in _SKILL_SCAN_IGNORED_DIRS]
+            current_root_path = Path(current_root)
+            for file_name in file_names:
+                if len(candidates) >= _SKILL_SCAN_MAX_FILES:
+                    return candidates
+                normalized = self._normalize_path(str(current_root_path / file_name))
+                if normalized is None or normalized in excluded_paths:
+                    continue
+                if not self._should_scan_skill_path(root, normalized):
+                    continue
+                key = str(normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(normalized)
+
+        return candidates
+
+    def _should_scan_skill_path(self, root: Path, path: Path) -> bool:
+        suffix = path.suffix.lower()
+        if suffix in _SKILL_SCAN_TEXT_SUFFIXES or suffix in _SKILL_SCAN_BINARY_SUFFIXES:
+            return True
+        try:
+            relative = path.relative_to(root).as_posix().lower()
+        except ValueError:
+            return False
+        if relative.startswith("scripts/"):
+            return True
+        try:
+            return os.access(path, os.X_OK)
+        except Exception:
+            return False
+
+    def _assess_skill_candidate(self, root: Path, path: Path) -> Dict[str, Any] | None:
+        try:
+            raw = path.read_bytes()[:_SKILL_SCAN_MAX_BYTES]
+        except Exception:
+            return None
+        is_binary = b"\x00" in raw
+        try:
+            relative_path = path.relative_to(root).as_posix()
+        except ValueError:
+            relative_path = path.name
+        lowered_path = relative_path.lower()
+        text = raw.decode("utf-8", errors="ignore").lower()
+        composite = f"{lowered_path}\n{text}"
+
+        findings: list[dict[str, Any]] = []
+        for rule in _SKILL_SCAN_RULES:
+            if self._matches_skill_scan_rule(composite, rule):
+                findings.append(
+                    {
+                        "id": str(rule["id"]),
+                        "label": str(rule["label"]),
+                        "severity": str(rule["severity"]),
+                        "score": int(rule["score"]),
+                        "reason": str(rule["reason"]),
+                    }
+                )
+
+        if is_binary and path.suffix.lower() in _SKILL_SCAN_BINARY_SUFFIXES:
+            findings.append(
+                {
+                    "id": "binary_executable",
+                    "label": "可执行二进制载荷",
+                    "severity": "medium",
+                    "score": 18,
+                    "reason": "发现可执行二进制文件，需人工确认其来源与用途。",
+                }
+            )
+
+        if not findings:
+            return None
+
+        score = min(100, sum(int(item["score"]) for item in findings))
+        severity = max((str(item["severity"]) for item in findings), key=self._severity_rank)
+        return {
+            "path": relative_path,
+            "severity": severity,
+            "score": score,
+            "isBinary": is_binary,
+            "findings": findings,
+        }
+
+    def _matches_skill_scan_rule(self, text: str, rule: Dict[str, Any]) -> bool:
+        any_tokens = tuple(str(item).lower() for item in rule.get("any_tokens", ()) if str(item).strip())
+        if any_tokens and not any(token in text for token in any_tokens):
+            return False
+        for group in tuple(rule.get("all_groups", ()) or ()):
+            normalized = tuple(str(item).lower() for item in group if str(item).strip())
+            if normalized and not any(token in text for token in normalized):
+                return False
+        return bool(any_tokens or rule.get("all_groups"))
+
+    def _severity_rank(self, severity: str) -> int:
+        return {
+            "low": 1,
+            "medium": 2,
+            "high": 3,
+            "critical": 4,
+        }.get(str(severity or "").strip().lower(), 1)
+
+    def _skill_scan_verdict(self, total_score: int, highest_severity_rank: int) -> str:
+        if total_score >= 80 or highest_severity_rank >= 4:
+            return "critical"
+        if total_score >= 45 or highest_severity_rank >= 3:
+            return "high"
+        if total_score >= 20 or highest_severity_rank >= 2:
+            return "medium"
+        return "low"
+
+    def _skill_scan_confidence(self, total_score: int, flagged_count: int, highest_severity_rank: int) -> float:
+        confidence = 0.42
+        confidence += min(0.28, flagged_count * 0.05)
+        confidence += min(0.2, total_score / 250.0)
+        if highest_severity_rank >= 3:
+            confidence += 0.08
+        return round(min(0.98, max(0.35, confidence)), 2)
 
     def _normalize_path(self, path: str | None) -> Optional[Path]:
         if not path:

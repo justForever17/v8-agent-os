@@ -359,6 +359,100 @@ def fetch_skill_instructions(skill_name: str) -> str:
     if skill_name in registry:
         # Returning the path and the raw markdown. LangGraph will place this directly into the ToolMessage for the context.
         skill = registry[skill_name]
+        scan_payload: dict[str, Any] | None = None
+        review_payload: dict[str, Any] | None = None
+        try:
+            from core.audit_logger import audit_logger
+            from erc.safety_guardian import safety_guardian
+
+            scan_payload = safety_guardian.assess_skill_directory(
+                skill_name=skill.get("name") or skill_name,
+                skill_root=skill.get("path") or "",
+                instruction_path=skill.get("instructionPath") or "",
+            )
+            static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
+            if static_verdict in {"medium", "high"}:
+                review_payload = safety_guardian.review_skill_scan_with_llm(
+                    skill_name=skill.get("name") or skill_name,
+                    skill_root=skill.get("path") or "",
+                    scan_payload=scan_payload,
+                )
+                if review_payload:
+                    scan_payload["llmReview"] = review_payload
+                    scan_payload["reviewMode"] = "llm_assisted"
+                    if review_payload.get("status") == "completed":
+                        review_summary = str(review_payload.get("summary") or "").strip()
+                        if review_payload.get("decision") == "allow":
+                            scan_payload["staticVerdict"] = static_verdict
+                            scan_payload["verdict"] = "medium" if static_verdict == "high" else "low"
+                            reasons = list(scan_payload.get("reasons") or [])
+                            reasons.append(
+                                f"安全复审模型认为该 skill 可放行：{review_summary or '证据不足以支持阻断。'}"
+                            )
+                            scan_payload["reasons"] = reasons[:10]
+                        elif review_payload.get("decision") == "block":
+                            scan_payload["staticVerdict"] = static_verdict
+                            scan_payload["verdict"] = "high" if static_verdict == "medium" else static_verdict
+                            reasons = list(scan_payload.get("reasons") or [])
+                            reasons.append(
+                                f"安全复审模型维持阻断：{review_summary or '疑点仍然足够高风险。'}"
+                            )
+                            scan_payload["reasons"] = reasons[:10]
+                    else:
+                        scan_payload["reviewMode"] = "rules_only_fallback"
+            else:
+                scan_payload["reviewMode"] = "rules_only"
+            audit_logger.log(
+                source_type="SAFETY",
+                action="skill_scan",
+                status="WARNING" if scan_payload.get("verdict") in {"high", "critical"} else "INFO",
+                details=json.dumps(
+                    {
+                        "skillName": skill.get("name") or skill_name,
+                        "skillPath": skill.get("path") or "",
+                        "instructionPath": skill.get("instructionPath") or "",
+                        **scan_payload,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:
+            scan_payload = None
+
+        if scan_payload and scan_payload.get("verdict") in {"high", "critical"}:
+            try:
+                from core.extensions_runtime import extensions_runtime_service
+
+                extensions_runtime_service.emit_skill_blocked(
+                    skill_name=skill["name"],
+                    skill_path=skill["path"],
+                    verdict=str(scan_payload.get("verdict") or "high"),
+                    confidence=float(scan_payload.get("confidence") or 0.0),
+                    skill_trust_score=int(scan_payload.get("skillTrustScore") or 0),
+                    audit_id=str(scan_payload.get("auditId") or ""),
+                    reasons=list(scan_payload.get("reasons") or []),
+                    flagged_files=list(scan_payload.get("flaggedFiles") or []),
+                )
+            except Exception:
+                pass
+            reasons = "\n".join(f"- {item}" for item in list(scan_payload.get("reasons") or [])[:8]) or "- Safety Guardian 未提供具体原因。"
+            flagged_files = "\n".join(
+                f"- {item.get('path')}: {', '.join(str(entry.get('label') or '') for entry in list(item.get('findings') or [])[:4] if str(entry.get('label') or '').strip()) or '高风险特征'}"
+                for item in list(scan_payload.get("flaggedFiles") or [])[:12]
+            ) or "- 未返回命中文件详情。"
+            return (
+                f"=== SKILL BLOCKED BY SAFETY GUARDIAN ===\n"
+                f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
+                f"Skill Root: {skill.get('skillRoot') or skill.get('path') or ''}\n"
+                f"Verdict: {scan_payload.get('verdict')}\n"
+                f"Confidence: {scan_payload.get('confidence')}\n"
+                f"Skill Trust Score: {scan_payload.get('skillTrustScore')}\n"
+                f"Audit ID: {scan_payload.get('auditId')}\n"
+                f"Reasons:\n{reasons}\n"
+                f"Flagged Files:\n{flagged_files}\n\n"
+                f"Safety Guardian 已阻断该 skill 的说明读取。不要继续使用这个 skill，"
+                f"请改用其他 skill、MCP、插件工具或系统工具继续完成当前任务。"
+            )
         try:
             from core.extensions_runtime import extensions_runtime_service
 

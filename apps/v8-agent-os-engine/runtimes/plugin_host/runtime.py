@@ -84,7 +84,7 @@ def _extract_interrupt_request(chunk: dict | None) -> dict | None:
 
     question = payload.get("question") or payload.get("prompt") or "当前渠道任务需要您的确认才能继续。"
     tool_call_id = payload.get("toolCallId") or payload.get("tool_call_id")
-    approval_kind = payload.get("approvalKind") or payload.get("approval_kind") or "ask_user"
+    approval_kind = payload.get("approvalKind") or payload.get("approval_kind") or "human_input_required"
     request_payload = dict(payload)
     request_payload["question"] = question
     request_payload["prompt"] = question
@@ -1151,7 +1151,7 @@ class PluginHostRuntime:
         governance: bool = False,
     ) -> Optional[Tuple[str, None, str]]:
         approval = run_handle.request_approval(
-            approval_kind=approval_kind or request.get("approvalKind") or "ask_user",
+            approval_kind=approval_kind or request.get("approvalKind") or "human_input_required",
             request=request,
         )
         if str(approval.get("status") or "").strip().lower() != "pending":

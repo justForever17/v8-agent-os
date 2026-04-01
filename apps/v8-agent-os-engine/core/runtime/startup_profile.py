@@ -11,9 +11,9 @@ _PROFILE_ORDER = {name: index for index, name in enumerate(STARTUP_PROFILES)}
 _FEATURE_MIN_PROFILE = {
     "core": "minimal",
     "audio": "standard",
-    "skills": "standard",
+    "skills": "minimal",
     "mcp": "standard",
-    "extensions": "standard",
+    "extensions": "minimal",
     "cron": "standard",
     "knowledge": "standard",
     "ops": "standard",
@@ -28,6 +28,38 @@ _DISABLED_REASON_LABELS = {
     "disabled_by_profile": "启动档位未开启",
     "disabled_by_runtime_policy": "runtime policy 已禁用",
     "enabled": "已启用",
+}
+_RUNTIME_CLUSTERS = {
+    "chatruntime": {
+        "minimumProfile": "minimal",
+        "features": ("core",),
+        "minimalSubmode": "full",
+    },
+    "extensionsruntime": {
+        "minimumProfile": "minimal",
+        "features": ("skills", "extensions"),
+        "minimalSubmode": "lite",
+    },
+    "memoryruntime": {
+        "minimumProfile": "minimal",
+        "features": ("knowledge",),
+        "minimalSubmode": "lite",
+    },
+    "autoruntime": {
+        "minimumProfile": "minimal",
+        "features": ("cron", "ops"),
+        "minimalSubmode": "lite",
+    },
+    "servicecluster": {
+        "minimumProfile": "standard",
+        "features": ("audio", "mcp", "plugin_host", "network_supervisor"),
+        "minimalSubmode": "off",
+    },
+    "desktopcluster": {
+        "minimumProfile": "desktop",
+        "features": ("computer_use", "desktop_live", "rpa"),
+        "minimalSubmode": "off",
+    },
 }
 
 
@@ -161,3 +193,30 @@ def startup_bundle_diagnostics(profile: str | None = None) -> dict[str, dict[str
         "desktop_live": service_state("desktop_live", profile=normalized_profile),
         "rpa": service_state("rpa", profile=normalized_profile),
     }
+
+
+def runtime_cluster_summary(profile: str | None = None) -> dict[str, bool]:
+    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
+    return {
+        cluster_name: profile_at_least(normalized_profile, cluster_config["minimumProfile"])
+        for cluster_name, cluster_config in _RUNTIME_CLUSTERS.items()
+    }
+
+
+def runtime_submode_summary(profile: str | None = None) -> dict[str, str]:
+    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
+    submodes: dict[str, str] = {}
+    for cluster_name, cluster_config in _RUNTIME_CLUSTERS.items():
+        minimum_profile = normalize_startup_profile(cluster_config["minimumProfile"])
+        if not profile_at_least(normalized_profile, minimum_profile):
+            submodes[cluster_name] = "off"
+            continue
+        if normalized_profile == "minimal":
+            submodes[cluster_name] = str(cluster_config.get("minimalSubmode") or "lite")
+        else:
+            submodes[cluster_name] = "full"
+    return submodes
+
+
+def disabled_reason_summary(profile: str | None = None) -> dict[str, dict[str, Any]]:
+    return startup_bundle_diagnostics(profile)

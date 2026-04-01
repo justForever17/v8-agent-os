@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
 
     try {
         const [{ data: approvals }, { data: runs }, { data: health }] = await Promise.all([
-            proxyEngineJson("/approvals"),
+            proxyEngineJson("/approvals?status=pending"),
             proxyEngineJson("/runs?limit=12"),
             proxyEngineJson("/health"),
         ]);

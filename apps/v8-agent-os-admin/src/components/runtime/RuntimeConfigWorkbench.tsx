@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
-import { getRuntimeDisplayName, isCoreRuntimeKind } from "@/lib/runtime-admin";
+import { getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind } from "@/lib/runtime-admin";
 
 type RuntimePolicy = {
     enabled?: boolean;
@@ -68,8 +68,11 @@ export function RuntimeConfigWorkbench({
     }, [loadRuntime]);
 
     const displayName = useMemo(
-        () => getRuntimeDisplayName({ kind, displayName: runtime?.displayName || fallbackDisplayName }),
-        [fallbackDisplayName, kind, runtime?.displayName],
+        () =>
+            isCanonicalRuntimeKind(kind)
+                ? t(getRuntimeDisplayText(kind))
+                : getRuntimeDisplayName({ kind, displayName: runtime?.displayName || fallbackDisplayName }),
+        [fallbackDisplayName, kind, runtime?.displayName, t],
     );
 
     const enabled = runtime ? runtime.policy?.enabled !== false : false;

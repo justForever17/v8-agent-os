@@ -24,6 +24,10 @@ type WorkspacePathStatus = {
     writable?: boolean;
     writableTarget?: string;
     reason?: string;
+    isLegacyResidue?: boolean;
+    legacyReason?: string;
+    recommendedPath?: string;
+    autoCreateAllowed?: boolean;
 };
 
 type WorkspaceData = {
@@ -178,6 +182,22 @@ export default function ProjectsWorkspacesPage() {
                                     {pathStatus.writable ? "可写" : "待确认"}
                                 </div>
                             </div>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 sm:col-span-3">
+                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">路径类型</div>
+                                <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                    {pathStatus.isLegacyResidue ? (
+                                        <AlertTriangle className="h-4 w-4 text-rose-600" />
+                                    ) : (
+                                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                                    )}
+                                    {pathStatus.isLegacyResidue ? "Legacy Monorepo Residue" : "Canonical Workspace"}
+                                </div>
+                                {pathStatus.isLegacyResidue && pathStatus.recommendedPath ? (
+                                    <div className="mt-2 text-xs leading-5 text-rose-600">
+                                        推荐改用：{formatPathSummary(pathStatus.recommendedPath)}
+                                    </div>
+                                ) : null}
+                            </div>
                         </div>
 
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
@@ -185,6 +205,11 @@ export default function ProjectsWorkspacesPage() {
                             <div className="mt-2 leading-6">{error || localValidationError || pathStatus.reason || "目录状态正常，可作为默认执行目录。"}</div>
                             {pathStatus.writableTarget ? (
                                 <div className="mt-2 text-xs text-slate-500">写入检测目录：{pathStatus.writableTarget}</div>
+                            ) : null}
+                            {pathStatus.isLegacyResidue && pathStatus.legacyReason ? (
+                                <div className="mt-2 text-xs leading-5 text-rose-600">
+                                    已识别为旧 monorepo 残留路径：{pathStatus.legacyReason}。此路径不会再被接受为当前主工作区，也不会允许自动建目录。
+                                </div>
                             ) : null}
                         </div>
                     </div>

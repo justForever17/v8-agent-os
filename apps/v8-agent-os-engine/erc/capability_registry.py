@@ -5,6 +5,60 @@ from typing import Any, Dict, Iterable, Optional
 
 from core.system_tools.baseline import is_baseline_system_tool_name
 
+_SNAPSHOT_RUNTIME_ORDER = (
+    "chat",
+    "memory",
+    "automation",
+    "extensions",
+    "plugin_host",
+    "computer_use",
+    "rpa",
+    "network_supervisor",
+)
+
+_KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
+    "chat": {
+        "displayName": "ChatRuntime",
+        "summary": "负责 Supervisor 主链、多 Agent 聊天编排与会话执行控制。",
+        "visibility": "primary",
+    },
+    "memory": {
+        "displayName": "MemoryRuntime",
+        "summary": "负责长期记忆、检索、摘要与会话范围内的知识注入。",
+        "visibility": "primary",
+    },
+    "automation": {
+        "displayName": "AutomationRuntime",
+        "summary": "负责 hooks、Cron、自动化调度与运行控制。",
+        "visibility": "primary",
+    },
+    "extensions": {
+        "displayName": "ExtensionsRuntime",
+        "summary": "负责 Skills、扩展目录、候选工具筛选与扩展健康状态。",
+        "visibility": "primary",
+    },
+    "plugin_host": {
+        "displayName": "PluginHostRuntime",
+        "summary": "负责外部插件宿主、桥接通道、入站 handoff 与宿主运行状态。",
+        "visibility": "secondary",
+    },
+    "computer_use": {
+        "displayName": "ComputerUseRuntime",
+        "summary": "负责桌面观察、窗口交互、结构化执行与视觉保底。",
+        "visibility": "secondary",
+    },
+    "rpa": {
+        "displayName": "RPARuntime",
+        "summary": "负责 trace 编译、流程固化、.robot 导出、执行与失败回退。",
+        "visibility": "secondary",
+    },
+    "network_supervisor": {
+        "displayName": "NetworkSupervisorRuntime",
+        "summary": "负责节点发现、信任、定向唤醒与显式远程任务委派。",
+        "visibility": "secondary",
+    },
+}
+
 
 @dataclass(slots=True)
 class RuntimeCapability:
@@ -148,7 +202,10 @@ class CapabilityRegistry:
         return normalized
 
     def get(self, kind: str) -> Optional[RuntimeDescriptor]:
-        return self._descriptors.get(kind)
+        normalized_kind = str(kind or "").strip()
+        if not normalized_kind:
+            return None
+        return self._descriptors.get(normalized_kind) or self._synthetic_descriptor(normalized_kind)
 
     def list(self) -> Iterable[RuntimeDescriptor]:
         return tuple(self._descriptors.values())
@@ -215,6 +272,46 @@ class CapabilityRegistry:
 
     def is_enabled(self, kind: str) -> bool:
         return self.get_policy(kind).enabled
+
+    def _synthetic_descriptor(self, kind: str) -> Optional[RuntimeDescriptor]:
+        baseline = _KNOWN_RUNTIME_BASELINES.get(str(kind or "").strip())
+        if baseline is None:
+            return None
+        return coerce_runtime_descriptor(
+            {
+                "kind": kind,
+                "displayName": baseline.get("displayName") or kind,
+                "summary": baseline.get("summary") or "",
+                "visibility": baseline.get("visibility") or "internal",
+                "metadata": {
+                    "synthetic": True,
+                    "source": "capability_registry.known_runtime_baseline",
+                },
+            }
+        )
+
+    def _snapshot_descriptors(self) -> list[tuple[RuntimeDescriptor, bool]]:
+        merged: dict[str, tuple[RuntimeDescriptor, bool]] = {
+            kind: (descriptor, True)
+            for kind, descriptor in self._descriptors.items()
+        }
+        for kind in _KNOWN_RUNTIME_BASELINES:
+            merged.setdefault(kind, (self._synthetic_descriptor(kind), False))  # type: ignore[arg-type]
+
+        ordered: list[tuple[RuntimeDescriptor, bool]] = []
+        seen: set[str] = set()
+        for kind in _SNAPSHOT_RUNTIME_ORDER:
+            item = merged.get(kind)
+            if item is None:
+                continue
+            ordered.append(item)
+            seen.add(kind)
+
+        for kind in sorted(merged):
+            if kind in seen:
+                continue
+            ordered.append(merged[kind])
+        return ordered
 
     def _descriptor_tool_names(self, descriptor: RuntimeDescriptor) -> set[str]:
         metadata = descriptor.metadata or {}
@@ -316,16 +413,18 @@ class CapabilityRegistry:
 
     def snapshot(self, *, query: str | None = None, recommendation_limit: int = 5) -> Dict[str, Any]:
         recommendations = self.recommend(query, limit=recommendation_limit) if query is not None else []
+        descriptors = self._snapshot_descriptors()
         return {
-            "count": len(self._descriptors),
+            "count": len(descriptors),
             "query": str(query or "") if query is not None else None,
             "recommendations": [item.as_dict() for item in recommendations],
             "runtimes": [
                 {
                     **descriptor.as_dict(),
                     "policy": self.get_policy(descriptor.kind).as_dict(),
+                    "registered": bool(registered),
                 }
-                for descriptor in self.list()
+                for descriptor, registered in descriptors
             ],
         }
 

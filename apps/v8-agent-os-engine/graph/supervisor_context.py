@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import logging
 import platform
@@ -12,6 +13,27 @@ from erc.capability_registry import capability_registry
 
 
 logger = logging.getLogger("v8_agent_os.supervisor")
+_STABLE_SYSTEM_CONTEXT_CACHE: dict[str, dict[str, str]] = {}
+_STABLE_SYSTEM_CONTEXT_CACHE_LIMIT = 64
+_PASSIVE_RAG_HINT_TOKENS = (
+    "remember",
+    "recall",
+    "history",
+    "previous",
+    "before",
+    "again",
+    "context",
+    "workspace",
+    "project",
+    "继续",
+    "之前",
+    "上次",
+    "记得",
+    "历史",
+    "上下文",
+    "项目",
+    "工作区",
+)
 
 
 def _build_memory_recall_block(items: list[dict]) -> tuple[str, list[dict]]:
@@ -126,22 +148,92 @@ def build_supervisor_system_content(
     os_name = platform.system()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     identity_line = render_system_identity_line(storage.get_system_identity())
-    env_context = (
-        f"<environment>\n"
-        f"OS: {os_name}\n"
-        f"Current Time: {current_time}\n"
-        f"{identity_line}\n"
-        f"Sysadmin Privileges: You operate with the full permissions of the engine process. You are AUTHORIZED to manage the system, modify global configuration files (e.g., /etc, /var), and execute system commands globally when explicitly requested by the user.\n"
-        f"Local Workspace Absolute Path: {workspace_path}\n"
-        f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them to the Local Workspace above.\n"
-        f"To display a workspace file in the chat, return a markdown image or link using the URL format: {get_engine_origin().rstrip('/')}/workspace/YOUR_FILE_NAME\n"
-        f"</environment>\n"
-    )
-
     base_prompt = config.system_prompt or storage.get_supervisor_prompt() or (
         "You are the V8 Agent OS AI Application Architect & Assistant.\n"
         "As the orchestration engine, you should delegate complex specialized tasks to specialized agents using the `handoff_to_*` tools.\n"
         "If a required specialized agent does not exist, use `create_agent` first.\n"
+    )
+
+    stable_signature = hashlib.sha1(
+        json.dumps(
+            {
+                "basePrompt": base_prompt,
+                "identityLine": identity_line,
+                "workspacePath": str(workspace_path),
+                "osName": os_name,
+                "engineOrigin": get_engine_origin().rstrip("/"),
+                "agents": [
+                    {
+                        "id": str(agent.get("id") or "").strip(),
+                        "name": str(agent.get("name") or "").strip(),
+                        "description": str(agent.get("description") or "").strip(),
+                    }
+                    for agent in list(loaded_agents or [])
+                    if isinstance(agent, dict)
+                ],
+                "tools": [
+                    {
+                        "name": str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip(),
+                        "description": str(getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")) or "").strip().split("\n")[0],
+                    }
+                    for tool_ref in list(supervisor_tools or [])
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    cached_stable = _STABLE_SYSTEM_CONTEXT_CACHE.get(stable_signature)
+    if cached_stable is None:
+        env_static_context = (
+            f"OS: {os_name}\n"
+            f"{identity_line}\n"
+            "Sysadmin Privileges: You operate with the full permissions of the engine process. "
+            "You are AUTHORIZED to manage the system, modify global configuration files (e.g., /etc, /var), "
+            "and execute system commands globally when explicitly requested by the user.\n"
+            f"Local Workspace Absolute Path: {workspace_path}\n"
+            "When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, "
+            "you MUST save them to the Local Workspace above.\n"
+            f"To display a workspace file in the chat, return a markdown image or link using the URL format: {get_engine_origin().rstrip('/')}/workspace/YOUR_FILE_NAME\n"
+        )
+        available_tools_context = "--- SUPERVISOR DIRECT TOOL REGISTRY ---\n"
+        available_tools_context += "下面只列出你当前可直接调用的工具。模块级任务优先参考 Runtime 能力卡片来路由，而不是硬记所有模块细节。\n"
+        for tool_ref in supervisor_tools:
+            tool_name = getattr(tool_ref, "name", tool_ref.__name__ if hasattr(tool_ref, "__name__") else "")
+            if not tool_name:
+                continue
+            tool_desc = getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")).strip().split("\n")[0]
+            available_tools_context += f"- {tool_name}: {tool_desc}\n"
+        available_tools_context += "---------------------------------------\n"
+
+        specialist_agents_context = "--- SPECIALIST AGENT REGISTRY ---\n"
+        specialist_agents = [agent for agent in loaded_agents if agent.get("id") != "supervisor"]
+        if specialist_agents:
+            for agent in specialist_agents:
+                specialist_agents_context += (
+                    f"- {agent.get('name') or agent.get('id')} ({agent.get('id')}): "
+                    f"{agent.get('description') or 'No description'} | tools={len(agent.get('tools') or [])}\n"
+                )
+        else:
+            specialist_agents_context += "- 暂无已注册的专业子 Agent，可按需使用 create_agent 创建。\n"
+        specialist_agents_context += "--------------------------------\n"
+
+        cached_stable = {
+            "envStaticContext": env_static_context,
+            "availableToolsContext": available_tools_context,
+            "specialistAgentsContext": specialist_agents_context,
+        }
+        _STABLE_SYSTEM_CONTEXT_CACHE[stable_signature] = cached_stable
+        if len(_STABLE_SYSTEM_CONTEXT_CACHE) > _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT:
+            for key in list(_STABLE_SYSTEM_CONTEXT_CACHE.keys())[: len(_STABLE_SYSTEM_CONTEXT_CACHE) - _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT]:
+                _STABLE_SYSTEM_CONTEXT_CACHE.pop(key, None)
+
+    env_context = (
+        "<environment>\n"
+        f"Current Time: {current_time}\n"
+        f"{cached_stable['envStaticContext']}"
+        "</environment>\n"
     )
 
     memory_context = memory_runtime.build_session_context(
@@ -155,27 +247,8 @@ def build_supervisor_system_content(
         prioritized_kinds=["chat", "computer_use", "rpa", "memory", "channel", "automation"],
     )
 
-    available_tools_context = "--- SUPERVISOR DIRECT TOOL REGISTRY ---\n"
-    available_tools_context += "下面只列出你当前可直接调用的工具。模块级任务优先参考 Runtime 能力卡片来路由，而不是硬记所有模块细节。\n"
-    for tool_ref in supervisor_tools:
-        tool_name = getattr(tool_ref, "name", tool_ref.__name__ if hasattr(tool_ref, "__name__") else "")
-        if not tool_name:
-            continue
-        tool_desc = getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")).strip().split("\n")[0]
-        available_tools_context += f"- {tool_name}: {tool_desc}\n"
-    available_tools_context += "---------------------------------------\n"
-
-    specialist_agents_context = "--- SPECIALIST AGENT REGISTRY ---\n"
-    specialist_agents = [agent for agent in loaded_agents if agent.get("id") != "supervisor"]
-    if specialist_agents:
-        for agent in specialist_agents:
-            specialist_agents_context += (
-                f"- {agent.get('name') or agent.get('id')} ({agent.get('id')}): "
-                f"{agent.get('description') or 'No description'} | tools={len(agent.get('tools') or [])}\n"
-            )
-    else:
-        specialist_agents_context += "- 暂无已注册的专业子 Agent，可按需使用 create_agent 创建。\n"
-    specialist_agents_context += "--------------------------------\n"
+    available_tools_context = cached_stable["availableToolsContext"]
+    specialist_agents_context = cached_stable["specialistAgentsContext"]
 
     todos_context = ""
     raw_todos = state.get("todos", [])
@@ -289,7 +362,16 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
         passive_top_k = 1
     passive_top_k = max(1, min(passive_top_k, 3))
 
+    human_turns = sum(1 for message in messages if isinstance(message, HumanMessage))
+    normalized_query = str(user_query or "").strip().lower()
+    has_recall_cue = any(token in normalized_query for token in _PASSIVE_RAG_HINT_TOKENS)
     if not user_query or not passive_injection_enabled:
+        return messages
+    if human_turns <= 1 and not has_recall_cue:
+        return messages
+    if len(normalized_query) < 24 and not has_recall_cue:
+        return messages
+    if len(scope_chain or []) <= 1 and len(normalized_query.split()) < 4 and not has_recall_cue:
         return messages
 
     try:

@@ -3,7 +3,10 @@ import importlib
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from core.runtime.startup_profile import (
+    disabled_reason_summary,
     resolve_startup_profile,
+    runtime_cluster_summary,
+    runtime_submode_summary,
     service_enabled,
     service_state,
     startup_bundle_diagnostics,
@@ -54,7 +57,8 @@ def _get_memory_backend_health():
 
 
 def _get_silk_toolchain_status():
-    return importlib.import_module("core.plugin_host.silk_codec").silk_toolchain_status
+    status = importlib.import_module("core.plugin_host.silk_codec").silk_toolchain_status
+    return status() if callable(status) else status
 
 
 def _plugin_host_enabled() -> bool:
@@ -163,7 +167,10 @@ async def health():
         "mcpStartupState": mcp_status.get("startupState"),
         "startupProfile": _STARTUP_PROFILE,
         "startupBundle": startup_bundle_summary(_STARTUP_PROFILE),
+        "runtimeClusters": runtime_cluster_summary(_STARTUP_PROFILE),
+        "runtimeSubmodes": runtime_submode_summary(_STARTUP_PROFILE),
         "startupDiagnostics": startup_bundle_diagnostics(_STARTUP_PROFILE),
+        "disabledReasons": disabled_reason_summary(_STARTUP_PROFILE),
         "serviceStates": service_states,
         "skillsRuntime": skills_status,
         "extensionsRuntime": extensions_status,

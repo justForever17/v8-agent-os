@@ -125,19 +125,6 @@ def prepare_supervisor_messages(
         )
         _safe_print(f"[LoopBreaker] Repeated tool pattern detected ({tool_list}) x{loop_info['count']}")
 
-    if remaining_steps <= 5:
-        prepared.append(
-            SystemMessage(
-                content=(
-                    "⚠️ CRITICAL: You are approaching the execution step limit. "
-                    f"Only {remaining_steps} steps remaining. "
-                    "You MUST immediately summarize your current progress and provide a final response. "
-                    "Do NOT start any new tool calls. Wrap up NOW."
-                )
-            )
-        )
-        _safe_print(f"[RemainingSteps] Only {remaining_steps} steps left - injected wrap-up instruction")
-
     return prepared
 
 

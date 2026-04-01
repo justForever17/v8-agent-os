@@ -21,6 +21,21 @@ from skills.loader import SkillLoader
 _SUPPORTED_NPX_FLAGS = {"-y", "--yes"}
 
 
+class SkillInstallValidationError(ValueError):
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "details": self.details,
+        }
+
+
 @dataclass(slots=True)
 class ParsedSkillInstallCommand:
     raw_command: str
@@ -187,6 +202,64 @@ def _safe_extract_zip_file(archive_path: Path, destination: Path) -> None:
         _safe_extract_zip_bytes(handle.read(), destination)
 
 
+def _validate_skill_zip_layout(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            file_members = []
+            top_level_entries: set[str] = set()
+            root_level_files: list[str] = []
+            skill_md_relpaths: list[str] = []
+
+            for member in archive.infolist():
+                normalized = str(member.filename or "").replace("\\", "/").strip()
+                if not normalized or normalized.startswith("__MACOSX/"):
+                    continue
+
+                clean_parts = [part for part in normalized.split("/") if part and part != "."]
+                if not clean_parts:
+                    continue
+
+                top_level_entries.add(clean_parts[0])
+                if member.is_dir():
+                    continue
+
+                file_members.append(clean_parts)
+                if len(clean_parts) == 1:
+                    root_level_files.append(clean_parts[0])
+                if clean_parts[-1].lower() == "skill.md":
+                    skill_md_relpaths.append("/".join(clean_parts))
+
+            if not file_members:
+                raise SkillInstallValidationError(
+                    "empty_archive",
+                    "压缩包中没有可导入的文件。",
+                )
+            if root_level_files:
+                raise SkillInstallValidationError(
+                    "invalid_root_structure",
+                    "压缩包顶层必须只有一个目录，不能直接放散文件。",
+                    {"rootFiles": root_level_files[:8]},
+                )
+            if len(top_level_entries) != 1:
+                raise SkillInstallValidationError(
+                    "multiple_root_directories",
+                    "压缩包顶层必须只包含一个目录。",
+                    {"rootEntries": sorted(top_level_entries)},
+                )
+            if not skill_md_relpaths:
+                raise SkillInstallValidationError(
+                    "missing_skill_manifest",
+                    "压缩包内至少需要包含一个 SKILL.md 文件。",
+                )
+
+            return next(iter(top_level_entries))
+    except zipfile.BadZipFile as exc:
+        raise SkillInstallValidationError(
+            "invalid_zip",
+            "上传文件不是合法的 ZIP 压缩包。",
+        ) from exc
+
+
 def _discover_skill_manifests(root: Path) -> list[SkillManifest]:
     candidates: list[Path] = []
     for preferred_root in (root / ".agents" / "skills", root / "skills"):
@@ -299,12 +372,17 @@ def install_skill_from_command(command: str) -> dict[str, Any]:
 
 def install_skills_from_zip(file_name: str, content: bytes) -> dict[str, Any]:
     if not str(file_name or "").lower().endswith(".zip"):
-        raise ValueError("当前仅支持 ZIP 压缩包导入。")
+        raise SkillInstallValidationError("invalid_file_type", "当前仅支持 ZIP 压缩包导入。")
 
     with tempfile.TemporaryDirectory(prefix="v8chat-skill-zip-") as temp_dir:
         extract_root = Path(temp_dir) / "unzipped"
+        root_folder = _validate_skill_zip_layout(content)
         _safe_extract_zip_bytes(content, extract_root)
-        manifests = _discover_skill_manifests(extract_root)
+        manifests = _discover_skill_manifests(extract_root / root_folder)
         if not manifests:
-            raise ValueError("压缩包中没有发现任何合法的 Skill 目录。")
+            raise SkillInstallValidationError(
+                "missing_skill_manifest",
+                "压缩包结构已解压，但没有发现任何合法的 Skill 目录。",
+                {"rootFolder": root_folder},
+            )
         return _install_manifests(manifests, source=file_name, overwrite=False)

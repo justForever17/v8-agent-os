@@ -30,7 +30,10 @@ from api import routes
 from core.runtime.health import inspect_engine_runtime
 from core.models.provider_compatibility import install_provider_compatibility_patches
 from core.runtime.startup_profile import (
+    disabled_reason_summary,
     resolve_startup_profile,
+    runtime_cluster_summary,
+    runtime_submode_summary,
     service_enabled,
     service_state,
     startup_bundle_diagnostics,
@@ -401,7 +404,10 @@ async def health_check():
         "service": "v8-agent-os-engine",
         "startupProfile": STARTUP_PROFILE,
         "startupBundle": startup_bundle_summary(STARTUP_PROFILE),
+        "runtimeClusters": runtime_cluster_summary(STARTUP_PROFILE),
+        "runtimeSubmodes": runtime_submode_summary(STARTUP_PROFILE),
         "startupDiagnostics": startup_bundle_diagnostics(STARTUP_PROFILE),
+        "disabledReasons": disabled_reason_summary(STARTUP_PROFILE),
         "serviceStates": service_states,
         "mcp_tools": len(_get_mcp_manager().get_tools()) if service_flags["mcp"] else 0,
         "mcp": _get_mcp_manager().get_health_summary() if service_flags["mcp"] else {"status": "disabled"},

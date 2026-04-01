@@ -42,6 +42,7 @@ from runtimes.computer_use.primitives import list_computer_use_primitives, primi
 from runtimes.rpa.promotion_gate import draft_environment_signal_summary, draft_timing_signal_summary
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
+from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
 from runtimes.computer_use.verification_contract import (
     build_evidence_summary_payload,
@@ -2266,7 +2267,11 @@ def inspect_and_move_media(path: str) -> str:
                 explicit_workspace_path=str(runtime_context.get("workspace_path") or "") or None,
             )
         )
-        
+        workspace_dir = ensure_workspace_auto_create_allowed(
+            workspace_dir,
+            source="native_tools.inspect_and_move_media",
+            allow_missing=True,
+        )
         workspace_dir.mkdir(parents=True, exist_ok=True)
         
         # Copy to workspace
@@ -2848,6 +2853,7 @@ def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotat
         "question": question,
         "prompt": question,
         "toolCallId": tool_call_id,
+        "interactionKind": "ask_user",
     }
     if details:
         request["details"] = details
@@ -3190,8 +3196,10 @@ def run_system_command(
         try:
             launched = _launch_background_command(command, tool_call_id=tool_call_id)
             payload = {
+                "kind": "command_session",
                 "mode": "session",
                 "commandId": launched["commandId"],
+                "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
                 "tty": launched["tty"],
                 "runId": launched["runId"],

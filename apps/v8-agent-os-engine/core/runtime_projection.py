@@ -379,6 +379,16 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 summary=f"已读取 Skill：{skill_name}",
                 status="loaded",
             )
+        elif topic in {"extension.skill.blocked", "safety.skill_blocked"}:
+            skill_name = str(payload.get("skillName") or "未知 Skill")
+            verdict = str(payload.get("verdict") or "high").strip() or "high"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="extensions",
+                kind="governance",
+                summary=f"Safety Guardian 已阻断 Skill：{skill_name}（{verdict}）",
+                status="blocked",
+            )
         elif topic == "extension.mcp.candidate_exposed":
             count = int(payload.get("count") or len(list(payload.get("toolNames") or [])) or 0)
             entry = _runtime_timeline_entry(
@@ -504,6 +514,40 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 summary="流式执行长时间无输出，已触发看门狗",
                 status="stalled",
                 actor_label="运行状态",
+            )
+        elif topic == "run.continuation.scheduled":
+            continuation_count = int(payload.get("continuationCount") or 0)
+            continuation_reason = str(payload.get("continuationReason") or "unknown").strip() or "unknown"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="progress",
+                summary=f"已静默续跑第 {continuation_count} 段执行（{continuation_reason}）",
+                status="continued",
+                actor_label="续跑管理",
+            )
+        elif topic == "supervisor.graph.diagnostics":
+            graph_ms = payload.get("graphBuildMs")
+            route_ms = payload.get("routeBuildMs")
+            system_ms = payload.get("systemContentBuildMs")
+            rag_ms = payload.get("passiveRagMs")
+            parts: list[str] = []
+            if graph_ms is not None:
+                parts.append(f"graph {graph_ms}ms")
+            if route_ms is not None:
+                parts.append(f"route {route_ms}ms")
+            if system_ms is not None:
+                parts.append(f"prompt {system_ms}ms")
+            if rag_ms is not None:
+                parts.append(f"rag {rag_ms}ms")
+            summary = "Supervisor 诊断：" + ("，".join(parts) if parts else "已记录内部构建指标")
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="progress",
+                summary=summary,
+                status="diagnostics",
+                actor_label="Supervisor 诊断",
             )
 
         if not entry:

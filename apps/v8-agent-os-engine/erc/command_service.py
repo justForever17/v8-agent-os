@@ -14,7 +14,7 @@ class CommandService:
 
     def _should_auto_approve(self, approval_kind: str) -> bool:
         normalized = str(approval_kind or "").strip().lower()
-        return normalized not in {"", "ask_user", "waiting_input"}
+        return normalized not in {"", "ask_user", "human_input_required", "waiting_input"}
 
     def request_approval(self, request: ApprovalRequest) -> Dict[str, Any]:
         from core.database import db

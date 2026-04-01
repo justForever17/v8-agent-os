@@ -1,12 +1,12 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { ArrowRight, Bot, Crown, MessageSquare } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { RuntimeConfigWorkbench } from "@/components/runtime/RuntimeConfigWorkbench";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
+import { lt, parseLocale, pickLocalizedText } from "@/lib/locale";
 
 const CHAT_RUNTIME_LINKS = [
     {
@@ -23,8 +23,8 @@ const CHAT_RUNTIME_LINKS = [
     },
 ];
 
-export default function ChatRuntimePage() {
-    const t = useT();
+export default async function ChatRuntimePage() {
+    const locale = parseLocale((await cookies()).get("v8-agent-os-locale")?.value) || "zh-CN";
 
     return (
         <AdminPageShell>
@@ -43,12 +43,12 @@ export default function ChatRuntimePage() {
                                         <div className="rounded-2xl bg-sky-50 p-3 text-sky-700">
                                             <item.icon className="h-5 w-5" />
                                         </div>
-                                        <CardTitle className="text-base font-semibold text-slate-900">{t(item.title)}</CardTitle>
+                                        <CardTitle className="text-base font-semibold text-slate-900">{pickLocalizedText(locale, item.title)}</CardTitle>
                                     </div>
                                     <ArrowRight className="h-4 w-4 text-slate-400" />
                                 </CardHeader>
                                 <CardContent className="pt-0 text-sm leading-6 text-slate-500">
-                                    {t(item.description)}
+                                    {pickLocalizedText(locale, item.description)}
                                 </CardContent>
                             </Card>
                         </Link>
@@ -58,10 +58,13 @@ export default function ChatRuntimePage() {
                     <CardContent className="flex items-start gap-3 p-6 text-sm text-slate-500">
                         <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-sky-600" />
                         <div>
-                            {t(lt(
-                                "CHAT RUNTIME 负责主理人的提示词、子 Agent、skills/tool route 与多 Agent 调度。Supervisor 与 Subagents 的兼容路径仍然保留，但侧边栏主入口统一收口到这里。",
-                                "CHAT RUNTIME owns the lead prompt, subagents, skills/tool routing, and multi-agent orchestration. Legacy Supervisor/Subagents routes remain available, but the sidebar entry is unified here.",
-                            ))}
+                            {pickLocalizedText(
+                                locale,
+                                lt(
+                                    "CHAT RUNTIME 负责主理人的提示词、子 Agent、skills/tool route 与多 Agent 调度。Supervisor 与 Subagents 的兼容路径仍然保留，但侧边栏主入口统一收口到这里。",
+                                    "CHAT RUNTIME owns the lead prompt, subagents, skills/tool routing, and multi-agent orchestration. Legacy Supervisor/Subagents routes remain available, but the sidebar entry is unified here.",
+                                ),
+                            )}
                         </div>
                     </CardContent>
                 </Card>

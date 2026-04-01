@@ -608,10 +608,10 @@ export function InputArea({
 
             <div className="flex flex-col relative">
                 {(selectedCommandPreset || taskPlanningMode) && (
-                    <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
+                    <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
                         {selectedCommandPreset && (
-                            <div className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-[11px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200">
-                                <Command className="h-3.5 w-3.5 shrink-0" />
+                            <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
+                                <Command className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
                                 <span className="truncate">{t(lt("命令", "Preset"))}：{selectedCommandPreset.name}</span>
                                 <button
                                     type="button"
@@ -624,8 +624,8 @@ export function InputArea({
                             </div>
                         )}
                         {taskPlanningMode && (
-                            <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200">
-                                <ListTodo className="h-3.5 w-3.5 shrink-0" />
+                            <div className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200 sm:text-[11px]">
+                                <ListTodo className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
                                 <span>{t(lt("任务模式", "Task mode"))}</span>
                             </div>
                         )}
@@ -648,7 +648,7 @@ export function InputArea({
                         <div className="border-b border-border/50 px-3 py-2 text-[11px] text-muted-foreground">
                             {t(lt("输入 ", "Type "))}<span className="font-medium text-foreground">/</span>{t(lt(" 后选择一个命令预设，发送时会作为结构化数据交给 Engine。", " to pick a command preset. It will be sent to Engine as structured input."))}
                         </div>
-                        <div className="max-h-44 overflow-y-auto px-1 py-1">
+                        <div className="max-h-32 sm:max-h-40 overflow-y-auto px-1 py-1">
                             {commandsLoading ? (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">{t(lt("正在读取命令预设...", "Loading command presets..."))}</div>
                             ) : filteredCommandPresets.length > 0 ? (
@@ -665,7 +665,7 @@ export function InputArea({
                                                 {preset.name}
                                             </div>
                                             {preset.summary && (
-                                                <div className="line-clamp-2 text-xs leading-5 text-muted-foreground">
+                                                <div className="line-clamp-1 sm:line-clamp-2 text-[11px] leading-4.5 text-muted-foreground">
                                                     {preset.summary}
                                                 </div>
                                             )}

@@ -5,6 +5,7 @@ import contextvars
 import json
 import os
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -261,6 +262,8 @@ class ExtensionsRuntimeService:
         self._cached_health: dict[str, Any] | None = None
         self._background_refresh_task: asyncio.Task | None = None
         self._refresh_lock = asyncio.Lock()
+        self._route_cache: dict[str, tuple[float, ExtensionRouteBundle]] = {}
+        self._route_cache_ttl_seconds = 20.0
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -865,7 +868,29 @@ class ExtensionsRuntimeService:
         mcp_limit: int = 8,
         plugin_host_limit: int = 8,
     ) -> ExtensionRouteBundle:
-        return self.build_contextual_route(
+        context_payload = self._resolve_event_context()
+        session_id = str(context_payload.get("session_id") or "").strip() or "global"
+        normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
+        tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
+        inventory_revision = str(self._last_refresh_at or "cold")
+        cache_key = "|".join(
+            [
+                session_id,
+                normalized_query,
+                inventory_revision,
+                str(len(list(loaded_agents or []))),
+                str(skill_limit),
+                str(mcp_limit),
+                str(plugin_host_limit),
+                tool_signature,
+            ]
+        )
+        now = time.monotonic()
+        cached = self._route_cache.get(cache_key)
+        if cached and (now - cached[0]) <= self._route_cache_ttl_seconds:
+            return cached[1]
+
+        bundle = self.build_contextual_route(
             user_query=user_query,
             available_tools=supervisor_tools,
             loaded_agents=loaded_agents,
@@ -873,6 +898,12 @@ class ExtensionsRuntimeService:
             mcp_limit=mcp_limit,
             plugin_host_limit=plugin_host_limit,
         )
+        self._route_cache[cache_key] = (now, bundle)
+        if len(self._route_cache) > 128:
+            stale_keys = sorted(self._route_cache.items(), key=lambda item: item[1][0])[:32]
+            for stale_key, _ in stale_keys:
+                self._route_cache.pop(stale_key, None)
+        return bundle
 
     def bind_execution_context(self, **context: Any):
         current = dict(_EXTENSION_CONTEXT.get() or {})
@@ -947,6 +978,31 @@ class ExtensionsRuntimeService:
             node="skill_loaded",
         )
 
+    def emit_skill_blocked(
+        self,
+        *,
+        skill_name: str,
+        skill_path: str,
+        verdict: str,
+        confidence: float,
+        skill_trust_score: int,
+        audit_id: str,
+        reasons: list[str],
+        flagged_files: list[dict[str, Any]],
+    ) -> None:
+        payload = {
+            "skillName": skill_name,
+            "skillPath": skill_path,
+            "verdict": verdict,
+            "confidence": confidence,
+            "skillTrustScore": skill_trust_score,
+            "auditId": audit_id,
+            "reasons": list(reasons or []),
+            "flaggedFiles": list(flagged_files or []),
+        }
+        self._emit("extension.skill.blocked", payload, node="skill_blocked")
+        self._emit("safety.skill_blocked", payload, node="skill_blocked")
+
     def emit_response_tool_calls(self, response: Any) -> None:
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         if not tool_calls:
@@ -975,6 +1031,9 @@ class ExtensionsRuntimeService:
             },
             node="execution_completed",
         )
+
+    def emit_supervisor_diagnostics(self, payload: dict[str, Any]) -> None:
+        self._emit("supervisor.turn.diagnostics", payload, node="supervisor_diagnostics")
 
     def build_usage_summary(self, *, window_hours: int = 24) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -1011,6 +1070,18 @@ class ExtensionsRuntimeService:
                 if skill_name:
                     skill_counter[skill_name] += 1
                     recent_events.append({"kind": "skill", "name": skill_name, "ts": event_ts})
+            elif topic == "extension.skill.blocked":
+                skill_name = str(payload.get("skillName") or "").strip()
+                verdict = str(payload.get("verdict") or "").strip()
+                if skill_name:
+                    recent_events.append(
+                        {
+                            "kind": "skill_blocked",
+                            "name": skill_name,
+                            "status": verdict or "blocked",
+                            "ts": event_ts,
+                        }
+                    )
             elif topic == "extension.mcp.invoked":
                 for tool_name in list(payload.get("toolNames") or []):
                     normalized = str(tool_name or "").strip()

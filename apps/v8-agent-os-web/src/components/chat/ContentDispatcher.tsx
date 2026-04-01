@@ -1,3 +1,7 @@
+'use client';
+
+import { useT } from "@/components/providers/LocaleProvider";
+import { lt } from "@/lib/locale";
 import React from 'react';
 import { motion } from 'framer-motion';
 import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
@@ -5,7 +9,10 @@ import { ThinkingCard } from './ThinkingCard';
 import { ToolCard, ToolInvocation } from './ToolCard';
 import { InteractiveTerminalCard } from './InteractiveTerminalCard';
 import { GenericToolTraceCard } from './GenericToolTraceCard';
+import { AskUserCard } from './AskUserCard';
+import { ApprovalCard } from './ApprovalCard';
 import { parseContentToBlocks } from '@/lib/chat/content-detector';
+import { extractCommandSessionPayload, isCommandSessionTool } from '@/lib/chat/command-session';
 import { MessageBlockItem } from './MessageBlockItem';
 
 interface ToolRendererProps {
@@ -13,28 +20,26 @@ interface ToolRendererProps {
     isFinished: boolean;
 }
 
+function CommandSessionToolRenderer({ toolInvocation }: ToolRendererProps) {
+    const session = extractCommandSessionPayload(toolInvocation.result);
+    const bgCommandId = session?.commandId || null;
+    return (
+        <motion.div layout className="flex flex-col">
+            <ToolCard toolInvocation={toolInvocation} hideResult={!!bgCommandId} />
+            {bgCommandId && (
+                <div className="mt-1 mb-2 ml-[15px] relative z-10 w-[calc(100%-15px)]">
+                    <div className="absolute -left-[14px] top-0 w-3 h-4 border-l-[1.5px] border-b-[1.5px] border-zinc-300 dark:border-zinc-700 rounded-bl-xl" />
+                    <InteractiveTerminalCard commandId={bgCommandId} />
+                </div>
+            )}
+        </motion.div>
+    );
+}
+
 // Registry for tools that need specific rendering formats
 const ToolRegistry: Record<string, React.FC<ToolRendererProps> | null> = {
-    'start_background_command': ({ toolInvocation }) => {
-        let bgCommandId = null;
-        const result = toolInvocation.result;
-        if (result && typeof result === 'string') {
-            const match = result.match(/ID:\s*([a-f0-9-]+)/i);
-            if (match) bgCommandId = match[1];
-        }
-        return (
-            <motion.div layout className="flex flex-col">
-                <ToolCard toolInvocation={toolInvocation} hideResult={!!bgCommandId} />
-                {bgCommandId && (
-                    <div className="mt-1 mb-2 ml-[15px] relative z-10 w-[calc(100%-15px)]">
-                        <div className="absolute -left-[14px] top-0 w-3 h-4 border-l-[1.5px] border-b-[1.5px] border-zinc-300 dark:border-zinc-700 rounded-bl-xl" />
-                        <InteractiveTerminalCard commandId={bgCommandId} />
-                    </div>
-                )}
-            </motion.div>
-        );
-    },
-    
+    'start_background_command': CommandSessionToolRenderer,
+    'run_system_command': CommandSessionToolRenderer,
     // Tools that we want to render subtly using GenericToolTraceCard (previously blacklisted)
     'write_todos': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
     'update_todo': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
@@ -56,6 +61,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
     isStreaming, 
     resultNode 
 }: ContentDispatcherProps) {
+    const t = useT();
     switch (node.kind) {
         case 'execution': {
             if (node.executionType === 'reasoning') {
@@ -81,6 +87,10 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     state: isFinished ? 'result' : 'call',
                     result: result
                 };
+
+                if (isCommandSessionTool(toolName)) {
+                    return <CommandSessionToolRenderer toolInvocation={toolInvocation} isFinished={isFinished} />;
+                }
 
                 if (toolName in ToolRegistry) {
                     const Renderer = ToolRegistry[toolName];
@@ -128,11 +138,29 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
 
         case 'governance': {
             const isApproval = node.governanceType === 'approval_request';
+            const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
+            const approvalLabel =
+                approvalKind === "human_input_required" || approvalKind === "ask_user" || approvalKind === "waiting_input"
+                    ? t(lt("等待你的输入", "Waiting for your answer"))
+                    : approvalKind === "safety_review"
+                      ? t(lt("安全复核", "Safety review"))
+                      : approvalKind === "safety_blocked"
+                        ? t(lt("安全阻断", "Safety blocked"))
+                        : t(lt("系统确认", "Approval"));
+            const question = node.question || node.reason || node.topic || node.status || "";
+            const isAskUser =
+                isApproval &&
+                (approvalKind === "human_input_required" || approvalKind === "ask_user" || approvalKind === "waiting_input");
+            if (isAskUser) {
+                return <AskUserCard question={question} status={node.status} />;
+            }
             return (
-                <div className="my-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-sm text-amber-700 dark:text-amber-400">
-                    <strong className="mb-1 block text-[12px] font-semibold">{isApproval ? 'Approval Required:' : 'System Control:'}</strong>
-                    {node.question || node.reason || node.topic || node.status}
-                </div>
+                <ApprovalCard
+                    title={isApproval ? approvalLabel : t(lt("系统控制信号", "System control"))}
+                    body={question}
+                    status={node.status}
+                    tone={!isApproval ? "control" : approvalKind === "safety_blocked" ? "safety" : "approval"}
+                />
             );
         }
 

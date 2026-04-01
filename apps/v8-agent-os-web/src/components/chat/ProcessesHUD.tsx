@@ -5,11 +5,12 @@ import { useMemo, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TerminalSquare, ChevronDown } from 'lucide-react';
 import { InteractiveTerminalCard } from './InteractiveTerminalCard';
+import { extractCommandSessionPayload, isCommandSessionTool } from '@/lib/chat/command-session';
 
 /**
  * ProcessesHUD — persistent HUD that displays active background processes.
  * Positioned alongside TodosHUD above the input area.
- * Auto-appears when start_background_command tool returns a command ID,
+ * Auto-appears when a command session tool returns a command ID,
  * auto-disappears when all processes terminate.
  */
 
@@ -22,16 +23,15 @@ export function useProcessesState() {
             const match = text.match(/ID:\s*([a-f0-9-]+)/i);
             return match ? match[1] : null;
         };
-        // Scan all messages for start_background_command results
+        // Scan all messages for canonical / legacy command-session tool results
         for (const msg of messages) {
             if (msg.role !== 'assistant') continue;
             const nodes = msg.nodes || [];
-            // Collect tool call IDs for start_background_command  
+            // Collect tool call IDs for command-session capable tools
             const bgToolCallIds = new Set<string>();
             for (const node of nodes) {
-                if (node.kind === 'execution' && node.executionType === 'tool_call' && node.toolName === 'start_background_command') {
-                    // Case 1: result directly on tool_call (history / merged)
-                    const id = extractId(node.result);
+                if (node.kind === 'execution' && node.executionType === 'tool_call' && isCommandSessionTool(node.toolName)) {
+                    const id = extractCommandSessionPayload(node.result)?.commandId || extractId(node.result);
                     if (id && !commandIds.includes(id)) commandIds.push(id);
                     if (node.toolCallId) bgToolCallIds.add(node.toolCallId);
                 }
@@ -39,7 +39,7 @@ export function useProcessesState() {
             // Case 2: separate tool_result part (live streaming)
             for (const node of nodes) {
                 if (node.kind === 'execution' && node.executionType === 'tool_result' && node.toolCallId && bgToolCallIds.has(node.toolCallId)) {
-                    const id = extractId(node.result);
+                    const id = extractCommandSessionPayload(node.result)?.commandId || extractId(node.result);
                     if (id && !commandIds.includes(id)) commandIds.push(id);
                 }
             }
@@ -70,13 +70,13 @@ export function ProcessesHUD() {
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
                 transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                className="w-[min(20rem,calc(100vw-2rem))] max-w-full pointer-events-auto select-none"
+                className="w-[min(19rem,calc(100vw-1.5rem))] max-w-full pointer-events-auto select-none"
                 layout
             >
                 <div className="flex flex-col overflow-hidden rounded-2xl border border-white/30 bg-background/46 shadow-[0_18px_48px_rgba(15,23,42,0.12)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/42">
                     {/* Header */}
                     <div
-                        className="flex cursor-pointer items-center gap-2 border-b border-white/15 bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent px-4 py-3 transition-colors hover:bg-emerald-500/5"
+                        className="flex min-h-[36px] cursor-pointer items-center gap-2 border-b border-white/15 bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent px-3 py-1.5 sm:min-h-[40px] sm:px-4 sm:py-2 transition-colors hover:bg-emerald-500/5"
                         onClick={() => setIsCollapsed(!isCollapsed)}
                     >
                         <div className="rounded-md bg-emerald-500/18 p-1.5 text-emerald-500 backdrop-blur-sm">
@@ -110,7 +110,7 @@ export function ProcessesHUD() {
                                 transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                                 className="overflow-hidden"
                             >
-                                <div className="flex max-h-[400px] flex-col gap-2 overflow-y-auto p-3">
+                                <div className="flex max-h-[132px] sm:max-h-[208px] flex-col gap-2 overflow-y-auto p-2 sm:p-2.5">
                                     {activeIds.map(cmdId => (
                                         <InteractiveTerminalCard
                                             key={cmdId}

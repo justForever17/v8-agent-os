@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 
 from .models import ModelConnectionTestPayload
@@ -5,12 +7,73 @@ from core.extensions_runtime import extensions_runtime_service
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
 from core.model_telemetry import model_telemetry_service
-from core.skills_install_service import install_skill_from_command, install_skills_from_zip
+from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
 from mcp_client import mcp_manager
 
 
 router = APIRouter()
+
+
+class McpConfigValidationError(ValueError):
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "details": self.details,
+        }
+
+
+def _validate_mcp_server_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if not isinstance(config, dict):
+        raise McpConfigValidationError("invalid_payload", "MCP 配置必须是 JSON 对象。")
+
+    server_map = config.get("mcpServers") if "mcpServers" in config else config
+    if not isinstance(server_map, dict):
+        raise McpConfigValidationError("invalid_server_map", "`mcpServers` 必须是对象映射。")
+    if not server_map:
+        raise McpConfigValidationError("empty_server_map", "MCP 配置中至少需要包含一个 server。")
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_server in server_map.items():
+        server_name = str(raw_name or "").strip()
+        if not server_name:
+            raise McpConfigValidationError("empty_server_name", "MCP server 名称不能为空。")
+        if not isinstance(raw_server, dict):
+            raise McpConfigValidationError(
+                "invalid_server_payload",
+                f"MCP server `{server_name}` 的配置必须是对象。",
+            )
+
+        server = dict(raw_server)
+        if "command" in server and not isinstance(server.get("command"), str):
+            raise McpConfigValidationError("invalid_command", f"MCP server `{server_name}` 的 command 必须是字符串。")
+        if "url" in server and not isinstance(server.get("url"), str):
+            raise McpConfigValidationError("invalid_url", f"MCP server `{server_name}` 的 url 必须是字符串。")
+        if "args" in server and not isinstance(server.get("args"), list):
+            raise McpConfigValidationError("invalid_args", f"MCP server `{server_name}` 的 args 必须是数组。")
+        if "env" in server and not isinstance(server.get("env"), dict):
+            raise McpConfigValidationError("invalid_env", f"MCP server `{server_name}` 的 env 必须是对象。")
+        if "headers" in server and not isinstance(server.get("headers"), dict):
+            raise McpConfigValidationError("invalid_headers", f"MCP server `{server_name}` 的 headers 必须是对象。")
+
+        disabled = bool(server.get("disabled", False))
+        command = str(server.get("command") or "").strip()
+        url = str(server.get("url") or "").strip()
+        if not disabled and not command and not url:
+            raise McpConfigValidationError(
+                "missing_target",
+                f"MCP server `{server_name}` 至少需要提供 command 或 url。",
+            )
+        normalized[server_name] = server
+
+    return normalized
 
 
 @router.get("/mcp/config")
@@ -32,12 +95,14 @@ async def get_mcp_status():
 @router.post("/mcp/config")
 async def update_mcp_config(config: dict = Body(...)):
     try:
-        new_servers = config["mcpServers"] if "mcpServers" in config else config
+        new_servers = _validate_mcp_server_map(config)
         existing = storage.get_mcp_config() or {"mcpServers": {}}
         existing_servers = existing.get("mcpServers", {})
         existing_servers.update(new_servers)
         storage.save_mcp_config({"mcpServers": existing_servers})
         return {"status": "success"}
+    except McpConfigValidationError as e:
+        raise HTTPException(status_code=400, detail=e.to_payload())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -93,6 +158,8 @@ async def install_skill_zip(file: UploadFile = File(...)):
     try:
         content = await file.read()
         return install_skills_from_zip(file.filename or "skills.zip", content)
+    except SkillInstallValidationError as e:
+        raise HTTPException(status_code=400, detail=e.to_payload())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

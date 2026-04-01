@@ -21,7 +21,7 @@ def _build_summary(content: str) -> str:
         if line.startswith("#"):
             line = line.lstrip("#").strip()
         if line:
-            return line[:120]
+            return line[:72]
     return ""
 
 

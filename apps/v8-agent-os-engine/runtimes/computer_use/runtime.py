@@ -26,6 +26,7 @@ from core.runtime_signal_ingress import build_normalized_signal_payload
 from core.v8_agent_os_paths import ensure_v8_agent_os_tmp_path
 from core.context.workspace import workspace_resolution_service
 from core.tools.vision_media_analyzer import vision_media_analyzer
+from core.workspace_guard import ensure_workspace_auto_create_allowed
 from runtimes.computer_use.action_policy import (
     binding_allows_profile,
     build_action_policy_metadata,
@@ -673,7 +674,11 @@ class ComputerUseRuntime:
             session_id=str(runtime_context.get("session_id") or "") or None,
             explicit_workspace_path=workspace_path or str(runtime_context.get("workspace_path") or "") or None,
         )
-        return Path(resolved).expanduser()
+        return ensure_workspace_auto_create_allowed(
+            Path(resolved).expanduser(),
+            source="computer_use.runtime._workspace_root",
+            allow_missing=True,
+        )
 
     def _infer_app_id(
         self,

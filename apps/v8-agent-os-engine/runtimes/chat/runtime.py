@@ -32,6 +32,7 @@ from erc.session_admission_service import session_admission_service
 from erc.safety_guardian import safety_guardian
 from erc.workflow_ledger import workflow_ledger_service
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
@@ -241,11 +242,13 @@ class ChatRuntime:
 
         question = payload.get("question") or payload.get("prompt") or "我需要您的输入以继续执行任务。"
         tool_call_id = payload.get("toolCallId") or payload.get("tool_call_id")
-        approval_kind = payload.get("approvalKind") or payload.get("approval_kind") or "ask_user"
+        approval_kind = payload.get("approvalKind") or payload.get("approval_kind") or "human_input_required"
+        interaction_kind = payload.get("interactionKind") or payload.get("interaction_kind") or "approval"
         request_payload = dict(payload)
         request_payload["question"] = question
         request_payload["prompt"] = question
         request_payload["approvalKind"] = approval_kind
+        request_payload["interactionKind"] = interaction_kind
         if tool_call_id:
             request_payload["toolCallId"] = tool_call_id
         if interrupt_id:
@@ -768,6 +771,46 @@ class ChatRuntime:
         )
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
+    async def create_continuation_bundle(
+        self,
+        *,
+        chat_run: ChatRunContext,
+        previous_bundle: ChatExecutionBundle,
+        continuation_count: int,
+        continuation_reason: str,
+    ) -> ChatExecutionBundle | None:
+        snapshot = await supervisor_runner.get_state_snapshot(previous_bundle.runner_bundle)
+        if not isinstance(snapshot, dict):
+            return None
+
+        state_messages = list(snapshot.get("messages") or [])
+        if not state_messages:
+            return None
+
+        continuation_envelope = {
+            "continuationCount": continuation_count,
+            "continuationReason": continuation_reason,
+            "routeContext": dict(snapshot.get("current_route_context") or {}),
+            "todosCount": len(list(snapshot.get("todos") or [])),
+            "messageCount": len(state_messages),
+            "sessionId": chat_run.session_id,
+            "projectId": chat_run.scope_result.binding.project_id,
+            "workspaceId": chat_run.scope_result.binding.workspace_id,
+            "workspacePath": chat_run.scope_result.binding.workspace_path,
+            "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+        }
+
+        runner_bundle = await supervisor_runner.create_execution_bundle(
+            config=chat_run.request.config,
+            messages=state_messages,
+            session_id=chat_run.session_id,
+            recursion_limit=self._recursion_limit(),
+        )
+        diagnostics = dict(runner_bundle.diagnostics or {})
+        diagnostics.update(continuation_envelope)
+        runner_bundle.diagnostics = diagnostics
+        return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
+
     async def resolve_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         if chat_run.is_resume_request:
             return await self.create_resume_bundle(chat_run=chat_run)
@@ -856,6 +899,7 @@ class ChatRuntime:
             "run_id": chat_run.active_run_id,
             "data": {
                 "question": request_payload["question"],
+                "interactionKind": request_payload.get("interactionKind") or "approval",
                 "approvalKind": request_payload["approvalKind"],
                 "request": request_payload,
                 "safety": decision.to_payload(),
@@ -945,7 +989,7 @@ class ChatRuntime:
             interrupt_request = self._extract_interrupt_request(data.get("chunk"))
             if interrupt_request:
                 approval = chat_run.run_handle.request_approval(
-                    approval_kind=interrupt_request.get("approvalKind") or "ask_user",
+                    approval_kind=interrupt_request.get("approvalKind") or "human_input_required",
                     request=interrupt_request,
                 )
                 if str(approval.get("status") or "").strip().lower() != "pending":
@@ -961,6 +1005,7 @@ class ChatRuntime:
                             "question": interrupt_request.get("question"),
                             "toolCallId": interrupt_request.get("toolCallId") or approval.get("approval_id"),
                             "approvalId": approval.get("approval_id"),
+                            "interactionKind": interrupt_request.get("interactionKind") or "approval",
                             "approvalKind": approval.get("approval_kind"),
                             "request": interrupt_request,
                         },
@@ -968,7 +1013,7 @@ class ChatRuntime:
                 )
                 stream_state.interrupted_signal = {
                     "command": "approval_requested",
-                    "reason": approval.get("approval_kind") or "ask_user",
+                    "reason": approval.get("approval_kind") or "human_input_required",
                     "payload": {"approval_id": approval.get("approval_id")},
                 }
                 return emitted_events
@@ -1154,6 +1199,7 @@ class ChatRuntime:
                         "run_id": chat_run.active_run_id,
                         "data": {
                             "question": request_payload["question"],
+                            "interactionKind": request_payload.get("interactionKind") or "approval",
                             "approvalKind": exc.approval_kind,
                             "approvalId": approval.get("approval_id"),
                             "toolCallId": approval.get("approval_id"),
@@ -1398,61 +1444,97 @@ class ChatRuntime:
                     yield preflight_event
                 return
 
-            execution_bundle = await self.resolve_execution_bundle(chat_run=chat_run)
+            continuation_count = 0
+            continuation_reason = ""
+            continuation_bundle: ChatExecutionBundle | None = None
+            while True:
+                execution_bundle = continuation_bundle or await self.resolve_execution_bundle(chat_run=chat_run)
+                if execution_bundle.runner_bundle.diagnostics:
+                    chat_run.emit_runtime_event(
+                        "supervisor.graph.diagnostics",
+                        dict(execution_bundle.runner_bundle.diagnostics),
+                        agent_id=None,
+                        node="supervisor_graph",
+                    )
 
-            event_stream = self.stream_runner_events(execution_bundle)
-            with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
-                async with aclosing(event_stream):
-                    stream_iter = event_stream.__aiter__()
-                    while True:
-                        try:
-                            event = await next_graph_stream_event(
-                                stream_iter,
-                                state=stream_state.watchdog,
-                                session_id=chat_run.session_id,
-                                run_id=chat_run.active_run_id,
-                                on_timeout=lambda payload: (
-                                    chat_run.emit_runtime_event(
-                                        "run.watchdog.stream_idle_timeout",
-                                        payload,
-                                        agent_id=None,
-                                        node="stream_watchdog",
-                                    ),
-                                    chat_run.emit_runtime_event(
-                                        "run.liveness.stalled",
-                                        {
-                                            "heartbeat_kind": "stream_watchdog",
-                                            "watchdog_source": "stream_watchdog",
-                                            "idle_reason": "stream_idle_timeout",
-                                            "stalled": True,
-                                            **payload,
-                                        },
-                                        agent_id=None,
-                                        node="stream_watchdog",
-                                    ),
-                                )[-1],
-                            )
-                        except StopAsyncIteration:
-                            break
-                        try:
-                            control_signal = self.consume_control_signal(chat_run.active_run_id)
-                            if self.should_stop_stream(control_signal):
-                                interrupted_signal = control_signal
-                                break
+                event_stream = self.stream_runner_events(execution_bundle)
+                try:
+                    with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
+                        async with aclosing(event_stream):
+                            stream_iter = event_stream.__aiter__()
+                            while True:
+                                try:
+                                    event = await next_graph_stream_event(
+                                        stream_iter,
+                                        state=stream_state.watchdog,
+                                        session_id=chat_run.session_id,
+                                        run_id=chat_run.active_run_id,
+                                        on_timeout=lambda payload: (
+                                            chat_run.emit_runtime_event(
+                                                "run.watchdog.stream_idle_timeout",
+                                                payload,
+                                                agent_id=None,
+                                                node="stream_watchdog",
+                                            ),
+                                            chat_run.emit_runtime_event(
+                                                "run.liveness.stalled",
+                                                {
+                                                    "heartbeat_kind": "stream_watchdog",
+                                                    "watchdog_source": "stream_watchdog",
+                                                    "idle_reason": "stream_idle_timeout",
+                                                    "stalled": True,
+                                                    **payload,
+                                                },
+                                                agent_id=None,
+                                                node="stream_watchdog",
+                                            ),
+                                        )[-1],
+                                    )
+                                except StopAsyncIteration:
+                                    break
+                                try:
+                                    control_signal = self.consume_control_signal(chat_run.active_run_id)
+                                    if self.should_stop_stream(control_signal):
+                                        interrupted_signal = control_signal
+                                        break
 
-                            emitted_events = await self.handle_stream_event(
-                                chat_run,
-                                stream_state,
-                                event,
-                            )
-                            for emitted_event in emitted_events:
-                                yield emitted_event
+                                    emitted_events = await self.handle_stream_event(
+                                        chat_run,
+                                        stream_state,
+                                        event,
+                                    )
+                                    for emitted_event in emitted_events:
+                                        yield emitted_event
 
-                            if stream_state.interrupted_signal:
-                                interrupted_signal = stream_state.interrupted_signal
-                                break
-                        finally:
-                            stream_state.watchdog.finish_event(event)
+                                    if stream_state.interrupted_signal:
+                                        interrupted_signal = stream_state.interrupted_signal
+                                        break
+                                finally:
+                                    stream_state.watchdog.finish_event(event)
+                    break
+                except GraphRecursionError:
+                    if continuation_count >= 1:
+                        raise
+                    continuation_count += 1
+                    continuation_reason = "graph_recursion_limit"
+                    continuation_bundle = await self.create_continuation_bundle(
+                        chat_run=chat_run,
+                        previous_bundle=execution_bundle,
+                        continuation_count=continuation_count,
+                        continuation_reason=continuation_reason,
+                    )
+                    if continuation_bundle is None:
+                        raise
+                    chat_run.emit_runtime_event(
+                        "run.continuation.scheduled",
+                        {
+                            "continuationCount": continuation_count,
+                            "continuationReason": continuation_reason,
+                        },
+                        agent_id=None,
+                        node="continuation_manager",
+                    )
+                    continue
 
             if interrupted_signal:
                 for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal):

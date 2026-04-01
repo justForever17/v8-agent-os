@@ -82,7 +82,7 @@ export function useRuntimeOpsData() {
         question:
             approval.request?.question ||
             approval.request?.prompt ||
-            "当前审批未附带说明，请在 Engine 运行日志里进一步确认。",
+            "",
     })), [approvals]);
 
     const submitApproval = useCallback(async (approvalId: string, approve: boolean) => {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass
 from typing import AsyncIterator, Any
 
@@ -16,6 +18,7 @@ class SupervisorExecutionBundle:
     payload: object
     graph_config: dict
     mode: str = "start"
+    diagnostics: dict[str, Any] | None = None
 
 
 class SupervisorAgentRunner:
@@ -25,9 +28,25 @@ class SupervisorAgentRunner:
     后续再逐步迁出运行时职责。
     """
 
+    def __init__(self) -> None:
+        self._graph_cache: dict[str, object] = {}
+        self._graph_cache_lock = asyncio.Lock()
+
+    def _graph_signature(self, config: EngineConfig) -> str:
+        payload = config.model_dump(mode="json", by_alias=True)
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
     async def build_graph(self, config: EngineConfig):
-        checkpointer = await checkpoint_store.get_async_sqlite_saver()
-        return create_supervisor_graph(config, checkpointer=checkpointer)
+        signature = self._graph_signature(config)
+        started_at = asyncio.get_running_loop().time()
+        async with self._graph_cache_lock:
+            cached = self._graph_cache.get(signature)
+            if cached is not None:
+                return cached, {"graphCacheHit": True, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
+            checkpointer = await checkpoint_store.get_async_sqlite_saver()
+            graph = create_supervisor_graph(config, checkpointer=checkpointer)
+            self._graph_cache[signature] = graph
+            return graph, {"graphCacheHit": False, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
 
     def runtime_metadata(self) -> dict[str, str | bool]:
         return {
@@ -44,28 +63,38 @@ class SupervisorAgentRunner:
         return {"configurable": {"thread_id": session_id}, "recursion_limit": recursion_limit}
 
     async def create_execution_bundle(self, *, config: EngineConfig, messages, session_id: str, recursion_limit: int):
-        graph = await self.build_graph(config)
+        graph, diagnostics = await self.build_graph(config)
         return SupervisorExecutionBundle(
             graph=graph,
             payload=self.create_state(messages),
             graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),
             mode="start",
+            diagnostics=diagnostics,
         )
 
     def build_resume_input(self, resume_value):
         return Command(resume=resume_value)
 
     async def create_resume_bundle(self, *, config: EngineConfig, session_id: str, resume_value, recursion_limit: int):
-        graph = await self.build_graph(config)
+        graph, diagnostics = await self.build_graph(config)
         return SupervisorExecutionBundle(
             graph=graph,
             payload=self.build_resume_input(resume_value),
             graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),
             mode="resume",
+            diagnostics=diagnostics,
         )
 
     def open_bundle_stream(self, bundle: SupervisorExecutionBundle):
         return bundle.graph.astream_events(bundle.payload, config=bundle.graph_config, version="v2")
+
+    async def get_state_snapshot(self, bundle: SupervisorExecutionBundle) -> dict[str, Any] | None:
+        getter = getattr(bundle.graph, "aget_state", None)
+        if not callable(getter):
+            return None
+        snapshot = await getter(bundle.graph_config)
+        values = getattr(snapshot, "values", None)
+        return dict(values or {}) if isinstance(values, dict) else None
 
     async def stream_events(self, bundle: SupervisorExecutionBundle) -> AsyncIterator[dict[str, Any]]:
         async for event in self.open_bundle_stream(bundle):

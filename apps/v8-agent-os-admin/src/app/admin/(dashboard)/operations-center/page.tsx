@@ -65,6 +65,8 @@ export default function OperationsCenterPage() {
     const [loading, setLoading] = useState(true);
     const requestedTab = searchParams.get("tab") || "overview";
     const activeTab = VALID_TABS.has(requestedTab) ? requestedTab : "overview";
+    const focusRunId = searchParams.get("focusRun");
+    const focusSessionId = searchParams.get("focusSession");
 
     const loadSummary = async () => {
         setLoading(true);
@@ -85,6 +87,8 @@ export default function OperationsCenterPage() {
 
     const streamableHttpIssues = summary?.health?.mcp?.streamableHttpIssues || [];
     const degradedServers = summary?.health?.mcp?.degradedServers || [];
+    const pendingApprovalMismatch =
+        typeof summary?.pendingApprovals === "number" && summary.pendingApprovals !== runtime.approvals.length;
 
     return (
         <AdminPageShell>
@@ -103,17 +107,17 @@ export default function OperationsCenterPage() {
                 items={[
                     {
                         label: lt("待处理确认", "Pending approvals"),
-                        value: summary?.pendingApprovals ?? runtime.approvals.length,
+                        value: runtime.approvals.length,
                         description: lt("需要人工确认的运行点。", "Runs waiting for human approval."),
                     },
                     {
                         label: lt("运行中", "Running"),
-                        value: summary?.runningCount ?? runtime.runs.filter((run) => run.status === "running").length,
+                        value: runtime.runs.filter((run) => run.status === "running").length,
                         description: lt("当前仍在执行的任务。", "Tasks still in progress."),
                     },
                     {
                         label: lt("可恢复", "Recoverable"),
-                        value: summary?.recoverableCount ?? runtime.runs.filter((run) => ["paused", "failed", "waiting_input"].includes(run.status || "")).length,
+                        value: runtime.runs.filter((run) => ["paused", "failed", "waiting_input"].includes(run.status || "")).length,
                         description: lt("可以继续或重试的任务。", "Runs that can continue or retry."),
                     },
                     {
@@ -252,6 +256,16 @@ export default function OperationsCenterPage() {
                 </TabsList>
 
                 <TabsContent value="overview" className="space-y-4">
+                    {pendingApprovalMismatch ? (
+                        <StatusNotice
+                            title={lt("待处理确认统计存在漂移", "Pending approval counts are inconsistent")}
+                            description={lt(
+                                `summary 当前显示 ${summary?.pendingApprovals ?? "-"} 条，但 approvals 面板实际拿到 ${runtime.approvals.length} 条。请优先检查 approvals 数据源与过滤口径。`,
+                                `The summary currently shows ${summary?.pendingApprovals ?? "-"} items, but the approvals panel received ${runtime.approvals.length}. Check the approvals data source and filter scope first.`,
+                            )}
+                            tone="warning"
+                        />
+                    ) : null}
                     {runtime.approvals.length > 0 ? (
                         <StatusNotice
                             title={lt("发现待处理确认", "Pending approvals found")}
@@ -260,13 +274,13 @@ export default function OperationsCenterPage() {
                         />
                     ) : null}
                     <div className="grid gap-4 xl:grid-cols-2">
-                        <PendingApprovalsPanel hook={runtime} />
-                        <RecentRunsPanel hook={runtime} />
+                        <PendingApprovalsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId} />
+                        <RecentRunsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId} />
                     </div>
                 </TabsContent>
 
                 <TabsContent value="approvals">
-                    <PendingApprovalsPanel hook={runtime} />
+                    <PendingApprovalsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId} />
                 </TabsContent>
 
                 <TabsContent value="runs" className="space-y-4">
@@ -277,7 +291,7 @@ export default function OperationsCenterPage() {
                             tone="success"
                         />
                     ) : null}
-                    <RecentRunsPanel hook={runtime} />
+                    <RecentRunsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId} />
                 </TabsContent>
 
                 <TabsContent value="advanced">

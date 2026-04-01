@@ -1,3 +1,5 @@
+import time
+
 from .supervisor_context import (
     apply_passive_rag_injection,
     build_supervisor_system_content,
@@ -66,14 +68,17 @@ def execute_supervisor_turn(
         agent_id="supervisor",
     )
     try:
+        route_started_at = time.perf_counter()
         route_bundle = extensions_runtime_service.build_supervisor_route(
             user_query=user_query,
             supervisor_tools=supervisor_tools,
             loaded_agents=loaded_agents,
         )
+        route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
         filtered_supervisor_tools = route_bundle.filtered_tools
         extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
 
+        prompt_started_at = time.perf_counter()
         context_bundle = build_supervisor_system_content(
             state=state,
             config=config,
@@ -87,14 +92,17 @@ def execute_supervisor_turn(
             memory_runtime=memory_runtime,
             extension_prompt_addition=route_bundle.prompt_addition,
         )
+        prompt_duration_ms = round((time.perf_counter() - prompt_started_at) * 1000, 2)
         system_content = context_bundle["system_content"]
 
+        passive_rag_started_at = time.perf_counter()
         prepared_messages = apply_passive_rag_injection(
             messages,
             user_query=user_query,
             scope_chain=scope_chain,
             memory_runtime=memory_runtime,
         )
+        passive_rag_duration_ms = round((time.perf_counter() - passive_rag_started_at) * 1000, 2)
         prepared_messages = prepare_supervisor_messages(
             messages=prepared_messages,
             system_content=system_content,
@@ -103,6 +111,19 @@ def execute_supervisor_turn(
             context_orchestrator=context_orchestrator,
             resolved_model_id=sup_model_name,
             remaining_steps=state.get("remaining_steps", 100),
+        )
+        extensions_runtime_service.emit_supervisor_diagnostics(
+            {
+                "queryPreview": str(user_query or "")[:160],
+                "routeBuildMs": route_duration_ms,
+                "systemContentBuildMs": prompt_duration_ms,
+                "passiveRagMs": passive_rag_duration_ms,
+                "selectedSkillCount": len(route_bundle.selected_skill_names or []),
+                "selectedMcpToolCount": len(route_bundle.exposed_mcp_tool_names or []),
+                "selectedPluginHostToolCount": len(route_bundle.candidate_summary.get("pluginHostTools") or []),
+                "scope": current_scope,
+                "sessionId": session_id,
+            }
         )
 
         debug_supervisor_messages(prepared_messages)

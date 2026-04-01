@@ -127,7 +127,7 @@ const PRESET_LABELS: Record<RuntimePresetId, { title: string; description: strin
     debug: { title: "调试模板", description: "临时放开 direct tools，便于定位问题，不建议长期启用。" },
 };
 
-const NONCORE_RUNTIME_KINDS = ["plugin_host", "rpa", "computer_use", "workflow"] as const;
+const NONCORE_RUNTIME_KINDS = ["plugin_host", "rpa", "computer_use", "network_supervisor"] as const;
 
 function normalizePolicy(policy?: RuntimePolicy): Required<RuntimePolicy> {
     return {
@@ -226,7 +226,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
             {
                 key: "noncore",
                 title: "非核心运行时",
-                description: "plugin_host / rpa / computer_use / workflow 默认按需启用，关闭后应 cold stop / silent release。",
+                description: "plugin_host / rpa / computer_use / network_supervisor 默认按需启用，关闭后应 cold stop / silent release。",
                 runtimeKinds: [...NONCORE_RUNTIME_KINDS],
             },
         ];

@@ -10,6 +10,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, Body, HTTPException
 
 from core.audio.audio_config import AudioConfigManager
+from core.audit_logger import audit_logger
 from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
@@ -17,6 +18,7 @@ from core.system_base import detect_desktop_tools_readiness
 from core.storage import storage
 from core.v8_agent_os_identity import render_system_identity_block
 from core.v8_agent_os_paths import COMPUTER_USE_JSON_PATH, CONFIG_JSON_PATH, V8_AGENT_OS_HOME
+from core.workspace_guard import build_workspace_path_status
 from erc.runtime_stability import runtime_stability_service
 from erc.safety_guardian import safety_guardian
 
@@ -416,7 +418,7 @@ def _save_automation_runtime_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_workspace_domain() -> dict[str, Any]:
     workspace_config = storage.get_workspace_config() or {}
     workspace_path = str(workspace_config.get("agent_workspace_path") or "").strip()
-    path_status = _build_workspace_path_status(workspace_path)
+    path_status = build_workspace_path_status(workspace_path)
     return {
         "domain": "workspace",
         "title": "工作区",
@@ -441,44 +443,30 @@ def _save_workspace_domain(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_path = str(Path(raw_path).expanduser())
     if not Path(normalized_path).is_absolute():
         raise HTTPException(status_code=400, detail="主工作区必须使用绝对路径")
+    path_status = build_workspace_path_status(normalized_path)
+    if bool(path_status.get("isLegacyResidue")):
+        audit_logger.log(
+            source_type="SYSTEM",
+            action="workspace_legacy_residue_blocked",
+            status="WARNING",
+            details=json.dumps(
+                {
+                    "path": normalized_path,
+                    "reason": path_status.get("legacyReason") or path_status.get("reason"),
+                    "recommendedPath": path_status.get("recommendedPath"),
+                    "source": "config_registry.workspace.save",
+                },
+                ensure_ascii=False,
+            ),
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{path_status.get('reason')} 推荐路径：{path_status.get('recommendedPath') or ''}".strip()
+            ),
+        )
     storage.save_workspace_config({"agent_workspace_path": normalized_path})
     return _build_workspace_domain()
-
-
-def _build_workspace_path_status(workspace_path: str) -> dict[str, Any]:
-    normalized = str(workspace_path or "").strip()
-    if not normalized:
-        return {
-            "exists": False,
-            "isAbsolute": False,
-            "writable": False,
-            "writableTarget": "",
-            "reason": "未设置主工作区路径",
-        }
-
-    path_obj = Path(normalized).expanduser()
-    is_absolute = path_obj.is_absolute()
-    exists = path_obj.exists() if is_absolute else False
-    writable_target = path_obj if exists else path_obj.parent
-    writable = bool(writable_target and writable_target.exists() and os.access(writable_target, os.W_OK))
-    reason = ""
-    if not is_absolute:
-        reason = "当前路径不是绝对路径"
-    elif exists and not path_obj.is_dir():
-        reason = "当前路径存在，但不是目录"
-    elif not exists:
-        reason = "目录尚不存在，将在首次使用时按需创建"
-    elif not writable:
-        reason = "当前目录存在，但没有写入权限"
-    else:
-        reason = "目录状态正常，可作为默认执行目录"
-    return {
-        "exists": exists,
-        "isAbsolute": is_absolute,
-        "writable": writable,
-        "writableTarget": str(writable_target) if writable_target else "",
-        "reason": reason,
-    }
 
 
 def _build_runtime_stability_domain() -> dict[str, Any]:
@@ -503,21 +491,69 @@ def _save_runtime_stability_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_safety_domain() -> dict[str, Any]:
+    safety_review_model = model_control_plane.get_role_model_id("safety_review") or ""
+    recent_skill_scans = []
+    blocked_count = 0
+    verdict_counts: dict[str, int] = {}
+    try:
+        for item in audit_logger.get_logs(limit=50, source_type="SAFETY"):
+            if str(item.get("action") or "").strip() != "skill_scan":
+                continue
+            details_raw = str(item.get("details") or "").strip()
+            details = json.loads(details_raw) if details_raw else {}
+            if not isinstance(details, dict):
+                details = {}
+            verdict = str(details.get("verdict") or "unknown").strip() or "unknown"
+            verdict_counts[verdict] = int(verdict_counts.get(verdict) or 0) + 1
+            if verdict in {"high", "critical"}:
+                blocked_count += 1
+            if len(recent_skill_scans) < 6:
+                recent_skill_scans.append(
+                    {
+                        "skillName": str(details.get("skillName") or "").strip() or "未知 Skill",
+                        "verdict": verdict,
+                        "confidence": details.get("confidence"),
+                        "skillTrustScore": details.get("skillTrustScore"),
+                        "auditId": str(details.get("auditId") or item.get("id") or "").strip(),
+                        "timestamp": item.get("timestamp"),
+                        "reasons": list(details.get("reasons") or [])[:4],
+                    }
+                )
+    except Exception:
+        recent_skill_scans = []
+        blocked_count = 0
+        verdict_counts = {}
+
     return {
         "domain": "safety",
         "title": "安全控制",
         "summary": "定义命令、文件、网络和运行时的安全护栏。",
-        "data": safety_guardian.export_config(),
-        "source": _config_source("safety"),
-        "savePath": _config_save_path("safety"),
+        "data": {
+            **safety_guardian.export_config(),
+            "modelBindings": {
+                "safetyReviewModel": safety_review_model,
+            },
+            "runtimeSummary": {
+                "mode": "rules_audit_plus_llm_review" if safety_review_model else "rules_audit_first",
+                "llmBound": bool(safety_review_model),
+                "skillStaticScanEnabled": True,
+                "blockedSkillScans": blocked_count,
+                "verdictDistribution": verdict_counts,
+                "recentSkillScans": recent_skill_scans,
+            },
+        },
+        "source": f"{_config_source('safety')} + {_config_source('models')}",
+        "savePath": [f"{CONFIG_JSON_PATH}#safety", f"{CONFIG_JSON_PATH}#models"],
         "reloadRequired": False,
         "warnings": [],
-        "advancedFields": ["commandRules", "runtimeRules", "channelGroupGuard", "postActionRules"],
+        "advancedFields": ["commandRules", "runtimeRules", "channelGroupGuard", "postActionRules", "modelBindings"],
     }
 
 
 def _save_safety_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
+    model_bindings = dict(data.pop("modelBindings", {}) or {})
+    _update_role_bindings({"safety_review": model_bindings.get("safetyReviewModel")})
     safety_guardian.save_config(data)
     return _build_safety_domain()
 

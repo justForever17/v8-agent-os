@@ -49,6 +49,12 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: lt("系统总览、消息入口与关键状态。", "System overview, message entry, and key status."),
             },
             {
+                title: lt("MODELS", "MODELS"),
+                href: "/admin/model-hub",
+                icon: Sparkles,
+                description: lt("供应商、模型目录与连接健康。", "Providers, model catalogues, and connection health."),
+            },
+            {
                 title: lt("OPERATIONS", "OPERATIONS"),
                 href: "/admin/operations-center",
                 icon: Gauge,
@@ -85,12 +91,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: lt("Hooks、Cron 与自动化触发。", "Hooks, cron, and automation triggers."),
             },
             {
-                title: lt("WORKFLOW RUNTIME", "WORKFLOW RUNTIME"),
-                href: "/admin/workflow-runtime",
-                icon: SlidersHorizontal,
-                description: lt("流程编排与任务执行入口。", "Workflow orchestration and execution entry."),
-            },
-            {
                 title: lt("PLUGIN HOST RUNTIME", "PLUGIN HOST RUNTIME"),
                 href: "/admin/plugin-host",
                 icon: Blocks,
@@ -124,12 +124,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
         id: "capabilities",
         title: lt("CAPABILITIES", "CAPABILITIES"),
         items: [
-            {
-                title: lt("MODELS", "MODELS"),
-                href: "/admin/model-hub",
-                icon: Sparkles,
-                description: lt("供应商、模型目录与连接健康。", "Providers, model catalogues, and connection health."),
-            },
             {
                 title: lt("EXTENSIONS", "EXTENSIONS"),
                 href: "/admin/extensions",

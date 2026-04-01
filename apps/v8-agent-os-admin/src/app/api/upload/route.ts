@@ -6,6 +6,29 @@ import { resolveConfigDomain } from "@/lib/server/runtime-config";
 import { verifyServiceAuth } from "@/lib/service-auth";
 import { auth } from "@/lib/auth";
 
+function legacyWorkspaceResidueStatus(workspacePath: string) {
+    const normalized = path.resolve(String(workspacePath || "").trim());
+    const workspaceRoot = path.resolve(process.cwd(), "..");
+    const legacyTargets = [
+        { target: path.resolve(workspaceRoot, "apps", "engine", "workspace"), reason: "命中旧 monorepo engine workspace 路径" },
+        { target: path.resolve(workspaceRoot, "apps", "admin"), reason: "命中旧 monorepo admin 根目录" },
+        { target: path.resolve(workspaceRoot, "apps", "web"), reason: "命中旧 monorepo web 根目录" },
+    ];
+
+    for (const item of legacyTargets) {
+        if (normalized === item.target || normalized.startsWith(`${item.target}${path.sep}`)) {
+            return {
+                isLegacyResidue: true,
+                legacyReason: item.reason,
+            };
+        }
+    }
+    return {
+        isLegacyResidue: false,
+        legacyReason: "",
+    };
+}
+
 export async function POST(req: NextRequest) {
     try {
         let userEmail: string | undefined | null;
@@ -35,6 +58,15 @@ export async function POST(req: NextRequest) {
             workspacePath = typeof workspaceConfig.agent_workspace_path === "string" ? workspaceConfig.agent_workspace_path : "";
             if (!workspacePath) {
                 workspacePath = path.join(os.homedir(), ".v8-agent-os", "workspace");
+            }
+            const residue = legacyWorkspaceResidueStatus(workspacePath);
+            if (residue.isLegacyResidue) {
+                return NextResponse.json(
+                    {
+                        error: `当前工作区命中 legacy monorepo residue：${residue.legacyReason}，上传入口已阻止自动建目录。请先改成 canonical workspace。`,
+                    },
+                    { status: 400 }
+                );
             }
             
             const uploadsDir = path.join(workspacePath, "uploads");

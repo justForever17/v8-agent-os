@@ -28,6 +28,7 @@ from core.multimodal_payload_adapter import (
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 from core.system_base import get_engine_origin
+from core.workspace_guard import ensure_workspace_auto_create_allowed
 
 async def _upload_to_temp_s3(file_path: Path) -> str:
     from core.storage import storage
@@ -86,6 +87,11 @@ async def _mount_in_workspace(file_path: Path) -> str:
     if not workspace_dir.is_absolute():
          base_dir = Path(os.getcwd())
          workspace_dir = base_dir / workspace_dir
+    workspace_dir = ensure_workspace_auto_create_allowed(
+        workspace_dir,
+        source="vision_media_analyzer.mount_in_workspace",
+        allow_missing=True,
+    )
     workspace_dir.mkdir(parents=True, exist_ok=True)
     target_path = workspace_dir / file_path.name
     if str(file_path.absolute()) != str(target_path.absolute()):

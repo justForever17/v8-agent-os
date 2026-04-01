@@ -38,7 +38,7 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
         const term = new Terminal({
             cursorBlink: true,
             fontFamily: 'SF Mono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-            fontSize: 12,
+            fontSize: compact ? 11 : 12,
             rows: compact ? 10 : 16,
             theme: {
                 background: 'transparent',
@@ -109,7 +109,7 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
             {/* macOS-style Header */}
             <div
                 className={cn(
-                    "flex items-center justify-between px-3 py-2 bg-zinc-100 dark:bg-[#1C1C1E] border-b border-zinc-200 dark:border-zinc-800 cursor-pointer select-none",
+                    "flex items-center justify-between px-3 py-2 sm:py-2.5 bg-zinc-100 dark:bg-[#1C1C1E] border-b border-zinc-200 dark:border-zinc-800 cursor-pointer select-none",
                     isCollapsed && "border-b-0"
                 )}
                 onClick={() => setIsCollapsed(c => !c)}
@@ -159,7 +159,7 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
                         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                         className="overflow-hidden"
                     >
-                        <div className={cn("p-2 bg-[#000000]", compact ? "h-[200px]" : "h-[280px]")}>
+                        <div className={cn("p-2 bg-[#000000]", compact ? "h-[132px] sm:h-[160px]" : "h-[240px] sm:h-[280px]")}>
                             <div ref={terminalRef} className="h-full w-full" />
                         </div>
                     </motion.div>

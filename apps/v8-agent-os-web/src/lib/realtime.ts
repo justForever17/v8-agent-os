@@ -121,6 +121,7 @@ export function normalizeRealtimeEvent(raw: unknown): LegacyChatEvent | null {
                     toolCallId,
                     approvalId: typeof payloadRecord.approval_id === "string" ? payloadRecord.approval_id : undefined,
                     approvalKind: typeof payloadRecord.approval_kind === "string" ? payloadRecord.approval_kind : undefined,
+                    interactionKind: typeof request.interactionKind === "string" ? request.interactionKind : undefined,
                     request,
                 },
                 kind: envelope.kind,

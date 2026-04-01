@@ -359,7 +359,12 @@ export function buildRuntimeTimelineEntryFromEvent(raw: unknown): RuntimeTimelin
     }
     const record = raw as Record<string, unknown>;
     const topic = typeof record.topic === "string" ? record.topic : "";
-    if (!topic.startsWith("extension.") && !topic.startsWith("chat.")) {
+    if (
+        !topic.startsWith("extension.")
+        && !topic.startsWith("chat.")
+        && topic !== "run.continuation.scheduled"
+        && topic !== "supervisor.graph.diagnostics"
+    ) {
         return null;
     }
     const payload = (record.payload && typeof record.payload === "object"
@@ -379,6 +384,21 @@ export function buildRuntimeTimelineEntryFromEvent(raw: unknown): RuntimeTimelin
     } else if (topic === "chat.task_planning_mode.enabled") {
         summary = "已开启任务模式";
         status = "configured";
+    } else if (topic === "run.continuation.scheduled") {
+        const continuationCount = Number(payload.continuationCount || 0) || 0;
+        const continuationReason = typeof payload.continuationReason === "string" && payload.continuationReason.trim()
+            ? payload.continuationReason.trim()
+            : "unknown";
+        summary = `已静默续跑第 ${continuationCount} 段执行（${continuationReason}）`;
+        status = "continued";
+    } else if (topic === "supervisor.graph.diagnostics") {
+        const parts: string[] = [];
+        if (typeof payload.graphBuildMs === "number") parts.push(`graph ${payload.graphBuildMs}ms`);
+        if (typeof payload.routeBuildMs === "number") parts.push(`route ${payload.routeBuildMs}ms`);
+        if (typeof payload.systemContentBuildMs === "number") parts.push(`prompt ${payload.systemContentBuildMs}ms`);
+        if (typeof payload.passiveRagMs === "number") parts.push(`rag ${payload.passiveRagMs}ms`);
+        summary = parts.length > 0 ? `Supervisor 诊断：${parts.join("，")}` : "Supervisor 诊断已记录";
+        status = "diagnostics";
     } else if (topic === "extension.route.selected") {
         const skillCount = Array.isArray(payload.skillCandidates) ? payload.skillCandidates.length : 0;
         const mcpCount = Array.isArray(payload.mcpToolCandidates) ? payload.mcpToolCandidates.length : 0;
@@ -388,6 +408,13 @@ export function buildRuntimeTimelineEntryFromEvent(raw: unknown): RuntimeTimelin
         summary = `已读取 Skill：${String(payload.skillName || "未知 Skill")}`;
         kind = "tool";
         status = "loaded";
+    } else if (topic === "extension.skill.blocked" || topic === "safety.skill_blocked") {
+        const verdict = typeof payload.verdict === "string" && payload.verdict.trim()
+            ? payload.verdict.trim()
+            : "high";
+        summary = `Safety Guardian 已阻断 Skill：${String(payload.skillName || "未知 Skill")}（${verdict}）`;
+        kind = "governance";
+        status = "blocked";
     } else if (topic === "extension.mcp.candidate_exposed") {
         const count = Number(payload.count || (Array.isArray(payload.toolNames) ? payload.toolNames.length : 0)) || 0;
         summary = `已暴露 ${count} 个 MCP 工具`;
@@ -419,13 +446,13 @@ export function buildRuntimeTimelineEntryFromEvent(raw: unknown): RuntimeTimelin
             : `timeline-${topic}-${record.seq || summary}`,
         seq: Number(record.seq || 0) || 0,
         runId: typeof record.run_id === "string" ? record.run_id : undefined,
-        runtimeId: topic.startsWith("chat.") ? "chat" : "extensions",
+        runtimeId: topic.startsWith("extension.") ? "extensions" : "chat",
         topic,
         kind,
         summary,
         actorLabel: typeof (record.source as Record<string, unknown> | undefined)?.agent_id === "string"
             ? String((record.source as Record<string, unknown>).agent_id)
-            : topic.startsWith("chat.") ? "对话运行" : "扩展运行",
+            : topic.startsWith("extension.") ? "扩展运行" : "对话运行",
         timestamp: parseTimelineTimestamp(record.event_ts || record.ts || record.created_at),
         status,
         metadata: payload,

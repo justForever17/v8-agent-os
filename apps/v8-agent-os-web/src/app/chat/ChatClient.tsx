@@ -298,6 +298,7 @@ export default function ChatClient() {
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
     const [askUserApprovalId, setAskUserApprovalId] = useState("");
     const [askUserRunId, setAskUserRunId] = useState("");
+    const [askUserInteractionKind, setAskUserInteractionKind] = useState<"ask_user" | "approval">("approval");
     const [projects, setProjects] = useState<ProjectDescriptor[]>([]);
     const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
     const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -349,9 +350,13 @@ export default function ChatClient() {
                 applyPendingApproval({
                     id: event.data.approvalId || "",
                     run_id: event.run_id || event.data.runId || "",
+                    approval_kind: event.data.approvalKind || "",
+                    interactionKind: event.data.interactionKind || "",
                     request: {
                         question: event.data.question,
                         toolCallId: event.data.toolCallId,
+                        approvalKind: event.data.approvalKind,
+                        interactionKind: event.data.interactionKind,
                     },
                 });
                 const conversationId = activeConversationIdRef.current;
@@ -467,6 +472,7 @@ export default function ChatClient() {
         setAskUserQuestion("");
         setAskUserToolCallId("");
         setAskUserRunId("");
+        setAskUserInteractionKind("approval");
         if (options?.closeModal !== false) {
             setAskUserModalOpen(false);
         }
@@ -477,10 +483,12 @@ export default function ChatClient() {
         approval_id?: string;
         run_id?: string;
         runId?: string;
+        approval_kind?: string;
+        interactionKind?: string;
         question?: string;
         prompt?: string;
         toolCallId?: string;
-        request?: { question?: string; prompt?: string; toolCallId?: string };
+        request?: { question?: string; prompt?: string; toolCallId?: string; approvalKind?: string; interactionKind?: string };
     } | null, options?: { openModal?: boolean }) => {
         if (!approval) {
             clearApprovalState();
@@ -495,11 +503,20 @@ export default function ChatClient() {
             return;
         }
 
+        const interactionKind =
+            approval.interactionKind
+            || request.interactionKind
+            || (approvalId ? "approval" : "ask_user");
         setAskUserApprovalId(approvalId);
         setAskUserToolCallId(approval.toolCallId || request.toolCallId || "");
         setAskUserQuestion(question);
         setAskUserRunId(approval.run_id || approval.runId || "");
-        if (options?.openModal !== false) {
+        setAskUserInteractionKind(interactionKind === "ask_user" ? "ask_user" : "approval");
+        const shouldOpenModal =
+            typeof options?.openModal === "boolean"
+                ? options.openModal
+                : interactionKind === "ask_user";
+        if (shouldOpenModal) {
             setAskUserModalOpen(true);
         }
     }, [clearApprovalState]);
@@ -1220,12 +1237,18 @@ export default function ChatClient() {
                             onInterrupt={handleInterruptRun}
                             onRetry={handleRetryRun}
                             onOpenApproval={() => {
-                                if (askUserApprovalId) {
+                                if (askUserApprovalId && askUserInteractionKind === "ask_user") {
                                     setAskUserModalOpen(true);
                                     return;
                                 }
                                 if ((sessionProjection?.approvals?.length || 0) > 0) {
-                                    applyPendingApproval(sessionProjection?.approvals?.[0] || null, { openModal: true });
+                                    applyPendingApproval(sessionProjection?.approvals?.[0] || null, {
+                                        openModal:
+                                            String(
+                                                sessionProjection?.approvals?.[0]?.request?.interactionKind
+                                                || "",
+                                            ).trim() === "ask_user",
+                                    });
                                 }
                             }}
                         />
@@ -1348,7 +1371,7 @@ export default function ChatClient() {
 
                 <div className="shrink-0 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-1 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
                     <div className="flex flex-col gap-2">
-                        <div className="empty:hidden flex max-h-[min(18rem,28vh)] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain">
+                        <div className="empty:hidden flex max-h-[22vh] sm:max-h-[28vh] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain">
                             <ProcessesHUD />
                             <TodosHUD sessionId={activeConversationId} />
                         </div>

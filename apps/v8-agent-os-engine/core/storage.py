@@ -350,7 +350,16 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "music": {"tracks": []},
     "webFetchProfiles": {"version": 1, "sites": {}},
     "mediaDownloadProfiles": {"version": 1, "platforms": {}},
-    "runtimeRegistry": {"version": 1, "startupProfile": "standard", "policies": {}},
+    "runtimeRegistry": {
+        "version": 1,
+        "installProfile": "minimal",
+        "installPlatform": "",
+        "installedRuntimeFamilies": [],
+        "bootstrapManaged": False,
+        "lastUpgradeAt": "",
+        "startupProfile": "minimal",
+        "policies": {},
+    },
 }
 
 
@@ -1801,22 +1810,61 @@ class StorageManager:
     def get_runtime_registry_config(self) -> Dict[str, Any]:
         data = self.read_json("runtime_registry.json")
         if not data:
-            data = {"version": 1, "startupProfile": "standard", "policies": {}}
+            data = {
+                "version": 1,
+                "installProfile": "minimal",
+                "installPlatform": "",
+                "installedRuntimeFamilies": [],
+                "bootstrapManaged": False,
+                "lastUpgradeAt": "",
+                "startupProfile": "minimal",
+                "policies": {},
+            }
         data.setdefault("version", 1)
-        startup_profile = str(data.get("startupProfile") or "standard").strip().lower()
-        if startup_profile not in {"minimal", "standard", "desktop"}:
-            startup_profile = "standard"
-        data["startupProfile"] = startup_profile
+        install_profile = str(data.get("installProfile") or data.get("startupProfile") or "minimal").strip().lower()
+        if install_profile == "standard":
+            install_profile = "minimal"
+        if install_profile not in {"minimal", "desktop"}:
+            install_profile = "minimal"
+        data["installProfile"] = install_profile
+        data["startupProfile"] = install_profile
+        install_platform = str(data.get("installPlatform") or "").strip().lower()
+        if install_platform not in {"windows", "macos", "linux"}:
+            install_platform = ""
+        data["installPlatform"] = install_platform
+        families = []
+        for item in list(data.get("installedRuntimeFamilies") or []):
+            normalized = str(item or "").strip()
+            if normalized and normalized not in families:
+                families.append(normalized)
+        data["installedRuntimeFamilies"] = families
+        data["bootstrapManaged"] = bool(data.get("bootstrapManaged", False))
+        data["lastUpgradeAt"] = str(data.get("lastUpgradeAt") or "").strip()
         data.setdefault("policies", {})
         return data
 
     def save_runtime_registry_config(self, data: Dict[str, Any]):
         payload = dict(data or {})
         payload.setdefault("version", 1)
-        startup_profile = str(payload.get("startupProfile") or "standard").strip().lower()
-        if startup_profile not in {"minimal", "standard", "desktop"}:
-            startup_profile = "standard"
-        payload["startupProfile"] = startup_profile
+        install_profile = str(payload.get("installProfile") or payload.get("startupProfile") or "minimal").strip().lower()
+        if install_profile == "standard":
+            install_profile = "minimal"
+        if install_profile not in {"minimal", "desktop"}:
+            install_profile = "minimal"
+        payload["installProfile"] = install_profile
+        payload["startupProfile"] = install_profile
+        install_platform = str(payload.get("installPlatform") or "").strip().lower()
+        if install_platform not in {"windows", "macos", "linux"}:
+            install_platform = ""
+        payload["installPlatform"] = install_platform
+        families = []
+        for item in list(payload.get("installedRuntimeFamilies") or []):
+            normalized = str(item or "").strip()
+            if normalized and normalized not in families:
+                families.append(normalized)
+        payload["installedRuntimeFamilies"] = families
+        payload["bootstrapManaged"] = bool(payload.get("bootstrapManaged", False))
+        payload["lastUpgradeAt"] = str(payload.get("lastUpgradeAt") or "").strip()
         payload.setdefault("policies", {})
         self.write_json("runtime_registry.json", payload)
 

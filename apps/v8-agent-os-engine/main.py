@@ -30,8 +30,11 @@ from api import routes
 from core.runtime.health import inspect_engine_runtime
 from core.models.provider_compatibility import install_provider_compatibility_patches
 from core.runtime.startup_profile import (
+    build_installation_snapshot,
     disabled_reason_summary,
+    resolve_install_profile,
     resolve_startup_profile,
+    resolve_install_platform,
     runtime_cluster_summary,
     runtime_submode_summary,
     service_enabled,
@@ -49,6 +52,8 @@ from erc.workflow_ledger import workflow_ledger_service
 
 install_provider_compatibility_patches()
 STARTUP_PROFILE = resolve_startup_profile()
+INSTALL_PROFILE = resolve_install_profile()
+INSTALL_PLATFORM = resolve_install_platform()
 
 
 def _build_cors_allow_origins() -> list[str]:
@@ -285,6 +290,9 @@ async def lifespan(app: FastAPI):
             "interpreter_drift": runtime_health["interpreterDrift"],
             "launcher_drift": runtime_health["launcherDrift"],
             "startup_profile": STARTUP_PROFILE,
+            "install_profile": INSTALL_PROFILE,
+            "install_platform": INSTALL_PLATFORM,
+            "installed_runtime_families": build_installation_snapshot()["installedRuntimeFamilies"],
             "startup_bundle": startup_bundle_summary(STARTUP_PROFILE),
             "startup_services": _service_states(STARTUP_PROFILE),
         },
@@ -402,6 +410,7 @@ async def health_check():
     return {
         "status": "ok",
         "service": "v8-agent-os-engine",
+        **build_installation_snapshot(),
         "startupProfile": STARTUP_PROFILE,
         "startupBundle": startup_bundle_summary(STARTUP_PROFILE),
         "runtimeClusters": runtime_cluster_summary(STARTUP_PROFILE),

@@ -1,100 +1,213 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from core.storage import storage
 
 
-STARTUP_PROFILES = ("minimal", "standard", "desktop")
-_PROFILE_ORDER = {name: index for index, name in enumerate(STARTUP_PROFILES)}
-_FEATURE_MIN_PROFILE = {
-    "core": "minimal",
-    "audio": "standard",
-    "skills": "minimal",
-    "mcp": "standard",
-    "extensions": "minimal",
-    "cron": "standard",
-    "knowledge": "standard",
-    "ops": "standard",
-    "plugin_host": "standard",
-    "network_supervisor": "standard",
-    "computer_use": "desktop",
-    "desktop_live": "desktop",
-    "rpa": "desktop",
+INSTALL_PROFILES = ("minimal", "desktop")
+LEGACY_STARTUP_PROFILE_ALIASES = {
+    "minimal": "minimal",
+    "standard": "minimal",
+    "desktop": "desktop",
+}
+KNOWN_RUNTIME_FAMILIES = (
+    "chat",
+    "memory",
+    "extensions",
+    "automation",
+    "network_supervisor",
+    "plugin_host",
+    "computer_use",
+    "rpa",
+    "desktop_live",
+)
+DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
+    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor"),
+    "desktop": (
+        "chat",
+        "memory",
+        "extensions",
+        "automation",
+        "network_supervisor",
+        "computer_use",
+        "rpa",
+        "desktop_live",
+    ),
+}
+_FEATURE_RUNTIME_FAMILY = {
+    "core": "chat",
+    "audio": "chat",
+    "skills": "extensions",
+    "mcp": "extensions",
+    "extensions": "extensions",
+    "cron": "automation",
+    "knowledge": "memory",
+    "ops": "automation",
+    "plugin_host": "plugin_host",
+    "network_supervisor": "network_supervisor",
+    "computer_use": "computer_use",
+    "desktop_live": "desktop_live",
+    "rpa": "rpa",
 }
 _DISABLED_REASON_LABELS = {
+    "installed": "已安装",
+    "not_installed": "未安装",
     "disabled_by_config": "配置关闭",
-    "disabled_by_profile": "启动档位未开启",
     "disabled_by_runtime_policy": "runtime policy 已禁用",
-    "enabled": "已启用",
 }
-_RUNTIME_CLUSTERS = {
-    "chatruntime": {
-        "minimumProfile": "minimal",
-        "features": ("core",),
-        "minimalSubmode": "full",
-    },
-    "extensionsruntime": {
-        "minimumProfile": "minimal",
-        "features": ("skills", "extensions"),
-        "minimalSubmode": "lite",
-    },
-    "memoryruntime": {
-        "minimumProfile": "minimal",
-        "features": ("knowledge",),
-        "minimalSubmode": "lite",
-    },
-    "autoruntime": {
-        "minimumProfile": "minimal",
-        "features": ("cron", "ops"),
-        "minimalSubmode": "lite",
-    },
-    "servicecluster": {
-        "minimumProfile": "standard",
-        "features": ("audio", "mcp", "plugin_host", "network_supervisor"),
-        "minimalSubmode": "off",
-    },
-    "desktopcluster": {
-        "minimumProfile": "desktop",
-        "features": ("computer_use", "desktop_live", "rpa"),
-        "minimalSubmode": "off",
-    },
+_LEGACY_EXTRA_FAMILIES_BY_STARTUP_PROFILE = {
+    "standard": ("plugin_host",),
+    "desktop": ("plugin_host",),
 }
+_RUNTIME_CLUSTER_COMPAT_ORDER = (
+    ("chatruntime", "chat"),
+    ("memoryruntime", "memory"),
+    ("extensionsruntime", "extensions"),
+    ("autoruntime", "automation"),
+    ("networksupervisorruntime", "network_supervisor"),
+    ("desktopcluster", "computer_use"),
+)
+
+
+def normalize_install_profile(value: Any) -> str:
+    normalized = str(value or "minimal").strip().lower()
+    return LEGACY_STARTUP_PROFILE_ALIASES.get(normalized, "minimal")
 
 
 def normalize_startup_profile(value: Any) -> str:
-    normalized = str(value or "standard").strip().lower()
-    if normalized not in _PROFILE_ORDER:
-        return "standard"
-    return normalized
+    return normalize_install_profile(value)
 
 
-def get_configured_startup_profile() -> str:
+def normalize_install_platform(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"windows", "macos", "linux"}:
+        return normalized
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
+
+def _default_runtime_families_for_profile(profile: str) -> list[str]:
+    normalized_profile = normalize_install_profile(profile)
+    return list(DEFAULT_RUNTIME_FAMILIES_BY_PROFILE.get(normalized_profile, DEFAULT_RUNTIME_FAMILIES_BY_PROFILE["minimal"]))
+
+
+def _normalize_runtime_families(items: Any) -> list[str]:
+    families: list[str] = []
+    for item in list(items or []):
+        normalized = str(item or "").strip()
+        if not normalized or normalized in families:
+            continue
+        if normalized not in KNOWN_RUNTIME_FAMILIES:
+            continue
+        families.append(normalized)
+    return families
+
+
+def _resolve_legacy_runtime_families(*, startup_profile: str, install_profile: str) -> list[str]:
+    families = _default_runtime_families_for_profile(install_profile)
+    for family in _LEGACY_EXTRA_FAMILIES_BY_STARTUP_PROFILE.get(startup_profile, ()):
+        if family not in families:
+            families.append(family)
+    return families
+
+
+def get_runtime_registry_state() -> dict[str, Any]:
     try:
         payload = storage.get_runtime_registry_config()
     except Exception:
         payload = {}
-    return normalize_startup_profile(payload.get("startupProfile"))
+
+    env_install_profile = str(os.getenv("ENGINE_INSTALL_PROFILE") or "").strip()
+    env_startup_profile = str(os.getenv("ENGINE_STARTUP_PROFILE") or "").strip()
+    install_profile = normalize_install_profile(
+        env_install_profile
+        or payload.get("installProfile")
+        or payload.get("startupProfile")
+        or env_startup_profile
+        or "minimal"
+    )
+    install_platform = normalize_install_platform(
+        os.getenv("ENGINE_INSTALL_PLATFORM") or payload.get("installPlatform")
+    )
+    configured_families = _normalize_runtime_families(payload.get("installedRuntimeFamilies"))
+    if configured_families:
+        installed_runtime_families = configured_families
+    else:
+        legacy_startup_profile = str(payload.get("startupProfile") or "").strip().lower()
+        installed_runtime_families = _resolve_legacy_runtime_families(
+            startup_profile=legacy_startup_profile,
+            install_profile=install_profile,
+        )
+
+    return {
+        "version": int(payload.get("version") or 1),
+        "installProfile": install_profile,
+        "installPlatform": install_platform,
+        "installedRuntimeFamilies": installed_runtime_families,
+        "bootstrapManaged": bool(payload.get("bootstrapManaged", False)),
+        "lastUpgradeAt": str(payload.get("lastUpgradeAt") or "").strip() or None,
+        "startupProfile": normalize_install_profile(payload.get("startupProfile") or install_profile),
+        "policies": dict(payload.get("policies") or {}),
+    }
+
+
+def get_configured_install_profile() -> str:
+    return str(get_runtime_registry_state()["installProfile"])
+
+
+def get_configured_startup_profile() -> str:
+    return get_configured_install_profile()
+
+
+def resolve_install_profile() -> str:
+    return str(get_runtime_registry_state()["installProfile"])
 
 
 def resolve_startup_profile() -> str:
-    env_value = os.getenv("ENGINE_STARTUP_PROFILE")
-    if str(env_value or "").strip():
-        return normalize_startup_profile(env_value)
-    return get_configured_startup_profile()
+    return resolve_install_profile()
 
 
-def profile_at_least(profile: str, minimum: str) -> bool:
-    normalized_profile = normalize_startup_profile(profile)
-    normalized_minimum = normalize_startup_profile(minimum)
-    return _PROFILE_ORDER[normalized_profile] >= _PROFILE_ORDER[normalized_minimum]
+def resolve_install_platform() -> str:
+    return str(get_runtime_registry_state()["installPlatform"])
 
 
-def startup_feature_enabled(feature: str, profile: str | None = None) -> bool:
-    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
-    minimum = normalize_startup_profile(_FEATURE_MIN_PROFILE.get(str(feature or "").strip(), "standard"))
-    return profile_at_least(normalized_profile, minimum)
+def installed_runtime_families(profile: str | None = None) -> list[str]:
+    state = get_runtime_registry_state()
+    normalized_profile = normalize_install_profile(profile or state["installProfile"])
+    families = _normalize_runtime_families(state["installedRuntimeFamilies"])
+    if normalized_profile != state["installProfile"]:
+        return _default_runtime_families_for_profile(normalized_profile)
+    return families
+
+
+def runtime_family_installed(kind: str | None, *, profile: str | None = None) -> bool:
+    normalized_kind = str(kind or "").strip()
+    if not normalized_kind:
+        return True
+    return normalized_kind in installed_runtime_families(profile)
+
+
+def service_enabled(
+    feature: str,
+    *,
+    profile: str | None = None,
+    runtime_kind: str | None = None,
+    config_enabled: bool = True,
+) -> bool:
+    if not config_enabled:
+        return False
+    family = _FEATURE_RUNTIME_FAMILY.get(str(feature or "").strip())
+    if family and not runtime_family_installed(family, profile=profile):
+        return False
+    if runtime_kind is not None and not runtime_policy_enabled(runtime_kind):
+        return False
+    return True
 
 
 def runtime_policy_enabled(kind: str | None) -> bool:
@@ -110,22 +223,6 @@ def runtime_policy_enabled(kind: str | None) -> bool:
         return True
 
 
-def service_enabled(
-    feature: str,
-    *,
-    profile: str | None = None,
-    runtime_kind: str | None = None,
-    config_enabled: bool = True,
-) -> bool:
-    if not config_enabled:
-        return False
-    if not startup_feature_enabled(feature, profile):
-        return False
-    if runtime_kind is not None and not runtime_policy_enabled(runtime_kind):
-        return False
-    return True
-
-
 def service_state(
     feature: str,
     *,
@@ -133,26 +230,27 @@ def service_state(
     runtime_kind: str | None = None,
     config_enabled: bool = True,
 ) -> dict[str, Any]:
-    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
-    minimum_profile = normalize_startup_profile(_FEATURE_MIN_PROFILE.get(str(feature or "").strip(), "standard"))
+    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+    family = _FEATURE_RUNTIME_FAMILY.get(str(feature or "").strip())
     policy_enabled = True if runtime_kind is None else runtime_policy_enabled(runtime_kind)
 
-    if not config_enabled:
+    if family and not runtime_family_installed(family, profile=normalized_profile):
+        reason = "not_installed"
+    elif not config_enabled:
         reason = "disabled_by_config"
-    elif not profile_at_least(normalized_profile, minimum_profile):
-        reason = "disabled_by_profile"
     elif runtime_kind is not None and not policy_enabled:
         reason = "disabled_by_runtime_policy"
     else:
-        reason = "enabled"
+        reason = "installed"
 
     return {
         "feature": str(feature or "").strip(),
-        "enabled": reason == "enabled",
+        "enabled": reason == "installed",
         "reason": reason,
         "reasonLabel": _DISABLED_REASON_LABELS.get(reason, reason),
-        "profile": normalized_profile,
-        "minimumProfile": minimum_profile,
+        "installProfile": normalized_profile,
+        "installPlatform": resolve_install_platform(),
+        "runtimeFamily": family,
         "runtimeKind": str(runtime_kind or "").strip() or None,
         "configEnabled": bool(config_enabled),
         "policyEnabled": bool(policy_enabled),
@@ -160,25 +258,25 @@ def service_state(
 
 
 def startup_bundle_summary(profile: str | None = None) -> dict[str, bool]:
-    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
+    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
     return {
-        "audio": startup_feature_enabled("audio", normalized_profile),
-        "skills": startup_feature_enabled("skills", normalized_profile),
-        "mcp": startup_feature_enabled("mcp", normalized_profile),
-        "extensions": startup_feature_enabled("extensions", normalized_profile),
-        "cron": startup_feature_enabled("cron", normalized_profile),
-        "knowledge": startup_feature_enabled("knowledge", normalized_profile),
-        "ops": startup_feature_enabled("ops", normalized_profile),
-        "pluginHost": startup_feature_enabled("plugin_host", normalized_profile),
-        "networkSupervisor": startup_feature_enabled("network_supervisor", normalized_profile),
-        "computerUse": startup_feature_enabled("computer_use", normalized_profile),
-        "desktopLive": startup_feature_enabled("desktop_live", normalized_profile),
-        "rpa": startup_feature_enabled("rpa", normalized_profile),
+        "audio": service_enabled("audio", profile=normalized_profile),
+        "skills": service_enabled("skills", profile=normalized_profile),
+        "mcp": service_enabled("mcp", profile=normalized_profile),
+        "extensions": service_enabled("extensions", profile=normalized_profile),
+        "cron": service_enabled("cron", profile=normalized_profile),
+        "knowledge": service_enabled("knowledge", profile=normalized_profile),
+        "ops": service_enabled("ops", profile=normalized_profile),
+        "pluginHost": service_enabled("plugin_host", profile=normalized_profile),
+        "networkSupervisor": service_enabled("network_supervisor", profile=normalized_profile),
+        "computerUse": service_enabled("computer_use", profile=normalized_profile),
+        "desktopLive": service_enabled("desktop_live", profile=normalized_profile),
+        "rpa": service_enabled("rpa", profile=normalized_profile),
     }
 
 
 def startup_bundle_diagnostics(profile: str | None = None) -> dict[str, dict[str, Any]]:
-    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
+    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
     return {
         "audio": service_state("audio", profile=normalized_profile),
         "skills": service_state("skills", profile=normalized_profile),
@@ -196,27 +294,31 @@ def startup_bundle_diagnostics(profile: str | None = None) -> dict[str, dict[str
 
 
 def runtime_cluster_summary(profile: str | None = None) -> dict[str, bool]:
-    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
+    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
     return {
-        cluster_name: profile_at_least(normalized_profile, cluster_config["minimumProfile"])
-        for cluster_name, cluster_config in _RUNTIME_CLUSTERS.items()
+        cluster_name: runtime_family_installed(family, profile=normalized_profile)
+        for cluster_name, family in _RUNTIME_CLUSTER_COMPAT_ORDER
     }
 
 
 def runtime_submode_summary(profile: str | None = None) -> dict[str, str]:
-    normalized_profile = normalize_startup_profile(profile or resolve_startup_profile())
-    submodes: dict[str, str] = {}
-    for cluster_name, cluster_config in _RUNTIME_CLUSTERS.items():
-        minimum_profile = normalize_startup_profile(cluster_config["minimumProfile"])
-        if not profile_at_least(normalized_profile, minimum_profile):
-            submodes[cluster_name] = "off"
-            continue
-        if normalized_profile == "minimal":
-            submodes[cluster_name] = str(cluster_config.get("minimalSubmode") or "lite")
-        else:
-            submodes[cluster_name] = "full"
-    return submodes
+    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+    return {
+        cluster_name: "installed" if runtime_family_installed(family, profile=normalized_profile) else "off"
+        for cluster_name, family in _RUNTIME_CLUSTER_COMPAT_ORDER
+    }
 
 
 def disabled_reason_summary(profile: str | None = None) -> dict[str, dict[str, Any]]:
     return startup_bundle_diagnostics(profile)
+
+
+def build_installation_snapshot() -> dict[str, Any]:
+    state = get_runtime_registry_state()
+    return {
+        "installProfile": state["installProfile"],
+        "installPlatform": state["installPlatform"],
+        "installedRuntimeFamilies": list(state["installedRuntimeFamilies"]),
+        "bootstrapManaged": bool(state["bootstrapManaged"]),
+        "lastUpgradeAt": state["lastUpgradeAt"],
+    }

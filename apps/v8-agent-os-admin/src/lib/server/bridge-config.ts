@@ -17,6 +17,14 @@ type SupervisorConfig = {
 };
 
 export type CanonicalConfig = {
+    runtimeRegistry?: {
+        installProfile?: string;
+        installPlatform?: string;
+        installedRuntimeFamilies?: string[];
+        bootstrapManaged?: boolean;
+        lastUpgradeAt?: string;
+        startupProfile?: string;
+    };
     systemBase?: {
         bridge?: BridgeConfig;
         channels?: {

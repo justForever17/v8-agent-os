@@ -7,7 +7,7 @@ if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
   SCRIPT_ROOT="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 fi
 
-PROFILE="standard"
+PROFILE="minimal"
 SERVICES="engine+admin"
 PLATFORM="auto"
 
@@ -32,8 +32,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$PROFILE" = "standard" ]; then
+  PROFILE="minimal"
+fi
+
 case "$PROFILE" in
-  minimal|standard|desktop) ;;
+  minimal|desktop) ;;
   *)
     printf "Unsupported --profile value: %s\n" "$PROFILE" >&2
     exit 1
@@ -133,12 +137,69 @@ EOF
 requirements_for_profile() {
   local engine_dir="$1"
   printf "%s\n" "$engine_dir/requirements/base.txt"
-  if [ "$PROFILE" = "standard" ] || [ "$PROFILE" = "desktop" ]; then
-    printf "%s\n" "$engine_dir/requirements/standard.txt"
-  fi
+  printf "%s\n" "$engine_dir/requirements/minimal.txt"
   if [ "$PROFILE" = "desktop" ]; then
     printf "%s\n" "$engine_dir/requirements/desktop-common.txt"
     printf "%s\n" "$engine_dir/requirements/platform-$PLATFORM.txt"
+  fi
+}
+
+installed_runtime_families_json() {
+  if [ "$1" = "desktop" ]; then
+    printf '["chat","memory","extensions","automation","network_supervisor","computer_use","rpa","desktop_live"]'
+  else
+    printf '["chat","memory","extensions","automation","network_supervisor"]'
+  fi
+}
+
+sync_runtime_registry() {
+  local engine_dir="$1"
+  local python_exe="$2"
+  local profile="$3"
+  local platform="$4"
+  local bootstrap_managed="$5"
+  local families_json
+  families_json="$(installed_runtime_families_json "$profile")"
+  local timestamp
+  timestamp="$(python - <<'PY'
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).isoformat())
+PY
+)"
+  (
+    cd "$engine_dir"
+    "$python_exe" - <<PY
+import json
+from core.storage import storage
+
+payload = storage.get_runtime_registry_config()
+payload.update(
+    {
+        "installProfile": "$profile",
+        "installPlatform": "$platform",
+        "installedRuntimeFamilies": json.loads(r'''$families_json'''),
+        "bootstrapManaged": ${bootstrap_managed},
+        "lastUpgradeAt": "$timestamp",
+        "startupProfile": "$profile",
+    }
+)
+storage.save_runtime_registry_config(payload)
+PY
+  )
+}
+
+stop_existing_engine() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids="$(lsof -ti tcp:$port 2>/dev/null || true)"
+    if [ -n "$pids" ]; then
+      kill -9 $pids >/dev/null 2>&1 || true
+    fi
+    return
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${port}/tcp" >/dev/null 2>&1 || true
   fi
 }
 
@@ -233,6 +294,12 @@ while IFS= read -r requirement_file; do
   [ -f "$requirement_file" ] || continue
   "$ENGINE_DIR/.venv/bin/python" -m pip install -r "$requirement_file"
 done < <(requirements_for_profile "$ENGINE_DIR")
+BOOTSTRAP_MANAGED="${V8_AGENT_OS_BOOTSTRAP_MANAGED:-1}"
+if [ "$BOOTSTRAP_MANAGED" = "0" ]; then
+  sync_runtime_registry "$ENGINE_DIR" "$ENGINE_DIR/.venv/bin/python" "$PROFILE" "$PLATFORM" "False"
+else
+  sync_runtime_registry "$ENGINE_DIR" "$ENGINE_DIR/.venv/bin/python" "$PROFILE" "$PLATFORM" "True"
+fi
 
 if [ "$SERVICES" = "engine+admin" ]; then
   step "Preparing admin"
@@ -241,7 +308,14 @@ if [ "$SERVICES" = "engine+admin" ]; then
 fi
 
 step "Starting services"
-nohup env ENGINE_STARTUP_PROFILE="$PROFILE" "$ENGINE_DIR/.venv/bin/python" "$ENGINE_DIR/main.py" >"$LOG_DIR/engine.stdout.log" 2>"$LOG_DIR/engine.stderr.log" &
+if [ "${V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY:-0}" = "1" ]; then
+  printf "\nInstall-only mode complete. Please restart the engine manually.\n"
+  exit 0
+fi
+if [ "${V8_AGENT_OS_BOOTSTRAP_RESTART_ENGINE:-0}" = "1" ]; then
+  stop_existing_engine 9530
+fi
+nohup env ENGINE_STARTUP_PROFILE="$PROFILE" ENGINE_INSTALL_PROFILE="$PROFILE" ENGINE_INSTALL_PLATFORM="$PLATFORM" "$ENGINE_DIR/.venv/bin/python" "$ENGINE_DIR/main.py" >"$LOG_DIR/engine.stdout.log" 2>"$LOG_DIR/engine.stderr.log" &
 if [ "$SERVICES" = "engine+admin" ]; then
   nohup npm --prefix "$ADMIN_DIR" run dev >"$LOG_DIR/admin.stdout.log" 2>"$LOG_DIR/admin.stderr.log" &
 fi

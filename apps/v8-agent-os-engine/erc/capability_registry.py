@@ -10,10 +10,11 @@ _SNAPSHOT_RUNTIME_ORDER = (
     "memory",
     "automation",
     "extensions",
+    "network_supervisor",
     "plugin_host",
     "computer_use",
     "rpa",
-    "network_supervisor",
+    "desktop_live",
 )
 
 _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
@@ -55,6 +56,11 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     "network_supervisor": {
         "displayName": "NetworkSupervisorRuntime",
         "summary": "负责节点发现、信任、定向唤醒与显式远程任务委派。",
+        "visibility": "primary",
+    },
+    "desktop_live": {
+        "displayName": "DesktopLiveRuntime",
+        "summary": "负责桌面实时画面桥接、会话采集、WebRTC 协商与直播状态管理。",
         "visibility": "secondary",
     },
 }
@@ -229,13 +235,9 @@ class CapabilityRegistry:
             from core.storage import storage
 
             current = storage.get_runtime_registry_config()
-            storage.save_runtime_registry_config(
-                {
-                    "version": int(current.get("version") or 1),
-                    "startupProfile": str(current.get("startupProfile") or "standard"),
-                    "policies": {kind: policy.as_dict() for kind, policy in self._policies.items()},
-                }
-            )
+            current["version"] = int(current.get("version") or 1)
+            current["policies"] = {kind: policy.as_dict() for kind, policy in self._policies.items()}
+            storage.save_runtime_registry_config(current)
         except Exception:
             return
 
@@ -412,17 +414,46 @@ class CapabilityRegistry:
         return suggestions[: max(1, limit)]
 
     def snapshot(self, *, query: str | None = None, recommendation_limit: int = 5) -> Dict[str, Any]:
+        from core.runtime.startup_profile import build_installation_snapshot, runtime_family_installed
+        from core.storage import storage
+
         recommendations = self.recommend(query, limit=recommendation_limit) if query is not None else []
         descriptors = self._snapshot_descriptors()
+        installation = build_installation_snapshot()
+
+        def _config_enabled(kind: str) -> bool:
+            try:
+                if kind == "plugin_host":
+                    return bool(storage.get_plugin_host_config().get("enabled", True))
+                if kind == "network_supervisor":
+                    return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
+                if kind == "desktop_live":
+                    return bool((storage.get_system_base_config().get("desktopLive") or {}).get("enabled", True))
+            except Exception:
+                return True
+            return True
+
+        def _availability_reason(kind: str) -> str:
+            if not runtime_family_installed(kind):
+                return "not_installed"
+            if not _config_enabled(kind):
+                return "disabled_by_config"
+            if not self.get_policy(kind).enabled:
+                return "disabled_by_policy"
+            return "installed"
+
         return {
             "count": len(descriptors),
             "query": str(query or "") if query is not None else None,
+            **installation,
             "recommendations": [item.as_dict() for item in recommendations],
             "runtimes": [
                 {
                     **descriptor.as_dict(),
                     "policy": self.get_policy(descriptor.kind).as_dict(),
                     "registered": bool(registered),
+                    "availability": _availability_reason(descriptor.kind),
+                    "availabilityReason": _availability_reason(descriptor.kind),
                 }
                 for descriptor, registered in descriptors
             ],

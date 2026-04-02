@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$ProfileMode = "standard"
+$ProfileMode = "minimal"
 $ServicesMode = "engine+admin"
 $PlatformMode = "auto"
 
@@ -25,7 +25,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     }
 }
 
-if ($ProfileMode -notin @("minimal", "standard", "desktop")) {
+if ($ProfileMode -eq "standard") {
+    $ProfileMode = "minimal"
+}
+if ($ProfileMode -notin @("minimal", "desktop")) {
     throw "Unsupported --profile value: $ProfileMode"
 }
 if ($ServicesMode -notin @("engine", "engine+admin")) {
@@ -104,14 +107,61 @@ function Ensure-AdminEnv([string]$TargetDir) {
 function Get-RequirementsForProfile([string]$EngineDir) {
     $items = [System.Collections.Generic.List[string]]::new()
     $items.Add((Join-Path $EngineDir "requirements\base.txt"))
-    if ($ProfileMode -in @("standard", "desktop")) {
-        $items.Add((Join-Path $EngineDir "requirements\standard.txt"))
-    }
+    $items.Add((Join-Path $EngineDir "requirements\minimal.txt"))
     if ($ProfileMode -eq "desktop") {
         $items.Add((Join-Path $EngineDir "requirements\desktop-common.txt"))
         $items.Add((Join-Path $EngineDir "requirements\platform-$PlatformMode.txt"))
     }
     return $items
+}
+
+function Get-InstalledRuntimeFamilies([string]$Profile) {
+    if ($Profile -eq "desktop") {
+        return @("chat", "memory", "extensions", "automation", "network_supervisor", "computer_use", "rpa", "desktop_live")
+    }
+    return @("chat", "memory", "extensions", "automation", "network_supervisor")
+}
+
+function Sync-RuntimeRegistry([string]$EngineDir, [string]$PythonExe, [string]$Profile, [string]$Platform, [bool]$BootstrapManaged) {
+    $FamiliesJson = (Get-InstalledRuntimeFamilies $Profile | ConvertTo-Json -Compress)
+    $Timestamp = (Get-Date).ToString("o")
+    Push-Location $EngineDir
+    try {
+        @"
+import json
+from core.storage import storage
+
+payload = storage.get_runtime_registry_config()
+payload.update(
+    {
+        "installProfile": "$Profile",
+        "installPlatform": "$Platform",
+        "installedRuntimeFamilies": json.loads(r'''$FamiliesJson'''),
+        "bootstrapManaged": bool($($BootstrapManaged.ToString().ToLowerInvariant())),
+        "lastUpgradeAt": "$Timestamp",
+        "startupProfile": "$Profile",
+    }
+)
+storage.save_runtime_registry_config(payload)
+"@ | & $PythonExe -
+    } finally {
+        Pop-Location
+    }
+}
+
+function Stop-ExistingEngine([int]$Port) {
+    try {
+        $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+    } catch {
+        $connections = @()
+    }
+    foreach ($pid in @($connections)) {
+        if (-not $pid) { continue }
+        try {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        } catch {
+        }
+    }
 }
 
 function Invoke-DesktopPreflight {
@@ -225,6 +275,8 @@ foreach ($RequirementFile in Get-RequirementsForProfile $EngineDir) {
         & $PythonExe -m pip install -r $RequirementFile | Out-Host
     }
 }
+$BootstrapManagedMode = $env:V8_AGENT_OS_BOOTSTRAP_MANAGED -ne "0"
+Sync-RuntimeRegistry $EngineDir $PythonExe $ProfileMode $PlatformMode $BootstrapManagedMode
 
 if ($ServicesMode -eq "engine+admin") {
     Write-Step "Preparing admin"
@@ -233,7 +285,19 @@ if ($ServicesMode -eq "engine+admin") {
 }
 
 Write-Step "Starting services"
-Start-Detached $EngineDir $PythonExe @("main.py") "engine" @{ ENGINE_STARTUP_PROFILE = $ProfileMode }
+if ($env:V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY -eq "1") {
+    Write-Host ""
+    Write-Host "Install-only mode complete. Please restart the engine manually." -ForegroundColor Yellow
+    exit 0
+}
+if ($env:V8_AGENT_OS_BOOTSTRAP_RESTART_ENGINE -eq "1") {
+    Stop-ExistingEngine 9530
+}
+Start-Detached $EngineDir $PythonExe @("main.py") "engine" @{
+    ENGINE_STARTUP_PROFILE = $ProfileMode
+    ENGINE_INSTALL_PROFILE = $ProfileMode
+    ENGINE_INSTALL_PLATFORM = $PlatformMode
+}
 if ($ServicesMode -eq "engine+admin") {
     Start-Detached $AdminDir "npm.cmd" @("run", "dev") "admin"
 }

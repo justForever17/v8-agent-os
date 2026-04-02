@@ -3,6 +3,7 @@ import importlib
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from core.runtime.startup_profile import (
+    build_installation_snapshot,
     disabled_reason_summary,
     resolve_startup_profile,
     runtime_cluster_summary,
@@ -160,6 +161,7 @@ async def health():
     inspect_memory_backend = _get_memory_backend_health()
     return {
         "status": "ok",
+        **build_installation_snapshot(),
         "mcp_tools": len(_get_mcp_manager().get_tools()) if mcp_enabled else 0,
         "mcp": _get_mcp_manager().get_health_summary() if mcp_enabled else {"status": "disabled"},
         "skillsStartupState": skills_status.get("startupState"),

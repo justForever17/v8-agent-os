@@ -1,15 +1,16 @@
 "use client";
 
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Loader2, Search } from "lucide-react";
+import { Bell, Loader2, Monitor, Search, Server } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { searchAdminTopbarEntries, type AdminTopbarSearchResult } from "@/components/layout/admin-topbar-search";
+import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-search";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { useT } from "@/components/providers/LocaleProvider";
+import { useToast } from "@/components/ui/use-toast";
 import { lt } from "@/lib/locale";
 import { getAdminNavItem } from "@/lib/admin-navigation";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,17 @@ type InboxItem = {
     severity: "error" | "warning" | "info";
     href: string;
     source: string;
+};
+
+type RuntimeInstallState = {
+    installProfile: "minimal" | "desktop";
+    installPlatform: "windows" | "macos" | "linux";
+    installedRuntimeFamilies: string[];
+    bootstrapManaged: boolean;
+    lastUpgradeAt: string | null;
+    engineAvailable: boolean;
+    canInstallDesktop: boolean;
+    canAutoRestart: boolean;
 };
 
 function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
@@ -40,15 +52,20 @@ export function Topbar() {
     const router = useRouter();
     const current = getAdminNavItem(pathname);
     const t = useT();
-    const [activePanel, setActivePanel] = useState<"search" | "inbox" | null>(null);
+    const { toast } = useToast();
+    const [activePanel, setActivePanel] = useState<"install" | "search" | "inbox" | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [activeSearchIndex, setActiveSearchIndex] = useState(0);
     const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
     const [seenInboxIds, setSeenInboxIds] = useState<Set<string>>(new Set());
     const [inboxLoading, setInboxLoading] = useState(false);
     const [inboxError, setInboxError] = useState<string | null>(null);
+    const [installState, setInstallState] = useState<RuntimeInstallState | null>(null);
+    const [installLoading, setInstallLoading] = useState(false);
+    const [installSubmitting, setInstallSubmitting] = useState(false);
     const searchContainerRef = useRef<HTMLDivElement | null>(null);
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
+    const installContainerRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
 
     const searchResults = useMemo(
@@ -59,6 +76,27 @@ export function Topbar() {
         () => inboxItems.filter((item) => !seenInboxIds.has(item.id)).length,
         [inboxItems, seenInboxIds],
     );
+
+    const loadInstallState = useCallback(async () => {
+        setInstallLoading(true);
+        try {
+            const response = await fetch("/api/runtime-install", { cache: "no-store" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
+            }
+            setInstallState(payload as RuntimeInstallState);
+        } catch (error) {
+            console.error("Failed to load runtime install state:", error);
+            toast({
+                title: t(lt("安装态读取失败", "Install state unavailable")),
+                description: t(lt("当前无法读取安装态信息。", "Unable to load the installation state right now.")),
+                variant: "destructive",
+            });
+        } finally {
+            setInstallLoading(false);
+        }
+    }, [t, toast]);
 
     const closePanels = useCallback(() => {
         setActivePanel(null);
@@ -96,14 +134,17 @@ export function Topbar() {
 
     useEffect(() => {
         void loadInbox(true);
+        void loadInstallState();
         const intervalId = window.setInterval(() => {
             if (document.visibilityState === "visible") {
                 void loadInbox(true);
+                void loadInstallState();
             }
         }, 45000);
         const handleVisible = () => {
             if (document.visibilityState === "visible") {
                 void loadInbox(true);
+                void loadInstallState();
             }
         };
         document.addEventListener("visibilitychange", handleVisible);
@@ -111,7 +152,7 @@ export function Topbar() {
             window.clearInterval(intervalId);
             document.removeEventListener("visibilitychange", handleVisible);
         };
-    }, [loadInbox]);
+    }, [loadInbox, loadInstallState]);
 
     useEffect(() => {
         closePanels();
@@ -142,7 +183,11 @@ export function Topbar() {
     useEffect(() => {
         const handlePointerDown = (event: MouseEvent) => {
             const target = event.target as Node;
-            if (searchContainerRef.current?.contains(target) || inboxContainerRef.current?.contains(target)) {
+            if (
+                searchContainerRef.current?.contains(target) ||
+                inboxContainerRef.current?.contains(target) ||
+                installContainerRef.current?.contains(target)
+            ) {
                 return;
             }
             closePanels();
@@ -193,6 +238,51 @@ export function Topbar() {
         });
     }, [loadInbox]);
 
+    const toggleInstallPanel = useCallback(() => {
+        setActivePanel((currentPanel) => {
+            const nextPanel = currentPanel === "install" ? null : "install";
+            if (nextPanel === "install") {
+                void loadInstallState();
+            }
+            return nextPanel;
+        });
+    }, [loadInstallState]);
+
+    const handleInstallDesktop = useCallback(async () => {
+        setInstallSubmitting(true);
+        try {
+            const response = await fetch("/api/runtime-install", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ platform: installState?.installPlatform || "auto" }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
+            }
+            toast({
+                title: t(lt("桌面增强安装已启动", "Desktop install started")),
+                description: String(payload.message || ""),
+            });
+            void loadInstallState();
+            closePanels();
+        } catch (error) {
+            console.error("Failed to start desktop install:", error);
+            toast({
+                title: t(lt("安装启动失败", "Failed to start install")),
+                description: error instanceof Error ? error.message : t(lt("当前无法启动桌面增强安装。", "Unable to start the desktop install right now.")),
+                variant: "destructive",
+            });
+        } finally {
+            setInstallSubmitting(false);
+        }
+    }, [closePanels, installState?.installPlatform, loadInstallState, t, toast]);
+
+    const installProfileLabel = installState?.installProfile === "desktop"
+        ? t(lt("桌面安装", "Desktop install"))
+        : t(lt("最小安装", "Minimal install"));
+    const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
+
     return (
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
             <div className="flex min-h-20 items-center justify-between gap-4 px-6 py-4">
@@ -202,6 +292,71 @@ export function Topbar() {
                 </div>
                 <div className="flex items-center gap-2">
                     <LocaleToggle />
+                    <div ref={installContainerRef} className="relative">
+                        <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={toggleInstallPanel}
+                            className="rounded-2xl border-slate-200 bg-white text-slate-500"
+                            aria-label={installProfileLabel}
+                            title={installProfileLabel}
+                            aria-expanded={activePanel === "install"}
+                        >
+                            <InstallIcon className="h-4 w-4" />
+                        </Button>
+                        {activePanel === "install" ? (
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl">
+                                {installLoading ? (
+                                    <div className="flex h-28 items-center justify-center">
+                                        <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                                    </div>
+                                ) : (
+                                    <div className="space-y-4 text-sm text-slate-600">
+                                        <div className="space-y-1">
+                                            <div className="text-sm font-semibold text-slate-900">{installProfileLabel}</div>
+                                            <div>{t(lt("当前平台", "Platform"))}: {installState?.installPlatform || "-"}</div>
+                                            <div>{t(lt("安装来源", "Managed by bootstrap"))}: {installState?.bootstrapManaged ? t(lt("是", "Yes")) : t(lt("否", "No"))}</div>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                                                {t(lt("已安装 runtime 家族", "Installed runtime families"))}
+                                            </div>
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {(installState?.installedRuntimeFamilies || []).map((family) => (
+                                                    <span key={family} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                                                        {family}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        {installState?.canInstallDesktop ? (
+                                            <div className="space-y-2">
+                                                <div className="text-xs text-slate-500">
+                                                    {installState?.canAutoRestart
+                                                        ? t(lt("可直接补装当前系统的桌面依赖，并在完成后重启 engine。", "Install desktop dependencies for this platform and restart the engine automatically."))
+                                                        : t(lt("可补装当前系统的桌面依赖，但当前环境不是 bootstrap-managed，安装后需要手动重启 engine。", "Desktop dependencies can be installed, but this environment is not bootstrap-managed, so you need to restart the engine manually afterwards."))}
+                                                </div>
+                                                <Button
+                                                    className="w-full rounded-2xl"
+                                                    onClick={() => void handleInstallDesktop()}
+                                                    disabled={installSubmitting}
+                                                >
+                                                    {installSubmitting ? (
+                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    ) : null}
+                                                    {t(lt("安装桌面能力", "Install desktop capabilities"))}
+                                                </Button>
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                                                {t(lt("当前机器已完成桌面安装。", "Desktop capabilities are already installed on this machine."))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </Card>
+                        ) : null}
+                    </div>
                     <div ref={searchContainerRef} className="relative">
                         <Button
                             variant="outline"

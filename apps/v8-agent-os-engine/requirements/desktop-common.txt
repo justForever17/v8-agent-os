@@ -1,4 +1,4 @@
--r standard.txt
+-r minimal.txt
 
 robotframework
 robotframework-seleniumlibrary

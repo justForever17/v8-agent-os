@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { lt } from "@/lib/locale";
-import { CANONICAL_RUNTIME_KINDS, CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind } from "@/lib/runtime-admin";
+import { CANONICAL_RUNTIME_KINDS, CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
 import { cn } from "@/lib/utils";
 
 type RuntimePolicy = {
@@ -22,6 +22,8 @@ type RuntimeDescriptor = {
     displayName: string;
     policy?: RuntimePolicy;
     registered?: boolean;
+    availability?: string;
+    availabilityReason?: string;
 };
 
 type RuntimeSnapshot = {
@@ -99,6 +101,28 @@ function StatusDot({ enabled }: { enabled: boolean }) {
             aria-hidden="true"
         />
     );
+}
+
+function resolveRuntimeStateLabel(t: ReturnType<typeof useT>, runtime: RuntimeDescriptor) {
+    const availability = String(runtime.availabilityReason || runtime.availability || "installed").trim();
+    if (availability === "not_installed") {
+        return t(lt("未安装", "Not installed"));
+    }
+    if (availability === "disabled_by_config") {
+        return t(lt("配置关闭", "Disabled by config"));
+    }
+    if (availability === "disabled_by_policy" || runtime.policy?.enabled === false) {
+        return t(lt("关闭", "Off"));
+    }
+    return t(lt("启用", "On"));
+}
+
+function resolveRuntimeToggleChecked(runtime: RuntimeDescriptor) {
+    const availability = String(runtime.availabilityReason || runtime.availability || "installed").trim();
+    if (availability === "not_installed" || availability === "disabled_by_config") {
+        return false;
+    }
+    return runtime.policy?.enabled !== false;
 }
 
 export function RuntimeDashboardCards() {
@@ -195,10 +219,16 @@ export function RuntimeDashboardCards() {
                             </div>
                             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                                 {group.items.map((runtime) => {
-                                    const enabled = runtime.policy?.enabled !== false;
-                                    const disabled = isCoreRuntimeKind(runtime.kind);
+                                    const enabled = resolveRuntimeToggleChecked(runtime);
+                                    const availability = String(runtime.availabilityReason || runtime.availability || "installed").trim();
+                                    const disabled =
+                                        isLockedRuntimeKind(runtime.kind) ||
+                                        availability === "not_installed" ||
+                                        availability === "disabled_by_config";
                                     const href = getRuntimeControlHref(runtime.kind);
                                     const pending = busyKind === runtime.kind;
+                                    const stateLabel = resolveRuntimeStateLabel(t, runtime);
+                                    const onDemand = availability === "installed" && !runtime.registered && isCanonicalRuntimeKind(runtime.kind);
                                     return (
                                         <Card key={runtime.kind} className="rounded-2xl border-slate-200 bg-slate-50/70 shadow-none">
                                             <CardContent className="flex items-center justify-between gap-4 p-4">
@@ -211,10 +241,10 @@ export function RuntimeDashboardCards() {
                                                     </Link>
                                                     <div className="flex items-center gap-2 text-xs text-slate-500">
                                                         <StatusDot enabled={enabled} />
-                                                        <span>{enabled ? t(lt("启用", "On")) : t(lt("关闭", "Off"))}</span>
-                                                        {!runtime.registered && isCanonicalRuntimeKind(runtime.kind) ? (
+                                                        <span>{stateLabel}</span>
+                                                        {onDemand ? (
                                                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                                                                {t(lt("按需加载", "Lazy-loaded"))}
+                                                                {t(lt("按需调用", "On demand"))}
                                                             </span>
                                                         ) : null}
                                                     </div>

@@ -6,7 +6,6 @@ import mimetypes
 import platform
 import re
 import time
-import importlib
 from datetime import datetime, timezone
 import httpx
 import psutil
@@ -44,6 +43,9 @@ from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
+from core.tools.media_downloader import download_media_for_vision
+from core.tools.vision_media_analyzer import vision_media_analyzer
+from core.tools.web_fetcher import web_extract, web_fetch, web_read, web_search
 from runtimes.computer_use.verification_contract import (
     build_evidence_summary_payload,
     build_environment_signal_summary_payload,
@@ -61,45 +63,22 @@ _COMPUTER_USE_POINT_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+def _get_memory_runtime():
+    from runtimes.memory.runtime import memory_runtime
 
-class _LazyAttributeProxy:
-    def __init__(self, module_name: str, attr_name: str):
-        self._module_name = module_name
-        self._attr_name = attr_name
-        self._resolved = None
-
-    def _resolve(self):
-        if self._resolved is None:
-            self._resolved = getattr(importlib.import_module(self._module_name), self._attr_name)
-        return self._resolved
-
-    def __getattr__(self, item):
-        return getattr(self._resolve(), item)
-
-    def __call__(self, *args, **kwargs):
-        return self._resolve()(*args, **kwargs)
+    return memory_runtime
 
 
-memory_runtime = _LazyAttributeProxy("runtimes.memory.runtime", "memory_runtime")
-computer_use_runtime = _LazyAttributeProxy("runtimes.computer_use.runtime", "computer_use_runtime")
-rpa_runtime = _LazyAttributeProxy("runtimes.rpa.runtime", "rpa_runtime")
-download_media_for_vision = _LazyAttributeProxy("core.tools.media_downloader", "download_media_for_vision")
-web_fetch = _LazyAttributeProxy("core.tools.web_fetcher", "web_fetch")
-web_read = _LazyAttributeProxy("core.tools.web_fetcher", "web_read")
-web_extract = _LazyAttributeProxy("core.tools.web_fetcher", "web_extract")
-web_search = _LazyAttributeProxy("core.tools.web_fetcher", "web_search")
-vision_media_analyzer = _LazyAttributeProxy("core.tools.vision_media_analyzer", "vision_media_analyzer")
+def _get_computer_use_runtime():
+    from runtimes.computer_use.runtime import computer_use_runtime
+
+    return computer_use_runtime
 
 
-def _invoke_tool(tool_ref, **kwargs):
-    target = tool_ref._resolve() if isinstance(tool_ref, _LazyAttributeProxy) else tool_ref
-    if hasattr(target, "func") and callable(getattr(target, "func")):
-        return target.func(**kwargs)
-    if hasattr(target, "invoke") and callable(getattr(target, "invoke")):
-        return target.invoke(kwargs)
-    if callable(target):
-        return target(**kwargs)
-    raise RuntimeError(f"Tool '{getattr(target, 'name', target)}' is not invokable.")
+def _get_rpa_runtime():
+    from runtimes.rpa.runtime import rpa_runtime
+
+    return rpa_runtime
 
 
 def _enforce_safety_decision(
@@ -414,7 +393,7 @@ def _computer_use_resolve_app(
         and (time.monotonic() - float(cached_entry[0])) * 1000 <= _COMPUTER_USE_APP_RESOLUTION_CACHE_TTL_MS
     ):
         return dict(cached_entry[1])
-    payload = computer_use_runtime.list_apps(
+    payload = _get_computer_use_runtime().list_apps(
         query=query,
         limit=5,
         include_running=True,
@@ -517,7 +496,7 @@ def _computer_use_prebind_window(
     if not app_query and not normalized_title and not normalized_class and window_handle in (None, ""):
         return resolved_app, normalized_title, window_handle, None
     try:
-        raw_result = computer_use_runtime.focus_window(
+        raw_result = _get_computer_use_runtime().focus_window(
             **_computer_use_runtime_kwargs(f"{action_name}:{app_query or normalized_title or normalized_class or 'desktop'}"),
             app_id=(resolved_app or {}).get("appId"),
             target_path=normalized_target_path,
@@ -554,7 +533,7 @@ def _computer_use_prebind_window(
     )
     if bound_handle not in (None, "") or bound_title:
         try:
-            computer_use_runtime.driver.focus_window(
+            _get_computer_use_runtime().driver.focus_window(
                 window_title=bound_title or None,
                 window_handle=int(bound_handle) if bound_handle not in (None, "") else None,
             )
@@ -1710,8 +1689,9 @@ def _computer_use_compact_primitive_catalog(*, category: str | None = None) -> s
 
 
 def _computer_use_compact_driver_capabilities() -> str:
-    runtime_descriptor = computer_use_runtime.runtime_descriptor()
+    runtime_descriptor = _get_computer_use_runtime().runtime_descriptor()
     capabilities = {}
+    computer_use_runtime = _get_computer_use_runtime()
     if hasattr(computer_use_runtime, "driver") and hasattr(computer_use_runtime.driver, "capability_summary"):
         capabilities = dict(computer_use_runtime.driver.capability_summary() or {})
     return json.dumps(
@@ -1870,7 +1850,7 @@ def _computer_use_execute_single_step(
     step: dict[str, Any],
     goal: str,
 ) -> dict[str, Any]:
-    return computer_use_runtime.execute_plan(
+    return _get_computer_use_runtime().execute_plan(
         **_computer_use_runtime_kwargs(goal),
         steps=[step],
         continue_on_error=False,
@@ -1883,7 +1863,7 @@ def rpa_list_robot_scripts(
 ) -> str:
     """List locally available .robot scripts managed by the active RPA script store."""
     try:
-        scripts = rpa_runtime.script_store.list_robot_scripts(limit=max(1, min(limit, 100)))
+        scripts = _get_rpa_runtime().script_store.list_robot_scripts(limit=max(1, min(limit, 100)))
         return _rpa_compact_script_list(scripts=list(scripts or []), limit=max(1, min(limit, 100)))
     except Exception as e:
         return f"Error listing RPA robot scripts: {e}"
@@ -1911,7 +1891,7 @@ def rpa_run_existing_flow(
         return "Error: robot_file 不能为空。"
     try:
         variables = _computer_use_parse_variables_json(variables_json)
-        raw_result = rpa_runtime.run_existing_flow(
+        raw_result = _get_rpa_runtime().run_existing_flow(
             robot_file=normalized_robot_file,
             variables=variables,
             output_dir=output_dir,
@@ -1958,7 +1938,7 @@ def rpa_run_draft(
     runtime_context = get_runtime_context()
     try:
         variables = _computer_use_parse_variables_json(variables_json)
-        raw_result = rpa_runtime.run_draft(
+        raw_result = _get_rpa_runtime().run_draft(
             script_id=normalized_script_id,
             variables=variables,
             output_dir=output_dir,
@@ -2772,7 +2752,7 @@ def memory_recall(query: str, limit: int = 5) -> str:
         limit (int): Max number of distinct memory fragments to return. Default: 5.
     """
     try:
-        results = memory_runtime.unified_recall(query=query, limit=limit)
+        results = _get_memory_runtime().unified_recall(query=query, limit=limit)
         
         if not results:
             return f"No relevant memory found for '{query}'."
@@ -2801,7 +2781,7 @@ def mem_delete(fact_id: str) -> str:
         fact_id (str): The unique ID of the fact to delete (e.g. "fact-a1b2c3d4").
     """
     try:
-        success = memory_runtime.delete_knowledge(fact_id=fact_id)
+        success = _get_memory_runtime().delete_knowledge(fact_id=fact_id)
         if success:
             return f"✓ Completely purged '{fact_id}' from memory."
         else:
@@ -2819,7 +2799,7 @@ def mem_update(fact_id: str, new_content: str) -> str:
         new_content (str): The full corrected text for this memory item.
     """
     try:
-        success = memory_runtime.update_knowledge(fact_id=fact_id, new_fact=new_content)
+        success = _get_memory_runtime().update_knowledge(fact_id=fact_id, new_fact=new_content)
         if success:
             return f"✓ Updated '{fact_id}' with new content."
         else:
@@ -2841,7 +2821,7 @@ def mem_summary(tier: str, date: Optional[str] = None) -> str:
         date (str, optional): A target date in "YYYY-MM-DD" format. If omitted, uses the current date as reference to fetch the current week/month/year.
     """
     try:
-        return memory_runtime.read_memory_summary(tier=tier, date_str=date)
+        return _get_memory_runtime().read_memory_summary(tier=tier, date_str=date)
     except Exception as e:
         return f"Error retrieving memory summary: {str(e)}"
 
@@ -3289,7 +3269,7 @@ def computer_use_list_windows(title_filter: Optional[str] = None, limit: int = 2
     Use this before selecting a target application/window for structured desktop control.
     """
     try:
-        result = computer_use_runtime.list_windows(title_filter=title_filter, limit=max(1, min(limit, 50)))
+        result = _get_computer_use_runtime().list_windows(title_filter=title_filter, limit=max(1, min(limit, 50)))
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error listing windows: {e}"
@@ -3311,7 +3291,7 @@ def computer_use_observe(
     Prefer this tool before click/type actions so the agent can inspect available controls.
     """
     try:
-        result = computer_use_runtime.observe(
+        result = _get_computer_use_runtime().observe(
             **_computer_use_runtime_kwargs("observe_desktop"),
             window_title=window_title,
             window_handle=window_handle,
@@ -3344,7 +3324,7 @@ def computer_use_find_element(
 ) -> str:
     """Find UI elements within a target window by name, automation_id, control type, or class name."""
     try:
-        result = computer_use_runtime.find_elements(
+        result = _get_computer_use_runtime().find_elements(
             name=name,
             name_contains=name_contains,
             automation_id=automation_id,
@@ -3401,7 +3381,7 @@ def computer_use_click(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.click(
+        raw_result = _get_computer_use_runtime().click(
             **_computer_use_runtime_kwargs("computer_use_click"),
             **target,
             observe_notifications=observe_notifications,
@@ -3463,7 +3443,7 @@ def computer_use_type_text(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.type_text(
+        raw_result = _get_computer_use_runtime().type_text(
             **_computer_use_runtime_kwargs("computer_use_type_text"),
             element_id=element_id,
             name=name,
@@ -3520,7 +3500,7 @@ def computer_use_hotkey(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.hotkey(
+        raw_result = _get_computer_use_runtime().hotkey(
             **_computer_use_runtime_kwargs("computer_use_hotkey"),
             sequence=sequence,
             window_title=window_title,
@@ -3572,7 +3552,7 @@ def computer_use_scroll(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.scroll(
+        raw_result = _get_computer_use_runtime().scroll(
             **_computer_use_runtime_kwargs("computer_use_scroll"),
             amount=amount,
             element_id=element_id,
@@ -3623,7 +3603,7 @@ def computer_use_wait_for_element(
         "poll_ms": poll_ms,
     }
     try:
-        raw_result = computer_use_runtime.wait_for_element(
+        raw_result = _get_computer_use_runtime().wait_for_element(
             **_computer_use_runtime_kwargs("computer_use_wait_for_element"),
             **target,
             observe_notifications=observe_notifications,
@@ -3653,7 +3633,7 @@ def computer_use_capture_screenshot(
 ) -> str:
     """Capture a desktop, window, or element screenshot and record it as a runtime artifact."""
     try:
-        raw_result = computer_use_runtime.capture_screenshot(
+        raw_result = _get_computer_use_runtime().capture_screenshot(
             **_computer_use_runtime_kwargs("computer_use_capture_screenshot"),
             element_id=element_id,
             window_title=window_title,
@@ -3687,7 +3667,7 @@ def computer_use_open_app(
 ) -> str:
     """Open an application window for desktop automation. Prefer app_id so runtime can use app-specific profile."""
     try:
-        raw_result = computer_use_runtime.open_app(
+        raw_result = _get_computer_use_runtime().open_app(
             **_computer_use_runtime_kwargs(f"computer_use_open_app:{app_id or command or 'unknown'}"),
             app_id=app_id,
             command=command,
@@ -3724,7 +3704,7 @@ def computer_use_focus_window(
 ) -> str:
     """Focus an existing application window before multi-step desktop actions."""
     try:
-        raw_result = computer_use_runtime.focus_window(
+        raw_result = _get_computer_use_runtime().focus_window(
             **_computer_use_runtime_kwargs(f"computer_use_focus_window:{app_id or window_title or window_handle or 'unknown'}"),
             app_id=app_id,
             window_title=window_title,
@@ -3784,7 +3764,7 @@ def computer_use_find_and_type(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.find_and_type(
+        raw_result = _get_computer_use_runtime().find_and_type(
             **_computer_use_runtime_kwargs("computer_use_find_and_type"),
             app_id=app_id,
             selector_key=selector_key,
@@ -3845,7 +3825,7 @@ def computer_use_scroll_list(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.scroll_list(
+        raw_result = _get_computer_use_runtime().scroll_list(
             **_computer_use_runtime_kwargs("computer_use_scroll_list"),
             app_id=app_id,
             selector_key=selector_key,
@@ -3904,7 +3884,7 @@ def computer_use_click_toolbar_action(
             window_title=window_title,
         )
     try:
-        raw_result = computer_use_runtime.click_toolbar_action(
+        raw_result = _get_computer_use_runtime().click_toolbar_action(
             **_computer_use_runtime_kwargs(f"computer_use_click_toolbar_action:{action_name}"),
             app_id=app_id,
             action_name=action_name,
@@ -3957,7 +3937,7 @@ def computer_use_execute_plan(
     if goal and goal.strip():
         try:
             runtime_kwargs = _computer_use_runtime_kwargs(goal.strip())
-            planning = computer_use_runtime.plan(
+            planning = _get_computer_use_runtime().plan(
                 **runtime_kwargs,
                 app_id=app_id,
                 window_title=window_title,
@@ -3974,7 +3954,7 @@ def computer_use_execute_plan(
             )
             if not allowed:
                 return error_message or "Safety Guardian 已阻止 planner 生成的桌面动作。"
-            execution = computer_use_runtime.execute_plan(
+            execution = _get_computer_use_runtime().execute_plan(
                 **runtime_kwargs,
                 steps=planned_steps,
                 continue_on_error=continue_on_error,
@@ -4024,7 +4004,7 @@ def computer_use_execute_plan(
         return error_message or "Safety Guardian 已阻止 computer use 计划步骤。"
 
     try:
-        result = computer_use_runtime.execute_plan(
+        result = _get_computer_use_runtime().execute_plan(
             **_computer_use_runtime_kwargs("computer_use_execute_plan"),
             steps=steps,
             continue_on_error=continue_on_error,
@@ -4052,7 +4032,7 @@ def computer_use_list_apps(
     Prefer this before launch/focus when you only know an approximate app name.
     """
     try:
-        payload = computer_use_runtime.list_apps(
+        payload = _get_computer_use_runtime().list_apps(
             query=app_query,
             limit=max(1, min(limit, 20)),
             include_running=include_running,
@@ -4134,7 +4114,7 @@ def computer_use_lookup_muscle_memory(
     try:
         variables = _computer_use_parse_variables_json(variables_json)
         runtime_context = get_runtime_context()
-        route = rpa_runtime.recommend_execution_route(
+        route = _get_rpa_runtime().recommend_execution_route(
             goal=normalized_goal,
             app_id=(resolved_app or {}).get("appId") or app_query,
             variables=variables,
@@ -4164,7 +4144,7 @@ def computer_use_list_muscle_memories(
     app_query = str(app or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     try:
-        templates = rpa_runtime.list_templates(
+        templates = _get_rpa_runtime().list_templates(
             limit=max(1, min(limit, 50)),
             app_id=(resolved_app or {}).get("appId") or app_query,
             status=status,
@@ -4201,7 +4181,7 @@ def computer_use_resolve_execution_route(
     try:
         variables = _computer_use_parse_variables_json(variables_json)
         runtime_context = get_runtime_context()
-        route = rpa_runtime.recommend_execution_route(
+        route = _get_rpa_runtime().recommend_execution_route(
             goal=normalized_goal,
             app_id=(resolved_app or {}).get("appId") or app_query,
             variables=variables,
@@ -4252,7 +4232,7 @@ def computer_use_launch_app(
         or _computer_use_effective_window_title(None, resolved_app)
     )
     try:
-        raw_result = computer_use_runtime.open_app(
+        raw_result = _get_computer_use_runtime().open_app(
             **_computer_use_runtime_kwargs(f"launch_app:{app_query}"),
             app_id=(resolved_app or {}).get("appId"),
             app_name=app_query,
@@ -4289,7 +4269,7 @@ def computer_use_launch_app(
         resolved_app_id = str((resolved_app or {}).get("appId") or "").strip().lower()
         if resolved_app_id == "explorer" and fallback_target_path:
             try:
-                recovered_result = computer_use_runtime.focus_window(
+                recovered_result = _get_computer_use_runtime().focus_window(
                     **_computer_use_runtime_kwargs(f"launch_app_recover:{app_query}"),
                     app_id=(resolved_app or {}).get("appId"),
                     target_path=fallback_target_path,
@@ -4349,7 +4329,7 @@ def computer_use_ensure_window(
         or _computer_use_effective_window_title(window_title, resolved_app)
     )
     try:
-        raw_result = computer_use_runtime.focus_window(
+        raw_result = _get_computer_use_runtime().focus_window(
             **_computer_use_runtime_kwargs(f"ensure_window:{app_query or effective_window_title or class_name or 'desktop'}"),
             app_id=(resolved_app or {}).get("appId"),
             target_path=str(launch_override.get("resolved_target_path") or "").strip() or None,
@@ -4411,7 +4391,7 @@ def computer_use_observe_scene(
         or _computer_use_effective_window_title(window_title, resolved_app)
     )
     try:
-        raw_result = computer_use_runtime.observe(
+        raw_result = _get_computer_use_runtime().observe(
             **_computer_use_runtime_kwargs(f"observe_scene:{app_query or inferred_title or 'desktop'}"),
             app_id=(resolved_app or {}).get("appId"),
             window_title=inferred_title,

@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
-import { getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind } from "@/lib/runtime-admin";
+import { getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
 
 type RuntimePolicy = {
     enabled?: boolean;
@@ -20,11 +20,22 @@ type RuntimeDescriptor = {
     displayName: string;
     summary?: string;
     policy?: RuntimePolicy;
+    availability?: string;
+    availabilityReason?: string;
 };
 
 type RuntimeSnapshot = {
     runtimes?: RuntimeDescriptor[];
 };
+
+function resolveRuntimeToggleChecked(runtime: RuntimeDescriptor | null) {
+    if (!runtime) return false;
+    const availability = String(runtime.availabilityReason || runtime.availability || "installed").trim();
+    if (availability === "not_installed" || availability === "disabled_by_config") {
+        return false;
+    }
+    return runtime.policy?.enabled !== false;
+}
 
 export function RuntimeConfigWorkbench({
     kind,
@@ -75,8 +86,13 @@ export function RuntimeConfigWorkbench({
         [fallbackDisplayName, kind, runtime?.displayName, t],
     );
 
-    const enabled = runtime ? runtime.policy?.enabled !== false : false;
-    const disabled = isCoreRuntimeKind(kind) || !runtime;
+    const enabled = resolveRuntimeToggleChecked(runtime);
+    const availability = String(runtime?.availabilityReason || runtime?.availability || "installed").trim();
+    const disabled =
+        isLockedRuntimeKind(kind) ||
+        !runtime ||
+        availability === "not_installed" ||
+        availability === "disabled_by_config";
 
     const handleToggle = useCallback(async (checked: boolean) => {
         if (disabled) return;
@@ -119,8 +135,16 @@ export function RuntimeConfigWorkbench({
                                 <div className="text-sm font-semibold text-slate-900">{displayName}</div>
                                 <div className="text-xs text-slate-500">
                                     {runtime
-                                        ? (enabled ? t(lt("当前已启用。", "Currently enabled.")) : t(lt("当前已关闭。", "Currently disabled.")))
-                                        : t(lt("当前 runtime 尚未注册到 capability registry。", "This runtime is not registered in the capability registry yet."))}
+                                        ? (
+                                            availability === "not_installed"
+                                                ? t(lt("当前机器尚未安装这个 runtime。", "This runtime is not installed on the current machine."))
+                                                : availability === "disabled_by_config"
+                                                    ? t(lt("当前被配置域关闭，请前往对应控制页启用。", "This runtime is disabled by config. Open its control page to enable it."))
+                                                : enabled
+                                                    ? t(lt("当前已启用。", "Currently enabled."))
+                                                    : t(lt("当前已关闭。", "Currently disabled."))
+                                        )
+                                        : t(lt("当前 runtime 尚未进入 capability snapshot。", "This runtime is not present in the capability snapshot yet."))}
                                 </div>
                             </div>
                             <Switch

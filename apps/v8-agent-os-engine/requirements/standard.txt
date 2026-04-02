@@ -1,20 +1,4 @@
--r base.txt
+-r minimal.txt
 
-edge_tts
-pandas
-beautifulsoup4
-scrapling
-curl_cffi
-browserforge
-apify-fingerprint-datapoints
-msgspec
-playwright
-patchright
-yt-dlp
-python-docx
-python-pptx
-PyMuPDF
-jieba
-chromadb
-langchain
-langchain-text-splitters
+# 兼容旧 bootstrap/文档口径。
+# 当前 standard 已归一为 minimal，不再作为独立安装层。

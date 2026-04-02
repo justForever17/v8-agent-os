@@ -14,7 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { ApprovalRecord, RunRecord, RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
-import { CORE_RUNTIME_KINDS, getRuntimeControlHref } from "@/lib/runtime-admin";
+import { CORE_RUNTIME_KINDS, getRuntimeControlHref, isLockedRuntimeKind } from "@/lib/runtime-admin";
 
 type RuntimePolicy = {
     enabled?: boolean;
@@ -127,7 +127,7 @@ const PRESET_LABELS: Record<RuntimePresetId, { title: string; description: strin
     debug: { title: "调试模板", description: "临时放开 direct tools，便于定位问题，不建议长期启用。" },
 };
 
-const NONCORE_RUNTIME_KINDS = ["plugin_host", "rpa", "computer_use", "network_supervisor"] as const;
+const NONCORE_RUNTIME_KINDS = ["plugin_host", "computer_use", "rpa", "desktop_live"] as const;
 
 function normalizePolicy(policy?: RuntimePolicy): Required<RuntimePolicy> {
     return {
@@ -220,13 +220,13 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
             {
                 key: "core",
                 title: "核心运行时",
-                description: "chat / memory / extensions / automation 构成最小完整行为能力，不应在治理页里被真正关闭。",
+                description: "chat / memory / extensions / automation / network_supervisor 构成最小安装五件套；其中前四项不应在治理页里被真正关闭。",
                 runtimeKinds: [...CORE_RUNTIME_KINDS],
             },
             {
                 key: "noncore",
                 title: "非核心运行时",
-                description: "plugin_host / rpa / computer_use / network_supervisor 默认按需启用，关闭后应 cold stop / silent release。",
+                description: "plugin_host / computer_use / rpa / desktop_live 属于额外能力面；未安装或关闭后应 cold stop / silent release。",
                 runtimeKinds: [...NONCORE_RUNTIME_KINDS],
             },
         ];
@@ -588,6 +588,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                                             const live = observability.find((item) => item.kind === runtime.kind);
                                             const highlighted = activeRuntimeKind === runtime.kind;
                                             const isCoreRuntime = CORE_RUNTIME_KINDS.includes(runtime.kind as (typeof CORE_RUNTIME_KINDS)[number]);
+                                            const isLockedRuntime = isLockedRuntimeKind(runtime.kind);
                                             const controlHref = getRuntimeControlHref(runtime.kind);
                                             return (
                                                 <div key={runtime.kind} className={`rounded-2xl border p-4 ${highlighted ? "border-primary/60 bg-primary/5" : "border-border/60"}`}>
@@ -628,7 +629,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                                                         </div>
                                                     </div>
                                                     <div className="mt-4 grid gap-4 md:grid-cols-3">
-                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-enabled`}>启用</Label><Switch id={`${runtime.kind}-enabled`} checked={policy.enabled} onCheckedChange={(checked) => patchPolicy(runtime.kind, { enabled: checked })} disabled={isCoreRuntime} /></div><p className="mt-2 text-xs text-muted-foreground">{isCoreRuntime ? "核心运行时只允许调策略，不允许真正关闭。" : "关闭后，主理人不会再把它当作可用的执行能力。"}</p></div>
+                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-enabled`}>启用</Label><Switch id={`${runtime.kind}-enabled`} checked={policy.enabled} onCheckedChange={(checked) => patchPolicy(runtime.kind, { enabled: checked })} disabled={isLockedRuntime} /></div><p className="mt-2 text-xs text-muted-foreground">{isLockedRuntime ? "这个运行时属于最小安装锁定核心，不允许在治理页里真正关闭。" : isCoreRuntime ? "它属于最小安装核心家族，但这里仍允许做策略治理。" : "关闭后，主理人不会再把它当作可用的执行能力。"}</p></div>
                                                         <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-auto`}>自动路由</Label><Switch id={`${runtime.kind}-auto`} checked={policy.auto_route} onCheckedChange={(checked) => patchPolicy(runtime.kind, { auto_route: checked })} /></div><p className="mt-2 text-xs text-muted-foreground">关闭后，它仍可手动调用，但不参与自动推荐。</p></div>
                                                         <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-direct`}>直连工具</Label><Switch id={`${runtime.kind}-direct`} checked={policy.expose_direct_tools} onCheckedChange={(checked) => patchPolicy(runtime.kind, { expose_direct_tools: checked })} /></div><p className="mt-2 text-xs text-muted-foreground">关闭后，这组运行能力管理的底层工具不会再直接暴露给主理人。</p></div>
                                                     </div>

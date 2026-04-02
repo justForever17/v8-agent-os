@@ -94,6 +94,17 @@ export async function resolveAdminApiBaseUrl() {
     return DEFAULT_ADMIN_BASE_URL;
 }
 
+export async function resolveAdminRootUrl() {
+    const adminApiBaseUrl = await resolveAdminApiBaseUrl();
+    try {
+        const url = new URL(adminApiBaseUrl);
+        const normalizedPath = url.pathname.replace(/\/+$/, "").replace(/\/api$/, "");
+        return normalizedPath ? `${url.origin}${normalizedPath}` : url.origin;
+    } catch {
+        return adminApiBaseUrl.replace(/\/+$/, "").replace(/\/api$/, "");
+    }
+}
+
 export async function resolveInternalSecret() {
     const bridge = await getResolvedBridge();
     return String(bridge.internalSecret || "").trim();

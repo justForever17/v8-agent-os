@@ -312,6 +312,67 @@ export default function ChatClient() {
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
     const [isContextExpanded, setIsContextExpanded] = useState(false);
     const [localHour, setLocalHour] = useState<number>(9);
+    const viewportBaselineRef = useRef(0);
+    const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        const mediaQuery = window.matchMedia("(max-width: 767px)");
+        const visualViewport = window.visualViewport;
+
+        const updateMobileViewport = () => {
+            if (!mediaQuery.matches) {
+                viewportBaselineRef.current = 0;
+                setMobileKeyboardInset(0);
+                return;
+            }
+
+            const currentHeight = Math.round(visualViewport?.height ?? window.innerHeight);
+            if (viewportBaselineRef.current === 0 || currentHeight > viewportBaselineRef.current) {
+                viewportBaselineRef.current = currentHeight;
+            }
+
+            const baselineHeight = viewportBaselineRef.current || currentHeight;
+            const offsetTop = Math.max(0, Math.round(visualViewport?.offsetTop ?? 0));
+            const visualViewportInset = Math.max(0, Math.round(window.innerHeight - currentHeight - offsetTop));
+            const shrinkInset = Math.max(0, baselineHeight - currentHeight);
+            const nextInset = Math.max(visualViewportInset, shrinkInset > 96 ? shrinkInset : 0);
+
+            setMobileKeyboardInset(nextInset > 24 ? nextInset : 0);
+        };
+
+        const handleViewportReset = () => {
+            viewportBaselineRef.current = 0;
+            updateMobileViewport();
+        };
+
+        updateMobileViewport();
+        visualViewport?.addEventListener("resize", updateMobileViewport);
+        visualViewport?.addEventListener("scroll", updateMobileViewport);
+        window.addEventListener("resize", updateMobileViewport);
+        window.addEventListener("orientationchange", handleViewportReset);
+
+        if (typeof mediaQuery.addEventListener === "function") {
+            mediaQuery.addEventListener("change", handleViewportReset);
+        } else {
+            mediaQuery.addListener(handleViewportReset);
+        }
+
+        return () => {
+            visualViewport?.removeEventListener("resize", updateMobileViewport);
+            visualViewport?.removeEventListener("scroll", updateMobileViewport);
+            window.removeEventListener("resize", updateMobileViewport);
+            window.removeEventListener("orientationchange", handleViewportReset);
+            if (typeof mediaQuery.removeEventListener === "function") {
+                mediaQuery.removeEventListener("change", handleViewportReset);
+            } else {
+                mediaQuery.removeListener(handleViewportReset);
+            }
+        };
+    }, []);
 
     // Initialize Hook
     const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand, fetchPendingApprovals } = useLangGraphStream({
@@ -1210,6 +1271,15 @@ export default function ChatClient() {
         );
     }
 
+    const composerShellStyle = {
+        paddingBottom: mobileKeyboardInset > 0
+            ? `calc(0.5rem + env(safe-area-inset-bottom) + ${mobileKeyboardInset}px)`
+            : "calc(0.5rem + env(safe-area-inset-bottom))",
+    };
+    const hudStackStyle = mobileKeyboardInset > 0
+        ? { maxHeight: "5rem" }
+        : undefined;
+
     return (
         <div className="relative flex h-full min-h-0 w-full overflow-hidden overscroll-none bg-transparent">
             <div className={cn("mx-auto flex h-full min-h-0 w-full flex-col px-2 pt-0.5 sm:px-4 sm:pt-1 lg:px-6", contentShellClassName)}>
@@ -1369,14 +1439,20 @@ export default function ChatClient() {
                     )}
                 </div>
 
-                <div className="shrink-0 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-1 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+                <div
+                    className="shrink-0 pt-1 transition-[padding-bottom] duration-200 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
+                    style={composerShellStyle}
+                >
                     <div className="flex flex-col gap-2">
-                        <div className="empty:hidden flex max-h-[22vh] sm:max-h-[28vh] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain">
+                        <div
+                            className="empty:hidden flex max-h-[22vh] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain sm:max-h-[28vh]"
+                            style={hudStackStyle}
+                        >
                             <ProcessesHUD />
                             <TodosHUD sessionId={activeConversationId} />
                         </div>
                         <div className="relative shrink-0">
-                            <div className="pointer-events-none absolute inset-x-4 -top-7 h-7 bg-gradient-to-t from-background via-background/82 to-transparent blur-sm" />
+                            <div className="pointer-events-none absolute inset-x-4 -top-7 hidden h-7 bg-gradient-to-t from-background via-background/82 to-transparent blur-sm sm:block" />
                             <InputArea
                                 key={activeConversationId || "new-session"}
                                 input={input}

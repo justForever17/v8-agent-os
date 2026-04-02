@@ -60,7 +60,35 @@ export type RealtimeUiEvent = {
     artifact?: RuntimeArtifact;
 };
 
-export const DEFAULT_AVATAR = 'http://127.0.0.1:9528/Avatar/default-supervisor.svg';
+const LOOPBACK_AVATAR_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\//i;
+const ADMIN_AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
+const DEFAULT_ADMIN_AVATAR_PATTERN = /\/Avatar\/default-supervisor\.svg(?:$|[?#])/i;
+export const DEFAULT_AVATAR = "/default-supervisor.svg";
+
+function buildAvatarProxyUrl(avatar: string): string {
+    return `/api/avatar?src=${encodeURIComponent(avatar)}`;
+}
+
+function resolveAgentAvatar(value: unknown): string | undefined {
+    const avatar = typeof value === "string" ? value.trim() : "";
+    if (!avatar) {
+        return undefined;
+    }
+
+    if (DEFAULT_ADMIN_AVATAR_PATTERN.test(avatar)) {
+        return DEFAULT_AVATAR;
+    }
+
+    if (ADMIN_AVATAR_PATH_PATTERN.test(avatar)) {
+        return buildAvatarProxyUrl(avatar);
+    }
+
+    if (LOOPBACK_AVATAR_PATTERN.test(avatar) && /\/Avatar\//i.test(avatar)) {
+        return buildAvatarProxyUrl(avatar);
+    }
+
+    return avatar;
+}
 
 export function cloneMessages(messages: Message[]): Message[] {
     return messages.map((message) => ({
@@ -82,7 +110,7 @@ export function buildAssistantMessage(activeAgentProfile: AgentProfile): Message
         nodes: [],
         artifacts: [],
         agentName: activeAgentProfile.agentName || '智能主管',
-        agentAvatar: activeAgentProfile.agentAvatar || DEFAULT_AVATAR,
+        agentAvatar: resolveAgentAvatar(activeAgentProfile.agentAvatar) || DEFAULT_AVATAR,
         agentRoleLabel: activeAgentProfile.agentRoleLabel || '主理人',
         timestamp: Date.now(),
     };
@@ -194,7 +222,7 @@ function mergeMessageRecords(existing: Message, incoming: Message): Message {
         nodes: mergeTimelineNodes(existing.nodes || [], incoming.nodes || []),
         timestamp: Math.min(existing.timestamp || Date.now(), incoming.timestamp || Date.now()),
         agentName: incoming.agentName || existing.agentName,
-        agentAvatar: incoming.agentAvatar || existing.agentAvatar,
+        agentAvatar: resolveAgentAvatar(incoming.agentAvatar) || resolveAgentAvatar(existing.agentAvatar) || DEFAULT_AVATAR,
         agentRoleLabel: incoming.agentRoleLabel || existing.agentRoleLabel,
         agentType: incoming.agentType || existing.agentType,
         images: mergeUniqueStrings(existing.images, incoming.images),
@@ -214,6 +242,7 @@ export function normalizeMessagesForState(messages: Message[]): Message[] {
     for (const message of messages) {
         const candidate: Message = {
             ...message,
+            agentAvatar: resolveAgentAvatar(message.agentAvatar),
             nodes: Array.isArray(message.nodes) ? message.nodes.map((node) => ({ ...node })) : [],
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
@@ -251,14 +280,14 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
         const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : Date.now();
         const messageAgentProfile = {
             agentName: typeof msg.agentName === 'string' ? msg.agentName : undefined,
-            agentAvatar: typeof msg.agentAvatar === 'string' ? msg.agentAvatar : undefined,
+            agentAvatar: resolveAgentAvatar(msg.agentAvatar),
             agentRoleLabel: typeof msg.agentRoleLabel === 'string' ? msg.agentRoleLabel : undefined,
         };
         const parts = Array.isArray(msg.parts) ? (msg.parts as ProjectedMessagePart[]) : [];
         const nodes: UiTimelineNode[] = parts.flatMap<UiTimelineNode>((part, index) => {
             const nodeAgentProfile = {
                 agentName: typeof part.agentName === 'string' ? part.agentName : messageAgentProfile.agentName,
-                agentAvatar: typeof part.agentAvatar === 'string' ? part.agentAvatar : messageAgentProfile.agentAvatar,
+                agentAvatar: resolveAgentAvatar(part.agentAvatar) || messageAgentProfile.agentAvatar,
                 agentRoleLabel: typeof part.agentRoleLabel === 'string' ? part.agentRoleLabel : messageAgentProfile.agentRoleLabel,
             };
             const nodeId = `${typeof msg.id === 'string' ? msg.id : 'projected'}-${index}`;
@@ -366,7 +395,7 @@ export function deriveRealtimeStreamState(messages: Message[]): {
         currentAiMsg: lastAssistant,
         activeAgentProfile: {
             agentName: lastAgentNode?.agentName || lastAssistant.agentName,
-            agentAvatar: lastAgentNode?.agentAvatar || lastAssistant.agentAvatar,
+            agentAvatar: resolveAgentAvatar(lastAgentNode?.agentAvatar) || resolveAgentAvatar(lastAssistant.agentAvatar),
             agentRoleLabel: lastAgentNode?.agentRoleLabel || lastAssistant.agentRoleLabel,
         },
     };
@@ -410,7 +439,7 @@ export function applyRealtimeEventToMessages(
     if (event.type === 'agent_start') {
         nextActiveAgentProfile = {
             agentName: event.agent?.name,
-            agentAvatar: event.agent?.avatar || DEFAULT_AVATAR,
+            agentAvatar: resolveAgentAvatar(event.agent?.avatar) || DEFAULT_AVATAR,
             agentRoleLabel: event.agent?.roleLabel,
         };
         ensureCurrentAiMsg();
@@ -639,7 +668,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                     kind: 'execution',
                     executionType: 'agent_start',
                     agentName: thisAgentName,
-                    agentAvatar: msg.agentAvatar,
+                    agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                     agentRoleLabel: msg.agentRoleLabel,
                     timestamp: new Date(msg.createdAt).getTime(),
                 } as UiExecutionNode);
@@ -652,7 +681,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                     executionType: 'reasoning',
                     content: msg.reasoningContent,
                     agentName: thisAgentName,
-                    agentAvatar: msg.agentAvatar,
+                    agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                     agentRoleLabel: msg.agentRoleLabel,
                     timestamp: new Date(msg.createdAt).getTime(),
                 } as UiExecutionNode);
@@ -667,7 +696,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                     role: 'assistant',
                     content: msg.content,
                     agentName: thisAgentName,
-                    agentAvatar: msg.agentAvatar,
+                    agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                     agentRoleLabel: msg.agentRoleLabel,
                     timestamp: new Date(msg.createdAt).getTime(),
                 } as UiNarrativeNode);
@@ -683,7 +712,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                         args: tool.args,
                         result: tool.result,
                         agentName: thisAgentName,
-                        agentAvatar: msg.agentAvatar,
+                        agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                         agentRoleLabel: msg.agentRoleLabel,
                         timestamp: new Date(msg.createdAt).getTime(),
                     } as UiExecutionNode);
@@ -752,7 +781,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                 content: msg.content || '',
                 nodes,
                 agentName,
-                agentAvatar: msg.agentAvatar,
+                agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                 agentRoleLabel: msg.agentRoleLabel,
                 agentType: msg.agentId === 'SYSTEM_SUPERVISOR' || msg.agentName === '智能主管' ? 'supervisor' : (msg.agentId ? 'agent' : 'user'),
                 timestamp: new Date(msg.createdAt).getTime(),
@@ -772,7 +801,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                 content: msg.content || '',
                 nodes,
                 agentName: msg.agentName,
-                agentAvatar: msg.agentAvatar,
+                agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                 agentRoleLabel: msg.agentRoleLabel,
                 agentType: 'user',
                 timestamp: new Date(msg.createdAt).getTime(),

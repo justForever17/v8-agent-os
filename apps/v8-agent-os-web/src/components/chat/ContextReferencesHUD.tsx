@@ -99,11 +99,11 @@ export function ContextReferencesHUD() {
     };
 
     return (
-        <div className="w-full flex justify-center sticky top-4 z-40 pointer-events-none mb-4">
+        <div className="mb-2 flex w-full justify-center pointer-events-none sm:sticky sm:top-4 sm:z-40 sm:mb-4">
             <motion.div 
                 initial={{ opacity: 0, y: -20 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="max-w-[80%] flex flex-wrap justify-center gap-2 pointer-events-auto"
+                className="flex max-w-[92%] flex-wrap justify-center gap-2 pointer-events-auto sm:max-w-[80%]"
             >
                 <AnimatePresence>
                     {contextRefs.map((ref) => (
@@ -112,7 +112,7 @@ export function ContextReferencesHUD() {
                             initial={{ opacity: 0, scale: 0.8 }}
                             animate={{ opacity: 1, scale: 1 }}
                             exit={{ opacity: 0, scale: 0.8 }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-background/80 hover:bg-background/95 backdrop-blur-md rounded-full border border-border/50 shadow-sm cursor-help transition-colors group"
+                            className="group flex items-center gap-1.5 rounded-full border border-border/50 bg-background/92 px-3 py-1.5 shadow-sm transition-colors cursor-help hover:bg-background/95 backdrop-blur-sm sm:backdrop-blur-md"
                             title={ref.details || ref.label}
                         >
                             {getIcon(ref.type)}

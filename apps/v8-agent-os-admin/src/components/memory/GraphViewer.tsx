@@ -246,7 +246,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
         } finally {
             setLoading(false);
         }
-    }, [toast]);
+    }, [t, toast]);
 
     const loadEntityRelations = useCallback(async (entityId: string) => {
         try {

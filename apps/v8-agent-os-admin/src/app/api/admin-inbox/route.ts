@@ -67,7 +67,7 @@ function containsAuthIssue(values: Array<string | null | undefined>) {
     return values.some((value) => AUTH_PATTERN.test(String(value || "")));
 }
 
-export async function GET(req: NextRequest, _context: { params: Promise<Record<string, string>> }) {
+export async function GET(req: NextRequest) {
     const unauthorized = await requireAdminIdentity(req);
     if (unauthorized) {
         return unauthorized;
@@ -77,7 +77,7 @@ export async function GET(req: NextRequest, _context: { params: Promise<Record<s
         const locale = resolveInitialLocale(req.cookies.get(LOCALE_COOKIE_NAME)?.value, req.headers.get("accept-language"));
         const text = (zh: string, en: string) => pickLocalizedText(locale, lt(zh, en));
         const [{ data: approvals }, { data: runs }, { data: health }, { data: pluginHost }] = await Promise.all([
-            proxyEngineJson("/approvals"),
+            proxyEngineJson("/approvals?status=pending"),
             proxyEngineJson("/runs?limit=12"),
             proxyEngineJson("/health"),
             proxyEngineJson("/plugin-host"),

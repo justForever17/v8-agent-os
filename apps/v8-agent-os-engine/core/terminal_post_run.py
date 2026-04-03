@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.database import db
 from core.hooks_manager import hooks_manager
@@ -11,6 +11,10 @@ from erc.run_service import run_service
 
 
 logger = logging.getLogger("v8chat.terminal_post_run")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class TerminalPostRunService:
@@ -40,7 +44,7 @@ class TerminalPostRunService:
                     {
                         "memory_terminal_dispatched": True,
                         "memory_terminal_source": source_component,
-                        "memory_terminal_dispatched_at": datetime.now().isoformat(),
+                        "memory_terminal_dispatched_at": _utc_now_iso(),
                     },
                 )
             except Exception as exc:

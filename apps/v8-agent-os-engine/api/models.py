@@ -34,11 +34,20 @@ class CommandPresetSelection(BaseModel):
     name: str = Field(description="Command preset display name / file stem")
 
 
+class SkillReferenceSelection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(description="Skill display name")
+    description: Optional[str] = Field(default=None, description="Short skill description")
+    path: Optional[str] = Field(default=None, description="Absolute local path to the skill root or SKILL.md")
+
+
 class ChatRequestData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     command_preset: Optional[CommandPresetSelection] = Field(default=None, alias="commandPreset")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")
+    skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
 
 
 class ChatRequest(BaseModel):

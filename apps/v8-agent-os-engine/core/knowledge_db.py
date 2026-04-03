@@ -22,7 +22,7 @@ import json
 import hashlib
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 from contextlib import contextmanager
 
@@ -55,6 +55,10 @@ def tokenize_for_fts(text: str) -> str:
     # 保留英文原样，中文进行分词
     words = jieba.cut(text, cut_all=False)
     return " ".join(w.strip() for w in words if w.strip())
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class KnowledgeDB:
@@ -269,7 +273,7 @@ class KnowledgeDB:
                     UPDATE knowledge SET fact=?, category=?, scope=?, status='active',
                            source_session=?, parent_id=?, updated_at=?
                     WHERE id=?
-                """, (fact, category, scope, source_session, parent_id, datetime.now().isoformat(), fact_id))
+                """, (fact, category, scope, source_session, parent_id, _utc_now_iso(), fact_id))
                 conn.execute("""
                     INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope)
                     VALUES (?, ?, ?, ?)
@@ -279,7 +283,7 @@ class KnowledgeDB:
                 conn.execute("""
                     INSERT INTO knowledge (id, fact, category, scope, status, source_session, parent_id, updated_at)
                     VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-                """, (fact_id, fact, category, scope, source_session, parent_id, datetime.now().isoformat()))
+                """, (fact_id, fact, category, scope, source_session, parent_id, _utc_now_iso()))
                 
                 # 获取新 rowid 同步到 FTS5
                 new_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -336,7 +340,7 @@ class KnowledgeDB:
         with self._conn() as conn:
             cursor = conn.execute(
                 "UPDATE knowledge SET status = 'deleted', updated_at = ? WHERE id = ? AND status = 'active'",
-                (datetime.now().isoformat(), fact_id)
+                (_utc_now_iso(), fact_id)
             )
             return cursor.rowcount > 0
     
@@ -646,7 +650,7 @@ class KnowledgeDB:
             conn.execute("""
                 UPDATE knowledge SET fact=?, category=?, scope=?, updated_at=?
                 WHERE id=?
-            """, (new_fact, final_cat, final_scope, datetime.now().isoformat(), fact_id))
+            """, (new_fact, final_cat, final_scope, _utc_now_iso(), fact_id))
             
             # 重建 FTS5 记录
             conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid,))
@@ -692,7 +696,7 @@ class KnowledgeDB:
                 file_path.stat().st_mtime if file_path.exists() else 0,
                 content_hash,
                 chunk_count,
-                datetime.now().isoformat()
+                _utc_now_iso()
             ))
     
     def get_stale_files(self, directory: Path, pattern: str = "*.json") -> List[Path]:
@@ -751,7 +755,7 @@ class KnowledgeDB:
                       trigger_source: str, status: str, payload: Optional[Dict] = None, 
                       error_message: Optional[str] = None, duration_ms: Optional[int] = None):
         """记录一条执行日志 (插入或更新)"""
-        now = datetime.now().isoformat()
+        now = _utc_now_iso()
         payload_str = json.dumps(payload, ensure_ascii=False) if payload else "{}"
         
         with self._conn() as conn:

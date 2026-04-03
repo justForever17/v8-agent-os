@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, ListTodo } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, ListTodo, AtSign } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -178,6 +178,16 @@ interface CommandPresetSummary {
     contentHash?: string;
 }
 
+interface SkillReferenceSummary {
+    name: string;
+    description?: string;
+    path?: string;
+}
+
+function isSkillReferenceSummaryCandidate(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 export function InputArea({
     input,
     handleInputChange,
@@ -193,6 +203,10 @@ export function InputArea({
     const [commandsLoaded, setCommandsLoaded] = React.useState(false);
     const [commandsLoading, setCommandsLoading] = React.useState(false);
     const [selectedCommandPreset, setSelectedCommandPreset] = React.useState<CommandPresetSummary | null>(null);
+    const [skills, setSkills] = React.useState<SkillReferenceSummary[]>([]);
+    const [skillsLoaded, setSkillsLoaded] = React.useState(false);
+    const [skillsLoading, setSkillsLoading] = React.useState(false);
+    const [selectedSkills, setSelectedSkills] = React.useState<SkillReferenceSummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = React.useState(false);
     const [files, setFiles] = React.useState<File[]>([]);
     const [uploadedUrls, setUploadedUrls] = React.useState<string[]>([]);
@@ -222,7 +236,13 @@ export function InputArea({
         if (!trimmed.startsWith("/")) return "";
         return trimmed.slice(1).trim();
     }, [input, selectedCommandPreset]);
+    const skillQuery = React.useMemo(() => {
+        const trimmed = input.trimStart();
+        if (!trimmed.startsWith("@")) return "";
+        return trimmed.slice(1).trim();
+    }, [input]);
     const isCommandPickerOpen = !selectedCommandPreset && input.trimStart().startsWith("/");
+    const isSkillPickerOpen = input.trimStart().startsWith("@");
     const filteredCommandPresets = React.useMemo(() => {
         if (!slashQuery) {
             return commandPresets;
@@ -234,6 +254,19 @@ export function InputArea({
             || String(preset.filename || "").toLowerCase().includes(keyword)
         );
     }, [commandPresets, slashQuery]);
+    const filteredSkills = React.useMemo(() => {
+        const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
+        const base = skills.filter((skill) => !selectedKeys.has(`${skill.name}::${skill.path || ""}`));
+        if (!skillQuery) {
+            return base;
+        }
+        const keyword = skillQuery.toLowerCase();
+        return base.filter((skill) =>
+            skill.name.toLowerCase().includes(keyword)
+            || String(skill.description || "").toLowerCase().includes(keyword)
+            || String(skill.path || "").toLowerCase().includes(keyword)
+        );
+    }, [selectedSkills, skillQuery, skills]);
 
     const updateInputValue = React.useCallback((nextValue: string) => {
         handleInputChange({
@@ -290,14 +323,65 @@ export function InputArea({
         }
     }, [commandsLoaded, commandsLoading, showInlineNotice, t]);
 
+    const loadSkills = React.useCallback(async () => {
+        if (skillsLoaded || skillsLoading) return;
+        setSkillsLoading(true);
+        try {
+            const res = await fetch("/api/skills/list", { cache: "no-store" });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(
+                    typeof payload?.error === "string"
+                        ? payload.error
+                        : t(lt("技能列表加载失败", "Failed to load skill list"))
+                );
+            }
+            const nextSkills: unknown[] = Array.isArray(payload?.skills) ? payload.skills : [];
+            setSkills(
+                nextSkills
+                    .filter(isSkillReferenceSummaryCandidate)
+                    .map((item): SkillReferenceSummary => ({
+                        name: String(item.name || "").trim(),
+                        description: String(item.description || "").trim(),
+                        path: String(item.path || "").trim(),
+                    }))
+                    .filter((item: SkillReferenceSummary) => item.name || item.path)
+            );
+            setSkillsLoaded(true);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t(lt("技能列表加载失败", "Failed to load skill list"));
+            showInlineNotice("error", message);
+        } finally {
+            setSkillsLoading(false);
+        }
+    }, [showInlineNotice, skillsLoaded, skillsLoading, t]);
+
     React.useEffect(() => {
         if (isCommandPickerOpen) {
             void loadCommandPresets();
         }
     }, [isCommandPickerOpen, loadCommandPresets]);
 
+    React.useEffect(() => {
+        if (isSkillPickerOpen) {
+            void loadSkills();
+        }
+    }, [isSkillPickerOpen, loadSkills]);
+
     const selectCommandPreset = React.useCallback((preset: CommandPresetSummary) => {
         setSelectedCommandPreset(preset);
+        updateInputValue("");
+        dismissInlineNotice();
+    }, [dismissInlineNotice, updateInputValue]);
+
+    const selectSkillReference = React.useCallback((skill: SkillReferenceSummary) => {
+        setSelectedSkills((current) => {
+            const alreadySelected = current.some((item) => item.name === skill.name && (item.path || "") === (skill.path || ""));
+            if (alreadySelected) {
+                return current;
+            }
+            return [...current, skill];
+        });
         updateInputValue("");
         dismissInlineNotice();
     }, [dismissInlineNotice, updateInputValue]);
@@ -308,6 +392,12 @@ export function InputArea({
             if (isCommandPickerOpen) {
                 if (filteredCommandPresets.length > 0) {
                     selectCommandPreset(filteredCommandPresets[0]);
+                }
+                return;
+            }
+            if (isSkillPickerOpen) {
+                if (filteredSkills.length > 0) {
+                    selectSkillReference(filteredSkills[0]);
                 }
                 return;
             }
@@ -501,7 +591,10 @@ export function InputArea({
     }, [isRecording, isTranscribing, startRecording, stopRecording]);
 
     const hasTypedMessage = input.trim().length > 0;
-    const canSubmit = (!isCommandPickerOpen && hasTypedMessage) || files.length > 0 || Boolean(selectedCommandPreset);
+    const canSubmit = (!isCommandPickerOpen && !isSkillPickerOpen && hasTypedMessage)
+        || files.length > 0
+        || Boolean(selectedCommandPreset)
+        || selectedSkills.length > 0;
 
     // Convert attached files to MediaItems for Lightbox
     const mediaItems: MediaItem[] = files.map((f) => {
@@ -525,6 +618,13 @@ export function InputArea({
                 if (selectedCommandPreset?.name) {
                     nextData.commandPreset = { name: selectedCommandPreset.name };
                 }
+                if (selectedSkills.length > 0) {
+                    nextData.skillReferences = selectedSkills.map((skill) => ({
+                        name: skill.name,
+                        description: skill.description || "",
+                        path: skill.path || "",
+                    }));
+                }
                 if (taskPlanningMode) {
                     nextData.taskPlanningMode = true;
                 }
@@ -533,6 +633,7 @@ export function InputArea({
                 setFiles([]);
                 setUploadedUrls([]);
                 setSelectedCommandPreset(null);
+                setSelectedSkills([]);
             }}
             className={cn(
                 "relative mx-auto flex w-full flex-col overflow-hidden rounded-[1.25rem] border shadow-sm transition-all duration-500",
@@ -607,7 +708,7 @@ export function InputArea({
             )}
 
             <div className="flex flex-col relative">
-                {(selectedCommandPreset || taskPlanningMode) && (
+                {(selectedCommandPreset || taskPlanningMode || selectedSkills.length > 0) && (
                     <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
                         {selectedCommandPreset && (
                             <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
@@ -623,6 +724,24 @@ export function InputArea({
                                 </button>
                             </div>
                         )}
+                        {selectedSkills.map((skill) => (
+                            <div
+                                key={`${skill.name}:${skill.path || ""}`}
+                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-fuchsia-200 bg-fuchsia-50 px-2 py-0.5 text-[10px] font-medium text-fuchsia-700 dark:border-fuchsia-500/20 dark:bg-fuchsia-500/10 dark:text-fuchsia-200 sm:text-[11px]"
+                                title={skill.path || skill.description || skill.name}
+                            >
+                                <AtSign className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
+                                <span className="truncate">{skill.name}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedSkills((current) => current.filter((item) => !(item.name === skill.name && (item.path || "") === (skill.path || ""))))}
+                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    aria-label={t(lt("移除技能引用", "Remove skill reference"))}
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
                         {taskPlanningMode && (
                             <div className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200 sm:text-[11px]">
                                 <ListTodo className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
@@ -677,6 +796,51 @@ export function InputArea({
                                     {commandsLoaded
                                         ? t(lt("当前没有可用命令预设，请把 .md 文件放进 ~/.v8-agent-os/commands。", "No command presets are available yet. Put .md files into ~/.v8-agent-os/commands."))
                                         : t(lt("没有匹配的命令预设。", "No matching command presets."))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {isSkillPickerOpen && (
+                    <div className="mx-3 mb-2 rounded-2xl border border-fuchsia-200/60 bg-background/95 shadow-lg backdrop-blur-xl dark:border-fuchsia-500/20">
+                        <div className="border-b border-fuchsia-200/40 px-3 py-2 text-[11px] text-muted-foreground dark:border-fuchsia-500/10">
+                            {t(lt("输入 ", "Type "))}<span className="font-medium text-fuchsia-600">@</span>{t(lt(" 后选择一个或多个 Skill，发送时会把名称、说明和真实路径作为结构化上下文交给 Supervisor。", " to pick one or more skills. Their name, description, and real path will be sent to Supervisor as structured context."))}
+                        </div>
+                        <div className="max-h-32 overflow-y-auto px-1 py-1 sm:max-h-40">
+                            {skillsLoading ? (
+                                <div className="px-3 py-3 text-sm text-muted-foreground">{t(lt("正在读取技能列表...", "Loading skills..."))}</div>
+                            ) : filteredSkills.length > 0 ? (
+                                filteredSkills.map((skill) => (
+                                    <button
+                                        key={`${skill.name}:${skill.path || ""}`}
+                                        type="button"
+                                        onClick={() => selectSkillReference(skill)}
+                                        className="flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-fuchsia-50/70 dark:hover:bg-fuchsia-500/10"
+                                    >
+                                        <AtSign className="mt-0.5 h-4 w-4 shrink-0 text-fuchsia-500" />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="truncate text-sm font-medium text-foreground">
+                                                {skill.name}
+                                            </div>
+                                            {skill.description && (
+                                                <div className="line-clamp-1 text-[11px] leading-4.5 text-muted-foreground sm:line-clamp-2">
+                                                    {skill.description}
+                                                </div>
+                                            )}
+                                            {skill.path && (
+                                                <div className="truncate text-[10px] text-fuchsia-700/80 dark:text-fuchsia-300/80">
+                                                    {skill.path}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </button>
+                                ))
+                            ) : (
+                                <div className="px-3 py-3 text-sm text-muted-foreground">
+                                    {skillsLoaded
+                                        ? t(lt("当前没有匹配的 Skill。", "No matching skills were found."))
+                                        : t(lt("技能列表暂时不可用。", "The skill list is currently unavailable."))}
                                 </div>
                             )}
                         </div>

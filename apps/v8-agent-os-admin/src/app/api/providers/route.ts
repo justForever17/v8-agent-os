@@ -94,6 +94,7 @@ export async function POST(req: NextRequest) {
                 credential_mode: data.credentialMode || existingProvider.credential_mode || "apiKey",
                 oauth_preset: data.platformLoginPreset || existingProvider.oauth_preset || "",
                 oauth_ref: oauthRef,
+                local_backend_preset: data.localBackendPreset || existingProvider.local_backend_preset || "",
             },
             models: existingModels
         };

@@ -49,6 +49,7 @@ export async function PUT(
             temperature: data.temperature !== undefined ? parseFloat(data.temperature) : undefined,
             costPerInput: data.costPerInput ? parseFloat(data.costPerInput) : undefined,
             costPerOutput: data.costPerOutput ? parseFloat(data.costPerOutput) : undefined,
+            rerank_api_flavor: data.rerankApiFlavor || undefined,
         };
 
         const resPost = await fetch(`${ENGINE_URL}/models`, {

@@ -97,7 +97,7 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                                 <div>{t(lt("会话", "Session"))}: <span className="text-foreground/90">{run.session_id || "-"}</span></div>
                                 {taskName ? <div>{t(lt("任务", "Task"))}: <span className="text-foreground/90">{taskName}</span></div> : null}
                                 {actionTarget ? <div>{t(lt("目标", "Target"))}: <span className="text-foreground/90 break-all">{actionTarget}</span></div> : null}
-                                <div>{t(lt("时间", "Created"))}: <span className="text-foreground/90">{formatWhen(run.created_at)}</span></div>
+                                <div>{t(lt("开始于", "Started"))}: <span className="text-foreground/90">{formatWhen(run.started_at || run.created_at)}</span></div>
                             </div>
                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                                 <Button asChild type="button" variant="ghost" size="sm" className="h-8 rounded-xl px-3">

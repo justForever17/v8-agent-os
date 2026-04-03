@@ -25,6 +25,7 @@ export interface RunRecord {
     run_type?: string;
     trigger_source?: string;
     created_at?: string;
+    started_at?: string;
     metadata?: Record<string, unknown>;
 }
 
@@ -40,7 +41,7 @@ export const RUN_LABELS: Record<string, string> = {
 };
 
 export function formatWhen(value?: string) {
-    return formatLocalDateTime(value, { includeYear: false, includeSeconds: true, fallback: "刚刚" });
+    return formatLocalDateTime(value, { includeYear: false, includeSeconds: true });
 }
 
 export function useRuntimeOpsData() {

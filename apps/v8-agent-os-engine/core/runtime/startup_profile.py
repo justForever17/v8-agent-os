@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import os
 import sys
+import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from core.storage import storage
@@ -70,6 +73,109 @@ _RUNTIME_CLUSTER_COMPAT_ORDER = (
     ("networksupervisorruntime", "network_supervisor"),
     ("desktopcluster", "computer_use"),
 )
+_RUNTIME_REGISTRY_MIGRATION_LOCK = threading.Lock()
+_RUNTIME_REGISTRY_MIGRATION_CHECKED = False
+
+
+def _module_importable(module_name: str) -> bool:
+    try:
+        importlib.import_module(module_name)
+        return True
+    except Exception:
+        return False
+
+
+def _computer_use_runtime_available_for_platform(install_platform: str) -> bool:
+    common_ready = _module_importable("PIL") and _module_importable("mss")
+    if not common_ready:
+        return False
+    if install_platform == "windows":
+        return _module_importable("pywinauto") and (_module_importable("win32api") or _module_importable("win32gui"))
+    if install_platform == "macos":
+        return _module_importable("Quartz") or _module_importable("AppKit")
+    return _module_importable("pyatspi")
+
+
+def _desktop_live_runtime_available() -> bool:
+    return all(
+        _module_importable(module_name)
+        for module_name in ("mss", "PIL", "numpy", "av", "aiortc")
+    )
+
+
+def _rpa_runtime_available() -> bool:
+    return _module_importable("robot") and _module_importable("RPA")
+
+
+def _detect_installed_runtime_families(install_platform: str) -> list[str]:
+    families = _default_runtime_families_for_profile("minimal")
+    if _computer_use_runtime_available_for_platform(install_platform) and "computer_use" not in families:
+        families.append("computer_use")
+    if _desktop_live_runtime_available() and "desktop_live" not in families:
+        families.append("desktop_live")
+    if _rpa_runtime_available() and "rpa" not in families:
+        families.append("rpa")
+    return families
+
+
+def _needs_runtime_registry_installation_migration(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return True
+    startup_profile = str(payload.get("startupProfile") or "").strip().lower()
+    if startup_profile == "standard":
+        return True
+    if "installProfile" not in payload:
+        return True
+    if "installedRuntimeFamilies" not in payload:
+        return True
+    if not list(payload.get("installedRuntimeFamilies") or []):
+        return True
+    return False
+
+
+def ensure_runtime_registry_installation_state() -> None:
+    global _RUNTIME_REGISTRY_MIGRATION_CHECKED
+    if _RUNTIME_REGISTRY_MIGRATION_CHECKED:
+        return
+
+    with _RUNTIME_REGISTRY_MIGRATION_LOCK:
+        if _RUNTIME_REGISTRY_MIGRATION_CHECKED:
+            return
+
+        try:
+            raw_payload = storage.read_json("runtime_registry.json")
+        except Exception:
+            raw_payload = {}
+
+        if not _needs_runtime_registry_installation_migration(raw_payload):
+            _RUNTIME_REGISTRY_MIGRATION_CHECKED = True
+            return
+
+        current_state = storage.get_runtime_registry_config()
+        install_platform = normalize_install_platform(
+            (raw_payload or {}).get("installPlatform") or current_state.get("installPlatform")
+        )
+        detected_families = _detect_installed_runtime_families(install_platform)
+        persisted_families = _normalize_runtime_families((raw_payload or {}).get("installedRuntimeFamilies"))
+        next_families = _default_runtime_families_for_profile("minimal")
+
+        for family in [*persisted_families, *detected_families]:
+            if family not in next_families:
+                next_families.append(family)
+
+        next_profile = "desktop" if any(
+            family in next_families for family in ("computer_use", "desktop_live", "rpa")
+        ) else "minimal"
+
+        payload = {
+            **current_state,
+            "installProfile": next_profile,
+            "installPlatform": install_platform,
+            "installedRuntimeFamilies": next_families,
+            "lastUpgradeAt": current_state.get("lastUpgradeAt") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        storage.save_runtime_registry_config(payload)
+        _RUNTIME_REGISTRY_MIGRATION_CHECKED = True
 
 
 def normalize_install_profile(value: Any) -> str:
@@ -118,6 +224,7 @@ def _resolve_legacy_runtime_families(*, startup_profile: str, install_profile: s
 
 
 def get_runtime_registry_state() -> dict[str, Any]:
+    ensure_runtime_registry_installation_state()
     try:
         payload = storage.get_runtime_registry_config()
     except Exception:

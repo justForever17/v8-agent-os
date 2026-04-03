@@ -33,6 +33,12 @@ interface MessageActionButtonsProps {
     className?: string;
 }
 
+type SkillReferenceMetadata = {
+    name: string;
+    description?: string;
+    path?: string;
+};
+
 function extractCommandPresetName(message: Message): string | null {
     const commandPreset = message.metadata?.commandPreset;
     if (!commandPreset || typeof commandPreset !== "object") {
@@ -44,6 +50,43 @@ function extractCommandPresetName(message: Message): string | null {
 
 function hasTaskPlanningMode(message: Message): boolean {
     return Boolean(message.metadata?.taskPlanningMode);
+}
+
+function extractSkillReferences(message: Message): SkillReferenceMetadata[] {
+    const raw = message.metadata?.skillReferences;
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    const seen = new Set<string>();
+    const normalized: SkillReferenceMetadata[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== "object") {
+            continue;
+        }
+        const record = item as Record<string, unknown>;
+        const name = typeof record.name === "string" ? record.name.trim() : "";
+        const description = typeof record.description === "string" ? record.description.trim() : "";
+        const path = typeof record.path === "string" ? record.path.trim() : "";
+        if (!name && !path) {
+            continue;
+        }
+        const key = `${name.toLowerCase()}::${path.toLowerCase()}`;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        normalized.push({ name: name || path, description, path });
+    }
+    return normalized;
+}
+
+const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::9530)?\/workspace\/([^\s)]+)/gi;
+
+function normalizeWorkspaceLinks(content: string): string {
+    return content.replace(LOOPBACK_WORKSPACE_URL_PATTERN, (_match, subpath: string) => {
+        const cleaned = String(subpath || "").replace(/^\/+/, "");
+        return `/api/workspace/files/${cleaned}`;
+    });
 }
 
 function MessageActionButtons({
@@ -86,7 +129,9 @@ function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar
     const setActiveArtifactId = useChatStore((state) => state.setActiveArtifactId);
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const taskPlanningModeEnabled = useMemo(() => hasTaskPlanningMode(message), [message]);
-    const shouldRenderUserMetadata = Boolean(commandPresetName || taskPlanningModeEnabled);
+    const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
+    const shouldRenderUserMetadata = Boolean(commandPresetName || taskPlanningModeEnabled || skillReferences.length > 0);
+    const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
     const copyLabel = t(lt("复制消息", "Copy message"));
     const deleteLabel = t(lt("删除消息", "Delete message"));
 
@@ -152,6 +197,15 @@ function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar
                                         /{commandPresetName}
                                     </span>
                                 )}
+                                {skillReferences.map((skill) => (
+                                    <span
+                                        key={`${skill.name}:${skill.path || ""}`}
+                                        className="inline-flex items-center rounded-full border border-fuchsia-200/60 bg-fuchsia-500/20 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white backdrop-blur-sm"
+                                        title={skill.path || skill.description || skill.name}
+                                    >
+                                        @{skill.name}
+                                    </span>
+                                ))}
                                 {taskPlanningModeEnabled && (
                                     <span className="inline-flex items-center rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white/95 backdrop-blur-sm">
                                         {t(lt("任务模式", "Task mode"))}
@@ -194,16 +248,16 @@ function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar
                                 })}
                             </div>
                         )}
-                        {message.content?.trim() ? (
+                        {normalizedContent.trim() ? (
                             <div className={cn("leading-relaxed", isTool ? "whitespace-pre-wrap break-all" : "prose-invert")}>
-                                <MarkdownRenderer content={message.content} />
+                                <MarkdownRenderer content={normalizedContent} />
                             </div>
                         ) : null}
 
-                        {!isLoading && message.content && !isTool && (
+                        {!isLoading && normalizedContent && !isTool && (
                             <MessageActionButtons
                                 copied={isCopied}
-                                onCopy={() => handleCopy(message.content)}
+                                onCopy={() => handleCopy(normalizedContent)}
                                 onDelete={() => onDelete(message.id)}
                                 copyLabel={copyLabel}
                                 deleteLabel={deleteLabel}

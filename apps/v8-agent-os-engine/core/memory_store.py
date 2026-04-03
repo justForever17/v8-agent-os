@@ -15,12 +15,16 @@ import json
 import uuid
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 logger = logging.getLogger("v8_agent_os.memory")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 # === 配置 ===
 CONFIG_DIR = V8_AGENT_OS_HOME
@@ -351,7 +355,7 @@ class MemoryStore:
             "category": category,
             "scope": normalized_scope,
             "status": "active",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": _utc_now_iso(),
             "source_session": source_session,
             "tags": [str(tag).strip() for tag in list(tags or []) if str(tag).strip()],
         }
@@ -407,7 +411,7 @@ class MemoryStore:
                     if category: item["category"] = category
                     if scope:
                         item["scope"] = self._validate_scope(scope)
-                    item["timestamp"] = datetime.now().isoformat()
+                        item["timestamp"] = _utc_now_iso()
                     updated = True
                     break
             if updated:
@@ -456,7 +460,7 @@ class MemoryStore:
                 for item in items:
                     if item.get("id") == fact_id and item.get("status") == "active":
                         item["status"] = "deleted"
-                        item["deleted_at"] = datetime.now().isoformat()
+                        item["deleted_at"] = _utc_now_iso()
                 
                 path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
             except Exception as e:

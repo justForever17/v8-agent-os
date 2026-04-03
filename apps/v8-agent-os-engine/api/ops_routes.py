@@ -147,7 +147,7 @@ async def upload_memory_docs(
     chunk_overlap: int = Form(200),
 ):
     try:
-        from core.document_parser import document_parser
+        from core.document_parser import DocumentIngestionDependencyError, document_parser
         from core.document_chunker import document_chunker
         from core.vector_store import get_vector_store
         from core.knowledge_db import knowledge_db
@@ -169,6 +169,8 @@ async def upload_memory_docs(
             file_path = temp_dir / file.filename
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
+
+            document_parser.ensure_document_ingestion_dependencies(file_path)
 
             deleted_ids = knowledge_db.delete_user_document(file.filename)
             if deleted_ids:
@@ -240,6 +242,8 @@ async def upload_memory_docs(
             "status": "success",
             "message": f"Successfully parsed {processed_count} files ({total_chars} chars) into {total_chunks} semantic chunks.",
         }
+    except DocumentIngestionDependencyError as e:
+        raise HTTPException(status_code=424, detail=e.to_payload())
     except Exception as e:
         import logging
 

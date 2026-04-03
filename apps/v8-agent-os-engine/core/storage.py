@@ -50,7 +50,7 @@ def _normalize_admin_public_base_url(value: Any) -> str:
 
 
 def _default_supervisor_avatar_url(admin_base_url: Any) -> str:
-    return f"{_normalize_admin_public_base_url(admin_base_url)}/Avatar/default-supervisor.svg"
+    return f"{_normalize_admin_public_base_url(admin_base_url)}/brand-mark.png"
 
 
 def _normalize_allowed_origins(value: Any) -> list[str]:

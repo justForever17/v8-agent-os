@@ -19,6 +19,7 @@ from skills.loader import SkillLoader
 
 
 _SUPPORTED_NPX_FLAGS = {"-y", "--yes"}
+_ENGINE_VENV_ROOT = Path(__file__).resolve().parents[1] / ".venv"
 
 
 class SkillInstallValidationError(ValueError):
@@ -50,6 +51,15 @@ class SkillManifest:
     name: str
     description: str
     source_dir: Path
+
+
+def get_skill_dependency_policy() -> dict[str, Any]:
+    return {
+        "mode": "engine_venv_only",
+        "pythonTarget": str(_ENGINE_VENV_ROOT),
+        "systemWideInstallAllowed": False,
+        "nodeGlobalInstallAllowed": False,
+    }
 
 
 def _parse_yaml_frontmatter(content: str) -> dict[str, Any]:

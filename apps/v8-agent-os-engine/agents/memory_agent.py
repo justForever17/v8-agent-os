@@ -16,7 +16,7 @@ Memory Agent — 系统指令驱动的专业记忆维护 Agent
 
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from langchain_core.messages import SystemMessage, HumanMessage
 import logging
 import json
@@ -42,6 +42,10 @@ from runtimes.memory.scope_resolution import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 # === LLM 提取结果模型 ===
 
@@ -791,7 +795,7 @@ def analyze_session_memory(
         last_processed_message_count=len(messages),
         last_content_hash=current_hash,
         last_run_id=getattr(run_handle, "run_id", None),
-        last_processed_at=datetime.now().isoformat(),
+        last_processed_at=_utc_now_iso(),
     )
     _emit_memory_event(
         run_handle,

@@ -17,6 +17,7 @@ from core.llm_factory import llm_factory
 from core.model_control_plane import model_control_plane
 from core.plugin_host.tool_exposure import expand_tool_family_seeds
 from core.plugin_host.silk_codec import silk_toolchain_status
+from core.skills_install_service import get_skill_dependency_policy
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 from erc.event_bus import event_bus
@@ -396,6 +397,7 @@ class ExtensionsRuntimeService:
                 "connectedMcpServerCount": connected_servers,
                 "mcpToolCount": total_tools,
             },
+            "skillDependencyPolicy": get_skill_dependency_policy(),
             "skills": {
                 "root": str(roots[0]) if roots else "",
                 "items": [
@@ -421,6 +423,7 @@ class ExtensionsRuntimeService:
         root = str(((catalog.get("skills") or {}).get("root")) or "")
         return {
             "summary": dict(catalog.get("summary") or {}),
+            "skillDependencyPolicy": dict(catalog.get("skillDependencyPolicy") or {}),
             "skills": {
                 "root": root,
                 "available": bool(root),

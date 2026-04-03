@@ -34,11 +34,71 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+class DocumentIngestionDependencyError(RuntimeError):
+    def __init__(self, *, filename: str, suffix: str, missing_dependencies: list[str]):
+        self.filename = filename
+        self.suffix = suffix
+        self.missing_dependencies = list(missing_dependencies)
+        super().__init__(f"{filename} 缺少文档解析依赖：{', '.join(self.missing_dependencies)}")
+
+    def to_payload(self) -> dict:
+        normalized_suffix = self.suffix.lstrip(".").lower() or "unknown"
+        return {
+            "code": "document_ingestion_dependencies_missing",
+            "message": f"当前环境缺少解析 {self.filename} 所需的文档入库依赖。",
+            "details": {
+                "filename": self.filename,
+                "fileType": normalized_suffix,
+                "missingDependencies": self.missing_dependencies,
+                "requiredBundle": "document-ingestion",
+            },
+        }
+
+
 class DocumentParser:
     """
     Unified parser for multiple document formats.
     Attempts to return content in Markdown format to leverage Semantic Chunking later.
     """
+    DOCUMENT_INGESTION_DEPENDENCY_MAP = {
+        ".csv": ["pandas"],
+        ".xls": ["pandas", "openpyxl"],
+        ".xlsx": ["pandas", "openpyxl"],
+        ".pdf": ["PyMuPDF"],
+        ".doc": ["python-docx"],
+        ".docx": ["python-docx"],
+        ".ppt": ["python-pptx"],
+        ".pptx": ["python-pptx"],
+    }
+
+    @classmethod
+    def get_missing_dependencies_for_suffix(cls, suffix: str) -> list[str]:
+        normalized = str(suffix or "").lower()
+        required = cls.DOCUMENT_INGESTION_DEPENDENCY_MAP.get(normalized, [])
+        missing: list[str] = []
+        for dependency in required:
+            if dependency == "pandas" and pd is None:
+                missing.append(dependency)
+            elif dependency == "openpyxl" and pd is None:
+                missing.append(dependency)
+            elif dependency == "PyMuPDF" and fitz is None:
+                missing.append(dependency)
+            elif dependency == "python-docx" and Document is None:
+                missing.append(dependency)
+            elif dependency == "python-pptx" and Presentation is None:
+                missing.append(dependency)
+        return missing
+
+    @classmethod
+    def ensure_document_ingestion_dependencies(cls, file_path: Path) -> None:
+        missing = cls.get_missing_dependencies_for_suffix(file_path.suffix)
+        if missing:
+            raise DocumentIngestionDependencyError(
+                filename=file_path.name,
+                suffix=file_path.suffix,
+                missing_dependencies=missing,
+            )
     
     @classmethod
     def parse_file(cls, file_path: Path) -> str:

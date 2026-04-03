@@ -1,0 +1,7 @@
+-r base.txt
+
+pandas
+openpyxl
+python-docx
+python-pptx
+PyMuPDF

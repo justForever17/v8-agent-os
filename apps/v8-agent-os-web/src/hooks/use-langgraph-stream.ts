@@ -300,6 +300,16 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         if (data?.taskPlanningMode) {
             optimisticMetadata.taskPlanningMode = true;
         }
+        if (Array.isArray(data?.skillReferences) && data.skillReferences.length > 0) {
+            optimisticMetadata.skillReferences = data.skillReferences
+                .filter((item: unknown) => item && typeof item === 'object')
+                .map((item: Record<string, unknown>) => ({
+                    name: typeof item.name === 'string' ? item.name.trim() : '',
+                    description: typeof item.description === 'string' ? item.description.trim() : '',
+                    path: typeof item.path === 'string' ? item.path.trim() : '',
+                }))
+                .filter((item: { name: string; description: string; path: string }) => item.name || item.path);
+        }
         const nextImages = Array.isArray(data?.fileUrls) ? data.fileUrls : [];
         const nextNodes = userMessage.trim()
             ? [{ id: createClientId('node'), kind: 'narrative' as const, role: 'user' as const, content: userMessage, timestamp: Date.now() }]

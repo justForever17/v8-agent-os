@@ -39,6 +39,7 @@ export async function GET(req: NextRequest) {
                     type: modelMeta.type || "LLM",
                     contextWindow: modelMeta.contextWindow || null,
                     maxTokens: modelMeta.maxTokens || null,
+                    rerankApiFlavor: modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || "",
                     temperature: modelMeta.temperature || 0.7,
                     isEnabled: true,
                     provider: {
@@ -97,6 +98,7 @@ export async function POST(req: NextRequest) {
             contextWindow: data.contextWindow ? parseInt(data.contextWindow) : undefined,
             maxTokens: data.maxTokens ? parseInt(data.maxTokens) : undefined,
             temperature: data.temperature ? parseFloat(data.temperature) : undefined,
+            rerank_api_flavor: data.rerankApiFlavor || undefined,
         };
         
         // Remap to structure

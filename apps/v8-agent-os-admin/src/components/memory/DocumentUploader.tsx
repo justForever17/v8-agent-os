@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, useRef, DragEvent, ChangeEvent, useEffect, useCallback } from "react";
-import { UploadCloud, FileText, Loader2, CheckCircle2, AlertCircle, X, Trash2, File as FileIcon, FileArchive, FileImage, FileCode, FileSpreadsheet } from "lucide-react";
+import { UploadCloud, FileText, Loader2, CheckCircle2, AlertCircle, X, Trash2, File as FileIcon, FileArchive, FileCode, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
@@ -18,7 +17,7 @@ export default function DocumentUploader() {
     const [uploading, setUploading] = useState(false);
     const [chunkSize, setChunkSize] = useState([1500]);
     const [chunkOverlap, setChunkOverlap] = useState([200]);
-    const [result, setResult] = useState<{ status: 'success' | 'error', message: string } | null>(null);
+    const [result, setResult] = useState<{ status: 'success' | 'error', message: string, details?: string[] } | null>(null);
     
     // Uploaded Documents state
     interface UploadedDoc {
@@ -113,14 +112,29 @@ export default function DocumentUploader() {
             const data = await res.json();
             
             if (!res.ok) {
-                throw new Error(data.error || "Upload failed");
+                const detail = data?.detail || {};
+                const missingDependencies = Array.isArray(detail?.details?.missingDependencies)
+                    ? detail.details.missingDependencies.map((item: unknown) => String(item))
+                    : [];
+                setResult({
+                    status: 'error',
+                    message: String(detail?.message || data?.error || "Upload failed"),
+                    details: missingDependencies.length > 0
+                        ? [
+                            `${t(lt("缺失依赖", "Missing dependencies"))}: ${missingDependencies.join(", ")}`,
+                            `${t(lt("所需依赖包", "Required bundle"))}: ${String(detail?.details?.requiredBundle || "document-ingestion")}`,
+                        ]
+                        : undefined,
+                });
+                return;
             }
             
             setResult({ status: 'success', message: data.message });
             setFiles([]); // clear list on success
             loadDocuments(); // Refresh uploaded list
-        } catch (err: any) {
-            setResult({ status: 'error', message: String(err.message || err) });
+        } catch (err: unknown) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            setResult({ status: 'error', message: errorMessage });
         } finally {
             setUploading(false);
         }
@@ -168,6 +182,9 @@ export default function DocumentUploader() {
                 <CardDescription>
                     {t("支持 PDF, Docx, TXT, Markdown, CSV, Excel, PPTX, HTML 等格式。上传后将自动进行文本解析与基于 Markdown 标题的语义切分，并完成向量化与 FTS 索引，供 Agent 进行 RAG 检索。")}
                 </CardDescription>
+                <p className="text-xs leading-5 text-muted-foreground">
+                    {t(lt("说明：文档上传/入库是可选能力。若当前环境未安装 document-ingestion 依赖包，系统会明确提示缺失依赖，而不是静默降级。", "Document upload and ingestion are optional capabilities. If the document-ingestion bundle is missing, the UI will report the exact missing dependencies instead of silently degrading."))}
+                </p>
             </CardHeader>
             <CardContent className="space-y-6">
                 
@@ -272,7 +289,16 @@ export default function DocumentUploader() {
                             : 'bg-destructive/10 border-destructive/20 text-destructive'
                     }`}>
                         {result.status === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" /> : <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />}
-                        <div className="text-sm font-medium">{result.message}</div>
+                        <div className="space-y-1 text-sm">
+                            <div className="font-medium">{result.message}</div>
+                            {result.details?.length ? (
+                                <ul className="list-disc space-y-1 pl-4 text-xs opacity-90">
+                                    {result.details.map((detail) => (
+                                        <li key={detail}>{detail}</li>
+                                    ))}
+                                </ul>
+                            ) : null}
+                        </div>
                     </div>
                 )}
             </CardContent>

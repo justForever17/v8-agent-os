@@ -682,7 +682,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                                         </div>
                                         <div className="mt-2 text-xs text-muted-foreground">Run: {run.id}</div>
                                         {run.session_id ? <div className="mt-1 text-xs text-muted-foreground">Session: {run.session_id}</div> : null}
-                                        <div className="mt-1 text-xs text-muted-foreground">时间：{formatWhen(run.created_at)}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">时间：{formatWhen(run.started_at || run.created_at)}</div>
                                         {run.session_id ? (
                                             <Button className="mt-3" variant="outline" size="sm" onClick={() => void inspectSession(run.session_id!)}>
                                                 <Eye className="mr-2 h-4 w-4" />

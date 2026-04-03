@@ -83,6 +83,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             credential_mode: data.credentialMode || existingProvider.credential_mode || "apiKey",
             oauth_preset: data.platformLoginPreset || existingProvider.oauth_preset || "",
             oauth_ref: oauthRef,
+            local_backend_preset: data.localBackendPreset || existingProvider.local_backend_preset || "",
         };
 
         // Save back

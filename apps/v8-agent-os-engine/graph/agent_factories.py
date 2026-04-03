@@ -20,7 +20,6 @@ from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.storage import storage
 from core.system_tools.baseline import select_baseline_system_tool_names
-from core.system_base import get_engine_origin
 from erc.runtime_context import get_runtime_context
 from skills.loader import SkillLoader
 from .tool_routing import create_routed_tool_node
@@ -278,7 +277,7 @@ def build_agent_node(
                 f"Current Time: {current_time}\n"
                 f"Local Workspace Absolute Path: {workspace_path}\n"
                 f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them to the Local Workspace above.\n"
-                f"To display a workspace file in the chat, return a markdown image or link using the URL format: {get_engine_origin().rstrip('/')}/workspace/YOUR_FILE_NAME\n"
+                "To display a workspace file in the chat, return a markdown image or link using the same-origin URL format: /api/workspace/files/YOUR_FILE_NAME\n"
                 f"</environment>\n"
             )
 

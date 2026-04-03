@@ -1,4 +1,0 @@
--r minimal.txt
-
-# 兼容旧 bootstrap/文档口径。
-# 当前 standard 已归一为 minimal，不再作为独立安装层。

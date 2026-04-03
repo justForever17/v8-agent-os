@@ -1,7 +1,6 @@
 -r base.txt
 
 edge_tts
-pandas
 beautifulsoup4
 scrapling
 curl_cffi
@@ -9,9 +8,6 @@ browserforge
 apify-fingerprint-datapoints
 msgspec
 yt-dlp
-python-docx
-python-pptx
-PyMuPDF
 jieba
 chromadb
 langchain

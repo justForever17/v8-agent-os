@@ -101,6 +101,7 @@ class ChatPreparedRequest:
     command_preset_name: str | None = None
     command_preset_hash: str | None = None
     task_planning_mode: bool = False
+    skill_references: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -317,7 +318,31 @@ class ChatRuntime:
                 return candidate.content
         return ""
 
-    def _resolve_command_context(self, request: ChatRequest) -> tuple[dict[str, Any] | None, bool]:
+    def _normalize_skill_references(self, request: ChatRequest) -> list[dict[str, str]]:
+        request_data = request.data
+        selected = getattr(request_data, "skill_references", None) if request_data else None
+        normalized: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in list(selected or []):
+            name = str(getattr(item, "name", "") or "").strip()
+            description = str(getattr(item, "description", "") or "").strip()
+            path = str(getattr(item, "path", "") or "").strip()
+            if not name and not path:
+                continue
+            dedupe_key = (name.lower(), path.lower())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            normalized.append(
+                {
+                    "name": name or Path(path).name or "unknown-skill",
+                    "description": description,
+                    "path": path,
+                }
+            )
+        return normalized
+
+    def _resolve_request_context(self, request: ChatRequest) -> tuple[dict[str, Any] | None, bool, list[dict[str, str]]]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
@@ -328,16 +353,17 @@ class ChatRuntime:
             if not command_preset:
                 raise RuntimeError(f"Command preset '{command_selection.name}' does not exist.")
 
-        return command_preset, task_planning_mode
+        return command_preset, task_planning_mode, self._normalize_skill_references(request)
 
-    def _inject_command_and_task_mode_context(
+    def _inject_structured_request_context(
         self,
         lc_messages: list[Any],
         *,
         command_preset: dict[str, Any] | None,
         task_planning_mode: bool,
+        skill_references: list[dict[str, str]],
     ) -> None:
-        if not command_preset and not task_planning_mode:
+        if not command_preset and not task_planning_mode and not skill_references:
             return
 
         for message in reversed(lc_messages):
@@ -357,6 +383,16 @@ class ChatRuntime:
                         ]
                     )
                 )
+            if skill_references:
+                skill_lines = ["[SKILL REFERENCES]"]
+                for skill in skill_references:
+                    skill_lines.append(f"- name: {skill.get('name') or 'unknown-skill'}")
+                    if skill.get("description"):
+                        skill_lines.append(f"  description: {skill['description']}")
+                    if skill.get("path"):
+                        skill_lines.append(f"  path: {skill['path']}")
+                skill_lines.append("[/SKILL REFERENCES]")
+                wrapped_sections.append("\n".join(skill_lines))
             if task_planning_mode:
                 wrapped_sections.append(
                     "\n".join(
@@ -443,11 +479,12 @@ class ChatRuntime:
         user_id = request.user_id or "anonymous"
         lc_messages = self._to_langchain_messages(request)
         self._inject_uploaded_file_notices(request, lc_messages)
-        command_preset, task_planning_mode = self._resolve_command_context(request)
-        self._inject_command_and_task_mode_context(
+        command_preset, task_planning_mode, skill_references = self._resolve_request_context(request)
+        self._inject_structured_request_context(
             lc_messages,
             command_preset=command_preset,
             task_planning_mode=task_planning_mode,
+            skill_references=skill_references,
         )
 
         request.session_id = session_id
@@ -466,6 +503,7 @@ class ChatRuntime:
             command_preset_name=(str(command_preset.get("name") or "").strip() or None) if command_preset else None,
             command_preset_hash=(str(command_preset.get("contentHash") or "").strip() or None) if command_preset else None,
             task_planning_mode=task_planning_mode,
+            skill_references=skill_references,
         )
 
     def begin_run(
@@ -650,6 +688,8 @@ class ChatRuntime:
             }
         if chat_run.prepared.task_planning_mode:
             metadata["taskPlanningMode"] = True
+        if chat_run.prepared.skill_references:
+            metadata["skillReferences"] = list(chat_run.prepared.skill_references)
 
         if not chat_run.is_resume_request and request.messages and request.messages[-1].role == "user":
             latest_user = request.messages[-1]
@@ -695,6 +735,16 @@ class ChatRuntime:
                     agent_id=None,
                     node="input_recorder",
                 )
+            if chat_run.prepared.skill_references:
+                chat_run.emit_runtime_event(
+                    "chat.skill_references.applied",
+                    {
+                        "messageId": user_message_id,
+                        "skills": list(chat_run.prepared.skill_references),
+                    },
+                    agent_id=None,
+                    node="input_recorder",
+                )
             workflow_ledger_service.record_step_inputs(
                 chat_run.active_run_id,
                 inputs={
@@ -705,6 +755,7 @@ class ChatRuntime:
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
                     "command_preset_name": chat_run.prepared.command_preset_name,
                     "task_planning_mode": chat_run.prepared.task_planning_mode,
+                    "skill_references": list(chat_run.prepared.skill_references),
                 },
             )
             chat_run.run_handle.refresh_chat_snapshot()

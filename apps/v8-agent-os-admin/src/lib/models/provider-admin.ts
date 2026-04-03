@@ -1,6 +1,7 @@
 export type ProviderCredentialMode = "apiKey" | "oauthFile";
 export type PlatformLoginPreset = "qwenCode" | "geminiCli" | "codex";
 export type ProviderApiStandard = "openai" | "anthropic" | "gemini";
+export type LocalBackendPreset = "ollama" | "nexa" | "vllm" | "lmstudio";
 
 export type PlatformLoginPresetConfig = {
     id: PlatformLoginPreset;
@@ -9,6 +10,17 @@ export type PlatformLoginPresetConfig = {
     apiStandard: ProviderApiStandard;
     baseUrl: string;
     oauthPath: string;
+    supportState: "stable" | "preset-only";
+    helpText: string;
+};
+
+export type LocalBackendPresetConfig = {
+    id: LocalBackendPreset;
+    label: string;
+    description: string;
+    apiStandard: ProviderApiStandard;
+    baseUrl: string;
+    apiKey: string;
     supportState: "stable" | "preset-only";
     helpText: string;
 };
@@ -25,6 +37,7 @@ type EngineProviderMeta = {
     credential_mode?: string;
     oauth_preset?: string;
     oauth_ref?: string;
+    local_backend_preset?: string;
 };
 
 type EngineProviderContainer = {
@@ -64,6 +77,49 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
         oauthPath: "~/.codex/auth.json",
         supportState: "stable",
         helpText: "正式支持。保存后会按 oauth: 文件引用读取 Codex access_token。",
+    },
+};
+
+export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPresetConfig> = {
+    ollama: {
+        id: "ollama",
+        label: "Ollama",
+        description: "本机 Ollama OpenAI 兼容入口",
+        apiStandard: "openai",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        apiKey: "ollama",
+        supportState: "stable",
+        helpText: "默认按 OpenAI 兼容模式连接 Ollama，本地聊天模型可直接测试。",
+    },
+    nexa: {
+        id: "nexa",
+        label: "Nexa",
+        description: "本机 Nexa OpenAI 兼容入口",
+        apiStandard: "openai",
+        baseUrl: "http://127.0.0.1:18181/v1",
+        apiKey: "",
+        supportState: "preset-only",
+        helpText: "当前按本地 OpenAI 兼容 HTTP provider 处理，保留 baseUrl / key 可编辑。",
+    },
+    vllm: {
+        id: "vllm",
+        label: "vLLM",
+        description: "本机 vLLM OpenAI 兼容入口",
+        apiStandard: "openai",
+        baseUrl: "http://127.0.0.1:8000/v1",
+        apiKey: "local-vllm",
+        supportState: "stable",
+        helpText: "适用于本机 vLLM 服务，文本模型和 rerank 都走本地 HTTP provider。",
+    },
+    lmstudio: {
+        id: "lmstudio",
+        label: "LM Studio",
+        description: "本机 LM Studio OpenAI 兼容入口",
+        apiStandard: "openai",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        apiKey: "lm-studio",
+        supportState: "stable",
+        helpText: "保留现有 LM Studio 本地探针能力，并允许继续手改 baseUrl / key。",
     },
 };
 
@@ -142,6 +198,44 @@ export function getPlatformLoginPresetConfig(preset: PlatformLoginPreset): Platf
     return PLATFORM_LOGIN_PRESETS[preset];
 }
 
+export function inferLocalBackendPreset(params: {
+    providerType?: string;
+    baseUrl?: string | null;
+    preset?: string | null;
+    code?: string | null;
+    name?: string | null;
+}): LocalBackendPreset {
+    const normalizedType = String(params.providerType || "").toUpperCase();
+    if (normalizedType !== "LOCAL") {
+        return "ollama";
+    }
+    const explicitPreset = String(params.preset || "").trim().toLowerCase();
+    if (explicitPreset === "ollama" || explicitPreset === "nexa" || explicitPreset === "vllm" || explicitPreset === "lmstudio") {
+        return explicitPreset;
+    }
+    const normalizedBaseUrl = String(params.baseUrl || "").trim().toLowerCase();
+    const normalizedCode = String(params.code || "").trim().toLowerCase();
+    const normalizedName = String(params.name || "").trim().toLowerCase();
+    const fingerprint = `${normalizedBaseUrl} ${normalizedCode} ${normalizedName}`;
+    if (fingerprint.includes("11434") || fingerprint.includes("ollama")) {
+        return "ollama";
+    }
+    if (fingerprint.includes("1234") || fingerprint.includes("lmstudio") || fingerprint.includes("lm studio")) {
+        return "lmstudio";
+    }
+    if (fingerprint.includes("8000") || fingerprint.includes("vllm")) {
+        return "vllm";
+    }
+    if (fingerprint.includes("18181") || fingerprint.includes("nexa")) {
+        return "nexa";
+    }
+    return "ollama";
+}
+
+export function getLocalBackendPresetConfig(preset: LocalBackendPreset): LocalBackendPresetConfig {
+    return LOCAL_BACKEND_PRESETS[preset];
+}
+
 export function mapEngineProvider(providerId: string, providerData: EngineProviderContainer) {
     const meta = providerData.provider || {};
     const rawCredential = String(meta.api_key || "");
@@ -153,6 +247,13 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
         apiStandard: meta.api_standard,
         baseUrl: meta.base_url,
         oauthPath,
+        code: providerId,
+        name: meta.name,
+    });
+    const localBackendPreset = inferLocalBackendPreset({
+        providerType: meta.type,
+        baseUrl: meta.base_url,
+        preset: meta.local_backend_preset,
         code: providerId,
         name: meta.name,
     });
@@ -168,6 +269,7 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
             type: String(modelMeta.type || "TEXT"),
             contextWindow: typeof modelMeta.contextWindow === "number" ? modelMeta.contextWindow : null,
             maxTokens: typeof modelMeta.maxTokens === "number" ? modelMeta.maxTokens : null,
+            rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
             isEnabled: modelMeta.isEnabled !== false,
         };
     });
@@ -189,6 +291,7 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
         oauthRef,
         oauthPathMasked: oauthPath ? maskPath(oauthPath) : "",
         platformLoginPreset,
+        localBackendPreset,
         models,
     };
 }

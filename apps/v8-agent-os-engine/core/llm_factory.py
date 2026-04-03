@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, Type
+from typing import Dict, Any, Optional, Type, List
 import time
 
 from langchain_openai import ChatOpenAI
@@ -30,6 +30,95 @@ except ImportError:
         pass
     class BaseReranker:
         pass
+
+
+def normalize_rerank_api_flavor(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"vllm", "nexa"}:
+        return normalized
+    return "generic"
+
+
+def _join_endpoint(base_url: str, suffix: str) -> str:
+    root = (base_url or "").rstrip("/")
+    tail = suffix.lstrip("/")
+    if not root:
+        return tail
+    if root.endswith(f"/{tail}") or root == tail:
+        return root
+    if tail.startswith("v1/") and root.endswith("/v1"):
+        return f"{root}/{tail.removeprefix('v1/')}"
+    return f"{root}/{tail}"
+
+
+def build_rerank_endpoint_candidates(base_url: str, api_flavor: Any) -> List[str]:
+    flavor = normalize_rerank_api_flavor(api_flavor)
+    root = (base_url or "https://api.siliconflow.cn/v1").rstrip("/")
+    if flavor == "vllm":
+        paths = ["v1/rerank", "rerank"]
+    elif flavor == "nexa":
+        paths = ["v1/reranking", "v1/rerank", "rerank"]
+    else:
+        paths = ["rerank"]
+    candidates: List[str] = []
+    for path in paths:
+        endpoint = _join_endpoint(root, path)
+        if endpoint not in candidates:
+            candidates.append(endpoint)
+    return candidates
+
+
+def parse_rerank_response_payload(payload: Dict[str, Any], documents: List[str]) -> List[Dict[str, Any]]:
+    rows = payload.get("results") or payload.get("data") or []
+    if not isinstance(rows, list):
+        return []
+
+    parsed: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        index = row.get("index")
+        if not isinstance(index, int):
+            index = None
+
+        document_value = row.get("document")
+        if isinstance(document_value, dict):
+            document_text = (
+                document_value.get("text")
+                or document_value.get("content")
+                or document_value.get("document")
+                or document_value.get("page_content")
+                or ""
+            )
+        elif isinstance(document_value, str):
+            document_text = document_value
+        else:
+            document_text = str(row.get("text") or row.get("content") or "")
+
+        if not document_text and index is not None and 0 <= index < len(documents):
+            document_text = documents[index]
+
+        raw_score = (
+            row.get("relevance_score")
+            or row.get("relevanceScore")
+            or row.get("score")
+            or row.get("similarity")
+            or 0.0
+        )
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            score = 0.0
+
+        parsed.append(
+            {
+                "index": index,
+                "document": str(document_text or ""),
+                "relevance_score": score,
+            }
+        )
+    return parsed
 
 
 class OpenAICompatibleEmbedding(BaseEmbedding):
@@ -120,11 +209,12 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
 
 
 class RestReranker(BaseReranker):
-    def __init__(self, model_name: str, api_key: str, base_url: str, max_tokens: int = None, provider_id: str = "", provider_name: str = "", role: str = "reranker", capability_class: str = "reranker"):
+    def __init__(self, model_name: str, api_key: str, base_url: str, max_tokens: int = None, provider_id: str = "", provider_name: str = "", role: str = "reranker", capability_class: str = "reranker", api_flavor: str = "generic"):
         self.model_name = model_name
         self.api_key = api_key
         self.max_tokens = int(max_tokens) if max_tokens else None
-        self.endpoint = base_url.rstrip("/") + "/rerank" if base_url else "https://api.siliconflow.cn/v1/rerank"
+        self.api_flavor = normalize_rerank_api_flavor(api_flavor)
+        self.endpoints = build_rerank_endpoint_candidates(base_url or "https://api.siliconflow.cn/v1", self.api_flavor)
         self.provider_id = provider_id
         self.provider_name = provider_name or provider_id
         self.role = role
@@ -157,9 +247,19 @@ class RestReranker(BaseReranker):
             "return_documents": True
         }
         
-        res = requests.post(self.endpoint, json=payload, headers=headers)
-        if res.status_code != 200:
-            print(f"[Reranker Error] {res.status_code}: {res.text}")
+        out: List[Dict[str, Any]] = []
+        resolved_endpoint = self.endpoints[0] if self.endpoints else ""
+        last_error: tuple[int, str, str] | None = None
+        for endpoint in self.endpoints:
+            resolved_endpoint = endpoint
+            res = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+            if res.status_code == 200:
+                out = parse_rerank_response_payload(res.json(), documents)
+                break
+            last_error = (res.status_code, res.text, endpoint)
+        else:
+            status_code, error_text, failed_endpoint = last_error or (500, "Unknown rerank error", resolved_endpoint)
+            print(f"[Reranker Error] {status_code}: {error_text}")
             model_telemetry_service.record_aux_model_invocation(
                 model_id=self.model_name,
                 provider_id=self.provider_id,
@@ -169,29 +269,11 @@ class RestReranker(BaseReranker):
                 request_kind="reranker",
                 latency_ms=(time.perf_counter() - started) * 1000,
                 status="failed",
-                error_code=str(res.status_code),
-                error_message=res.text,
-                metadata={"documents": len(documents), "top_k": top_k},
+                error_code=str(status_code),
+                error_message=error_text,
+                metadata={"documents": len(documents), "top_k": top_k, "endpoint": failed_endpoint, "apiFlavor": self.api_flavor},
             )
-        res.raise_for_status()
-        
-        results = res.json().get("results", [])
-        out = []
-        for r in results:
-            doc_text = ""
-            if isinstance(r.get("document"), dict):
-                doc_text = r["document"].get("text", "")
-            else:
-                doc_text = r.get("document", "")
-                
-            if not doc_text and "index" in r:
-                doc_text = documents[r["index"]]
-                
-            out.append({
-                "index": r.get("index"),
-                "document": doc_text,
-                "relevance_score": r.get("relevance_score", 0.0)
-            })
+            raise requests.HTTPError(f"Rerank request failed ({status_code}) on {failed_endpoint}: {error_text}")
         model_telemetry_service.record_aux_model_invocation(
             model_id=self.model_name,
             provider_id=self.provider_id,
@@ -201,7 +283,7 @@ class RestReranker(BaseReranker):
             request_kind="reranker",
             latency_ms=(time.perf_counter() - started) * 1000,
             status="completed",
-            metadata={"documents": len(documents), "top_k": top_k, "results": len(out)},
+            metadata={"documents": len(documents), "top_k": top_k, "results": len(out), "endpoint": resolved_endpoint, "apiFlavor": self.api_flavor},
         )
         return out
 
@@ -273,6 +355,7 @@ class LLMFactory:
                 "base_url": t_base_url,
                 "api_key": t_api_key,
                 "api_standard": p_conf.get("api_standard", "openai"),
+                "local_backend_preset": p_conf.get("local_backend_preset") or p_conf.get("localBackendPreset") or "",
                 "oauth_path": oauth_resolution.get("oauthPath") or "",
                 "oauth_ref": oauth_resolution.get("oauthRef") or "",
                 "credential_mode": oauth_resolution.get("credentialMode") or "",
@@ -284,6 +367,7 @@ class LLMFactory:
                 "global_temperature": meta.get("temperature", 0.0),
                 "global_max_tokens": meta.get("maxTokens"),
                 "global_context_window": meta.get("contextWindow"),
+                "rerank_api_flavor": normalize_rerank_api_flavor(meta.get("rerank_api_flavor") or meta.get("rerankApiFlavor")),
                 "capabilities": meta.get("capabilities", {}),
                 "capability_class": meta.get("capabilityClass"),
                 "cost_per_input": meta.get("costPerInput"),
@@ -449,6 +533,7 @@ class LLMFactory:
             provider_name=str(meta.get("provider_name") or meta.get("provider_id") or ""),
             role=role,
             capability_class=capability_class,
+            api_flavor=str(kwargs.pop("api_flavor", "") or meta.get("rerank_api_flavor") or "generic"),
         )
 
     @classmethod

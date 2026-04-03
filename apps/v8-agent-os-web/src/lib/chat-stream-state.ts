@@ -62,8 +62,8 @@ export type RealtimeUiEvent = {
 
 const LOOPBACK_AVATAR_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\//i;
 const ADMIN_AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
-const DEFAULT_ADMIN_AVATAR_PATTERN = /\/Avatar\/default-supervisor\.svg(?:$|[?#])/i;
-export const DEFAULT_AVATAR = "/default-supervisor.svg";
+const DEFAULT_ADMIN_AVATAR_PATTERN = /(?:\/Avatar\/default-supervisor\.svg|\/brand-mark\.png)(?:$|[?#])/i;
+export const DEFAULT_AVATAR = "/brand-mark.png";
 
 function buildAvatarProxyUrl(avatar: string): string {
     return `/api/avatar?src=${encodeURIComponent(avatar)}`;

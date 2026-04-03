@@ -1122,8 +1122,9 @@ export default function ChatClient() {
         e.preventDefault();
         const hasText = input.trim().length > 0;
         const hasCommandPreset = Boolean(options?.data?.commandPreset?.name);
+        const hasSkillReferences = Array.isArray(options?.data?.skillReferences) && options.data.skillReferences.length > 0;
         const hasFiles = Array.isArray(options?.data?.fileUrls) && options.data.fileUrls.length > 0;
-        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasFiles) || isLoading) return;
+        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasFiles) || isLoading) return;
 
         const currentInput = input;
         setInput(""); // Clear immediately (Optimistic)
@@ -1134,6 +1135,7 @@ export default function ChatClient() {
         try {
             const seedTitle = currentInput.trim()
                 || options?.data?.commandPreset?.name
+                || options?.data?.skillReferences?.[0]?.name
                 || (hasFiles ? t(lt("新文件任务", "New file task")) : t(lt("新任务", "New task")));
             const ensuredConversationId = await ensureConversationId(seedTitle);
             if (!ensuredConversationId) {

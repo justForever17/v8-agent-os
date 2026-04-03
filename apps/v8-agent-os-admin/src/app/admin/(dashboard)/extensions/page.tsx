@@ -40,6 +40,12 @@ type ExtensionCatalogResponse = {
         mcpStartupState?: string | null;
     };
     summary: { skillCount: number; mcpServerCount: number; connectedMcpServerCount: number; mcpToolCount: number };
+    skillDependencyPolicy?: {
+        mode?: string;
+        pythonTarget?: string;
+        systemWideInstallAllowed?: boolean;
+        nodeGlobalInstallAllowed?: boolean;
+    };
     skills: { root: string; items: Array<{ name: string; description: string; path: string }> };
     mcp: {
         servers: Array<{
@@ -74,6 +80,7 @@ type ExtensionHealthResponse = {
         };
     };
     summary: ExtensionCatalogResponse["summary"];
+    skillDependencyPolicy?: ExtensionCatalogResponse["skillDependencyPolicy"];
     mcp: { statusBreakdown: Record<string, number> };
     silk?: {
         available?: boolean;
@@ -486,6 +493,7 @@ export default function ExtensionsPage() {
     const silkAvailable = Boolean(health.silk?.available ?? health.runtime?.silk?.available);
     const silkVersion = String(health.silk?.version || health.runtime?.silk?.version || "").trim();
     const silkRoot = String(health.silk?.toolRoot || health.runtime?.silk?.toolRoot || "").trim();
+    const dependencyPolicy = catalog.skillDependencyPolicy || health.skillDependencyPolicy || {};
 
     return (
         <AdminPageShell>
@@ -655,6 +663,14 @@ export default function ExtensionsPage() {
                             <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx skills add https://github.com/vercel-labs/skills --skill find-skills" />
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-6 text-slate-600">
                                 {t(lt("支持命令格式：", "Supported command format:"))}<span className="font-mono text-slate-900">npx skills add &lt;source&gt; [--skill &lt;name&gt;] [--overwrite]</span>。{t(lt("安装器会把 Skill 放到 ", "The installer places skills under "))}<span className="font-mono text-slate-900">~/.agents/skills</span>。
+                            </div>
+                            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-xs leading-6 text-amber-900">
+                                <div className="font-medium">
+                                    {t(lt("Skill 依赖策略：仅允许写入 engine venv", "Skill dependency policy: engine venv only"))}
+                                </div>
+                                <div className="mt-1">
+                                    {t(lt("Skill 文件本身仍安装到 ~/.agents/skills；若后续需要额外 Python 依赖，只允许受控安装到 ", "Skill files are still installed under ~/.agents/skills. If extra Python dependencies are needed later, they may only be installed in a controlled way into "))}<span className="font-mono">{dependencyPolicy.pythonTarget || "apps/v8-agent-os-engine/.venv"}</span>{t(lt("，不支持自由写入系统 Python 或全局 Node 环境。", ". Free installs into the system Python or global Node environment are not supported."))}
+                                </div>
                             </div>
                             <div className="text-xs leading-5 text-slate-500">
                                 {t(lt("也可以前往", "You can also browse"))}{" "}

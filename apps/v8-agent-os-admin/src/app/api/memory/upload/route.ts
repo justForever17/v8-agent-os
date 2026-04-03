@@ -15,7 +15,13 @@ export async function POST(req: Request) {
         const data = await response.json();
         
         if (!response.ok) {
-            throw new Error(data.detail || `Failed: ${response.status}`);
+            return NextResponse.json(
+                {
+                    error: data?.detail?.message || data?.error || `Failed: ${response.status}`,
+                    detail: data?.detail || null,
+                },
+                { status: response.status }
+            );
         }
         
         return NextResponse.json(data);

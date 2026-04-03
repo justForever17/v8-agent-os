@@ -22,9 +22,13 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { fetchConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import {
+    getLocalBackendPresetConfig,
     getPlatformLoginPresetConfig,
     inferPlatformLoginPreset,
+    inferLocalBackendPreset,
+    LOCAL_BACKEND_PRESETS,
     PLATFORM_LOGIN_PRESETS,
+    type LocalBackendPreset,
     type PlatformLoginPreset,
 } from "@/lib/models/provider-admin";
 import { lt } from "@/lib/locale";
@@ -44,6 +48,7 @@ type AIProvider = {
     hasCredential?: boolean;
     oauthPath?: string;
     oauthPathMasked?: string;
+    localBackendPreset?: LocalBackendPreset;
     models: { id: string }[];
 };
 
@@ -54,6 +59,7 @@ type AIModel = {
     modelId: string;
     type: string;
     contextWindow?: number | null;
+    rerankApiFlavor?: string;
     isEnabled: boolean;
     provider?: { name: string; icon?: string | null };
 };
@@ -108,10 +114,13 @@ export default function ModelHubPage() {
     const [providerCredentialMode, setProviderCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
     const [providerApiStandard, setProviderApiStandard] = useState<"openai" | "anthropic" | "gemini">("openai");
     const [providerBaseUrl, setProviderBaseUrl] = useState("");
+    const [providerApiKey, setProviderApiKey] = useState("");
     const [providerOauthPath, setProviderOauthPath] = useState("");
     const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("qwenCode");
+    const [localBackendPreset, setLocalBackendPreset] = useState<LocalBackendPreset>("ollama");
     const [modelType, setModelType] = useState("TEXT");
     const [modelProviderId, setModelProviderId] = useState("");
+    const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
 
     const fetchData = async () => {
@@ -171,6 +180,7 @@ export default function ModelHubPage() {
         : providerApiStandard === "gemini"
             ? t(lt("Gemini 当前仍使用原生 API Key 调用。若需要 Gemini CLI OAuth，请切到“平台”并选择 Gemini CLI 预设。", "Gemini still uses native API keys here. Switch to Platform and choose the Gemini CLI preset if you need Gemini CLI OAuth."))
             : t(lt("适用于 Qwen OAuth、Codex auth.json 等 access_token 文件。保存时会自动复制到 ~/.v8-agent-os/core/oauth/providers 并写回标准 oauth: 引用。", "Use this for Qwen OAuth, Codex auth.json, and other access_token files. Saved files are copied into ~/.v8-agent-os/core/oauth/providers and referenced with the standard oauth: format."));
+    const localBackendConfig = getLocalBackendPresetConfig(localBackendPreset);
 
     const handleSaveModel = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -288,8 +298,13 @@ export default function ModelHubPage() {
                 }));
                 return;
             }
+            const providerPreset = typeof data?.providerPreset === "string" && data.providerPreset
+                ? String(data.providerPreset).toUpperCase()
+                : "";
+            const resolvedEndpoint = typeof data?.resolvedEndpoint === "string" ? data.resolvedEndpoint.replace(/^https?:\/\//, "") : "";
             const successMessage = [
-                `${data.providerName || "Provider"} · ${Math.round(Number(data.latencyMs || 0))}ms`,
+                `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} · ${Math.round(Number(data.latencyMs || 0))}ms`,
+                resolvedEndpoint,
                 data.message || "",
             ].filter(Boolean).join(" · ");
             setConnectionStatusMap((current) => ({
@@ -322,14 +337,16 @@ export default function ModelHubPage() {
                             setProviderCredentialMode("apiKey");
                             setProviderApiStandard("openai");
                             setProviderBaseUrl("");
+                            setProviderApiKey("");
                             setProviderOauthPath("");
                             setPlatformLoginPreset("qwenCode");
+                            setLocalBackendPreset("ollama");
                             setIsProviderDialogOpen(true);
                         }}>
                             <Plus className="mr-2 h-4 w-4" />
                             {t(lt("添加供应商", "Add provider"))}
                         </Button>
-                        <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setModelType("TEXT"); setModelProviderId(providers[0]?.id || ""); setIsModelDialogOpen(true); }}>
+                        <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setModelType("TEXT"); setModelProviderId(providers[0]?.id || ""); setRerankApiFlavor("generic"); setIsModelDialogOpen(true); }}>
                             <Plus className="mr-2 h-4 w-4" />
                             {t(lt("添加模型", "Add model"))}
                         </Button>
@@ -365,13 +382,22 @@ export default function ModelHubPage() {
                                         code: provider.code,
                                         name: provider.name,
                                     });
+                                    const inferredLocalPreset = inferLocalBackendPreset({
+                                        providerType: provider.type,
+                                        baseUrl: provider.baseUrl,
+                                        preset: provider.localBackendPreset,
+                                        code: provider.code,
+                                        name: provider.name,
+                                    });
                                     setEditingProvider(provider);
                                     setProviderType(provider.type || "API");
                                     setProviderCredentialMode(provider.type === "PLATFORM" ? "oauthFile" : (provider.credentialMode || "apiKey"));
                                     setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini") || "openai");
                                     setProviderBaseUrl(provider.baseUrl || "");
+                                    setProviderApiKey(provider.apiKey || "");
                                     setProviderOauthPath(provider.oauthPath || "");
                                     setPlatformLoginPreset(inferredPreset);
+                                    setLocalBackendPreset(inferredLocalPreset);
                                     setIsProviderDialogOpen(true);
                                 }}
                                 onDelete={handleDeleteProvider}
@@ -417,6 +443,7 @@ export default function ModelHubPage() {
                                     setEditingModel(model);
                                     setModelType(model.type || "TEXT");
                                     setModelProviderId(model.providerId);
+                                    setRerankApiFlavor(model.rerankApiFlavor || "generic");
                                     setIsModelDialogOpen(true);
                                 }}
                                 onDelete={handleDeleteModel}
@@ -471,6 +498,14 @@ export default function ModelHubPage() {
                                     setProviderApiStandard(config.apiStandard);
                                     setProviderBaseUrl(config.baseUrl);
                                     setProviderOauthPath(providerOauthPath || config.oauthPath);
+                                    setProviderApiKey("");
+                                } else if (value === "LOCAL") {
+                                    const config = getLocalBackendPresetConfig(localBackendPreset);
+                                    setProviderCredentialMode("apiKey");
+                                    setProviderApiStandard(config.apiStandard);
+                                    setProviderBaseUrl(config.baseUrl);
+                                    setProviderApiKey(config.apiKey);
+                                    setProviderOauthPath("");
                                 }
                             }}>
                                 <SelectTrigger id="provider-type"><SelectValue /></SelectTrigger>
@@ -517,6 +552,39 @@ export default function ModelHubPage() {
                                                 ? t(lt("Anthropic 兼容", "Anthropic-compatible"))
                                                 : t(lt("Gemini 原生", "Gemini native"))
                                     } readOnly />
+                                    <input type="hidden" name="apiStandard" value={providerApiStandard} />
+                                </div>
+                            </>
+                        ) : providerType === "LOCAL" ? (
+                            <>
+                                <input type="hidden" name="localBackendPreset" value={localBackendPreset} />
+                                <div className="space-y-2">
+                                    <Label htmlFor="provider-local-preset">{t(lt("本地后端预设", "Local backend preset"))}</Label>
+                                    <Select
+                                        value={localBackendPreset}
+                                        onValueChange={(value: LocalBackendPreset) => {
+                                            const config = getLocalBackendPresetConfig(value);
+                                            setLocalBackendPreset(value);
+                                            setProviderCredentialMode("apiKey");
+                                            setProviderApiStandard(config.apiStandard);
+                                            setProviderBaseUrl(config.baseUrl);
+                                            setProviderApiKey(config.apiKey);
+                                        }}
+                                    >
+                                        <SelectTrigger id="provider-local-preset"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            {Object.values(LOCAL_BACKEND_PRESETS).map((preset) => (
+                                                <SelectItem key={preset.id} value={preset.id}>
+                                                    {preset.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-xs text-muted-foreground">{t(localBackendConfig.description)}</p>
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="provider-api-standard-readonly">{t(lt("API 格式", "API format"))}</Label>
+                                    <Input id="provider-api-standard-readonly" value={t(lt("OpenAI 兼容", "OpenAI-compatible"))} readOnly />
                                     <input type="hidden" name="apiStandard" value={providerApiStandard} />
                                 </div>
                             </>
@@ -577,7 +645,17 @@ export default function ModelHubPage() {
                         ) : (
                             <div className="space-y-2">
                                 <Label htmlFor="provider-api-key">API Key</Label>
-                                <Input id="provider-api-key" name="apiKey" type="password" defaultValue={editingProvider?.apiKey || ""} />
+                                <Input
+                                    id="provider-api-key"
+                                    name="apiKey"
+                                    type="password"
+                                    value={providerApiKey}
+                                    onChange={(event) => setProviderApiKey(event.target.value)}
+                                    placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}
+                                />
+                                {providerType === "LOCAL" ? (
+                                    <p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>
+                                ) : null}
                             </div>
                         )}
                         <Button type="submit" className="w-full">{t(lt("保存供应商", "Save provider"))}</Button>
@@ -627,6 +705,23 @@ export default function ModelHubPage() {
                                 </SelectContent>
                             </Select>
                         </div>
+                        {modelType === "RERANK" ? (
+                            <div className="space-y-2">
+                                <Label htmlFor="model-rerank-flavor">{t(lt("Rerank 接口兼容层", "Rerank API flavor"))}</Label>
+                                <input type="hidden" name="rerankApiFlavor" value={rerankApiFlavor} />
+                                <Select value={rerankApiFlavor} onValueChange={setRerankApiFlavor}>
+                                    <SelectTrigger id="model-rerank-flavor"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="generic">{t(lt("通用 /rerank", "Generic /rerank"))}</SelectItem>
+                                        <SelectItem value="vllm">{t(lt("vLLM /v1/rerank", "vLLM /v1/rerank"))}</SelectItem>
+                                        <SelectItem value="nexa">{t(lt("Nexa /v1/reranking", "Nexa /v1/reranking"))}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <p className="text-xs text-muted-foreground">
+                                    {t(lt("vLLM / Nexa 的 rerank 继续按本地 HTTP provider 处理，但允许按各自端点差异构造请求。", "vLLM and Nexa rerank stay in the local HTTP provider flow, while requests are adapted to their endpoint differences."))}
+                                </p>
+                            </div>
+                        ) : null}
                         <Button type="submit" className="w-full">{t(lt("保存模型", "Save model"))}</Button>
                     </form>
                 </DialogContent>

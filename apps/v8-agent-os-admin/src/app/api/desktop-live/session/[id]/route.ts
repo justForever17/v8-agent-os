@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getDesktopLiveBridgeStatus, stopDesktopLiveBridge } from "@/lib/server/desktop-live-bridge";
+import { getDesktopLiveBridgeStatus, scheduleDesktopLiveBridgeIdleStop } from "@/lib/server/desktop-live-bridge";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import { resolveDesktopLiveBridgeBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
@@ -16,8 +16,7 @@ export async function DELETE(req: NextRequest, context: { params: Promise<{ id: 
         const { id } = await context.params;
         const bridgeStatus = await getDesktopLiveBridgeStatus();
         if (!bridgeStatus.bridgeReachable) {
-            await stopDesktopLiveBridge();
-            return NextResponse.json({ success: true, bridgeStopped: true }, { status: 200 });
+            return NextResponse.json({ success: true, bridgeStopped: false, bridgeReachable: false }, { status: 200 });
         }
 
         const response = await fetch(`${resolveDesktopLiveBridgeBaseUrl()}/desktop-live/session/${encodeURIComponent(id)}`, {
@@ -29,10 +28,10 @@ export async function DELETE(req: NextRequest, context: { params: Promise<{ id: 
         });
         const payload = await response.json().catch(() => ({}));
         if (response.ok) {
-            await stopDesktopLiveBridge();
+            scheduleDesktopLiveBridgeIdleStop();
         }
         return NextResponse.json(
-            response.ok ? { ...payload, bridgeStopped: true } : payload,
+            response.ok ? { ...payload, bridgeStopped: false } : payload,
             { status: response.status },
         );
     } catch (error) {

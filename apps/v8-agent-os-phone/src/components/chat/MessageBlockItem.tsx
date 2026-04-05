@@ -17,7 +17,9 @@ import { VoiceCard } from "@/src/components/chat/VoiceCard";
 import { Badge } from "@/src/components/ui/badge";
 import { Card, CardContent } from "@/src/components/ui/card";
 import type { PhoneContentBlock } from "@/src/lib/content-detector";
+import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import type { ChatArtifact, PhoneUiTimelineNode } from "@/src/types/admin";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
@@ -45,6 +47,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     onSpeak?: (text: string) => void;
     onOpenArtifact?: (artifact: ChatArtifact) => void;
 }) {
+    const { adminBaseUrl } = useAppSession();
     const { colors, t } = useUiPrefs();
 
     if (node?.kind === "governance") {
@@ -162,7 +165,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (block.type === "file-ppt") {
-        const url = String(block.data?.url || "").trim();
+        const url = normalizeRenderableWorkspaceUrl(adminBaseUrl, String(block.data?.url || "").trim());
         return url ? (
             <PPTCard
                 url={url}
@@ -172,7 +175,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (block.type === "file-html") {
-        const url = String(block.data?.url || "").trim();
+        const url = normalizeRenderableWorkspaceUrl(adminBaseUrl, String(block.data?.url || "").trim());
         return url ? (
             <HTMLFileCard
                 url={url}
@@ -182,7 +185,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (block.type === "model-3d") {
-        const url = block.content.trim();
+        const url = normalizeRenderableWorkspaceUrl(adminBaseUrl, block.content.trim());
         return url ? <ModelViewer src={url} /> : null;
     }
 

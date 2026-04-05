@@ -2,6 +2,8 @@ import { memo, useMemo } from "react";
 import { Linking, StyleSheet, Text, View } from "react-native";
 
 import { MediaPlayer, ImagePreview } from "@/src/components/chat/MediaRenderers";
+import { normalizeRenderableWorkspaceLinks, mapWindowsWorkspacePathToRenderableLink, normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { spacing } from "@/src/theme/tokens";
 
@@ -11,27 +13,42 @@ type InlineToken =
 
 const MARKDOWN_LINK = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/gi;
 const BARE_LINK = /(https?:\/\/[^\s)]+)/gi;
+const WINDOWS_PATH = /([A-Za-z]:\\[^\s<>"]+)/gi;
 const IMAGE_URL = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i;
 const VIDEO_URL = /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i;
 const AUDIO_URL = /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i;
 
-function tokenizeInline(content: string): InlineToken[] {
+function tokenizeInline(content: string, windowsPathLinks: Map<string, string>): InlineToken[] {
     const tokens: InlineToken[] = [];
     let cursor = 0;
     const markdownMatches = Array.from(content.matchAll(MARKDOWN_LINK));
 
     if (markdownMatches.length === 0) {
         let innerCursor = 0;
-        const bareMatches = Array.from(content.matchAll(BARE_LINK));
-        if (bareMatches.length === 0) {
+        const allMatches = [
+            ...Array.from(content.matchAll(BARE_LINK)).map((match) => ({ kind: "url" as const, match })),
+            ...Array.from(content.matchAll(WINDOWS_PATH)).map((match) => ({ kind: "path" as const, match })),
+        ].sort((left, right) => (left.match.index ?? 0) - (right.match.index ?? 0));
+
+        if (allMatches.length === 0) {
             return [{ type: "text", value: content }];
         }
-        for (const match of bareMatches) {
+        for (const entry of allMatches) {
+            const match = entry.match;
             const index = match.index ?? 0;
             if (index > innerCursor) {
                 tokens.push({ type: "text", value: content.slice(innerCursor, index) });
             }
-            tokens.push({ type: "link", value: match[0], href: match[0] });
+            if (entry.kind === "url") {
+                tokens.push({ type: "link", value: match[0], href: match[0] });
+            } else {
+                const href = windowsPathLinks.get(match[0]);
+                if (href) {
+                    tokens.push({ type: "link", value: match[0], href });
+                } else {
+                    tokens.push({ type: "text", value: match[0] });
+                }
+            }
             innerCursor = index + match[0].length;
         }
         if (innerCursor < content.length) {
@@ -67,10 +84,19 @@ function resolveMedia(line: string) {
 }
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { content: string }) {
+    const { adminBaseUrl } = useAppSession();
     const { colors } = useUiPrefs();
+    const normalizedContent = useMemo(
+        () => normalizeRenderableWorkspaceLinks(adminBaseUrl, String(content || "")),
+        [adminBaseUrl, content],
+    );
+    const windowsPathLinks = useMemo(
+        () => mapWindowsWorkspacePathToRenderableLink(adminBaseUrl, normalizedContent),
+        [adminBaseUrl, normalizedContent],
+    );
     const paragraphs = useMemo(
-        () => String(content || "").split(/\n{2,}/).map((item) => item.trim()).filter(Boolean),
-        [content],
+        () => normalizedContent.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean),
+        [normalizedContent],
     );
 
     return (
@@ -105,7 +131,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                             }
 
                             const bulletMatch = line.match(/^[-*]\s+(.+)$/);
-                            const tokens = tokenizeInline(bulletMatch ? bulletMatch[1] : line);
+                            const tokens = tokenizeInline(bulletMatch ? bulletMatch[1] : line, windowsPathLinks);
                             return (
                                 <Text key={`${lineIndex}:${line.slice(0, 12)}`} style={[styles.text, { color: colors.textMuted }]}>
                                     {bulletMatch ? <Text style={{ color: colors.text }}>• </Text> : null}
@@ -115,7 +141,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                                                 <Text
                                                     key={`${token.href}:${tokenIndex}`}
                                                     style={[styles.link, { color: colors.primaryDeep }]}
-                                                    onPress={() => void Linking.openURL(token.href)}
+                                                    onPress={() => void Linking.openURL(normalizeRenderableWorkspaceUrl(adminBaseUrl, token.href))}
                                                 >
                                                     {token.value}
                                                 </Text>

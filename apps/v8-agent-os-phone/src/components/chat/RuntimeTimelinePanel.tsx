@@ -372,15 +372,14 @@ const styles = StyleSheet.create({
         maxHeight: 48,
         flexGrow: 0,
         flexShrink: 0,
-        overflow: "hidden",
         justifyContent: "center",
     },
     tabsRow: {
         flexDirection: "row",
-        paddingHorizontal: 18,
         paddingVertical: 8,
         gap: 6,
         alignItems: "center",
+        justifyContent: "center",
     },
     tabButton: {
         width: 32,
@@ -420,8 +419,8 @@ const styles = StyleSheet.create({
         paddingBottom: 18,
     },
     contentEmpty: {
-        flexGrow: 1,
-        justifyContent: "center",
+        paddingTop: 12,
+        paddingBottom: 18,
     },
     feedGap: {
         height: 12,

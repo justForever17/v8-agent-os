@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
 import "react-native-reanimated";
 
 import { AppSessionProvider } from "@/src/providers/app-session";
@@ -13,6 +15,8 @@ export {
 export const unstable_settings = {
     initialRouteName: "index",
 };
+
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 function AppNavigation() {
     const { colors, themeMode } = useUiPrefs();
@@ -28,6 +32,10 @@ function AppNavigation() {
             text: colors.text,
         },
     };
+
+    useEffect(() => {
+        void SplashScreen.hideAsync().catch(() => undefined);
+    }, []);
 
     return (
         <ThemeProvider value={theme}>

@@ -36,6 +36,8 @@ type MobileAuthPayload = {
     user: PhoneUser;
 };
 
+const MIN_BOOTING_SCREEN_MS = 900;
+
 function getBrowserAdminFallbackBaseUrls(currentBaseUrl: string) {
     if (Platform.OS !== "web" || typeof window === "undefined") {
         return [];
@@ -98,6 +100,23 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [refreshToken, setRefreshToken] = React.useState("");
     const [user, setUser] = React.useState<PhoneUser | null>(null);
     const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
+    const bootStartedAtRef = React.useRef(Date.now());
+    const statusRef = React.useRef<SessionStatus>("booting");
+
+    React.useEffect(() => {
+        statusRef.current = status;
+    }, [status]);
+
+    const awaitMinimumBootScreen = React.useCallback(async () => {
+        if (statusRef.current !== "booting") {
+            return;
+        }
+        const elapsed = Date.now() - bootStartedAtRef.current;
+        const remaining = MIN_BOOTING_SCREEN_MS - elapsed;
+        if (remaining > 0) {
+            await new Promise((resolve) => setTimeout(resolve, remaining));
+        }
+    }, []);
 
     const refreshSessionWithBaseUrl = React.useCallback(async (baseUrlInput: string, refreshTokenInput: string) => {
         const baseUrl = normalizeAdminBaseUrl(baseUrlInput);
@@ -129,6 +148,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 setAccessToken(payload.accessToken);
                 setRefreshToken(payload.refreshToken);
                 setUser(payload.user);
+                await awaitMinimumBootScreen();
                 setStatus("authenticated");
                 await persistSession(candidateBaseUrl, payload);
                 return true;
@@ -137,7 +157,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             }
         }
         return false;
-    }, []);
+    }, [awaitMinimumBootScreen]);
 
     const refreshSession = React.useCallback(async () => {
         return refreshSessionWithBaseUrl(adminBaseUrl, refreshToken);
@@ -171,6 +191,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
 
         if (!preferredBaseUrl || !storedAccessToken) {
+            await awaitMinimumBootScreen();
             setStatus("anonymous");
             return;
         }
@@ -189,6 +210,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                     if (mePayload?.user) {
                         setAdminBaseUrlState(candidateBaseUrl);
                         setUser(mePayload.user);
+                        await awaitMinimumBootScreen();
                         setStatus("authenticated");
                         if (candidateBaseUrl !== preferredBaseUrl) {
                             await setStoredValue("adminBaseUrl", candidateBaseUrl);
@@ -206,12 +228,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 setRefreshToken("");
                 setUser(null);
                 setActiveConversationIdState(null);
+                await awaitMinimumBootScreen();
                 setStatus("anonymous");
             }
         } catch {
+            await awaitMinimumBootScreen();
             setStatus("anonymous");
         }
-    }, [refreshSessionWithBaseUrl]);
+    }, [awaitMinimumBootScreen, refreshSessionWithBaseUrl]);
 
     React.useEffect(() => {
         void hydrate();

@@ -1,5 +1,7 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
+    Keyboard,
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -14,21 +16,14 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 import type { CommandPresetSummary, SkillReferenceSummary, UploadedWorkspaceFile } from "@/src/types/admin";
 
-function extractSkillQuery(input: string) {
-    const match = input.match(/(?:^|\s)@([^\s@]*)$/);
-    return match ? match[1] : "";
-}
-
 export const Composer = memo(function Composer({
     value,
     onChange,
     onSend,
     busy = false,
     selectedCommand,
-    onSelectCommand,
     onClearCommand,
     selectedSkills,
-    onAddSkill,
     onRemoveSkill,
     taskPlanningMode,
     onToggleTaskPlanningMode,
@@ -39,18 +34,14 @@ export const Composer = memo(function Composer({
     attachmentBusy = false,
     recording = false,
     transcribing = false,
-    commands,
-    skills,
 }: {
     value: string;
     onChange: (next: string) => void;
     onSend: () => void;
     busy?: boolean;
     selectedCommand: CommandPresetSummary | null;
-    onSelectCommand: (command: CommandPresetSummary) => void;
     onClearCommand: () => void;
     selectedSkills: SkillReferenceSummary[];
-    onAddSkill: (skill: SkillReferenceSummary) => void;
     onRemoveSkill: (skill: SkillReferenceSummary) => void;
     taskPlanningMode: boolean;
     onToggleTaskPlanningMode: () => void;
@@ -61,40 +52,11 @@ export const Composer = memo(function Composer({
     attachmentBusy?: boolean;
     recording?: boolean;
     transcribing?: boolean;
-    commands: CommandPresetSummary[];
-    skills: SkillReferenceSummary[];
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
-
-    const slashQuery = useMemo(() => {
-        const trimmed = value.trimStart();
-        return !selectedCommand && trimmed.startsWith("/") ? trimmed.slice(1).trim().toLowerCase() : "";
-    }, [selectedCommand, value]);
-
-    const skillQuery = useMemo(() => extractSkillQuery(value).toLowerCase(), [value]);
-
-    const filteredCommands = useMemo(() => {
-        if (!slashQuery) return commands;
-        return commands.filter((item) =>
-            item.name.toLowerCase().includes(slashQuery)
-            || String(item.summary || "").toLowerCase().includes(slashQuery),
-        );
-    }, [commands, slashQuery]);
-
-    const filteredSkills = useMemo(() => {
-        const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}:${skill.path || ""}`));
-        const base = skills.filter((item) => !selectedKeys.has(`${item.name}:${item.path || ""}`));
-        if (!skillQuery) return base;
-        return base.filter((item) =>
-            item.name.toLowerCase().includes(skillQuery)
-            || String(item.description || "").toLowerCase().includes(skillQuery)
-            || String(item.path || "").toLowerCase().includes(skillQuery),
-        );
-    }, [selectedSkills, skillQuery, skills]);
-
-    const commandPickerOpen = !selectedCommand && value.trimStart().startsWith("/");
-    const skillPickerOpen = /(?:^|\s)@([^\s@]*)$/.test(value);
+    const [keyboardVisible, setKeyboardVisible] = useState(false);
+    const inputRef = useRef<TextInput | null>(null);
     const canSend = Boolean(value.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0) && !busy;
     const inputShellBackground = themeMode === "dark"
         ? "rgba(28,25,23,0.86)"
@@ -102,63 +64,45 @@ export const Composer = memo(function Composer({
     const inputShellBorder = isFocused
         ? (themeMode === "dark" ? "rgba(245,158,11,0.32)" : "rgba(249,115,22,0.28)")
         : "transparent";
+    const inputWebStyle: any = Platform.OS === "web"
+        ? {
+            outlineStyle: "none",
+            boxShadow: "none",
+            appearance: "none",
+            WebkitAppearance: "none",
+        }
+        : null;
+
+    const forceFocusInput = () => {
+        if (!inputRef.current) {
+            return;
+        }
+        if (Platform.OS === "android" && isFocused && !keyboardVisible) {
+            inputRef.current.blur();
+            setTimeout(() => inputRef.current?.focus(), 40);
+            return;
+        }
+        inputRef.current.focus();
+    };
+
+    const handleInputShellPress = () => {
+        forceFocusInput();
+    };
+
+    useEffect(() => {
+        const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+        const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+        const showSubscription = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+        const hideSubscription = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+        return () => {
+            showSubscription.remove();
+            hideSubscription.remove();
+        };
+    }, []);
 
     return (
         <View style={styles.shell}>
             <View style={styles.inputStage}>
-                {commandPickerOpen ? (
-                    <View style={[styles.pickerPopover, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                        <Text style={[styles.pickerHint, { color: colors.textMuted }]}>{t("输入 / 选择命令预设", "Type / to choose a preset")}</Text>
-                        <ScrollView nestedScrollEnabled style={styles.pickerScroll}>
-                            {filteredCommands.map((item) => (
-                                <Pressable key={item.name} onPress={() => onSelectCommand(item)} style={styles.pickerItem}>
-                                    <MaterialCommunityIcons name="slash-forward" size={16} color={colors.accent} />
-                                    <View style={styles.pickerBody}>
-                                        <Text style={[styles.pickerTitle, { color: colors.text }]}>{item.name}</Text>
-                                        {item.summary ? (
-                                            <Text style={[styles.pickerSummary, { color: colors.textMuted }]} numberOfLines={2}>
-                                                {item.summary}
-                                            </Text>
-                                        ) : null}
-                                    </View>
-                                </Pressable>
-                            ))}
-                            {filteredCommands.length === 0 ? <Text style={[styles.emptyText, { color: colors.textMuted }]}>{t("没有匹配的命令预设", "No matching presets")}</Text> : null}
-                        </ScrollView>
-                    </View>
-                ) : null}
-
-                {skillPickerOpen ? (
-                    <View style={[styles.pickerPopover, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                        <Text style={[styles.pickerHint, { color: colors.textMuted }]}>{t("输入 @ 选择一个或多个 Skill", "Type @ to choose one or more skills")}</Text>
-                        <ScrollView nestedScrollEnabled style={styles.pickerScroll}>
-                            {filteredSkills.map((item) => (
-                                <Pressable
-                                    key={`${item.name}:${item.path || ""}`}
-                                    onPress={() => onAddSkill(item)}
-                                    style={styles.pickerItem}
-                                >
-                                    <MaterialCommunityIcons name="at" size={16} color={colors.primary} />
-                                    <View style={styles.pickerBody}>
-                                        <Text style={[styles.pickerTitle, { color: colors.text }]}>{item.name}</Text>
-                                        {item.description ? (
-                                            <Text style={[styles.pickerSummary, { color: colors.textMuted }]} numberOfLines={2}>
-                                                {item.description}
-                                            </Text>
-                                        ) : null}
-                                        {item.path ? (
-                                            <Text style={[styles.pathText, { color: colors.textSoft }]} numberOfLines={1}>
-                                                {item.path}
-                                            </Text>
-                                        ) : null}
-                                    </View>
-                                </Pressable>
-                            ))}
-                            {filteredSkills.length === 0 ? <Text style={[styles.emptyText, { color: colors.textMuted }]}>{t("没有匹配的 Skill", "No matching skills")}</Text> : null}
-                        </ScrollView>
-                    </View>
-                ) : null}
-
                 {(selectedCommand || selectedSkills.length > 0 || taskPlanningMode) && (
                     <ScrollView
                         horizontal
@@ -221,22 +165,29 @@ export const Composer = memo(function Composer({
                         },
                     ]}
                 >
-                    <View style={styles.inputCore}>
-                        <TextInput
-                            value={value}
-                            onChangeText={onChange}
-                            onFocus={() => setIsFocused(true)}
-                            onBlur={() => setIsFocused(false)}
-                            placeholder={t("给 智能主管 发送消息...", "Message Supervisor...")}
+                    <Pressable style={styles.inputFocusSurface} onPress={handleInputShellPress} onPressIn={handleInputShellPress}>
+                        <View style={styles.editorSurface}>
+                            <TextInput
+                                ref={inputRef}
+                                value={value}
+                                onChangeText={onChange}
+                                onFocus={() => setIsFocused(true)}
+                                onBlur={() => setIsFocused(false)}
+                                placeholder={t("给 智能主管 发送消息...", "Message Supervisor...")}
                             placeholderTextColor={colors.textSoft}
                             multiline
                             underlineColorAndroid="transparent"
-                            selectionColor={colors.primary}
-                            cursorColor={colors.primary}
+                            selectionColor={Platform.OS === "android" ? "rgba(0,0,0,0)" : colors.primary}
+                            cursorColor={colors.accent}
+                            autoCorrect={false}
+                            spellCheck={false}
+                            autoComplete="off"
                             textAlignVertical="top"
-                            style={[styles.input, { color: colors.text }]}
-                        />
-                    </View>
+                            onTouchStart={handleInputShellPress}
+                            style={[styles.input, { color: colors.text }, inputWebStyle]}
+                            />
+                        </View>
+                    </Pressable>
 
                     <View style={styles.bottomControls}>
                         <Pressable
@@ -331,37 +282,46 @@ const styles = StyleSheet.create({
         borderRadius: 30,
         minHeight: 108,
         paddingHorizontal: 14,
-        paddingTop: 12,
-        paddingBottom: 10,
+        paddingTop: 14,
+        paddingBottom: 12,
         borderWidth: 1,
         shadowOpacity: 0.08,
         shadowRadius: 16,
         shadowOffset: { width: 0, height: 8 },
         elevation: 2,
     },
+    inputFocusSurface: {
+        minHeight: 56,
+        justifyContent: "flex-start",
+    },
+    editorSurface: {
+        minHeight: 56,
+        borderRadius: 20,
+        justifyContent: "flex-start",
+        backgroundColor: "transparent",
+        overflow: "hidden",
+        paddingBottom: 2,
+    },
     input: {
-        minHeight: 44,
+        minHeight: 56,
         maxHeight: 140,
         fontSize: 15,
         lineHeight: 22,
         textAlignVertical: "top",
         backgroundColor: "transparent",
         borderWidth: 0,
-        paddingTop: 4,
-        paddingBottom: 2,
+        paddingTop: 2,
+        paddingBottom: 6,
         paddingHorizontal: 0,
+        paddingVertical: 0,
         margin: 0,
         includeFontPadding: false,
-    },
-    inputCore: {
-        minHeight: 52,
-        backgroundColor: "transparent",
-        borderRadius: 20,
-        overflow: "hidden",
-        justifyContent: "flex-start",
+        borderRadius: 0,
+        borderBottomWidth: 0,
+        borderBottomColor: "transparent",
     },
     bottomControls: {
-        marginTop: 6,
+        marginTop: 4,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
@@ -404,58 +364,6 @@ const styles = StyleSheet.create({
         borderRadius: 18,
         alignItems: "center",
         justifyContent: "center",
-    },
-    pickerPopover: {
-        position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: "100%",
-        marginBottom: 8,
-        zIndex: 20,
-        maxHeight: 240,
-        borderRadius: 20,
-        borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingTop: 10,
-        paddingBottom: 6,
-        shadowColor: "#0F172A",
-        shadowOpacity: 0.08,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 10 },
-        elevation: 3,
-    },
-    pickerHint: {
-        fontSize: 12,
-        fontWeight: "700",
-        marginBottom: 8,
-    },
-    pickerScroll: {
-        maxHeight: 190,
-    },
-    pickerItem: {
-        flexDirection: "row",
-        alignItems: "flex-start",
-        gap: 10,
-        paddingVertical: 10,
-    },
-    pickerBody: {
-        flex: 1,
-        gap: 2,
-    },
-    pickerTitle: {
-        fontSize: 14,
-        fontWeight: "800",
-    },
-    pickerSummary: {
-        fontSize: 12,
-        lineHeight: 18,
-    },
-    pathText: {
-        fontSize: 11,
-    },
-    emptyText: {
-        fontSize: 12,
-        paddingVertical: 10,
     },
     disabled: {
         opacity: 0.56,

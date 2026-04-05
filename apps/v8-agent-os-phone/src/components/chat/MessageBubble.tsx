@@ -8,6 +8,7 @@ import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api"
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import { formatClock } from "@/src/lib/time";
+import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ChatArtifact, ChatMessage, SkillReferenceSummary } from "@/src/types/admin";
@@ -27,7 +28,7 @@ function artifactUrl(adminBaseUrl: string, artifact: ChatArtifact) {
         return getWorkspaceFileUrl(adminBaseUrl, workspacePath);
     }
     const candidate = artifact.previewUrl || artifact.externalUrl || artifact.sourcePath || "";
-    return resolveAdminAssetUrl(adminBaseUrl, candidate);
+    return normalizeRenderableWorkspaceUrl(adminBaseUrl, candidate);
 }
 
 function imageUrl(adminBaseUrl: string, value: string) {
@@ -36,7 +37,7 @@ function imageUrl(adminBaseUrl: string, value: string) {
     if (trimmed.startsWith("/workspace/")) {
         return getWorkspaceFileUrl(adminBaseUrl, trimmed.replace(/^\/workspace\//, ""));
     }
-    return resolveAdminAssetUrl(adminBaseUrl, trimmed);
+    return normalizeRenderableWorkspaceUrl(adminBaseUrl, trimmed);
 }
 
 function extractCommandPresetName(message: ChatMessage) {
@@ -402,67 +403,68 @@ export const MessageBubble = memo(function MessageBubble({
                     ) : null}
                 </View>
 
-                <View
-                    style={[
-                        styles.assistantBubble,
-                        voiceOnly && styles.assistantBubbleVoiceOnly,
-                        { backgroundColor: assistantBubbleBackground, borderColor: assistantBubbleBorder },
-                    ]}
-                >
-                    <View style={[styles.assistantBubbleSheen, { backgroundColor: `${palette.primary}40` }]} />
-                    <View style={[styles.assistantInner, voiceOnly && styles.assistantInnerVoiceOnly]}>
-                        {hasStructuredNodes ? (
-                            (message.nodes || []).map((node, index) => (
-                                <ContentDispatcher
-                                    key={node.id || `${messageIdentity}:node:${index}`}
-                                    node={node}
-                                    messageIdentity={`${messageIdentity}:node:${index}`}
-                                    speakingKey={speakingKey}
-                                    onSpeakVoice={onSpeakVoice}
-                                    onOpenArtifact={openArtifact}
-                                />
-                            ))
-                        ) : fallbackBlocks.length > 0 ? (
-                            fallbackBlocks.map((block, index) => {
-                                const voiceKey = block.type === "voice"
-                                    ? buildVoicePlaybackKey(messageIdentity, String(index), block.content)
-                                    : "";
-                                return (
-                                    <MessageBlockItem
-                                        key={block.id}
-                                        block={block}
-                                        speaking={Boolean(voiceKey) && speakingKey === voiceKey}
-                                        onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
+                <View style={[styles.assistantBubbleShell, voiceOnly && styles.assistantBubbleVoiceOnly]}>
+                    <View
+                        style={[
+                            styles.assistantBubbleClip,
+                            { backgroundColor: assistantBubbleBackground, borderColor: assistantBubbleBorder },
+                        ]}
+                    >
+                        <View style={[styles.assistantBubbleSheen, { backgroundColor: `${palette.primary}40` }]} />
+                        <View style={[styles.assistantInner, voiceOnly && styles.assistantInnerVoiceOnly]}>
+                            {hasStructuredNodes ? (
+                                (message.nodes || []).map((node, index) => (
+                                    <ContentDispatcher
+                                        key={node.id || `${messageIdentity}:node:${index}`}
+                                        node={node}
+                                        messageIdentity={`${messageIdentity}:node:${index}`}
+                                        speakingKey={speakingKey}
+                                        onSpeakVoice={onSpeakVoice}
                                         onOpenArtifact={openArtifact}
                                     />
-                                );
-                            })
-                        ) : (
-                            <Text style={[styles.assistantText, { color: palette.text }]}>…</Text>
-                        )}
+                                ))
+                            ) : fallbackBlocks.length > 0 ? (
+                                fallbackBlocks.map((block, index) => {
+                                    const voiceKey = block.type === "voice"
+                                        ? buildVoicePlaybackKey(messageIdentity, String(index), block.content)
+                                        : "";
+                                    return (
+                                        <MessageBlockItem
+                                            key={block.id}
+                                            block={block}
+                                            speaking={Boolean(voiceKey) && speakingKey === voiceKey}
+                                            onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
+                                            onOpenArtifact={openArtifact}
+                                        />
+                                    );
+                                })
+                            ) : (
+                                <Text style={[styles.assistantText, { color: palette.text }]}>…</Text>
+                            )}
 
-                        {supplementalArtifacts.length > 0 ? (
-                            <View style={styles.artifactList}>
-                                {supplementalArtifacts.map((artifact, index) => (
-                                    <Pressable
-                                        key={`${artifact.id || artifact.artifactId || artifact.workspacePath || artifact.sourcePath || artifact.title || "artifact"}:${index}`}
-                                        onPress={() => openArtifact(artifact)}
-                                        style={[styles.artifactCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
-                                    >
-                                        <MaterialCommunityIcons name="file-star-outline" size={16} color={palette.primaryDeep} />
-                                        <View style={styles.artifactBody}>
-                                            <Text style={[styles.artifactTitle, { color: palette.text }]} numberOfLines={1}>
-                                                {artifact.title || artifact.kind || t("产物", "Artifact")}
-                                            </Text>
-                                            <Text style={[styles.artifactSubtitle, { color: palette.textMuted }]} numberOfLines={1}>
-                                                {artifact.kind || artifact.workspacePath || artifact.sourcePath || t("点击打开", "Tap to open")}
-                                            </Text>
-                                        </View>
-                                        <MaterialCommunityIcons name="open-in-new" size={15} color={palette.textSoft} />
-                                    </Pressable>
-                                ))}
-                            </View>
-                        ) : null}
+                            {supplementalArtifacts.length > 0 ? (
+                                <View style={styles.artifactList}>
+                                    {supplementalArtifacts.map((artifact, index) => (
+                                        <Pressable
+                                            key={`${artifact.id || artifact.artifactId || artifact.workspacePath || artifact.sourcePath || artifact.title || "artifact"}:${index}`}
+                                            onPress={() => openArtifact(artifact)}
+                                            style={[styles.artifactCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                        >
+                                            <MaterialCommunityIcons name="file-star-outline" size={16} color={palette.primaryDeep} />
+                                            <View style={styles.artifactBody}>
+                                                <Text style={[styles.artifactTitle, { color: palette.text }]} numberOfLines={1}>
+                                                    {artifact.title || artifact.kind || t("产物", "Artifact")}
+                                                </Text>
+                                                <Text style={[styles.artifactSubtitle, { color: palette.textMuted }]} numberOfLines={1}>
+                                                    {artifact.kind || artifact.workspacePath || artifact.sourcePath || t("点击打开", "Tap to open")}
+                                                </Text>
+                                            </View>
+                                            <MaterialCommunityIcons name="open-in-new" size={15} color={palette.textSoft} />
+                                        </Pressable>
+                                    ))}
+                                </View>
+                            ) : null}
+                        </View>
                     </View>
                 </View>
 
@@ -626,31 +628,39 @@ const styles = StyleSheet.create({
         fontWeight: "800",
         letterSpacing: 0.3,
     },
-    assistantBubble: {
-        overflow: "hidden",
+    assistantBubbleShell: {
         borderRadius: 24,
         borderTopLeftRadius: 9,
-        borderWidth: 1,
         shadowColor: "#0F172A",
         shadowOpacity: 0.08,
         shadowRadius: 20,
         shadowOffset: { width: 0, height: 10 },
         elevation: 2,
+        overflow: "visible",
     },
     assistantBubbleVoiceOnly: {
         minWidth: 260,
+    },
+    assistantBubbleClip: {
+        overflow: "hidden",
+        borderRadius: 24,
+        borderTopLeftRadius: 9,
+        borderWidth: 1,
     },
     assistantBubbleSheen: {
         height: 2,
     },
     assistantInner: {
         paddingHorizontal: 16,
-        paddingVertical: 15,
-        gap: 12,
+        paddingTop: 15,
+        paddingBottom: 18,
+        gap: 14,
         minWidth: 0,
+        overflow: "visible",
     },
     assistantInnerVoiceOnly: {
-        paddingVertical: 18,
+        paddingTop: 18,
+        paddingBottom: 20,
     },
     assistantText: {
         fontSize: 14,

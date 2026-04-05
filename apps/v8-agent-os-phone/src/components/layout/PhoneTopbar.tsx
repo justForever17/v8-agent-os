@@ -50,24 +50,43 @@ function isRoundAction(key: string) {
 
 function WordmarkText({
     color = "#FFFFFF",
+    text = "V8 OS",
+    fontSize = 18.5,
     style,
     onLayout,
 }: {
     color?: string;
+    text?: string;
+    fontSize?: number;
     style?: object;
     onLayout?: (event: LayoutChangeEvent) => void;
 }) {
+    const lineHeight = Math.round(fontSize * 1.18);
     return (
-        <Text allowFontScaling={false} onLayout={onLayout} style={[styles.wordmarkText, style, { color }]}>
-            V8 OS
+        <Text
+            allowFontScaling={false}
+            numberOfLines={1}
+            onLayout={onLayout}
+            style={[styles.wordmarkText, style, { color, fontSize, lineHeight }]}
+        >
+            {text}
         </Text>
     );
 }
 
-export function PhoneWordmark({ dark }: { dark: boolean }) {
+export function PhoneWordmark({
+    dark,
+    text = "V8 OS",
+    fontSize = 18.5,
+}: {
+    dark: boolean;
+    text?: string;
+    fontSize?: number;
+}) {
     const shine = useRef(new Animated.Value(0)).current;
     const gradientFlow = useRef(new Animated.Value(0)).current;
-    const [textWidth, setTextWidth] = useState(88);
+    const [textWidth, setTextWidth] = useState(Math.max(Math.ceil(text.length * fontSize * 0.68), 90));
+    const lineHeight = Math.round(fontSize * 1.18);
 
     useEffect(() => {
         const loop = Animated.loop(
@@ -112,7 +131,7 @@ export function PhoneWordmark({ dark }: { dark: boolean }) {
     });
 
     const handleMeasure = (event: LayoutChangeEvent) => {
-        const nextWidth = Math.ceil(event.nativeEvent.layout.width);
+        const nextWidth = Math.max(90, Math.ceil(event.nativeEvent.layout.width));
         if (nextWidth && Math.abs(nextWidth - textWidth) > 1) {
             setTextWidth(nextWidth);
         }
@@ -121,10 +140,16 @@ export function PhoneWordmark({ dark }: { dark: boolean }) {
     const glowColor = dark ? "rgba(99,102,241,0.20)" : "rgba(99,102,241,0.14)";
 
     return (
-        <View style={[styles.wordmark, { width: textWidth }]}>
-            <WordmarkText color="rgba(255,255,255,0.01)" onLayout={handleMeasure} style={styles.wordmarkMeasure} />
-            <WordmarkText color={glowColor} style={styles.wordmarkGlow} />
-            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkText />}>
+        <View style={[styles.wordmark, { width: textWidth, height: lineHeight }]}>
+            <WordmarkText
+                color="rgba(255,255,255,0.01)"
+                text={text}
+                fontSize={fontSize}
+                onLayout={handleMeasure}
+                style={styles.wordmarkMeasure}
+            />
+            <WordmarkText color={glowColor} text={text} fontSize={fontSize} style={styles.wordmarkGlow} />
+            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkText text={text} fontSize={fontSize} />}>
                 <Animated.View
                     pointerEvents="none"
                     style={[
@@ -144,7 +169,7 @@ export function PhoneWordmark({ dark }: { dark: boolean }) {
                     />
                 </Animated.View>
             </MaskedView>
-            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkText />}>
+            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkText text={text} fontSize={fontSize} />}>
                 <Animated.View
                     pointerEvents="none"
                     style={[
@@ -387,9 +412,10 @@ const styles = StyleSheet.create({
     brandSide: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 7,
+        gap: 6,
         minWidth: 0,
-        flexShrink: 1,
+        flexGrow: 1,
+        flexShrink: 0,
     },
     brandPressable: {
         paddingRight: 4,
@@ -411,26 +437,28 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     wordmark: {
-        height: 23,
+        height: 22,
         justifyContent: "center",
-        alignSelf: "flex-start",
+        alignSelf: "center",
         overflow: "visible",
+        minWidth: 90,
+        flexShrink: 0,
     },
     wordmarkLayer: {
         ...StyleSheet.absoluteFillObject,
     },
     wordmarkText: {
-        fontSize: 18.5,
         fontWeight: "900",
         letterSpacing: -0.72,
-        lineHeight: 22,
         includeFontPadding: false,
+        textAlignVertical: "center",
     },
     wordmarkMeasure: {
         position: "absolute",
         left: 0,
         top: 0,
         opacity: 0,
+        minWidth: 90,
     },
     wordmarkGradient: {
         height: "100%",

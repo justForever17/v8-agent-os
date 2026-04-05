@@ -10,10 +10,33 @@ import {
 } from "@/lib/server/runtime-config";
 
 let ensurePromise: Promise<string> | null = null;
+let idleStopTimer: NodeJS.Timeout | null = null;
+
+type BridgePhase = "idle" | "warming" | "ready" | "degraded";
+type BridgeErrorStage = "spawn" | "port" | "status" | "session" | "offer" | "candidate" | "track";
+
+type BridgeRuntimeState = {
+    phase: BridgePhase;
+    warmingStartedAt: string | null;
+    lastErrorStage: BridgeErrorStage | null;
+    lastErrorMessage: string | null;
+    retryAllowed: boolean;
+    bridgePid: number | null;
+};
+
+const bridgeRuntimeState: BridgeRuntimeState = {
+    phase: "idle",
+    warmingStartedAt: null,
+    lastErrorStage: null,
+    lastErrorMessage: null,
+    retryAllowed: false,
+    bridgePid: null,
+};
 
 export type BridgeStatusPayload = {
     available?: boolean;
     reason?: string | null;
+    phase?: BridgePhase;
     bridgeReady?: boolean;
     bridgeStartable?: boolean;
     bridgeWarming?: boolean;
@@ -35,12 +58,27 @@ export type BridgeStatusPayload = {
     bridgeLayer?: string;
     bridgeExecutable?: string;
     bridgeReachable?: boolean;
+    warmingStartedAt?: string;
+    lastErrorStage?: BridgeErrorStage;
+    retryAllowed?: boolean;
+    bridgePid?: number;
 };
 
 type BridgeProcessInfo = {
     pid: number;
     parentPid: number | null;
 };
+
+function setBridgeRuntimeState(next: Partial<BridgeRuntimeState>) {
+    Object.assign(bridgeRuntimeState, next);
+}
+
+function clearDesktopLiveIdleStopTimer() {
+    if (idleStopTimer) {
+        clearTimeout(idleStopTimer);
+        idleStopTimer = null;
+    }
+}
 
 function getBridgeScriptPath() {
     const candidates = [
@@ -268,10 +306,11 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
 
     return {
         available: false,
-        reason: reason || (startable ? "桌面直播 bridge 正在启动，请稍后重试。" : null),
+        reason: bridgeRuntimeState.lastErrorMessage || reason || (startable ? "桌面直播 bridge 正在启动，请稍候。" : null),
+        phase: bridgeRuntimeState.phase === "ready" ? "idle" : bridgeRuntimeState.phase,
         bridgeReady: false,
         bridgeStartable: startable,
-        bridgeWarming: false,
+        bridgeWarming: bridgeRuntimeState.phase === "warming",
         activeSessionId: null,
         viewerCount: 0,
         singleViewer: config.singleViewerOnly !== false,
@@ -282,6 +321,10 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
         captureSurface: "primary_display",
         bridgeLayer: "python_local_webrtc_bridge",
         bridgeExecutable: bridgeExecutable || undefined,
+        warmingStartedAt: bridgeRuntimeState.warmingStartedAt || undefined,
+        lastErrorStage: bridgeRuntimeState.lastErrorStage || undefined,
+        retryAllowed: bridgeRuntimeState.phase === "degraded",
+        bridgePid: bridgeRuntimeState.bridgePid || undefined,
         config: {
             enabled,
             maxWidth: Number(config.maxWidth || 640),
@@ -298,13 +341,35 @@ export async function getDesktopLiveBridgeStatus() {
     if (payload) {
         const currentPid = await findBridgePidByPort();
         await cleanupDuplicateBridgeProcesses(currentPid);
+        setBridgeRuntimeState({
+            phase: "ready",
+            warmingStartedAt: null,
+            lastErrorStage: null,
+            lastErrorMessage: null,
+            retryAllowed: false,
+            bridgePid: currentPid,
+        });
         return {
             ...payload,
             available: payload.available === true,
+            phase: "ready",
             bridgeReady: true,
             bridgeStartable: true,
             bridgeWarming: false,
             bridgeReachable: true,
+            warmingStartedAt: undefined,
+            lastErrorStage: undefined,
+            retryAllowed: false,
+            bridgePid: currentPid || undefined,
+        };
+    }
+    if (ensurePromise || bridgeRuntimeState.phase === "warming") {
+        return {
+            ...buildDormantBridgeStatus(),
+            phase: "warming",
+            bridgeWarming: true,
+            retryAllowed: false,
+            reason: "桌面直播 bridge 正在启动，请稍候。",
         };
     }
     return buildDormantBridgeStatus();
@@ -318,25 +383,56 @@ export async function warmDesktopLiveBridge() {
 
     const reachable = await pingBridge();
     if (reachable) {
+        const currentPid = await findBridgePidByPort();
+        setBridgeRuntimeState({
+            phase: "ready",
+            warmingStartedAt: null,
+            lastErrorStage: null,
+            lastErrorMessage: null,
+            retryAllowed: false,
+            bridgePid: currentPid,
+        });
         return {
             ...reachable,
             available: reachable.available === true,
+            phase: "ready",
             bridgeReady: true,
             bridgeStartable: true,
             bridgeWarming: false,
             bridgeReachable: true,
+            retryAllowed: false,
+            bridgePid: currentPid || undefined,
         } satisfies BridgeStatusPayload;
     }
 
+    setBridgeRuntimeState({
+        phase: "warming",
+        warmingStartedAt: bridgeRuntimeState.warmingStartedAt || new Date().toISOString(),
+        lastErrorStage: null,
+        lastErrorMessage: null,
+        retryAllowed: false,
+    });
     void ensureDesktopLiveBridge().catch(() => undefined);
     return {
         ...dormant,
+        phase: "warming",
         bridgeWarming: true,
+        retryAllowed: false,
+        reason: "桌面直播 bridge 正在启动，请稍候。",
     } satisfies BridgeStatusPayload;
 }
 
 export async function stopDesktopLiveBridge() {
+    clearDesktopLiveIdleStopTimer();
     await stopExistingBridgeProcesses();
+    setBridgeRuntimeState({
+        phase: "idle",
+        warmingStartedAt: null,
+        lastErrorStage: null,
+        lastErrorMessage: null,
+        retryAllowed: false,
+        bridgePid: null,
+    });
     return !(await findBridgePidByPort());
 }
 
@@ -362,33 +458,95 @@ function spawnBridgeProcess(pythonExecutable: string) {
         },
     );
     child.unref();
+    return child.pid ?? null;
+}
+
+export function scheduleDesktopLiveBridgeIdleStop() {
+    clearDesktopLiveIdleStopTimer();
+    const idleReleaseSeconds = Number(resolveDesktopLiveConfig().idleReleaseSeconds || 15);
+    if (!Number.isFinite(idleReleaseSeconds) || idleReleaseSeconds <= 0) {
+        return;
+    }
+
+    idleStopTimer = setTimeout(async () => {
+        idleStopTimer = null;
+        try {
+            const payload = await pingBridge(1200);
+            const hasActiveViewer = Boolean(payload?.activeSessionId) || Number(payload?.viewerCount || 0) > 0;
+            if (hasActiveViewer) {
+                return;
+            }
+            await stopDesktopLiveBridge();
+        } catch {
+            // idle cleanup is best-effort
+        }
+    }, idleReleaseSeconds * 1000);
 }
 
 export async function ensureDesktopLiveBridge() {
+    clearDesktopLiveIdleStopTimer();
     const expectedPython = resolveEnginePythonPath() || "python";
     const existingBridge = await pingBridge();
     if (existingBridge) {
         const currentPid = await findBridgePidByPort();
         await cleanupDuplicateBridgeProcesses(currentPid);
+        setBridgeRuntimeState({
+            phase: "ready",
+            warmingStartedAt: null,
+            lastErrorStage: null,
+            lastErrorMessage: null,
+            retryAllowed: false,
+            bridgePid: currentPid,
+        });
         return resolveDesktopLiveBridgeBaseUrl();
     }
 
     if (!ensurePromise) {
         ensurePromise = (async () => {
-            if (existingBridge) {
-                await stopExistingBridgeProcesses();
-                await new Promise((resolve) => setTimeout(resolve, 300));
-            }
-            spawnBridgeProcess(expectedPython);
+            setBridgeRuntimeState({
+                phase: "warming",
+                warmingStartedAt: new Date().toISOString(),
+                lastErrorStage: "spawn",
+                lastErrorMessage: null,
+                retryAllowed: false,
+            });
+            const spawnedPid = spawnBridgeProcess(expectedPython);
+            setBridgeRuntimeState({
+                bridgePid: spawnedPid,
+                lastErrorStage: "status",
+            });
             for (let attempt = 0; attempt < 12; attempt += 1) {
                 const payload = await pingBridge();
                 if (payload) {
+                    const currentPid = await findBridgePidByPort();
+                    setBridgeRuntimeState({
+                        phase: "ready",
+                        warmingStartedAt: null,
+                        lastErrorStage: null,
+                        lastErrorMessage: null,
+                        retryAllowed: false,
+                        bridgePid: currentPid,
+                    });
                     return resolveDesktopLiveBridgeBaseUrl();
                 }
                 await new Promise((resolve) => setTimeout(resolve, 500));
             }
-            throw new Error("桌面直播 bridge 启动失败，请检查 Python bridge 日志。");
-        })().finally(() => {
+            setBridgeRuntimeState({
+                phase: "degraded",
+                lastErrorStage: "status",
+                lastErrorMessage: "桌面直播 bridge 启动超时，请检查 bridge 日志。",
+                retryAllowed: true,
+            });
+            throw new Error("桌面直播 bridge 启动超时，请检查 bridge 日志。");
+        })().catch((error) => {
+            setBridgeRuntimeState({
+                phase: "degraded",
+                lastErrorStage: bridgeRuntimeState.lastErrorStage || "spawn",
+                lastErrorMessage: error instanceof Error ? error.message : "桌面直播 bridge 启动失败。",
+                retryAllowed: true,
+            });
+            throw error;
+        }).finally(() => {
             ensurePromise = null;
         });
     }

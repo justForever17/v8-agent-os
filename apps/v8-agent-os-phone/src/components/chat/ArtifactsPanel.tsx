@@ -16,8 +16,8 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
+import { getArtifactContentUrl } from "@/src/lib/phone-api";
+import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -45,7 +45,7 @@ function inferArtifactKind(artifact: ArtifactDetail) {
 }
 
 function resolveArtifactPreviewUrl(adminBaseUrl: string, artifact: ArtifactDetail) {
-    const previewCandidate = resolveAdminAssetUrl(
+    const previewCandidate = normalizeRenderableWorkspaceUrl(
         adminBaseUrl,
         artifact.previewUrl || artifact.externalUrl || "",
     );
@@ -55,13 +55,10 @@ function resolveArtifactPreviewUrl(adminBaseUrl: string, artifact: ArtifactDetai
     if (artifact.id || artifact.artifactId) {
         return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
     }
-    if (artifact.workspacePath || artifact.sourcePath?.startsWith("/workspace/")) {
-        const workspacePath = String(artifact.workspacePath || artifact.sourcePath || "")
-            .replace(/^\/workspace\//, "")
-            .replace(/^workspace\//, "");
-        return workspacePath ? getWorkspaceFileUrl(adminBaseUrl, workspacePath) : "";
-    }
-    return resolveAdminAssetUrl(adminBaseUrl, artifact.sourcePath || "");
+    return normalizeRenderableWorkspaceUrl(
+        adminBaseUrl,
+        artifact.workspacePath || artifact.sourcePath || "",
+    );
 }
 
 export const ArtifactsPanel = memo(function ArtifactsPanel({

@@ -304,12 +304,17 @@ export type OperationsSummary = {
 export type DesktopLiveStatus = {
     available?: boolean;
     reason?: string | null;
+    phase?: "idle" | "warming" | "ready" | "degraded";
     bridgeReady?: boolean;
     bridgeStartable?: boolean;
     bridgeWarming?: boolean;
     bridgeReachable?: boolean;
     activeSessionId?: string | null;
     viewerCount?: number;
+    warmingStartedAt?: string;
+    lastErrorStage?: "spawn" | "port" | "status" | "session" | "offer" | "candidate" | "track";
+    retryAllowed?: boolean;
+    bridgePid?: number;
     config?: {
         enabled?: boolean;
         maxWidth?: number;

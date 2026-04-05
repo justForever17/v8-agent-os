@@ -17,8 +17,8 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { openCachedFile, saveResponseToCache } from "@/src/lib/file-transfer";
+import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import {
     fetchArtifactContentResponse,
     fetchWorkspaceFileResponse,
@@ -94,7 +94,7 @@ export default function ArtifactsScreen() {
         try {
             const directUrl = selectedArtifact.externalUrl || selectedArtifact.previewUrl;
             if (directUrl) {
-                await Linking.openURL(resolveAdminAssetUrl(adminBaseUrl, directUrl));
+                await Linking.openURL(normalizeRenderableWorkspaceUrl(adminBaseUrl, directUrl));
                 return;
             }
 

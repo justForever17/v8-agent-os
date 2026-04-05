@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "V8 Agent OS Phone",
+    "name": "V8 Agent OS",
     "slug": "v8-agent-os-phone",
     "version": "1.0.0",
     "assetBundlePatterns": [
@@ -11,7 +11,7 @@
     "scheme": "v8agentosphone",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/images/splash-icon.png",
+      "image": "./assets/images/brand-mark.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },

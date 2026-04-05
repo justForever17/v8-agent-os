@@ -1,0 +1,77 @@
+import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
+import { getWorkspaceFileUrl } from "@/src/lib/phone-api";
+
+const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/([^\s)]+)/gi;
+const ABSOLUTE_WORKSPACE_PATH_PATTERN = /(^|[\s(])\/workspace\/([^\s)]+)/gi;
+const WINDOWS_WORKSPACE_PATH_PATTERN = /([A-Za-z]:\\[^\s<>"]*?\\workspace\\[^\s<>"]+)/g;
+
+function normalizeWorkspaceSubpath(value: string) {
+    return String(value || "")
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .replace(/^workspace\//i, "")
+        .trim();
+}
+
+export function deriveWorkspaceSubpathFromWindowsPath(rawValue: string) {
+    const normalized = String(rawValue || "").trim();
+    if (!normalized) {
+        return null;
+    }
+    const marker = normalized.toLowerCase().lastIndexOf("\\workspace\\");
+    if (marker < 0) {
+        return null;
+    }
+    const subpath = normalizeWorkspaceSubpath(normalized.slice(marker + "\\workspace\\".length));
+    return subpath || null;
+}
+
+export function normalizeRenderableWorkspaceUrl(adminBaseUrl: string, value?: string | null) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+
+    const loopbackMatch = raw.match(/^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/(.+)$/i);
+    if (loopbackMatch?.[1]) {
+        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(loopbackMatch[1]));
+    }
+
+    if (raw.startsWith("/workspace/")) {
+        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(raw));
+    }
+
+    const windowsSubpath = deriveWorkspaceSubpathFromWindowsPath(raw);
+    if (windowsSubpath) {
+        return getWorkspaceFileUrl(adminBaseUrl, windowsSubpath);
+    }
+
+    return resolveAdminAssetUrl(adminBaseUrl, raw);
+}
+
+export function normalizeRenderableWorkspaceLinks(adminBaseUrl: string, content: string) {
+    let normalized = String(content || "");
+
+    normalized = normalized.replace(LOOPBACK_WORKSPACE_URL_PATTERN, (_match, subpath: string) => {
+        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath));
+    });
+
+    normalized = normalized.replace(ABSOLUTE_WORKSPACE_PATH_PATTERN, (_match, prefix: string, subpath: string) => {
+        return `${prefix}${getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath))}`;
+    });
+
+    return normalized;
+}
+
+export function mapWindowsWorkspacePathToRenderableLink(adminBaseUrl: string, content: string) {
+    const mapping = new Map<string, string>();
+    for (const match of String(content || "").matchAll(WINDOWS_WORKSPACE_PATH_PATTERN)) {
+        const rawPath = String(match[1] || "").trim();
+        const subpath = deriveWorkspaceSubpathFromWindowsPath(rawPath);
+        if (!rawPath || !subpath || mapping.has(rawPath)) {
+            continue;
+        }
+        mapping.set(rawPath, getWorkspaceFileUrl(adminBaseUrl, subpath));
+    }
+    return mapping;
+}

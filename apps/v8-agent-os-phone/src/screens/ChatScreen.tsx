@@ -29,6 +29,7 @@ import {
 
 import { ChatWindow } from "@/src/components/chat/ChatWindow";
 import { Composer } from "@/src/components/chat/Composer";
+import { ComposerPickerOverlay } from "@/src/components/chat/ComposerPickerOverlay";
 import { RunControlBar } from "@/src/components/chat/RunControlBar";
 import { RuntimeDock } from "@/src/components/chat/RuntimeDock";
 import { RuntimeTimelinePanel } from "@/src/components/chat/RuntimeTimelinePanel";
@@ -178,6 +179,11 @@ function buildAssistantPlaceholder(runId?: string): ChatMessage {
         artifacts: [],
         images: [],
     };
+}
+
+function extractSkillQuery(input: string) {
+    const match = input.match(/(?:^|\s)@([^\s@]*)$/);
+    return match ? match[1] : "";
 }
 
 function mergeArtifacts(base: ChatArtifact[] = [], incoming: ChatArtifact[] = []) {
@@ -408,10 +414,10 @@ function normalizeDesktopLiveErrorMessage(
 ) {
     const raw = error instanceof Error ? String(error.message || "").trim() : "";
     if (!raw) {
-        return t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly.");
+        return t("桌面预览正在准备中，请稍候。", "Desktop preview is still preparing. Please wait.");
     }
-    if (/fetch failed|network request failed|failed to fetch|bridge|local-offer-unavailable|offer|candidate|session/i.test(raw)) {
-        return t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly.");
+    if (/fetch failed|network request failed|failed to fetch|bridge is starting|local-offer-unavailable|offer|candidate|session/i.test(raw)) {
+        return t("桌面预览正在准备中，请稍候。", "Desktop preview is still preparing. Please wait.");
     }
     return raw;
 }
@@ -470,7 +476,10 @@ export default function ChatScreen() {
     const desktopPreviewWebViewRef = useRef<WebView | null>(null);
     const desktopPreviewNegotiatedSessionRef = useRef("");
     const desktopLiveUserIntentRef = useRef(false);
-    const autoPlayedVoiceKeysRef = useRef(new Set<string>());
+    const voiceAutoplayStateRef = useRef(new Map<string, {
+        lastSeenMessageKey: string;
+        lastAutoPlayedKey: string;
+    }>());
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const previousConversationIdRef = useRef<string | null>(null);
@@ -506,6 +515,7 @@ export default function ChatScreen() {
     const [selectedCommand, setSelectedCommand] = useState<CommandPresetSummary | null>(null);
     const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
+    const [composerHeight, setComposerHeight] = useState(132);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
@@ -518,6 +528,35 @@ export default function ChatScreen() {
     const [desktopPreviewState, setDesktopPreviewState] = useState<"closed" | "loading" | "preview" | "error">("closed");
     const [desktopPreviewWebReady, setDesktopPreviewWebReady] = useState(false);
     const [desktopLiveStatus, setDesktopLiveStatus] = useState<DesktopLiveStatus | null>(null);
+
+    const slashQuery = useMemo(() => {
+        const trimmed = input.trimStart();
+        return !selectedCommand && trimmed.startsWith("/") ? trimmed.slice(1).trim().toLowerCase() : "";
+    }, [input, selectedCommand]);
+    const skillQuery = useMemo(() => extractSkillQuery(input).toLowerCase(), [input]);
+    const commandPickerOpen = !selectedCommand && input.trimStart().startsWith("/");
+    const skillPickerOpen = /(?:^|\s)@([^\s@]*)$/.test(input);
+    const filteredCommands = useMemo(() => {
+        if (!slashQuery) {
+            return commands;
+        }
+        return commands.filter((item) =>
+            item.name.toLowerCase().includes(slashQuery)
+            || String(item.summary || "").toLowerCase().includes(slashQuery),
+        );
+    }, [commands, slashQuery]);
+    const filteredSkills = useMemo(() => {
+        const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}:${skill.path || ""}`));
+        const base = skills.filter((item) => !selectedKeys.has(`${item.name}:${item.path || ""}`));
+        if (!skillQuery) {
+            return base;
+        }
+        return base.filter((item) =>
+            item.name.toLowerCase().includes(skillQuery)
+            || String(item.description || "").toLowerCase().includes(skillQuery)
+            || String(item.path || "").toLowerCase().includes(skillQuery),
+        );
+    }, [selectedSkills, skillQuery, skills]);
 
     useEffect(() => {
         runtimeRef.current = runtime;
@@ -556,8 +595,10 @@ export default function ChatScreen() {
         if (!desktopLiveUserIntentRef.current) {
             return desktopLiveStatus || {
                 available: false,
+                phase: "idle",
                 bridgeReady: false,
                 bridgeWarming: false,
+                retryAllowed: false,
             } satisfies DesktopLiveStatus;
         }
         try {
@@ -567,9 +608,11 @@ export default function ChatScreen() {
         } catch {
             const fallback = {
                 available: false,
-                reason: t("桌面预览尚未就绪", "Desktop preview is not ready yet"),
+                reason: t("桌面预览正在准备中，请稍候。", "Desktop preview is still preparing. Please wait."),
+                phase: "warming",
                 bridgeReady: false,
                 bridgeWarming: true,
+                retryAllowed: false,
             } satisfies DesktopLiveStatus;
             setDesktopLiveStatus((current) => current || fallback);
             return fallback;
@@ -580,8 +623,10 @@ export default function ChatScreen() {
         if (!desktopLiveUserIntentRef.current) {
             return desktopLiveStatus || {
                 available: false,
+                phase: "idle",
                 bridgeReady: false,
                 bridgeWarming: false,
+                retryAllowed: false,
             } satisfies DesktopLiveStatus;
         }
         try {
@@ -592,8 +637,10 @@ export default function ChatScreen() {
             const fallback = {
                 available: false,
                 reason: normalizeDesktopLiveErrorMessage(error, t),
+                phase: "warming",
                 bridgeReady: false,
                 bridgeWarming: true,
+                retryAllowed: false,
             } satisfies DesktopLiveStatus;
             setDesktopLiveStatus((current) => current || fallback);
             return fallback;
@@ -623,7 +670,9 @@ export default function ChatScreen() {
         setDesktopLiveStatus((current) => current ? {
             ...current,
             activeSessionId: null,
+            phase: "idle",
             bridgeWarming: false,
+            retryAllowed: false,
         } : current);
     }, [authorizedFetch, desktopPreviewSessionId]);
 
@@ -638,14 +687,14 @@ export default function ChatScreen() {
                 return status;
             }
             lastError = String(
-                status?.bridgeWarming === true || status?.bridgeReady === false
-                    ? t("桌面预览桥正在启动，请稍后重试", "Desktop preview bridge is starting. Please retry shortly.")
+                status?.phase === "warming" || status?.bridgeWarming === true || status?.bridgeReady === false
+                    ? t("桌面预览桥正在启动，请稍候。", "Desktop preview bridge is starting. Please wait.")
                     : status?.reason
-                        || t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly."),
+                        || t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."),
             );
             await new Promise((resolve) => setTimeout(resolve, Math.min(900 + attempt * 150, 1800)));
         }
-        throw new Error(lastError || t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly."));
+        throw new Error(lastError || t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
     }, [refreshDesktopLiveStatus, t]);
 
     const maybeStartDesktopPreviewNegotiation = useCallback((sessionId?: string | null) => {
@@ -692,21 +741,25 @@ export default function ChatScreen() {
                 }
                 status = await waitForDesktopLiveAvailability(requestId) || {
                     available: false,
-                    reason: t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly."),
+                    reason: t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."),
+                    phase: "warming",
                     bridgeReady: false,
                     bridgeWarming: true,
+                    retryAllowed: false,
                 };
             }
             if (desktopPreviewRequestIdRef.current !== requestId) {
                 return;
             }
             if (!status?.available) {
-                throw new Error(t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly."));
+                throw new Error(t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
             }
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
                 ...status,
+                phase: "ready",
                 bridgeWarming: false,
+                retryAllowed: false,
             }));
             const payload = await retryWithDelay(
                 async () => createDesktopLiveSession(authorizedFetch) as Promise<DesktopLiveSessionPayload>,
@@ -715,7 +768,7 @@ export default function ChatScreen() {
             );
             const sessionId = String(payload.sessionId || payload.session_id || "").trim();
             if (!sessionId) {
-                throw new Error(t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly."));
+                throw new Error(t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
             }
             if (desktopPreviewRequestIdRef.current !== requestId) {
                 try {
@@ -731,9 +784,11 @@ export default function ChatScreen() {
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
                 available: true,
+                phase: "ready",
                 bridgeReady: true,
                 bridgeWarming: false,
                 activeSessionId: sessionId,
+                retryAllowed: false,
             }));
             maybeStartDesktopPreviewNegotiation(sessionId);
         } catch (error) {
@@ -748,8 +803,10 @@ export default function ChatScreen() {
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
                 available: false,
+                phase: "degraded",
                 bridgeWarming: false,
                 reason: message,
+                retryAllowed: true,
             }));
         } finally {
             if (desktopPreviewRequestIdRef.current === requestId) {
@@ -825,9 +882,11 @@ export default function ChatScreen() {
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
                 available: true,
+                phase: "ready",
                 bridgeReady: true,
                 bridgeWarming: false,
                 activeSessionId: sessionId,
+                retryAllowed: false,
             }));
             return;
         }
@@ -843,11 +902,13 @@ export default function ChatScreen() {
                 desktopLiveUserIntentRef.current = false;
                 setDesktopPreviewState("error");
                 setDesktopPreviewBusy(false);
-                setDesktopPreviewError(t("桌面预览连接失败，请重试", "Desktop preview failed to connect. Please retry."));
+                setDesktopPreviewError(t("桌面预览连接失败，请检查桥接状态后再继续。", "Desktop preview failed to connect. Check the bridge state and try again later."));
                 setDesktopLiveStatus((current) => ({
                     ...(current || {}),
                     activeSessionId: null,
+                    phase: "degraded",
                     bridgeWarming: false,
+                    retryAllowed: true,
                 }));
             }
             return;
@@ -861,7 +922,9 @@ export default function ChatScreen() {
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
                 activeSessionId: null,
+                phase: "degraded",
                 bridgeWarming: false,
+                retryAllowed: true,
             }));
         }
     }, [authorizedFetch, desktopPreviewSessionId, maybeStartDesktopPreviewNegotiation, t]);
@@ -1316,7 +1379,6 @@ export default function ChatScreen() {
     }, [activeConversationId, status]);
 
     useEffect(() => {
-        autoPlayedVoiceKeysRef.current.clear();
         setSpeakingId("");
     }, [activeConversationId]);
 
@@ -1577,6 +1639,12 @@ export default function ChatScreen() {
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
+    const latestProjectedMessage = projection.projectedMessages[projection.projectedMessages.length - 1] || null;
+    const latestProjectedMessageKey = String(
+        latestProjectedMessage?.renderKey
+        || latestProjectedMessage?.id
+        || "",
+    ).trim();
 
     useEffect(() => {
         if (projection.selectedRuntimeId !== selectedRuntimeId) {
@@ -1646,15 +1714,78 @@ export default function ChatScreen() {
     ]);
 
     useEffect(() => {
-        if (!voiceEnabled || !latestAutoPlayableVoice?.autoPlayKey || !latestAutoPlayableVoice.voiceText.trim()) {
+        if (!activeConversationId || !latestProjectedMessageKey) {
             return;
         }
-        if (autoPlayedVoiceKeysRef.current.has(latestAutoPlayableVoice.autoPlayKey)) {
+
+        const current = voiceAutoplayStateRef.current.get(activeConversationId) || {
+            lastSeenMessageKey: "",
+            lastAutoPlayedKey: "",
+        };
+        const latestMessageId = String(latestProjectedMessage?.id || "").trim();
+        const belongsToLatestMessage = Boolean(
+            latestAutoPlayableVoice?.autoPlayKey
+            && (
+                (latestAutoPlayableVoice.renderKey && latestAutoPlayableVoice.renderKey === latestProjectedMessageKey)
+                || (!latestAutoPlayableVoice.renderKey && latestAutoPlayableVoice.messageId === latestMessageId)
+            ),
+        );
+
+        if (!belongsToLatestMessage) {
+            if (current.lastSeenMessageKey !== latestProjectedMessageKey) {
+                voiceAutoplayStateRef.current.set(activeConversationId, {
+                    ...current,
+                    lastSeenMessageKey: latestProjectedMessageKey,
+                });
+            }
             return;
         }
-        autoPlayedVoiceKeysRef.current.add(latestAutoPlayableVoice.autoPlayKey);
+
+        if (!voiceEnabled || !latestAutoPlayableVoice?.voiceText.trim()) {
+            if (current.lastSeenMessageKey !== latestProjectedMessageKey) {
+                voiceAutoplayStateRef.current.set(activeConversationId, {
+                    ...current,
+                    lastSeenMessageKey: latestProjectedMessageKey,
+                });
+            }
+            return;
+        }
+
+        if (!current.lastSeenMessageKey) {
+            voiceAutoplayStateRef.current.set(activeConversationId, {
+                ...current,
+                lastSeenMessageKey: latestProjectedMessageKey,
+            });
+            return;
+        }
+
+        if (current.lastSeenMessageKey === latestProjectedMessageKey) {
+            return;
+        }
+
+        const nextState = {
+            lastSeenMessageKey: latestProjectedMessageKey,
+            lastAutoPlayedKey: current.lastAutoPlayedKey,
+        };
+
+        if (current.lastAutoPlayedKey === latestAutoPlayableVoice.autoPlayKey) {
+            voiceAutoplayStateRef.current.set(activeConversationId, nextState);
+            return;
+        }
+
+        voiceAutoplayStateRef.current.set(activeConversationId, {
+            ...nextState,
+            lastAutoPlayedKey: latestAutoPlayableVoice.autoPlayKey,
+        });
         void handleSpeakVoice(latestAutoPlayableVoice.voiceText, latestAutoPlayableVoice.autoPlayKey);
-    }, [handleSpeakVoice, latestAutoPlayableVoice, voiceEnabled]);
+    }, [
+        activeConversationId,
+        handleSpeakVoice,
+        latestAutoPlayableVoice,
+        latestProjectedMessage?.id,
+        latestProjectedMessageKey,
+        voiceEnabled,
+    ]);
 
     const handleSend = useCallback(async () => {
         const text = input.trim();
@@ -1773,6 +1904,21 @@ export default function ChatScreen() {
             subtitle: t("想先聊什么？", "What would you like to start with?"),
         }
         : null;
+    const composerHorizontalInset = isLandscape ? 18 : 10;
+    const composerBottomInset = Platform.OS === "ios" ? 8 : 4;
+    const pickerOverlayVisible = commandPickerOpen || skillPickerOpen;
+    const pickerOverlayMode = commandPickerOpen ? "command" : skillPickerOpen ? "skill" : null;
+    const pickerOverlayBottom = composerBottomInset + composerHeight + 8;
+
+    const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
+        setSelectedCommand(command);
+        setInput("");
+    };
+
+    const handleSelectSkillFromPicker = (skill: SkillReferenceSummary) => {
+        setSelectedSkills((current) => [...current, skill]);
+        setInput("");
+    };
 
     return (
         <LinearGradient
@@ -1896,20 +2042,35 @@ export default function ChatScreen() {
                             emptyState={greetingEmptyState}
                         />
 
-                        <View style={[styles.composerWrap, isLandscape && styles.composerWrapLandscape]}>
+                        <ComposerPickerOverlay
+                            visible={pickerOverlayVisible}
+                            mode={pickerOverlayMode}
+                            left={composerHorizontalInset}
+                            right={composerHorizontalInset}
+                            bottom={pickerOverlayBottom}
+                            commands={filteredCommands}
+                            skills={filteredSkills}
+                            onSelectCommand={handleSelectCommandFromPicker}
+                            onSelectSkill={handleSelectSkillFromPicker}
+                        />
+
+                        <View
+                            style={[styles.composerWrap, isLandscape && styles.composerWrapLandscape]}
+                            onLayout={(event) => {
+                                const nextHeight = Math.round(event.nativeEvent.layout.height);
+                                if (nextHeight > 0 && nextHeight !== composerHeight) {
+                                    setComposerHeight(nextHeight);
+                                }
+                            }}
+                        >
                             <Composer
                                 value={input}
                                 onChange={setInput}
                                 onSend={() => void handleSend()}
                                 busy={sending}
                                 selectedCommand={selectedCommand}
-                                onSelectCommand={(command) => {
-                                    setSelectedCommand(command);
-                                    setInput("");
-                                }}
                                 onClearCommand={() => setSelectedCommand(null)}
                                 selectedSkills={selectedSkills}
-                                onAddSkill={(skill) => setSelectedSkills((current) => [...current, skill])}
                                 onRemoveSkill={(skill) => setSelectedSkills((current) =>
                                     current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
                                 )}
@@ -1922,8 +2083,6 @@ export default function ChatScreen() {
                                 attachmentBusy={attachmentBusy}
                                 recording={recorderState.isRecording}
                                 transcribing={transcribing}
-                                commands={commands}
-                                skills={skills}
                             />
                         </View>
                     </View>
@@ -1965,7 +2124,7 @@ export default function ChatScreen() {
                                 onError={() => {
                                     setDesktopPreviewState("error");
                                     setDesktopPreviewBusy(false);
-                                    setDesktopPreviewError(t("桌面预览尚未就绪，请稍后重试", "Desktop preview is not ready yet. Please retry shortly."));
+                                    setDesktopPreviewError(t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
                                 }}
                             />
                             {(desktopPreviewBusy || desktopPreviewState === "loading" || (!desktopPreviewError && desktopPreviewState !== "preview")) ? (

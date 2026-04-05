@@ -19,13 +19,17 @@ import * as ImagePicker from "expo-image-picker";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
+import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { getCurrentProfile, updatePassword, updateProfile, uploadUserAvatar } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
 export default function SettingsScreen() {
     const { status, user, adminBaseUrl, signOut, authorizedFetch, refreshUser, updateCurrentUser } = useAppSession();
+    const { t } = useUiPrefs();
+    const goHomeToChat = useGoHomeToChat();
     const [name, setName] = useState(user?.name || "");
     const [email, setEmail] = useState(user?.email || "");
     const [image, setImage] = useState(user?.image || "");
@@ -98,9 +102,9 @@ export default function SettingsScreen() {
             } else {
                 await refreshUser();
             }
-            setProfileMessage("资料已同步到当前用户主链。");
+            setProfileMessage(t("资料已同步到当前用户主链。", "Profile synced to the current user runtime lane."));
         } catch (error) {
-            Alert.alert("保存失败", error instanceof Error ? error.message : "无法更新资料");
+            Alert.alert(t("保存失败", "Save failed"), error instanceof Error ? error.message : t("无法更新资料", "Unable to update the profile."));
         } finally {
             setProfileBusy(false);
         }
@@ -112,7 +116,7 @@ export default function SettingsScreen() {
         try {
             const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
             if (!permission.granted) {
-                throw new Error("需要相册权限才能上传头像");
+                throw new Error(t("需要相册权限才能上传头像", "Photo library permission is required to upload an avatar."));
             }
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ["images"],
@@ -130,7 +134,7 @@ export default function SettingsScreen() {
                 type: asset.mimeType || "image/jpeg",
             });
             if (!uploaded.url) {
-                throw new Error("头像上传成功，但未返回地址");
+                throw new Error(t("头像上传成功，但未返回地址", "The avatar upload succeeded, but no URL was returned."));
             }
             setImage(uploaded.url);
             const updated = await updateProfile(authorizedFetch, {
@@ -143,9 +147,9 @@ export default function SettingsScreen() {
             } else {
                 await refreshUser();
             }
-            setProfileMessage("头像已更新。");
+            setProfileMessage(t("头像已更新。", "Avatar updated."));
         } catch (error) {
-            Alert.alert("头像更新失败", error instanceof Error ? error.message : "无法更新头像");
+            Alert.alert(t("头像更新失败", "Avatar update failed"), error instanceof Error ? error.message : t("无法更新头像", "Unable to update the avatar."));
         } finally {
             setAvatarBusy(false);
         }
@@ -153,11 +157,11 @@ export default function SettingsScreen() {
 
     const savePassword = async () => {
         if (!currentPassword.trim() || !nextPassword.trim()) {
-            Alert.alert("修改失败", "请填写当前密码和新密码");
+            Alert.alert(t("修改失败", "Update failed"), t("请填写当前密码和新密码", "Please enter both the current password and the new password."));
             return;
         }
         if (nextPassword !== confirmPassword) {
-            Alert.alert("修改失败", "两次输入的新密码不一致");
+            Alert.alert(t("修改失败", "Update failed"), t("两次输入的新密码不一致", "The new passwords do not match."));
             return;
         }
         setPasswordBusy(true);
@@ -174,16 +178,16 @@ export default function SettingsScreen() {
             setCurrentPassword("");
             setNextPassword("");
             setConfirmPassword("");
-            setPasswordMessage("密码已更新。");
+            setPasswordMessage(t("密码已更新。", "Password updated."));
         } catch (error) {
-            Alert.alert("修改失败", error instanceof Error ? error.message : "无法修改密码");
+            Alert.alert(t("修改失败", "Update failed"), error instanceof Error ? error.message : t("无法修改密码", "Unable to update the password."));
         } finally {
             setPasswordBusy(false);
         }
     };
 
     if (status === "booting") {
-        return <LoadingScreen label="正在读取手机端设置…" />;
+        return <LoadingScreen label={t("正在读取手机端设置…", "Loading phone settings...")} />;
     }
 
     if (status === "anonymous") {
@@ -193,11 +197,11 @@ export default function SettingsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} />
+                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView contentContainerStyle={styles.content}>
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>当前账号</Text>
+                        <Text style={styles.sectionTitle}>{t("当前账号", "Current account")}</Text>
                         <View style={styles.userRow}>
                             {avatarUri ? (
                                 <Image source={{ uri: avatarUri }} style={styles.userAvatarImage} />
@@ -207,22 +211,22 @@ export default function SettingsScreen() {
                                 </View>
                             )}
                             <View style={styles.userBody}>
-                                <Text style={styles.userName}>{user?.name || user?.login || "未知用户"}</Text>
-                                <Text style={styles.userMeta}>{user?.email || "未提供邮箱"}</Text>
-                                <Text style={styles.userTag}>角色：{user?.role || "USER"}</Text>
+                                <Text style={styles.userName}>{user?.name || user?.login || t("未知用户", "Unknown user")}</Text>
+                                <Text style={styles.userMeta}>{user?.email || t("未提供邮箱", "No email provided")}</Text>
+                                <Text style={styles.userTag}>{t("角色", "Role")}：{user?.role || "USER"}</Text>
                             </View>
                         </View>
                         {user?.mustChangePassword ? (
                             <View style={styles.noticeBox}>
                                 <MaterialCommunityIcons name="shield-key-outline" size={16} color={colors.warning} />
-                                <Text style={styles.noticeText}>当前账号要求先修改密码，修改完成后会与 Web 端保持同一用户态。</Text>
+                                <Text style={styles.noticeText}>{t("当前账号要求先修改密码，修改完成后会与 Web 端保持同一用户态。", "This account must change its password first. After that, Phone and Web will share the same user session.")}</Text>
                             </View>
                         ) : null}
                     </GlassCard>
 
                     <GlassCard>
                         <View style={styles.sectionTitleRow}>
-                            <Text style={styles.sectionTitle}>个人资料</Text>
+                            <Text style={styles.sectionTitle}>{t("个人资料", "Profile")}</Text>
                             {loadingProfile ? <ActivityIndicator color={colors.primary} size="small" /> : null}
                         </View>
                         <View style={styles.profileCard}>
@@ -244,17 +248,17 @@ export default function SettingsScreen() {
                             </Pressable>
                             <View style={styles.profileFields}>
                                 <View style={styles.field}>
-                                    <Text style={styles.fieldLabel}>昵称</Text>
+                                    <Text style={styles.fieldLabel}>{t("昵称", "Display name")}</Text>
                                     <TextInput
                                         value={name}
                                         onChangeText={setName}
-                                        placeholder="你的显示名称"
+                                        placeholder={t("你的显示名称", "Your display name")}
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
                                 </View>
                                 <View style={styles.field}>
-                                    <Text style={styles.fieldLabel}>邮箱</Text>
+                                    <Text style={styles.fieldLabel}>{t("邮箱", "Email")}</Text>
                                     <TextInput
                                         value={email}
                                         onChangeText={setEmail}
@@ -270,69 +274,69 @@ export default function SettingsScreen() {
                         </View>
                         {profileMessage ? <Text style={styles.successText}>{profileMessage}</Text> : null}
                         <Pressable style={[styles.primaryButton, profileBusy && styles.disabled]} onPress={() => void saveProfile()}>
-                            {profileBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>保存资料</Text>}
+                            {profileBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("保存资料", "Save profile")}</Text>}
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>安全与密码</Text>
+                        <Text style={styles.sectionTitle}>{t("安全与密码", "Security & password")}</Text>
                         <View style={styles.field}>
-                            <Text style={styles.fieldLabel}>当前密码</Text>
+                            <Text style={styles.fieldLabel}>{t("当前密码", "Current password")}</Text>
                             <TextInput
                                 secureTextEntry
                                 value={currentPassword}
                                 onChangeText={setCurrentPassword}
-                                placeholder="输入当前密码"
+                                placeholder={t("输入当前密码", "Enter current password")}
                                 placeholderTextColor={colors.textSoft}
                                 style={styles.input}
                             />
                         </View>
                         <View style={styles.field}>
-                            <Text style={styles.fieldLabel}>新密码</Text>
+                            <Text style={styles.fieldLabel}>{t("新密码", "New password")}</Text>
                             <TextInput
                                 secureTextEntry
                                 value={nextPassword}
                                 onChangeText={setNextPassword}
-                                placeholder="输入新密码"
+                                placeholder={t("输入新密码", "Enter new password")}
                                 placeholderTextColor={colors.textSoft}
                                 style={styles.input}
                             />
                         </View>
                         <View style={styles.field}>
-                            <Text style={styles.fieldLabel}>确认新密码</Text>
+                            <Text style={styles.fieldLabel}>{t("确认新密码", "Confirm new password")}</Text>
                             <TextInput
                                 secureTextEntry
                                 value={confirmPassword}
                                 onChangeText={setConfirmPassword}
-                                placeholder="再次输入新密码"
+                                placeholder={t("再次输入新密码", "Enter the new password again")}
                                 placeholderTextColor={colors.textSoft}
                                 style={styles.input}
                             />
                         </View>
                         {passwordMessage ? <Text style={styles.successText}>{passwordMessage}</Text> : null}
                         <Pressable style={[styles.primaryButton, passwordBusy && styles.disabled]} onPress={() => void savePassword()}>
-                            {passwordBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>更新密码</Text>}
+                            {passwordBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("更新密码", "Update password")}</Text>}
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>连接摘要</Text>
+                        <Text style={styles.sectionTitle}>{t("连接摘要", "Connection summary")}</Text>
                         <View style={styles.summaryGroup}>
                             <Text style={styles.summaryLabel}>Admin BFF</Text>
-                            <Text style={styles.summaryValue}>{adminBaseUrl || "未连接"}</Text>
+                            <Text style={styles.summaryValue}>{adminBaseUrl || t("未连接", "Not connected")}</Text>
                         </View>
                         <View style={styles.summaryGroup}>
-                            <Text style={styles.summaryLabel}>用户面语义</Text>
-                            <Text style={styles.summaryValue}>Phone 与 Web 使用同一条用户主链，不下放后台治理权限。</Text>
+                            <Text style={styles.summaryLabel}>{t("用户面语义", "User-surface contract")}</Text>
+                            <Text style={styles.summaryValue}>{t("Phone 与 Web 使用同一条用户主链，不下放后台治理权限。", "Phone and Web share the same user-facing runtime lane without exposing background governance controls.")}</Text>
                         </View>
                         <View style={styles.buttonRow}>
                             <Pressable style={styles.primaryButton} onPress={() => router.push("/connect" as Href)}>
                                 <MaterialCommunityIcons name="lan-connect" size={16} color="#FFFFFF" />
-                                <Text style={styles.primaryButtonText}>打开连接页</Text>
+                                <Text style={styles.primaryButtonText}>{t("打开连接页", "Open connection page")}</Text>
                             </Pressable>
                             <Pressable style={styles.secondaryButton} onPress={() => void signOut()}>
                                 <MaterialCommunityIcons name="logout" size={16} color={colors.text} />
-                                <Text style={styles.secondaryButtonText}>退出登录</Text>
+                                <Text style={styles.secondaryButtonText}>{t("退出登录", "Sign out")}</Text>
                             </Pressable>
                         </View>
                     </GlassCard>

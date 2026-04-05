@@ -16,10 +16,12 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
-import { conversationGroupLabels, conversationGroupOrder, groupConversations, type ConversationGroupKey } from "@/src/lib/conversation-groups";
+import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
+import { conversationGroupOrder, getConversationGroupLabel, groupConversations, type ConversationGroupKey } from "@/src/lib/conversation-groups";
 import { createConversation, deleteConversation, listConversations } from "@/src/lib/phone-api";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
 
@@ -32,6 +34,8 @@ const groupIcons: Record<ConversationGroupKey, keyof typeof MaterialCommunityIco
 
 export default function SessionsScreen() {
     const { status, activeConversationId, setActiveConversationId, authorizedFetch } = useAppSession();
+    const { t, locale } = useUiPrefs();
+    const goHomeToChat = useGoHomeToChat();
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -50,11 +54,11 @@ export default function SessionsScreen() {
         try {
             setConversations(await listConversations(authorizedFetch));
         } catch (error) {
-            Alert.alert("读取失败", error instanceof Error ? error.message : "无法加载会话列表");
+            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法加载会话列表", "Unable to load the conversation list"));
         } finally {
             setRefreshing(false);
         }
-    }, [authorizedFetch]);
+    }, [authorizedFetch, t]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -65,22 +69,22 @@ export default function SessionsScreen() {
     const createNew = async () => {
         setBusy(true);
         try {
-            const created = await createConversation(authorizedFetch, "New Chat");
+            const created = await createConversation(authorizedFetch, t("新对话", "New chat"));
             await setActiveConversationId(created.id);
             await load();
             router.push("/chat" as Href);
         } catch (error) {
-            Alert.alert("创建失败", error instanceof Error ? error.message : "无法创建新会话");
+            Alert.alert(t("创建失败", "Create failed"), error instanceof Error ? error.message : t("无法创建新会话", "Unable to create a new conversation"));
         } finally {
             setBusy(false);
         }
     };
 
     const remove = async (item: ConversationSummary) => {
-        Alert.alert("删除会话", "确定删除这个会话吗？", [
-            { text: "取消", style: "cancel" },
+        Alert.alert(t("删除会话", "Delete conversation"), t("确定删除这个会话吗？", "Delete this conversation?"), [
+            { text: t("取消", "Cancel"), style: "cancel" },
             {
-                text: "删除",
+                text: t("删除", "Delete"),
                 style: "destructive",
                 onPress: async () => {
                     try {
@@ -90,7 +94,7 @@ export default function SessionsScreen() {
                         }
                         await load();
                     } catch (error) {
-                        Alert.alert("删除失败", error instanceof Error ? error.message : "无法删除会话");
+                        Alert.alert(t("删除失败", "Delete failed"), error instanceof Error ? error.message : t("无法删除会话", "Unable to delete the conversation"));
                     }
                 },
             },
@@ -98,7 +102,7 @@ export default function SessionsScreen() {
     };
 
     if (status === "booting") {
-        return <LoadingScreen label="正在同步会话列表…" />;
+        return <LoadingScreen label={t("正在同步会话列表…", "Syncing conversations...")} />;
     }
 
     if (status === "anonymous") {
@@ -113,7 +117,7 @@ export default function SessionsScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} />
+                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}
@@ -121,11 +125,11 @@ export default function SessionsScreen() {
                 >
                     <Pressable style={[styles.newButton, busy && styles.disabled]} onPress={() => void createNew()}>
                         <MaterialCommunityIcons name="plus" size={18} color="#FFFFFF" />
-                        <Text style={styles.newButtonText}>新建对话</Text>
+                        <Text style={styles.newButtonText}>{t("新建对话", "New chat")}</Text>
                     </Pressable>
 
                     {conversations.length === 0 ? (
-                        <Text style={styles.emptyBody}>当前没有会话</Text>
+                        <Text style={styles.emptyBody}>{t("当前没有会话", "There are no conversations yet.")}</Text>
                     ) : null}
 
                     {conversationGroupOrder
@@ -135,7 +139,7 @@ export default function SessionsScreen() {
                                 <View style={styles.groupHeader}>
                                     <View style={styles.groupPill}>
                                         <MaterialCommunityIcons name={groupIcons[groupKey]} size={14} color={colors.textMuted} />
-                                        <Text style={styles.groupLabel}>{conversationGroupLabels[groupKey]}</Text>
+                                        <Text style={styles.groupLabel}>{getConversationGroupLabel(groupKey, locale)}</Text>
                                     </View>
                                     <Text style={styles.groupCount}>{grouped[groupKey].length}</Text>
                                 </View>
@@ -155,10 +159,10 @@ export default function SessionsScreen() {
                                                     <View style={[styles.itemDot, active && styles.itemDotActive]} />
                                                     <View style={styles.itemBody}>
                                                         <Text style={styles.itemTitle} numberOfLines={1}>
-                                                            {item.title || `会话 ${item.id.slice(0, 8)}`}
+                                                            {item.title || t(`会话 ${item.id.slice(0, 8)}`, `Conversation ${item.id.slice(0, 8)}`)}
                                                         </Text>
                                                         <Text style={styles.itemMeta}>
-                                                            {formatRelativeTime(item.updatedAt || item.createdAt || "")}
+                                                            {formatRelativeTime(item.updatedAt || item.createdAt || "", locale)}
                                                         </Text>
                                                     </View>
                                                     <Pressable onPress={() => void remove(item)} hitSlop={8}>

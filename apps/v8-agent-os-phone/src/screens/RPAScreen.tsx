@@ -18,13 +18,17 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
+import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { getRpaAvailability, listRpaDrafts, runExistingRobotFlow, runRpaCompile } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { RPAAvailability, RPADraftSummary } from "@/src/types/admin";
 
 export default function RPAScreen() {
     const { status, authorizedFetch } = useAppSession();
+    const { t } = useUiPrefs();
+    const goHomeToChat = useGoHomeToChat();
     const [refreshing, setRefreshing] = useState(false);
     const [availability, setAvailability] = useState<RPAAvailability | null>(null);
     const [drafts, setDrafts] = useState<RPADraftSummary[]>([]);
@@ -51,11 +55,11 @@ export default function RPAScreen() {
             setAvailability(nextAvailability);
             setDrafts(nextDrafts);
         } catch (error) {
-            Alert.alert("读取失败", error instanceof Error ? error.message : "无法读取 RPA 用户入口状态");
+            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法读取 RPA 用户入口状态", "Unable to load the RPA user entry state"));
         } finally {
             setRefreshing(false);
         }
-    }, [authorizedFetch]);
+    }, [authorizedFetch, t]);
 
     const parseVariables = useCallback(() => {
         const raw = variablesText.trim();
@@ -65,13 +69,13 @@ export default function RPAScreen() {
         try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-                throw new Error("变量必须是 JSON 对象");
+                throw new Error(t("变量必须是 JSON 对象", "Variables must be a JSON object"));
             }
             return parsed as Record<string, unknown>;
         } catch (error) {
-            throw new Error(error instanceof Error ? error.message : "变量 JSON 解析失败");
+            throw new Error(error instanceof Error ? error.message : t("变量 JSON 解析失败", "Failed to parse the variables JSON"));
         }
-    }, [variablesText]);
+    }, [variablesText, t]);
 
     const handleCompile = useCallback(async () => {
         const runIds = compileRunIds
@@ -79,7 +83,7 @@ export default function RPAScreen() {
             .map((item) => item.trim())
             .filter(Boolean);
         if (runIds.length === 0) {
-            Alert.alert("无法生成", "请至少输入一个 Run ID。");
+            Alert.alert(t("无法生成", "Unable to generate"), t("请至少输入一个 Run ID。", "Enter at least one Run ID."));
             return;
         }
         setBusyAction("compile");
@@ -88,23 +92,23 @@ export default function RPAScreen() {
             setLatestResult(payload);
             await load();
         } catch (error) {
-            Alert.alert("生成失败", error instanceof Error ? error.message : "无法从 Run 生成 RPA 草稿");
+            Alert.alert(t("生成失败", "Generation failed"), error instanceof Error ? error.message : t("无法从 Run 生成 RPA 草稿", "Unable to generate an RPA draft from the run."));
         } finally {
             setBusyAction("");
         }
-    }, [authorizedFetch, compileRunIds, load]);
+    }, [authorizedFetch, compileRunIds, load, t]);
 
     const handleRunExisting = useCallback(async () => {
         const robotFile = existingRobotFile.trim();
         if (!robotFile) {
-            Alert.alert("无法执行", "请填写既有的 robot 文件路径或脚本 ID。");
+            Alert.alert(t("无法执行", "Unable to execute"), t("请填写既有的 robot 文件路径或脚本 ID。", "Enter an existing robot file path or script ID."));
             return;
         }
         let variables: Record<string, unknown>;
         try {
             variables = parseVariables();
         } catch (error) {
-            Alert.alert("变量格式错误", error instanceof Error ? error.message : "变量 JSON 不正确");
+            Alert.alert(t("变量格式错误", "Invalid variables"), error instanceof Error ? error.message : t("变量 JSON 不正确", "The variables JSON is invalid."));
             return;
         }
         setBusyAction("run-existing");
@@ -113,11 +117,11 @@ export default function RPAScreen() {
             setLatestResult(payload);
             await load();
         } catch (error) {
-            Alert.alert("执行失败", error instanceof Error ? error.message : "无法执行既有 RPA 流程");
+            Alert.alert(t("执行失败", "Execution failed"), error instanceof Error ? error.message : t("无法执行既有 RPA 流程", "Unable to execute the existing RPA flow."));
         } finally {
             setBusyAction("");
         }
-    }, [authorizedFetch, existingRobotFile, load, parseVariables]);
+    }, [authorizedFetch, existingRobotFile, load, parseVariables, t]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -126,7 +130,7 @@ export default function RPAScreen() {
     }, [load, status]);
 
     if (status === "booting") {
-        return <LoadingScreen label="正在读取 RPA 状态…" />;
+        return <LoadingScreen label={t("正在读取 RPA 状态…", "Loading RPA status...")} />;
     }
 
     if (status === "anonymous") {
@@ -141,35 +145,37 @@ export default function RPAScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} />
+                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load()} />}
                 >
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>运行时可用性</Text>
+                        <Text style={styles.sectionTitle}>{t("运行时可用性", "Runtime availability")}</Text>
                         <View style={styles.statusRow}>
                             <View style={[styles.statusDot, availability?.robotFramework ? styles.statusOk : styles.statusMuted]} />
                             <Text style={styles.statusText}>
-                                Robot Framework {availability?.robotFramework ? "已就绪" : "未就绪"}
+                                Robot Framework {availability?.robotFramework ? t("已就绪", "Ready") : t("未就绪", "Not ready")}
                             </Text>
                         </View>
                         <View style={styles.statusRow}>
                             <View style={[styles.statusDot, availability?.rpaFramework ? styles.statusOk : styles.statusMuted]} />
                             <Text style={styles.statusText}>
-                                RPA Framework {availability?.rpaFramework ? "已就绪" : "未就绪"}
+                                RPA Framework {availability?.rpaFramework ? t("已就绪", "Ready") : t("未就绪", "Not ready")}
                             </Text>
                         </View>
                         <Text style={styles.metaText}>
-                            Windows 库：{availability?.libraries?.["RPA.Windows"] ? "已安装" : "缺失"} · Browser：{availability?.libraries?.["RPA.Browser.Selenium"] ? "已安装" : "缺失"}
+                            {t("Windows 库", "Windows library")}：{availability?.libraries?.["RPA.Windows"] ? t("已安装", "Installed") : t("缺失", "Missing")}
+                            {" · "}
+                            Browser：{availability?.libraries?.["RPA.Browser.Selenium"] ? t("已安装", "Installed") : t("缺失", "Missing")}
                         </Text>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>最近草稿</Text>
+                        <Text style={styles.sectionTitle}>{t("最近草稿", "Recent drafts")}</Text>
                         {drafts.length === 0 ? (
-                            <Text style={styles.emptyBody}>当前没有可直接继续的 RPA 草稿。</Text>
+                            <Text style={styles.emptyBody}>{t("当前没有可直接继续的 RPA 草稿。", "There are no RPA drafts ready to continue right now.")}</Text>
                         ) : (
                             drafts.map((draft) => (
                                 <Pressable
@@ -178,9 +184,9 @@ export default function RPAScreen() {
                                     onPress={() => setExistingRobotFile(draft.script_id || draft.id || draft.title || "")}
                                 >
                                     <View style={styles.draftBody}>
-                                        <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || "未命名草稿"}</Text>
+                                        <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || t("未命名草稿", "Untitled draft")}</Text>
                                         <Text style={styles.draftMeta}>
-                                            {draft.status || "draft"} · {draft.updated_at || draft.created_at || "时间未知"}
+                                            {draft.status || "draft"} · {draft.updated_at || draft.created_at || t("时间未知", "Unknown time")}
                                         </Text>
                                     </View>
                                     <MaterialCommunityIcons name="chevron-right" size={18} color={colors.textSoft} />
@@ -190,27 +196,27 @@ export default function RPAScreen() {
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>从 Run 生成草稿</Text>
+                        <Text style={styles.sectionTitle}>{t("从 Run 生成草稿", "Generate draft from run")}</Text>
                         <TextInput
                             value={compileRunIds}
                             onChangeText={setCompileRunIds}
-                            placeholder="run_123456 或用逗号 / 空格分隔多个 Run ID"
+                            placeholder={t("run_123456 或用逗号 / 空格分隔多个 Run ID", "run_123456, or separate multiple Run IDs with commas / spaces")}
                             placeholderTextColor={colors.textSoft}
                             autoCapitalize="none"
                             autoCorrect={false}
                             style={styles.input}
                         />
                         <Pressable style={[styles.primaryButton, busyAction === "compile" && styles.disabled]} onPress={() => void handleCompile()}>
-                            {busyAction === "compile" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>生成草稿</Text>}
+                            {busyAction === "compile" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("生成草稿", "Generate draft")}</Text>}
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>执行既有流程</Text>
+                        <Text style={styles.sectionTitle}>{t("执行既有流程", "Run existing flow")}</Text>
                         <TextInput
                             value={existingRobotFile}
                             onChangeText={setExistingRobotFile}
-                            placeholder="scripts/example.robot 或已有脚本 ID"
+                            placeholder={t("scripts/example.robot 或已有脚本 ID", "scripts/example.robot or an existing script ID")}
                             placeholderTextColor={colors.textSoft}
                             autoCapitalize="none"
                             autoCorrect={false}
@@ -228,16 +234,16 @@ export default function RPAScreen() {
                             style={[styles.input, styles.multilineInput]}
                         />
                         <Pressable style={[styles.primaryButton, busyAction === "run-existing" && styles.disabled]} onPress={() => void handleRunExisting()}>
-                            {busyAction === "run-existing" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>执行既有流程</Text>}
+                            {busyAction === "run-existing" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("执行既有流程", "Run existing flow")}</Text>}
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>最近结果</Text>
+                        <Text style={styles.sectionTitle}>{t("最近结果", "Latest result")}</Text>
                         {latestResult ? (
                             <Text style={styles.resultText}>{JSON.stringify(latestResult, null, 2)}</Text>
                         ) : (
-                            <Text style={styles.emptyBody}>这里会显示最近一次编译或执行返回的结果，便于手机端继续跟进。</Text>
+                            <Text style={styles.emptyBody}>{t("这里会显示最近一次编译或执行返回的结果，便于手机端继续跟进。", "The latest compile or execution result appears here so you can continue from Phone.")}</Text>
                         )}
                     </GlassCard>
                 </ScrollView>

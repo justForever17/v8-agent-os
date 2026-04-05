@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Animated,
     Easing,
     Image,
+    LayoutChangeEvent,
     Pressable,
     StyleSheet,
     Text,
@@ -31,7 +32,7 @@ const ACTION_ORDER = ["desktop-live", "rpa", "voice", "theme"] as const;
 const WORDMARK_COLORS = ["#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7", "#8B5CF6"] as const;
 const WORDMARK_SHINE_COLORS = [
     "rgba(255,255,255,0)",
-    "rgba(255,255,255,0.16)",
+    "rgba(255,255,255,0.14)",
     "rgba(255,255,255,0.98)",
     "rgba(255,255,255,0.22)",
     "rgba(255,255,255,0)",
@@ -47,23 +48,32 @@ function isRoundAction(key: string) {
     return key === "voice" || key === "theme";
 }
 
-function WordmarkMask({ style, color = "#FFFFFF" }: { style?: object; color?: string }) {
+function WordmarkText({
+    color = "#FFFFFF",
+    style,
+    onLayout,
+}: {
+    color?: string;
+    style?: object;
+    onLayout?: (event: LayoutChangeEvent) => void;
+}) {
     return (
-        <Text allowFontScaling={false} style={[styles.wordmarkMask, style, { color }]}>
+        <Text allowFontScaling={false} onLayout={onLayout} style={[styles.wordmarkText, style, { color }]}>
             V8 OS
         </Text>
     );
 }
 
-function V8Wordmark({ dark }: { dark: boolean }) {
+export function PhoneWordmark({ dark }: { dark: boolean }) {
     const shine = useRef(new Animated.Value(0)).current;
     const gradientFlow = useRef(new Animated.Value(0)).current;
+    const [textWidth, setTextWidth] = useState(88);
 
     useEffect(() => {
         const loop = Animated.loop(
             Animated.timing(shine, {
                 toValue: 1,
-                duration: 3900,
+                duration: 3800,
                 easing: Easing.bezier(0.22, 1, 0.36, 1),
                 useNativeDriver: true,
             }),
@@ -76,7 +86,7 @@ function V8Wordmark({ dark }: { dark: boolean }) {
         const loop = Animated.loop(
             Animated.timing(gradientFlow, {
                 toValue: 1,
-                duration: 8200,
+                duration: 8600,
                 easing: Easing.linear,
                 useNativeDriver: true,
             }),
@@ -85,51 +95,62 @@ function V8Wordmark({ dark }: { dark: boolean }) {
         return () => loop.stop();
     }, [gradientFlow]);
 
+    const gradientWidth = Math.max(Math.round(textWidth * 2.6), 220);
+    const gradientTravel = Math.max(gradientWidth - textWidth, 84);
+    const shineWidth = Math.max(Math.round(textWidth * 0.74), 64);
     const translateX = shine.interpolate({
-        inputRange: [0, 0.18, 0.28, 0.55, 0.7, 1],
-        outputRange: [96, 96, 78, -32, -52, -68],
+        inputRange: [0, 0.16, 0.28, 0.58, 0.72, 1],
+        outputRange: [textWidth + 24, textWidth + 24, textWidth * 0.72, -shineWidth * 0.2, -shineWidth * 0.68, -shineWidth],
     });
     const opacity = shine.interpolate({
-        inputRange: [0, 0.18, 0.28, 0.55, 0.7, 1],
-        outputRange: [0, 0, 0.98, 0.85, 0, 0],
+        inputRange: [0, 0.16, 0.28, 0.58, 0.72, 1],
+        outputRange: [0, 0, 0.94, 0.84, 0, 0],
     });
     const gradientTranslateX = gradientFlow.interpolate({
         inputRange: [0, 1],
-        outputRange: [0, -92],
+        outputRange: [0, -gradientTravel],
     });
 
+    const handleMeasure = (event: LayoutChangeEvent) => {
+        const nextWidth = Math.ceil(event.nativeEvent.layout.width);
+        if (nextWidth && Math.abs(nextWidth - textWidth) > 1) {
+            setTextWidth(nextWidth);
+        }
+    };
+
+    const glowColor = dark ? "rgba(99,102,241,0.20)" : "rgba(99,102,241,0.14)";
+
     return (
-        <View style={styles.wordmark}>
-            <WordmarkMask
-                style={[
-                    styles.wordmarkGlow,
-                    { color: dark ? "rgba(99,102,241,0.28)" : "rgba(99,102,241,0.22)" },
-                ]} 
-            />
-            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkMask />}>
+        <View style={[styles.wordmark, { width: textWidth }]}>
+            <WordmarkText color="rgba(255,255,255,0.01)" onLayout={handleMeasure} style={styles.wordmarkMeasure} />
+            <WordmarkText color={glowColor} style={styles.wordmarkGlow} />
+            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkText />}>
                 <Animated.View
                     pointerEvents="none"
                     style={[
                         styles.wordmarkGradient,
                         {
+                            width: gradientWidth,
                             transform: [{ translateX: gradientTranslateX }],
                         },
                     ]}
                 >
                     <LinearGradient
                         colors={WORDMARK_COLORS}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
+                        locations={[0, 0.16, 0.34, 0.52, 0.7, 0.86, 1]}
+                        start={{ x: 0, y: 0.5 }}
+                        end={{ x: 1, y: 0.5 }}
                         style={StyleSheet.absoluteFill}
                     />
                 </Animated.View>
             </MaskedView>
-            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkMask />}>
+            <MaskedView style={styles.wordmarkLayer} maskElement={<WordmarkText />}>
                 <Animated.View
                     pointerEvents="none"
                     style={[
                         styles.wordmarkShine,
                         {
+                            width: shineWidth,
                             opacity,
                             transform: [{ translateX }],
                         },
@@ -204,11 +225,6 @@ function TopbarButton({
                 round ? styles.actionButtonRound : styles.actionButtonSoftSquare,
                 surfaceStyle,
                 { opacity: action.disabled ? 0.45 : pressed ? 0.78 : 1 },
-                pressed && action.tone === "default" && {
-                    backgroundColor: colors.surfaceStrong,
-                    borderColor: `${colors.border}F2`,
-                    borderWidth: 1,
-                },
             ]}
         >
             <Icon size={16} color={color} strokeWidth={2} />
@@ -224,25 +240,58 @@ function TopbarButton({
     );
 }
 
+function BrandArea({
+    colors,
+    themeMode,
+    onBrandPress,
+}: {
+    colors: ReturnType<typeof useUiPrefs>["colors"];
+    themeMode: "light" | "dark";
+    onBrandPress?: () => void;
+}) {
+    const content = (
+        <>
+            <View style={[styles.brandMarkWrap, { borderColor: `${colors.border}A6`, backgroundColor: colors.surfaceStrong }]}>
+                <Image source={BRAND_MARK} style={styles.brandMark} />
+            </View>
+            <PhoneWordmark dark={themeMode === "dark"} />
+        </>
+    );
+
+    if (!onBrandPress) {
+        return <View style={styles.brandSide}>{content}</View>;
+    }
+
+    return (
+        <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="V8 OS"
+            hitSlop={8}
+            onPress={onBrandPress}
+            style={({ pressed }) => [styles.brandSide, styles.brandPressable, pressed && styles.brandPressableActive]}
+        >
+            {content}
+        </Pressable>
+    );
+}
+
 export function PhoneTopbar({
     actions,
     userImageUri,
     onProfilePress,
+    onBrandPress,
 }: {
     actions: PhoneTopbarAction[];
     userImageUri?: string;
     onProfilePress?: () => void;
+    onBrandPress?: () => void;
 }) {
-    const { locale, setLocale, colors, themeMode, voiceEnabled, t } = useUiPrefs();
+    const { locale, toggleLocale, colors, themeMode, voiceEnabled, t } = useUiPrefs();
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
         .map((key) => actionMap.get(key))
         .filter((item): item is PhoneTopbarAction => Boolean(item));
-
-    const localeOptions = [
-        { key: "zh-CN" as const, label: "中" },
-        { key: "en" as const, label: "EN" },
-    ];
+    const localeLabel = locale === "en" ? "EN" : "中";
 
     return (
         <View
@@ -254,12 +303,7 @@ export function PhoneTopbar({
                 },
             ]}
         >
-            <View style={styles.brandSide}>
-                <View style={[styles.brandMarkWrap, { borderColor: `${colors.border}A6`, backgroundColor: colors.surfaceStrong }]}>
-                    <Image source={BRAND_MARK} style={styles.brandMark} />
-                </View>
-                <V8Wordmark dark={themeMode === "dark"} />
-            </View>
+            <BrandArea colors={colors} themeMode={themeMode} onBrandPress={onBrandPress} />
 
             <View style={styles.actions}>
                 {orderedActions
@@ -274,8 +318,10 @@ export function PhoneTopbar({
                         />
                     ))}
 
-                <View
-                    accessibilityLabel={t("语言切换", "Language switcher")}
+                <Pressable
+                    accessibilityLabel={t("语言切换", "Toggle language")}
+                    accessibilityRole="button"
+                    onPress={() => void toggleLocale()}
                     style={[
                         styles.localeButton,
                         {
@@ -284,36 +330,8 @@ export function PhoneTopbar({
                         },
                     ]}
                 >
-                    {localeOptions.map((option) => {
-                        const active = option.key === locale;
-                        return (
-                            <Pressable
-                                key={option.key}
-                                onPress={() => void setLocale(option.key)}
-                                style={[
-                                    styles.localeOption,
-                                    active && {
-                                        backgroundColor: colors.primary,
-                                        shadowColor: colors.primary,
-                                        shadowOpacity: 0.18,
-                                        shadowRadius: 6,
-                                        shadowOffset: { width: 0, height: 2 },
-                                        elevation: 2,
-                                    },
-                                ]}
-                            >
-                                <Text
-                                    style={[
-                                        styles.localeText,
-                                        { color: active ? "#FFFFFF" : colors.textMuted },
-                                    ]}
-                                >
-                                    {option.label}
-                                </Text>
-                            </Pressable>
-                        );
-                    })}
-                </View>
+                    <Text style={[styles.localeText, { color: colors.textMuted }]}>{localeLabel}</Text>
+                </Pressable>
 
                 {orderedActions
                     .filter((action) => action.key === "voice" || action.key === "theme")
@@ -328,6 +346,8 @@ export function PhoneTopbar({
                     ))}
 
                 <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("用户资料", "User profile")}
                     style={({ pressed }) => [
                         styles.profileButton,
                         {
@@ -367,9 +387,16 @@ const styles = StyleSheet.create({
     brandSide: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
+        gap: 7,
         minWidth: 0,
         flexShrink: 1,
+    },
+    brandPressable: {
+        paddingRight: 4,
+        borderRadius: 14,
+    },
+    brandPressableActive: {
+        opacity: 0.82,
     },
     brandMark: {
         width: 32,
@@ -384,42 +411,46 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     wordmark: {
-        width: 92,
         height: 23,
         justifyContent: "center",
+        alignSelf: "flex-start",
+        overflow: "visible",
     },
     wordmarkLayer: {
         ...StyleSheet.absoluteFillObject,
     },
-    wordmarkGradient: {
-        width: 184,
-        height: "100%",
-    },
-    wordmarkMask: {
-        minWidth: 86,
-        fontSize: 18,
+    wordmarkText: {
+        fontSize: 18.5,
         fontWeight: "900",
-        letterSpacing: -0.8,
+        letterSpacing: -0.72,
         lineHeight: 22,
         includeFontPadding: false,
+    },
+    wordmarkMeasure: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        opacity: 0,
+    },
+    wordmarkGradient: {
+        height: "100%",
     },
     wordmarkGlow: {
         position: "absolute",
         left: 0,
-        top: 1.5,
-        opacity: 1,
-        textShadowColor: "rgba(99,102,241,0.24)",
-        textShadowOffset: { width: 0, height: 1 },
-        textShadowRadius: 14,
+        top: 1.4,
+        opacity: 0.88,
+        textShadowColor: "rgba(99,102,241,0.18)",
+        textShadowOffset: { width: 0, height: 0 },
+        textShadowRadius: 18,
     },
     wordmarkShine: {
-        width: 92,
         height: "100%",
     },
     actions: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
+        gap: 5,
         flexShrink: 0,
     },
     actionButton: {
@@ -440,12 +471,11 @@ const styles = StyleSheet.create({
         borderRadius: 12,
     },
     localeButton: {
+        width: 36,
         height: 36,
-        borderRadius: 999,
-        paddingHorizontal: 4,
-        flexDirection: "row",
+        borderRadius: 12,
         alignItems: "center",
-        gap: 2,
+        justifyContent: "center",
         borderWidth: 1,
         shadowColor: "#0F172A",
         shadowOpacity: 0.04,
@@ -453,18 +483,10 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 3 },
         elevation: 1,
     },
-    localeOption: {
-        minWidth: 29,
-        height: 28,
-        borderRadius: 999,
-        paddingHorizontal: 9,
-        alignItems: "center",
-        justifyContent: "center",
-    },
     localeText: {
-        fontSize: 11,
+        fontSize: 10.5,
         fontWeight: "800",
-        letterSpacing: 0.6,
+        letterSpacing: 0.4,
     },
     profileButton: {
         width: 36,

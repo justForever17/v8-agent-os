@@ -16,7 +16,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
+import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
 import { useAppSession } from "@/src/providers/app-session";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
 const BRAND_MARK = require("../assets/images/brand-mark.png");
@@ -25,8 +27,19 @@ type Mode = "login" | "register";
 
 export default function LoginScreen() {
     const { status, adminBaseUrl, signIn, signUp, user } = useAppSession();
+    const { t, locale, toggleLocale } = useUiPrefs();
+    const defaultWebBaseUrl = useMemo(() => {
+        if (Platform.OS !== "web" || typeof window === "undefined") {
+            return "";
+        }
+        const hostname = window.location.hostname || "";
+        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") {
+            return "http://127.0.0.1:9528";
+        }
+        return "";
+    }, []);
     const [mode, setMode] = useState<Mode>("login");
-    const [baseUrl, setBaseUrl] = useState(adminBaseUrl || "");
+    const [baseUrl, setBaseUrl] = useState(adminBaseUrl || defaultWebBaseUrl);
     const [login, setLogin] = useState("");
     const [password, setPassword] = useState("");
     const [name, setName] = useState("");
@@ -37,19 +50,23 @@ export default function LoginScreen() {
     useEffect(() => {
         if (adminBaseUrl) {
             setBaseUrl(adminBaseUrl);
+            return;
         }
-    }, [adminBaseUrl]);
+        if (defaultWebBaseUrl) {
+            setBaseUrl((current) => current || defaultWebBaseUrl);
+        }
+    }, [adminBaseUrl, defaultWebBaseUrl]);
 
     const pageTitle = useMemo(
-        () => (mode === "login" ? "欢迎回来" : "创建账号"),
-        [mode],
+        () => (mode === "login" ? t("欢迎回来", "Welcome back") : t("创建账号", "Create account")),
+        [mode, t],
     );
     const pageSubtitle = useMemo(
         () =>
             mode === "login"
-                ? "使用和 Web 端完全一致的用户账号进入 V8 OS Phone。手机端直接连接 Admin 作为用户面 BFF。"
-                : "这里复刻 Web 端注册链路。创建完成后会自动登录，并进入与 Web 同一条用户主链。",
-        [mode],
+                ? t("使用和 Web 端完全一致的用户账号进入 V8 OS Phone。手机端直接连接 Admin 作为用户面 BFF。", "Sign in with the same account you use on Web. Phone connects to Admin as the user-surface BFF.")
+                : t("这里复刻 Web 端注册链路。创建完成后会自动登录，并进入与 Web 同一条用户主链。", "This mirrors the Web sign-up flow. After registration, you will be signed in automatically and enter the same user runtime lane as Web."),
+        [mode, t],
     );
 
     if (status === "authenticated") {
@@ -60,15 +77,15 @@ export default function LoginScreen() {
 
     const validate = () => {
         if (!baseUrl.trim()) {
-            setError("请填写可访问的 Admin 地址");
+            setError(t("请填写可访问的 Admin 地址", "Please enter a reachable Admin URL"));
             return false;
         }
         if (!login.trim() || !password.trim()) {
-            setError("请填写登录名和密码");
+            setError(t("请填写登录名和密码", "Please enter your login and password"));
             return false;
         }
         if (mode === "register" && !name.trim()) {
-            setError("注册时需要填写昵称");
+            setError(t("注册时需要填写昵称", "Display name is required when registering"));
             return false;
         }
         return true;
@@ -93,7 +110,13 @@ export default function LoginScreen() {
                 email: email.trim() || undefined,
             });
         } catch (nextError) {
-            setError(nextError instanceof Error ? nextError.message : mode === "login" ? "登录失败" : "注册失败");
+            setError(
+                nextError instanceof Error
+                    ? nextError.message
+                    : mode === "login"
+                        ? t("登录失败", "Sign-in failed")
+                        : t("注册失败", "Registration failed"),
+            );
         } finally {
             setBusy(false);
         }
@@ -112,12 +135,22 @@ export default function LoginScreen() {
                     behavior={Platform.OS === "ios" ? "padding" : undefined}
                 >
                     <View style={styles.header}>
-                        <View style={styles.brandRow}>
-                            <Image source={BRAND_MARK} style={styles.brandMark} />
-                            <View style={styles.brandTextWrap}>
-                                <Text style={styles.brand}>V8 OS</Text>
-                                <Text style={styles.brandSub}>Phone</Text>
+                        <View style={styles.headerTopRow}>
+                            <View style={styles.brandRow}>
+                                <Image source={BRAND_MARK} style={styles.brandMark} />
+                                <View style={styles.brandTextWrap}>
+                                    <PhoneWordmark dark={false} />
+                                    <Text style={styles.brandSub}>Phone</Text>
+                                </View>
                             </View>
+                            <Pressable
+                                accessibilityLabel={t("语言切换", "Toggle language")}
+                                accessibilityRole="button"
+                                onPress={() => void toggleLocale()}
+                                style={styles.localeToggle}
+                            >
+                                <Text style={styles.localeToggleText}>{locale === "en" ? "EN" : "中"}</Text>
+                            </Pressable>
                         </View>
                         <Text style={styles.title}>{pageTitle}</Text>
                         <Text style={styles.subtitle}>{pageSubtitle}</Text>
@@ -132,7 +165,7 @@ export default function LoginScreen() {
                                     resetError();
                                 }}
                             >
-                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>登录</Text>
+                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("登录", "Sign in")}</Text>
                             </Pressable>
                             <Pressable
                                 style={[styles.modeButton, mode === "register" && styles.modeButtonActive]}
@@ -141,13 +174,13 @@ export default function LoginScreen() {
                                     resetError();
                                 }}
                             >
-                                <Text style={[styles.modeText, mode === "register" && styles.modeTextActive]}>注册</Text>
+                                <Text style={[styles.modeText, mode === "register" && styles.modeTextActive]}>{t("注册", "Register")}</Text>
                             </Pressable>
                         </View>
 
                         <View style={styles.form}>
                             <View style={styles.field}>
-                                <Text style={styles.label}>Admin 地址</Text>
+                                <Text style={styles.label}>{t("Admin 地址", "Admin URL")}</Text>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
@@ -156,7 +189,7 @@ export default function LoginScreen() {
                                         setBaseUrl(next);
                                         resetError();
                                     }}
-                                    placeholder="http://192.168.x.x:9528"
+                                    placeholder={defaultWebBaseUrl || "http://192.168.x.x:9528"}
                                     placeholderTextColor={colors.textSoft}
                                     style={styles.input}
                                 />
@@ -164,14 +197,14 @@ export default function LoginScreen() {
 
                             {mode === "register" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>昵称</Text>
+                                    <Text style={styles.label}>{t("昵称", "Display name")}</Text>
                                     <TextInput
                                         value={name}
                                         onChangeText={(next) => {
                                             setName(next);
                                             resetError();
                                         }}
-                                        placeholder="怎么称呼你？"
+                                        placeholder={t("怎么称呼你？", "How should we address you?")}
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
@@ -179,7 +212,7 @@ export default function LoginScreen() {
                             ) : null}
 
                             <View style={styles.field}>
-                                <Text style={styles.label}>登录名</Text>
+                                <Text style={styles.label}>{t("登录名", "Login")}</Text>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
@@ -188,7 +221,7 @@ export default function LoginScreen() {
                                         setLogin(next);
                                         resetError();
                                     }}
-                                    placeholder={mode === "login" ? "输入 Web 端同一登录名或邮箱" : "设置一个登录名"}
+                                    placeholder={mode === "login" ? t("输入 Web 端同一登录名或邮箱", "Use the same login or email as Web") : t("设置一个登录名", "Choose a login name")}
                                     placeholderTextColor={colors.textSoft}
                                     style={styles.input}
                                 />
@@ -196,7 +229,7 @@ export default function LoginScreen() {
 
                             {mode === "register" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>邮箱</Text>
+                                    <Text style={styles.label}>{t("邮箱", "Email")}</Text>
                                     <TextInput
                                         autoCapitalize="none"
                                         autoCorrect={false}
@@ -206,7 +239,7 @@ export default function LoginScreen() {
                                             setEmail(next);
                                             resetError();
                                         }}
-                                        placeholder="可选，便于同步头像与通知"
+                                        placeholder={t("可选，便于同步头像与通知", "Optional, useful for avatar sync and notifications")}
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
@@ -214,7 +247,7 @@ export default function LoginScreen() {
                             ) : null}
 
                             <View style={styles.field}>
-                                <Text style={styles.label}>{mode === "login" ? "密码" : "设置密码"}</Text>
+                                <Text style={styles.label}>{mode === "login" ? t("密码", "Password") : t("设置密码", "Set password")}</Text>
                                 <TextInput
                                     secureTextEntry
                                     value={password}
@@ -246,7 +279,9 @@ export default function LoginScreen() {
                                         <ActivityIndicator color="#FFFFFF" />
                                     ) : (
                                         <Text style={styles.submitText}>
-                                            {mode === "login" ? "登录并进入 V8 OS Phone" : "创建账号并进入 V8 OS Phone"}
+                                            {mode === "login"
+                                                ? t("登录并进入 V8 OS Phone", "Sign in to V8 OS Phone")
+                                                : t("创建账号并进入 V8 OS Phone", "Create account and enter V8 OS Phone")}
                                         </Text>
                                     )}
                                 </LinearGradient>
@@ -256,7 +291,7 @@ export default function LoginScreen() {
 
                     <Pressable style={styles.connectHint} onPress={() => router.push("/connect" as Href)}>
                         <MaterialCommunityIcons name="lan-connect" size={16} color={colors.textMuted} />
-                        <Text style={styles.connectHintText}>先检查连接地址</Text>
+                        <Text style={styles.connectHintText}>{t("先检查连接地址", "Check the connection first")}</Text>
                     </Pressable>
                 </KeyboardAvoidingView>
             </SafeAreaView>
@@ -280,10 +315,18 @@ const styles = StyleSheet.create({
     header: {
         gap: 10,
     },
+    headerTopRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+    },
     brandRow: {
         flexDirection: "row",
         alignItems: "center",
         gap: 12,
+        flexShrink: 1,
+        minWidth: 0,
     },
     brandMark: {
         width: 42,
@@ -294,16 +337,34 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "baseline",
         gap: 6,
-    },
-    brand: {
-        color: colors.primary,
-        fontSize: 28,
-        fontWeight: "900",
+        flexShrink: 1,
+        minWidth: 0,
     },
     brandSub: {
         color: colors.textMuted,
         fontSize: 16,
         fontWeight: "800",
+    },
+    localeToggle: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.78)",
+        borderWidth: 1,
+        borderColor: colors.border,
+        shadowColor: "#0F172A",
+        shadowOpacity: 0.04,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+        elevation: 1,
+    },
+    localeToggleText: {
+        color: colors.textMuted,
+        fontSize: 10.5,
+        fontWeight: "800",
+        letterSpacing: 0.4,
     },
     title: {
         color: colors.text,

@@ -109,7 +109,7 @@ export function normalizeSessionHistoryItem(raw: unknown): ConversationSummary {
 
     return {
         id: coerceString(record.id) || "",
-        title: coerceString(record.title) || "新对话",
+        title: coerceString(record.title) || "",
         createdAt: coerceString(record.createdAt) || coerceString(record.created_at),
         updatedAt: coerceString(record.updatedAt),
         updated_at: coerceString(record.updated_at),

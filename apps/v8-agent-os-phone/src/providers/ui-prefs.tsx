@@ -3,7 +3,7 @@ import React from "react";
 import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import { getThemeColors, type ThemeColors, type ThemeMode } from "@/src/theme/tokens";
 
-type LocaleCode = "zh-CN" | "en";
+export type LocaleCode = "zh-CN" | "en";
 
 type UiPrefsContextValue = {
     locale: LocaleCode;

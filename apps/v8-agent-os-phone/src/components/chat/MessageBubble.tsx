@@ -107,7 +107,7 @@ export const MessageBubble = memo(function MessageBubble({
     userDisplayName?: string;
 }) {
     const { width, height } = useWindowDimensions();
-    const { colors: palette, t, themeMode } = useUiPrefs();
+    const { colors: palette, t, themeMode, locale } = useUiPrefs();
     const isLandscape = width > height;
     const isUser = message.role === "user";
     const [copied, setCopied] = useState(false);
@@ -236,14 +236,6 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
-    const userBubbleWidth = Math.max(
-        176,
-        Math.min(
-            isLandscape ? width * 0.54 : width * 0.66,
-            width - (isLandscape ? 212 : 136),
-            356,
-        ),
-    );
 
     const openArtifact = async (artifact: ChatArtifact) => {
         if (onOpenArtifact) {
@@ -302,11 +294,24 @@ export const MessageBubble = memo(function MessageBubble({
         return () => clearTimeout(timer);
     }, [copied]);
 
+    const userActionCount = Number(Boolean(copyValue)) + Number(Boolean(onDelete));
+    const userActionFootprint = userActionCount > 0
+        ? (userActionCount * 26) + (Math.max(userActionCount - 1, 0) * 6) + 8
+        : 0;
+    const userColumnWidth = Math.max(
+        156,
+        Math.min(
+            width - 42 - 12 - (isLandscape ? 178 : 108),
+            isLandscape ? 328 : 272,
+        ),
+    );
+    const userBubbleWidth = Math.max(152, userColumnWidth - Math.max(userActionFootprint - 2, 0));
+
     if (isUser) {
         return (
             <View style={styles.userRow}>
                 <View style={styles.userRowInner}>
-                    <View style={[styles.userColumn, { maxWidth: userBubbleWidth }]}>
+                    <View style={[styles.userColumn, { width: userColumnWidth, maxWidth: userColumnWidth }]}>
                         <Text style={[styles.userLabel, { color: palette.textMuted }]} numberOfLines={1}>
                             {userDisplayName || t("你", "You")}
                         </Text>
@@ -314,7 +319,7 @@ export const MessageBubble = memo(function MessageBubble({
                             colors={[palette.primary, palette.accent]}
                             start={{ x: 0, y: 0 }}
                             end={{ x: 1, y: 1 }}
-                            style={[styles.userBubble, { shadowColor: palette.primaryDeep, maxWidth: userBubbleWidth }]}
+                            style={[styles.userBubble, { shadowColor: palette.primaryDeep, width: userBubbleWidth, maxWidth: userBubbleWidth }]}
                         >
                             {(commandPresetName || skillReferences.length > 0 || taskPlanningMode) && (
                                 <View style={styles.userMetaRow}>
@@ -362,7 +367,7 @@ export const MessageBubble = memo(function MessageBubble({
                             ) : null}
                         </View>
 
-                        <Text style={[styles.timeLabelUser, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp) : ""}</Text>
+                        <Text style={[styles.timeLabelUser, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp, locale) : ""}</Text>
                     </View>
 
                     <View style={styles.userAvatarShell}>
@@ -474,7 +479,7 @@ export const MessageBubble = memo(function MessageBubble({
                     ) : null}
                 </View>
 
-                <Text style={[styles.timeLabel, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp) : ""}</Text>
+                <Text style={[styles.timeLabel, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp, locale) : ""}</Text>
             </View>
         </View>
     );
@@ -492,6 +497,7 @@ const styles = StyleSheet.create({
         alignItems: "flex-start",
         justifyContent: "flex-end",
         gap: 12,
+        paddingLeft: 18,
         minWidth: 0,
         maxWidth: "100%",
         width: "100%",
@@ -503,6 +509,7 @@ const styles = StyleSheet.create({
         alignItems: "flex-end",
         gap: 7,
         maxWidth: "100%",
+        overflow: "hidden",
     },
     userAvatarShell: {
         width: 42,
@@ -526,6 +533,7 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 8 },
         elevation: 3,
         maxWidth: "100%",
+        width: "100%",
     },
     userMetaRow: {
         flexDirection: "row",
@@ -554,12 +562,14 @@ const styles = StyleSheet.create({
         width: "100%",
         flexShrink: 1,
         minWidth: 0,
+        maxWidth: "100%",
     },
     actionRowUser: {
         flexDirection: "row",
         justifyContent: "flex-end",
         gap: 6,
         paddingRight: 6,
+        width: "100%",
         maxWidth: "100%",
         alignSelf: "flex-end",
     },

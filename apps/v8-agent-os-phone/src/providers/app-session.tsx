@@ -36,6 +36,50 @@ type MobileAuthPayload = {
     user: PhoneUser;
 };
 
+function getBrowserAdminFallbackBaseUrls(currentBaseUrl: string) {
+    if (Platform.OS !== "web" || typeof window === "undefined") {
+        return [];
+    }
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    const hostname = window.location.hostname || "127.0.0.1";
+    const normalizedCurrent = normalizeAdminBaseUrl(currentBaseUrl);
+    return [
+        `${protocol}//${hostname}:9528`,
+        `${protocol}//127.0.0.1:9528`,
+        `${protocol}//localhost:9528`,
+    ]
+        .map((candidate) => normalizeAdminBaseUrl(candidate))
+        .filter((candidate, index, all) => Boolean(candidate) && candidate !== normalizedCurrent && all.indexOf(candidate) === index);
+}
+
+function getPreferredBrowserAdminBaseUrls(currentBaseUrl: string) {
+    const normalizedCurrent = normalizeAdminBaseUrl(currentBaseUrl);
+    if (Platform.OS !== "web" || typeof window === "undefined") {
+        return normalizedCurrent ? [normalizedCurrent] : [];
+    }
+
+    const browserLocalHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+    let shouldPreferBrowserLocal = false;
+    try {
+        const currentUrl = new URL(normalizedCurrent);
+        shouldPreferBrowserLocal = browserLocalHosts.has(window.location.hostname || "")
+            && !browserLocalHosts.has(currentUrl.hostname || "");
+    } catch {
+        shouldPreferBrowserLocal = browserLocalHosts.has(window.location.hostname || "");
+    }
+
+    const browserFallbacks = getBrowserAdminFallbackBaseUrls(normalizedCurrent);
+    const candidates = shouldPreferBrowserLocal
+        ? [...browserFallbacks, normalizedCurrent]
+        : [normalizedCurrent, ...browserFallbacks];
+
+    return candidates.filter((candidate, index, all) => Boolean(candidate) && all.indexOf(candidate) === index);
+}
+
+async function readAuthPayload(response: Response) {
+    return parseJsonSafe<MobileAuthPayload & { error?: string }>(response);
+}
+
 const SessionContext = React.createContext<SessionContextValue | null>(null);
 
 async function persistSession(baseUrl: string, payload: MobileAuthPayload) {
@@ -55,36 +99,49 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [user, setUser] = React.useState<PhoneUser | null>(null);
     const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
 
+    const refreshSessionWithBaseUrl = React.useCallback(async (baseUrlInput: string, refreshTokenInput: string) => {
+        const baseUrl = normalizeAdminBaseUrl(baseUrlInput);
+        if (!baseUrl || !refreshTokenInput) {
+            return false;
+        }
+
+        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
+        for (const candidateBaseUrl of candidateBaseUrls) {
+            try {
+                const response = await fetch(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/refresh"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        refreshToken: refreshTokenInput,
+                        deviceName: `v8-phone-${Platform.OS}`,
+                    }),
+                });
+                if (!response.ok) {
+                    continue;
+                }
+
+                const payload = await parseJsonSafe<MobileAuthPayload>(response);
+                if (!payload?.accessToken || !payload?.refreshToken || !payload.user) {
+                    continue;
+                }
+
+                setAdminBaseUrlState(candidateBaseUrl);
+                setAccessToken(payload.accessToken);
+                setRefreshToken(payload.refreshToken);
+                setUser(payload.user);
+                setStatus("authenticated");
+                await persistSession(candidateBaseUrl, payload);
+                return true;
+            } catch {
+                // Try next browser-reachable candidate.
+            }
+        }
+        return false;
+    }, []);
+
     const refreshSession = React.useCallback(async () => {
-        const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-        if (!baseUrl || !refreshToken) {
-            return false;
-        }
-
-        const response = await fetch(buildAdminApiUrl(baseUrl, "/api/client/auth/refresh"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                refreshToken,
-                deviceName: `v8-phone-${Platform.OS}`,
-            }),
-        });
-        if (!response.ok) {
-            return false;
-        }
-
-        const payload = await parseJsonSafe<MobileAuthPayload>(response);
-        if (!payload?.accessToken || !payload?.refreshToken || !payload.user) {
-            return false;
-        }
-
-        setAccessToken(payload.accessToken);
-        setRefreshToken(payload.refreshToken);
-        setUser(payload.user);
-        setStatus("authenticated");
-        await persistSession(baseUrl, payload);
-        return true;
-    }, [adminBaseUrl, refreshToken]);
+        return refreshSessionWithBaseUrl(adminBaseUrl, refreshToken);
+    }, [adminBaseUrl, refreshToken, refreshSessionWithBaseUrl]);
 
     const hydrate = React.useCallback(async () => {
         const [storedBaseUrl, storedAccessToken, storedRefreshToken, storedUser, storedConversationId] = await Promise.all([
@@ -96,10 +153,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         ]);
 
         const normalizedBaseUrl = normalizeAdminBaseUrl(storedBaseUrl || "");
-        setAdminBaseUrlState(normalizedBaseUrl);
+        const preferredBaseUrl = getPreferredBrowserAdminBaseUrls(normalizedBaseUrl)[0] || normalizedBaseUrl;
+        setAdminBaseUrlState(preferredBaseUrl);
         setAccessToken(storedAccessToken || "");
         setRefreshToken(storedRefreshToken || "");
         setActiveConversationIdState(storedConversationId || null);
+        if (preferredBaseUrl && preferredBaseUrl !== normalizedBaseUrl) {
+            await setStoredValue("adminBaseUrl", preferredBaseUrl);
+        }
 
         if (storedUser) {
             try {
@@ -109,24 +170,36 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             }
         }
 
-        if (!normalizedBaseUrl || !storedAccessToken) {
+        if (!preferredBaseUrl || !storedAccessToken) {
             setStatus("anonymous");
             return;
         }
 
         try {
-            const meResponse = await fetch(buildAdminApiUrl(normalizedBaseUrl, "/api/client/auth/me"), {
-                headers: { Authorization: `Bearer ${storedAccessToken}` },
-            });
-            if (meResponse.ok) {
-                const mePayload = await parseJsonSafe<{ user: PhoneUser }>(meResponse);
-                if (mePayload?.user) {
-                    setUser(mePayload.user);
-                    setStatus("authenticated");
-                    return;
+            const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(preferredBaseUrl);
+            for (const candidateBaseUrl of candidateBaseUrls) {
+                try {
+                    const meResponse = await fetch(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/me"), {
+                        headers: { Authorization: `Bearer ${storedAccessToken}` },
+                    });
+                    if (!meResponse.ok) {
+                        continue;
+                    }
+                    const mePayload = await parseJsonSafe<{ user: PhoneUser }>(meResponse);
+                    if (mePayload?.user) {
+                        setAdminBaseUrlState(candidateBaseUrl);
+                        setUser(mePayload.user);
+                        setStatus("authenticated");
+                        if (candidateBaseUrl !== preferredBaseUrl) {
+                            await setStoredValue("adminBaseUrl", candidateBaseUrl);
+                        }
+                        return;
+                    }
+                } catch {
+                    // Try next candidate.
                 }
             }
-            const refreshed = await refreshSession();
+            const refreshed = await refreshSessionWithBaseUrl(preferredBaseUrl, storedRefreshToken || "");
             if (!refreshed) {
                 await clearSessionStorage();
                 setAccessToken("");
@@ -138,7 +211,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         } catch {
             setStatus("anonymous");
         }
-    }, [refreshSession]);
+    }, [refreshSessionWithBaseUrl]);
 
     React.useEffect(() => {
         void hydrate();
@@ -164,39 +237,65 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     }, []);
 
     const signIn = React.useCallback(async ({ adminBaseUrl: nextBaseUrl, login, password }: LoginInput) => {
-        const normalizedBaseUrl = normalizeAdminBaseUrl(nextBaseUrl);
-        const response = await fetch(buildAdminApiUrl(normalizedBaseUrl, "/api/client/auth/login"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                login,
-                password,
-                deviceName: `v8-phone-${Platform.OS}`,
-            }),
-        });
+        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(nextBaseUrl);
+        let lastError = "登录失败";
 
-        const payload = await parseJsonSafe<MobileAuthPayload & { error?: string }>(response);
-        if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload.user) {
-            throw new Error(payload?.error || "登录失败");
+        for (const candidateBaseUrl of candidateBaseUrls) {
+            try {
+                const response = await fetch(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/login"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        login,
+                        password,
+                        deviceName: `v8-phone-${Platform.OS}`,
+                    }),
+                });
+
+                const payload = await readAuthPayload(response);
+                if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload.user) {
+                    lastError = payload?.error || "登录失败";
+                    continue;
+                }
+
+                setAdminBaseUrlState(candidateBaseUrl);
+                setAccessToken(payload.accessToken);
+                setRefreshToken(payload.refreshToken);
+                setUser(payload.user);
+                setStatus("authenticated");
+                await persistSession(candidateBaseUrl, payload);
+                return;
+            } catch (error) {
+                lastError = error instanceof Error ? error.message : "登录失败";
+            }
         }
 
-        setAdminBaseUrlState(normalizedBaseUrl);
-        setAccessToken(payload.accessToken);
-        setRefreshToken(payload.refreshToken);
-        setUser(payload.user);
-        setStatus("authenticated");
-        await persistSession(normalizedBaseUrl, payload);
+        throw new Error(lastError);
     }, []);
 
     const signUp = React.useCallback(async (input: RegisterInput) => {
-        const normalizedBaseUrl = normalizeAdminBaseUrl(input.adminBaseUrl);
-        const payload = await registerPhoneUser(normalizedBaseUrl, input);
-        setAdminBaseUrlState(normalizedBaseUrl);
-        setAccessToken(payload.accessToken);
-        setRefreshToken(payload.refreshToken);
-        setUser(payload.user);
-        setStatus("authenticated");
-        await persistSession(normalizedBaseUrl, payload);
+        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(input.adminBaseUrl);
+        let lastError = "注册失败";
+
+        for (const candidateBaseUrl of candidateBaseUrls) {
+            try {
+                const payload = await registerPhoneUser(candidateBaseUrl, {
+                    ...input,
+                    adminBaseUrl: candidateBaseUrl,
+                });
+                setAdminBaseUrlState(candidateBaseUrl);
+                setAccessToken(payload.accessToken);
+                setRefreshToken(payload.refreshToken);
+                setUser(payload.user);
+                setStatus("authenticated");
+                await persistSession(candidateBaseUrl, payload);
+                return;
+            } catch (error) {
+                lastError = error instanceof Error ? error.message : "注册失败";
+            }
+        }
+
+        throw new Error(lastError);
     }, []);
 
     const signOut = React.useCallback(async () => {
@@ -255,16 +354,33 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             throw new Error("当前尚未连接到 Admin");
         }
 
-        const doFetch = async (token: string) =>
-            fetch(buildAdminApiUrl(baseUrl, path), {
+        const doFetch = async (token: string, targetBaseUrl: string) =>
+            fetch(buildAdminApiUrl(targetBaseUrl, path), {
                 ...init,
                 headers: {
                     ...(init?.headers || {}),
                     Authorization: `Bearer ${token}`,
                 },
             });
+        const attemptFetch = async (token: string) => {
+            const candidates = getPreferredBrowserAdminBaseUrls(baseUrl);
+            let lastError: unknown = null;
+            for (const candidateBaseUrl of candidates) {
+                try {
+                    const response = await doFetch(token, candidateBaseUrl);
+                    if (candidateBaseUrl !== baseUrl) {
+                        setAdminBaseUrlState(candidateBaseUrl);
+                        await setStoredValue("adminBaseUrl", candidateBaseUrl);
+                    }
+                    return response;
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+            throw lastError instanceof Error ? new Error(`无法连接 Admin：${baseUrl}`) : new Error("无法连接 Admin");
+        };
 
-        let response = await doFetch(accessToken);
+        let response = await attemptFetch(accessToken);
         if (response.status !== 401) {
             return response;
         }
@@ -276,7 +392,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
 
         const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
-        response = await doFetch(nextAccessToken);
+        response = await attemptFetch(nextAccessToken);
         return response;
     }, [accessToken, adminBaseUrl, refreshSession, signOut]);
 

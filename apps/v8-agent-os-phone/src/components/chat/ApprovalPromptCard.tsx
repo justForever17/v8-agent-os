@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
 
@@ -15,9 +16,10 @@ export function ApprovalPromptCard({
     busy?: boolean;
     onResolve: (answer: string, approve: boolean) => Promise<void>;
 }) {
+    const { t } = useUiPrefs();
     const [answer, setAnswer] = useState("");
 
-    const title = approval.request?.question || approval.request?.prompt || "运行正在等待人工确认";
+    const title = approval.request?.question || approval.request?.prompt || t("运行正在等待人工确认", "This run is waiting for human confirmation");
     const kind = approval.approval_kind || "human_input_required";
 
     return (
@@ -27,7 +29,7 @@ export function ApprovalPromptCard({
                     <MaterialCommunityIcons name="account-question-outline" size={16} color={colors.accent} />
                 </View>
                 <View style={styles.headerBody}>
-                    <Text style={styles.headerTitle}>等待人工确认</Text>
+                    <Text style={styles.headerTitle}>{t("等待人工确认", "Waiting for review")}</Text>
                     <Text style={styles.headerSubtitle}>{kind}</Text>
                 </View>
             </View>
@@ -37,7 +39,7 @@ export function ApprovalPromptCard({
             <TextInput
                 value={answer}
                 onChangeText={setAnswer}
-                placeholder="可以输入补充说明，也可以直接批准"
+                placeholder={t("可以输入补充说明，也可以直接批准", "Add context if needed, or approve directly")}
                 placeholderTextColor={colors.textSoft}
                 multiline
                 style={styles.input}
@@ -49,7 +51,7 @@ export function ApprovalPromptCard({
                     onPress={() => onResolve(answer.trim(), false)}
                     style={[styles.button, styles.rejectButton, busy && styles.disabled]}
                 >
-                    <Text style={[styles.buttonText, styles.rejectText]}>拒绝</Text>
+                    <Text style={[styles.buttonText, styles.rejectText]}>{t("拒绝", "Reject")}</Text>
                 </Pressable>
                 <Pressable
                     disabled={busy}
@@ -57,7 +59,7 @@ export function ApprovalPromptCard({
                     style={[styles.button, styles.approveButton, busy && styles.disabled]}
                 >
                     <Text style={[styles.buttonText, styles.approveText]}>
-                        {busy ? "处理中…" : "批准并继续"}
+                        {busy ? t("处理中…", "Processing...") : t("批准并继续", "Approve and continue")}
                     </Text>
                 </Pressable>
             </View>

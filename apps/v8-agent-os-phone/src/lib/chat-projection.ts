@@ -1,5 +1,6 @@
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import type { ArtifactDetail, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
+import type { LocaleCode } from "@/src/providers/ui-prefs";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageActivity, PhoneRuntimeStageCard, PhoneRuntimeTimelineEntry } from "@/src/lib/runtime-stage";
 import { buildPhoneRuntimeStageModel } from "@/src/lib/runtime-stage";
@@ -193,6 +194,7 @@ export function buildPhoneChatProjection({
     runtimeTimeline,
     selectedRuntimeId,
     t,
+    locale,
 }: {
     conversations: ConversationSummary[];
     activeConversationId: string | null;
@@ -204,6 +206,7 @@ export function buildPhoneChatProjection({
     runtimeTimeline: PhoneRuntimeTimelineEntry[];
     selectedRuntimeId: PhoneRuntimeId;
     t: Translate;
+    locale: LocaleCode;
 }): PhoneChatProjection {
     const activeConversation = conversations.find((item) => item.id === activeConversationId) || null;
     const historyPreview = deriveHistoryPreview(messages, activeConversation);
@@ -213,6 +216,7 @@ export function buildPhoneChatProjection({
         pendingApproval: approvals.length > 0,
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         runtimeTimeline,
+        locale,
     });
 
     const runtimeIdsWithActivities = new Set(runtimeStageModel.activities.map((entry) => entry.runtimeId));

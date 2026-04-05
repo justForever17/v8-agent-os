@@ -66,7 +66,7 @@ export function HistoryDrawer({
 }) {
     const insets = useSafeAreaInsets();
     const { width } = useWindowDimensions();
-    const { colors, t } = useUiPrefs();
+    const { colors, t, locale } = useUiPrefs();
     const panelWidth = Math.min(width * 0.86, 352);
     const groups = useMemo(() => groupedItems || groupConversations(items), [groupedItems, items]);
     const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({
@@ -178,7 +178,7 @@ export function HistoryDrawer({
                                                             />
                                                             <View style={styles.itemBody}>
                                                                 <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text }]} numberOfLines={1}>
-                                                                    {item.title || `会话 ${item.id.slice(0, 8)}`}
+                                                                    {item.title || t(`会话 ${item.id.slice(0, 8)}`, `Conversation ${item.id.slice(0, 8)}`)}
                                                                 </Text>
                                                                 {(item.ownerRuntime || item.workflowStatus || Number(item.pendingApprovalCount || 0) > 0 || item.recoverable) ? (
                                                                     <View style={styles.badgeRow}>
@@ -212,7 +212,7 @@ export function HistoryDrawer({
                                                                     </Text>
                                                                 ) : null}
                                                                 <Text style={[styles.itemMeta, { color: colors.textMuted }]} numberOfLines={1}>
-                                                                    {formatRelativeTime(item.lastActivityAt || item.updatedAt || item.updated_at || item.createdAt || "")}
+                                                                    {formatRelativeTime(item.lastActivityAt || item.updatedAt || item.updated_at || item.createdAt || "", locale)}
                                                                 </Text>
                                                             </View>
                                                             <Pressable

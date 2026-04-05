@@ -38,6 +38,11 @@ type ChatWindowProps = {
     onResolveApproval?: (approval: PendingApproval, answer: string, approve: boolean) => void | Promise<void>;
     onOpenApprovalPanel?: () => void;
     isLandscape?: boolean;
+    emptyState?: {
+        icon?: keyof typeof MaterialCommunityIcons.glyphMap;
+        title: string;
+        subtitle?: string;
+    } | null;
 };
 
 function toArtifactDetail(artifact: ChatArtifact): ArtifactDetail {
@@ -118,6 +123,7 @@ export const ChatWindow = memo(function ChatWindow({
     onResolveApproval,
     onOpenApprovalPanel,
     isLandscape = false,
+    emptyState,
 }: ChatWindowProps) {
     const { colors, t } = useUiPrefs();
     const scrollRef = useRef<ScrollView | null>(null);
@@ -138,6 +144,11 @@ export const ChatWindow = memo(function ChatWindow({
         () => messages.filter(hasRenderableMessage),
         [messages],
     );
+    const resolvedEmptyState = emptyState || {
+        icon: "robot-happy-outline" as const,
+        title: t("没有消息历史", "No messages yet"),
+        subtitle: t("打个招呼吧", "Start the conversation"),
+    };
 
     useEffect(() => {
         if (isAtBottom) {
@@ -189,13 +200,19 @@ export const ChatWindow = memo(function ChatWindow({
                 >
                     {visibleMessages.length === 0 ? (
                         <View style={styles.emptyState}>
-                            <MaterialCommunityIcons name="robot-happy-outline" size={42} color={colors.textSoft} />
+                            <MaterialCommunityIcons
+                                name={resolvedEmptyState.icon || "robot-happy-outline"}
+                                size={42}
+                                color={colors.textSoft}
+                            />
                             <Text style={[styles.emptyTitle, { color: colors.textMuted }]}>
-                                {t("没有消息历史", "No messages yet")}
+                                {resolvedEmptyState.title}
                             </Text>
-                            <Text style={[styles.emptySubtitle, { color: colors.textSoft }]}>
-                                {t("打个招呼吧", "Start the conversation")}
-                            </Text>
+                            {resolvedEmptyState.subtitle ? (
+                                <Text style={[styles.emptySubtitle, { color: colors.textSoft }]}>
+                                    {resolvedEmptyState.subtitle}
+                                </Text>
+                            ) : null}
                         </View>
                     ) : (
                         visibleMessages.map((message) => (

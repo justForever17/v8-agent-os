@@ -1,8 +1,8 @@
-import { memo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import {
+    FlatList,
     Modal,
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     View,
@@ -59,7 +59,7 @@ function ActivityFeedItem({
 }: {
     activity: PhoneRuntimeStageActivity;
 }) {
-    const { colors } = useUiPrefs();
+    const { colors, locale } = useUiPrefs();
     const tone = getKindTone(activity.kind, colors);
     const iconName = getKindIconName(activity.kind);
 
@@ -85,7 +85,7 @@ function ActivityFeedItem({
                     </View>
                 ) : null}
                 <Text style={[styles.feedTimeText, { color: colors.textSoft }]}>
-                    {formatPhoneRelativeRuntimeTime(activity.timestamp)}
+                    {formatPhoneRelativeRuntimeTime(activity.timestamp, locale)}
                 </Text>
             </View>
 
@@ -119,12 +119,75 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     onClose: () => void;
     onSelectRuntime: (runtimeId: PhoneRuntimeId) => void;
 }) {
-    const { colors, themeMode, t } = useUiPrefs();
-    const selectedDescriptor = selectedRuntimeId ? getPhoneRuntimeDescriptor(selectedRuntimeId) : null;
+    const { colors, themeMode, t, locale } = useUiPrefs();
+    const contentScrollRef = useRef<FlatList<PhoneRuntimeStageActivity> | null>(null);
+    const shouldForceScrollTopRef = useRef(false);
+    const effectiveSelectedRuntimeId = useMemo(
+        () => (selectedRuntimeId && items.some((item) => item.id === selectedRuntimeId) ? selectedRuntimeId : (items[0]?.id ?? null)),
+        [items, selectedRuntimeId],
+    );
+    const effectiveSelectedRuntimeDockItem = useMemo(
+        () => items.find((item) => item.id === effectiveSelectedRuntimeId) || selectedRuntimeDockItem,
+        [effectiveSelectedRuntimeId, items, selectedRuntimeDockItem],
+    );
+    const selectedDescriptor = effectiveSelectedRuntimeId ? getPhoneRuntimeDescriptor(effectiveSelectedRuntimeId, locale) : null;
     const panelGradient: [string, string] = themeMode === "dark"
         ? ["rgba(24,24,27,0.985)", "rgba(15,15,18,0.975)"]
         : ["rgba(255,255,255,0.98)", "rgba(247,244,238,0.97)"];
     const overlayColor = themeMode === "dark" ? "rgba(0,0,0,0.58)" : "rgba(15,23,42,0.38)";
+    const visibleActivities = useMemo(() => activities.slice(0, 24), [activities]);
+    const runtimeListKey = useMemo(
+        () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}:${visibleActivities.map((activity) => activity.id).join("|")}`,
+        [effectiveSelectedRuntimeId, visible, visibleActivities],
+    );
+    const resetScrollTop = useCallback(() => {
+        if (!visible) {
+            return;
+        }
+        contentScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
+        shouldForceScrollTopRef.current = false;
+    }, [visible]);
+
+    useEffect(() => {
+        if (!items.length || !effectiveSelectedRuntimeId) {
+            return;
+        }
+        if (selectedRuntimeId !== effectiveSelectedRuntimeId) {
+            onSelectRuntime(effectiveSelectedRuntimeId);
+        }
+    }, [effectiveSelectedRuntimeId, items.length, onSelectRuntime, selectedRuntimeId]);
+
+    useEffect(() => {
+        if (!visible) {
+            return undefined;
+        }
+        shouldForceScrollTopRef.current = true;
+        const handle = requestAnimationFrame(() => {
+            resetScrollTop();
+        });
+        const fallback = setTimeout(() => {
+            resetScrollTop();
+        }, 120);
+        return () => {
+            cancelAnimationFrame(handle);
+            clearTimeout(fallback);
+        };
+    }, [activities.length, effectiveSelectedRuntimeId, resetScrollTop, visible]);
+
+    const renderActivityItem = useCallback(
+        ({ item }: { item: PhoneRuntimeStageActivity }) => <ActivityFeedItem activity={item} />,
+        [],
+    );
+    const renderEmptyState = useCallback(
+        () => (
+            <View style={[styles.emptyState, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
+                <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
+                    {t("当前还没有可展示的运行记录。", "There are no runtime entries to display yet.")}
+                </Text>
+            </View>
+        ),
+        [colors.border, colors.surfaceStrong, colors.textMuted, t],
+    );
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -136,15 +199,15 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                         <View style={[styles.header, { borderBottomColor: colors.border }]}>
                             <View style={styles.headerMain}>
                                 <View style={[styles.hero, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
-                                    {selectedRuntimeDockItem ? (() => {
-                                        const Icon = getRuntimeDockIcon(selectedRuntimeDockItem.id);
+                                    {effectiveSelectedRuntimeDockItem ? (() => {
+                                        const Icon = getRuntimeDockIcon(effectiveSelectedRuntimeDockItem?.id || items[0]?.id || "chat");
                                         return (
                                             <Icon
                                                 size={16}
                                                 color={
-                                                    selectedRuntimeDockItem.status === "attention"
+                                                    effectiveSelectedRuntimeDockItem?.status === "attention"
                                                         ? colors.danger
-                                                        : selectedRuntimeDockItem.status === "active"
+                                                        : effectiveSelectedRuntimeDockItem?.status === "active"
                                                             ? colors.warning
                                                             : colors.text
                                                 }
@@ -155,7 +218,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                 </View>
                                 <View style={styles.headerBody}>
                                     <Text style={[styles.title, { color: colors.text }]}>
-                                        {selectedDescriptor?.label || selectedRuntimeDockItem?.label || t("运行状态", "Runtime")}
+                                        {selectedDescriptor?.label || effectiveSelectedRuntimeDockItem?.label || t("运行状态", "Runtime")}
                                     </Text>
                                     <Text style={[styles.subtitle, { color: colors.textMuted }]} numberOfLines={1}>
                                         {currentRunLabel}
@@ -171,45 +234,61 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             </Pressable>
                         </View>
 
-                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsRow}>
-                            {items.map((item) => (
-                                <Pressable
-                                    key={item.id}
-                                    style={[
-                                        styles.tabButton,
-                                        { backgroundColor: colors.surfaceStrong, borderColor: colors.border },
-                                        item.id === selectedRuntimeId && {
-                                            backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)",
-                                            borderColor: "rgba(245,158,11,0.34)",
-                                            shadowColor: "#F59E0B",
-                                        },
-                                    ]}
-                                    onPress={() => onSelectRuntime(item.id)}
-                                >
-                                    {(() => {
-                                        const Icon = getRuntimeDockIcon(item.id);
-                                        return <Icon size={14} color={item.id === selectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
-                                    })()}
-                                    {item.eventCount > 0 ? (
-                                        <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
-                                            <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
-                                        </View>
-                                    ) : null}
-                                </Pressable>
-                            ))}
-                        </ScrollView>
+                        <View style={styles.tabsWrap}>
+                            <View style={styles.tabsRow}>
+                                {items.map((item) => (
+                                    <Pressable
+                                        key={item.id}
+                                        style={[
+                                            styles.tabButton,
+                                            { backgroundColor: colors.surfaceStrong, borderColor: colors.border },
+                                            item.id === effectiveSelectedRuntimeId && {
+                                                backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)",
+                                                borderColor: "rgba(245,158,11,0.34)",
+                                                shadowColor: "#F59E0B",
+                                            },
+                                        ]}
+                                        onPress={() => onSelectRuntime(item.id)}
+                                    >
+                                        {(() => {
+                                            const Icon = getRuntimeDockIcon(item.id);
+                                            return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
+                                        })()}
+                                        {item.eventCount > 0 ? (
+                                            <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
+                                                <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
+                                            </View>
+                                        ) : null}
+                                    </Pressable>
+                                ))}
+                            </View>
+                        </View>
 
-                        <ScrollView style={styles.contentScroll} contentContainerStyle={styles.content}>
-                            {activities.length > 0 ? (
-                                activities.slice(0, 24).map((activity) => <ActivityFeedItem key={activity.id} activity={activity} />)
-                            ) : (
-                                <View style={[styles.emptyState, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
-                                    <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
-                                        {t("当前还没有可展示的运行记录。", "There are no runtime entries to display yet.")}
-                                    </Text>
-                                </View>
-                            )}
-                        </ScrollView>
+                        <FlatList
+                            key={runtimeListKey}
+                            ref={contentScrollRef}
+                            data={visibleActivities}
+                            keyExtractor={(activity) => activity.id}
+                            renderItem={renderActivityItem}
+                            style={styles.contentList}
+                            contentContainerStyle={[
+                                styles.content,
+                                visibleActivities.length === 0 && styles.contentEmpty,
+                            ]}
+                            ItemSeparatorComponent={() => <View style={styles.feedGap} />}
+                            overScrollMode="never"
+                            onLayout={() => {
+                                if (shouldForceScrollTopRef.current) {
+                                    resetScrollTop();
+                                }
+                            }}
+                            onContentSizeChange={() => {
+                                if (shouldForceScrollTopRef.current) {
+                                    resetScrollTop();
+                                }
+                            }}
+                            ListEmptyComponent={renderEmptyState}
+                        />
                     </View>
                 </View>
             </View>
@@ -287,10 +366,21 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
+    tabsWrap: {
+        height: 48,
+        minHeight: 48,
+        maxHeight: 48,
+        flexGrow: 0,
+        flexShrink: 0,
+        overflow: "hidden",
+        justifyContent: "center",
+    },
     tabsRow: {
+        flexDirection: "row",
         paddingHorizontal: 18,
         paddingVertical: 8,
         gap: 6,
+        alignItems: "center",
     },
     tabButton: {
         width: 32,
@@ -320,15 +410,21 @@ const styles = StyleSheet.create({
         fontWeight: "800",
         lineHeight: 9,
     },
-    contentScroll: {
+    contentList: {
         flex: 1,
         minHeight: 0,
     },
     content: {
         paddingHorizontal: 18,
-        paddingTop: 4,
+        paddingTop: 0,
         paddingBottom: 18,
-        gap: 12,
+    },
+    contentEmpty: {
+        flexGrow: 1,
+        justifyContent: "center",
+    },
+    feedGap: {
+        height: 12,
     },
     feedCard: {
         borderWidth: 1,

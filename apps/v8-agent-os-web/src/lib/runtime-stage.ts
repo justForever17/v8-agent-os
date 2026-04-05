@@ -102,6 +102,7 @@ const RUNTIME_DESCRIPTORS: Record<RuntimeId, RuntimeDescriptor> = {
 };
 
 const RUNTIME_ORDER: RuntimeId[] = ["chat", "extensions", "computer_use", "rpa", "memory", "automation", "plugin_host"];
+const VISIBLE_RUNTIME_ORDER: RuntimeId[] = RUNTIME_ORDER.filter((runtimeId) => runtimeId !== "memory");
 
 function normalizeRuntimeString(value: string): string {
     return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -510,15 +511,16 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
             agentRoleLabel: entry.actorLabel,
             artifact: {
                 id: artifactId,
-                artifactId: coerceTimelineString(metadata.artifactId),
+                artifactId: coerceTimelineString(metadata.artifactId) || artifactId,
                 title: coerceTimelineString(metadata.title) || entry.summary,
                 displayLabel: coerceTimelineString(metadata.displayLabel) || coerceTimelineString(metadata.title) || entry.summary,
                 displaySubtitle: coerceTimelineString(metadata.displaySubtitle)
                     || coerceTimelineString(metadata.workspacePath)
                     || coerceTimelineString(metadata.sourcePath)
-                    || coerceTimelineString(metadata.kind),
-                kind: coerceTimelineString(metadata.kind),
-                mimeType: coerceTimelineString(metadata.mimeType),
+                    || coerceTimelineString(metadata.kind)
+                    || "暂无路径信息",
+                kind: coerceTimelineString(metadata.kind) || "file",
+                mimeType: coerceTimelineString(metadata.mimeType) || "application/octet-stream",
                 previewUrl: coerceTimelineString(metadata.previewUrl),
                 externalUrl: coerceTimelineString(metadata.externalUrl),
                 sourcePath: coerceTimelineString(metadata.sourcePath),
@@ -580,7 +582,7 @@ export function getRuntimeDescriptor(runtimeId: RuntimeId): RuntimeDescriptor {
 }
 
 export function getRuntimeDescriptors(): RuntimeDescriptor[] {
-    return RUNTIME_ORDER.map((runtimeId) => RUNTIME_DESCRIPTORS[runtimeId]);
+    return VISIBLE_RUNTIME_ORDER.map((runtimeId) => RUNTIME_DESCRIPTORS[runtimeId]);
 }
 
 interface BuildRuntimeStageModelOptions {
@@ -640,10 +642,14 @@ export function buildRuntimeStageModel(
 
     activities.sort((left, right) => right.timestamp - left.timestamp);
 
-    const activeRuntimeId = normalizeRuntimeId(options?.ownerRuntime) ?? activities[0]?.runtimeId ?? null;
+    const rawActiveRuntimeId = normalizeRuntimeId(options?.ownerRuntime) ?? activities[0]?.runtimeId ?? null;
+    const firstVisibleRuntimeWithActivity = activities.find((activity) => VISIBLE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
+    const activeRuntimeId = rawActiveRuntimeId && VISIBLE_RUNTIME_ORDER.includes(rawActiveRuntimeId)
+        ? rawActiveRuntimeId
+        : firstVisibleRuntimeWithActivity || "chat";
     const isBusy = Boolean(options?.status && !["completed", "failed", "cancelled"].includes(options.status));
 
-    const items = RUNTIME_ORDER.map((runtimeId) => {
+    const items = VISIBLE_RUNTIME_ORDER.map((runtimeId) => {
         const descriptor = getRuntimeDescriptor(runtimeId);
         const runtimeActivities = activities.filter((activity) => activity.runtimeId === runtimeId);
         const lastActivity = runtimeActivities[0];

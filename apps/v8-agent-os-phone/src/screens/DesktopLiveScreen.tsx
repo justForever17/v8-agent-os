@@ -2,12 +2,14 @@ import { Redirect } from "expo-router";
 
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { useAppSession } from "@/src/providers/app-session";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export default function DesktopLiveScreen() {
     const { status } = useAppSession();
+    const { t } = useUiPrefs();
 
     if (status === "booting") {
-        return <LoadingScreen label="正在返回聊天主界面…" />;
+        return <LoadingScreen label={t("正在返回聊天主界面…", "Returning to chat...")} />;
     }
 
     if (status === "anonymous") {

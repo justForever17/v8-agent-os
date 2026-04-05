@@ -6,6 +6,7 @@ import type {
     PhoneUiGovernanceNode,
     PhoneUiTimelineNode,
 } from "@/src/types/admin";
+import type { LocaleCode } from "@/src/providers/ui-prefs";
 
 export type PhoneRuntimeId =
     | "chat"
@@ -65,53 +66,61 @@ export type PhoneRuntimeStageModel = {
 
 type RuntimeDescriptor = {
     id: PhoneRuntimeId;
-    label: string;
-    shortLabel: string;
-    description: string;
+    label: { zh: string; en: string };
+    shortLabel: { zh: string; en: string };
+    description: { zh: string; en: string };
 };
+
+function isEnglishLocale(locale: LocaleCode = "zh-CN") {
+    return locale === "en";
+}
+
+function rt(locale: LocaleCode, zh: string, en: string) {
+    return isEnglishLocale(locale) ? en : zh;
+}
 
 const RUNTIME_DESCRIPTORS: Record<PhoneRuntimeId, RuntimeDescriptor> = {
     chat: {
         id: "chat",
-        label: "对话运行",
-        shortLabel: "对话",
-        description: "承接主理人的对话主链和任务编排。",
+        label: { zh: "对话运行", en: "Conversation runtime" },
+        shortLabel: { zh: "对话", en: "Chat" },
+        description: { zh: "承接主理人的对话主链和任务编排。", en: "Carries the supervisor conversation and orchestration flow." },
     },
     automation: {
         id: "automation",
-        label: "自动流程",
-        shortLabel: "自动化",
-        description: "处理 Hook、Cron 与系统自动流程。",
+        label: { zh: "自动流程", en: "Automation" },
+        shortLabel: { zh: "自动化", en: "Auto" },
+        description: { zh: "处理 Hook、Cron 与系统自动流程。", en: "Handles hooks, cron jobs, and system automation flows." },
     },
     memory: {
         id: "memory",
-        label: "记忆运行",
-        shortLabel: "记忆",
-        description: "负责记忆召回、知识补充与上下文维护。",
+        label: { zh: "记忆运行", en: "Memory runtime" },
+        shortLabel: { zh: "记忆", en: "Memory" },
+        description: { zh: "负责记忆召回、知识补充与上下文维护。", en: "Handles memory retrieval and context upkeep." },
     },
     plugin_host: {
         id: "plugin_host",
-        label: "插件宿主",
-        shortLabel: "插件宿主",
-        description: "承接 OpenClaw host 与外部消息接入。",
+        label: { zh: "插件宿主", en: "Plugin host" },
+        shortLabel: { zh: "插件", en: "Plugin" },
+        description: { zh: "承接 OpenClaw host 与外部消息接入。", en: "Handles OpenClaw host and external channel ingress." },
     },
     computer_use: {
         id: "computer_use",
-        label: "桌面操作",
-        shortLabel: "桌面",
-        description: "执行真实桌面观察、点击、输入与 GUI 操作。",
+        label: { zh: "桌面操作", en: "Desktop operations" },
+        shortLabel: { zh: "桌面", en: "Desktop" },
+        description: { zh: "执行真实桌面观察、点击、输入与 GUI 操作。", en: "Performs real desktop observation, clicks, typing, and GUI actions." },
     },
     rpa: {
         id: "rpa",
-        label: "自动流程执行",
-        shortLabel: "RPA",
-        description: "复用和生成流程自动化草稿与执行链。",
+        label: { zh: "自动流程执行", en: "RPA execution" },
+        shortLabel: { zh: "RPA", en: "RPA" },
+        description: { zh: "复用和生成流程自动化草稿与执行链。", en: "Reuses and runs automation drafts and execution chains." },
     },
     extensions: {
         id: "extensions",
-        label: "扩展运行",
-        shortLabel: "扩展",
-        description: "负责 Skills 与 MCP 的候选暴露、读取与执行。",
+        label: { zh: "扩展运行", en: "Extensions" },
+        shortLabel: { zh: "扩展", en: "Ext" },
+        description: { zh: "负责 Skills 与 MCP 的候选暴露、读取与执行。", en: "Handles skill and MCP exposure, loading, and execution." },
     },
 };
 
@@ -124,6 +133,8 @@ export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "automation",
     "plugin_host",
 ];
+
+export const VISIBLE_PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = PHONE_RUNTIME_ORDER.filter((runtimeId) => runtimeId !== "memory");
 
 function normalizeRuntimeString(value: string) {
     return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -356,16 +367,19 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
     };
 }
 
-export function formatPhoneRelativeRuntimeTime(timestamp?: number): string {
-    if (!timestamp) return "刚刚";
+export function formatPhoneRelativeRuntimeTime(
+    timestamp?: number,
+    locale: LocaleCode = "zh-CN",
+): string {
+    if (!timestamp) return rt(locale, "刚刚", "Just now");
     const diffMs = Date.now() - timestamp;
     const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
-    if (diffMinutes < 1) return "刚刚";
-    if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+    if (diffMinutes < 1) return rt(locale, "刚刚", "Just now");
+    if (diffMinutes < 60) return isEnglishLocale(locale) ? `${diffMinutes}m ago` : `${diffMinutes} 分钟前`;
     const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) return `${diffHours} 小时前`;
+    if (diffHours < 24) return isEnglishLocale(locale) ? `${diffHours}h ago` : `${diffHours} 小时前`;
     const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays} 天前`;
+    return isEnglishLocale(locale) ? `${diffDays}d ago` : `${diffDays} 天前`;
 }
 
 export function normalizePhoneRuntimeId(raw?: string | null): PhoneRuntimeId | null {
@@ -440,8 +454,14 @@ export function mergePhoneRuntimeTimeline(
     return Array.from(map.values()).sort((left, right) => right.timestamp - left.timestamp);
 }
 
-export function getPhoneRuntimeDescriptor(runtimeId: PhoneRuntimeId) {
-    return RUNTIME_DESCRIPTORS[runtimeId];
+export function getPhoneRuntimeDescriptor(runtimeId: PhoneRuntimeId, locale: LocaleCode = "zh-CN") {
+    const descriptor = RUNTIME_DESCRIPTORS[runtimeId];
+    return {
+        id: descriptor.id,
+        label: locale === "en" ? descriptor.label.en : descriptor.label.zh,
+        shortLabel: locale === "en" ? descriptor.shortLabel.en : descriptor.shortLabel.zh,
+        description: locale === "en" ? descriptor.description.en : descriptor.description.zh,
+    };
 }
 
 export function normalizePhoneRuntimeTimeline(input: unknown[]): PhoneRuntimeTimelineEntry[] {
@@ -498,7 +518,10 @@ export function normalizePhoneRuntimeTimeline(input: unknown[]): PhoneRuntimeTim
     return entries;
 }
 
-export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRuntimeTimelineEntry | null {
+export function buildPhoneRuntimeTimelineEntryFromEvent(
+    raw: unknown,
+    locale: LocaleCode = "zh-CN",
+): PhoneRuntimeTimelineEntry | null {
     if (!raw || typeof raw !== "object") {
         return null;
     }
@@ -539,12 +562,12 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRunt
     if (topic === "chat.command_preset.applied") {
         const presetName = typeof payload.commandPresetName === "string" && payload.commandPresetName.trim()
             ? payload.commandPresetName.trim()
-            : "未知命令";
-        summary = `已应用命令预设：${presetName}`;
+            : rt(locale, "未知命令", "Unknown preset");
+        summary = isEnglishLocale(locale) ? `Applied preset: ${presetName}` : `已应用命令预设：${presetName}`;
         status = "configured";
         runtimeId ||= "chat";
     } else if (topic === "chat.task_planning_mode.enabled") {
-        summary = "已开启任务模式";
+        summary = rt(locale, "已开启任务模式", "Task mode enabled");
         status = "configured";
         runtimeId ||= "chat";
     } else if (topic === "run.continuation.scheduled") {
@@ -552,7 +575,9 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRunt
         const continuationReason = typeof payload.continuationReason === "string" && payload.continuationReason.trim()
             ? payload.continuationReason.trim()
             : "unknown";
-        summary = `已静默续跑第 ${continuationCount} 段执行（${continuationReason}）`;
+        summary = isEnglishLocale(locale)
+            ? `Silently continued segment ${continuationCount} (${continuationReason})`
+            : `已静默续跑第 ${continuationCount} 段执行（${continuationReason}）`;
         status = "continued";
         runtimeId ||= "chat";
     } else if (topic === "supervisor.graph.diagnostics") {
@@ -561,17 +586,25 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRunt
         if (typeof payload.routeBuildMs === "number") parts.push(`route ${payload.routeBuildMs}ms`);
         if (typeof payload.systemContentBuildMs === "number") parts.push(`prompt ${payload.systemContentBuildMs}ms`);
         if (typeof payload.passiveRagMs === "number") parts.push(`rag ${payload.passiveRagMs}ms`);
-        summary = parts.length > 0 ? `Supervisor 诊断：${parts.join("，")}` : "Supervisor 诊断已记录";
+        summary = parts.length > 0
+            ? isEnglishLocale(locale)
+                ? `Supervisor diagnostics: ${parts.join(", ")}`
+                : `Supervisor 诊断：${parts.join("，")}`
+            : rt(locale, "Supervisor 诊断已记录", "Supervisor diagnostics recorded");
         status = "diagnostics";
         runtimeId ||= "chat";
     } else if (topic === "extension.route.selected") {
         const skillCount = Array.isArray(payload.skillCandidates) ? payload.skillCandidates.length : 0;
         const mcpCount = Array.isArray(payload.mcpToolCandidates) ? payload.mcpToolCandidates.length : 0;
-        summary = `已筛出 ${skillCount} 个 Skills，${mcpCount} 个 MCP 工具`;
+        summary = isEnglishLocale(locale)
+            ? `Selected ${skillCount} skills and ${mcpCount} MCP tools`
+            : `已筛出 ${skillCount} 个 Skills，${mcpCount} 个 MCP 工具`;
         status = "selected";
         runtimeId ||= "extensions";
     } else if (topic === "extension.skill.loaded") {
-        summary = `已读取 Skill：${String(payload.skillName || "未知 Skill")}`;
+        summary = isEnglishLocale(locale)
+            ? `Loaded skill: ${String(payload.skillName || "Unknown skill")}`
+            : `已读取 Skill：${String(payload.skillName || "未知 Skill")}`;
         kind = "tool";
         status = "loaded";
         runtimeId ||= "extensions";
@@ -579,20 +612,26 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRunt
         const verdict = typeof payload.verdict === "string" && payload.verdict.trim()
             ? payload.verdict.trim()
             : "high";
-        summary = `Safety Guardian 已阻断 Skill：${String(payload.skillName || "未知 Skill")}（${verdict}）`;
+        summary = isEnglishLocale(locale)
+            ? `Safety Guardian blocked skill: ${String(payload.skillName || "Unknown skill")} (${verdict})`
+            : `Safety Guardian 已阻断 Skill：${String(payload.skillName || "未知 Skill")}（${verdict}）`;
         kind = "governance";
         status = "blocked";
         runtimeId ||= "extensions";
     } else if (topic === "extension.mcp.candidate_exposed") {
         const count = Number(payload.count || (Array.isArray(payload.toolNames) ? payload.toolNames.length : 0)) || 0;
-        summary = `已暴露 ${count} 个 MCP 工具`;
+        summary = isEnglishLocale(locale) ? `Exposed ${count} MCP tools` : `已暴露 ${count} 个 MCP 工具`;
         status = "ready";
         runtimeId ||= "extensions";
     } else if (topic === "extension.mcp.invoked") {
         const names = Array.isArray(payload.toolNames)
             ? payload.toolNames.map((item) => String(item).trim()).filter(Boolean)
             : [];
-        summary = names.length > 0 ? `已调用 MCP 工具：${names.slice(0, 3).join("、")}` : "已调用 MCP 工具";
+        summary = names.length > 0
+            ? isEnglishLocale(locale)
+                ? `Invoked MCP tools: ${names.slice(0, 3).join(", ")}`
+                : `已调用 MCP 工具：${names.slice(0, 3).join("、")}`
+            : rt(locale, "已调用 MCP 工具", "Invoked MCP tools");
         kind = "tool";
         status = "invoked";
         runtimeId ||= "extensions";
@@ -601,27 +640,29 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRunt
             ? payload.toolNames.map((item) => String(item).trim()).filter(Boolean)
             : [];
         summary = names.length > 0
-            ? `扩展执行完成，调用了 ${names.slice(0, 3).join("、")}`
-            : "扩展执行完成";
+            ? isEnglishLocale(locale)
+                ? `Extension run completed with ${names.slice(0, 3).join(", ")}`
+                : `扩展执行完成，调用了 ${names.slice(0, 3).join("、")}`
+            : rt(locale, "扩展执行完成", "Extension run completed");
         status = "completed";
         runtimeId ||= "extensions";
     } else if (topic === "approval.requested") {
         summary = typeof payload.question === "string" && payload.question.trim()
             ? payload.question.trim()
-            : "等待用户确认";
+            : rt(locale, "等待用户确认", "Waiting for user confirmation");
         kind = "governance";
         status = "pending";
         runtimeId ||= "automation";
     } else if (topic === "artifact.recorded") {
-        summary = String(payload.title || payload.kind || payload.workspacePath || "记录新的产物");
+        summary = String(payload.title || payload.kind || payload.workspacePath || rt(locale, "记录新的产物", "Recorded a new artifact"));
         kind = "artifact";
         runtimeId ||= normalizePhoneRuntimeId(String(payload.kind || payload.workspacePath || "chat")) || "chat";
     } else if (topic === "run.lane.acquired") {
-        summary = "已获得当前会话执行权";
+        summary = rt(locale, "已获得当前会话执行权", "Acquired the execution lane");
         status = "acquired";
         runtimeId ||= "chat";
     } else if (topic === "run.lane.released") {
-        summary = "已释放当前会话执行权";
+        summary = rt(locale, "已释放当前会话执行权", "Released the execution lane");
         status = "released";
         runtimeId ||= "chat";
     } else if (topic.startsWith("run.")) {
@@ -671,10 +712,10 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(raw: unknown): PhoneRunt
         actorLabel: typeof (record.source as Record<string, unknown> | undefined)?.agent_id === "string"
             ? String((record.source as Record<string, unknown>).agent_id)
             : runtimeId === "extensions"
-                ? "扩展运行"
+                ? rt(locale, "扩展运行", "Extensions")
                 : runtimeId === "computer_use"
-                    ? "桌面操作"
-                    : "对话运行",
+                    ? rt(locale, "桌面操作", "Desktop")
+                    : rt(locale, "对话运行", "Conversation"),
         timestamp: parseTimelineTimestamp(record.event_ts || record.ts || record.created_at),
         status,
         metadata: payload,
@@ -689,6 +730,7 @@ export function buildPhoneRuntimeStageModel(
         pendingApproval?: boolean;
         currentStepTitle?: string | null;
         runtimeTimeline?: PhoneRuntimeTimelineEntry[] | null;
+        locale?: LocaleCode;
     },
 ): PhoneRuntimeStageModel {
     const activities: PhoneRuntimeStageActivity[] = [];
@@ -734,12 +776,16 @@ export function buildPhoneRuntimeStageModel(
     }
 
     activities.sort((left, right) => right.timestamp - left.timestamp);
-    const activeRuntimeId = normalizePhoneRuntimeId(options?.ownerRuntime) ?? activities[0]?.runtimeId ?? null;
+    const rawActiveRuntimeId = normalizePhoneRuntimeId(options?.ownerRuntime) ?? activities[0]?.runtimeId ?? null;
+    const firstVisibleRuntimeWithActivity = activities.find((activity) => VISIBLE_PHONE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
+    const activeRuntimeId = rawActiveRuntimeId && VISIBLE_PHONE_RUNTIME_ORDER.includes(rawActiveRuntimeId)
+        ? rawActiveRuntimeId
+        : firstVisibleRuntimeWithActivity || "chat";
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
     const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
 
-    const items = PHONE_RUNTIME_ORDER.map((runtimeId) => {
-        const descriptor = getPhoneRuntimeDescriptor(runtimeId);
+    const items = VISIBLE_PHONE_RUNTIME_ORDER.map((runtimeId) => {
+        const descriptor = getPhoneRuntimeDescriptor(runtimeId, options?.locale);
         const runtimeActivities = activities.filter((activity) => activity.runtimeId === runtimeId);
         const lastActivity = runtimeActivities[0];
 

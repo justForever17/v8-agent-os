@@ -8,13 +8,17 @@ import { ApprovalPromptCard } from "@/src/components/chat/ApprovalPromptCard";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
+import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { approvePendingItem, listPendingApprovals } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
 
 export default function ApprovalsScreen() {
     const { status, authorizedFetch } = useAppSession();
+    const { t } = useUiPrefs();
+    const goHomeToChat = useGoHomeToChat();
     const [items, setItems] = useState<PendingApproval[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busyId, setBusyId] = useState("");
@@ -32,11 +36,11 @@ export default function ApprovalsScreen() {
         try {
             setItems(await listPendingApprovals(authorizedFetch));
         } catch (error) {
-            Alert.alert("读取失败", error instanceof Error ? error.message : "无法读取待处理确认");
+            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法读取待处理确认", "Unable to load pending approvals"));
         } finally {
             setRefreshing(false);
         }
-    }, [authorizedFetch]);
+    }, [authorizedFetch, t]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -47,7 +51,7 @@ export default function ApprovalsScreen() {
     const resolve = async (approval: PendingApproval, answer: string, approve: boolean) => {
         const approvalId = approval.id || approval.approval_id;
         if (!approvalId) {
-            Alert.alert("处理失败", "审批记录缺少 ID");
+            Alert.alert(t("处理失败", "Action failed"), t("审批记录缺少 ID", "The approval record is missing its ID."));
             return;
         }
         setBusyId(approvalId);
@@ -55,14 +59,14 @@ export default function ApprovalsScreen() {
             await approvePendingItem(authorizedFetch, approvalId, answer, approve);
             await load();
         } catch (error) {
-            Alert.alert("处理失败", error instanceof Error ? error.message : "无法提交审批结果");
+            Alert.alert(t("处理失败", "Action failed"), error instanceof Error ? error.message : t("无法提交审批结果", "Unable to submit the approval result"));
         } finally {
             setBusyId("");
         }
     };
 
     if (status === "booting") {
-        return <LoadingScreen label="正在读取待处理确认…" />;
+        return <LoadingScreen label={t("正在读取待处理确认…", "Loading pending approvals...")} />;
     }
 
     if (status === "anonymous") {
@@ -72,7 +76,7 @@ export default function ApprovalsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} />
+                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}
@@ -80,7 +84,7 @@ export default function ApprovalsScreen() {
                 >
                     {items.length === 0 ? (
                         <GlassCard>
-                            <Text style={styles.emptyBody}>当前没有待处理确认</Text>
+                            <Text style={styles.emptyBody}>{t("当前没有待处理确认", "There are no pending approvals right now.")}</Text>
                         </GlassCard>
                     ) : null}
 

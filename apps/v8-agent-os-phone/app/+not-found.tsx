@@ -4,20 +4,28 @@ import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, spacing } from "@/src/theme/tokens";
 
 export default function NotFoundScreen() {
+    const { t } = useUiPrefs();
+
     return (
         <>
-            <Stack.Screen options={{ title: "Not Found" }} />
+            <Stack.Screen options={{ title: t("页面未找到", "Not found") }} />
             <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
                 <SafeAreaView style={styles.safeArea}>
                     <View style={styles.container}>
                         <GlassCard>
-                            <Text style={styles.title}>这个页面不存在</Text>
-                            <Text style={styles.body}>当前手机端只承接 web 用户面的正式入口，请返回首页继续使用。</Text>
+                            <Text style={styles.title}>{t("这个页面不存在", "This page does not exist")}</Text>
+                            <Text style={styles.body}>
+                                {t(
+                                    "当前手机端只承接 Web 用户面的正式入口，请返回首页继续使用。",
+                                    "This phone shell only exposes the formal Web user entry points. Return home to continue.",
+                                )}
+                            </Text>
                             <Link href="/" style={styles.link}>
-                                <Text style={styles.linkText}>返回首页</Text>
+                                <Text style={styles.linkText}>{t("返回首页", "Back home")}</Text>
                             </Link>
                         </GlassCard>
                     </View>

@@ -52,6 +52,7 @@ import {
 import { buildDesktopLiveBridgeInjection, buildDesktopLivePreviewHtml } from "@/src/lib/desktop-live-preview";
 import { mergeSessionHistoryOverlay, sortSessionHistory } from "@/src/lib/session-history";
 import { saveResponseToCache } from "@/src/lib/file-transfer";
+import { getDayGreeting } from "@/src/lib/time";
 import {
     approvePendingItem,
     createDesktopLiveOffer,
@@ -445,6 +446,7 @@ export default function ChatScreen() {
         authorizedFetch,
     } = useAppSession();
     const {
+        locale,
         themeMode,
         voiceEnabled,
         toggleThemeMode,
@@ -942,7 +944,7 @@ export default function ChatScreen() {
             return;
         }
 
-        const normalized = normalizePhoneRealtimeEvent(payload);
+        const normalized = normalizePhoneRealtimeEvent(payload, locale);
         if (!normalized) {
             return;
         }
@@ -971,9 +973,9 @@ export default function ChatScreen() {
                         ts: normalized.ts,
                         payload: {
                             question: normalized.data?.question,
-                    actorLabel: tRef.current("运行调度", "Automation"),
-                },
-            }) || buildRuntimeTimelineEntry(
+                            actorLabel: tRef.current("运行调度", "Automation"),
+                        },
+                    }, locale) || buildRuntimeTimelineEntry(
                 normalizePhoneRuntimeId(String(normalized.topic || normalized.data?.topic || "automation")) || "automation",
                 normalized.topic || "approval.requested",
                 String(normalized.data?.question || tRef.current("等待用户确认", "Waiting for approval")),
@@ -1000,10 +1002,10 @@ export default function ChatScreen() {
                         kind: normalized.artifact?.kind,
                         workspacePath: normalized.artifact?.workspacePath,
                     },
-                }) || buildRuntimeTimelineEntry(
+                }, locale) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.topic || normalized.artifact?.kind || "chat")) || "chat",
                     normalized.topic || "artifact.recorded",
-                    String(normalized.artifact?.title || normalized.artifact?.kind || "记录新的产物"),
+                    String(normalized.artifact?.title || normalized.artifact?.kind || tRef.current("记录新的产物", "Recorded a new artifact")),
                     {
                         id: normalized.event_id || `artifact:${normalized.seq || Date.now()}`,
                         timestamp: normalized.ts || Date.now(),
@@ -1027,10 +1029,10 @@ export default function ChatScreen() {
                     event_id: normalized.event_id,
                     ts: normalized.ts,
                     payload: normalized.data,
-                }) || buildRuntimeTimelineEntry(
+                }, locale) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.topic || normalized.data?.topic || "chat")) || "chat",
                     normalized.topic || String(normalized.data?.topic || "runtime.progress"),
-                    String(normalized.data?.label || normalized.topic || "运行更新"),
+                    String(normalized.data?.label || normalized.topic || tRef.current("运行更新", "Runtime updated")),
                     {
                         id: normalized.event_id || `runtime:${normalized.seq || Date.now()}`,
                         timestamp: normalized.ts || Date.now(),
@@ -1055,10 +1057,10 @@ export default function ChatScreen() {
                     event_id: normalized.event_id,
                     ts: normalized.ts,
                     payload: normalized.data,
-                }) || buildRuntimeTimelineEntry(
+                }, locale) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.topic || normalized.data?.topic || "chat")) || "chat",
                     normalized.topic || String(normalized.data?.topic || "run.controlled"),
-                    String(normalized.data?.topic || "运行控制已更新"),
+                    String(normalized.data?.topic || tRef.current("运行控制已更新", "Run control updated")),
                     {
                         id: normalized.event_id || `control:${normalized.seq || Date.now()}`,
                         timestamp: normalized.ts || Date.now(),
@@ -1088,7 +1090,7 @@ export default function ChatScreen() {
                 event_id: normalized.event_id,
                 ts: normalized.ts,
                 payload: normalized.data,
-            }) || buildRuntimeTimelineEntry(
+            }, locale) || buildRuntimeTimelineEntry(
                 normalizePhoneRuntimeId(String(normalized.data?.runtimeId || normalized.data?.runtime || topic)) || "chat",
                 topic,
                 String(normalized.data?.label || normalized.data?.summary || topic),
@@ -1123,7 +1125,7 @@ export default function ChatScreen() {
                 label: typeof normalized.data?.label === "string" ? normalized.data.label : current.label,
             };
         });
-    }, [appendRuntimeTimeline, applyConversationProjection, syncArtifactsFromMessages]);
+    }, [appendRuntimeTimeline, applyConversationProjection, locale, syncArtifactsFromMessages]);
 
     const startRealtime = useCallback(async (conversationId: string, transitionToken?: number) => {
         if (
@@ -1199,7 +1201,7 @@ export default function ChatScreen() {
                 activeConversationIdRef.current === conversationId
                 && conversationTransitionTokenRef.current === transitionToken
             ) {
-                Alert.alert("读取会话失败", error instanceof Error ? error.message : "无法加载会话详情");
+                Alert.alert(t("读取会话失败", "Load failed"), error instanceof Error ? error.message : t("无法加载会话详情", "Unable to load the conversation detail"));
             }
             return false;
         } finally {
@@ -1245,6 +1247,8 @@ export default function ChatScreen() {
             setLoading(true);
             try {
                 await loadSupportDataRef.current();
+            } catch (error) {
+                console.warn("[phone/chat] loadSupportData failed", error instanceof Error ? error.message : error);
             } finally {
                 if (!cancelled) {
                     setLoading(false);
@@ -1364,6 +1368,11 @@ export default function ChatScreen() {
         await setActiveConversationId(null);
     }, [setActiveConversationId, stopRealtime]);
 
+    const handleBrandPress = useCallback(async () => {
+        await handleNewConversation();
+        router.replace("/chat" as Href);
+    }, [handleNewConversation]);
+
     const handleDeleteConversation = useCallback((item: ConversationSummary) => {
         Alert.alert(t("删除会话", "Delete conversation"), t("确定删除这个会话吗？", "Delete this conversation?"), [
             { text: t("取消", "Cancel"), style: "cancel" },
@@ -1425,7 +1434,7 @@ export default function ChatScreen() {
 
             setUploadedFiles((current) => [...current, ...uploaded]);
         } catch (error) {
-            Alert.alert("上传失败", error instanceof Error ? error.message : "无法上传附件");
+            Alert.alert(t("上传失败", "Upload failed"), error instanceof Error ? error.message : t("无法上传附件", "Unable to upload the attachment"));
         } finally {
             setAttachmentBusy(false);
         }
@@ -1562,8 +1571,9 @@ export default function ChatScreen() {
             runtimeTimeline,
             selectedRuntimeId,
             t,
+            locale,
         }),
-        [activeConversationId, approvals, artifacts, conversations, messages, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
+        [activeConversationId, approvals, artifacts, conversations, locale, messages, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
@@ -1748,7 +1758,7 @@ export default function ChatScreen() {
     ]);
 
     if (status === "booting") {
-        return <LoadingScreen label="正在读取聊天主链…" />;
+        return <LoadingScreen label={t("正在读取聊天主链…", "Loading the conversation lane...")} />;
     }
 
     if (status === "anonymous") {
@@ -1756,6 +1766,13 @@ export default function ChatScreen() {
     }
 
     const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
+    const greetingEmptyState = !activeConversationId && projection.projectedMessages.length === 0
+        ? {
+            icon: "hand-wave-outline" as const,
+            title: getDayGreeting(locale),
+            subtitle: t("想先聊什么？", "What would you like to start with?"),
+        }
+        : null;
 
     return (
         <LinearGradient
@@ -1768,6 +1785,7 @@ export default function ChatScreen() {
                 <PhoneTopbar
                     actions={topbarActions}
                     userImageUri={profileImageUri || undefined}
+                    onBrandPress={() => void handleBrandPress()}
                     onProfilePress={() => router.push("/settings" as Href)}
                 />
 
@@ -1804,7 +1822,7 @@ export default function ChatScreen() {
                                     />
                                 </Pressable>
 
-                                <View style={[styles.runControlWrap, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                                <View style={styles.runControlWrap}>
                                     <RunControlBar
                                         runId={projection.runControlState.runId || runtime.runId}
                                         status={projection.runControlState.status || runtime.status}
@@ -1875,6 +1893,7 @@ export default function ChatScreen() {
                             onResolveApproval={handleApprovalResolve}
                             onOpenApprovalPanel={openApprovalPanel}
                             isLandscape={isLandscape}
+                            emptyState={greetingEmptyState}
                         />
 
                         <View style={[styles.composerWrap, isLandscape && styles.composerWrapLandscape]}>
@@ -2064,17 +2083,15 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     runControlWrap: {
-        minHeight: 36,
+        minHeight: 32,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        paddingHorizontal: 4,
-        paddingVertical: 2,
-        borderRadius: radii.pill,
-        borderWidth: 1,
-        width: 144,
-        minWidth: 144,
-        maxWidth: 144,
+        paddingHorizontal: 0,
+        paddingVertical: 0,
+        width: 72,
+        minWidth: 72,
+        maxWidth: 72,
         flexGrow: 0,
         flexShrink: 0,
         overflow: "visible",

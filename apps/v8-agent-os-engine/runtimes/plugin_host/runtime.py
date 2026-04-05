@@ -53,7 +53,6 @@ from erc.runtime_stability import runtime_stability_service
 from erc.session_admission_service import session_admission_service
 from erc.safety_guardian import safety_guardian
 from erc.snapshot_service import snapshot_service
-from graph.supervisor import AgentState
 from runtimes.memory.scope_resolution import scope_resolution_service, session_scope_binding_service
 
 
@@ -196,6 +195,48 @@ class PluginHostRuntime:
         normalized_remote_id = re.sub(r"[^A-Za-z0-9._:-]+", "_", (remote_id or "unknown").strip())
         return f"plugin_host:{normalized_source}:{normalized_chat_type}:{normalized_remote_id}"
 
+    def _build_channel_session_metadata(
+        self,
+        *,
+        source: str,
+        chat_type: str,
+        remote_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        raw = dict(metadata or {})
+        handoff_source = str(raw.get("handoff_source") or raw.get("handoffSource") or "").strip()
+        transport_managed_by = str(raw.get("transport_managed_by") or raw.get("transportManagedBy") or "").strip()
+        if not transport_managed_by and handoff_source == "openclaw_bridge":
+            transport_managed_by = "openclaw_bridge"
+
+        channel_type = str(raw.get("channel_type") or raw.get("channelType") or source or "").strip() or source
+        channel_name = str(raw.get("channel_name") or raw.get("channelName") or channel_type or source or "").strip() or channel_type
+        channel_domain = str(raw.get("channel_domain") or raw.get("channelDomain") or "").strip()
+        account_id = str(raw.get("account_id") or raw.get("accountId") or "").strip()
+        default_account = str(raw.get("default_account") or raw.get("defaultAccount") or "").strip()
+        bridge_plugin_id = str(raw.get("bridge_plugin_id") or raw.get("bridgePluginId") or "").strip()
+
+        normalized: Dict[str, Any] = {
+            "source": source,
+            "channel_type": channel_type,
+            "channel_name": channel_name,
+            "chat_type": chat_type,
+            "remote_id": remote_id,
+        }
+        if channel_domain:
+            normalized["channel_domain"] = channel_domain
+        if account_id:
+            normalized["account_id"] = account_id
+        if default_account:
+            normalized["default_account"] = default_account
+        if handoff_source:
+            normalized["handoff_source"] = handoff_source
+        if transport_managed_by:
+            normalized["transport_managed_by"] = transport_managed_by
+        if bridge_plugin_id:
+            normalized["bridge_plugin_id"] = bridge_plugin_id
+        return normalized
+
     def _persist_runtime_event(
         self,
         *,
@@ -276,20 +317,30 @@ class PluginHostRuntime:
         trigger_source: str,
         agent_id: str,
         agent_profile: Dict[str, Any],
+        inbound_metadata: Dict[str, Any] | None = None,
         delivery_receipt: Dict[str, Any] | None = None,
         assistant_message_id: str | None = None,
         persist_message: bool = True,
     ) -> str:
         session_id = self.resolve_session_id(source, remote_id, chat_type)
         existing_session = db.get_session(session_id)
-        if not existing_session:
-            title_prefix = f"[{source.capitalize()} {'群聊' if chat_type == 'group' else '单聊'}] "
-            db.create_or_update_session(
-                session_id=session_id,
-                title=title_prefix + (final_msg[:40] if final_msg else "主动推送"),
-                user_id="system",
-                metadata={"source": source, "chat_type": chat_type, "remote_id": remote_id},
-            )
+        session_metadata = self._build_channel_session_metadata(
+            source=source,
+            chat_type=chat_type,
+            remote_id=remote_id,
+            metadata=inbound_metadata,
+        )
+        channel_label = str(session_metadata.get("channel_name") or source).strip() or source
+        title_prefix = f"[{channel_label} {'群聊' if chat_type == 'group' else '单聊'}] "
+        db.create_or_update_session(
+            session_id=session_id,
+            title=(existing_session.get("title") if existing_session else None) or title_prefix + (final_msg[:40] if final_msg else "主动推送"),
+            user_id="system",
+            metadata={
+                **(coerce_json_dict(existing_session.get("metadata")) if existing_session else {}),
+                **session_metadata,
+            },
+        )
         run_id = f"plugin_host_push_{uuid.uuid4().hex}"
         run_handle = erc_kernel.submit_run(
             run_id=run_id,
@@ -300,7 +351,10 @@ class PluginHostRuntime:
             trigger_source=trigger_source,
             agent_id=agent_id,
             channel_type=source,
-            metadata={"target_agent": agent_id, "remote_id": remote_id, "chat_type": chat_type},
+            metadata={
+                **session_metadata,
+                "target_agent": agent_id,
+            },
             initial_status="running",
             component="plugin_host_runtime",
             node="plugin_host_runtime",
@@ -340,9 +394,7 @@ class PluginHostRuntime:
                 agent_avatar=agent_profile.get("avatar"),
                 agent_role_label=agent_profile.get("roleLabel"),
                 metadata={
-                    "source": source,
-                    "chat_type": chat_type,
-                    "remote_id": remote_id,
+                    **session_metadata,
                     "push": True,
                     "run_id": run_id,
                     "delivery_receipt": dict(delivery_receipt or {}),
@@ -380,21 +432,31 @@ class PluginHostRuntime:
         trigger_source: str,
         agent_id: str,
         agent_profile: Dict[str, Any],
+        inbound_metadata: Dict[str, Any] | None = None,
         delivery_receipt: Dict[str, Any] | None = None,
         visible_content: str | None = None,
         media_delivery: Dict[str, Any] | None = None,
     ) -> str:
         session_id = self.resolve_session_id(source, remote_id, chat_type)
         existing_session = db.get_session(session_id)
-        if not existing_session:
-            title_prefix = f"[{source.capitalize()} {'群聊' if chat_type == 'group' else '单聊'}] "
-            seed = visible_content or "媒体发送"
-            db.create_or_update_session(
-                session_id=session_id,
-                title=title_prefix + seed[:40],
-                user_id="system",
-                metadata={"source": source, "chat_type": chat_type, "remote_id": remote_id},
-            )
+        session_metadata = self._build_channel_session_metadata(
+            source=source,
+            chat_type=chat_type,
+            remote_id=remote_id,
+            metadata=inbound_metadata,
+        )
+        channel_label = str(session_metadata.get("channel_name") or source).strip() or source
+        title_prefix = f"[{channel_label} {'群聊' if chat_type == 'group' else '单聊'}] "
+        seed = visible_content or "媒体发送"
+        db.create_or_update_session(
+            session_id=session_id,
+            title=(existing_session.get("title") if existing_session else None) or title_prefix + seed[:40],
+            user_id="system",
+            metadata={
+                **(coerce_json_dict(existing_session.get("metadata")) if existing_session else {}),
+                **session_metadata,
+            },
+        )
         run_id = f"plugin_host_push_{uuid.uuid4().hex}"
         run_handle = erc_kernel.submit_run(
             run_id=run_id,
@@ -406,9 +468,8 @@ class PluginHostRuntime:
             agent_id=agent_id,
             channel_type=source,
             metadata={
+                **session_metadata,
                 "target_agent": agent_id,
-                "remote_id": remote_id,
-                "chat_type": chat_type,
                 "delivery_mode": "media",
             },
             initial_status="running",
@@ -498,11 +559,18 @@ class PluginHostRuntime:
 
         session_id = self.resolve_session_id(source, remote_id, chat_type)
         run_id = f"plugin_host_{uuid.uuid4().hex}"
+        session_metadata = self._build_channel_session_metadata(
+            source=source,
+            chat_type=chat_type,
+            remote_id=remote_id,
+            metadata=message.metadata,
+        )
 
         existing_session = db.get_session(session_id)
         if not existing_session:
             chat_type_label = "群聊" if chat_type == "group" else "单聊"
-            title_prefix = f"[{source.capitalize()} {chat_type_label}] "
+            channel_display = str(session_metadata.get("channel_name") or source).strip() or source
+            title_prefix = f"[{channel_display} {chat_type_label}] "
             title = title_prefix + (text_content[:40] if text_content else "Chat")
         else:
             title = existing_session.get("title")
@@ -513,9 +581,7 @@ class PluginHostRuntime:
             user_id=message.sender_id or "anonymous",
             metadata={
                 **(coerce_json_dict(existing_session.get("metadata")) if existing_session else {}),
-                "source": source,
-                "chat_type": chat_type,
-                "remote_id": remote_id,
+                **session_metadata,
             },
         )
         existing_binding = session_scope_binding_service.get_binding(session_id)
@@ -554,9 +620,7 @@ class PluginHostRuntime:
             agent_id="supervisor",
             channel_type=source,
             metadata={
-                "source": source,
-                "chat_type": chat_type,
-                "remote_id": remote_id,
+                **session_metadata,
                 "record_only": record_only,
                 "resolved_scope": scope_result.binding.resolved_scope,
             },
@@ -968,12 +1032,15 @@ class PluginHostRuntime:
         )
 
         config = self._resolve_engine_config()
-        graph = await supervisor_runner.build_graph(config)
 
         ctx_config = storage.get_context_config()
         rec_limit = ctx_config.get("recursion_limit", 500)
-        graph_config = {"configurable": {"thread_id": session_id}, "recursion_limit": rec_limit}
-        state = AgentState(messages=lc_messages)
+        bundle = await supervisor_runner.create_execution_bundle(
+            config=config,
+            messages=lc_messages,
+            session_id=session_id,
+            recursion_limit=rec_limit,
+        )
 
         output_buffer: list[str] = []
         streamed_model_run_ids: set[str] = set()
@@ -1008,7 +1075,7 @@ class PluginHostRuntime:
                 workspace_id=scope_result.binding.workspace_id,
                 resolved_scope=scope_result.binding.resolved_scope,
             ):
-                event_stream = graph.astream_events(state, config=graph_config, version="v2")
+                event_stream = supervisor_runner.open_bundle_stream(bundle)
                 async with aclosing(event_stream):
                     stream_iter = event_stream.__aiter__()
                     while True:
@@ -1503,6 +1570,7 @@ class PluginHostRuntime:
                     trigger_source=source,
                     agent_id="supervisor",
                     agent_profile=profile,
+                    inbound_metadata=inbound_meta,
                     delivery_receipt=delivery_receipt,
                     assistant_message_id=assistant_message_id,
                     persist_message=False,
@@ -1515,6 +1583,7 @@ class PluginHostRuntime:
                     trigger_source=source,
                     agent_id="supervisor",
                     agent_profile=profile,
+                    inbound_metadata=inbound_meta,
                     delivery_receipt=audio_delivery_receipt,
                     visible_content=final_visible_text,
                     media_delivery=media_delivery,

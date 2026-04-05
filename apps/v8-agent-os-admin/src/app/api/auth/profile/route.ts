@@ -40,8 +40,9 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const name = typeof body.name === "string" ? body.name : user.name || "";
     const image = typeof body.image === "string" ? body.image : user.image || "";
+    const email = typeof body.email === "string" ? body.email : user.email || "";
 
-    const updated = updateUserRecord(user.id, { name, image });
+    const updated = updateUserRecord(user.id, { name, image, email });
     return NextResponse.json({
         success: true,
         user: {

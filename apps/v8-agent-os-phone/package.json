@@ -1,0 +1,53 @@
+{
+  "name": "v8-agent-os-phone",
+  "main": "expo-router/entry",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "doctor": "npx expo-doctor",
+    "export:android": "expo export --platform android --output-dir dist-android"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.3",
+    "@react-native-masked-view/masked-view": "0.3.2",
+    "@react-navigation/native": "^7.1.8",
+    "expo": "~55.0.11",
+    "expo-asset": "~55.0.12",
+    "expo-audio": "~55.0.11",
+    "expo-build-properties": "~55.0.11",
+    "expo-clipboard": "~55.0.11",
+    "expo-constants": "~55.0.11",
+    "expo-document-picker": "^55.0.11",
+    "expo-file-system": "^55.0.14",
+    "expo-font": "~55.0.6",
+    "expo-image-picker": "^55.0.16",
+    "expo-linear-gradient": "^55.0.11",
+    "expo-linking": "~55.0.11",
+    "expo-router": "~55.0.10",
+    "expo-secure-store": "^55.0.11",
+    "expo-splash-screen": "~55.0.15",
+    "expo-status-bar": "~55.0.5",
+    "expo-web-browser": "~55.0.12",
+    "lucide-react-native": "^0.542.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-native": "0.83.4",
+    "react-native-reanimated": "4.2.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.23.0",
+    "react-native-svg": "15.15.3",
+    "react-native-web": "~0.21.0",
+    "react-native-webview": "13.16.0",
+    "react-native-worklets": "0.7.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.10",
+    "react-test-renderer": "^19.2.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}

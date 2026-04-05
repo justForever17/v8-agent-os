@@ -56,7 +56,7 @@ _NPM_SPEC_PATTERN = re.compile(r"@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]
 _OPENCLAW_MJS_RELATIVE_PATH = Path("node_modules") / "openclaw" / "openclaw.mjs"
 _OPENCLAW_DASHBOARD_URL = "http://127.0.0.1:18789/"
 _OPENCLAW_DOCS_URL = "https://docs.openclaw.ai/install/index"
-_OPENCLAW_BRIDGE_PLUGIN_IDS = ("v8-bridge",)
+_OPENCLAW_BRIDGE_PLUGIN_IDS = ("openclaw-v8-bridge",)
 _OPENCLAW_GATEWAY_BUILTIN_TOOLS = {
     "message": {
         "name": "message",
@@ -677,9 +677,9 @@ class PluginHostService:
         bridge_loaded = str((bridge_plugin or {}).get("status") or "").strip().lower() == "loaded"
         bridge_enabled = bool(entry_payload.get("enabled", True))
         route_payload: dict[str, Any] = {}
-        if bridge_plugin_id == "v8-bridge" and bridge_loaded and bridge_enabled:
+        if bridge_plugin_id == "openclaw-v8-bridge" and bridge_loaded and bridge_enabled:
             try:
-                body = self._openclaw_gateway_request_json(suffix="/plugins/v8-bridge/status")
+                body = self._openclaw_gateway_request_json(suffix="/plugins/openclaw-v8-bridge/status")
                 if isinstance(body, dict) and bool(body.get("ok")):
                     route_payload = dict(body)
             except Exception:
@@ -910,13 +910,13 @@ class PluginHostService:
         bridge_state = self._managed_local_bridge_state(refresh=refresh)
         timings_ms["bridgeState"] = max(0, int((time.perf_counter() - bridge_state_started_at) * 1000))
         if not bool(bridge_state.get("bridgeReady")):
-            raise RuntimeError("当前尚未检测到已加载的 v8-bridge。")
+            raise RuntimeError("当前尚未检测到已加载的 OpenClaw V8 Bridge。")
         inventory_started_at = time.perf_counter()
-        body = self._openclaw_gateway_request_json(suffix="/plugins/v8-bridge/tools", timeout=45)
+        body = self._openclaw_gateway_request_json(suffix="/plugins/openclaw-v8-bridge/tools", timeout=45)
         timings_ms["gatewayInventory"] = max(0, int((time.perf_counter() - inventory_started_at) * 1000))
         if not bool(body.get("ok")):
             detail = str(body.get("error") or body).strip() or "unknown bridge tools error"
-            raise RuntimeError(f"v8-bridge tools catalog 读取失败：{detail}")
+            raise RuntimeError(f"OpenClaw V8 Bridge tools catalog 读取失败：{detail}")
         normalize_started_at = time.perf_counter()
         inventory = [
             self._normalize_bridge_tool_entry(item)
@@ -1614,8 +1614,12 @@ class PluginHostService:
         metadata = dict(payload.get("metadata") or {})
         account_id = str(payload.get("accountId") or "").strip() or None
         metadata.setdefault("account_id", account_id)
+        metadata.setdefault("default_account", str(payload.get("defaultAccount") or "").strip() or None)
         metadata.setdefault("message_id", str(payload.get("messageId") or "").strip() or None)
         metadata.setdefault("context_token", str(payload.get("contextToken") or "").strip() or None)
+        metadata.setdefault("channel_type", channel_type)
+        metadata.setdefault("channel_name", str(payload.get("channelName") or "").strip() or channel_type)
+        metadata.setdefault("channel_domain", str(payload.get("channelDomain") or "").strip() or None)
         media_path = str(payload.get("mediaPath") or "").strip()
         media_url = str(payload.get("mediaUrl") or "").strip()
         if not text and not media_path and not media_url:
@@ -1675,6 +1679,7 @@ class PluginHostService:
         sender_id = str(payload.get("senderId") or "").strip() or None
         sender_name = str(payload.get("senderName") or "").strip() or None
         chat_type = "group" if str(payload.get("chatType") or "").strip().lower() == "group" else "p2p"
+        metadata.setdefault("chat_type", chat_type)
         audio_trigger = bool(payload.get("audioTrigger", False))
         record_only = bool(payload.get("recordOnly", False))
         buffer_key = self._attachment_buffer_key(channel_type=channel_type, remote_id=remote_id, account_id=account_id)
@@ -1975,9 +1980,9 @@ class PluginHostService:
             "inboundOwnership": "v8_owned" if bridge_ready and channel_managed else "delegated",
             "supported": channel_managed,
             "reason": (
-                "当前渠道已列入统一 v8-bridge 的 managedChannels；真实 ownership 以 bridge 握手和最近入站证明为准。"
+                "当前渠道已列入统一 OpenClaw V8 Bridge 的 managedChannels；真实 ownership 以 bridge 握手和最近入站证明为准。"
                 if bridge_ready and channel_managed
-                else "当前未检测到统一 v8-bridge 已接管该渠道，真实入站仍可能停留在 OpenClaw 自身执行链。"
+                else "当前未检测到统一 OpenClaw V8 Bridge 已接管该渠道，真实入站仍可能停留在 OpenClaw 自身执行链。"
             ),
             "pluginPatch": None,
             "launcherPatch": None,
@@ -4031,7 +4036,7 @@ Get-CimInstance Win32_Process |
         action = str(params_payload.pop("action", "") or "").strip() or None
         session_key = str(params_payload.pop("sessionKey", "") or "").strip() or None
         body = self._openclaw_gateway_request_json(
-            suffix="/plugins/v8-bridge/tools/invoke",
+            suffix="/plugins/openclaw-v8-bridge/tools/invoke",
             payload={
                 "canonicalName": canonical_name,
                 "toolName": str(match.get("toolName") or "").strip() or None,
@@ -4050,7 +4055,7 @@ Get-CimInstance Win32_Process |
     def _bridge_error_allows_cli_fallback(self, exc: Exception) -> bool:
         detail = str(exc).strip() or exc.__class__.__name__
         fallback_markers = (
-            "当前尚未检测到已加载的 v8-bridge",
+            "当前尚未检测到已加载的 OpenClaw V8 Bridge",
             "当前未发现可调用的 OpenClaw bridge 工具",
             "无法连接 OpenClaw gateway",
             "OpenClaw gateway 请求失败",

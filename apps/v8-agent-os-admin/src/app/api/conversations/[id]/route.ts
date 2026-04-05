@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { verifyServiceAuth } from "@/lib/service-auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
+import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -9,15 +9,10 @@ export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
-    let userEmail: string | undefined | null;
-    userEmail = await verifyServiceAuth(req);
-    if (!userEmail) {
-        const session = await auth();
-        userEmail = session?.user?.email;
-    }
+    const userEmail = await resolveAuthorizedUserEmail(req);
 
     if (!userEmail) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return unauthorizedJson();
     }
 
     const { id } = await params;
@@ -33,7 +28,7 @@ export async function GET(
             const snapshotData = await snapshotRes.json().catch(() => ({}));
             const snapshotMessages = snapshotData?.snapshot?.messages;
             if (Array.isArray(snapshotMessages)) {
-                return NextResponse.json({
+                return NextResponse.json(applyCanonicalSourceGroup({
                     id,
                     messages: snapshotMessages,
                     latestSeq: snapshotData.latestSeq || 0,
@@ -45,7 +40,7 @@ export async function GET(
                     recoverable: snapshotData.recoverable || null,
                     summary: snapshotData.summary || null,
                     projection: snapshotData,
-                });
+                }));
             }
         }
 
@@ -64,7 +59,7 @@ export async function GET(
         const data = await res.json();
         const messages = data.messages || [];
 
-        return NextResponse.json({
+        return NextResponse.json(applyCanonicalSourceGroup({
             id,
             messages,
             latestSeq: data.latestSeq || 0,
@@ -75,7 +70,7 @@ export async function GET(
             controls: data.controls || null,
             recoverable: data.recoverable || null,
             summary: data.summary || null,
-        });
+        }));
     } catch (error) {
         console.error("Error communicating with Python engine:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -86,15 +81,10 @@ export async function DELETE(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
-    let userEmail: string | undefined | null;
-    userEmail = await verifyServiceAuth(req);
-    if (!userEmail) {
-        const session = await auth();
-        userEmail = session?.user?.email;
-    }
+    const userEmail = await resolveAuthorizedUserEmail(req);
 
     if (!userEmail) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return unauthorizedJson();
     }
 
     const { id } = await params;

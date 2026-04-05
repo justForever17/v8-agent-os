@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { verifyServiceAuth } from "@/lib/service-auth";
 import { sessionFanoutHub } from "@/lib/realtime/session-fanout";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -13,15 +12,10 @@ export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
-    let userEmail: string | undefined | null;
-    userEmail = await verifyServiceAuth(req);
-    if (!userEmail) {
-        const session = await auth();
-        userEmail = session?.user?.email;
-    }
+    const userEmail = await resolveAuthorizedUserEmail(req);
 
     if (!userEmail) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return unauthorizedJson();
     }
 
     const { id } = await params;
@@ -33,6 +27,8 @@ export async function GET(
             let closed = false;
             let latestSeq = 0;
             const seenEventIds = new Set<string>();
+            let idleBackoffMs = 10000;
+            let idlePollCount = 0;
 
             const sendSse = (event: unknown, eventName = "message") => {
                 if (closed) return;
@@ -105,17 +101,29 @@ export async function GET(
                         if (eventsRes.ok) {
                             const eventsData = await eventsRes.json().catch(() => null);
                             const events = Array.isArray(eventsData?.events) ? eventsData.events : [];
+                            if (events.length > 0) {
+                                idlePollCount = 0;
+                                idleBackoffMs = 3000;
+                            } else {
+                                idlePollCount += 1;
+                                idleBackoffMs = Math.min(10000 + idlePollCount * 5000, 45000);
+                            }
                             for (const runtimeEvent of events) {
                                 forwardRuntimeEvent(runtimeEvent);
                             }
+                        } else {
+                            idlePollCount += 1;
+                            idleBackoffMs = Math.min(15000 + idlePollCount * 5000, 45000);
                         }
                     } catch (error) {
                         if (!closed) {
                             console.warn("[Admin Realtime SSE] polling runtime events failed:", error);
                         }
+                        idlePollCount += 1;
+                        idleBackoffMs = Math.min(15000 + idlePollCount * 5000, 45000);
                     }
 
-                    await sleep(1500);
+                    await sleep(idleBackoffMs);
                 }
             })();
 

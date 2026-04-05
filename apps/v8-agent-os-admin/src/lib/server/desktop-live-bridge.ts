@@ -14,6 +14,9 @@ let ensurePromise: Promise<string> | null = null;
 export type BridgeStatusPayload = {
     available?: boolean;
     reason?: string | null;
+    bridgeReady?: boolean;
+    bridgeStartable?: boolean;
+    bridgeWarming?: boolean;
     activeSessionId?: string | null;
     viewerCount?: number;
     singleViewer?: boolean;
@@ -264,8 +267,11 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
     }
 
     return {
-        available: startable,
-        reason,
+        available: false,
+        reason: reason || (startable ? "桌面直播 bridge 正在启动，请稍后重试。" : null),
+        bridgeReady: false,
+        bridgeStartable: startable,
+        bridgeWarming: false,
         activeSessionId: null,
         viewerCount: 0,
         singleViewer: config.singleViewerOnly !== false,
@@ -294,10 +300,39 @@ export async function getDesktopLiveBridgeStatus() {
         await cleanupDuplicateBridgeProcesses(currentPid);
         return {
             ...payload,
+            available: payload.available === true,
+            bridgeReady: true,
+            bridgeStartable: true,
+            bridgeWarming: false,
             bridgeReachable: true,
         };
     }
     return buildDormantBridgeStatus();
+}
+
+export async function warmDesktopLiveBridge() {
+    const dormant = buildDormantBridgeStatus();
+    if (dormant.bridgeStartable !== true) {
+        return dormant;
+    }
+
+    const reachable = await pingBridge();
+    if (reachable) {
+        return {
+            ...reachable,
+            available: reachable.available === true,
+            bridgeReady: true,
+            bridgeStartable: true,
+            bridgeWarming: false,
+            bridgeReachable: true,
+        } satisfies BridgeStatusPayload;
+    }
+
+    void ensureDesktopLiveBridge().catch(() => undefined);
+    return {
+        ...dormant,
+        bridgeWarming: true,
+    } satisfies BridgeStatusPayload;
 }
 
 export async function stopDesktopLiveBridge() {

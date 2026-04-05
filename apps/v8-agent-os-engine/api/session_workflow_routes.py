@@ -89,6 +89,7 @@ def _build_durable_detail_payload(
     session_row: dict,
     messages: list[dict],
     context_governance: dict | None,
+    session_source: str | None = None,
     runtime_timeline: list[dict] | None = None,
     runtime_events: list[dict] | None = None,
 ) -> dict:
@@ -121,7 +122,7 @@ def _build_durable_detail_payload(
             workflow=workflow_view,
             approvals=approvals,
             latest_seq=0,
-            source="durable_detail_projection",
+            source=session_source or "durable_detail_projection",
         ),
         "source": "durable_detail_projection",
         "contextGovernance": context_governance,
@@ -129,6 +130,26 @@ def _build_durable_detail_payload(
         "liveness": liveness,
         "recoveryClass": recovery_class,
     }
+
+
+def _derive_session_source(session_row: dict, run_record: dict | None = None) -> str:
+    metadata = session_row.get("metadata") if isinstance(session_row.get("metadata"), dict) else {}
+    run_metadata = run_record.get("metadata") if isinstance((run_record or {}).get("metadata"), dict) else {}
+
+    for candidate in (
+        session_row.get("source"),
+        metadata.get("source"),
+        metadata.get("trigger_source"),
+        metadata.get("triggerSource"),
+        run_record.get("trigger_source") if run_record else None,
+        run_metadata.get("source"),
+        run_metadata.get("trigger_source"),
+        run_metadata.get("triggerSource"),
+    ):
+        normalized = str(candidate or "").strip()
+        if normalized:
+            return normalized
+    return "web"
 
 
 @router.get("/sessions")
@@ -150,6 +171,8 @@ async def get_sessions():
                 "currentStepStatus": row.get("stepStatus"),
                 "updatedAt": row.get("workflowUpdatedAt") or row.get("lastActivityAt"),
             }
+            run_record = db.get_run_record(workflow_view.get("rootRunId")) if workflow_view.get("rootRunId") else None
+            session_source = _derive_session_source(row, run_record)
             approvals = project_pending_approvals(
                 db.list_pending_approvals(session_id=row["id"], status="pending")
             )
@@ -160,7 +183,7 @@ async def get_sessions():
                 workflow=workflow_view,
                 approvals=approvals,
                 latest_seq=0,
-                source="session_list",
+                source=session_source,
             )
             sessions.append(
                 {
@@ -172,10 +195,10 @@ async def get_sessions():
                     "recoverableView": build_recoverable_view(workflow_view, controls),
                     "lane": session_admission_service.get_lane_view(row["id"]),
                     "recoveryClass": derive_recovery_class(
-                        db.get_run_record(workflow_view.get("rootRunId")) if workflow_view.get("rootRunId") else None,
+                        run_record,
                         workflow_view=workflow_view,
                     ),
-                    "source": "session_list",
+                    "source": session_source,
                 }
             )
         return {"sessions": sessions}
@@ -250,6 +273,10 @@ async def get_session_messages(session_id: str):
             session_row=session_row,
             messages=durable_messages,
             context_governance=context_governance,
+            session_source=_derive_session_source(
+                session_row,
+                db.get_run_record((session_row.get("rootRunId") or "")) if session_row.get("rootRunId") else None,
+            ),
             runtime_timeline=project_runtime_timeline_from_events(runtime_events),
             runtime_events=runtime_events,
         )

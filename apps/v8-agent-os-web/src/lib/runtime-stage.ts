@@ -286,6 +286,11 @@ function getNodeTimestamp(message: Message, node: UiTimelineNode): number {
     return message.timestamp;
 }
 
+function coerceTimelineString(value: unknown) {
+    const normalized = String(value || "").trim();
+    return normalized || undefined;
+}
+
 function parseTimelineTimestamp(raw: unknown): number {
     if (typeof raw === "number" && Number.isFinite(raw)) {
         return raw;
@@ -489,12 +494,68 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         } satisfies UiGovernanceNode;
     }
 
+    if (entry.kind === "artifact") {
+        const metadata = entry.metadata && typeof entry.metadata === "object"
+            ? entry.metadata as Record<string, unknown>
+            : {};
+        const artifactId = coerceTimelineString(metadata.artifactId)
+            || coerceTimelineString(metadata.id)
+            || coerceTimelineString(metadata.messageId)
+            || entry.id;
+        return {
+            id: `timeline-node-${entry.id}`,
+            kind: "artifact",
+            timestamp: entry.timestamp,
+            agentName: entry.actorLabel,
+            agentRoleLabel: entry.actorLabel,
+            artifact: {
+                id: artifactId,
+                artifactId: coerceTimelineString(metadata.artifactId),
+                title: coerceTimelineString(metadata.title) || entry.summary,
+                displayLabel: coerceTimelineString(metadata.displayLabel) || coerceTimelineString(metadata.title) || entry.summary,
+                displaySubtitle: coerceTimelineString(metadata.displaySubtitle)
+                    || coerceTimelineString(metadata.workspacePath)
+                    || coerceTimelineString(metadata.sourcePath)
+                    || coerceTimelineString(metadata.kind),
+                kind: coerceTimelineString(metadata.kind),
+                mimeType: coerceTimelineString(metadata.mimeType),
+                previewUrl: coerceTimelineString(metadata.previewUrl),
+                externalUrl: coerceTimelineString(metadata.externalUrl),
+                sourcePath: coerceTimelineString(metadata.sourcePath),
+                workspacePath: coerceTimelineString(metadata.workspacePath),
+                runId: entry.runId,
+                metadata,
+            },
+        } satisfies UiArtifactNode;
+    }
+
+    const metadata = entry.metadata && typeof entry.metadata === "object"
+        ? entry.metadata as Record<string, unknown>
+        : undefined;
+    const content = coerceTimelineString(
+        metadata?.content
+        || metadata?.summary
+        || metadata?.message
+        || metadata?.reason
+        || metadata?.label,
+    );
+    const executionType = entry.kind === "tool"
+        ? "tool_call"
+        : entry.kind === "handoff"
+            ? "agent_start"
+            : "runtime_progress";
+
     return {
         id: `timeline-node-${entry.id}`,
         kind: "execution",
-        executionType: "runtime_progress",
+        executionType,
         topic: entry.topic,
         label: entry.summary,
+        content,
+        toolName: executionType === "tool_call" ? coerceTimelineString(metadata?.toolName || metadata?.tool_name) : undefined,
+        toolCallId: executionType === "tool_call" ? coerceTimelineString(metadata?.toolCallId || metadata?.tool_call_id || metadata?.approval_id) : undefined,
+        args: executionType === "tool_call" ? metadata?.args ?? metadata?.request : undefined,
+        result: executionType !== "tool_call" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
         data: entry.metadata,
         timestamp: entry.timestamp,
         agentName: entry.actorLabel,

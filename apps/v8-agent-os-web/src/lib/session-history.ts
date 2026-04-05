@@ -16,6 +16,12 @@ export interface SessionHistoryItem {
     metadata?: string | Record<string, unknown>;
     parsedMetadata?: Record<string, unknown>;
     sourceGroup: SessionHistorySourceGroup;
+    channelType?: string;
+    channelName?: string;
+    channelDomain?: string;
+    chatType?: string;
+    accountId?: string;
+    defaultAccount?: string;
     workflowStatus?: string;
     statusLabel?: string;
     stepStatus?: string;
@@ -50,18 +56,46 @@ function parseMetadata(metadata: SessionHistoryItem["metadata"]): Record<string,
     return {};
 }
 
-function deriveSourceGroup(parsedMetadata: Record<string, unknown>, record: Record<string, unknown>): SessionHistorySourceGroup {
-    const source = String(
-        parsedMetadata.source
-        || parsedMetadata.trigger_source
-        || parsedMetadata.triggerSource
-        || record.source
-        || "web"
-    ).trim().toLowerCase();
-    if (source === "cron") return "cron";
-    if (source.startsWith("hook")) return "hooks";
-    if (source && source !== "web" && source !== "session_list") return "channels";
-    return "web";
+function normalizeSourceGroup(value: unknown): SessionHistorySourceGroup | "" {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return "";
+    if (normalized === "cron") return "cron";
+    if (normalized === "hooks") return "hooks";
+    if (normalized === "channels") return "channels";
+    if (normalized === "web") return "web";
+    return "";
+}
+
+function readServerSourceGroup(record: Record<string, unknown>): SessionHistorySourceGroup {
+    const summary = record.summary && typeof record.summary === "object"
+        ? record.summary as Record<string, unknown>
+        : {};
+    return normalizeSourceGroup(
+        record.sourceGroup
+        || record.source_group
+        || summary.sourceGroup
+        || summary.source_group,
+    ) || "web";
+}
+
+function deriveChannelValue(
+    record: Record<string, unknown>,
+    parsedMetadata: Record<string, unknown>,
+    keys: string[],
+) {
+    for (const key of keys) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) {
+            return value.trim();
+        }
+    }
+    for (const key of keys) {
+        const value = parsedMetadata[key];
+        if (typeof value === "string" && value.trim()) {
+            return value.trim();
+        }
+    }
+    return undefined;
 }
 
 function deriveScopeTags(parsedMetadata: Record<string, unknown>, record: Record<string, unknown>): string[] {
@@ -103,7 +137,13 @@ export function normalizeSessionHistoryItem(raw: unknown): SessionHistoryItem {
         lastActivityAt: coerceString(record.lastActivityAt) || coerceString(record.updatedAt) || coerceString(record.updated_at),
         metadata: (record.metadata as SessionHistoryItem["metadata"]) || parsedMetadata,
         parsedMetadata,
-        sourceGroup: deriveSourceGroup(parsedMetadata, record),
+        sourceGroup: readServerSourceGroup(record),
+        channelType: deriveChannelValue(record, parsedMetadata, ["channelType", "channel_type"]),
+        channelName: deriveChannelValue(record, parsedMetadata, ["channelName", "channel_name"]),
+        channelDomain: deriveChannelValue(record, parsedMetadata, ["channelDomain", "channel_domain"]),
+        chatType: deriveChannelValue(record, parsedMetadata, ["chatType", "chat_type"]),
+        accountId: deriveChannelValue(record, parsedMetadata, ["accountId", "account_id"]),
+        defaultAccount: deriveChannelValue(record, parsedMetadata, ["defaultAccount", "default_account"]),
         workflowStatus: coerceString(record.workflowStatus),
         statusLabel: coerceString(record.statusLabel),
         stepStatus: coerceString(record.stepStatus),

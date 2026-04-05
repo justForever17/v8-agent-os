@@ -1,0 +1,181 @@
+import { memo, useMemo } from "react";
+import { StyleSheet, Text, View } from "react-native";
+
+import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
+import { InteractiveTerminalCard } from "@/src/components/chat/InteractiveTerminalCard";
+import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
+import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
+import {
+    extractCommandSessionPayload,
+    isBackgroundCommandTraceTool,
+    isCommandSessionTool,
+} from "@/src/lib/chat/command-session";
+import { buildVoicePlaybackKey, parsePhoneContentBlocks, type PhoneContentBlock } from "@/src/lib/content-detector";
+import { useUiPrefs } from "@/src/providers/ui-prefs";
+import { spacing } from "@/src/theme/tokens";
+import type { ChatArtifact, PhoneUiExecutionNode, PhoneUiTimelineNode } from "@/src/types/admin";
+
+function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel: string): ToolInvocation {
+    const toolName = String(
+        executionNode.toolName
+        || executionNode.data?.toolName
+        || executionNode.data?.tool_name
+        || executionNode.label
+        || fallbackLabel,
+    ).trim() || fallbackLabel;
+
+    const result = executionNode.result
+        ?? executionNode.data?.result
+        ?? executionNode.data?.response
+        ?? executionNode.data?.result_preview;
+
+    return {
+        toolCallId: String(
+            executionNode.toolCallId
+            || executionNode.data?.toolCallId
+            || executionNode.data?.tool_call_id
+            || `${executionNode.id}:${toolName}`,
+        ).trim(),
+        toolName,
+        args: executionNode.args ?? executionNode.data?.args ?? executionNode.data?.request ?? {},
+        state: executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call",
+        result,
+    };
+}
+
+export const ContentDispatcher = memo(function ContentDispatcher({
+    node,
+    messageIdentity,
+    speakingKey,
+    onSpeakVoice,
+    onOpenArtifact,
+}: {
+    node: PhoneUiTimelineNode;
+    messageIdentity?: string;
+    speakingKey?: string;
+    onSpeakVoice?: (text: string, messageKey: string) => void;
+    onOpenArtifact?: (artifact: ChatArtifact) => void;
+}) {
+    const { colors, t } = useUiPrefs();
+    const narrativeBlocks = useMemo(
+        () => (node.kind === "narrative" ? parsePhoneContentBlocks(String(node.content || "")) : []),
+        [node],
+    );
+
+    const renderExecutionTool = (executionNode: PhoneUiExecutionNode) => {
+        const toolInvocation = buildToolInvocation(executionNode, t("工具调用", "Tool call"));
+        const commandSession = extractCommandSessionPayload(toolInvocation.result);
+
+        if (commandSession?.commandId && (isCommandSessionTool(toolInvocation.toolName) || toolInvocation.state === "result")) {
+            return (
+                <View style={styles.stack}>
+                    <ToolCard toolInvocation={toolInvocation} hideResult />
+                    <InteractiveTerminalCard commandId={commandSession.commandId} compact />
+                </View>
+            );
+        }
+
+        if (isBackgroundCommandTraceTool(toolInvocation.toolName)) {
+            return <GenericToolTraceCard toolInvocation={toolInvocation} />;
+        }
+
+        return <ToolCard toolInvocation={toolInvocation} />;
+    };
+
+    if (node.kind === "narrative") {
+        if (narrativeBlocks.length === 0) {
+            return null;
+        }
+        return (
+            <View style={styles.stack}>
+                {narrativeBlocks.map((block, index) => {
+                    const voiceKey = block.type === "voice" && messageIdentity
+                        ? buildVoicePlaybackKey(messageIdentity, String(index), block.content)
+                        : "";
+                    return (
+                        <MessageBlockItem
+                            key={block.id}
+                            block={block}
+                            speaking={Boolean(voiceKey) && speakingKey === voiceKey}
+                            onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
+                            onOpenArtifact={onOpenArtifact}
+                        />
+                    );
+                })}
+            </View>
+        );
+    }
+
+    if (node.kind === "execution") {
+        const executionNode = node as PhoneUiExecutionNode;
+
+        if (executionNode.executionType === "reasoning") {
+            const block: PhoneContentBlock = {
+                id: `${executionNode.id}-thinking`,
+                type: "thinking",
+                content: String(executionNode.content || ""),
+                data: executionNode.time ? { elapsedTime: executionNode.time } : undefined,
+            };
+            return <MessageBlockItem block={block} />;
+        }
+
+        if (executionNode.executionType === "tool_call" || executionNode.executionType === "tool_result") {
+            return renderExecutionTool(executionNode);
+        }
+
+        if (executionNode.executionType === "runtime_progress") {
+            return (
+                <View
+                    style={[
+                        styles.progressPill,
+                        {
+                            backgroundColor: colors.surfaceStrong,
+                            borderColor: colors.border,
+                        },
+                    ]}
+                >
+                    <View style={[styles.progressDot, { backgroundColor: colors.primary }]} />
+                    <Text style={[styles.progressText, { color: colors.textMuted }]}>
+                        {executionNode.topic && !String(executionNode.topic).startsWith("extension.")
+                            ? `[${executionNode.topic}] `
+                            : ""}
+                        {executionNode.label || t("运行中…", "Running...")}
+                    </Text>
+                </View>
+            );
+        }
+    }
+
+    return (
+        <MessageBlockItem
+            node={node}
+            onOpenArtifact={onOpenArtifact}
+        />
+    );
+});
+
+const styles = StyleSheet.create({
+    stack: {
+        gap: spacing.sm,
+    },
+    progressPill: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+        borderWidth: 1,
+        borderRadius: 12,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+    },
+    progressDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 999,
+        marginTop: 6,
+    },
+    progressText: {
+        flex: 1,
+        fontSize: 11,
+        lineHeight: 18,
+    },
+});

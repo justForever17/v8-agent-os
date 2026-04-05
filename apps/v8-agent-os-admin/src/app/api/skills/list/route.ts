@@ -1,9 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 const ENGINE_ORIGIN = resolveEngineOrigin();
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const userEmail = await resolveAuthorizedUserEmail(req);
+  if (!userEmail) {
+    return unauthorizedJson();
+  }
   try {
     const res = await fetch(`${ENGINE_ORIGIN}/v1/skills/list`);
     const data = await res.json();

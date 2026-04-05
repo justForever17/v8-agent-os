@@ -13,6 +13,9 @@ import { lt } from "@/lib/locale";
 type DesktopLiveStatus = {
     available?: boolean;
     reason?: string | null;
+    bridgeReady?: boolean;
+    bridgeStartable?: boolean;
+    bridgeWarming?: boolean;
     activeSessionId?: string | null;
     viewerCount?: number;
     config?: {
@@ -29,6 +32,21 @@ type DesktopLiveAnswer = {
     sdp?: string;
     error?: string;
 };
+
+async function retryWithDelay<T>(fn: () => Promise<T>, retries: number, delayMs: number) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            if (attempt < retries - 1) {
+                await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+            }
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Operation failed");
+}
 
 export function DesktopLiveButton() {
     const pathname = usePathname();
@@ -59,22 +77,42 @@ export function DesktopLiveButton() {
     }, [authStatus, pathname, session?.user?.role]);
 
     const refreshStatus = useCallback(async () => {
-        if (!visible) return;
+        if (!visible) return null;
         try {
             const response = await fetch("/api/desktop-live/status", { cache: "no-store" });
             const payload = (await response.json().catch(() => ({}))) as DesktopLiveStatus & { error?: string };
             if (!response.ok) {
-                setLiveStatus({ available: false, reason: payload.error || t(lt("桌面直播当前不可用", "Desktop Live is unavailable")) });
-                return;
+                const fallback = {
+                    available: false,
+                    reason: payload.error || t(lt("桌面直播当前不可用", "Desktop Live is unavailable")),
+                } satisfies DesktopLiveStatus;
+                setLiveStatus(fallback);
+                return fallback;
             }
             setLiveStatus(payload);
+            return payload;
         } catch (err) {
-            setLiveStatus({
+            const fallback = {
                 available: false,
                 reason: err instanceof Error ? err.message : t(lt("桌面直播当前不可用", "Desktop Live is unavailable")),
-            });
+            } satisfies DesktopLiveStatus;
+            setLiveStatus(fallback);
+            return fallback;
         }
     }, [t, visible]);
+
+    const prepareBridge = useCallback(async () => {
+        const response = await fetch("/api/desktop-live/prepare", {
+            method: "POST",
+            cache: "no-store",
+        });
+        const payload = (await response.json().catch(() => ({}))) as DesktopLiveStatus & { error?: string };
+        if (!response.ok) {
+            throw new Error(payload.error || t(lt("桌面直播桥预热失败", "Failed to prepare Desktop Live bridge")));
+        }
+        setLiveStatus(payload);
+        return payload;
+    }, [t]);
 
     const releaseSession = useCallback(async (activeSessionId: string | null) => {
         if (!activeSessionId) return;
@@ -185,13 +223,40 @@ export function DesktopLiveButton() {
         let activeSessionId: string | null = null;
 
         try {
-            const sessionResponse = await fetch("/api/desktop-live/session", {
-                method: "POST",
-                cache: "no-store",
-            });
-            const sessionPayload = (await sessionResponse.json().catch(() => ({}))) as { sessionId?: string; error?: string };
-            if (!sessionResponse.ok || !sessionPayload.sessionId) {
-                throw new Error(sessionPayload.error || t(lt("创建桌面直播会话失败", "Failed to create Desktop Live session")));
+            let latestStatus = await refreshStatus();
+            if (latestStatus?.available !== true) {
+                await prepareBridge().catch(() => null);
+            }
+            for (let attempt = 0; attempt < 12; attempt += 1) {
+                latestStatus = await refreshStatus();
+                if (latestStatus.available === true) {
+                    break;
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, 850));
+            }
+
+            if (latestStatus?.available !== true) {
+                throw new Error(
+                    latestStatus?.reason
+                    || t(lt("桌面直播桥仍在启动，请稍后重试。", "Desktop Live bridge is still starting. Please retry shortly.")),
+                );
+            }
+
+            let sessionPayload: { sessionId?: string; error?: string } | null = null;
+            for (let attempt = 0; attempt < 4; attempt += 1) {
+                const sessionResponse = await fetch("/api/desktop-live/session", {
+                    method: "POST",
+                    cache: "no-store",
+                });
+                sessionPayload = (await sessionResponse.json().catch(() => ({}))) as { sessionId?: string; error?: string };
+                if (sessionResponse.ok && sessionPayload.sessionId) {
+                    break;
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, 700));
+            }
+
+            if (!sessionPayload?.sessionId) {
+                throw new Error(sessionPayload?.error || t(lt("创建桌面直播会话失败", "Failed to create Desktop Live session")));
             }
 
             activeSessionId = sessionPayload.sessionId;
@@ -249,22 +314,25 @@ export function DesktopLiveButton() {
                 throw new Error(t(lt("桌面直播本地描述生成失败。", "Failed to create a Desktop Live local description.")));
             }
 
-            const offerResponse = await fetch("/api/desktop-live/offer", {
-                method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                },
-                body: JSON.stringify({
-                    sessionId: activeSessionId,
-                    sdp: localDescription.sdp,
-                    type: localDescription.type,
-                }),
-                cache: "no-store",
-            });
-            const answerPayload = (await offerResponse.json().catch(() => ({}))) as DesktopLiveAnswer;
-            if (!offerResponse.ok || !answerPayload.sdp || !answerPayload.type) {
-                throw new Error(answerPayload.error || t(lt("桌面直播协商失败", "Desktop Live negotiation failed")));
-            }
+            const answerPayload = await retryWithDelay(async () => {
+                const offerResponse = await fetch("/api/desktop-live/offer", {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        sessionId: activeSessionId,
+                        sdp: localDescription.sdp,
+                        type: localDescription.type,
+                    }),
+                    cache: "no-store",
+                });
+                const payload = (await offerResponse.json().catch(() => ({}))) as DesktopLiveAnswer;
+                if (!offerResponse.ok || !payload.sdp || !payload.type) {
+                    throw new Error(payload.error || t(lt("桌面直播桥仍在启动，请稍后重试。", "Desktop Live bridge is still starting. Please retry shortly.")));
+                }
+                return payload;
+            }, 6, 900);
 
             await pc.setRemoteDescription({
                 type: answerPayload.type,
@@ -291,14 +359,16 @@ export function DesktopLiveButton() {
             setLoading(false);
             setError(err instanceof Error ? err.message : t(lt("创建桌面直播会话失败", "Failed to create Desktop Live session")));
         }
-    }, [loading, refreshStatus, releaseSession, t]);
+    }, [loading, prepareBridge, refreshStatus, releaseSession, t]);
 
     if (!visible) {
         return null;
     }
 
-    const disabled = !liveStatus?.available;
-    const buttonTitle = disabled ? liveStatus?.reason || t(lt("桌面直播当前不可用", "Desktop Live is unavailable")) : t(lt("观看服务端真实桌面", "Watch the live desktop"));
+    const buttonDisabled = loading || liveStatus?.bridgeStartable === false;
+    const buttonTitle = liveStatus?.available
+        ? t(lt("观看服务端真实桌面", "Watch the live desktop"))
+        : liveStatus?.reason || t(lt("桌面直播当前不可用", "Desktop Live is unavailable"));
 
     return (
         <>
@@ -308,7 +378,7 @@ export function DesktopLiveButton() {
                 size="icon"
                 className="relative h-9 w-9 rounded-xl"
                 title={buttonTitle}
-                disabled={disabled || loading}
+                disabled={buttonDisabled}
                 onClick={() => void openViewer()}
                 onPointerEnter={() => void refreshStatus()}
             >

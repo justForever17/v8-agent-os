@@ -35,6 +35,7 @@ DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
         "extensions",
         "automation",
         "network_supervisor",
+        "plugin_host",
         "computer_use",
         "rpa",
         "desktop_live",
@@ -103,12 +104,18 @@ def _desktop_live_runtime_available() -> bool:
     )
 
 
+def _plugin_host_runtime_available() -> bool:
+    return _module_importable("core.plugin_host") and _module_importable("runtimes.plugin_host.runtime")
+
+
 def _rpa_runtime_available() -> bool:
     return _module_importable("robot") and _module_importable("RPA")
 
 
 def _detect_installed_runtime_families(install_platform: str) -> list[str]:
     families = _default_runtime_families_for_profile("minimal")
+    if _plugin_host_runtime_available() and "plugin_host" not in families:
+        families.append("plugin_host")
     if _computer_use_runtime_available_for_platform(install_platform) and "computer_use" not in families:
         families.append("computer_use")
     if _desktop_live_runtime_available() and "desktop_live" not in families:
@@ -129,6 +136,10 @@ def _needs_runtime_registry_installation_migration(payload: Any) -> bool:
     if "installedRuntimeFamilies" not in payload:
         return True
     if not list(payload.get("installedRuntimeFamilies") or []):
+        return True
+    install_profile = normalize_install_profile(payload.get("installProfile") or startup_profile or "minimal")
+    configured_families = _normalize_runtime_families(payload.get("installedRuntimeFamilies"))
+    if install_profile == "desktop" and _plugin_host_runtime_available() and "plugin_host" not in configured_families:
         return True
     return False
 
@@ -251,6 +262,8 @@ def get_runtime_registry_state() -> dict[str, Any]:
             startup_profile=legacy_startup_profile,
             install_profile=install_profile,
         )
+    if install_profile == "desktop" and _plugin_host_runtime_available() and "plugin_host" not in installed_runtime_families:
+        installed_runtime_families = [*installed_runtime_families, "plugin_host"]
 
     return {
         "version": int(payload.get("version") or 1),

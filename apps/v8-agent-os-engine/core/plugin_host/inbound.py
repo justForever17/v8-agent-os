@@ -44,6 +44,36 @@ def normalize_inbound_message(
     normalized_metadata.setdefault("source", normalized_source)
     normalized_metadata.setdefault("chat_type", normalized_chat_type)
     normalized_metadata.setdefault("remote_id", normalized_remote_id)
+    normalized_metadata.setdefault("channel_type", normalized_source)
+    normalized_metadata.setdefault(
+        "channel_name",
+        str(
+            normalized_metadata.get("channel_name")
+            or normalized_metadata.get("channelName")
+            or normalized_source
+        ).strip() or normalized_source,
+    )
+    channel_domain = str(
+        normalized_metadata.get("channel_domain")
+        or normalized_metadata.get("channelDomain")
+        or ""
+    ).strip() or None
+    if channel_domain:
+        normalized_metadata.setdefault("channel_domain", channel_domain)
+    account_id = str(
+        normalized_metadata.get("account_id")
+        or normalized_metadata.get("accountId")
+        or ""
+    ).strip() or None
+    if account_id:
+        normalized_metadata.setdefault("account_id", account_id)
+    default_account = str(
+        normalized_metadata.get("default_account")
+        or normalized_metadata.get("defaultAccount")
+        or ""
+    ).strip() or None
+    if default_account:
+        normalized_metadata.setdefault("default_account", default_account)
     normalized_metadata.setdefault("mentioned", mentioned)
     normalized_metadata.setdefault("mentions", mentions)
     normalized_metadata.setdefault("wake_triggered", wake_triggered)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 from typing import Any, Dict, List, Optional
 
 from core.multimodal_payload_adapter import normalize_artifact_record
@@ -27,6 +28,188 @@ STATUS_LABELS = {
     "cancelled": "已取消",
     "completed": "已完成",
 }
+
+
+def _parse_metadata(metadata: Any) -> Dict[str, Any]:
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    if isinstance(metadata, str):
+        try:
+            parsed = json.loads(metadata)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _read_string(record: Dict[str, Any], keys: List[str]) -> str:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _coerce_string(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _normalize_source_group(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"web", "channels", "cron", "hooks"}:
+        return normalized
+    return ""
+
+
+def _normalize_source(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_chat_type(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    return "group" if normalized == "group" else "p2p"
+
+
+def _derive_channel_context(record: Dict[str, Any], *, source_hint: str | None = None) -> Dict[str, Any]:
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    metadata = _parse_metadata(record.get("metadata") or summary.get("metadata"))
+    source = _normalize_source(
+        record.get("source")
+        or summary.get("source")
+        or record.get("trigger_source")
+        or summary.get("trigger_source")
+        or metadata.get("trigger_source")
+        or metadata.get("triggerSource")
+        or metadata.get("source")
+        or source_hint
+    )
+    handoff_source = _normalize_source(metadata.get("handoff_source") or metadata.get("handoffSource"))
+    transport_managed_by = _normalize_source(metadata.get("transport_managed_by") or metadata.get("transportManagedBy"))
+    bridge_backed_source = (
+        handoff_source == "openclaw_bridge" or transport_managed_by == "openclaw_bridge"
+    ) and source not in {"", "web", "cron", "hooks"} and not source.startswith("hook") and not source.startswith("trigger") and not source.startswith("cron")
+
+    channel_type = _coerce_string(
+        _read_string(record, ["channel_type", "channelType"])
+        or _read_string(summary, ["channel_type", "channelType"])
+        or _read_string(metadata, ["channel_type", "channelType"])
+        or (source if bridge_backed_source else "")
+    )
+    channel_name = _coerce_string(
+        _read_string(record, ["channel_name", "channelName"])
+        or _read_string(summary, ["channel_name", "channelName"])
+        or _read_string(metadata, ["channel_name", "channelName"])
+        or channel_type
+    )
+    channel_domain = _coerce_string(
+        _read_string(record, ["channel_domain", "channelDomain"])
+        or _read_string(summary, ["channel_domain", "channelDomain"])
+        or _read_string(metadata, ["channel_domain", "channelDomain"])
+    )
+    chat_type = _normalize_chat_type(
+        _read_string(record, ["chat_type", "chatType"])
+        or _read_string(summary, ["chat_type", "chatType"])
+        or _read_string(metadata, ["chat_type", "chatType"])
+    )
+    account_id = _coerce_string(
+        _read_string(record, ["account_id", "accountId"])
+        or _read_string(summary, ["account_id", "accountId"])
+        or _read_string(metadata, ["account_id", "accountId"])
+    )
+    default_account = _coerce_string(
+        _read_string(record, ["default_account", "defaultAccount"])
+        or _read_string(summary, ["default_account", "defaultAccount"])
+        or _read_string(metadata, ["default_account", "defaultAccount"])
+    )
+
+    return {
+        **({"channelType": channel_type} if channel_type else {}),
+        **({"channelName": channel_name} if channel_name else {}),
+        **({"channelDomain": channel_domain} if channel_domain else {}),
+        **({"chatType": chat_type} if chat_type else {}),
+        **({"accountId": account_id} if account_id else {}),
+        **({"defaultAccount": default_account} if default_account else {}),
+    }
+
+
+def _has_channel_context(context: Dict[str, Any]) -> bool:
+    return bool(
+        context.get("channelType")
+        or context.get("channelName")
+        or context.get("channelDomain")
+        or context.get("accountId")
+        or context.get("defaultAccount")
+    )
+
+
+def _is_bridge_managed_channel_record(record: Dict[str, Any], *, source_hint: str | None = None) -> bool:
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    metadata = _parse_metadata(record.get("metadata") or summary.get("metadata"))
+    context = _derive_channel_context(record, source_hint=source_hint)
+    if not _has_channel_context(context):
+        return False
+
+    source = _normalize_source(
+        record.get("source")
+        or summary.get("source")
+        or record.get("trigger_source")
+        or summary.get("trigger_source")
+        or metadata.get("trigger_source")
+        or metadata.get("triggerSource")
+        or metadata.get("source")
+        or source_hint
+    )
+    handoff_source = _normalize_source(metadata.get("handoff_source") or metadata.get("handoffSource"))
+    transport_managed_by = _normalize_source(metadata.get("transport_managed_by") or metadata.get("transportManagedBy"))
+    bridge_managed = handoff_source == "openclaw_bridge" or transport_managed_by == "openclaw_bridge"
+
+    if source in {"channels", "openclaw_channels", "openclaw_channel"}:
+        return True
+    if bridge_managed:
+        return True
+    return False
+
+
+def _derive_source_group(record: Dict[str, Any], *, source_hint: str | None = None) -> str:
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    explicit = _normalize_source_group(
+        record.get("sourceGroup")
+        or record.get("source_group")
+        or summary.get("sourceGroup")
+        or summary.get("source_group")
+    )
+    if explicit in {"cron", "hooks"}:
+        return explicit
+
+    metadata = _parse_metadata(record.get("metadata") or summary.get("metadata"))
+    source = _normalize_source(
+        record.get("source")
+        or summary.get("source")
+        or record.get("trigger_source")
+        or summary.get("trigger_source")
+        or metadata.get("trigger_source")
+        or metadata.get("triggerSource")
+        or metadata.get("source")
+        or source_hint
+    )
+    if not source:
+        return "web"
+    if source == "cron" or source.startswith("cron"):
+        return "cron"
+    if source == "hooks" or source.startswith("hook") or source.startswith("trigger"):
+        return "hooks"
+
+    is_canonical_channel_record = _is_bridge_managed_channel_record(record, source_hint=source_hint)
+    if explicit == "channels":
+        return "channels" if is_canonical_channel_record else "web"
+    if is_canonical_channel_record:
+        return "channels"
+    if explicit == "web":
+        return "web"
+    return "web"
 
 
 def project_artifacts_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -707,6 +890,7 @@ def build_projection_summary(
     session = session or {}
     workflow = workflow or {}
     approvals = approvals or []
+    channel_context = _derive_channel_context(session, source_hint=source)
     preview_excerpt = derive_preview_excerpt(snapshot, fallback_preview=session.get("previewExcerpt"))
     workflow_status = workflow.get("status") or session.get("workflowStatus")
     step_status = workflow.get("currentStepStatus") or session.get("stepStatus")
@@ -725,6 +909,8 @@ def build_projection_summary(
         "updatedAt": session.get("updated_at") or session.get("updatedAt"),
         "latestSeq": latest_seq,
         "source": source,
+        "sourceGroup": _derive_source_group(session, source_hint=source),
+        **channel_context,
         "workflowStatus": workflow_status,
         "statusLabel": _status_label(workflow_status),
         "stepStatus": step_status,

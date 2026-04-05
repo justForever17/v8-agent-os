@@ -1,23 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
-import { verifyServiceAuth } from "@/lib/service-auth";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
 async function resolveUserEmail(req: NextRequest) {
-    let userEmail: string | null | undefined = await verifyServiceAuth(req);
-    if (!userEmail) {
-        const session = await auth();
-        userEmail = session?.user?.email;
-    }
-    return userEmail;
+    return resolveAuthorizedUserEmail(req);
 }
 
 export async function GET(req: NextRequest) {
     const userEmail = await resolveUserEmail(req);
     if (!userEmail) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return unauthorizedJson();
     }
 
     try {

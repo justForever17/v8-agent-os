@@ -1,23 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateImageWithDoubao } from "@/lib/volcengine";
 import crypto from 'crypto';
-import { verifyServiceAuth } from "@/lib/service-auth";
-import { auth } from "@/lib/auth";
 import { createEngineChatGatewayStream } from "@/lib/realtime/engine-chat-gateway";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-    let userEmail: string | undefined | null;
-    userEmail = await verifyServiceAuth(req);
+    const userEmail = await resolveAuthorizedUserEmail(req);
     if (!userEmail) {
-        const session = await auth();
-        userEmail = session?.user?.email;
-    }
-
-    if (!userEmail) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return unauthorizedJson();
     }
 
     try {

@@ -1,108 +1,23 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import type { ContextReferenceItem } from "@v8/session-realtime";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ChatMessage } from "@/src/types/admin";
-
-type ContextReference = {
-    id: string;
-    type: "file" | "memory" | "search" | "web";
-    label: string;
-    details?: string;
-};
 
 type ContextReferencesHUDProps = {
-    messages: ChatMessage[];
+    contextReferences: ContextReferenceItem[];
 };
 
-function asRecord(value: unknown) {
-    return value && typeof value === "object" ? value as Record<string, unknown> : {};
-}
-
-export const ContextReferencesHUD = memo(function ContextReferencesHUD({ messages }: ContextReferencesHUDProps) {
+export const ContextReferencesHUD = memo(function ContextReferencesHUD({ contextReferences }: ContextReferencesHUDProps) {
     const { colors, themeMode } = useUiPrefs();
 
-    const contextRefs = useMemo(() => {
-        const refs = new Map<string, ContextReference>();
-
-        messages.forEach((message) => {
-            if (message.role !== "assistant" || !Array.isArray(message.nodes)) {
-                return;
-            }
-
-            message.nodes.forEach((node) => {
-                if (node.kind !== "execution" || node.executionType !== "tool_call") {
-                    return;
-                }
-
-                const args = asRecord(node.args);
-                const toolName = String(node.toolName || "").trim();
-
-                if (["read_file", "view_file", "replace_file_content", "multi_replace_file_content", "write_to_file"].includes(toolName)) {
-                    const path = String(args.AbsolutePath || args.TargetFile || args.filePath || "").trim();
-                    if (path) {
-                        const filename = path.split(/[\\/]/).pop();
-                        if (filename) {
-                            refs.set(`file-${filename}`, {
-                                id: `file-${filename}`,
-                                type: "file",
-                                label: filename,
-                                details: path,
-                            });
-                        }
-                    }
-                    return;
-                }
-
-                if (["find_by_name", "grep_search", "list_dir"].includes(toolName)) {
-                    const query = String(args.Pattern || args.Query || args.SearchDirectory || "").trim();
-                    if (query) {
-                        const shortQuery = query.length > 15 ? `${query.slice(0, 15)}...` : query;
-                        refs.set(`search-${shortQuery}`, {
-                            id: `search-${shortQuery}`,
-                            type: "search",
-                            label: `搜索: ${shortQuery}`,
-                            details: `Tool: ${toolName}`,
-                        });
-                    }
-                    return;
-                }
-
-                if (toolName === "search_web" || toolName === "read_url_content") {
-                    const query = String(args.query || args.Url || "").trim();
-                    if (query) {
-                        const shortQuery = query.length > 20 ? `${query.slice(0, 20)}...` : query;
-                        refs.set(`web-${shortQuery}`, {
-                            id: `web-${shortQuery}`,
-                            type: "web",
-                            label: `网页: ${shortQuery}`,
-                        });
-                    }
-                    return;
-                }
-
-                if (toolName === "memory_recall") {
-                    const query = String(args.query || "knowledge").trim();
-                    const shortQuery = query.length > 15 ? `${query.slice(0, 15)}...` : query;
-                    refs.set(`memory-${shortQuery}`, {
-                        id: `memory-${shortQuery}`,
-                        type: "memory",
-                        label: `记忆: ${shortQuery}`,
-                    });
-                }
-            });
-        });
-
-        return Array.from(refs.values()).slice(-10);
-    }, [messages]);
-
-    if (contextRefs.length === 0) {
+    if (contextReferences.length === 0) {
         return null;
     }
 
-    const iconName = (type: ContextReference["type"]) => {
+    const iconName = (type: ContextReferenceItem["type"]) => {
         switch (type) {
             case "file":
                 return { name: "file-code-outline" as const, color: "#3B82F6" };
@@ -119,7 +34,7 @@ export const ContextReferencesHUD = memo(function ContextReferencesHUD({ message
 
     return (
         <View style={styles.wrap}>
-            {contextRefs.map((ref) => {
+            {contextReferences.slice(-10).map((ref) => {
                 const icon = iconName(ref.type);
                 return (
                     <View

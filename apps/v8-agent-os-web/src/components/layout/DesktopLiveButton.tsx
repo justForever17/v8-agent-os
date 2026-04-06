@@ -229,7 +229,7 @@ export function DesktopLiveButton() {
             }
             for (let attempt = 0; attempt < 12; attempt += 1) {
                 latestStatus = await refreshStatus();
-                if (latestStatus.available === true) {
+                if (latestStatus?.available === true) {
                     break;
                 }
                 await new Promise((resolve) => window.setTimeout(resolve, 850));
@@ -333,6 +333,10 @@ export function DesktopLiveButton() {
                 }
                 return payload;
             }, 6, 900);
+
+            if (!answerPayload.type || !answerPayload.sdp) {
+                throw new Error(t(lt("桌面直播桥返回了无效的应答。", "Desktop Live bridge returned an invalid answer.")));
+            }
 
             await pc.setRemoteDescription({
                 type: answerPayload.type,

@@ -10,6 +10,7 @@ import { ContextReferencesHUD } from "./ContextReferencesHUD";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
+import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
 
 import {
     Dialog,
@@ -22,13 +23,15 @@ import {
 
 interface ChatWindowProps {
     messages: Message[];
+    processes: AdminProcessRef[];
+    contextReferences: ContextReferenceItem[];
     onDeleteMessage?: (id: string) => void;
     isLoading?: boolean;
     userAvatar?: string | null;
     shellClassName?: string;
 }
 
-export function ChatWindow({ messages, onDeleteMessage, isLoading, userAvatar, shellClassName }: ChatWindowProps) {
+export function ChatWindow({ messages, processes, contextReferences, onDeleteMessage, isLoading, userAvatar, shellClassName }: ChatWindowProps) {
     const t = useT();
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -175,7 +178,7 @@ export function ChatWindow({ messages, onDeleteMessage, isLoading, userAvatar, s
             <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden pt-1 sm:pt-1.5">
                     <div className="shrink-0">
-                        <ContextReferencesHUD />
+                        <ContextReferencesHUD contextReferences={contextReferences} />
                     </div>
                     <div
                         className={cn(
@@ -197,6 +200,7 @@ export function ChatWindow({ messages, onDeleteMessage, isLoading, userAvatar, s
                                     <ChatMessage
                                         key={m.id}
                                         message={m}
+                                        processes={processes}
                                         isLoading={(isLoading || false) && index === messages.length - 1}
                                         onDelete={setDeleteId}
                                         isLast={index === messages.length - 1}

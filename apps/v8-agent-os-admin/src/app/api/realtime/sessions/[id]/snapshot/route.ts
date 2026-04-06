@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
+import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -22,7 +23,7 @@ export async function GET(
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
         });
-        const data = await res.json().catch(() => ({}));
+        const data = normalizeSnapshotForRealtimeSurface(await res.json().catch(() => ({})));
         return NextResponse.json(data, { status: res.status });
     } catch (error) {
         console.error("[Admin Realtime Snapshot] Engine proxy failed:", error);

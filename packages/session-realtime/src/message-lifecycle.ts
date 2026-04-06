@@ -1,0 +1,869 @@
+import type { AdminResourceRef, NormalizedSessionRuntimeEvent } from "./contract.js";
+import { deriveAdminResourceRefFromArtifactLike } from "./resources.js";
+import { shouldForwardRuntimeEventToRealtimeSurface } from "./event-normalizer.js";
+
+export type SessionStreamPhase = "placeholder" | "agent_started" | "streaming" | "settling" | "error";
+
+export type SessionAgentProfile = {
+  agentName?: string;
+  agentAvatar?: string;
+  agentRoleLabel?: string;
+};
+
+export type SessionStreamToolPayload = {
+  toolCallId?: string;
+  toolName?: string;
+  args?: unknown;
+  result?: unknown;
+};
+
+export type SessionStreamArtifact = {
+  id?: string;
+  artifactId?: string;
+  title?: string;
+  displayLabel?: string;
+  displaySubtitle?: string;
+  kind?: string;
+  previewUrl?: string;
+  externalUrl?: string;
+  sourcePath?: string;
+  workspacePath?: string;
+  mimeType?: string;
+  resourceRef?: AdminResourceRef | null;
+  [key: string]: unknown;
+};
+
+export type SessionStreamUiEvent = Pick<
+  NormalizedSessionRuntimeEvent,
+  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "seq"
+> & {
+  agent?: {
+    id?: string;
+    name?: string;
+    avatar?: string;
+    roleLabel?: string;
+  };
+  tool?: SessionStreamToolPayload;
+  artifact?: SessionStreamArtifact | null;
+};
+
+export type SessionStreamNarrativeNode = {
+  id: string;
+  kind: "narrative";
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: number;
+  agentName?: string;
+  agentAvatar?: string;
+  agentRoleLabel?: string;
+  agentType?: "supervisor" | "agent" | "user";
+};
+
+export type SessionStreamExecutionNode = {
+  id: string;
+  kind: "execution";
+  executionType: "reasoning" | "tool_call" | "tool_result" | "runtime_progress" | "agent_start";
+  timestamp: number;
+  agentName?: string;
+  agentAvatar?: string;
+  agentRoleLabel?: string;
+  agentType?: "supervisor" | "agent" | "user";
+  content?: string;
+  time?: number;
+  startTime?: number;
+  toolCallId?: string;
+  toolName?: string;
+  args?: unknown;
+  result?: unknown;
+  topic?: string;
+  label?: string;
+  data?: Record<string, unknown>;
+};
+
+export type SessionStreamGovernanceNode = {
+  id: string;
+  kind: "governance";
+  governanceType: "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance";
+  timestamp: number;
+  agentName?: string;
+  agentAvatar?: string;
+  agentRoleLabel?: string;
+  agentType?: "supervisor" | "agent" | "user";
+  approvalId?: string;
+  approvalKind?: string;
+  question?: string;
+  toolCallId?: string;
+  requestInfo?: unknown;
+  topic?: string;
+  status?: string;
+  reason?: string;
+};
+
+export type SessionStreamArtifactNode = {
+  id: string;
+  kind: "artifact";
+  timestamp: number;
+  agentName?: string;
+  agentAvatar?: string;
+  agentRoleLabel?: string;
+  agentType?: "supervisor" | "agent" | "user";
+  artifact: SessionStreamArtifact;
+};
+
+export type SessionStreamTimelineNode =
+  | SessionStreamNarrativeNode
+  | SessionStreamExecutionNode
+  | SessionStreamGovernanceNode
+  | SessionStreamArtifactNode;
+
+export type SessionStreamMessage = {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  timestamp?: number;
+  runId?: string;
+  renderKey?: string;
+  agentName?: string;
+  agentAvatar?: string;
+  agentRoleLabel?: string;
+  agentType?: "supervisor" | "agent" | "user";
+  nodes?: SessionStreamTimelineNode[];
+  images?: string[];
+  artifacts?: SessionStreamArtifact[];
+  metadata?: Record<string, unknown>;
+  uiEphemeral?: boolean;
+  uiStreamPhase?: SessionStreamPhase;
+};
+
+export type SessionStreamState<TMessage extends SessionStreamMessage = SessionStreamMessage> = {
+  currentAiMsg: TMessage | undefined;
+  activeAgentProfile: SessionAgentProfile;
+};
+
+export type SessionStreamLifecycleOptions = {
+  createId?: (prefix: string) => string;
+  defaultAgentProfile?: Required<SessionAgentProfile>;
+  resolveAgentProfile?: (
+    event: SessionStreamUiEvent,
+    fallback: SessionAgentProfile,
+    defaultAgentProfile: Required<SessionAgentProfile>,
+  ) => SessionAgentProfile;
+  resolveArtifact?: (event: SessionStreamUiEvent) => SessionStreamArtifact | null;
+  coalescedRuntimeTopics?: string[];
+};
+
+const DEFAULT_AGENT_PROFILE: Required<SessionAgentProfile> = {
+  agentName: "智能主管",
+  agentAvatar: "/brand-mark.png",
+  agentRoleLabel: "主理人",
+};
+
+const DEFAULT_COALESCED_RUNTIME_TOPICS = new Set([
+  "computer_use.step.heartbeat",
+  "computer_use.step.waiting_for_window",
+  "computer_use.action.settle_wait_started",
+]);
+
+function nextId(prefix: string, createId?: (prefix: string) => string) {
+  if (createId) {
+    return createId(prefix);
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function resolveDefaultAgentProfile(options?: SessionStreamLifecycleOptions) {
+  return options?.defaultAgentProfile || DEFAULT_AGENT_PROFILE;
+}
+
+function buildAgentProfileFromEvent(
+  event: SessionStreamUiEvent,
+  fallback: SessionAgentProfile,
+  defaultAgentProfile: Required<SessionAgentProfile>,
+) {
+  const eventData = asRecord(event.data);
+  const agentData = asRecord(eventData.agent);
+  return {
+    agentName:
+      event.agent?.name
+      || (typeof eventData.agentName === "string" ? eventData.agentName : "")
+      || (typeof agentData.name === "string" ? agentData.name : "")
+      || fallback.agentName
+      || defaultAgentProfile.agentName,
+    agentAvatar:
+      event.agent?.avatar
+      || (typeof eventData.agentAvatar === "string" ? eventData.agentAvatar : "")
+      || (typeof agentData.avatar === "string" ? agentData.avatar : "")
+      || fallback.agentAvatar
+      || defaultAgentProfile.agentAvatar,
+    agentRoleLabel:
+      event.agent?.roleLabel
+      || (typeof eventData.agentRoleLabel === "string" ? eventData.agentRoleLabel : "")
+      || (typeof agentData.roleLabel === "string" ? agentData.roleLabel : "")
+      || fallback.agentRoleLabel
+      || defaultAgentProfile.agentRoleLabel,
+  };
+}
+
+function resolveArtifactFromEvent(event: SessionStreamUiEvent): SessionStreamArtifact | null {
+  const artifact = event.artifact || asRecord(event.data).artifact || event.data;
+  const record = asRecord(artifact);
+  if (
+    !record.id
+    && !record.artifactId
+    && !record.artifact_id
+    && !record.workspacePath
+    && !record.workspace_path
+    && !record.sourcePath
+    && !record.source_path
+    && !record.previewUrl
+    && !record.preview_url
+    && !record.externalUrl
+    && !record.external_url
+    && !record.resourceRef
+    && !record.title
+  ) {
+    return null;
+  }
+  return {
+    id: typeof record.id === "string" ? record.id : undefined,
+    artifactId:
+      typeof record.artifactId === "string"
+        ? record.artifactId
+        : typeof record.artifact_id === "string"
+          ? record.artifact_id
+          : undefined,
+    title: typeof record.title === "string" ? record.title : undefined,
+    displayLabel:
+      typeof record.displayLabel === "string"
+        ? record.displayLabel
+        : typeof record.display_label === "string"
+          ? record.display_label
+          : undefined,
+    displaySubtitle:
+      typeof record.displaySubtitle === "string"
+        ? record.displaySubtitle
+        : typeof record.display_subtitle === "string"
+          ? record.display_subtitle
+          : undefined,
+    kind: typeof record.kind === "string" ? record.kind : undefined,
+    previewUrl:
+      typeof record.previewUrl === "string"
+        ? record.previewUrl
+        : typeof record.preview_url === "string"
+          ? record.preview_url
+          : undefined,
+    externalUrl:
+      typeof record.externalUrl === "string"
+        ? record.externalUrl
+        : typeof record.external_url === "string"
+          ? record.external_url
+          : undefined,
+    sourcePath:
+      typeof record.sourcePath === "string"
+        ? record.sourcePath
+        : typeof record.source_path === "string"
+          ? record.source_path
+          : undefined,
+    workspacePath:
+      typeof record.workspacePath === "string"
+        ? record.workspacePath
+        : typeof record.workspace_path === "string"
+          ? record.workspace_path
+          : undefined,
+    mimeType:
+      typeof record.mimeType === "string"
+        ? record.mimeType
+        : typeof record.mime_type === "string"
+          ? record.mime_type
+          : undefined,
+    resourceRef: deriveAdminResourceRefFromArtifactLike(record),
+    ...record,
+  };
+}
+
+function artifactKey(artifact: SessionStreamArtifact) {
+  return String(
+    artifact.id
+    || artifact.artifactId
+    || artifact.workspacePath
+    || artifact.sourcePath
+    || artifact.resourceRef?.adminPath
+    || artifact.resourceRef?.url
+    || artifact.previewUrl
+    || artifact.externalUrl
+    || artifact.title
+    || "",
+  ).trim();
+}
+
+function ensureAssistantIdentity(
+  message: SessionStreamMessage,
+  profile: SessionAgentProfile,
+  options?: { overwrite?: boolean },
+) {
+  if (options?.overwrite || !message.agentName) {
+    message.agentName = profile.agentName || message.agentName || DEFAULT_AGENT_PROFILE.agentName;
+  }
+  if (options?.overwrite || !message.agentAvatar) {
+    message.agentAvatar = profile.agentAvatar || message.agentAvatar || DEFAULT_AGENT_PROFILE.agentAvatar;
+  }
+  if (options?.overwrite || !message.agentRoleLabel) {
+    message.agentRoleLabel = profile.agentRoleLabel || message.agentRoleLabel || DEFAULT_AGENT_PROFILE.agentRoleLabel;
+  }
+  if (options?.overwrite || !message.agentType) {
+    message.agentType = message.agentType || "supervisor";
+  }
+}
+
+function shouldPromoteMessageIdentity(
+  currentMessage: SessionStreamMessage,
+  profile: SessionAgentProfile,
+  defaultAgentProfile: Required<SessionAgentProfile>,
+) {
+  const currentName = String(currentMessage.agentName || "").trim();
+  const currentRole = String(currentMessage.agentRoleLabel || "").trim();
+  const nextName = String(profile.agentName || "").trim();
+  const nextRole = String(profile.agentRoleLabel || "").trim();
+  return (
+    !currentName
+    || currentName === defaultAgentProfile.agentName
+    || currentRole === defaultAgentProfile.agentRoleLabel
+    || nextName === defaultAgentProfile.agentName
+    || nextRole === defaultAgentProfile.agentRoleLabel
+  );
+}
+
+function upsertCurrentAiMessage<TMessage extends SessionStreamMessage>(localMessages: TMessage[], currentAiMsg: TMessage) {
+  const index = localMessages.findIndex((message) => message.id === currentAiMsg.id);
+  if (index >= 0) {
+    localMessages[index] = currentAiMsg;
+  } else {
+    localMessages.push(currentAiMsg);
+  }
+  return currentAiMsg;
+}
+
+function ensureCurrentAiMessage<TMessage extends SessionStreamMessage>(
+  localMessages: TMessage[],
+  currentAiMsg: TMessage | undefined,
+  activeAgentProfile: SessionAgentProfile,
+  runId: string | undefined,
+  options?: SessionStreamLifecycleOptions,
+) {
+  let nextCurrentAiMsg = currentAiMsg;
+  if (!nextCurrentAiMsg) {
+    nextCurrentAiMsg = buildAssistantMessage(activeAgentProfile, runId, "placeholder", options) as TMessage;
+    localMessages.push(nextCurrentAiMsg);
+  }
+  if (!Array.isArray(nextCurrentAiMsg.nodes)) {
+    nextCurrentAiMsg.nodes = [];
+  }
+  if (!Array.isArray(nextCurrentAiMsg.images)) {
+    nextCurrentAiMsg.images = [];
+  }
+  if (!Array.isArray(nextCurrentAiMsg.artifacts)) {
+    nextCurrentAiMsg.artifacts = [];
+  }
+  if (runId) {
+    nextCurrentAiMsg.runId = runId;
+  }
+  ensureAssistantIdentity(nextCurrentAiMsg, activeAgentProfile);
+  return nextCurrentAiMsg;
+}
+
+function appendNode(message: SessionStreamMessage, node: SessionStreamTimelineNode) {
+  const nodes = Array.isArray(message.nodes) ? message.nodes : [];
+  nodes.push(node);
+  message.nodes = nodes;
+  message.timestamp = Date.now();
+}
+
+function buildRuntimeProgressNode(
+  topic: string,
+  label: string,
+  data: Record<string, unknown>,
+  profile: SessionAgentProfile,
+  options?: SessionStreamLifecycleOptions,
+): SessionStreamExecutionNode {
+  return {
+    id: nextId("node", options?.createId),
+    kind: "execution",
+    executionType: "runtime_progress",
+    topic,
+    label,
+    data,
+    timestamp: Date.now(),
+    ...profile,
+  };
+}
+
+function appendNarrativeContent(
+  message: SessionStreamMessage,
+  content: string,
+  profile: SessionAgentProfile,
+  options?: SessionStreamLifecycleOptions,
+) {
+  const normalizedContent = String(content || "").trim();
+  if (!normalizedContent) {
+    return;
+  }
+  const lastNode = Array.isArray(message.nodes) ? message.nodes[message.nodes.length - 1] : undefined;
+  if (
+    lastNode
+    && lastNode.kind === "narrative"
+    && lastNode.role === "assistant"
+    && lastNode.agentName === profile.agentName
+  ) {
+    lastNode.content = `${String(lastNode.content || "")}${normalizedContent}`;
+  } else {
+    appendNode(message, {
+      id: nextId("node", options?.createId),
+      kind: "narrative",
+      role: "assistant",
+      content: normalizedContent,
+      timestamp: Date.now(),
+      ...profile,
+    });
+  }
+  message.content = `${String(message.content || "")}${normalizedContent}`;
+}
+
+export function isActiveAssistantStreamPhase(phase?: SessionStreamPhase | null) {
+  return phase === "placeholder" || phase === "agent_started" || phase === "streaming" || phase === "settling";
+}
+
+export function buildAssistantMessage(
+  activeAgentProfile: SessionAgentProfile,
+  runId?: string,
+  phase: SessionStreamPhase = "placeholder",
+  options?: SessionStreamLifecycleOptions,
+): SessionStreamMessage {
+  const defaultAgentProfile = resolveDefaultAgentProfile(options);
+  const resolvedProfile = {
+    ...defaultAgentProfile,
+    ...activeAgentProfile,
+  };
+  return {
+    id: nextId("assistant", options?.createId),
+    role: "assistant",
+    content: "",
+    runId,
+    nodes: [],
+    images: [],
+    artifacts: [],
+    agentName: resolvedProfile.agentName,
+    agentAvatar: resolvedProfile.agentAvatar,
+    agentRoleLabel: resolvedProfile.agentRoleLabel,
+    agentType: "supervisor",
+    timestamp: Date.now(),
+    uiEphemeral: true,
+    uiStreamPhase: phase,
+  };
+}
+
+export function deriveRealtimeStreamState<TMessage extends SessionStreamMessage = SessionStreamMessage>(
+  messages: TMessage[],
+  options?: SessionStreamLifecycleOptions,
+): SessionStreamState<TMessage> {
+  const defaultAgentProfile = resolveDefaultAgentProfile(options);
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  if (!lastAssistant) {
+    return {
+      currentAiMsg: undefined,
+      activeAgentProfile: { ...defaultAgentProfile },
+    };
+  }
+
+  const nodes = Array.isArray(lastAssistant.nodes) ? lastAssistant.nodes : [];
+  const lastAgentNode = [...nodes].reverse().find((node) => node.agentName || node.agentAvatar || node.agentRoleLabel);
+  const currentAiMsg = lastAssistant.uiEphemeral || isActiveAssistantStreamPhase(lastAssistant.uiStreamPhase)
+    ? lastAssistant
+    : undefined;
+
+  return {
+    currentAiMsg,
+    activeAgentProfile: {
+      agentName: lastAgentNode?.agentName || lastAssistant.agentName || defaultAgentProfile.agentName,
+      agentAvatar: lastAgentNode?.agentAvatar || lastAssistant.agentAvatar || defaultAgentProfile.agentAvatar,
+      agentRoleLabel: lastAgentNode?.agentRoleLabel || lastAssistant.agentRoleLabel || defaultAgentProfile.agentRoleLabel,
+    },
+  };
+}
+
+export function shouldApplyRuntimeEventToMessage(
+  event: Pick<SessionStreamUiEvent, "type" | "name" | "targets" | "visibility">,
+) {
+  if (!shouldForwardRuntimeEventToRealtimeSurface(event)) {
+    return false;
+  }
+  if (
+    event.type === "agent_start"
+    || event.type === "text_chunk"
+    || event.type === "reasoning_chunk"
+    || event.type === "tool_start"
+    || event.type === "tool_result"
+    || event.type === "done"
+    || event.type === "error"
+  ) {
+    return true;
+  }
+  if (event.type !== "custom_event") {
+    return false;
+  }
+  const targets = Array.isArray(event.targets) ? event.targets : [];
+  return targets.some((target) => ["message", "artifact", "approval", "runtime_card", "hud", "process", "terminal"].includes(target));
+}
+
+export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessage = SessionStreamMessage>(
+  event: SessionStreamUiEvent,
+  localMessages: TMessage[],
+  currentAiMsg: TMessage | undefined,
+  activeAgentProfile: SessionAgentProfile,
+  options?: SessionStreamLifecycleOptions,
+): SessionStreamState<TMessage> {
+  let nextCurrentAiMsg = currentAiMsg;
+  const defaultAgentProfile = resolveDefaultAgentProfile(options);
+  const resolveAgentProfile = options?.resolveAgentProfile || buildAgentProfileFromEvent;
+  const resolveArtifact = options?.resolveArtifact || resolveArtifactFromEvent;
+  const runtimeCoalesceTopics = new Set(options?.coalescedRuntimeTopics || DEFAULT_COALESCED_RUNTIME_TOPICS);
+  let nextActiveAgentProfile = activeAgentProfile;
+
+  const ensureCurrent = () => {
+    nextCurrentAiMsg = ensureCurrentAiMessage(
+      localMessages,
+      nextCurrentAiMsg,
+      nextActiveAgentProfile,
+      event.run_id,
+      options,
+    );
+    return nextCurrentAiMsg;
+  };
+
+  if (event.type === "agent_start") {
+    nextActiveAgentProfile = resolveAgentProfile(event, nextActiveAgentProfile, defaultAgentProfile);
+    const current = ensureCurrent();
+    current.uiStreamPhase = "agent_started";
+    if (shouldPromoteMessageIdentity(current, nextActiveAgentProfile, defaultAgentProfile)) {
+      ensureAssistantIdentity(current, nextActiveAgentProfile, { overwrite: true });
+    }
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "execution",
+      executionType: "agent_start",
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "text_chunk") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = "streaming";
+    const content = String(event.content || "");
+    const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
+    if (lastNode && lastNode.kind === "narrative" && lastNode.role === "assistant" && lastNode.agentName === nextActiveAgentProfile.agentName) {
+      lastNode.content = `${String(lastNode.content || "")}${content}`;
+    } else {
+      appendNode(current, {
+        id: nextId("node", options?.createId),
+        kind: "narrative",
+        role: "assistant",
+        content,
+        timestamp: Date.now(),
+        ...nextActiveAgentProfile,
+      });
+    }
+    current.content = `${String(current.content || "")}${content}`;
+  } else if (event.type === "reasoning_chunk") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const content = String(event.content || "");
+    const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
+    if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "reasoning" && !lastNode.time) {
+      lastNode.content = `${String(lastNode.content || "")}${content}`;
+    } else {
+      appendNode(current, {
+        id: nextId("node", options?.createId),
+        kind: "execution",
+        executionType: "reasoning",
+        content,
+        time: 0,
+        startTime: Date.now(),
+        timestamp: Date.now(),
+        ...nextActiveAgentProfile,
+      });
+    }
+  } else if (event.type === "tool_start") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const narrativeContent = typeof event.content === "string" && event.content.trim()
+      ? event.content.trim()
+      : typeof eventData.content === "string" && eventData.content.trim()
+        ? eventData.content.trim()
+        : typeof eventData.message === "string" && eventData.message.trim()
+          ? eventData.message.trim()
+          : "";
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "execution",
+      executionType: "tool_call",
+      toolCallId: event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
+      toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
+      args: event.tool?.args ?? eventData.args ?? asRecord(eventData.tool).args,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+    if (narrativeContent) {
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+    }
+  } else if (event.type === "tool_result") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const toolCallId = event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined);
+    const narrativeContent = typeof event.content === "string" && event.content.trim()
+      ? event.content.trim()
+      : typeof eventData.content === "string" && eventData.content.trim()
+        ? eventData.content.trim()
+        : typeof eventData.message === "string" && eventData.message.trim()
+          ? eventData.message.trim()
+          : "";
+    const existingToolCall = (current.nodes || []).find((node) =>
+      node.kind === "execution"
+      && node.executionType === "tool_call"
+      && node.toolCallId === toolCallId,
+    ) as SessionStreamExecutionNode | undefined;
+
+    if (existingToolCall) {
+      existingToolCall.result = event.tool?.result ?? eventData.result;
+      existingToolCall.timestamp = Date.now();
+    } else {
+      appendNode(current, {
+        id: nextId("node", options?.createId),
+        kind: "execution",
+        executionType: "tool_result",
+        toolCallId,
+        toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
+        result: event.tool?.result ?? eventData.result,
+        timestamp: Date.now(),
+        ...nextActiveAgentProfile,
+      });
+    }
+    if (narrativeContent) {
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+    }
+  } else if (event.type === "custom_event" && event.name === "artifact_recorded") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const artifact = resolveArtifact(event);
+    if (artifact) {
+      const currentArtifacts = Array.isArray(current.artifacts) ? current.artifacts : [];
+      const key = artifactKey(artifact);
+      if (key && !currentArtifacts.some((item) => artifactKey(item) === key)) {
+        current.artifacts = [...currentArtifacts, artifact];
+        appendNode(current, {
+          id: nextId("node", options?.createId),
+          kind: "artifact",
+          artifact,
+          timestamp: Date.now(),
+          ...nextActiveAgentProfile,
+        });
+      }
+    }
+  } else if (event.type === "custom_event" && (event.name === "runtime_progress" || event.name === "runtime_event")) {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const topic = typeof eventData.topic === "string" ? eventData.topic : event.name === "runtime_event" ? "runtime" : "runtime_progress";
+    const label = typeof eventData.label === "string"
+      ? eventData.label
+      : typeof eventData.summary === "string"
+        ? eventData.summary
+        : typeof eventData.message === "string"
+          ? eventData.message
+          : topic;
+    const targets = Array.isArray(event.targets) ? event.targets : [];
+    const narrativeContent = typeof event.content === "string" && event.content.trim()
+      ? event.content.trim()
+      : typeof eventData.content === "string" && eventData.content.trim()
+        ? eventData.content.trim()
+        : typeof eventData.message === "string" && eventData.message.trim()
+          ? eventData.message.trim()
+          : "";
+    if (targets.includes("message") && narrativeContent && narrativeContent !== label) {
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+    }
+    const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
+    if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "runtime_progress" && lastNode.label === label) {
+      lastNode.data = eventData;
+      lastNode.timestamp = Date.now();
+    } else if (
+      runtimeCoalesceTopics.has(topic)
+      && lastNode
+      && lastNode.kind === "execution"
+      && lastNode.executionType === "runtime_progress"
+      && lastNode.topic === topic
+    ) {
+      lastNode.label = label;
+      lastNode.data = eventData;
+      lastNode.timestamp = Date.now();
+    } else {
+      appendNode(current, buildRuntimeProgressNode(topic, label, eventData, nextActiveAgentProfile, options));
+    }
+  } else if (event.type === "custom_event" && event.name === "ask_user") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
+      governanceType: "approval_request",
+      approvalId: typeof eventData.approvalId === "string" ? eventData.approvalId : undefined,
+      approvalKind: typeof eventData.approvalKind === "string" ? eventData.approvalKind : undefined,
+      question: typeof eventData.question === "string" ? eventData.question : undefined,
+      toolCallId: typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined,
+      requestInfo: eventData.request,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "approval_resolved") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const narrativeContent = typeof event.content === "string" && event.content.trim()
+      ? event.content.trim()
+      : typeof eventData.message === "string" && eventData.message.trim()
+        ? eventData.message.trim()
+        : "";
+    if (narrativeContent && Array.isArray(event.targets) && event.targets.includes("message")) {
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+    }
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
+      governanceType: "approval_resolved",
+      approvalId: typeof eventData.approval_id === "string" ? eventData.approval_id : typeof eventData.approvalId === "string" ? eventData.approvalId : undefined,
+      approvalKind: typeof eventData.approval_kind === "string" ? eventData.approval_kind : typeof eventData.approvalKind === "string" ? eventData.approvalKind : undefined,
+      topic: typeof eventData.topic === "string" ? eventData.topic : undefined,
+      status: typeof eventData.status === "string" ? eventData.status : undefined,
+      reason: typeof eventData.reason === "string" ? eventData.reason : undefined,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "run_controlled") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
+      governanceType: "run_controlled",
+      topic: typeof eventData.topic === "string" ? eventData.topic : undefined,
+      status: typeof eventData.status === "string" ? eventData.status : undefined,
+      reason: typeof eventData.reason === "string" ? eventData.reason : undefined,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "safety_blocked") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const narrativeContent = typeof event.content === "string" && event.content.trim()
+      ? event.content.trim()
+      : typeof eventData.message === "string" && eventData.message.trim()
+        ? eventData.message.trim()
+        : "";
+    if (narrativeContent && Array.isArray(event.targets) && event.targets.includes("message")) {
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+    }
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
+      governanceType: "safety_blocked",
+      topic: typeof eventData.topic === "string" ? eventData.topic : undefined,
+      status: typeof eventData.status === "string" ? eventData.status : "blocked",
+      reason: typeof eventData.reason === "string"
+        ? eventData.reason
+        : (narrativeContent || (typeof eventData.label === "string" ? eventData.label : undefined)),
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "context_governance_changed") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
+      governanceType: "context_governance",
+      topic: typeof eventData.topic === "string" ? eventData.topic : undefined,
+      status: typeof eventData.status === "string" ? eventData.status : undefined,
+      reason: typeof eventData.label === "string" ? eventData.label : undefined,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "lane_updated") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const topic = typeof eventData.topic === "string" ? eventData.topic : "run.lane.updated";
+    const label = typeof eventData.label === "string"
+      ? eventData.label
+      : typeof event.content === "string" && event.content.trim()
+        ? event.content.trim()
+        : topic;
+    appendNode(current, buildRuntimeProgressNode(topic, label, eventData, nextActiveAgentProfile, options));
+  } else if (event.type === "done") {
+    if (nextCurrentAiMsg) {
+      nextCurrentAiMsg.uiStreamPhase = "settling";
+      upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
+    }
+    nextCurrentAiMsg = undefined;
+  } else if (event.type === "error") {
+    if (nextCurrentAiMsg) {
+      nextCurrentAiMsg.uiStreamPhase = "error";
+      upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
+    }
+    nextCurrentAiMsg = undefined;
+  }
+
+  if (nextCurrentAiMsg) {
+    nextCurrentAiMsg = upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
+  }
+
+  return {
+    currentAiMsg: nextCurrentAiMsg,
+    activeAgentProfile: nextActiveAgentProfile,
+  };
+}
+
+export function isLifecycleTerminalEvent(event: Pick<NormalizedSessionRuntimeEvent, "type" | "name">) {
+  return event.type === "done" || event.type === "error";
+}
+
+export function shouldAuthoritativelyRefreshOnRuntimeEvent(
+  event: Pick<NormalizedSessionRuntimeEvent, "type" | "name" | "topic" | "seq" | "visibility">,
+) {
+  if (!shouldForwardRuntimeEventToRealtimeSurface(event)) {
+    return false;
+  }
+  if (event.seq && event.seq > 0) {
+    const topic = String(event.topic || "").trim().toLowerCase();
+    return !topic.includes("heartbeat");
+  }
+  if (event.type === "done" || event.type === "agent_start" || event.type === "error") {
+    return true;
+  }
+  return event.type === "custom_event"
+    && (
+      event.name === "ask_user"
+      || event.name === "artifact_recorded"
+      || event.name === "run_controlled"
+      || event.name === "approval_resolved"
+      || event.name === "safety_blocked"
+      || event.name === "lane_updated"
+      || event.name === "context_governance_changed"
+    );
+}

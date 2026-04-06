@@ -20,7 +20,6 @@ import type {
     RealtimeSessionSnapshot,
     RPAAvailability,
     RPADraftSummary,
-    SessionTodoSnapshot,
     SkillReferenceSummary,
     MusicTrack,
     UploadedWorkspaceFile,
@@ -360,15 +359,6 @@ export async function dispatchRunCommand(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ reason }),
         },
-    );
-}
-
-export async function getSessionTodos(authorizedFetch: AuthorizedFetch, conversationId: string) {
-    return authorizedJson<SessionTodoSnapshot>(
-        authorizedFetch,
-        `/api/client/sessions/${encodeURIComponent(conversationId)}/todos`,
-        "读取待办失败",
-        { cache: "no-store" },
     );
 }
 

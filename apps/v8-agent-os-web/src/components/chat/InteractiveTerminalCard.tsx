@@ -5,17 +5,22 @@ import { Square, TerminalSquare, ChevronDown } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+    resolveAdminProcessHttpPath,
+    resolveAdminProcessWsUrl,
+    type AdminProcessRef,
+} from '@v8/session-realtime';
 import { cn } from '@/lib/utils';
 import '@xterm/xterm/css/xterm.css';
 
 interface InteractiveTerminalCardProps {
-    commandId: string;
+    process: AdminProcessRef;
     compact?: boolean;
-    onTerminated?: (commandId: string) => void;
+    onTerminated?: (processId: string) => void;
 }
 
-export function InteractiveTerminalCard({ commandId, compact = false, onTerminated }: InteractiveTerminalCardProps) {
-    const [isRunning, setIsRunning] = useState<boolean>(true);
+export function InteractiveTerminalCard({ process, compact = false, onTerminated }: InteractiveTerminalCardProps) {
+    const [isRunning, setIsRunning] = useState<boolean>(() => String(process.status || '').trim().toLowerCase() !== 'stopped');
     const [isCollapsed, setIsCollapsed] = useState(compact);
     const terminalRef = useRef<HTMLDivElement>(null);
     const xtermRef = useRef<Terminal | null>(null);
@@ -25,10 +30,28 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
 
     // Fit terminal when expanding
     useEffect(() => {
+        setIsRunning(String(process.status || '').trim().toLowerCase() !== 'stopped');
+    }, [process.status]);
+
+    useEffect(() => {
         if (!isCollapsed && fitAddonRef.current) {
             setTimeout(() => fitAddonRef.current?.fit(), 50);
         }
     }, [isCollapsed]);
+
+    const handleTerminate = useCallback(async () => {
+        const terminatePath = resolveAdminProcessHttpPath('web', undefined, process, 'terminate');
+        if (!terminatePath) {
+            return;
+        }
+        try {
+            await fetch(terminatePath, { method: 'POST' });
+            setIsRunning(false);
+            onTerminated?.(process.processId);
+        } catch (err) {
+            console.error('Termination error:', err);
+        }
+    }, [onTerminated, process]);
 
     useEffect(() => {
         if (initRef.current || !terminalRef.current) return;
@@ -60,8 +83,15 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
         window.addEventListener('resize', handleResize);
 
         // WebSocket — goes through the Next.js → Admin → Engine proxy chain
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/api/bg_processes/${commandId}/ws`;
+        const wsUrl = resolveAdminProcessWsUrl('web', undefined, process);
+        if (!wsUrl) {
+            setIsRunning(false);
+            term.writeln('\r\n[Missing process stream]');
+            return () => {
+                window.removeEventListener('resize', handleResize);
+                term.dispose();
+            };
+        }
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
@@ -72,17 +102,27 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
         ws.onclose = () => {
             setIsRunning(false);
             if (term) term.writeln('\r\n[Process Terminated]');
-            onTerminated?.(commandId);
+            onTerminated?.(process.processId);
         };
 
         ws.onerror = () => {
             setIsRunning(false);
             if (term) term.writeln('\r\n[Connection Error]');
-            onTerminated?.(commandId);
+            onTerminated?.(process.processId);
         };
 
         term.onData((data) => {
-            if (ws.readyState === WebSocket.OPEN) ws.send(data);
+            const inputPath = resolveAdminProcessHttpPath('web', undefined, process, 'input');
+            if (!process.canInput || !inputPath || !data) {
+                return;
+            }
+            void fetch(inputPath, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input_text: data }),
+            }).catch((error) => {
+                console.error('Terminal input error:', error);
+            });
         });
 
         return () => {
@@ -90,19 +130,12 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
             if (ws.readyState === WebSocket.OPEN) ws.close();
             term.dispose();
         };
-    }, [commandId, compact, onTerminated]);
+    }, [compact, onTerminated, process]);
 
-    const handleTerminate = useCallback(async () => {
-        try {
-            await fetch(`/api/bg_processes/${commandId}/terminate`, { method: 'POST' });
-            setIsRunning(false);
-            onTerminated?.(commandId);
-        } catch (err) {
-            console.error('Termination error:', err);
-        }
-    }, [commandId, onTerminated]);
-
-    const shortId = commandId.length > 12 ? `…${commandId.slice(-8)}` : commandId;
+    const shortId = (process.commandId || process.processId).length > 12
+        ? `…${(process.commandId || process.processId).slice(-8)}`
+        : (process.commandId || process.processId);
+    const title = process.title || process.commandPreview || shortId;
 
     return (
         <div className="flex flex-col w-full rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800 shadow-sm transition-all">
@@ -117,7 +150,7 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
                 <div className="flex items-center gap-2 min-w-0">
                     <TerminalSquare className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400 shrink-0" />
                     <span className="text-[11px] font-mono font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                        {shortId}
+                        {title}
                     </span>
                     {isRunning ? (
                         <span className="relative flex h-2 w-2 shrink-0">
@@ -130,7 +163,7 @@ export function InteractiveTerminalCard({ commandId, compact = false, onTerminat
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
-                    {isRunning && (
+                    {isRunning && process.canTerminate && (
                         <button
                             onClick={(e) => { e.stopPropagation(); handleTerminate(); }}
                             className="flex items-center justify-center px-2 py-0.5 gap-1 text-[10px] font-semibold text-white bg-red-500/90 hover:bg-red-600 rounded-full transition-colors active:scale-95"

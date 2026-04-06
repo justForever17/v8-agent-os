@@ -2314,6 +2314,7 @@ def _launch_background_command(
         run_id=runtime_context.get("run_id"),
         interactive=interactive_mode,
     )
+    bg_proc.command_id = cmd_id
     _bg_processes[cmd_id] = bg_proc
 
     initial_chunks = []
@@ -3073,6 +3074,8 @@ class BackgroundProcess:
 
     def status_snapshot(self) -> dict:
         return {
+            "command_id": getattr(self, "command_id", None),
+            "command": self.command,
             "is_running": self.is_running,
             "uses_tty": self.uses_tty,
             "interactive": self.interactive,
@@ -3098,6 +3101,38 @@ class BackgroundProcess:
             self.proc.terminate()
 
 _bg_processes = {}
+
+
+def list_background_process_snapshots(run_id: str | None = None) -> list[dict]:
+    snapshots: list[dict] = []
+    normalized_run_id = str(run_id or "").strip() or None
+    for command_id, bg_proc in list(_bg_processes.items()):
+        process_run_id = str(getattr(bg_proc, "run_id", "") or "").strip() or None
+        if normalized_run_id and process_run_id != normalized_run_id:
+            continue
+        status = dict(bg_proc.status_snapshot())
+        command = str(getattr(bg_proc, "command", "") or "").strip()
+        command_preview = command if len(command) <= 240 else f"{command[:237]}..."
+        snapshots.append({
+            "processId": str(command_id),
+            "commandId": str(command_id),
+            "runId": process_run_id,
+            "title": command.splitlines()[0][:96] if command else str(command_id),
+            "commandPreview": command_preview,
+            "status": "running" if bool(status.get("is_running")) else "stopped",
+            "interactive": bool(status.get("interactive")),
+            "usesTty": bool(status.get("uses_tty")),
+            "canTerminate": True,
+            "canInput": bool(status.get("interactive")),
+            "startedAt": datetime.fromtimestamp(
+                float(status.get("started_at") or time.time()),
+                tz=timezone.utc,
+            ).isoformat(),
+            "secondsSinceOutput": status.get("seconds_since_output"),
+            "secondsSinceInput": status.get("seconds_since_input"),
+        })
+    snapshots.sort(key=lambda item: str(item.get("startedAt") or ""))
+    return snapshots
 
 @tool
 def start_background_command(

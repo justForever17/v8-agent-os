@@ -2,6 +2,61 @@
 
 如果你是一个准备给 V8 Agent OS 开发新功能、改 bug 或是梳理核心流程的开发者，这篇文档是你开始动手前的**心智共识库**。在我们的宇宙里，写得快远不如写得“稳”和“符合 Runtime 直觉”。
 
+## 0. 当前全局真相链
+
+当前主产品不再按“Engine / Admin / Web / Phone 各自一套局部状态”理解，而是按下面这条全局链路理解：
+
+1. `engine`
+   - 唯一 authoritative producer
+   - 负责生成 `snapshot`、runtime event、history ledger、history materialized summary
+2. `admin`
+   - 唯一远端 broker
+   - 负责把 engine 私有地址、私有路径、原始 runtime envelope 规范化成 surface 可消费 contract
+3. `os-web / os-phone`
+   - 视为同一 surface 的两个壳
+   - 只消费统一的 realtime/history contract
+4. `SessionRealtimeCDC + selectors`
+   - 当前会话的唯一前端消费层
+   - 组件不得绕过它自行轮询或自行解释 runtime 事件
+
+换句话说：
+
+> 真相不在页面，不在 Admin route 的临时拼装里，也不在 Phone/Web 的局部 reducer 里。  
+> 真相只允许从 `engine -> admin -> shared contract -> CDC selector` 这条链往下流。
+
+### 0.1 当前固定边界
+
+以下边界已经锁定，开发时不要再打破：
+
+1. `memory`
+   - 底层保障 runtime，不参与前端实时互动
+2. `desktop_live`
+   - 手工驱动通讯，不进入当前会话主聊天 CDC
+3. `plugin_host_channel / channels`
+   - 历史层，不进入实时 CDC
+4. `plugin_host_tool`
+   - 仍属于实时交互层
+
+### 0.2 排障顺序
+
+遇到“页面没更新 / HUD 不一致 / 历史记录乱了 / 某类事件丢了”时，禁止从 UI 现象直接反推。
+
+唯一允许的排障顺序是：
+
+1. `engine`
+   - 该事件是否真的被产生？
+   - 是否进入 `runtime_events`、`runtimeTimeline`、`snapshot`、history ledger？
+2. `admin`
+   - 是否被标准化转发？
+   - 是否被错误降级、过滤或错误改写成非 surface 可消费资源？
+3. shared contract
+   - event taxonomy / normalizer / selector 是否覆盖该事件？
+4. `web / phone`
+   - 组件是否只从 selector 取数？
+   - 是否还残留本地 topic 特判、消息扫描、旁路轮询？
+
+如果某个问题只能靠 UI patch 修复，通常说明你还没有找到上游真正的断点。
+
 ## 1. 核心开发角色与价值定位
 
 你现在的身份是 **V8 Agent OS Runtime Architect**（不仅是写几个全栈 CRUD 页面而已）。

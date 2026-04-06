@@ -9,19 +9,22 @@ import {
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import {
+    resolveAdminProcessWsUrl,
+    type AdminProcessRef,
+} from "@v8/session-realtime";
 
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
 import { Input } from "@/src/components/ui/input";
-import { buildAdminApiUrl, normalizeAdminBaseUrl } from "@/src/lib/admin-client";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
 type InteractiveTerminalCardProps = {
-    commandId: string;
+    process: AdminProcessRef;
     compact?: boolean;
-    onTerminated?: (commandId: string) => void;
+    onTerminated?: (processId: string) => void;
 };
 
 function trimTerminalBuffer(value: string, limit = 24000) {
@@ -32,13 +35,13 @@ function trimTerminalBuffer(value: string, limit = 24000) {
 }
 
 export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
-    commandId,
+    process,
     compact = false,
     onTerminated,
 }: InteractiveTerminalCardProps) {
     const { adminBaseUrl, authorizedFetch } = useAppSession();
     const { colors, themeMode, t } = useUiPrefs();
-    const [isRunning, setIsRunning] = useState(true);
+    const [isRunning, setIsRunning] = useState(() => String(process.status || "").trim().toLowerCase() !== "stopped");
     const [isCollapsed, setIsCollapsed] = useState(compact);
     const [terminalOutput, setTerminalOutput] = useState("");
     const [inputText, setInputText] = useState("");
@@ -47,6 +50,10 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     const scrollRef = useRef<ScrollView | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const notifiedTerminationRef = useRef(false);
+
+    useEffect(() => {
+        setIsRunning(String(process.status || "").trim().toLowerCase() !== "stopped");
+    }, [process.status]);
 
     useEffect(() => {
         Animated.timing(rotation, {
@@ -58,13 +65,14 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     }, [isCollapsed, rotation]);
 
     useEffect(() => {
-        const normalizedBaseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-        if (!normalizedBaseUrl || !commandId) {
+        if (!process?.processId) {
             return undefined;
         }
 
-        const wsBaseUrl = normalizedBaseUrl.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-        const wsUrl = buildAdminApiUrl(wsBaseUrl, `/api/bg_processes/${encodeURIComponent(commandId)}/ws`);
+        const wsUrl = resolveAdminProcessWsUrl("phone", adminBaseUrl, process);
+        if (!wsUrl) {
+            return undefined;
+        }
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
         notifiedTerminationRef.current = false;
@@ -82,7 +90,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             setTerminalOutput((current) => trimTerminalBuffer(`${current}\n[Process terminated]`));
             if (!notifiedTerminationRef.current) {
                 notifiedTerminationRef.current = true;
-                onTerminated?.(commandId);
+                onTerminated?.(process.processId);
             }
         };
 
@@ -91,7 +99,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             setTerminalOutput((current) => trimTerminalBuffer(`${current}\n[Connection error]`));
             if (!notifiedTerminationRef.current) {
                 notifiedTerminationRef.current = true;
-                onTerminated?.(commandId);
+                onTerminated?.(process.processId);
             }
         };
 
@@ -99,11 +107,14 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             ws.close();
             wsRef.current = null;
         };
-    }, [adminBaseUrl, commandId, onTerminated]);
+    }, [adminBaseUrl, onTerminated, process]);
 
     const handleTerminate = async () => {
+        if (!process?.terminateAdminPath) {
+            return;
+        }
         try {
-            await authorizedFetch(`/api/bg_processes/${encodeURIComponent(commandId)}/terminate`, {
+            await authorizedFetch(process.terminateAdminPath, {
                 method: "POST",
             });
         } catch {
@@ -112,18 +123,18 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             setIsRunning(false);
             if (!notifiedTerminationRef.current) {
                 notifiedTerminationRef.current = true;
-                onTerminated?.(commandId);
+                onTerminated?.(process.processId);
             }
         }
     };
 
     const handleSendInput = async () => {
-        if (!inputText.trim()) {
+        if (!inputText.trim() || !process?.inputAdminPath) {
             return;
         }
         setSendingInput(true);
         try {
-            await authorizedFetch(`/api/bg_processes/${encodeURIComponent(commandId)}/input`, {
+            await authorizedFetch(process.inputAdminPath, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ input_text: inputText }),
@@ -140,9 +151,18 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     });
 
     const shortId = useMemo(
-        () => (commandId.length > 12 ? `…${commandId.slice(-8)}` : commandId),
-        [commandId],
+        () => {
+            const id = String(process.commandId || process.processId || "").trim();
+            return id.length > 12 ? `…${id.slice(-8)}` : id;
+        },
+        [process.commandId, process.processId],
     );
+    const title = useMemo(
+        () => String(process.title || process.commandPreview || shortId || t("后台进程", "Background process")).trim(),
+        [process.commandPreview, process.title, shortId, t],
+    );
+    const inputEnabled = Boolean(process.canInput) && isRunning;
+    const canTerminate = Boolean(process.canTerminate) && isRunning;
 
     return (
         <Card style={styles.wrap}>
@@ -161,7 +181,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                         <MaterialCommunityIcons name="console-line" size={14} color={colors.textMuted} />
                     </View>
                     <Text style={[styles.commandId, { color: colors.textMuted }]} numberOfLines={1}>
-                        {shortId}
+                        {title}
                     </Text>
                     <View style={styles.statusWrap}>
                         <View
@@ -177,7 +197,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                 </View>
 
                 <View style={styles.headerActions}>
-                    {isRunning ? (
+                    {canTerminate ? (
                         <Button variant="destructive" size="sm" onPress={handleTerminate}>
                             {t("停止", "Stop")}
                         </Button>
@@ -208,7 +228,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                             value={inputText}
                             onChangeText={setInputText}
                             placeholder={t("向后台命令发送输入", "Send input to background command")}
-                            editable={isRunning && !sendingInput}
+                            editable={inputEnabled && !sendingInput}
                             style={styles.input}
                             onSubmitEditing={() => void handleSendInput()}
                             returnKeyType="send"
@@ -216,7 +236,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                         <Button
                             size="sm"
                             onPress={() => void handleSendInput()}
-                            disabled={!isRunning || sendingInput || !inputText.trim()}
+                            disabled={!inputEnabled || sendingInput || !inputText.trim()}
                             loading={sendingInput}
                         >
                             {t("发送", "Send")}

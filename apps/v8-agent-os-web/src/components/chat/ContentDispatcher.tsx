@@ -4,6 +4,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import React from 'react';
 import { motion } from 'framer-motion';
+import type { AdminProcessRef } from '@v8/session-realtime';
 import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
 import { ToolCard, ToolInvocation } from './ToolCard';
@@ -12,24 +13,23 @@ import { GenericToolTraceCard } from './GenericToolTraceCard';
 import { AskUserCard } from './AskUserCard';
 import { ApprovalCard } from './ApprovalCard';
 import { parseContentToBlocks } from '@/lib/chat/content-detector';
-import { extractCommandSessionPayload, isCommandSessionTool } from '@/lib/chat/command-session';
+import { isCommandSessionTool } from '@/lib/chat/command-session';
 import { MessageBlockItem } from './MessageBlockItem';
 
 interface ToolRendererProps {
     toolInvocation: ToolInvocation;
     isFinished: boolean;
+    process?: AdminProcessRef;
 }
 
-function CommandSessionToolRenderer({ toolInvocation }: ToolRendererProps) {
-    const session = extractCommandSessionPayload(toolInvocation.result);
-    const bgCommandId = session?.commandId || null;
+function CommandSessionToolRenderer({ toolInvocation, process }: ToolRendererProps) {
     return (
         <motion.div layout className="flex flex-col">
-            <ToolCard toolInvocation={toolInvocation} hideResult={!!bgCommandId} />
-            {bgCommandId && (
+            <ToolCard toolInvocation={toolInvocation} hideResult={!!process} />
+            {process && (
                 <div className="mt-1 mb-2 ml-[15px] relative z-10 w-[calc(100%-15px)]">
                     <div className="absolute -left-[14px] top-0 w-3 h-4 border-l-[1.5px] border-b-[1.5px] border-zinc-300 dark:border-zinc-700 rounded-bl-xl" />
-                    <InteractiveTerminalCard commandId={bgCommandId} />
+                    <InteractiveTerminalCard process={process} />
                 </div>
             )}
         </motion.div>
@@ -53,13 +53,15 @@ interface ContentDispatcherProps {
     isExecuting: boolean;
     isStreaming: boolean;
     resultNode?: UiTimelineNode;
+    processes?: AdminProcessRef[];
 }
 
 export const ContentDispatcher = React.memo(function ContentDispatcher({ 
     node, 
     isExecuting, 
     isStreaming, 
-    resultNode 
+    resultNode,
+    processes = [],
 }: ContentDispatcherProps) {
     const t = useT();
     switch (node.kind) {
@@ -74,10 +76,10 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                 );
             }
 
-            if (node.executionType === 'tool_call') {
+            if (node.executionType === 'tool_call' || node.executionType === 'tool_result') {
                 const toolName = node.toolName || 'Unknown Tool';
                 const resultExecNode = resultNode as UiExecutionNode | undefined;
-                const isFinished = !!resultNode || !!node.result || !isExecuting;
+                const isFinished = node.executionType === 'tool_result' || !!resultNode || !!node.result || !isExecuting;
                 const result = resultExecNode?.result || node.result;
                 
                 const toolInvocation: ToolInvocation = {
@@ -87,15 +89,18 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     state: isFinished ? 'result' : 'call',
                     result: result
                 };
+                const matchedProcess = toolInvocation.toolCallId
+                    ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)
+                    : undefined;
 
-                if (isCommandSessionTool(toolName)) {
-                    return <CommandSessionToolRenderer toolInvocation={toolInvocation} isFinished={isFinished} />;
+                if (matchedProcess || isCommandSessionTool(toolName)) {
+                    return <CommandSessionToolRenderer toolInvocation={toolInvocation} isFinished={isFinished} process={matchedProcess} />;
                 }
 
                 if (toolName in ToolRegistry) {
                     const Renderer = ToolRegistry[toolName];
                     if (Renderer === null) return null; // Explicitly hidden if mapped to null
-                    return <Renderer toolInvocation={toolInvocation} isFinished={isFinished} />;
+                    return <Renderer toolInvocation={toolInvocation} isFinished={isFinished} process={matchedProcess} />;
                 }
 
                 // Fallback standard ToolCard for unrecognized/normal tools
@@ -147,6 +152,14 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                       : approvalKind === "safety_blocked"
                         ? t(lt("安全阻断", "Safety blocked"))
                         : t(lt("系统确认", "Approval"));
+            const controlLabel =
+                node.governanceType === "safety_blocked"
+                    ? t(lt("安全阻断", "Safety blocked"))
+                    : node.governanceType === "context_governance"
+                        ? t(lt("上下文治理", "Context governance"))
+                        : node.governanceType === "lane_updated"
+                            ? t(lt("运行调度", "Run scheduling"))
+                            : t(lt("系统控制信号", "System control"));
             const question = node.question || node.reason || node.topic || node.status || "";
             const isAskUser =
                 isApproval &&
@@ -156,10 +169,18 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             }
             return (
                 <ApprovalCard
-                    title={isApproval ? approvalLabel : t(lt("系统控制信号", "System control"))}
+                    title={isApproval ? approvalLabel : controlLabel}
                     body={question}
                     status={node.status}
-                    tone={!isApproval ? "control" : approvalKind === "safety_blocked" ? "safety" : "approval"}
+                    tone={
+                        !isApproval
+                            ? node.governanceType === "safety_blocked"
+                                ? "safety"
+                                : "control"
+                            : approvalKind === "safety_blocked"
+                                ? "safety"
+                                : "approval"
+                    }
                 />
             );
         }

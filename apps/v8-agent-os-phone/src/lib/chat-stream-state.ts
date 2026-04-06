@@ -1,41 +1,24 @@
 import type {
     ChatArtifact,
     ChatMessage,
-    PhoneUiArtifactNode,
-    PhoneUiExecutionNode,
-    PhoneUiGovernanceNode,
-    PhoneUiNarrativeNode,
-    PhoneUiTimelineNode,
 } from "@/src/types/admin";
+import {
+    applyRealtimeEventToMessages as applySharedRealtimeEventToMessages,
+    buildAssistantMessage as buildSharedAssistantMessage,
+    deriveRealtimeStreamState as deriveSharedRealtimeStreamState,
+    type SessionAgentProfile,
+    type SessionStreamLifecycleOptions,
+    type SessionStreamMessage,
+    type SessionStreamPhase,
+    type SessionStreamUiEvent,
+} from "@v8/session-realtime";
 
-export type PhoneUiStreamPhase = "placeholder" | "agent_started" | "streaming" | "settling" | "error";
+export type PhoneUiStreamPhase = SessionStreamPhase;
 
-export type AgentProfile = {
-    agentName?: string;
-    agentAvatar?: string;
-    agentRoleLabel?: string;
-};
+export type AgentProfile = SessionAgentProfile;
 
-export type PhoneRealtimeUiEvent = {
-    type: string;
-    name?: string;
-    content?: string;
-    data?: Record<string, unknown>;
-    run_id?: string;
-    error?: string;
+export type PhoneRealtimeUiEvent = SessionStreamUiEvent & {
     artifact?: ChatArtifact;
-    agent?: {
-        id?: string;
-        name?: string;
-        avatar?: string;
-        roleLabel?: string;
-    };
-    tool?: {
-        toolCallId?: string;
-        toolName?: string;
-        args?: unknown;
-        result?: unknown;
-    };
 };
 
 const DEFAULT_AGENT_PROFILE: Required<AgentProfile> = {
@@ -128,63 +111,26 @@ function resolveAgentProfile(event: PhoneRealtimeUiEvent, fallback: AgentProfile
     };
 }
 
-function ensureAssistantIdentity(message: ChatMessage, profile: AgentProfile) {
-    message.agentName = profile.agentName || message.agentName || DEFAULT_AGENT_PROFILE.agentName;
-    message.agentAvatar = profile.agentAvatar || message.agentAvatar || DEFAULT_AGENT_PROFILE.agentAvatar;
-    message.agentRoleLabel = profile.agentRoleLabel || message.agentRoleLabel || DEFAULT_AGENT_PROFILE.agentRoleLabel;
-    message.agentType = message.agentType || "supervisor";
-}
-
-function upsertCurrentAiMessage(localMessages: ChatMessage[], currentAiMsg: ChatMessage) {
-    const updatedAiMsg: ChatMessage = {
-        ...currentAiMsg,
-        nodes: Array.isArray(currentAiMsg.nodes) ? [...currentAiMsg.nodes] : [],
-        images: Array.isArray(currentAiMsg.images) ? [...currentAiMsg.images] : [],
-        artifacts: Array.isArray(currentAiMsg.artifacts) ? currentAiMsg.artifacts.map((artifact) => ({ ...artifact })) : [],
-        metadata: currentAiMsg.metadata ? { ...currentAiMsg.metadata } : undefined,
-    };
-    const index = localMessages.findIndex((message) => message.id === updatedAiMsg.id);
-    if (index >= 0) {
-        localMessages[index] = updatedAiMsg;
-    } else {
-        localMessages.push(updatedAiMsg);
-    }
-    return updatedAiMsg;
-}
-
-function ensureCurrentAiMessage(
-    localMessages: ChatMessage[],
-    currentAiMsg: ChatMessage | undefined,
-    activeAgentProfile: AgentProfile,
-    runId?: string,
-) {
-    let nextCurrentAiMsg = currentAiMsg;
-    if (!nextCurrentAiMsg) {
-        nextCurrentAiMsg = buildAssistantMessage(activeAgentProfile, runId, "placeholder");
-        localMessages.push(nextCurrentAiMsg);
-    }
-    if (!Array.isArray(nextCurrentAiMsg.nodes)) {
-        nextCurrentAiMsg.nodes = [];
-    }
-    if (!Array.isArray(nextCurrentAiMsg.images)) {
-        nextCurrentAiMsg.images = [];
-    }
-    if (!Array.isArray(nextCurrentAiMsg.artifacts)) {
-        nextCurrentAiMsg.artifacts = [];
-    }
-    if (runId) {
-        nextCurrentAiMsg.runId = runId;
-    }
-    ensureAssistantIdentity(nextCurrentAiMsg, activeAgentProfile);
-    return nextCurrentAiMsg;
-}
-
-function appendNode(message: ChatMessage, node: PhoneUiTimelineNode) {
-    const nextNodes = Array.isArray(message.nodes) ? message.nodes : [];
-    nextNodes.push(node);
-    message.nodes = nextNodes;
-    message.timestamp = Date.now();
-}
+export const PHONE_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
+    createId: createClientId,
+    defaultAgentProfile: DEFAULT_AGENT_PROFILE,
+    resolveAgentProfile: (event, fallback, defaultAgentProfile) => {
+        const resolvedFallback = resolveAgentProfile(
+            event as PhoneRealtimeUiEvent,
+            {
+                agentName: fallback.agentName || defaultAgentProfile.agentName,
+                agentAvatar: fallback.agentAvatar || defaultAgentProfile.agentAvatar,
+                agentRoleLabel: fallback.agentRoleLabel || defaultAgentProfile.agentRoleLabel,
+            },
+        );
+        return {
+            agentName: resolvedFallback.agentName || defaultAgentProfile.agentName,
+            agentAvatar: resolvedFallback.agentAvatar || defaultAgentProfile.agentAvatar,
+            agentRoleLabel: resolvedFallback.agentRoleLabel || defaultAgentProfile.agentRoleLabel,
+        };
+    },
+    resolveArtifact: (event) => buildArtifact(event.artifact || resolveRecord(event.data).artifact || event.data),
+};
 
 export function isActiveAssistantStreamPhase(phase?: PhoneUiStreamPhase | null) {
     return phase === "placeholder" || phase === "agent_started" || phase === "streaming" || phase === "settling";
@@ -195,50 +141,17 @@ export function buildAssistantMessage(
     runId?: string,
     phase: PhoneUiStreamPhase = "placeholder",
 ): ChatMessage {
-    const resolvedProfile = {
-        ...DEFAULT_AGENT_PROFILE,
-        ...activeAgentProfile,
-    };
-    return {
-        id: createClientId("assistant"),
-        role: "assistant",
-        content: "",
-        runId,
-        nodes: [],
-        images: [],
-        artifacts: [],
-        agentName: resolvedProfile.agentName,
-        agentAvatar: resolvedProfile.agentAvatar,
-        agentRoleLabel: resolvedProfile.agentRoleLabel,
-        agentType: "supervisor",
-        timestamp: Date.now(),
-        uiEphemeral: true,
-        uiStreamPhase: phase,
-    };
+    return buildSharedAssistantMessage(activeAgentProfile, runId, phase, PHONE_STREAM_LIFECYCLE_OPTIONS) as ChatMessage;
 }
 
 export function deriveRealtimeStreamState(messages: ChatMessage[]) {
-    const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-    if (!lastAssistant) {
-        return {
-            currentAiMsg: undefined,
-            activeAgentProfile: { ...DEFAULT_AGENT_PROFILE } satisfies AgentProfile,
-        };
-    }
-
-    const nodes = Array.isArray(lastAssistant.nodes) ? lastAssistant.nodes : [];
-    const lastAgentNode = [...nodes].reverse().find((node) => node.agentName || node.agentAvatar || node.agentRoleLabel);
-
-    const currentAiMsg = lastAssistant.uiEphemeral || isActiveAssistantStreamPhase(lastAssistant.uiStreamPhase)
-        ? lastAssistant
-        : undefined;
-
+    const state = deriveSharedRealtimeStreamState(messages as unknown as SessionStreamMessage[], PHONE_STREAM_LIFECYCLE_OPTIONS);
     return {
-        currentAiMsg,
+        currentAiMsg: state.currentAiMsg as ChatMessage | undefined,
         activeAgentProfile: {
-            agentName: lastAgentNode?.agentName || lastAssistant.agentName || DEFAULT_AGENT_PROFILE.agentName,
-            agentAvatar: lastAgentNode?.agentAvatar || lastAssistant.agentAvatar || DEFAULT_AGENT_PROFILE.agentAvatar,
-            agentRoleLabel: lastAgentNode?.agentRoleLabel || lastAssistant.agentRoleLabel || DEFAULT_AGENT_PROFILE.agentRoleLabel,
+            agentName: state.activeAgentProfile.agentName || DEFAULT_AGENT_PROFILE.agentName,
+            agentAvatar: state.activeAgentProfile.agentAvatar || DEFAULT_AGENT_PROFILE.agentAvatar,
+            agentRoleLabel: state.activeAgentProfile.agentRoleLabel || DEFAULT_AGENT_PROFILE.agentRoleLabel,
         } satisfies AgentProfile,
     };
 }
@@ -249,259 +162,19 @@ export function applyRealtimeEventToMessages(
     currentAiMsg: ChatMessage | undefined,
     activeAgentProfile: AgentProfile,
 ) {
-    let nextCurrentAiMsg = currentAiMsg;
-    let nextActiveAgentProfile = activeAgentProfile;
-
-    const ensureCurrent = () => {
-        nextCurrentAiMsg = ensureCurrentAiMessage(
-            localMessages,
-            nextCurrentAiMsg,
-            nextActiveAgentProfile,
-            event.run_id,
-        );
-        return nextCurrentAiMsg;
-    };
-
-    if (event.type === "agent_start") {
-        nextActiveAgentProfile = resolveAgentProfile(event, nextActiveAgentProfile);
-        const current = ensureCurrent();
-        current.uiStreamPhase = "agent_started";
-        ensureAssistantIdentity(current, nextActiveAgentProfile);
-        appendNode(current, {
-            id: createClientId("node"),
-            kind: "execution",
-            executionType: "agent_start",
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile,
-        } satisfies PhoneUiExecutionNode);
-    } else if (event.type === "text_chunk") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = "streaming";
-        const content = String(event.content || "");
-        const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
-        if (lastNode && lastNode.kind === "narrative" && lastNode.role === "assistant") {
-            (lastNode as PhoneUiNarrativeNode).content = `${String(lastNode.content || "")}${content}`;
-        } else {
-            appendNode(current, {
-                id: createClientId("node"),
-                kind: "narrative",
-                role: "assistant",
-                content,
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } satisfies PhoneUiNarrativeNode);
-        }
-        current.content = `${String(current.content || "")}${content}`;
-    } else if (event.type === "reasoning_chunk") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const content = String(event.content || "");
-        const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
-        if (
-            lastNode
-            && lastNode.kind === "execution"
-            && lastNode.executionType === "reasoning"
-            && !lastNode.time
-        ) {
-            (lastNode as PhoneUiExecutionNode).content = `${String(lastNode.content || "")}${content}`;
-        } else {
-            appendNode(current, {
-                id: createClientId("node"),
-                kind: "execution",
-                executionType: "reasoning",
-                content,
-                time: 0,
-                startTime: Date.now(),
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } satisfies PhoneUiExecutionNode);
-        }
-    } else if (event.type === "tool_start") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const eventData = resolveRecord(event.data);
-        const toolData = resolveRecord(eventData.tool);
-        appendNode(current, {
-            id: createClientId("node"),
-            kind: "execution",
-            executionType: "tool_call",
-            toolCallId: event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
-            toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : typeof toolData.name === "string" ? toolData.name : undefined),
-            args: event.tool?.args ?? eventData.args ?? toolData.args,
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile,
-        } satisfies PhoneUiExecutionNode);
-    } else if (event.type === "tool_result") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const eventData = resolveRecord(event.data);
-        const toolCallId = event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined);
-        const existingToolCall = (current.nodes || []).find((node) =>
-            node.kind === "execution"
-            && node.executionType === "tool_call"
-            && node.toolCallId === toolCallId,
-        ) as PhoneUiExecutionNode | undefined;
-        if (existingToolCall) {
-            existingToolCall.result = event.tool?.result ?? eventData.result;
-            existingToolCall.timestamp = Date.now();
-        } else {
-            appendNode(current, {
-                id: createClientId("node"),
-                kind: "execution",
-                executionType: "tool_result",
-                toolCallId,
-                toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
-                result: event.tool?.result ?? eventData.result,
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } satisfies PhoneUiExecutionNode);
-        }
-    } else if (event.type === "custom_event" && event.name === "artifact_recorded") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const normalizedArtifact = event.artifact || buildArtifact(resolveRecord(event.data).artifact) || buildArtifact(event.data);
-        if (normalizedArtifact) {
-            const existingArtifacts = current.artifacts || [];
-            const artifactKey = String(
-                normalizedArtifact.id
-                || normalizedArtifact.artifactId
-                || normalizedArtifact.workspacePath
-                || normalizedArtifact.sourcePath
-                || normalizedArtifact.previewUrl
-                || normalizedArtifact.externalUrl
-                || normalizedArtifact.title
-                || "",
-            ).trim();
-            if (!existingArtifacts.some((artifact) => String(
-                artifact.id
-                || artifact.artifactId
-                || artifact.workspacePath
-                || artifact.sourcePath
-                || artifact.previewUrl
-                || artifact.externalUrl
-                || artifact.title
-                || "",
-            ).trim() === artifactKey)) {
-                current.artifacts = [...existingArtifacts, normalizedArtifact];
-                appendNode(current, {
-                    id: createClientId("node"),
-                    kind: "artifact",
-                    artifact: {
-                        id: String(
-                            normalizedArtifact.id
-                            || normalizedArtifact.artifactId
-                            || normalizedArtifact.workspacePath
-                            || normalizedArtifact.sourcePath
-                            || normalizedArtifact.previewUrl
-                            || normalizedArtifact.externalUrl
-                            || createClientId("artifact"),
-                        ).trim(),
-                        artifactId: normalizedArtifact.artifactId,
-                        title: normalizedArtifact.title,
-                        kind: normalizedArtifact.kind,
-                        previewUrl: normalizedArtifact.previewUrl,
-                        externalUrl: normalizedArtifact.externalUrl,
-                        sourcePath: normalizedArtifact.sourcePath,
-                        workspacePath: normalizedArtifact.workspacePath,
-                        mimeType: normalizedArtifact.mimeType,
-                    },
-                    timestamp: Date.now(),
-                    ...nextActiveAgentProfile,
-                } satisfies PhoneUiArtifactNode);
-            }
-        }
-    } else if (event.type === "custom_event" && (event.name === "runtime_progress" || event.name === "runtime_event")) {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const eventData = resolveRecord(event.data);
-        const topic = typeof eventData.topic === "string" ? eventData.topic : event.name === "runtime_event" ? "runtime" : "runtime_progress";
-        const label = typeof eventData.label === "string"
-            ? eventData.label
-            : typeof eventData.summary === "string"
-                ? eventData.summary
-                : typeof eventData.message === "string"
-                    ? eventData.message
-                    : topic;
-        const canCoalesce =
-            topic === "computer_use.step.heartbeat"
-            || topic === "computer_use.step.waiting_for_window"
-            || topic === "computer_use.action.settle_wait_started";
-        const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
-        if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "runtime_progress" && lastNode.label === label) {
-            (lastNode as PhoneUiExecutionNode).data = eventData;
-            (lastNode as PhoneUiExecutionNode).timestamp = Date.now();
-        } else if (
-            canCoalesce
-            && lastNode
-            && lastNode.kind === "execution"
-            && lastNode.executionType === "runtime_progress"
-            && lastNode.topic === topic
-        ) {
-            (lastNode as PhoneUiExecutionNode).label = label;
-            (lastNode as PhoneUiExecutionNode).data = eventData;
-            (lastNode as PhoneUiExecutionNode).timestamp = Date.now();
-        } else {
-            appendNode(current, {
-                id: createClientId("node"),
-                kind: "execution",
-                executionType: "runtime_progress",
-                topic,
-                label,
-                data: eventData,
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } satisfies PhoneUiExecutionNode);
-        }
-    } else if (event.type === "custom_event" && event.name === "ask_user") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const eventData = resolveRecord(event.data);
-        appendNode(current, {
-            id: createClientId("node"),
-            kind: "governance",
-            governanceType: "approval_request",
-            approvalId: typeof eventData.approvalId === "string" ? eventData.approvalId : undefined,
-            approvalKind: typeof eventData.approvalKind === "string" ? eventData.approvalKind : undefined,
-            question: typeof eventData.question === "string" ? eventData.question : undefined,
-            toolCallId: typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined,
-            requestInfo: eventData.request,
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile,
-        } satisfies PhoneUiGovernanceNode);
-    } else if (event.type === "custom_event" && event.name === "run_controlled") {
-        const current = ensureCurrent();
-        current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-        const eventData = resolveRecord(event.data);
-        appendNode(current, {
-            id: createClientId("node"),
-            kind: "governance",
-            governanceType: "run_controlled",
-            topic: typeof eventData.topic === "string" ? eventData.topic : undefined,
-            status: typeof eventData.status === "string" ? eventData.status : undefined,
-            reason: typeof eventData.reason === "string" ? eventData.reason : undefined,
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile,
-        } satisfies PhoneUiGovernanceNode);
-    } else if (event.type === "done") {
-        if (nextCurrentAiMsg) {
-            nextCurrentAiMsg.uiStreamPhase = "settling";
-            upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
-        }
-        nextCurrentAiMsg = undefined;
-    } else if (event.type === "error") {
-        if (nextCurrentAiMsg) {
-            nextCurrentAiMsg.uiStreamPhase = "error";
-            upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
-        }
-        nextCurrentAiMsg = undefined;
-    }
-
-    if (nextCurrentAiMsg) {
-        nextCurrentAiMsg = upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
-    }
-
+    const result = applySharedRealtimeEventToMessages(
+        event,
+        localMessages as unknown as SessionStreamMessage[],
+        currentAiMsg as unknown as SessionStreamMessage | undefined,
+        activeAgentProfile,
+        PHONE_STREAM_LIFECYCLE_OPTIONS,
+    );
     return {
-        currentAiMsg: nextCurrentAiMsg,
-        activeAgentProfile: nextActiveAgentProfile,
+        currentAiMsg: result.currentAiMsg as ChatMessage | undefined,
+        activeAgentProfile: {
+            agentName: result.activeAgentProfile.agentName || DEFAULT_AGENT_PROFILE.agentName,
+            agentAvatar: result.activeAgentProfile.agentAvatar || DEFAULT_AGENT_PROFILE.agentAvatar,
+            agentRoleLabel: result.activeAgentProfile.agentRoleLabel || DEFAULT_AGENT_PROFILE.agentRoleLabel,
+        } satisfies AgentProfile,
     };
 }

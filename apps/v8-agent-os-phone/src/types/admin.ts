@@ -1,3 +1,11 @@
+import type {
+    AdminProcessRef,
+    AdminResourceRef,
+    AuthoritativeSessionHistoryRecord,
+    ContextReferenceItem,
+    SessionHistoryControls,
+} from "@v8/session-realtime";
+
 export type PhoneUser = {
     id: string;
     email: string;
@@ -55,46 +63,7 @@ export type MusicTrack = {
     durationMs?: number;
 };
 
-export type ConversationSummary = {
-    id: string;
-    title?: string;
-    source?: string;
-    createdAt?: string;
-    updatedAt?: string;
-    updated_at?: string;
-    lastActivityAt?: string;
-    sourceGroup?: string;
-    channelType?: string;
-    channelName?: string;
-    channelDomain?: string;
-    chatType?: string;
-    accountId?: string;
-    defaultAccount?: string;
-    scopeTags?: string[];
-    previewExcerpt?: string;
-    lastNarrativeExcerpt?: string;
-    lastRuntimeSummary?: string;
-    metadata?: string | Record<string, unknown>;
-    parsedMetadata?: Record<string, unknown>;
-    ownerRuntime?: string;
-    ownerAgentId?: string;
-    workflowStatus?: string;
-    statusLabel?: string;
-    stepStatus?: string;
-    pendingApprovalCount?: number;
-    hasPendingApproval?: boolean;
-    hasDurablePreview?: boolean;
-    recoverable?: boolean;
-    currentStepId?: string;
-    currentStepKey?: string;
-    currentStepTitle?: string;
-    controls?: {
-        canResume?: boolean;
-        canRetry?: boolean;
-        canInterrupt?: boolean;
-        canOpenApproval?: boolean;
-    };
-};
+export type ConversationSummary = AuthoritativeSessionHistoryRecord;
 
 export type CommandPresetSummary = {
     name: string;
@@ -112,12 +81,15 @@ export type ChatArtifact = {
     id?: string;
     artifactId?: string;
     title?: string;
+    displayLabel?: string;
+    displaySubtitle?: string;
     kind?: string;
     previewUrl?: string;
     externalUrl?: string;
     sourcePath?: string;
     workspacePath?: string;
     mimeType?: string;
+    resourceRef?: AdminResourceRef | null;
 };
 
 export type PhoneUiTimelineNodeBase = {
@@ -153,7 +125,13 @@ export type PhoneUiExecutionNode = PhoneUiTimelineNodeBase & {
 
 export type PhoneUiGovernanceNode = PhoneUiTimelineNodeBase & {
     kind: "governance";
-    governanceType: "approval_request" | "run_controlled";
+    governanceType:
+        | "approval_request"
+        | "approval_resolved"
+        | "run_controlled"
+        | "safety_blocked"
+        | "context_governance"
+        | "lane_updated";
     approvalId?: string;
     approvalKind?: string;
     question?: string;
@@ -190,6 +168,7 @@ export type ArtifactDetail = {
     workspacePath?: string;
     externalUrl?: string;
     previewUrl?: string;
+    resourceRef?: AdminResourceRef | null;
     createdAt?: string;
     metadata?: Record<string, unknown>;
 };
@@ -251,7 +230,7 @@ export type ConversationDetail = {
     messages: ChatMessage[];
     latestSeq?: number;
     approvals?: PendingApproval[];
-    controls?: ConversationSummary["controls"];
+    controls?: SessionHistoryControls;
     recoverable?: boolean | null;
     workflow?: Record<string, unknown> | null;
     workflowProjection?: Record<string, unknown> | null;
@@ -289,6 +268,8 @@ export type RealtimeSessionSnapshot = {
     runtimeEvents?: Array<Record<string, unknown>>;
     currentRun?: RealtimeRunSnapshot | null;
     runtimeStatus?: string;
+    processes?: AdminProcessRef[];
+    contextReferences?: ContextReferenceItem[];
     projection?: Record<string, unknown>;
     workflowProjection?: Record<string, unknown>;
     summary?: Record<string, unknown>;

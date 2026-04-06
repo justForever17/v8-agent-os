@@ -46,7 +46,13 @@ export interface UiExecutionNode extends UiTimelineNodeBase {
 // --- Governance (Approvals, Interrupts) ---
 export interface UiGovernanceNode extends UiTimelineNodeBase {
     kind: 'governance';
-    governanceType: 'approval_request' | 'run_controlled';
+    governanceType:
+        | 'approval_request'
+        | 'approval_resolved'
+        | 'run_controlled'
+        | 'safety_blocked'
+        | 'context_governance'
+        | 'lane_updated';
     
     // Approval
     approvalId?: string;

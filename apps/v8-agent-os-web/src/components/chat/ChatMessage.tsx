@@ -5,19 +5,21 @@ import { User, Copy, Trash2, Check, Sparkles, TerminalSquare } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo } from "react";
 import { motion } from "framer-motion";
+import { coerceAdminResourceRef, resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { Message } from "@/store/chat-types";
+import { Message, UiExecutionNode, UiTimelineNode } from "@/store/chat-types";
 import { ContentDispatcher } from "./ContentDispatcher";
 import { cn } from "@/lib/utils";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { ArtifactCard } from "./ArtifactCard";
-import { inferArtifactCardType } from "@/lib/artifacts";
+import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
 import { useChatStore } from "@/store/chat-store";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 
 interface ChatMessageProps {
     message: Message;
+    processes?: AdminProcessRef[];
     isLoading?: boolean;
     onDelete: (id: string) => void;
     isLast?: boolean;
@@ -38,6 +40,14 @@ type SkillReferenceMetadata = {
     description?: string;
     path?: string;
 };
+
+function isExecutionNode(node: UiTimelineNode): node is UiExecutionNode {
+    return node.kind === "execution";
+}
+
+function hasToolCallId(node: UiTimelineNode): node is UiExecutionNode & { toolCallId: string } {
+    return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
+}
 
 function extractCommandPresetName(message: Message): string | null {
     const commandPreset = message.metadata?.commandPreset;
@@ -123,7 +133,7 @@ function MessageActionButtons({
     );
 }
 
-function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar }: ChatMessageProps) {
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const setActiveArtifactId = useChatStore((state) => state.setActiveArtifactId);
@@ -146,7 +156,18 @@ function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar
     const [viewerStartingIndex, setViewerStartingIndex] = useState(0);
 
     // Prepare media items for Lightbox (if message has images)
-    const imagesArray = useMemo(() => Array.isArray(message.images) ? message.images : [], [message.images]);
+    const imagesArray = useMemo(
+        () => (Array.isArray(message.images) ? message.images : [])
+            .map((value) => {
+                const raw = String(value || "").trim();
+                if (!raw) {
+                    return "";
+                }
+                return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
+            })
+            .filter(Boolean),
+        [message.images],
+    );
     const mediaItems: MediaItem[] = useMemo(() => {
         return imagesArray.map((url) => {
             const isVid = url.match(/\.(mp4|webm|mov)$/i);
@@ -157,6 +178,31 @@ function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar
             };
         });
     }, [imagesArray]);
+    const toolCallIds = useMemo(() => {
+        return new Set(
+            (message.nodes || [])
+                .filter((node): node is UiExecutionNode & { toolCallId: string } => hasToolCallId(node) && node.executionType === 'tool_call')
+                .map((node) => node.toolCallId.trim())
+                .filter(Boolean),
+        );
+    }, [message.nodes]);
+    const resultNodesByToolCallId = useMemo(() => {
+        const mapping = new Map<string, UiExecutionNode>();
+        for (const node of message.nodes || []) {
+            if (hasToolCallId(node) && node.executionType === 'tool_result') {
+                mapping.set(node.toolCallId.trim(), node);
+            }
+        }
+        return mapping;
+    }, [message.nodes]);
+    const visibleNodes = useMemo(() => {
+        return (message.nodes || []).filter((node) => {
+            if (!hasToolCallId(node) || node.executionType !== 'tool_result') {
+                return true;
+            }
+            return !toolCallIds.has(node.toolCallId.trim());
+        });
+    }, [message.nodes, toolCallIds]);
 
     // USER MESSAGE
     if (message.role === 'user' || message.role === 'tool') {
@@ -343,29 +389,36 @@ function ChatMessageComponent({ message, isLoading, onDelete, isLast, userAvatar
                 <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-violet-500/40 via-purple-400/20 to-transparent opacity-80" />
 
                 <div className="space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]">
-                    {message.nodes?.filter(n => n.kind === 'narrative').map((node, i) => (
+                    {visibleNodes.map((node, i) => (
                         <ContentDispatcher 
                             key={node.id || i}
                             node={node}
                             isExecuting={!!(isLoading && isLast)}
                             isStreaming={!!(isLoading && isLast)}
+                            resultNode={hasToolCallId(node) && node.executionType === 'tool_call'
+                                ? resultNodesByToolCallId.get(node.toolCallId.trim())
+                                : undefined}
+                            processes={processes}
                         />
                     ))}
 
                     <div className="space-y-4">
                         {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (
                             <div className="space-y-2">
-                                {message.artifacts.map((artifact) => (
-                                    <ArtifactCard
-                                        key={artifact.id}
-                                        id={artifact.id}
-                                        title={artifact.displayLabel || artifact.title || artifact.id}
-                                        subtitle={artifact.displaySubtitle || artifact.workspacePath || artifact.sourcePath || artifact.previewUrl}
-                                        type={inferArtifactCardType(artifact)}
-                                        onClick={() => setActiveArtifactId(artifact.id)}
-                                        onDownload={artifact.previewUrl ? () => window.open(artifact.previewUrl, "_blank", "noopener,noreferrer") : undefined}
-                                    />
-                                ))}
+                                {message.artifacts.map((artifact) => {
+                                    const artifactUrl = resolveRuntimeArtifactUrl(artifact);
+                                    return (
+                                        <ArtifactCard
+                                            key={artifact.id}
+                                            id={artifact.id}
+                                            title={artifact.displayLabel || artifact.title || artifact.id}
+                                            subtitle={artifact.displaySubtitle || artifact.workspacePath || artifact.sourcePath || artifactUrl || "暂无路径信息"}
+                                            type={inferArtifactCardType(artifact)}
+                                            onClick={() => setActiveArtifactId(artifact.id)}
+                                            onDownload={artifactUrl ? () => window.open(artifactUrl, "_blank", "noopener,noreferrer") : undefined}
+                                        />
+                                    );
+                                })}
                             </div>
                         )}
                         {imagesArray.length > 0 && (

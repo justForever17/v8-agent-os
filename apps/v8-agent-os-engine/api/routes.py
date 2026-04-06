@@ -1,6 +1,6 @@
 import importlib
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
 from core.runtime.startup_profile import (
     build_installation_snapshot,
@@ -29,9 +29,6 @@ from . import config_registry_routes as config_registry_routes_module
 from . import platform_routes as platform_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import session_workflow_routes as session_workflow_routes_module
-from .models import RunCommandPayload
-
-
 router = APIRouter()
 _STARTUP_PROFILE = resolve_startup_profile()
 
@@ -181,85 +178,6 @@ async def health():
         "memory": inspect_memory_backend(),
         "identity": storage.get_system_identity(),
     }
-
-
-@router.get("/sessions")
-async def compat_get_sessions(request: Request):
-    return await session_workflow_routes_module.get_sessions(
-        request=request,
-        user_id=None,
-        workspace_id=None,
-        scope=None,
-        source="all",
-        limit=50,
-    )
-
-
-@router.get("/sessions/{session_id}/messages")
-async def compat_get_session_messages(session_id: str):
-    return await session_workflow_routes_module.get_session_messages(session_id=session_id)
-
-
-@router.get("/sessions/{session_id}/snapshot")
-async def compat_get_runtime_snapshot(session_id: str):
-    return await session_workflow_routes_module.get_session_snapshot(session_id=session_id)
-
-
-@router.get("/sessions/{session_id}/workflow")
-async def compat_get_workflow_for_session(session_id: str):
-    return await session_workflow_routes_module.get_workflow_for_session(session_id=session_id)
-
-
-@router.get("/workflows/{workflow_id}")
-async def compat_get_workflow_detail(workflow_id: str):
-    return await session_workflow_routes_module.get_workflow_detail(workflow_id=workflow_id)
-
-
-@router.get("/runs/{run_id}/workflow")
-async def compat_get_workflow_for_run(run_id: str):
-    return await session_workflow_routes_module.get_workflow_for_run(run_id=run_id)
-
-
-@router.get("/runtime-capabilities")
-async def compat_get_runtime_capabilities(query: str | None = None):
-    return await session_workflow_routes_module.get_runtime_capabilities(query=query)
-
-
-@router.get("/realtime/sessions/{session_id}/snapshot")
-async def compat_get_realtime_snapshot(session_id: str):
-    return await session_workflow_routes_module.get_realtime_snapshot(session_id=session_id)
-
-
-@router.get("/realtime/sessions/{session_id}/events")
-async def compat_get_realtime_events(session_id: str, after_seq: int | None = None):
-    return await session_workflow_routes_module.get_realtime_events(session_id=session_id, after_seq=after_seq)
-
-
-@router.get("/approvals")
-async def compat_get_pending_approvals():
-    return await run_control_routes_module.get_pending_approvals()
-
-
-@router.post("/approvals/{approval_id}/approve")
-async def compat_approve_pending_approval(
-    approval_id: str,
-    body: dict = Body(default_factory=dict),
-):
-    return await run_control_routes_module.approve_pending_approval(
-        approval_id=approval_id,
-        payload=RunCommandPayload.model_validate(body or {}),
-    )
-
-
-@router.post("/approvals/{approval_id}/reject")
-async def compat_reject_pending_approval(
-    approval_id: str,
-    body: dict = Body(default_factory=dict),
-):
-    return await run_control_routes_module.reject_pending_approval(
-        approval_id=approval_id,
-        payload=RunCommandPayload.model_validate(body or {}),
-    )
 
 
 @router.get("/runtime-capabilities/{kind}")

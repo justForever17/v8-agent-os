@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { sessionFanoutHub } from "@/lib/realtime/session-fanout";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
+import {
+    buildAuthoritativeSnapshotFingerprint,
+    coerceAuthoritativeSessionSnapshot,
+    normalizeSessionRuntimeEvent,
+    shouldForwardRuntimeEventToRealtimeSurface,
+    shouldAuthoritativelyRefreshOnRuntimeEvent,
+} from "@v8/session-realtime";
+import {
+    normalizeRuntimeEventForRealtimeSurface,
+    normalizeSnapshotForRealtimeSurface,
+} from "@/lib/server/session-realtime-resource";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -10,104 +21,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function getSnapshotSeq(snapshotData: unknown) {
-    const record = asRecord(snapshotData);
-    const nestedSnapshot = asRecord(record.snapshot);
-    return Number(record.latestSeq || record.latest_seq || nestedSnapshot.latest_seq || 0) || 0;
-}
-
-function buildSnapshotFingerprint(snapshotData: unknown) {
-    const record = asRecord(snapshotData);
-    const nestedSnapshot = asRecord(record.snapshot);
-    const messages = Array.isArray(nestedSnapshot.messages) ? nestedSnapshot.messages : [];
-    const approvals = Array.isArray(record.approvals) ? record.approvals : [];
-    const todos = Array.isArray(record.todos)
-        ? record.todos
-        : Array.isArray(asRecord(record.todos).items)
-            ? asRecord(record.todos).items as unknown[]
-            : [];
-    const runtimeTimeline = Array.isArray(record.runtimeTimeline)
-        ? record.runtimeTimeline
-        : Array.isArray(record.runtimeEvents)
-            ? record.runtimeEvents
-            : [];
-    const summary = asRecord(record.summary);
-    const currentRun = asRecord(record.currentRun);
-
-    const messageFingerprint = messages.map((message) => {
-        const item = asRecord(message);
-        const artifacts = Array.isArray(item.artifacts) ? item.artifacts : [];
-        const images = Array.isArray(item.images) ? item.images : [];
-        return [
-            String(item.id || "").trim(),
-            String(item.role || "").trim(),
-            String(item.runId || item.run_id || "").trim(),
-            String(item.content || ""),
-            String(images.length),
-            String(artifacts.length),
-        ].join("¦");
-    }).join("¶");
-
-    const todoFingerprint = todos.map((todo) => {
-        const item = asRecord(todo);
-        return [
-            String(item.id || "").trim(),
-            String(item.content || item.title || "").trim(),
-            String(item.status || "").trim(),
-        ].join("¦");
-    }).join("¶");
-
-    const approvalFingerprint = approvals.map((approval) => {
-        const item = asRecord(approval);
-        const request = asRecord(item.request);
-        return [
-            String(item.id || item.approval_id || "").trim(),
-            String(item.run_id || item.runId || "").trim(),
-            String(item.approval_kind || item.approvalKind || "").trim(),
-            String(request.question || request.prompt || "").trim(),
-        ].join("¦");
-    }).join("¶");
-
-    const runtimeFingerprint = runtimeTimeline.map((event) => {
-        const item = asRecord(event);
-        return [
-            String(item.id || item.event_id || "").trim(),
-            String(item.topic || item.name || "").trim(),
-            String(item.seq || "").trim(),
-            String(item.summary || item.label || "").trim(),
-        ].join("¦");
-    }).join("¶");
-
-    return [
-        String(getSnapshotSeq(snapshotData)),
-        messageFingerprint,
-        approvalFingerprint,
-        todoFingerprint,
-        runtimeFingerprint,
-        String(record.runtimeStatus || currentRun.status || "").trim(),
-        String(summary.workflowStatus || "").trim(),
-        String(summary.currentStepTitle || "").trim(),
-    ].join("§");
-}
-
-function shouldTriggerSnapshotRefresh(event: unknown) {
-    const record = asRecord(event);
-    const seq = Number(record.seq || 0) || 0;
-    const topic = String(record.topic || "").trim().toLowerCase();
-    const name = String(record.name || "").trim().toLowerCase();
-    const type = String(record.type || "").trim().toLowerCase();
-    if (topic.includes("heartbeat")) {
-        return false;
-    }
-    if (seq > 0) {
-        return true;
-    }
-    if (type === "done" || type === "agent_start" || type === "error") {
-        return true;
-    }
-    if (type === "custom_event" && (name === "ask_user" || name === "artifact_recorded" || name === "run_controlled")) {
-        return true;
-    }
-    return false;
+    return coerceAuthoritativeSessionSnapshot(snapshotData)?.latestSeq || 0;
 }
 
 export const runtime = "nodejs";
@@ -176,13 +90,15 @@ export async function GET(
                         throw new Error(`snapshot request failed: ${snapshotRes.status}`);
                     }
 
-                    const snapshotData = await snapshotRes.json().catch(() => null);
+                    const snapshotData = normalizeSnapshotForRealtimeSurface(await snapshotRes.json().catch(() => null));
                     if (!snapshotData) {
                         return;
                     }
 
                     latestSeq = Math.max(latestSeq, getSnapshotSeq(snapshotData));
-                    const nextFingerprint = buildSnapshotFingerprint(snapshotData);
+                    const nextFingerprint = buildAuthoritativeSnapshotFingerprint(
+                        coerceAuthoritativeSessionSnapshot(snapshotData),
+                    );
                     if (!force && nextFingerprint === lastSnapshotFingerprint) {
                         return;
                     }
@@ -227,6 +143,10 @@ export async function GET(
                 }
 
                 const eventRecord = event as Record<string, unknown>;
+                const normalizedEvent = normalizeSessionRuntimeEvent(event);
+                if (normalizedEvent && !shouldForwardRuntimeEventToRealtimeSurface(normalizedEvent)) {
+                    return;
+                }
                 const eventId = typeof eventRecord.event_id === "string" ? eventRecord.event_id : null;
                 if (eventId) {
                     if (seenEventIds.has(eventId)) {
@@ -245,8 +165,8 @@ export async function GET(
                 if (seq > latestSeq) {
                     latestSeq = seq;
                 }
-                sendSse(event, "runtime");
-                if (shouldTriggerSnapshotRefresh(eventRecord)) {
+                sendSse(normalizeRuntimeEventForRealtimeSurface(normalizedEvent || event), "runtime");
+                if (normalizedEvent ? shouldAuthoritativelyRefreshOnRuntimeEvent(normalizedEvent) : false) {
                     queueSnapshotPush();
                 }
             };

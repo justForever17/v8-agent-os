@@ -5,13 +5,10 @@ import { ChatWindow } from "@/components/chat/ChatWindow";
 import { InputArea } from "@/components/chat/InputArea";
 import { useLangGraphStream } from "@/hooks/use-langgraph-stream";
 import {
-    AgentProfile,
-    applyRealtimeEventToMessages,
     cloneMessages,
-    convertLegacyMessagesToChatMessages,
-    deriveRealtimeStreamState,
     normalizeMessagesForState,
     normalizeProjectedMessages,
+    WEB_STREAM_LIFECYCLE_OPTIONS,
 } from "@/lib/chat-stream-state";
 import { normalizeRealtimeEvent } from "@/lib/realtime";
 import {
@@ -37,6 +34,15 @@ import { RuntimeDock } from "@/components/chat/RuntimeDock";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
+import {
+    createInitialSessionRealtimeMessageState,
+    deriveAuthoritativeSessionView,
+    flushQueuedSessionRealtimeRuntimeEvents,
+    queueSessionRealtimeRuntimeEvent,
+    syncSessionRealtimeMessageState,
+    type AuthoritativeSessionView,
+    type SessionApprovalView,
+} from "@v8/session-realtime";
 
 const AskUserModal = dynamic(
     () => import("@/components/chat/AskUserModal").then((mod) => mod.AskUserModal),
@@ -52,26 +58,6 @@ const RuntimeTimelinePanel = dynamic(
     () => import("@/components/chat/RuntimeTimelinePanel").then((mod) => mod.RuntimeTimelinePanel),
     { ssr: false }
 );
-
-/** Shape of a message record returned from the DB API */
-interface DBMessage {
-    id: string;
-    role: 'user' | 'assistant' | 'system' | 'tool';
-    content: string;
-    reasoningContent?: string;
-    agentName?: string;
-    agentAvatar?: string;
-    agentRoleLabel?: string;
-    agentId?: string;
-    createdAt: string;
-    images?: string[];
-    toolInvocations?: Array<{
-        toolCallId: string;
-        toolName: string;
-        args: Record<string, unknown>;
-        result?: unknown;
-    }>;
-}
 
 interface ProjectDescriptor {
     id: string;
@@ -101,183 +87,12 @@ interface RunRecordView {
     metadata?: Record<string, unknown>;
 }
 
-interface SessionApprovalView {
-    id: string;
-    approvalId?: string;
-    runId?: string;
-    approvalKind?: string;
-    status?: string;
-    question?: string;
-    prompt?: string;
-    toolCallId?: string;
-    request?: Record<string, unknown>;
-}
-
-interface ContextGovernanceView {
-    context_policy_version?: number;
-    runtime_kind?: string;
-    target_role?: string;
-    resolved_model_id?: string;
-    context_window_tokens?: number;
-    original_message_count?: number;
-    estimated_input_tokens?: number;
-    trigger_reason?: string;
-    compaction_applied?: boolean;
-    compaction_method?: string;
-    block_types?: string[];
-    block_count?: number;
-    estimated_saved_tokens?: number;
-    eventTs?: string;
-    runId?: string;
-    eventSource?: {
-        component?: string;
-        node?: string;
-        agent_id?: string;
-    } | null;
-}
-
-interface SessionProjectionView {
-    todos?: {
-        taskId?: string | null;
-        taskName?: string | null;
-        runId?: string | null;
-        sessionId?: string | null;
-        updatedAt?: string | null;
-        isActive?: boolean;
-        isStale?: boolean;
-        allCompleted?: boolean;
-        items?: Array<{
-            id?: string | null;
-            content?: string | null;
-            status?: string | null;
-        }>;
-    } | null;
-    currentRun?: {
-        id?: string | null;
-        session_id?: string | null;
-        status?: string | null;
-        started_at?: string | null;
-        finished_at?: string | null;
-        trigger_source?: string | null;
-        metadata?: Record<string, unknown>;
-    } | null;
-    runtimeStatus?: string | null;
-    workflow?: {
-        rootRunId?: string;
-        status?: string;
-        recoverable?: boolean;
-        ownerRuntime?: string;
-        ownerAgentId?: string;
-        currentStepId?: string;
-        currentStepKey?: string;
-        currentStepTitle?: string;
-        currentStepStatus?: string;
-    } | null;
-    approvals?: SessionApprovalView[];
-    controls?: {
-        runId?: string;
-        canResume?: boolean;
-        canRetry?: boolean;
-        canInterrupt?: boolean;
-        canApprove?: boolean;
-        canReject?: boolean;
-        canOpenApproval?: boolean;
-        pendingApprovalCount?: number;
-        recoverable?: boolean;
-        workflowStatus?: string;
-        stepStatus?: string;
-    } | null;
-    recoverable?: {
-        recoverable?: boolean;
-        strategy?: string;
-        workflowStatus?: string;
-        currentStepStatus?: string;
-        canResume?: boolean;
-        canRetry?: boolean;
-    } | null;
-    summary?: {
-        workflowStatus?: string;
-        statusLabel?: string;
-        stepStatus?: string;
-        ownerRuntime?: string;
-        currentStepTitle?: string;
-        pendingApprovalCount?: number;
-        previewExcerpt?: string;
-        lastNarrativeExcerpt?: string;
-        lastRuntimeSummary?: string;
-        lastActivityAt?: string;
-        hasDurablePreview?: boolean;
-    } | null;
-    source?: string | null;
-    contextGovernance?: ContextGovernanceView | null;
-    runtimeTimeline?: RuntimeTimelineEntry[];
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
 function asNullableString(value: unknown): string | null {
     return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function normalizeTodoSnapshot(raw: unknown): SessionProjectionView["todos"] {
-    if (Array.isArray(raw)) {
-        return {
-            items: raw
-                .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-                .map((item) => ({
-                    id: asNullableString(item.id),
-                    content: asNullableString(item.content || item.text || item.title),
-                    status: asNullableString(item.status),
-                })),
-        };
-    }
-
-    const record = asRecord(raw);
-    if (Object.keys(record).length === 0) {
-        return null;
-    }
-
-    const itemSource = Array.isArray(record.items)
-        ? record.items
-        : Array.isArray(record.todo)
-            ? record.todo
-            : [];
-
-    return {
-        taskId: asNullableString(record.taskId),
-        taskName: asNullableString(record.taskName || record.task_name),
-        runId: asNullableString(record.runId || record.run_id),
-        sessionId: asNullableString(record.sessionId || record.session_id),
-        updatedAt: asNullableString(record.updatedAt || record.updated_at),
-        isActive: Boolean(record.isActive),
-        isStale: Boolean(record.isStale),
-        allCompleted: Boolean(record.allCompleted),
-        items: itemSource
-            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-            .map((item) => ({
-                id: asNullableString(item.id),
-                content: asNullableString(item.content || item.text || item.title),
-                status: asNullableString(item.status),
-            })),
-    };
-}
-
-function normalizeCurrentRun(raw: unknown): SessionProjectionView["currentRun"] {
-    const record = asRecord(raw);
-    if (Object.keys(record).length === 0) {
-        return null;
-    }
-    return {
-        id: asNullableString(record.id || record.runId || record.run_id),
-        session_id: asNullableString(record.session_id || record.sessionId),
-        status: asNullableString(record.status),
-        started_at: asNullableString(record.started_at || record.startedAt),
-        finished_at: asNullableString(record.finished_at || record.finishedAt),
-        trigger_source: asNullableString(record.trigger_source || record.triggerSource),
-        metadata: asRecord(record.metadata),
-    };
 }
 
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
@@ -301,29 +116,6 @@ function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     };
 }
 
-function normalizeProjectionPayload(raw: unknown): SessionProjectionView | null {
-    if (!raw || typeof raw !== "object") {
-        return null;
-    }
-    const record = raw as Record<string, unknown>;
-    const nestedProjection = asRecord(record.projection);
-    const effectiveRecord = Object.keys(nestedProjection).length > 0 ? nestedProjection : record;
-    const workflowProjection = asRecord(effectiveRecord.workflowProjection || record.workflowProjection);
-    return {
-        todos: normalizeTodoSnapshot(effectiveRecord.todos || record.todos || workflowProjection.todos),
-        currentRun: normalizeCurrentRun(effectiveRecord.currentRun || record.currentRun || workflowProjection.currentRun),
-        runtimeStatus: asNullableString(effectiveRecord.runtimeStatus || record.runtimeStatus || workflowProjection.runtimeStatus),
-        workflow: (effectiveRecord.workflow as SessionProjectionView["workflow"]) || null,
-        approvals: Array.isArray(effectiveRecord.approvals) ? (effectiveRecord.approvals as SessionApprovalView[]) : [],
-        controls: (effectiveRecord.controls as SessionProjectionView["controls"]) || null,
-        recoverable: (effectiveRecord.recoverable as SessionProjectionView["recoverable"]) || null,
-        summary: (effectiveRecord.summary as SessionProjectionView["summary"]) || null,
-        source: typeof effectiveRecord.source === "string" ? effectiveRecord.source : null,
-        contextGovernance: (effectiveRecord.contextGovernance as SessionProjectionView["contextGovernance"]) || null,
-        runtimeTimeline: Array.isArray(effectiveRecord.runtimeTimeline) ? normalizeRuntimeTimeline(effectiveRecord.runtimeTimeline) : [],
-    };
-}
-
 function normalizeWorkflowStatusForRunBar(status?: string | null): string | undefined {
     if (!status) return undefined;
     if (status === "recoverable_failed") return "failed";
@@ -332,7 +124,7 @@ function normalizeWorkflowStatusForRunBar(status?: string | null): string | unde
 
 function deriveHistoryPreview(
     messages: Message[],
-    projectionSummary?: SessionProjectionView["summary"] | null,
+    projectionSummary?: AuthoritativeSessionView["summary"] | null,
 ): string | undefined {
     const projectedPreview = String(
         projectionSummary?.previewExcerpt
@@ -405,7 +197,7 @@ export default function ChatClient() {
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [runActionLoading, setRunActionLoading] = useState(false);
-    const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
+    const [sessionProjection, setSessionProjection] = useState<AuthoritativeSessionView | null>(null);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
     const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -473,7 +265,7 @@ export default function ChatClient() {
     }, []);
 
     // Initialize Hook
-    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand, fetchPendingApprovals } = useLangGraphStream({
+    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
         onFinish: () => {
             refreshConversations();
@@ -534,10 +326,11 @@ export default function ChatClient() {
 
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const isLoadingRef = useRef(isLoading);
-    const remoteCurrentAiMsgRef = useRef<Message | undefined>(undefined);
-    const remoteAgentProfileRef = useRef<AgentProfile>({});
+    const messagesRef = useRef<Message[]>(messages);
+    const realtimeMessageStateRef = useRef(
+        createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS),
+    );
     const latestRealtimeSeqRef = useRef<number>(0);
-    const pendingRuntimeEventsRef = useRef<Array<{ event: NonNullable<ReturnType<typeof normalizeRealtimeEvent>>, seq: number }>>([]);
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingConversationCreationRef = useRef<Promise<string | null> | null>(null);
@@ -556,14 +349,20 @@ export default function ChatClient() {
     const effectivePendingApproval = hasPendingApproval || projectionPendingApproval || currentRun?.status === "waiting_approval";
     const projectionTodos = sessionProjection?.todos?.items || [];
     const projectionTodoStale = Boolean(sessionProjection?.todos?.isStale);
+    const projectionProcesses = sessionProjection?.processes || [];
+    const projectionContextReferences = sessionProjection?.contextReferences || [];
+    const projectionRuntimeTimeline = useMemo(
+        () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
+        [sessionProjection?.runtimeTimeline],
+    );
     const runtimeStageModel = useMemo(() => buildRuntimeStageModel(messages, {
         ownerRuntime: sessionProjection?.workflow?.ownerRuntime || sessionProjection?.summary?.ownerRuntime || null,
         status: effectiveStatus || null,
         pendingApproval: effectivePendingApproval,
         recoverable: Boolean(sessionProjection?.recoverable?.recoverable),
         currentStepTitle: sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null,
-        runtimeTimeline: sessionProjection?.runtimeTimeline || [],
-    }), [effectivePendingApproval, effectiveStatus, messages, sessionProjection?.recoverable?.recoverable, sessionProjection?.runtimeTimeline, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
+        runtimeTimeline: projectionRuntimeTimeline,
+    }), [effectivePendingApproval, effectiveStatus, messages, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
     const historyPreview = useMemo(
         () => deriveHistoryPreview(messages, sessionProjection?.summary),
         [messages, sessionProjection?.summary],
@@ -692,9 +491,11 @@ export default function ChatClient() {
     }, [isLoading]);
 
     useEffect(() => {
-        const derived = deriveRealtimeStreamState(messages);
-        remoteCurrentAiMsgRef.current = derived.currentAiMsg;
-        remoteAgentProfileRef.current = derived.activeAgentProfile;
+        messagesRef.current = messages;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            messages,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
     }, [messages]);
 
     const isLocalStreamActive = useCallback((sessionId: string | null | undefined) => {
@@ -711,64 +512,48 @@ export default function ChatClient() {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
         }
-        pendingRuntimeEventsRef.current = [];
         const normalized = normalizeProjectedMessages(projectedMessages);
-        const derived = deriveRealtimeStreamState(normalized);
-        remoteCurrentAiMsgRef.current = derived.currentAiMsg;
-        remoteAgentProfileRef.current = derived.activeAgentProfile;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            normalized,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
         latestRealtimeSeqRef.current = latestSeq;
+        messagesRef.current = normalizeMessagesForState(normalized);
         setMessages(normalizeMessagesForState(normalized));
         return normalized;
     }, [setMessages]);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
         const snapshotRes = await fetch(`/api/realtime/sessions/${conversationId}/snapshot`, { cache: "no-store" });
-        if (snapshotRes.ok) {
-            const data = await snapshotRes.json();
-            const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
-            const projection = normalizeProjectionPayload(snapshotPayload);
-            setSessionProjection(projection);
-            if ((projection?.approvals?.length || 0) > 0) {
-                applyPendingApproval(projection?.approvals?.[0] || null, { openModal: false });
-            }
-            if (Array.isArray(snapshotPayload?.snapshot?.messages)) {
-                applyProjectedSnapshot(
-                    snapshotPayload.snapshot.messages,
-                    Number(snapshotPayload.latestSeq || snapshotPayload.snapshot?.latest_seq || 0),
-                );
+        if (!snapshotRes.ok) {
+            if (snapshotRes.status === 404) {
+                router.replace("/chat");
                 return;
             }
+            throw new Error(`Failed to load authoritative snapshot: ${snapshotRes.status}`);
         }
 
-        const fallbackRes = await fetch(`/api/conversations/${conversationId}`, { cache: "no-store" });
-        if (fallbackRes.status === 404) {
-            router.replace("/chat");
-            return;
+        const data = await snapshotRes.json();
+        const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+        const projection = deriveAuthoritativeSessionView(snapshotPayload).view;
+        setSessionProjection(projection);
+        if ((projection?.approvals?.length || 0) > 0) {
+            applyPendingApproval(projection?.approvals?.[0] || null, { openModal: false });
         }
 
-        const fallbackData = fallbackRes.ok ? await fallbackRes.json() : { messages: [] };
-        const fallbackProjection = normalizeProjectionPayload(fallbackData);
-        setSessionProjection(fallbackProjection);
-        if ((fallbackProjection?.approvals?.length || 0) > 0) {
-            applyPendingApproval(fallbackProjection?.approvals?.[0] || null, { openModal: false });
-        }
-        if (
-            Array.isArray(fallbackData?.messages)
-            && fallbackData.messages.every((msg: unknown) => Array.isArray((msg as { parts?: unknown[] }).parts))
-        ) {
-            applyProjectedSnapshot(
-                fallbackData.messages,
-                Number(fallbackData.latestSeq || 0),
-            );
-            return;
-        }
-
-        const legacyMessages = convertLegacyMessagesToChatMessages((fallbackData?.messages || []) as DBMessage[]);
-        latestRealtimeSeqRef.current = Number(fallbackData?.latestSeq || 0);
-        const derived = deriveRealtimeStreamState(legacyMessages);
-        remoteCurrentAiMsgRef.current = derived.currentAiMsg;
-        remoteAgentProfileRef.current = derived.activeAgentProfile;
-        setMessages(normalizeMessagesForState(legacyMessages));
+        const authoritativeMessages = Array.isArray(snapshotPayload?.snapshot?.messages)
+            ? snapshotPayload.snapshot.messages
+            : Array.isArray(snapshotPayload?.messages)
+                ? snapshotPayload.messages
+                : [];
+        const normalized = normalizeProjectedMessages(authoritativeMessages);
+        latestRealtimeSeqRef.current = Number(snapshotPayload?.latestSeq || snapshotPayload?.snapshot?.latest_seq || 0);
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            normalized,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
+        messagesRef.current = normalizeMessagesForState(normalized);
+        setMessages(normalizeMessagesForState(normalized));
     }, [applyPendingApproval, applyProjectedSnapshot, router, setMessages]);
 
     const loadProjects = useCallback(async () => {
@@ -1055,38 +840,38 @@ export default function ChatClient() {
         if (runtimeTimelineEntry) {
             setSessionProjection((current) => {
                 if (!current) {
-                    return { runtimeTimeline: [runtimeTimelineEntry] };
+                    return current;
                 }
                 return {
                     ...current,
-                    runtimeTimeline: mergeRuntimeTimeline(current.runtimeTimeline || [], [runtimeTimelineEntry]),
+                    runtimeTimeline: mergeRuntimeTimeline(
+                        normalizeRuntimeTimeline(current.runtimeTimeline || []),
+                        [runtimeTimelineEntry],
+                    ),
                 };
             });
         }
-        pendingRuntimeEventsRef.current.push({ event: normalizedEvent, seq: eventSeq });
+        queueSessionRealtimeRuntimeEvent(realtimeMessageStateRef.current, normalizedEvent);
 
         const flush = () => {
             runtimeFlushFrameRef.current = null;
             runtimeFlushTimerRef.current = null;
-            const queued = pendingRuntimeEventsRef.current.splice(0, pendingRuntimeEventsRef.current.length);
-            if (queued.length === 0) {
+            const nextState = flushQueuedSessionRealtimeRuntimeEvents(
+                messagesRef.current,
+                realtimeMessageStateRef.current,
+                {
+                    cloneMessages,
+                    normalizeMessages: normalizeMessagesForState,
+                    lifecycleOptions: WEB_STREAM_LIFECYCLE_OPTIONS,
+                },
+            );
+            realtimeMessageStateRef.current = nextState.state;
+            if (!nextState.changed) {
                 return;
             }
 
-            setMessages((prev) => {
-                const nextMessages = cloneMessages(prev);
-                for (const item of queued) {
-                    const result = applyRealtimeEventToMessages(
-                        item.event!,
-                        nextMessages,
-                        remoteCurrentAiMsgRef.current,
-                        remoteAgentProfileRef.current,
-                    );
-                    remoteCurrentAiMsgRef.current = result.currentAiMsg;
-                    remoteAgentProfileRef.current = result.activeAgentProfile;
-                }
-                return normalizeMessagesForState(nextMessages);
-            });
+            messagesRef.current = nextState.messages;
+            setMessages(nextState.messages);
         };
 
         if (runtimeFlushFrameRef.current !== null || runtimeFlushTimerRef.current) {
@@ -1108,7 +893,7 @@ export default function ChatClient() {
             if (runtimeFlushTimerRef.current) {
                 clearTimeout(runtimeFlushTimerRef.current);
             }
-            pendingRuntimeEventsRef.current = [];
+            realtimeMessageStateRef.current.pendingRuntimeEvents = [];
         };
     }, []);
 
@@ -1270,22 +1055,12 @@ export default function ChatClient() {
                 console.error("Failed to load chat history", err);
             });
             void loadSessionScope(activeConversationId);
-            void (async () => {
-                try {
-                    const approvals = await fetchPendingApprovals(activeConversationId);
-                    applyPendingApproval(approvals[0] || null);
-                } catch (error) {
-                    console.warn("[ChatClient] Failed to fetch pending approvals:", error);
-                    clearApprovalState();
-                }
-            })();
             void loadRuns(activeConversationId);
         } else {
             console.log("[ChatClient] New conversation reset");
             if (isLoading) stop();
             latestRealtimeSeqRef.current = 0;
-            remoteCurrentAiMsgRef.current = undefined;
-            remoteAgentProfileRef.current = {};
+            realtimeMessageStateRef.current = createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS);
             setScopeBinding(null);
             setSessionProjection(null);
             clearApprovalState();
@@ -1293,9 +1068,10 @@ export default function ChatClient() {
             if (defaultProjectId && !selectedProjectId) {
                 setSelectedProjectId(defaultProjectId);
             }
+            messagesRef.current = [];
             setMessages([]);
         }
-    }, [activeConversationId, applyPendingApproval, clearApprovalState, defaultProjectId, fetchPendingApprovals, isLoading, loadConversationHistory, loadRuns, loadSessionScope, selectedProjectId, stop, setMessages]);
+    }, [activeConversationId, clearApprovalState, defaultProjectId, isLoading, loadConversationHistory, loadRuns, loadSessionScope, selectedProjectId, stop, setMessages]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -1311,7 +1087,7 @@ export default function ChatClient() {
             try {
                 const data = JSON.parse(event.data);
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
-                setSessionProjection((current) => normalizeProjectionPayload(snapshotPayload) || current);
+                setSessionProjection((current) => deriveAuthoritativeSessionView(snapshotPayload).view || current);
                 if (Array.isArray(snapshotPayload?.snapshot?.messages)) {
                     applyProjectedSnapshot(
                         snapshotPayload.snapshot.messages,
@@ -1526,6 +1302,8 @@ export default function ChatClient() {
                         <ChatWindow
                             key={activeConversationId || "new"}
                             messages={messages}
+                            processes={projectionProcesses}
+                            contextReferences={projectionContextReferences}
                             isLoading={isLoading}
                             userAvatar={session?.user?.image}
                             shellClassName="w-full"
@@ -1551,7 +1329,7 @@ export default function ChatClient() {
                             className="empty:hidden flex max-h-[22vh] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain sm:max-h-[28vh]"
                             style={hudStackStyle}
                         >
-                            <ProcessesHUD />
+                            <ProcessesHUD processes={projectionProcesses} />
                             <TodosHUD items={projectionTodos} isStale={projectionTodoStale} />
                         </div>
                         <div className="relative shrink-0">
@@ -1595,6 +1373,7 @@ export default function ChatClient() {
                 onClose={() => setIsTimelineOpen(false)}
                 model={runtimeStageModel}
                 selectedRuntimeId={selectedRuntimeId}
+                processes={projectionProcesses}
                 overallStatus={effectiveStatus}
                 currentStepTitle={sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null}
                 pendingApproval={effectivePendingApproval}

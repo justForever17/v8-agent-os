@@ -1,0 +1,65 @@
+{
+  "name": "@v8/session-realtime",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "if exist dist rmdir /s /q dist",
+    "prepare": "npm run build"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./contract": {
+      "types": "./dist/contract.d.ts",
+      "default": "./dist/contract.js"
+    },
+    "./runtime-registry": {
+      "types": "./dist/runtime-registry.d.ts",
+      "default": "./dist/runtime-registry.js"
+    },
+    "./event-taxonomy": {
+      "types": "./dist/event-taxonomy.d.ts",
+      "default": "./dist/event-taxonomy.js"
+    },
+    "./event-normalizer": {
+      "types": "./dist/event-normalizer.d.ts",
+      "default": "./dist/event-normalizer.js"
+    },
+    "./resources": {
+      "types": "./dist/resources.d.ts",
+      "default": "./dist/resources.js"
+    },
+    "./ui-event": {
+      "types": "./dist/ui-event.d.ts",
+      "default": "./dist/ui-event.js"
+    },
+    "./message-lifecycle": {
+      "types": "./dist/message-lifecycle.d.ts",
+      "default": "./dist/message-lifecycle.js"
+    },
+    "./cdc": {
+      "types": "./dist/cdc.d.ts",
+      "default": "./dist/cdc.js"
+    },
+    "./runtime-timeline": {
+      "types": "./dist/runtime-timeline.d.ts",
+      "default": "./dist/runtime-timeline.js"
+    },
+    "./history": {
+      "types": "./dist/history.d.ts",
+      "default": "./dist/history.js"
+    }
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

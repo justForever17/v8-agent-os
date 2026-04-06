@@ -41,11 +41,9 @@ import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
 import {
-    applyRealtimeEventToMessages as applyRealtimeEventToPhoneMessages,
     buildAssistantMessage,
-    deriveRealtimeStreamState,
     isActiveAssistantStreamPhase,
-    type AgentProfile,
+    PHONE_STREAM_LIFECYCLE_OPTIONS,
     type PhoneRealtimeUiEvent,
 } from "@/src/lib/chat-stream-state";
 import { buildApprovalFromEvent, collectArtifactsFromMessages, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
@@ -107,6 +105,17 @@ import type {
     UploadedWorkspaceFile,
     DesktopLiveSessionPayload,
 } from "@/src/types/admin";
+import {
+    createInitialSessionRealtimeMessageState,
+    type AdminProcessRef,
+    type ContextReferenceItem,
+    deriveAuthoritativeSessionView,
+    flushQueuedSessionRealtimeRuntimeEvents,
+    queueSessionRealtimeRuntimeEvent,
+    shouldAuthoritativelyRefreshOnRuntimeEvent,
+    syncSessionRealtimeMessageState,
+    shouldApplyRuntimeEventToMessage,
+} from "@v8/session-realtime";
 
 type RuntimeSummary = {
     status: string;
@@ -121,9 +130,11 @@ function buildRuntimeTimelineEntry(
     summary: string,
     options?: {
         id?: string;
+        seq?: number;
         timestamp?: number | string;
         actorLabel?: string;
         status?: string;
+        kind?: PhoneRuntimeTimelineEntry["kind"];
     },
 ): PhoneRuntimeTimelineEntry {
     const timestamp = typeof options?.timestamp === "number"
@@ -133,11 +144,14 @@ function buildRuntimeTimelineEntry(
             : Date.now();
     return {
         id: String(options?.id || `${runtimeId}:${topic}:${timestamp}`).trim(),
+        seq: Number(options?.seq || 0) || 0,
+        kind: options?.kind || "progress",
         runtimeId,
         topic,
         summary,
         timestamp,
         actorLabel: options?.actorLabel,
+        status: options?.status,
     };
 }
 
@@ -525,83 +539,6 @@ function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-function asRecordArray(...candidates: unknown[]): Array<Record<string, unknown>> {
-    for (const candidate of candidates) {
-        if (Array.isArray(candidate) && candidate.some((item) => item && typeof item === "object")) {
-            return candidate.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
-        }
-    }
-    return [];
-}
-
-function asTodoItems(value: unknown): SessionTodoItem[] {
-    if (Array.isArray(value)) {
-        return value.filter((item): item is SessionTodoItem => Boolean(item) && typeof item === "object");
-    }
-    const record = asRecord(value);
-    if (Array.isArray(record.items)) {
-        return record.items.filter((item): item is SessionTodoItem => Boolean(item) && typeof item === "object");
-    }
-    if (Array.isArray(record.todo)) {
-        return record.todo.filter((item): item is SessionTodoItem => Boolean(item) && typeof item === "object");
-    }
-    return [];
-}
-
-function pickRuntimeStatus(
-    projectionPayload: Record<string, unknown>,
-    root: Record<string, unknown>,
-    workflowProjection: Record<string, unknown>,
-    currentRuntime: RuntimeSummary,
-) {
-    const currentRun = asRecord(projectionPayload.currentRun || root.currentRun);
-    const truthChain = asRecord(workflowProjection.truthChain);
-    const summary = asRecord(projectionPayload.summary || root.summary);
-
-    const status = String(
-        projectionPayload.runtimeStatus
-        || root.runtimeStatus
-        || currentRun.status
-        || summary.workflowStatus
-        || truthChain.status
-        || currentRuntime.status
-        || "idle",
-    ).trim() || "idle";
-
-    const latestSeq = Number(
-        projectionPayload.latestSeq
-        || projectionPayload.latest_seq
-        || root.latestSeq
-        || root.latest_seq
-        || workflowProjection.latestSeq
-        || workflowProjection.latest_seq
-        || truthChain.latestSeq
-        || truthChain.latest_seq
-        || currentRuntime.latestSeq
-        || 0,
-    ) || 0;
-
-    const runId = String(
-        currentRun.id
-        || currentRun.run_id
-        || projectionPayload.runId
-        || root.runId
-        || currentRuntime.runId
-        || "",
-    ).trim() || undefined;
-
-    const label = String(
-        summary.lastRuntimeSummary
-        || summary.currentStepTitle
-        || projectionPayload.currentStepTitle
-        || root.currentStepTitle
-        || currentRuntime.label
-        || "",
-    ).trim() || undefined;
-
-    return { status, latestSeq, runId, label };
-}
-
 function buildConversationOverlayPatch(detail: Partial<ConversationDetail> | null | undefined): Partial<ConversationSummary> {
     const record = asRecord(detail);
     const summary = asRecord(record.summary);
@@ -703,13 +640,10 @@ export default function ChatScreen() {
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
     const lastRealtimeSnapshotAtRef = useRef(0);
-    const remoteCurrentAiMsgRef = useRef<ChatMessage | undefined>(undefined);
-    const remoteAgentProfileRef = useRef<AgentProfile>({
-        agentName: "智能主管",
-        agentAvatar: "/brand-mark.png",
-        agentRoleLabel: "主理人",
-    });
-    const pendingRuntimeEventsRef = useRef<PhoneRealtimeUiEvent[]>([]);
+    const messagesRef = useRef<ChatMessage[]>([]);
+    const realtimeMessageStateRef = useRef(
+        createInitialSessionRealtimeMessageState<ChatMessage>([], PHONE_STREAM_LIFECYCLE_OPTIONS),
+    );
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
@@ -739,6 +673,8 @@ export default function ChatScreen() {
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [artifacts, setArtifacts] = useState<ArtifactDetail[]>([]);
+    const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
+    const [contextReferences, setContextReferences] = useState<ContextReferenceItem[]>([]);
     const [musicTracks, setMusicTracks] = useState<MusicTrack[]>([]);
     const [commands, setCommands] = useState<CommandPresetSummary[]>([]);
     const [skills, setSkills] = useState<SkillReferenceSummary[]>([]);
@@ -802,7 +738,12 @@ export default function ChatScreen() {
     }, [activeConversationId]);
 
     useEffect(() => {
+        messagesRef.current = messages;
         lastMessageFingerprintRef.current = buildMessagesFingerprint(messages);
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            messages,
+            PHONE_STREAM_LIFECYCLE_OPTIONS,
+        );
     }, [messages]);
 
     const sendingRef = useRef(sending);
@@ -817,28 +758,15 @@ export default function ChatScreen() {
     }, []);
 
     const resetConversationStreamState = useCallback(() => {
-        remoteCurrentAiMsgRef.current = undefined;
-        remoteAgentProfileRef.current = {
-            agentName: "智能主管",
-            agentAvatar: "/brand-mark.png",
-            agentRoleLabel: "主理人",
-        };
-        pendingRuntimeEventsRef.current = [];
+        realtimeMessageStateRef.current = createInitialSessionRealtimeMessageState<ChatMessage>(
+            [],
+            PHONE_STREAM_LIFECYCLE_OPTIONS,
+        );
         if (runtimeFlushTimerRef.current) {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
         }
     }, []);
-
-    const syncStreamStateFromMessages = useCallback((nextMessages: ChatMessage[]) => {
-        const derived = deriveRealtimeStreamState(nextMessages);
-        remoteCurrentAiMsgRef.current = derived.currentAiMsg;
-        remoteAgentProfileRef.current = derived.activeAgentProfile;
-    }, []);
-
-    useEffect(() => {
-        syncStreamStateFromMessages(messages);
-    }, [messages, syncStreamStateFromMessages]);
 
     const appendRuntimeTimeline = useCallback((entry: PhoneRuntimeTimelineEntry | null) => {
         if (!entry) {
@@ -847,56 +775,35 @@ export default function ChatScreen() {
         setRuntimeTimeline((current) => mergePhoneRuntimeTimeline(current, [entry]));
     }, []);
 
-    const applyStreamEventsToMessages = useCallback((events: PhoneRealtimeUiEvent[]) => {
-        if (events.length === 0) {
-            return;
-        }
-        setMessages((current) => {
-            const localMessages = normalizeMessagesForState(current);
-            let nextCurrentAiMsg = remoteCurrentAiMsgRef.current;
-            let nextActiveAgentProfile = remoteAgentProfileRef.current;
-
-            for (const event of events) {
-                const result = applyRealtimeEventToPhoneMessages(
-                    event,
-                    localMessages,
-                    nextCurrentAiMsg,
-                    nextActiveAgentProfile,
-                );
-                nextCurrentAiMsg = result.currentAiMsg;
-                nextActiveAgentProfile = result.activeAgentProfile;
-            }
-
-            const normalized = normalizeMessagesForState(localMessages);
-            const fingerprint = buildMessagesFingerprint(normalized);
-
-            remoteCurrentAiMsgRef.current = nextCurrentAiMsg;
-            remoteAgentProfileRef.current = nextActiveAgentProfile;
-
-            if (fingerprint === lastMessageFingerprintRef.current) {
-                return current;
-            }
-
-            lastMessageFingerprintRef.current = fingerprint;
-            syncArtifactsFromMessages(normalized);
-            return normalized;
-        });
-    }, [syncArtifactsFromMessages]);
-
     const flushPendingRuntimeEvents = useCallback(() => {
         if (runtimeFlushTimerRef.current) {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
         }
-        const batch = pendingRuntimeEventsRef.current.splice(0, pendingRuntimeEventsRef.current.length);
-        if (batch.length === 0) {
+        const nextState = flushQueuedSessionRealtimeRuntimeEvents(
+            messagesRef.current,
+            realtimeMessageStateRef.current,
+            {
+                normalizeMessages: normalizeMessagesForState,
+                lifecycleOptions: PHONE_STREAM_LIFECYCLE_OPTIONS,
+            },
+        );
+        realtimeMessageStateRef.current = nextState.state;
+        if (!nextState.changed) {
             return;
         }
-        applyStreamEventsToMessages(batch);
-    }, [applyStreamEventsToMessages]);
+        const fingerprint = buildMessagesFingerprint(nextState.messages);
+        if (fingerprint === lastMessageFingerprintRef.current) {
+            return;
+        }
+        lastMessageFingerprintRef.current = fingerprint;
+        syncArtifactsFromMessages(nextState.messages);
+        messagesRef.current = nextState.messages;
+        setMessages(nextState.messages);
+    }, [syncArtifactsFromMessages]);
 
     const queueRuntimeMessageEvent = useCallback((event: PhoneRealtimeUiEvent, immediate = false) => {
-        pendingRuntimeEventsRef.current.push(event);
+        queueSessionRealtimeRuntimeEvent(realtimeMessageStateRef.current, event);
         if (immediate) {
             flushPendingRuntimeEvents();
             return;
@@ -1308,32 +1215,44 @@ export default function ChatScreen() {
     }, [authorizedFetch, setActiveConversationId]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
-        const root = asRecord(payload);
-        const projectionPayload = asRecord(root.projection);
-        const effectiveProjection = Object.keys(projectionPayload).length > 0 ? projectionPayload : root;
-        const workflowProjection = asRecord(effectiveProjection.workflowProjection || root.workflowProjection);
-        const nextApprovals = Array.isArray(effectiveProjection.approvals)
-            ? effectiveProjection.approvals as PendingApproval[]
-            : Array.isArray(root.approvals)
-                ? root.approvals as PendingApproval[]
-                : [];
-        const nextTodos = asTodoItems(effectiveProjection.todos || root.todos || workflowProjection.todos);
-        const nextRuntimeEvents = asRecordArray(
-            effectiveProjection.runtimeTimeline,
-            effectiveProjection.runtimeEvents,
-            root.runtimeTimeline,
-            root.runtimeEvents,
-            workflowProjection.runtimeTimeline,
-            workflowProjection.runtimeEvents,
-            workflowProjection.eventTail,
-            workflowProjection.activities,
-        );
-        const nextRuntime = pickRuntimeStatus(effectiveProjection, root, workflowProjection, runtimeRef.current);
+        const { store, view } = deriveAuthoritativeSessionView(payload);
+        if (!view) {
+            return;
+        }
+        const nextApprovals = view.approvals as PendingApproval[];
+        const nextTodos = view.todos?.items || [];
+        const nextRuntimeEvents = view.runtimeTimeline;
+        const nextRuntimeStatus = view.runtimeStatus;
+        const nextSummary = asRecord(view.summary);
+        const nextCurrentRun = asRecord(view.currentRun);
+        const workflowProjection = asRecord(view.workflowProjection);
 
         setApprovals(nextApprovals);
-        setTodos(nextTodos);
-        setRuntime(nextRuntime);
+        setTodos(nextTodos as SessionTodoItem[]);
+        setProcesses(view.processes || []);
+        setContextReferences(view.contextReferences || []);
         setRuntimeTimeline(normalizePhoneRuntimeTimeline(nextRuntimeEvents));
+        const nextRuntime: RuntimeSummary = {
+            status: String(
+                nextRuntimeStatus
+                || nextCurrentRun.status
+                || workflowProjection.runtimeStatus
+                || runtimeRef.current.status
+                || "idle",
+            ).trim() || "idle",
+            latestSeq: Number(store.latestSeq || 0) || 0,
+            runId: typeof nextCurrentRun.id === "string"
+                ? nextCurrentRun.id
+                : typeof nextCurrentRun.runId === "string"
+                    ? nextCurrentRun.runId
+                    : runtimeRef.current.runId,
+            label: typeof nextSummary.currentStepTitle === "string"
+                ? nextSummary.currentStepTitle
+                : typeof nextSummary.lastRuntimeSummary === "string"
+                    ? nextSummary.lastRuntimeSummary
+                    : runtimeRef.current.label,
+        };
+        setRuntime(nextRuntime);
         latestSeqRef.current = nextRuntime.latestSeq;
     }, []);
 
@@ -1367,8 +1286,12 @@ export default function ChatScreen() {
                     return current;
                 }
                 lastMessageFingerprintRef.current = fingerprint;
-                syncStreamStateFromMessages(normalized);
+                realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                    normalized,
+                    PHONE_STREAM_LIFECYCLE_OPTIONS,
+                );
                 syncArtifactsFromMessages(normalized);
+                messagesRef.current = normalized;
                 return normalized;
             });
         }
@@ -1378,7 +1301,7 @@ export default function ChatScreen() {
             lastRealtimeSnapshotAtRef.current = Date.now();
         }
         applyConversationProjection(payload);
-    }, [applyConversationProjection, syncArtifactsFromMessages, syncStreamStateFromMessages]);
+    }, [applyConversationProjection, syncArtifactsFromMessages]);
 
     const scheduleRealtimeSnapshotRefresh = useCallback((conversationId?: string | null, options?: { force?: boolean }) => {
         const targetConversationId = String(conversationId || activeConversationIdRef.current || "").trim();
@@ -1452,23 +1375,9 @@ export default function ChatScreen() {
             latestSeqRef.current = normalized.seq;
         }
 
-        const shouldMergeIntoAssistant =
-            normalized.type === "agent_start"
-            || normalized.type === "text_chunk"
-            || normalized.type === "reasoning_chunk"
-            || normalized.type === "tool_start"
-            || normalized.type === "tool_result"
-            || normalized.type === "done"
-            || normalized.type === "error"
-            || (normalized.type === "custom_event" && (
-                normalized.name === "artifact_recorded"
-                || normalized.name === "runtime_progress"
-                || normalized.name === "runtime_event"
-                || normalized.name === "ask_user"
-                || normalized.name === "run_controlled"
-            ));
+        const shouldFallbackRefresh = shouldAuthoritativelyRefreshOnRuntimeEvent(normalized);
 
-        if (shouldMergeIntoAssistant) {
+        if (shouldApplyRuntimeEventToMessage(normalized)) {
             queueRuntimeMessageEvent(normalized, normalized.type === "agent_start" || normalized.type === "done" || normalized.type === "error");
         }
 
@@ -1482,73 +1391,59 @@ export default function ChatScreen() {
                         runId: normalized.run_id || current.runId,
                     }));
                 appendRuntimeTimeline(
-                    buildPhoneRuntimeTimelineEntryFromEvent({
-                        topic: normalized.topic || "approval.requested",
-                        seq: normalized.seq,
-                        event_id: normalized.event_id,
-                        ts: normalized.ts,
-                        payload: {
-                            question: normalized.data?.question,
-                            actorLabel: tRef.current("运行调度", "Automation"),
+                    buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "automation")) || "automation",
+                        normalized.topic || "approval.requested",
+                        String(normalized.data?.question || tRef.current("等待用户确认", "Waiting for approval")),
+                        {
+                            id: normalized.event_id || `approval:${normalized.seq || Date.now()}`,
+                            seq: normalized.seq,
+                            kind: "governance",
+                            timestamp: normalized.ts || Date.now(),
+                            actorLabel: normalized.actorLabel || tRef.current("运行调度", "Automation"),
                         },
-                    }, locale) || buildRuntimeTimelineEntry(
-                normalizePhoneRuntimeId(String(normalized.topic || normalized.data?.topic || "automation")) || "automation",
-                normalized.topic || "approval.requested",
-                String(normalized.data?.question || tRef.current("等待用户确认", "Waiting for approval")),
-                {
-                    id: normalized.event_id || `approval:${normalized.seq || Date.now()}`,
-                    timestamp: normalized.ts || Date.now(),
-                    actorLabel: tRef.current("运行调度", "Automation"),
-                },
-                ),
-        );
+                    ),
+                );
             }
-            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
             return;
         }
 
         if (normalized.name === "artifact_recorded") {
             appendRuntimeTimeline(
-                buildPhoneRuntimeTimelineEntryFromEvent({
-                    topic: normalized.topic || "artifact.recorded",
-                    seq: normalized.seq,
-                    event_id: normalized.event_id,
-                    ts: normalized.ts,
-                    payload: {
-                        title: normalized.artifact?.title,
-                        kind: normalized.artifact?.kind,
-                        workspacePath: normalized.artifact?.workspacePath,
-                    },
-                }, locale) || buildRuntimeTimelineEntry(
-                    normalizePhoneRuntimeId(String(normalized.topic || normalized.artifact?.kind || "chat")) || "chat",
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.artifact?.kind || "chat")) || "chat",
                     normalized.topic || "artifact.recorded",
                     String(normalized.artifact?.title || normalized.artifact?.kind || tRef.current("记录新的产物", "Recorded a new artifact")),
                     {
                         id: normalized.event_id || `artifact:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "artifact",
                         timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
                     },
                 ),
             );
-            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
             return;
         }
 
         if (normalized.name === "runtime_progress") {
             appendRuntimeTimeline(
-                buildPhoneRuntimeTimelineEntryFromEvent({
-                    topic: normalized.topic || String(normalized.data?.topic || "runtime.progress"),
-                    runtimeId: normalized.data?.runtimeId,
-                    seq: normalized.seq,
-                    event_id: normalized.event_id,
-                    ts: normalized.ts,
-                    payload: normalized.data,
-                }, locale) || buildRuntimeTimelineEntry(
-                    normalizePhoneRuntimeId(String(normalized.topic || normalized.data?.topic || "chat")) || "chat",
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "chat")) || "chat",
                     normalized.topic || String(normalized.data?.topic || "runtime.progress"),
                     String(normalized.data?.label || normalized.topic || tRef.current("运行更新", "Runtime updated")),
                     {
                         id: normalized.event_id || `runtime:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "progress",
                         timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
                     },
                 ),
             );
@@ -1558,26 +1453,24 @@ export default function ChatScreen() {
                 runId: normalized.run_id || current.runId,
                 label: typeof normalized.data?.label === "string" ? normalized.data.label : current.label,
             }));
-            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
             return;
         }
 
         if (normalized.name === "run_controlled") {
             appendRuntimeTimeline(
-                buildPhoneRuntimeTimelineEntryFromEvent({
-                    topic: normalized.topic || String(normalized.data?.topic || "run.controlled"),
-                    runtimeId: normalized.data?.runtimeId,
-                    seq: normalized.seq,
-                    event_id: normalized.event_id,
-                    ts: normalized.ts,
-                    payload: normalized.data,
-                }, locale) || buildRuntimeTimelineEntry(
-                    normalizePhoneRuntimeId(String(normalized.topic || normalized.data?.topic || "chat")) || "chat",
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "chat")) || "chat",
                     normalized.topic || String(normalized.data?.topic || "run.controlled"),
                     String(normalized.data?.topic || tRef.current("运行控制已更新", "Run control updated")),
                     {
                         id: normalized.event_id || `control:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "governance",
                         timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
                     },
                 ),
             );
@@ -1588,7 +1481,9 @@ export default function ChatScreen() {
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
             }));
-            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
             return;
         }
 
@@ -1598,21 +1493,16 @@ export default function ChatScreen() {
         }
 
         appendRuntimeTimeline(
-            buildPhoneRuntimeTimelineEntryFromEvent({
-                topic,
-                runtimeId: normalized.data?.runtimeId,
-                seq: normalized.seq,
-                event_id: normalized.event_id,
-                ts: normalized.ts,
-                payload: normalized.data,
-            }, locale) || buildRuntimeTimelineEntry(
-                normalizePhoneRuntimeId(String(normalized.data?.runtimeId || normalized.data?.runtime || topic)) || "chat",
+            buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.data?.runtimeId || normalized.data?.runtime || topic)) || "chat",
                 topic,
                 String(normalized.data?.label || normalized.data?.summary || topic),
                 {
                     id: normalized.event_id || `runtime:${normalized.seq || Date.now()}`,
+                    seq: normalized.seq,
+                    kind: "progress",
                     timestamp: normalized.ts || Date.now(),
-                    actorLabel: typeof normalized.data?.actorLabel === "string" ? normalized.data.actorLabel : undefined,
+                    actorLabel: normalized.actorLabel || (typeof normalized.data?.actorLabel === "string" ? normalized.data.actorLabel : undefined),
                     status: typeof normalized.data?.status === "string" ? normalized.data.status : undefined,
                 },
             ),
@@ -1640,7 +1530,7 @@ export default function ChatScreen() {
                 label: typeof normalized.data?.label === "string" ? normalized.data.label : current.label,
             };
         });
-        if (!topic.toLowerCase().includes("heartbeat")) {
+        if (shouldFallbackRefresh) {
             scheduleRealtimeSnapshotRefresh(
                 normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
                 { force: normalized.type === "done" || normalized.type === "error" },
@@ -1701,8 +1591,12 @@ export default function ChatScreen() {
             }
             const normalized = normalizeMessagesForState(detail.messages || []);
             resetConversationStreamState();
-            syncStreamStateFromMessages(normalized);
+            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                normalized,
+                PHONE_STREAM_LIFECYCLE_OPTIONS,
+            );
             lastMessageFingerprintRef.current = buildMessagesFingerprint(normalized);
+            messagesRef.current = normalized;
             setMessages(normalized);
             syncArtifactsFromMessages(normalized);
             applyConversationProjection(detail);
@@ -1742,7 +1636,7 @@ export default function ChatScreen() {
                 setConversationBusy(false);
             }
         }
-    }, [applyConversationProjection, authorizedFetch, resetConversationStreamState, syncArtifactsFromMessages, syncStreamStateFromMessages]);
+    }, [applyConversationProjection, authorizedFetch, resetConversationStreamState, syncArtifactsFromMessages]);
 
     const ensureConversation = useCallback(async () => {
         if (activeConversationId) {
@@ -1806,10 +1700,13 @@ export default function ChatScreen() {
             hydratedConversationIdRef.current = null;
             loadingConversationIdRef.current = null;
             resetConversationStreamState();
+            messagesRef.current = [];
             setMessages([]);
             setApprovals([]);
             setTodos([]);
             setArtifacts([]);
+            setProcesses([]);
+            setContextReferences([]);
             setRuntime({ status: "idle", latestSeq: 0 });
             setRuntimeTimeline([]);
             latestSeqRef.current = 0;
@@ -1888,10 +1785,13 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
+        messagesRef.current = [];
         setMessages([]);
         setApprovals([]);
         setTodos([]);
         setArtifacts([]);
+        setProcesses([]);
+        setContextReferences([]);
         setUploadedFiles([]);
         setSelectedCommand(null);
         setSelectedSkills([]);
@@ -1947,7 +1847,15 @@ export default function ChatScreen() {
                         if (message.id && !message.id.startsWith("user-") && !message.id.startsWith("assistant-")) {
                             await deleteMessage(authorizedFetch, message.id);
                         }
-                        setMessages((current) => current.filter((item) => item.renderKey !== message.renderKey));
+                        setMessages((current) => {
+                            const next = current.filter((item) => item.renderKey !== message.renderKey);
+                            messagesRef.current = next;
+                            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                                next,
+                                PHONE_STREAM_LIFECYCLE_OPTIONS,
+                            );
+                            return next;
+                        });
                     })().catch((error) => {
                         Alert.alert(t("删除失败", "Delete failed"), error instanceof Error ? error.message : t("无法删除消息", "Unable to delete message"));
                     });
@@ -2107,13 +2015,15 @@ export default function ChatScreen() {
             approvals,
             todos,
             artifacts,
+            processes,
+            contextReferences,
             runtime,
             runtimeTimeline,
             selectedRuntimeId,
             t,
             locale,
         }),
-        [activeConversationId, approvals, artifacts, conversations, locale, messages, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
+        [activeConversationId, approvals, artifacts, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
@@ -2287,8 +2197,12 @@ export default function ChatScreen() {
                     userMessage,
                     buildAssistantPlaceholder(),
                 ]);
-                syncStreamStateFromMessages(next);
+                realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                    next,
+                    PHONE_STREAM_LIFECYCLE_OPTIONS,
+                );
                 lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                messagesRef.current = next;
                 return next;
             });
             setRuntime((current) => ({
@@ -2537,6 +2451,8 @@ export default function ChatScreen() {
                             userDisplayName={user?.name || user?.login || user?.email || ""}
                             todos={projection.todos}
                             artifacts={projection.artifacts}
+                            processes={projection.processes}
+                            contextReferences={projection.contextReferences}
                             pendingApproval={projection.pendingApproval}
                             pendingApprovalCount={projection.pendingApprovalCount}
                             approvalBusy={sending}
@@ -2598,6 +2514,7 @@ export default function ChatScreen() {
                     selectedRuntimeId={projection.selectedRuntimeId}
                     selectedRuntimeDockItem={projection.selectedRuntimeDockItem}
                     activities={projection.selectedRuntimeActivities}
+                    processes={projection.processes}
                     currentRunLabel={projection.currentRunLabel}
                     currentStepTitle={projection.currentStepTitle}
                     onClose={() => setRuntimePanelOpen(false)}

@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
 
 import { ArtifactsPanel } from "@/src/components/chat/ArtifactsPanel";
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
@@ -34,6 +35,8 @@ type ChatWindowProps = {
     userDisplayName?: string;
     todos: SessionTodoItem[];
     artifacts: ArtifactDetail[];
+    processes: AdminProcessRef[];
+    contextReferences: ContextReferenceItem[];
     pendingApproval?: PendingApproval | null;
     pendingApprovalCount?: number;
     approvalBusy?: boolean;
@@ -123,6 +126,8 @@ export const ChatWindow = memo(function ChatWindow({
     userDisplayName,
     todos,
     artifacts,
+    processes,
+    contextReferences,
     pendingApproval,
     pendingApprovalCount = 0,
     approvalBusy = false,
@@ -197,7 +202,7 @@ export const ChatWindow = memo(function ChatWindow({
     return (
         <View style={styles.root}>
             <View style={styles.contextWrap}>
-                <ContextReferencesHUD messages={messages} />
+                <ContextReferencesHUD contextReferences={contextReferences} />
             </View>
 
             <View style={[styles.messagesShell, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
@@ -249,6 +254,7 @@ export const ChatWindow = memo(function ChatWindow({
                                 onOpenArtifact={handleOpenArtifact}
                                 userImageUri={userImageUri}
                                 userDisplayName={userDisplayName}
+                                processes={processes}
                             />
                         ))
                     )}
@@ -271,7 +277,7 @@ export const ChatWindow = memo(function ChatWindow({
 
             <View style={[styles.hudStack, isLandscape && styles.hudStackLandscape]}>
                 {todos.length > 0 ? <TodosHUD items={todos} /> : null}
-                {messages.length > 0 ? <ProcessesHUD messages={messages} /> : null}
+                {processes.length > 0 ? <ProcessesHUD processes={processes} /> : null}
                 {pendingApproval && isAskUserApproval(pendingApproval) ? (
                     <Pressable
                         style={[styles.artifactsPill, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}

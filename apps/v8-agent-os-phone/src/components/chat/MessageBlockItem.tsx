@@ -58,12 +58,26 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         if (isAskUser) {
             return <AskUserCard question={node.question || node.reason || node.topic || ""} status={node.status} />;
         }
+        const title = node.governanceType === "safety_blocked"
+            ? t("安全阻断", "Safety blocked")
+            : node.governanceType === "context_governance"
+                ? t("上下文治理", "Context governance")
+                : node.governanceType === "lane_updated"
+                    ? t("运行调度", "Run scheduling")
+                    : approvalKind === "safety_blocked"
+                        ? t("安全阻断", "Safety blocked")
+                        : t("系统确认", "Approval");
+        const tone = node.governanceType === "safety_blocked" || approvalKind === "safety_blocked"
+            ? "safety"
+            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated" || node.governanceType === "context_governance"
+                ? "control"
+                : "approval";
         return (
             <ApprovalCard
-                title={approvalKind === "safety_blocked" ? t("安全阻断", "Safety blocked") : t("系统确认", "Approval")}
+                title={title}
                 body={node.question || node.reason || node.topic || node.status || ""}
                 status={node.status}
-                tone={approvalKind === "safety_blocked" ? "safety" : node.governanceType === "run_controlled" ? "control" : "approval"}
+                tone={tone}
             />
         );
     }

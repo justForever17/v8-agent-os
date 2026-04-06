@@ -2,6 +2,7 @@
 
 import React from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import type { AdminProcessRef } from "@v8/session-realtime";
 import { cn } from "@/lib/utils";
 import {
     RuntimeId,
@@ -11,13 +12,14 @@ import {
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
 import { ContentDispatcher } from "./ContentDispatcher";
-import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, RadioTower, TerminalSquare, Workflow, X } from "lucide-react";
+import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, Globe, RadioTower, TerminalSquare, Workflow, X } from "lucide-react";
 
 interface RuntimeTimelinePanelProps {
     isOpen: boolean;
     onClose: () => void;
     model: RuntimeStageModel;
     selectedRuntimeId: RuntimeId | null;
+    processes: AdminProcessRef[];
     overallStatus?: string;
     currentStepTitle?: string | null;
     pendingApproval?: boolean;
@@ -29,9 +31,12 @@ const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>>
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
-    plugin_host: RadioTower,
+    network_supervisor: Globe,
+    plugin_host_tool: RadioTower,
+    plugin_host_channel: RadioTower,
     computer_use: TerminalSquare,
     rpa: Cpu,
+    desktop_live: RadioTower,
 };
 
 const kindMeta: Record<RuntimeStageActivity["kind"], { label: string; icon: React.ElementType<{ className?: string }>; tone: string }> = {
@@ -153,7 +158,13 @@ function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
     );
 }
 
-function ActivityFeedItem({ activity }: { activity: RuntimeStageActivity }) {
+function ActivityFeedItem({
+    activity,
+    processes,
+}: {
+    activity: RuntimeStageActivity;
+    processes: AdminProcessRef[];
+}) {
     const meta = kindMeta[activity.kind];
     const Icon = meta.icon;
 
@@ -182,7 +193,7 @@ function ActivityFeedItem({ activity }: { activity: RuntimeStageActivity }) {
                 {activity.node.kind === "artifact" ? (
                     <div className="text-sm text-muted-foreground">产物已记录，可在 Artifacts 面板查看详细内容。</div>
                 ) : (
-                    <ContentDispatcher node={activity.node} isExecuting={false} isStreaming={false} />
+                    <ContentDispatcher node={activity.node} isExecuting={false} isStreaming={false} processes={processes} />
                 )}
             </div>
         </div>
@@ -194,6 +205,7 @@ export function RuntimeTimelinePanel({
     onClose,
     model,
     selectedRuntimeId,
+    processes,
     overallStatus,
     currentStepTitle,
     pendingApproval,
@@ -290,7 +302,7 @@ export function RuntimeTimelinePanel({
                                 <div className={cn("space-y-3", activities.length > 0 ? "md:mt-4" : "")}>
                                     {activities.length > 0 ? (
                                         activities.slice(0, 24).map((activity) => (
-                                            <ActivityFeedItem key={activity.id} activity={activity} />
+                                            <ActivityFeedItem key={activity.id} activity={activity} processes={processes} />
                                         ))
                                     ) : (
                                         <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">

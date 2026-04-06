@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/hooks/use-debounce";
 import { useChatStore } from "@/store/chat-store";
-import { inferArtifactCardType, normalizeRuntimeArtifact, normalizeRuntimeArtifacts, RuntimeArtifact } from "@/lib/artifacts";
+import { inferArtifactCardType, normalizeRuntimeArtifact, normalizeRuntimeArtifacts, resolveRuntimeArtifactUrl, RuntimeArtifact } from "@/lib/artifacts";
 import { parseContentToBlocks } from "@/lib/chat/content-detector";
 
 type LegacyArtifact = {
@@ -191,6 +191,10 @@ export function ArtifactsPanel({ sessionId }: { sessionId?: string | null }) {
         isLegacyArtifact(activeArtifact) && activeArtifact.type === "html" ? activeArtifact.content : "",
         500,
     );
+    const activeArtifactUrl = useMemo(
+        () => (isRuntimeArtifact(activeArtifact) ? resolveRuntimeArtifactUrl(activeArtifact) : undefined),
+        [activeArtifact],
+    );
 
     const iframeKey = useMemo(() => {
         return `iframe-${activeArtifact?.id}-${debouncedHtmlContent.length}`;
@@ -268,19 +272,19 @@ export function ArtifactsPanel({ sessionId }: { sessionId?: string | null }) {
                     {isRuntimeArtifact(activeArtifact) ? (
                         <div className="grid h-full gap-4 p-5 lg:grid-cols-[minmax(0,1.1fr)_340px]">
                             <div className="rounded-2xl border bg-card/70 p-4 overflow-auto">
-                                {activeArtifact.previewUrl && runtimeArtifactType === "image" ? (
+                                {activeArtifactUrl && runtimeArtifactType === "image" ? (
                                     // eslint-disable-next-line @next/next/no-img-element
-                                    <img src={activeArtifact.previewUrl} alt={getRuntimeArtifactTitle(activeArtifact)} className="max-h-[60vh] w-full rounded-xl object-contain bg-black/5" />
+                                    <img src={activeArtifactUrl} alt={getRuntimeArtifactTitle(activeArtifact)} className="max-h-[60vh] w-full rounded-xl object-contain bg-black/5" />
                                 ) : null}
-                                {activeArtifact.previewUrl && runtimeArtifactType === "video" ? (
-                                    <video controls className="max-h-[60vh] w-full rounded-xl bg-black/5" src={activeArtifact.previewUrl} />
+                                {activeArtifactUrl && runtimeArtifactType === "video" ? (
+                                    <video controls className="max-h-[60vh] w-full rounded-xl bg-black/5" src={activeArtifactUrl} />
                                 ) : null}
-                                {activeArtifact.previewUrl && runtimeArtifactType === "audio" ? (
+                                {activeArtifactUrl && runtimeArtifactType === "audio" ? (
                                     <div className="rounded-xl border bg-background p-5">
-                                        <audio controls className="w-full" src={activeArtifact.previewUrl} />
+                                        <audio controls className="w-full" src={activeArtifactUrl} />
                                     </div>
                                 ) : null}
-                                {!activeArtifact.previewUrl || !["image", "video", "audio"].includes(runtimeArtifactType) ? (
+                                {!activeArtifactUrl || !["image", "video", "audio"].includes(runtimeArtifactType) ? (
                                     <div className="rounded-xl border bg-background p-5 space-y-4">
                                         <div>
                                             <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Artifact Type</div>
@@ -288,14 +292,14 @@ export function ArtifactsPanel({ sessionId }: { sessionId?: string | null }) {
                                         </div>
                                         <div>
                                             <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Preview</div>
-                                            {activeArtifact.previewUrl ? (
+                                            {activeArtifactUrl ? (
                                                 <a
-                                                    href={activeArtifact.previewUrl}
+                                                    href={activeArtifactUrl}
                                                     target="_blank"
                                                     rel="noreferrer"
                                                     className="mt-2 block break-all text-sm text-primary underline-offset-4 hover:underline"
                                                 >
-                                                    {activeArtifact.previewUrl}
+                                                    {activeArtifactUrl}
                                                 </a>
                                             ) : (
                                                 <div className="mt-2 text-sm text-muted-foreground">该产物没有可直接内联预览的链接。</div>

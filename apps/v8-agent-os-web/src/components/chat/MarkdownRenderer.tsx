@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { motion } from 'framer-motion';
+import { coerceAdminResourceRef, resolveAdminResourceUrl } from "@v8/session-realtime";
 import { MediaPlayer, ImagePreview } from './MediaRenderers';
 import { CodeBlock as SharedCodeBlock } from './CodeBlock';
 import { useDebouncedValue } from '@/hooks/use-debounce';
@@ -143,6 +144,15 @@ function preprocessContent(content: string, workspaceAssetBaseUrl: string): stri
     );
 }
 
+function normalizeSurfaceHref(href: string) {
+    const raw = String(href || "").trim();
+    if (!raw) {
+        return "";
+    }
+    return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw))
+        || raw.replace(/^\/api\/client\b/i, "/api");
+}
+
 /**
  * 嵌入式视频组件
  */
@@ -227,39 +237,45 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
         code: CodeBlock,
         a: ({ href, children }: ComponentPropsWithoutRef<'a'>) => {
             if (!href) return <>{children}</>;
+            const resolvedHref = normalizeSurfaceHref(href);
+            if (!resolvedHref) return <>{children}</>;
 
             // 检查是否是视频平台 URL
             for (const platform of VIDEO_PLATFORMS) {
-                if (platform.regex.test(href)) {
-                    return <EmbeddedVideo url={href} />;
+                if (platform.regex.test(resolvedHref)) {
+                    return <EmbeddedVideo url={resolvedHref} />;
                 }
             }
 
             // 优先使用增强的 Image 检测
-            if (isImageUrl(href)) {
-                return <ImagePreview src={href} alt={String(children)} />;
+            if (isImageUrl(resolvedHref)) {
+                return <ImagePreview src={resolvedHref} alt={String(children)} />;
             }
 
-            const isVideo = MEDIA_EXTENSIONS.video.test(href);
-            const isAudio = MEDIA_EXTENSIONS.audio.test(href);
+            const isVideo = MEDIA_EXTENSIONS.video.test(resolvedHref);
+            const isAudio = MEDIA_EXTENSIONS.audio.test(resolvedHref);
             // const isImage = matches above
 
             if (isVideo) {
-                return <MediaPlayer src={href} type="video" title={String(children)} />;
+                return <MediaPlayer src={resolvedHref} type="video" title={String(children)} />;
             }
             if (isAudio) {
-                return <MediaPlayer src={href} type="audio" title={String(children)} />;
+                return <MediaPlayer src={resolvedHref} type="audio" title={String(children)} />;
             }
 
             return (
-                <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline font-medium break-all">
+                <a href={resolvedHref} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline font-medium break-all">
                     {children}
                 </a>
             );
         },
-        img: ({ src, alt }: ComponentPropsWithoutRef<'img'>) => (
-            <ImagePreview src={String(src)} alt={alt} />
-        )
+        img: ({ src, alt }: ComponentPropsWithoutRef<'img'>) => {
+            const resolvedSrc = normalizeSurfaceHref(String(src || ""));
+            if (!resolvedSrc) {
+                return null;
+            }
+            return <ImagePreview src={resolvedSrc} alt={alt} />;
+        }
     }), []);
 
     return (

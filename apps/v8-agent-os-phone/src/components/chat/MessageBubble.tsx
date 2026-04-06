@@ -3,6 +3,7 @@ import { ActivityIndicator, Image, Linking, Pressable, StyleSheet, Text, View, u
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
 
 import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
@@ -18,6 +19,10 @@ import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 
 function artifactUrl(adminBaseUrl: string, artifact: ChatArtifact) {
+    const resolved = resolveAdminResourceUrl("phone", adminBaseUrl, artifact.resourceRef || null);
+    if (resolved) {
+        return resolved;
+    }
     if (artifact.id || artifact.artifactId) {
         return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
     }
@@ -100,6 +105,7 @@ export const MessageBubble = memo(function MessageBubble({
     speakingKey = "",
     userImageUri,
     userDisplayName,
+    processes = [],
 }: {
     adminBaseUrl: string;
     message: ChatMessage;
@@ -112,6 +118,7 @@ export const MessageBubble = memo(function MessageBubble({
     speakingKey?: string;
     userImageUri?: string;
     userDisplayName?: string;
+    processes?: AdminProcessRef[];
 }) {
     const { width, height } = useWindowDimensions();
     const { colors: palette, t, themeMode, locale } = useUiPrefs();
@@ -472,6 +479,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         speakingKey={speakingKey}
                                         onSpeakVoice={onSpeakVoice}
                                         onOpenArtifact={openArtifact}
+                                        processes={processes}
                                     />
                                 ))
                             ) : fallbackBlocks.length > 0 ? (
@@ -518,10 +526,10 @@ export const MessageBubble = memo(function MessageBubble({
                                             <MaterialCommunityIcons name="file-star-outline" size={16} color={palette.primaryDeep} />
                                             <View style={styles.artifactBody}>
                                                 <Text style={[styles.artifactTitle, { color: palette.text }]} numberOfLines={1}>
-                                                    {artifact.title || artifact.kind || t("产物", "Artifact")}
+                                                    {artifact.displayLabel || artifact.title || artifact.kind || t("产物", "Artifact")}
                                                 </Text>
                                                 <Text style={[styles.artifactSubtitle, { color: palette.textMuted }]} numberOfLines={1}>
-                                                    {artifact.kind || artifact.workspacePath || artifact.sourcePath || t("点击打开", "Tap to open")}
+                                                    {artifact.displaySubtitle || artifact.kind || artifact.workspacePath || artifact.sourcePath || t("点击打开", "Tap to open")}
                                                 </Text>
                                             </View>
                                             <MaterialCommunityIcons name="open-in-new" size={15} color={palette.textSoft} />

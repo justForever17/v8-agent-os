@@ -29,6 +29,10 @@ function resolveAdminApiBaseUrl() {
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
+  transpilePackages: ["@v8/session-realtime"],
+  experimental: {
+    externalDir: true,
+  },
   async rewrites() {
     return [
       ...localApiNamespaces.map((namespace) => ({

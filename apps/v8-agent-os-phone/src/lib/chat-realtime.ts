@@ -1,36 +1,16 @@
 import type { ChatArtifact, ChatMessage, ChatStreamEvent, PendingApproval } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
+import {
+    type NormalizedSessionRuntimeEvent,
+    buildSessionStreamUiEvent,
+} from "@v8/session-realtime";
 
 type JsonRecord = Record<string, unknown>;
 
-type RuntimeEnvelope = JsonRecord & {
-    kind?: string;
-    topic?: string;
-    payload?: unknown;
-};
-
-export type PhoneRealtimeEvent = ChatStreamEvent & {
-    seq?: number;
-    session_id?: string;
-    conversation_id?: string;
-    event_id?: string;
-    ts?: string;
-    topic?: string;
+export type PhoneRealtimeEvent = NormalizedSessionRuntimeEvent & {
     artifact?: ChatArtifact;
 };
 
-function withEnvelopeFields(event: PhoneRealtimeEvent, envelope: RuntimeEnvelope): PhoneRealtimeEvent {
-    return {
-        ...event,
-        seq: typeof envelope.seq === "number" ? envelope.seq : undefined,
-        session_id: typeof envelope.session_id === "string" ? envelope.session_id : undefined,
-        conversation_id: typeof envelope.conversation_id === "string" ? envelope.conversation_id : undefined,
-        run_id: typeof envelope.run_id === "string" ? envelope.run_id : event.run_id,
-        event_id: typeof envelope.event_id === "string" ? envelope.event_id : undefined,
-        ts: typeof envelope.ts === "string" ? envelope.ts : undefined,
-        topic: typeof envelope.topic === "string" ? envelope.topic : undefined,
-    };
-}
 
 function buildArtifact(value: unknown): ChatArtifact | null {
     if (!value || typeof value !== "object") {
@@ -74,150 +54,11 @@ function buildArtifact(value: unknown): ChatArtifact | null {
     };
 }
 
-function isEnglishLocale(locale: LocaleCode = "zh-CN") {
-    return locale === "en";
-}
-
-function tr(locale: LocaleCode, zh: string, en: string) {
-    return isEnglishLocale(locale) ? en : zh;
-}
-
-function buildProgressLabel(topic: string, payload: JsonRecord, locale: LocaleCode = "zh-CN") {
-    const action = String(payload.action || payload.actionType || payload.appName || payload.expectedTitle || "").trim();
-    const index = typeof payload.index === "number" ? payload.index : undefined;
-    if (typeof payload.label === "string" && payload.label.trim()) {
-        return payload.label.trim();
-    }
-    if (topic === "computer_use.step.started") {
-        return isEnglishLocale(locale)
-            ? `Desktop Live step ${index ?? 0} started: ${action || "Running"}`
-            : `Desktop Live 第 ${index ?? 0} 步开始：${action || "处理中"}`;
-    }
-    if (topic === "computer_use.step.completed") {
-        return isEnglishLocale(locale)
-            ? `Desktop Live step ${index ?? 0} completed: ${action || "Done"}`
-            : `Desktop Live 第 ${index ?? 0} 步完成：${action || "已完成"}`;
-    }
-    if (topic === "computer_use.step.failed") {
-        return isEnglishLocale(locale)
-            ? `Desktop Live step ${index ?? 0} failed: ${action || "Failed"}`
-            : `Desktop Live 第 ${index ?? 0} 步失败：${action || "执行失败"}`;
-    }
-    if (topic === "computer_use.step.heartbeat") {
-        return isEnglishLocale(locale)
-            ? `Desktop Live running: ${action || "Processing"}`
-            : `Desktop Live 正在执行：${action || "处理中"}`;
-    }
-    if (topic === "computer_use.step.waiting_for_window") {
-        return isEnglishLocale(locale)
-            ? `Desktop Live waiting for ${action || "the target window"}`
-            : `Desktop Live 正在等待 ${action || "目标窗口"} 出现`;
-    }
-    if (topic === "computer_use.action.settle_wait_started") {
-        return tr(locale, "Desktop Live 正在等待界面稳定", "Desktop Live waiting for the UI to settle");
-    }
-    if (topic === "computer_use.action.settle_wait_completed") {
-        return tr(locale, "Desktop Live 已确认界面稳定", "Desktop Live UI settled");
-    }
-    if (topic === "computer_use.plan.started") {
-        return tr(locale, "Desktop Live 开始执行计划", "Desktop Live started the plan");
-    }
-    return "";
-}
-
 export function normalizePhoneRealtimeEvent(raw: unknown, locale: LocaleCode = "zh-CN"): PhoneRealtimeEvent | null {
-    if (!raw || typeof raw !== "object") {
-        return null;
-    }
-
-    const direct = raw as PhoneRealtimeEvent;
-    if (typeof direct.type === "string") {
-        return direct;
-    }
-
-    const envelope = raw as RuntimeEnvelope;
-    const payload = envelope.payload && typeof envelope.payload === "object" ? (envelope.payload as JsonRecord) : null;
-    if (!payload) {
-        return null;
-    }
-
-    if (typeof (payload as PhoneRealtimeEvent).type === "string") {
-        return withEnvelopeFields(payload as PhoneRealtimeEvent, envelope);
-    }
-
-    if (envelope.topic === "approval.requested") {
-        const request = (payload.request as JsonRecord | undefined) || {};
-        return withEnvelopeFields({
-            type: "custom_event",
-            name: "ask_user",
-            data: {
-                question: typeof request.question === "string"
-                    ? request.question
-                    : typeof request.prompt === "string"
-                        ? request.prompt
-                        : tr(locale, "我需要您的输入以继续执行任务。", "I need your input to continue the task."),
-                toolCallId: typeof request.toolCallId === "string"
-                    ? request.toolCallId
-                    : typeof payload.approval_id === "string"
-                        ? payload.approval_id
-                        : "",
-                approvalId: typeof payload.approval_id === "string" ? payload.approval_id : undefined,
-                approvalKind: typeof payload.approval_kind === "string" ? payload.approval_kind : undefined,
-                interactionKind: typeof request.interactionKind === "string" ? request.interactionKind : undefined,
-                request,
-            },
-        }, envelope);
-    }
-
-    if (["run.paused", "run.cancelled", "run.interrupted"].includes(String(envelope.topic || ""))) {
-        return withEnvelopeFields({
-            type: "custom_event",
-            name: "run_controlled",
-            data: {
-                topic: envelope.topic,
-                ...payload,
-            },
-        }, envelope);
-    }
-
-    if (envelope.topic === "artifact.recorded") {
-        return withEnvelopeFields({
-            type: "custom_event",
-            name: "artifact_recorded",
-            data: {
-                artifact: payload,
-            },
-            artifact: buildArtifact(payload) || undefined,
-        }, envelope);
-    }
-
-    if (typeof envelope.topic === "string" && envelope.topic.startsWith("computer_use.")) {
-        const label = buildProgressLabel(envelope.topic, payload, locale);
-        if (label) {
-            return withEnvelopeFields({
-                type: "custom_event",
-                name: "runtime_progress",
-                data: {
-                    ...payload,
-                    topic: envelope.topic,
-                    label,
-                },
-            }, envelope);
-        }
-    }
-
-    if (typeof envelope.topic === "string" && envelope.topic.trim()) {
-        return withEnvelopeFields({
-            type: "custom_event",
-            name: "runtime_event",
-            data: {
-                ...payload,
-                topic: envelope.topic,
-            },
-        }, envelope);
-    }
-
-    return null;
+    return buildSessionStreamUiEvent(raw, {
+        locale,
+        artifactResolver: (artifact, event) => buildArtifact(artifact || event.artifact || event.data?.artifact || event.data),
+    }) as PhoneRealtimeEvent | null;
 }
 
 export function buildApprovalFromEvent(event: PhoneRealtimeEvent): PendingApproval | null {

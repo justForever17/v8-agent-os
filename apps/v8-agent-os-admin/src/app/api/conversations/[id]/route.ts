@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
+import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+
+function asRecord(value: unknown) {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
 
 export async function GET(
     req: NextRequest,
@@ -24,59 +29,33 @@ export async function GET(
             cache: 'no-store'
         });
 
-        if (snapshotRes.ok) {
-            const snapshotData = await snapshotRes.json().catch(() => ({}));
-            const snapshotMessages = snapshotData?.snapshot?.messages;
-            if (Array.isArray(snapshotMessages)) {
-                return NextResponse.json(applyCanonicalSourceGroup({
-                    id,
-                    messages: snapshotMessages,
-                    latestSeq: snapshotData.latestSeq || 0,
-                    source: snapshotData.source || "runtime_snapshot",
-                    todos: snapshotData.todos || null,
-                    currentRun: snapshotData.currentRun || null,
-                    runtimeStatus: snapshotData.runtimeStatus || null,
-                    workflow: snapshotData.workflow || null,
-                    workflowProjection: snapshotData.workflowProjection || null,
-                    approvals: Array.isArray(snapshotData.approvals) ? snapshotData.approvals : [],
-                    controls: snapshotData.controls || null,
-                    recoverable: snapshotData.recoverable || null,
-                    summary: snapshotData.summary || null,
-                    projection: snapshotData,
-                }));
-            }
-        }
-
-        // Fallback to durable detail projection if runtime snapshot is unavailable.
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}/messages`, {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store'
-        });
-
-        if (!res.ok) {
-            console.error("Failed to fetch session messages from Python engine:", await res.text());
+        if (!snapshotRes.ok) {
+            console.error("Failed to fetch session snapshot from Python engine:", await snapshotRes.text());
             return NextResponse.json({ error: "Failed to fetch from engine" }, { status: 500 });
         }
 
-        const data = await res.json();
-        const messages = data.messages || [];
+        const snapshotData = normalizeSnapshotForRealtimeSurface(await snapshotRes.json().catch(() => ({}))) as Record<string, unknown>;
+        const snapshotMessages = Array.isArray(asRecord(snapshotData.snapshot).messages)
+            ? asRecord(snapshotData.snapshot).messages
+            : Array.isArray(snapshotData.messages)
+                ? snapshotData.messages
+                : [];
 
         return NextResponse.json(applyCanonicalSourceGroup({
             id,
-            messages,
-            latestSeq: data.latestSeq || 0,
-            source: data.source || "durable_detail_projection",
-            todos: data.todos || null,
-            currentRun: data.currentRun || null,
-            runtimeStatus: data.runtimeStatus || null,
-            workflow: data.workflow || null,
-            workflowProjection: data.workflowProjection || null,
-            approvals: Array.isArray(data.approvals) ? data.approvals : [],
-            controls: data.controls || null,
-            recoverable: data.recoverable || null,
-            summary: data.summary || null,
-            projection: data,
+            messages: snapshotMessages,
+            latestSeq: snapshotData.latestSeq || 0,
+            source: snapshotData.source || "runtime_snapshot",
+            todos: snapshotData.todos || null,
+            currentRun: snapshotData.currentRun || null,
+            runtimeStatus: snapshotData.runtimeStatus || null,
+            workflow: snapshotData.workflow || null,
+            workflowProjection: snapshotData.workflowProjection || null,
+            approvals: Array.isArray(snapshotData.approvals) ? snapshotData.approvals : [],
+            controls: snapshotData.controls || null,
+            recoverable: snapshotData.recoverable || null,
+            summary: snapshotData.summary || null,
+            projection: snapshotData,
         }));
     } catch (error) {
         console.error("Error communicating with Python engine:", error);

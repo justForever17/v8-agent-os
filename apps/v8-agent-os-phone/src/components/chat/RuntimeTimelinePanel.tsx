@@ -21,6 +21,7 @@ import {
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
+import type { AdminProcessRef } from "@v8/session-realtime";
 
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
     switch (kind) {
@@ -56,8 +57,10 @@ function getKindIconName(kind: PhoneRuntimeStageActivity["kind"]): React.Compone
 
 function ActivityFeedItem({
     activity,
+    processes,
 }: {
     activity: PhoneRuntimeStageActivity;
+    processes: AdminProcessRef[];
 }) {
     const { colors, locale } = useUiPrefs();
     const tone = getKindTone(activity.kind, colors);
@@ -92,7 +95,7 @@ function ActivityFeedItem({
             <Text style={[styles.feedSummary, { color: colors.text }]}>{activity.summary}</Text>
 
             <View style={[styles.feedBody, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <ContentDispatcher node={activity.node} />
+                <ContentDispatcher node={activity.node} processes={processes} />
             </View>
         </View>
     );
@@ -104,6 +107,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     selectedRuntimeId,
     selectedRuntimeDockItem,
     activities,
+    processes,
     currentRunLabel,
     currentStepTitle,
     onClose,
@@ -114,6 +118,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     selectedRuntimeId: PhoneRuntimeId | null;
     selectedRuntimeDockItem?: PhoneRuntimeStageCard;
     activities: PhoneRuntimeStageActivity[];
+    processes: AdminProcessRef[];
     currentRunLabel: string;
     currentStepTitle?: string | null;
     onClose: () => void;
@@ -175,8 +180,8 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     }, [activities.length, effectiveSelectedRuntimeId, resetScrollTop, visible]);
 
     const renderActivityItem = useCallback(
-        ({ item }: { item: PhoneRuntimeStageActivity }) => <ActivityFeedItem activity={item} />,
-        [],
+        ({ item }: { item: PhoneRuntimeStageActivity }) => <ActivityFeedItem activity={item} processes={processes} />,
+        [processes],
     );
     const renderEmptyState = useCallback(
         () => (

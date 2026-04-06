@@ -4,6 +4,101 @@
 
 *(注：系统功能高度迭代中，此文档用作快速参考和机制引导。遇到具体的参数结构或路径冲突，请务必以 `apps/v8-agent-os-engine/api/` 目录下的实际实现源码为唯一准则)*
 
+## 0. 当前 API 真相与边界
+
+当前系统已经进入 `Govern` 收口阶段，不能再按“页面自己猜 detail / summary / status”的旧思路理解接口。
+
+固定原则：
+
+1. `engine` 是实时态与历史态的唯一 authoritative producer
+2. `admin` 是唯一远端 broker，负责把 engine 数据规范化后提供给 `web/phone`
+3. `web/phone` 默认远端，不允许假设与 `engine` 同机，也不允许假设与 `admin` 同源
+4. `snapshot` 是当前会话唯一 authoritative realtime state
+5. history 统一走 **事件账本 + 物化汇总**
+
+### 0.1 当前会话实时 contract
+
+当前会话 realtime 只允许存在四类 broker 事件：
+
+1. `snapshot`
+   - 当前会话唯一 authoritative source
+2. `runtime`
+   - 标准化的 side-channel
+3. `heartbeat`
+4. `error`
+
+`snapshot` 至少稳定包含：
+
+1. `session`
+2. `currentRun`
+3. `latestSeq`
+4. `messages`
+5. `runtimeTimeline`
+6. `approvals`
+7. `controls`
+8. `recoverable`
+9. `artifacts`
+10. `todos`
+11. `workflowProjection`
+12. `summary`
+13. `processes`
+14. `contextReferences`
+15. `contextGovernance`
+
+### 0.2 当前历史记录 contract
+
+历史记录层固定为两层：
+
+1. **History Ledger**
+   - 标准化事件账本
+2. **History Materialized Summary**
+   - 会话列表和历史详情的直接消费视图
+
+物化汇总至少包含：
+
+1. `sessionId`
+2. `sourceGroup`
+3. `runtimeOwner`
+4. `startedAt`
+5. `lastActivityAt`
+6. `endedAt`
+7. `status`
+8. `currentRunId / lastRunId`
+9. `title`
+10. `previewExcerpt`
+11. `lastNarrativeExcerpt`
+12. `lastRuntimeSummary`
+13. `pendingApprovalCount`
+14. `recoverable`
+15. `scopeTags`
+16. `workflowSummary`
+
+账本条目至少包含：
+
+1. `eventId`
+2. `seq`
+3. `sessionId`
+4. `runId`
+5. `ts`
+6. `runtimeFamily`
+7. `eventName`
+8. `scope`
+9. `visibility`
+10. `targets`
+11. `messageRef / toolCallId / processRef / resourceRef`
+12. `payload`
+
+### 0.3 当前排除项
+
+以下内容不进入当前会话 realtime CDC：
+
+1. `memory`
+   - 底层保障 runtime
+2. `desktop_live`
+   - 手工驱动通讯
+3. `plugin_host_channel / channels`
+   - 归历史层
+
 ## 1. 核心通讯协议划分
 
 ### 1.1 HTTP / REST API

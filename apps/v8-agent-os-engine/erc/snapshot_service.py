@@ -17,6 +17,8 @@ from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
 from erc.session_realtime_contract import (
     augment_workflow_projection,
+    build_context_references,
+    build_processes_snapshot,
     resolve_authoritative_session_runtime_state,
 )
 from erc.session_admission_service import session_admission_service
@@ -129,6 +131,8 @@ class SnapshotService:
                     "controls": controls,
                     "recoverable": build_recoverable_view(workflow_view, controls),
                     "todos": todos,
+                    "processes": [],
+                    "contextReferences": [],
                     "currentRun": current_run,
                     "runtimeStatus": runtime_status,
                     "summary": build_projection_summary(
@@ -167,6 +171,8 @@ class SnapshotService:
                 "controls": controls,
                 "recoverable": build_recoverable_view(workflow_view, controls),
                 "todos": todos,
+                "processes": build_processes_snapshot(snapshot=snapshot, run_id=session_runtime.current_run_id),
+                "contextReferences": build_context_references(snapshot),
                 "currentRun": current_run,
                 "runtimeStatus": runtime_status,
                 "summary": build_projection_summary(
@@ -204,6 +210,8 @@ class SnapshotService:
             "controls": controls,
             "recoverable": build_recoverable_view(workflow_view, controls),
             "todos": todos,
+            "processes": build_processes_snapshot(snapshot=snapshot, run_id=session_runtime.current_run_id),
+            "contextReferences": build_context_references(snapshot),
             "currentRun": current_run,
             "runtimeStatus": runtime_status,
             "summary": build_projection_summary(

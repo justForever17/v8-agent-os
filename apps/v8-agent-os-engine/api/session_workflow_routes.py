@@ -25,12 +25,15 @@ from erc.session_realtime_contract import (
     augment_workflow_projection,
     resolve_authoritative_session_runtime_state,
 )
+from erc.session_history_contract import (
+    build_session_history_detail,
+    build_session_history_materialized_record,
+)
 from erc.session_admission_service import session_admission_service
 from erc.snapshot_service import snapshot_service
 from erc.runtime_stability import runtime_stability_service
 from erc.workflow_ledger import workflow_ledger_service
 from erc.workflow_projection import workflow_projection_service
-from core.storage import storage
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
@@ -197,29 +200,16 @@ async def get_sessions():
                 db.list_pending_approvals(session_id=row["id"], status="pending")
             )
             controls = build_projection_controls(workflow_view, approvals)
-            summary = build_projection_summary(
-                session=row,
-                snapshot=None,
-                workflow=workflow_view,
-                approvals=approvals,
-                latest_seq=0,
-                source=session_source,
-            )
             sessions.append(
-                {
-                    **row,
-                    **summary,
-                    "workflow": workflow_view,
-                    "approvals": approvals,
-                    "controls": controls,
-                    "recoverableView": build_recoverable_view(workflow_view, controls),
-                    "lane": session_admission_service.get_lane_view(row["id"]),
-                    "recoveryClass": derive_recovery_class(
-                        run_record,
-                        workflow_view=workflow_view,
-                    ),
-                    "source": session_source,
-                }
+                build_session_history_materialized_record(
+                    session_row={**row, "controls": controls},
+                    workflow_view=workflow_view,
+                    approvals=approvals,
+                    snapshot=None,
+                    latest_seq=0,
+                    source=session_source,
+                    run_record=run_record,
+                )
             )
         return {"sessions": sessions}
     except Exception as e:
@@ -249,7 +239,19 @@ async def create_session(data: dict = Body(...)):
                 scope_mode=data.get("scopeMode", "mixed"),
             )
         session = db.get_session(session_id)
-        return session
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        approvals: list[dict] = []
+        controls = build_projection_controls(workflow_view, approvals)
+        session_source = _derive_session_source(session or {"id": session_id, "metadata": {}}, None)
+        return build_session_history_materialized_record(
+            session_row={**(session or {}), "controls": controls},
+            workflow_view=workflow_view,
+            approvals=approvals,
+            snapshot=None,
+            latest_seq=0,
+            source=session_source,
+            run_record=None,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -308,20 +310,6 @@ async def get_session_messages(session_id: str):
         import traceback
 
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/sessions/{session_id}/todos")
-async def get_session_todos(session_id: str, run_id: Optional[str] = Query(default=None)):
-    try:
-        snapshot = storage.get_active_todo_snapshot(session_id=session_id, run_id=run_id)
-        return {
-            "sessionId": session_id,
-            "runId": run_id,
-            "todo": snapshot,
-            "source": "storage_snapshot" if snapshot else "empty",
-        }
-    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -526,6 +514,41 @@ async def get_runtime_artifact_content(artifact_id: str):
 async def get_session_snapshot(session_id: str):
     try:
         return runtime_command_router.get_snapshot(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}/history")
+async def get_session_history(session_id: str):
+    try:
+        session_row = db.get_session(session_id)
+        if session_row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        runtime_events = db.get_runtime_events(session_id)
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        approvals = project_pending_approvals(
+            db.list_pending_approvals(session_id=session_id, status="pending")
+        )
+        controls = build_projection_controls(workflow_view, approvals)
+        snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
+        snapshot = snapshot_payload.get("snapshot")
+        latest_seq = int(snapshot_payload.get("latestSeq") or 0)
+        root_run_id = str(workflow_view.get("rootRunId") or "").strip()
+        run_record = db.get_run_record(root_run_id) if root_run_id else None
+        session_source = _derive_session_source(session_row, run_record)
+        return build_session_history_detail(
+            session_row={**session_row, "controls": controls},
+            workflow_view=workflow_view,
+            approvals=approvals,
+            snapshot=snapshot,
+            latest_seq=latest_seq,
+            source=session_source,
+            runtime_events=runtime_events,
+            run_record=run_record,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

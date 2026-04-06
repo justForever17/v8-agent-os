@@ -1,70 +1,33 @@
 import { memo, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import type { AdminProcessRef } from "@v8/session-realtime";
 
 import { InteractiveTerminalCard } from "@/src/components/chat/InteractiveTerminalCard";
 import { Card, CardContent } from "@/src/components/ui/card";
-import { extractCommandSessionPayload, isCommandSessionTool } from "@/src/lib/chat/command-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ChatMessage } from "@/src/types/admin";
 
 type ProcessesHUDProps = {
-    messages: ChatMessage[];
+    processes: AdminProcessRef[];
 };
 
-function useProcessesState(messages: ChatMessage[]) {
-    return useMemo(() => {
-        const commandIds: string[] = [];
-        const extractId = (text: unknown) => {
-            if (typeof text !== "string") return null;
-            const match = text.match(/ID:\s*([a-f0-9-]+)/i);
-            return match ? match[1] : null;
-        };
-
-        for (const message of messages) {
-            if (message.role !== "assistant") continue;
-            const nodes = Array.isArray(message.nodes) ? message.nodes : [];
-            const bgToolCallIds = new Set<string>();
-
-            for (const node of nodes) {
-                if (node.kind !== "execution" || node.executionType !== "tool_call") continue;
-                const toolName = node.toolName || node.data?.toolName || node.data?.tool_name;
-                if (!isCommandSessionTool(toolName)) continue;
-
-                const commandId = extractCommandSessionPayload(node.result)?.commandId || extractId(node.result);
-                if (commandId && !commandIds.includes(commandId)) {
-                    commandIds.push(commandId);
-                }
-                if (node.toolCallId) {
-                    bgToolCallIds.add(node.toolCallId);
-                }
-            }
-
-            for (const node of nodes) {
-                if (node.kind !== "execution" || node.executionType !== "tool_result" || !node.toolCallId || !bgToolCallIds.has(node.toolCallId)) {
-                    continue;
-                }
-                const commandId = extractCommandSessionPayload(node.result)?.commandId || extractId(node.result);
-                if (commandId && !commandIds.includes(commandId)) {
-                    commandIds.push(commandId);
-                }
-            }
-        }
-
-        return commandIds;
-    }, [messages]);
+function isActiveProcess(process: AdminProcessRef) {
+    const status = String(process.status || "").trim().toLowerCase();
+    return status !== "stopped" && status !== "terminated" && status !== "completed" && status !== "failed";
 }
 
-export const ProcessesHUD = memo(function ProcessesHUD({ messages }: ProcessesHUDProps) {
+export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesHUDProps) {
     const { colors, themeMode, t } = useUiPrefs();
     const [terminatedIds, setTerminatedIds] = useState<Set<string>>(new Set());
     const [isCollapsed, setIsCollapsed] = useState(false);
     const progress = useRef(new Animated.Value(0)).current;
-    const allCommandIds = useProcessesState(messages);
-    const activeIds = allCommandIds.filter((id) => !terminatedIds.has(id));
+    const activeProcesses = useMemo(
+        () => processes.filter((process) => isActiveProcess(process) && !terminatedIds.has(process.processId)),
+        [processes, terminatedIds],
+    );
 
-    if (activeIds.length === 0) {
+    if (activeProcesses.length === 0) {
         return null;
     }
 
@@ -113,7 +76,7 @@ export const ProcessesHUD = memo(function ProcessesHUD({ messages }: ProcessesHU
                         <View style={styles.counterDotWrap}>
                             <View style={styles.counterDot} />
                         </View>
-                        <Text style={[styles.counterText, { color: colors.textMuted }]}>{activeIds.length}</Text>
+                        <Text style={[styles.counterText, { color: colors.textMuted }]}>{activeProcesses.length}</Text>
                     </View>
                 </View>
                 <Animated.View style={{ transform: [{ rotate: rotation }] }}>
@@ -124,15 +87,15 @@ export const ProcessesHUD = memo(function ProcessesHUD({ messages }: ProcessesHU
             {!isCollapsed ? (
                 <CardContent style={styles.content}>
                     <ScrollView nestedScrollEnabled style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
-                        {activeIds.map((commandId) => (
+                        {activeProcesses.map((process) => (
                             <InteractiveTerminalCard
-                                key={commandId}
-                                commandId={commandId}
+                                key={process.processId}
+                                process={process}
                                 compact
-                                onTerminated={(cmdId) => {
+                                onTerminated={(processId) => {
                                     setTerminatedIds((current) => {
                                         const next = new Set(current);
-                                        next.add(cmdId);
+                                        next.add(processId);
                                         return next;
                                     });
                                 }}

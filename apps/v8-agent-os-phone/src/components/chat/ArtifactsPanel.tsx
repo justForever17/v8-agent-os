@@ -13,6 +13,7 @@ import {
 import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { resolveAdminResourceUrl } from "@v8/session-realtime";
 
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
@@ -45,6 +46,10 @@ function inferArtifactKind(artifact: ArtifactDetail) {
 }
 
 function resolveArtifactPreviewUrl(adminBaseUrl: string, artifact: ArtifactDetail) {
+    const resolved = resolveAdminResourceUrl("phone", adminBaseUrl, artifact.resourceRef || null);
+    if (resolved) {
+        return resolved;
+    }
     if (artifact.id || artifact.artifactId) {
         return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
     }

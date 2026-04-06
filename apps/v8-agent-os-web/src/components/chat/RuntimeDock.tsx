@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import type { ElementType } from "react";
 import { cn } from "@/lib/utils";
 import { RuntimeId, RuntimeStageModel } from "@/lib/runtime-stage";
-import { Blocks, Bot, Cpu, Database, RadioTower, TerminalSquare, Workflow } from "lucide-react";
+import { Blocks, Bot, Cpu, Database, Globe, RadioTower, TerminalSquare, Workflow } from "lucide-react";
 
 interface RuntimeDockProps {
     model: RuntimeStageModel;
@@ -18,9 +18,12 @@ const runtimeIcons: Record<RuntimeId, ElementType<{ className?: string }>> = {
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
-    plugin_host: RadioTower,
+    network_supervisor: Globe,
+    plugin_host_tool: RadioTower,
+    plugin_host_channel: RadioTower,
     computer_use: TerminalSquare,
     rpa: Cpu,
+    desktop_live: RadioTower,
 };
 
 const statusStyles = {

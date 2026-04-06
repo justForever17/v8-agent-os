@@ -13,11 +13,19 @@ function resolveEngineOrigin() {
 
 const nextConfig: NextConfig = {
   /* config options here */
+  transpilePackages: ["@v8/session-realtime"],
+  experimental: {
+    externalDir: true,
+  },
   async rewrites() {
     return [
       // Proxy background process endpoints (REST + WebSocket) to Engine
       {
         source: '/api/bg_processes/:path*',
+        destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
+      },
+      {
+        source: '/api/client/bg_processes/:path*',
         destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
       },
     ];

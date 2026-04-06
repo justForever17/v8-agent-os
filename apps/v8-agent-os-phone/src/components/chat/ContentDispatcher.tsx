@@ -1,14 +1,13 @@
 import { memo, useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import type { AdminProcessRef } from "@v8/session-realtime";
 
 import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
 import { InteractiveTerminalCard } from "@/src/components/chat/InteractiveTerminalCard";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
 import {
-    extractCommandSessionPayload,
     isBackgroundCommandTraceTool,
-    isCommandSessionTool,
 } from "@/src/lib/chat/command-session";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks, type PhoneContentBlock } from "@/src/lib/content-detector";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -51,6 +50,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     speakingKey,
     onSpeakVoice,
     onOpenArtifact,
+    processes = [],
 }: {
     node: PhoneUiTimelineNode;
     messageIdentity?: string;
@@ -59,6 +59,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     speakingKey?: string;
     onSpeakVoice?: (text: string, messageKey: string) => void;
     onOpenArtifact?: (artifact: ChatArtifact) => void;
+    processes?: AdminProcessRef[];
 }) {
     const { colors, t } = useUiPrefs();
     const narrativeBlocks = useMemo(
@@ -68,13 +69,15 @@ export const ContentDispatcher = memo(function ContentDispatcher({
 
     const renderExecutionTool = (executionNode: PhoneUiExecutionNode) => {
         const toolInvocation = buildToolInvocation(executionNode, t("工具调用", "Tool call"));
-        const commandSession = extractCommandSessionPayload(toolInvocation.result);
+        const matchedProcess = toolInvocation.toolCallId
+            ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)
+            : undefined;
 
-        if (commandSession?.commandId && (isCommandSessionTool(toolInvocation.toolName) || toolInvocation.state === "result")) {
+        if (matchedProcess) {
             return (
                 <View style={styles.stack}>
                     <ToolCard toolInvocation={toolInvocation} hideResult />
-                    <InteractiveTerminalCard commandId={commandSession.commandId} compact />
+                    <InteractiveTerminalCard process={matchedProcess} compact />
                 </View>
             );
         }

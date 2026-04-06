@@ -1,6 +1,7 @@
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import type { ArtifactDetail, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
+import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageActivity, PhoneRuntimeStageCard, PhoneRuntimeTimelineEntry } from "@/src/lib/runtime-stage";
 import { buildPhoneRuntimeStageModel } from "@/src/lib/runtime-stage";
@@ -42,6 +43,8 @@ export type PhoneChatProjection = {
     artifactCount: number;
     artifacts: ArtifactDetail[];
     todos: SessionTodoItem[];
+    processes: AdminProcessRef[];
+    contextReferences: ContextReferenceItem[];
     sidebarGroups: Record<"channels" | "cron" | "hooks" | "web", ConversationSummary[]>;
     runControlState: {
         runId?: string;
@@ -190,6 +193,8 @@ export function buildPhoneChatProjection({
     approvals,
     todos,
     artifacts,
+    processes,
+    contextReferences,
     runtime,
     runtimeTimeline,
     selectedRuntimeId,
@@ -202,6 +207,8 @@ export function buildPhoneChatProjection({
     approvals: PendingApproval[];
     todos: SessionTodoItem[];
     artifacts: ArtifactDetail[];
+    processes: AdminProcessRef[];
+    contextReferences: ContextReferenceItem[];
     runtime: RuntimeSummary;
     runtimeTimeline: PhoneRuntimeTimelineEntry[];
     selectedRuntimeId: PhoneRuntimeId;
@@ -247,6 +254,8 @@ export function buildPhoneChatProjection({
         artifactCount: artifacts.length,
         artifacts,
         todos,
+        processes,
+        contextReferences,
         sidebarGroups: groupSidebarConversations(conversations),
         runControlState: {
             runId: runtime.runId,

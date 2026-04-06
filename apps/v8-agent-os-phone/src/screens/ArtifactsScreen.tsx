@@ -12,6 +12,7 @@ import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { resolveAdminResourceUrl } from "@v8/session-realtime";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
@@ -92,7 +93,9 @@ export default function ArtifactsScreen() {
         if (!selectedArtifact) return;
         setOpening(true);
         try {
-            const directUrl = selectedArtifact.externalUrl || selectedArtifact.previewUrl;
+            const directUrl = resolveAdminResourceUrl("phone", adminBaseUrl, selectedArtifact.resourceRef || null)
+                || selectedArtifact.externalUrl
+                || selectedArtifact.previewUrl;
             if (directUrl) {
                 await Linking.openURL(normalizeRenderableWorkspaceUrl(adminBaseUrl, directUrl));
                 return;

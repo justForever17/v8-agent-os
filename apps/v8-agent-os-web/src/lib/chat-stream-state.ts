@@ -1,12 +1,18 @@
 import { Message, UiTimelineNode, UiNarrativeNode, UiExecutionNode, UiGovernanceNode, UiArtifactNode } from '@/store/chat-types';
 import { RuntimeArtifact, normalizeRuntimeArtifact, normalizeRuntimeArtifacts } from '@/lib/artifacts';
 import { createClientId } from '@/lib/id';
+import {
+    applyRealtimeEventToMessages as applySharedRealtimeEventToMessages,
+    buildAssistantMessage as buildSharedAssistantMessage,
+    deriveRealtimeStreamState as deriveSharedRealtimeStreamState,
+    type SessionAgentProfile,
+    type SessionStreamArtifact,
+    type SessionStreamUiEvent,
+    type SessionStreamLifecycleOptions,
+    type SessionStreamMessage,
+} from '@v8/session-realtime';
 
-export type AgentProfile = {
-    agentName?: string;
-    agentAvatar?: string;
-    agentRoleLabel?: string;
-};
+export type AgentProfile = SessionAgentProfile;
 
 type ProjectedPartType = 'text' | 'reasoning' | 'tool_call' | 'tool_result' | 'agent_start';
 
@@ -39,24 +45,7 @@ type ProjectedMessageRecord = {
     metadata?: unknown;
 };
 
-export type RealtimeUiEvent = {
-    type: string;
-    name?: string;
-    data?: Record<string, unknown>;
-    run_id?: string;
-    content?: string;
-    agent?: {
-        id?: string;
-        name?: string;
-        avatar?: string;
-        roleLabel?: string;
-    };
-    tool?: {
-        toolCallId?: string;
-        toolName?: string;
-        args?: unknown;
-        result?: unknown;
-    };
+export type RealtimeUiEvent = SessionStreamUiEvent & {
     artifact?: RuntimeArtifact;
 };
 
@@ -90,6 +79,45 @@ function resolveAgentAvatar(value: unknown): string | undefined {
     return avatar;
 }
 
+export const WEB_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
+    createId: createClientId,
+    defaultAgentProfile: {
+        agentName: '智能主管',
+        agentAvatar: DEFAULT_AVATAR,
+        agentRoleLabel: '主理人',
+    },
+    resolveAgentProfile: (event, fallback, defaultAgentProfile) => {
+        const eventData = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
+        const nestedAgent = eventData.agent && typeof eventData.agent === 'object' ? eventData.agent as Record<string, unknown> : {};
+        return {
+            agentName: event.agent?.name
+                || (typeof eventData.agentName === 'string' ? eventData.agentName : '')
+                || (typeof nestedAgent.name === 'string' ? nestedAgent.name : '')
+                || fallback.agentName
+                || defaultAgentProfile.agentName,
+            agentAvatar: resolveAgentAvatar(
+                event.agent?.avatar
+                || (typeof eventData.agentAvatar === 'string' ? eventData.agentAvatar : '')
+                || (typeof nestedAgent.avatar === 'string' ? nestedAgent.avatar : '')
+                || fallback.agentAvatar
+                || defaultAgentProfile.agentAvatar,
+            ) || DEFAULT_AVATAR,
+            agentRoleLabel: event.agent?.roleLabel
+                || (typeof eventData.agentRoleLabel === 'string' ? eventData.agentRoleLabel : '')
+                || (typeof nestedAgent.roleLabel === 'string' ? nestedAgent.roleLabel : '')
+                || fallback.agentRoleLabel
+                || defaultAgentProfile.agentRoleLabel,
+        };
+    },
+    resolveArtifact: (event) => {
+        const artifact = normalizeRuntimeArtifact(
+            event.artifact
+            || (event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>).artifact : undefined),
+        );
+        return artifact ? ({ ...artifact } as SessionStreamArtifact) : null;
+    },
+};
+
 export function cloneMessages(messages: Message[]): Message[] {
     return messages.map((message) => ({
         ...message,
@@ -103,17 +131,15 @@ export function cloneMessages(messages: Message[]): Message[] {
 }
 
 export function buildAssistantMessage(activeAgentProfile: AgentProfile): Message {
-    return {
-        id: createClientId('message'),
-        role: 'assistant',
-        content: '',
-        nodes: [],
-        artifacts: [],
-        agentName: activeAgentProfile.agentName || '智能主管',
-        agentAvatar: resolveAgentAvatar(activeAgentProfile.agentAvatar) || DEFAULT_AVATAR,
-        agentRoleLabel: activeAgentProfile.agentRoleLabel || '主理人',
-        timestamp: Date.now(),
-    };
+    return buildSharedAssistantMessage(
+        {
+            ...activeAgentProfile,
+            agentAvatar: resolveAgentAvatar(activeAgentProfile.agentAvatar) || DEFAULT_AVATAR,
+        },
+        undefined,
+        'placeholder',
+        WEB_STREAM_LIFECYCLE_OPTIONS,
+    ) as Message;
 }
 
 function hashMessageContent(value: string): string {
@@ -379,38 +405,15 @@ export function deriveRealtimeStreamState(messages: Message[]): {
     currentAiMsg: Message | undefined;
     activeAgentProfile: AgentProfile;
 } {
-    const lastAssistant = [...messages].reverse().find((msg) => msg.role === 'assistant');
-    if (!lastAssistant) {
-        return {
-            currentAiMsg: undefined,
-            activeAgentProfile: {},
-        };
-    }
-
-    const lastAgentNode = [...(lastAssistant.nodes || [])]
-        .reverse()
-        .find((node) => node.agentName || node.agentAvatar || node.agentRoleLabel);
-
+    const state = deriveSharedRealtimeStreamState(messages as unknown as SessionStreamMessage[], WEB_STREAM_LIFECYCLE_OPTIONS);
     return {
-        currentAiMsg: lastAssistant,
+        currentAiMsg: state.currentAiMsg as Message | undefined,
         activeAgentProfile: {
-            agentName: lastAgentNode?.agentName || lastAssistant.agentName,
-            agentAvatar: resolveAgentAvatar(lastAgentNode?.agentAvatar) || resolveAgentAvatar(lastAssistant.agentAvatar),
-            agentRoleLabel: lastAgentNode?.agentRoleLabel || lastAssistant.agentRoleLabel,
+            agentName: state.activeAgentProfile.agentName,
+            agentAvatar: resolveAgentAvatar(state.activeAgentProfile.agentAvatar) || DEFAULT_AVATAR,
+            agentRoleLabel: state.activeAgentProfile.agentRoleLabel,
         },
     };
-}
-
-function upsertCurrentAiMessage(localMessages: Message[], currentAiMsg: Message) {
-    const updatedAiMsg: Message = {
-        ...currentAiMsg,
-        nodes: [...currentAiMsg.nodes],
-    };
-    const lastIdx = localMessages.findIndex((message) => message.id === updatedAiMsg.id);
-    if (lastIdx >= 0) {
-        localMessages[lastIdx] = updatedAiMsg;
-    }
-    return updatedAiMsg;
 }
 
 export function applyRealtimeEventToMessages(
@@ -419,209 +422,20 @@ export function applyRealtimeEventToMessages(
     currentAiMsg: Message | undefined,
     activeAgentProfile: AgentProfile,
 ) {
-    let nextCurrentAiMsg = currentAiMsg;
-    let nextActiveAgentProfile = activeAgentProfile;
-
-    const ensureCurrentAiMsg = () => {
-        if (!nextCurrentAiMsg) {
-            const newMsg = buildAssistantMessage(nextActiveAgentProfile);
-            localMessages.push(newMsg);
-            nextCurrentAiMsg = newMsg;
-        }
-        if (!nextCurrentAiMsg.nodes) {
-            nextCurrentAiMsg.nodes = [];
-        }
-        if (event.run_id && nextCurrentAiMsg) {
-            nextCurrentAiMsg.runId = event.run_id;
-        }
-    };
-
-    if (event.type === 'agent_start') {
-        nextActiveAgentProfile = {
-            agentName: event.agent?.name,
-            agentAvatar: resolveAgentAvatar(event.agent?.avatar) || DEFAULT_AVATAR,
-            agentRoleLabel: event.agent?.roleLabel,
-        };
-        ensureCurrentAiMsg();
-
-        if (nextActiveAgentProfile.agentName === '智能主管' || nextActiveAgentProfile.agentRoleLabel === '主理人') {
-            nextCurrentAiMsg!.agentName = nextActiveAgentProfile.agentName;
-            nextCurrentAiMsg!.agentAvatar = nextActiveAgentProfile.agentAvatar;
-            nextCurrentAiMsg!.agentRoleLabel = nextActiveAgentProfile.agentRoleLabel;
-        }
-
-        nextCurrentAiMsg!.nodes.push({
-            id: createClientId('node'),
-            kind: 'execution',
-            executionType: 'agent_start',
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile,
-        } as UiExecutionNode);
-    } else if (event.type === 'text_chunk') {
-        ensureCurrentAiMsg();
-
-        const isSupervisor = (
-            nextActiveAgentProfile.agentName === '智能主管'
-            || nextActiveAgentProfile.agentRoleLabel === '主理人'
-        );
-        const lastNode = nextCurrentAiMsg!.nodes[nextCurrentAiMsg!.nodes.length - 1] as UiNarrativeNode | undefined;
-        if (lastNode && lastNode.kind === 'narrative' && lastNode.agentName === nextActiveAgentProfile.agentName) {
-            lastNode.content = `${lastNode.content || ''}${event.content || ''}`;
-        } else {
-            nextCurrentAiMsg!.nodes.push({
-                id: createClientId('node'),
-                kind: 'narrative',
-                role: 'assistant',
-                content: event.content || '',
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } as UiNarrativeNode);
-        }
-
-        if (isSupervisor) {
-            nextCurrentAiMsg!.content += event.content || '';
-        }
-    } else if (event.type === 'reasoning_chunk') {
-        ensureCurrentAiMsg();
-        const lastNode = nextCurrentAiMsg!.nodes[nextCurrentAiMsg!.nodes.length - 1] as UiExecutionNode | undefined;
-        if (
-            lastNode
-            && lastNode.kind === 'execution'
-            && lastNode.executionType === 'reasoning'
-            && lastNode.agentName === nextActiveAgentProfile.agentName
-            && !lastNode.time
-        ) {
-            lastNode.content = `${lastNode.content || ''}${event.content || ''}`;
-        } else {
-            nextCurrentAiMsg!.nodes.push({
-                id: createClientId('node'),
-                kind: 'execution',
-                executionType: 'reasoning',
-                content: event.content || '',
-                time: 0,
-                startTime: Date.now(),
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } as UiExecutionNode);
-        }
-    } else if (event.type === 'tool_start') {
-        ensureCurrentAiMsg();
-        nextCurrentAiMsg!.nodes.push({
-            id: createClientId('node'),
-            kind: 'execution',
-            executionType: 'tool_call',
-            toolCallId: event.tool?.toolCallId,
-            toolName: event.tool?.toolName,
-            args: event.tool?.args,
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile,
-        } as UiExecutionNode);
-    } else if (event.type === 'tool_result') {
-        ensureCurrentAiMsg();
-        // Try to update existing tool_call node if present
-        const toolCallNode = nextCurrentAiMsg!.nodes.find(n => n.kind === 'execution' && n.executionType === 'tool_call' && n.toolCallId === event.tool?.toolCallId) as UiExecutionNode | undefined;
-        
-        if (toolCallNode) {
-            toolCallNode.result = event.tool?.result;
-        } else {
-            nextCurrentAiMsg!.nodes.push({
-                id: createClientId('node'),
-                kind: 'execution',
-                executionType: 'tool_result',
-                toolCallId: event.tool?.toolCallId,
-                result: event.tool?.result,
-                timestamp: Date.now(),
-                ...nextActiveAgentProfile,
-            } as UiExecutionNode);
-        }
-    } else if (event.type === 'custom_event' && event.name === 'artifact_recorded') {
-        ensureCurrentAiMsg();
-        const normalizedArtifact = event.artifact || normalizeRuntimeArtifact(event.data?.artifact);
-        if (normalizedArtifact) {
-            const existingArtifacts = nextCurrentAiMsg!.artifacts || [];
-            if (!existingArtifacts.some((artifact) => artifact.id === normalizedArtifact.id)) {
-                nextCurrentAiMsg!.artifacts = [...existingArtifacts, normalizedArtifact];
-                nextCurrentAiMsg!.nodes.push({
-                    id: createClientId('node'),
-                    kind: 'artifact',
-                    artifact: normalizedArtifact,
-                    timestamp: Date.now(),
-                    ...nextActiveAgentProfile,
-                } as UiArtifactNode);
-            }
-        }
-    } else if (event.type === 'custom_event' && event.name === 'runtime_progress') {
-        ensureCurrentAiMsg();
-        const label = typeof event.data?.label === 'string' ? event.data.label : '';
-        if (label) {
-            const topic = typeof event.data?.topic === 'string' ? event.data.topic : 'runtime';
-            const lastNode = nextCurrentAiMsg!.nodes[nextCurrentAiMsg!.nodes.length - 1] as UiExecutionNode | undefined;
-            const canCoalesce =
-                topic === 'computer_use.step.heartbeat'
-                || topic === 'computer_use.step.waiting_for_window'
-                || topic === 'computer_use.action.settle_wait_started';
-                
-            if (lastNode && lastNode.kind === 'execution' && lastNode.executionType === 'runtime_progress' && lastNode.label === label) {
-                // no-op
-            } else if (
-                canCoalesce
-                && lastNode
-                && lastNode.kind === 'execution'
-                && lastNode.executionType === 'runtime_progress'
-                && lastNode.topic === topic
-            ) {
-                lastNode.label = label;
-                lastNode.data = event.data;
-            } else {
-                nextCurrentAiMsg!.nodes.push({
-                    id: createClientId('node'),
-                    kind: 'execution',
-                    executionType: 'runtime_progress',
-                    topic,
-                    label,
-                    data: event.data,
-                    timestamp: Date.now(),
-                    ...nextActiveAgentProfile,
-                } as UiExecutionNode);
-            }
-        }
-    } else if (event.type === 'custom_event' && event.name === 'ask_user') {
-        ensureCurrentAiMsg();
-        nextCurrentAiMsg!.nodes.push({
-            id: createClientId('node'),
-            kind: 'governance',
-            governanceType: 'approval_request',
-            approvalId: event.data?.approvalId as string | undefined,
-            approvalKind: event.data?.approvalKind as string | undefined,
-            question: event.data?.question as string | undefined,
-            toolCallId: event.data?.toolCallId as string | undefined,
-            requestInfo: event.data?.request,
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile
-        } as UiGovernanceNode);
-    } else if (event.type === 'custom_event' && event.name === 'run_controlled') {
-        ensureCurrentAiMsg();
-        nextCurrentAiMsg!.nodes.push({
-            id: createClientId('node'),
-            kind: 'governance',
-            governanceType: 'run_controlled',
-            topic: event.data?.topic as string | undefined,
-            status: event.data?.status as string | undefined,
-            reason: event.data?.reason as string | undefined,
-            timestamp: Date.now(),
-            ...nextActiveAgentProfile
-        } as UiGovernanceNode);
-    } else if (event.type === 'done' || event.type === 'error') {
-        nextCurrentAiMsg = undefined;
-    }
-
-    if (nextCurrentAiMsg) {
-        nextCurrentAiMsg = upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
-    }
-
+    const result = applySharedRealtimeEventToMessages(
+        event,
+        localMessages as unknown as SessionStreamMessage[],
+        currentAiMsg as unknown as SessionStreamMessage | undefined,
+        activeAgentProfile,
+        WEB_STREAM_LIFECYCLE_OPTIONS,
+    );
     return {
-        currentAiMsg: nextCurrentAiMsg,
-        activeAgentProfile: nextActiveAgentProfile,
+        currentAiMsg: result.currentAiMsg as Message | undefined,
+        activeAgentProfile: {
+            agentName: result.activeAgentProfile.agentName,
+            agentAvatar: resolveAgentAvatar(result.activeAgentProfile.agentAvatar) || DEFAULT_AVATAR,
+            agentRoleLabel: result.activeAgentProfile.agentRoleLabel,
+        },
     };
 }
 

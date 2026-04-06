@@ -2,15 +2,22 @@
 import { useRef, useCallback, useEffect } from 'react';
 
 import {
-    AgentProfile,
-    applyRealtimeEventToMessages,
+    buildAssistantMessage,
     cloneMessages,
+    normalizeMessagesForState,
     normalizeProjectedMessages,
+    WEB_STREAM_LIFECYCLE_OPTIONS,
 } from '@/lib/chat-stream-state';
 import { createClientId } from '@/lib/id';
 import { normalizeRealtimeEvent } from '@/lib/realtime';
 import { Message } from '@/store/chat-types';
 import { useChatStore } from '@/store/chat-store';
+import {
+    createInitialSessionRealtimeMessageState,
+    flushQueuedSessionRealtimeRuntimeEvents,
+    queueSessionRealtimeRuntimeEvent,
+    syncSessionRealtimeMessageState,
+} from '@v8/session-realtime';
 
 type AbortableTransport = {
     abort: () => void;
@@ -24,17 +31,25 @@ interface UseLangGraphStreamOptions {
     onCustomEvent?: (event: any) => void;
 }
 
-interface PendingApprovalRecord {
-    id?: string;
-    approval_id?: string;
-    run_id?: string;
-    approval_kind?: string;
-    request?: {
-        question?: string;
-        prompt?: string;
-        toolCallId?: string;
-        [key: string]: unknown;
-    };
+function appendAssistantPlaceholderIfNeeded(messages: Message[]) {
+    const lastMessage = messages[messages.length - 1] as (Message & {
+        uiEphemeral?: boolean;
+        uiStreamPhase?: string | null;
+    }) | undefined;
+    if (
+        lastMessage?.role === 'assistant'
+        && (lastMessage.uiEphemeral || isActiveAssistantStreamPhase(lastMessage.uiStreamPhase))
+    ) {
+        return normalizeMessagesForState(messages);
+    }
+    return normalizeMessagesForState([
+        ...messages,
+        buildAssistantMessage({}),
+    ]);
+}
+
+function isActiveAssistantStreamPhase(phase?: string | null) {
+    return phase === 'placeholder' || phase === 'agent_started' || phase === 'streaming' || phase === 'settling';
 }
 
 function applyScopeRequestFields(requestBody: Record<string, unknown>, data?: Record<string, unknown>) {
@@ -74,10 +89,19 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
     const pendingMessagesRef = useRef<Message[] | null>(null);
     const commitFrameRef = useRef<number | null>(null);
     const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const messagesRef = useRef<Message[]>(messages);
+    const realtimeMessageStateRef = useRef(
+        createInitialSessionRealtimeMessageState<Message>(messages, WEB_STREAM_LIFECYCLE_OPTIONS),
+    );
 
     // Use a ref for callbacks to avoid stale closures in the long-running stream loop
     const handlersRef = useRef({ onError, onFinish, onConnect, onCustomEvent });
     handlersRef.current = { onError, onFinish, onConnect, onCustomEvent };
+
+    useEffect(() => {
+        messagesRef.current = messages;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(messages, WEB_STREAM_LIFECYCLE_OPTIONS);
+    }, [messages]);
 
     const flushPendingMessages = useCallback(() => {
         if (commitFrameRef.current !== null && typeof window !== 'undefined') {
@@ -95,6 +119,8 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
 
         const snapshot = cloneMessages(pendingMessagesRef.current);
         pendingMessagesRef.current = null;
+        messagesRef.current = snapshot;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(snapshot, WEB_STREAM_LIFECYCLE_OPTIONS);
         setMessages(snapshot);
     }, [setMessages]);
 
@@ -123,21 +149,13 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         };
     }, [flushPendingMessages]);
 
-    const applyStreamEvent = useCallback((
-        event: any,
-        localMessages: Message[],
-        currentAiMsg: Message | undefined,
-        activeAgentProfile: AgentProfile
-    ) => {
-        let nextCurrentAiMsg = currentAiMsg;
-        let nextActiveAgentProfile = activeAgentProfile;
-
+    const applyStreamEvent = useCallback((event: any) => {
         if (event.type === 'protocol_connected') {
             const connectedSessionId = event.sessionId || event.conversationId;
             if (connectedSessionId && handlersRef.current.onConnect) {
                 handlersRef.current.onConnect(connectedSessionId);
             }
-            return { currentAiMsg: nextCurrentAiMsg, activeAgentProfile: nextActiveAgentProfile };
+            return false;
         }
 
         if (event.type === 'error') {
@@ -148,19 +166,10 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             }
         }
 
-        const stateResult = applyRealtimeEventToMessages(event, localMessages, nextCurrentAiMsg, nextActiveAgentProfile);
-        nextCurrentAiMsg = stateResult.currentAiMsg;
-        nextActiveAgentProfile = stateResult.activeAgentProfile;
-
-        return { currentAiMsg: nextCurrentAiMsg, activeAgentProfile: nextActiveAgentProfile };
+        return queueSessionRealtimeRuntimeEvent(realtimeMessageStateRef.current, event);
     }, []);
 
-    const streamNdjson = useCallback(async (
-        requestBody: any,
-        localMessages: Message[],
-        currentAiMsg: Message | undefined,
-        activeAgentProfile: AgentProfile
-    ) => {
+    const streamNdjson = useCallback(async (requestBody: any, initialMessages: Message[]) => {
         const abortController = new AbortController();
         abortControllerRef.current = { abort: () => abortController.abort() };
 
@@ -182,8 +191,30 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        let nextCurrentAiMsg = currentAiMsg;
-        let nextActiveAgentProfile = activeAgentProfile;
+        let localMessages = cloneMessages(initialMessages);
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            localMessages,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
+
+        const flushRuntimeEvents = () => {
+            const nextState = flushQueuedSessionRealtimeRuntimeEvents(
+                localMessages,
+                realtimeMessageStateRef.current,
+                {
+                    cloneMessages,
+                    normalizeMessages: normalizeMessagesForState,
+                    lifecycleOptions: WEB_STREAM_LIFECYCLE_OPTIONS,
+                },
+            );
+            realtimeMessageStateRef.current = nextState.state;
+            if (!nextState.changed) {
+                return;
+            }
+            localMessages = nextState.messages;
+            messagesRef.current = nextState.messages;
+            scheduleMessagesCommit(nextState.messages);
+        };
 
         while (true) {
             const { done, value } = await reader.read();
@@ -202,15 +233,13 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                     const event = normalizeRealtimeEvent(rawEvent);
                     if (!event) continue;
 
-                    const result = applyStreamEvent(event, localMessages, nextCurrentAiMsg, nextActiveAgentProfile);
-                    nextCurrentAiMsg = result.currentAiMsg;
-                    nextActiveAgentProfile = result.activeAgentProfile;
+                    applyStreamEvent(event);
                 } catch (e) {
                     console.warn('Failed to parse NDJSON line:', line, e);
                 }
             }
 
-            scheduleMessagesCommit(localMessages);
+            flushRuntimeEvents();
         }
 
         if (buffer.trim()) {
@@ -218,10 +247,8 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 const rawEvent = JSON.parse(buffer);
                 const event = normalizeRealtimeEvent(rawEvent);
                 if (event) {
-                    const result = applyStreamEvent(event, localMessages, nextCurrentAiMsg, nextActiveAgentProfile);
-                    nextCurrentAiMsg = result.currentAiMsg;
-                    nextActiveAgentProfile = result.activeAgentProfile;
-                    scheduleMessagesCommit(localMessages);
+                    applyStreamEvent(event);
+                    flushRuntimeEvents();
                 }
             } catch (e) {
                 console.warn('Failed to parse trailing NDJSON buffer:', buffer, e);
@@ -229,11 +256,10 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         }
 
         flushPendingMessages();
-
-        return { currentAiMsg: nextCurrentAiMsg, activeAgentProfile: nextActiveAgentProfile };
+        return localMessages;
     }, [apiEndpoint, applyStreamEvent, flushPendingMessages, scheduleMessagesCommit]);
 
-    const hydrateFromSnapshotAndReplay = useCallback(async (sessionId: string) => {
+    const hydrateFromSnapshot = useCallback(async (sessionId: string) => {
         const snapshotRes = await fetch(`/api/realtime/sessions/${sessionId}/snapshot`, { cache: 'no-store' });
         if (!snapshotRes.ok) {
             return false;
@@ -245,47 +271,27 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             return false;
         }
 
-        const localMessages = normalizeProjectedMessages(snapshotMessages);
-        let nextCurrentAiMsg = localMessages.length > 0 && localMessages[localMessages.length - 1]?.role === 'assistant'
-            ? localMessages[localMessages.length - 1]
-            : undefined;
-        let nextActiveAgentProfile: AgentProfile = nextCurrentAiMsg
-            ? {
-                agentName: nextCurrentAiMsg.agentName,
-                agentAvatar: nextCurrentAiMsg.agentAvatar,
-                agentRoleLabel: nextCurrentAiMsg.agentRoleLabel,
-            }
-            : {};
-
-        const latestSeq = Number(snapshotData?.latestSeq || snapshotData?.snapshot?.latest_seq || 0);
-        const eventsRes = await fetch(`/api/realtime/sessions/${sessionId}/events?after_seq=${latestSeq}`, { cache: 'no-store' });
-        if (eventsRes.ok) {
-            const eventsData = await eventsRes.json();
-            const events = Array.isArray(eventsData?.events) ? eventsData.events : [];
-            for (const runtimeEvent of events) {
-                const event = normalizeRealtimeEvent(runtimeEvent);
-                if (!event) continue;
-                const result = applyStreamEvent(event, localMessages, nextCurrentAiMsg, nextActiveAgentProfile);
-                nextCurrentAiMsg = result.currentAiMsg;
-                nextActiveAgentProfile = result.activeAgentProfile;
-            }
-        }
-
+        const localMessages = normalizeMessagesForState(normalizeProjectedMessages(snapshotMessages));
+        messagesRef.current = localMessages;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            localMessages,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
         setMessages([...localMessages]);
         return true;
-    }, [applyStreamEvent, setMessages]);
+    }, [setMessages]);
 
     const tryResyncConversation = useCallback(async (sessionId: string | undefined, label: string) => {
         if (!sessionId) {
             return false;
         }
         try {
-            return await hydrateFromSnapshotAndReplay(sessionId);
+            return await hydrateFromSnapshot(sessionId);
         } catch (syncError) {
             console.warn(`[useLangGraphStream] ${label} resync failed:`, syncError);
             return false;
         }
-    }, [hydrateFromSnapshotAndReplay]);
+    }, [hydrateFromSnapshot]);
 
     const sendMessage = useCallback(async (userMessage: string, data?: any) => {
         setIsLoading(true);
@@ -326,11 +332,12 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             metadata: Object.keys(optimisticMetadata).length > 0 ? optimisticMetadata : undefined,
         };
 
-        let currentAiMsg: Message | undefined;
-        let activeAgentProfile: { agentName?: string, agentAvatar?: string, agentRoleLabel?: string } = {};
-
-        // Update state with BOTH User and AI placeholders immediately
-        const newHistory = [...currentMessages, tempUserMsg];
+        const newHistory = appendAssistantPlaceholderIfNeeded([...currentMessages, tempUserMsg]);
+        messagesRef.current = newHistory;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            newHistory,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
         setMessages(newHistory);
 
         // Prepare Request
@@ -343,12 +350,9 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 fileUrls: data?.fileUrls // Explicitly pass fileUrls
             };
             applyScopeRequestFields(requestBody, data);
-            const localMessages = cloneMessages(newHistory);
-            const httpResult = await streamNdjson(requestBody, localMessages, currentAiMsg, activeAgentProfile);
-            currentAiMsg = httpResult.currentAiMsg;
-            activeAgentProfile = httpResult.activeAgentProfile;
+            const finalMessages = await streamNdjson(requestBody, newHistory);
 
-            if (handlersRef.current.onFinish) handlersRef.current.onFinish(localMessages);
+            if (handlersRef.current.onFinish) handlersRef.current.onFinish(finalMessages);
 
         } catch (error) {
             console.error("Stream failed:", error);
@@ -376,9 +380,13 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         const currentMessages = cloneMessages(messages);
         try {
             if (abortControllerRef.current) abortControllerRef.current.abort();
-            const localMessages = cloneMessages(currentMessages);
-            let currentAiMsg: Message | undefined = undefined;
-            let activeAgentProfile: AgentProfile = {};
+            const nextMessages = appendAssistantPlaceholderIfNeeded(currentMessages);
+            messagesRef.current = nextMessages;
+            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                nextMessages,
+                WEB_STREAM_LIFECYCLE_OPTIONS,
+            );
+            setMessages(nextMessages);
             const requestBody: any = {
                 messages: currentMessages.map(m => ({ role: m.role, content: m.content })),
                 data: data,
@@ -386,11 +394,9 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             };
             applyScopeRequestFields(requestBody, data);
 
-            const httpResult = await streamNdjson(requestBody, localMessages, currentAiMsg, activeAgentProfile);
-            currentAiMsg = httpResult.currentAiMsg;
-            activeAgentProfile = httpResult.activeAgentProfile;
+            const finalMessages = await streamNdjson(requestBody, nextMessages);
 
-            if (handlersRef.current.onFinish) handlersRef.current.onFinish(localMessages);
+            if (handlersRef.current.onFinish) handlersRef.current.onFinish(finalMessages);
 
         } catch (error) {
             console.error("Tool output stream failed:", error);
@@ -439,16 +445,5 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         return response.json().catch(() => ({}));
     }, []);
 
-    const fetchPendingApprovals = useCallback(async (sessionId: string): Promise<PendingApprovalRecord[]> => {
-        const response = await fetch(`/api/approvals?session_id=${encodeURIComponent(sessionId)}&status=pending`, {
-            cache: 'no-store',
-        });
-        if (!response.ok) {
-            throw new Error(`Pending approvals request failed: ${response.status}`);
-        }
-        const data = await response.json().catch(() => ({}));
-        return Array.isArray(data?.approvals) ? data.approvals : [];
-    }, []);
-
-    return { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand, fetchPendingApprovals };
+    return { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand };
 }

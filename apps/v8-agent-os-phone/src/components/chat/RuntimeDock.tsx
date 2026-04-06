@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef } from "react";
 import { Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { Blocks, Bot, Cpu, Database, RadioTower, TerminalSquare, Workflow } from "lucide-react-native";
+import { Blocks, Bot, Cpu, Database, Globe, RadioTower, TerminalSquare, Workflow } from "lucide-react-native";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageCard } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -12,9 +12,12 @@ const RUNTIME_ICON_MAP: Record<PhoneRuntimeId, LucideIcon> = {
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
-    plugin_host: RadioTower,
+    network_supervisor: Globe,
+    plugin_host_tool: RadioTower,
+    plugin_host_channel: RadioTower,
     computer_use: TerminalSquare,
     rpa: Cpu,
+    desktop_live: RadioTower,
 };
 
 export function getRuntimeDockIcon(runtimeId: PhoneRuntimeId) {

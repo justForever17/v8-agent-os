@@ -1,3 +1,9 @@
+import type { AdminResourceRef } from "@v8/session-realtime";
+import {
+    deriveAdminResourceRefFromArtifactLike,
+    resolveAdminResourceUrl,
+} from "@v8/session-realtime";
+
 export interface RuntimeArtifact {
     id: string;
     artifactId: string;
@@ -13,6 +19,7 @@ export interface RuntimeArtifact {
     workspacePath?: string;
     externalUrl?: string;
     previewUrl?: string;
+    resourceRef?: AdminResourceRef | null;
     hasPreview?: boolean;
     supportsInlinePreview?: boolean;
     previewKind?: string;
@@ -23,15 +30,16 @@ export interface RuntimeArtifact {
 
 type ArtifactRecord = Record<string, unknown>;
 
-function normalizeArtifactPreviewUrl(record: ArtifactRecord, artifactId: string): string | undefined {
-    const raw = record.previewUrl || record.preview_url || record.externalUrl || record.external_url || record.contentUrl || record.content_url;
-    if (typeof raw !== "string" || !raw) {
-        return undefined;
+function resolveRuntimeArtifactResource(record: ArtifactRecord) {
+    return deriveAdminResourceRefFromArtifactLike(record);
+}
+
+export function resolveRuntimeArtifactUrl(artifact: Pick<RuntimeArtifact, "resourceRef" | "previewUrl" | "externalUrl">) {
+    const resolved = resolveAdminResourceUrl("web", undefined, artifact.resourceRef || null);
+    if (resolved) {
+        return resolved;
     }
-    if (raw.startsWith("/v1/artifacts/")) {
-        return `/api/artifacts/${encodeURIComponent(artifactId)}/content`;
-    }
-    return raw;
+    return String(artifact.previewUrl || artifact.externalUrl || "").trim() || undefined;
 }
 
 export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
@@ -45,6 +53,8 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
         return null;
     }
 
+    const resourceRef = resolveRuntimeArtifactResource(record);
+    const resolvedUrl = resolveAdminResourceUrl("web", undefined, resourceRef);
     const title = String(record.displayLabel || record.title || artifactId);
     const displaySubtitle = String(
         record.displaySubtitle
@@ -52,8 +62,7 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
             || record.workspace_path
             || record.sourcePath
             || record.source_path
-            || record.previewUrl
-            || record.preview_url
+            || resolvedUrl
             || "暂无路径信息",
     );
 
@@ -70,9 +79,10 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
         messageId: typeof (record.messageId || record.message_id) === "string" ? String(record.messageId || record.message_id) : undefined,
         sourcePath: typeof (record.sourcePath || record.source_path) === "string" ? String(record.sourcePath || record.source_path) : undefined,
         workspacePath: typeof (record.workspacePath || record.workspace_path) === "string" ? String(record.workspacePath || record.workspace_path) : undefined,
-        externalUrl: typeof (record.externalUrl || record.external_url) === "string" ? String(record.externalUrl || record.external_url) : undefined,
-        previewUrl: normalizeArtifactPreviewUrl(record, artifactId),
-        hasPreview: Boolean(record.hasPreview ?? record.previewUrl ?? record.preview_url ?? record.externalUrl ?? record.external_url ?? record.contentUrl ?? record.content_url),
+        externalUrl: resolvedUrl,
+        previewUrl: resolvedUrl,
+        resourceRef,
+        hasPreview: Boolean(record.hasPreview ?? resolvedUrl ?? record.contentUrl ?? record.content_url),
         supportsInlinePreview: Boolean(record.supportsInlinePreview ?? record.supports_inline_preview),
         previewKind: typeof (record.previewKind || record.preview_kind) === "string" ? String(record.previewKind || record.preview_kind) : undefined,
         sourceComponent: typeof (record.sourceComponent || record.source_component) === "string" ? String(record.sourceComponent || record.source_component) : undefined,

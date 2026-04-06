@@ -662,6 +662,107 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 status="idle",
                 actor_label="运行调度",
             )
+        elif topic == "run.state.changed":
+            next_state = str(payload.get("status") or payload.get("state") or payload.get("nextState") or "unknown").strip() or "unknown"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary=f"运行状态已切换为：{next_state}",
+                status=next_state,
+                actor_label="运行治理",
+            )
+        elif topic == "run.paused":
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary="当前运行已暂停",
+                status="paused",
+                actor_label="运行治理",
+            )
+        elif topic == "run.resumed":
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary="当前运行已恢复",
+                status="running",
+                actor_label="运行治理",
+            )
+        elif topic == "run.interrupted":
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary="当前运行已被中断",
+                status="interrupted",
+                actor_label="运行治理",
+            )
+        elif topic == "run.cancelled":
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary="当前运行已取消",
+                status="cancelled",
+                actor_label="运行治理",
+            )
+        elif topic == "run.retry.requested":
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary="已请求重新执行当前运行",
+                status="retry_requested",
+                actor_label="运行治理",
+            )
+        elif topic in {"approval.approved", "approval.rejected", "approval.auto_approved"}:
+            approval_status = {
+                "approval.approved": "approved",
+                "approval.rejected": "rejected",
+                "approval.auto_approved": "auto_approved",
+            }.get(topic, "resolved")
+            approval_summary = {
+                "approval.approved": "审批已通过",
+                "approval.rejected": "审批已拒绝",
+                "approval.auto_approved": "审批已自动通过",
+            }.get(topic, "审批状态已更新")
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="automation",
+                kind="governance",
+                summary=approval_summary,
+                status=approval_status,
+                actor_label="审批治理",
+            )
+        elif topic == "safety.preflight.blocked":
+            reason = str(payload.get("reason") or payload.get("verdict") or "未通过安全预检").strip() or "未通过安全预检"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary=f"安全预检阻断：{reason}",
+                status="blocked",
+                actor_label="Safety Guardian",
+            )
+        elif topic == "context.prepared":
+            compaction = payload.get("compaction") if isinstance(payload.get("compaction"), dict) else {}
+            saved_tokens = compaction.get("savedTokens")
+            window_state = str(payload.get("windowState") or payload.get("state") or "").strip()
+            summary = "上下文治理已更新"
+            if saved_tokens is not None:
+                summary = f"上下文治理已更新，节省 {saved_tokens} tokens"
+            elif window_state:
+                summary = f"上下文治理已更新：{window_state}"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="chat",
+                kind="governance",
+                summary=summary,
+                status="prepared",
+                actor_label="上下文治理",
+            )
         elif topic == "run.liveness.blocked":
             entry = _runtime_timeline_entry(
                 event,

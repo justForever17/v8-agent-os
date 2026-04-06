@@ -137,6 +137,31 @@ interface ContextGovernanceView {
 }
 
 interface SessionProjectionView {
+    todos?: {
+        taskId?: string | null;
+        taskName?: string | null;
+        runId?: string | null;
+        sessionId?: string | null;
+        updatedAt?: string | null;
+        isActive?: boolean;
+        isStale?: boolean;
+        allCompleted?: boolean;
+        items?: Array<{
+            id?: string | null;
+            content?: string | null;
+            status?: string | null;
+        }>;
+    } | null;
+    currentRun?: {
+        id?: string | null;
+        session_id?: string | null;
+        status?: string | null;
+        started_at?: string | null;
+        finished_at?: string | null;
+        trigger_source?: string | null;
+        metadata?: Record<string, unknown>;
+    } | null;
+    runtimeStatus?: string | null;
     workflow?: {
         rootRunId?: string;
         status?: string;
@@ -188,6 +213,73 @@ interface SessionProjectionView {
     runtimeTimeline?: RuntimeTimelineEntry[];
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function asNullableString(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeTodoSnapshot(raw: unknown): SessionProjectionView["todos"] {
+    if (Array.isArray(raw)) {
+        return {
+            items: raw
+                .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+                .map((item) => ({
+                    id: asNullableString(item.id),
+                    content: asNullableString(item.content || item.text || item.title),
+                    status: asNullableString(item.status),
+                })),
+        };
+    }
+
+    const record = asRecord(raw);
+    if (Object.keys(record).length === 0) {
+        return null;
+    }
+
+    const itemSource = Array.isArray(record.items)
+        ? record.items
+        : Array.isArray(record.todo)
+            ? record.todo
+            : [];
+
+    return {
+        taskId: asNullableString(record.taskId),
+        taskName: asNullableString(record.taskName || record.task_name),
+        runId: asNullableString(record.runId || record.run_id),
+        sessionId: asNullableString(record.sessionId || record.session_id),
+        updatedAt: asNullableString(record.updatedAt || record.updated_at),
+        isActive: Boolean(record.isActive),
+        isStale: Boolean(record.isStale),
+        allCompleted: Boolean(record.allCompleted),
+        items: itemSource
+            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+            .map((item) => ({
+                id: asNullableString(item.id),
+                content: asNullableString(item.content || item.text || item.title),
+                status: asNullableString(item.status),
+            })),
+    };
+}
+
+function normalizeCurrentRun(raw: unknown): SessionProjectionView["currentRun"] {
+    const record = asRecord(raw);
+    if (Object.keys(record).length === 0) {
+        return null;
+    }
+    return {
+        id: asNullableString(record.id || record.runId || record.run_id),
+        session_id: asNullableString(record.session_id || record.sessionId),
+        status: asNullableString(record.status),
+        started_at: asNullableString(record.started_at || record.startedAt),
+        finished_at: asNullableString(record.finished_at || record.finishedAt),
+        trigger_source: asNullableString(record.trigger_source || record.triggerSource),
+        metadata: asRecord(record.metadata),
+    };
+}
+
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     if (!raw || typeof raw !== "object") {
         return null;
@@ -214,15 +306,21 @@ function normalizeProjectionPayload(raw: unknown): SessionProjectionView | null 
         return null;
     }
     const record = raw as Record<string, unknown>;
+    const nestedProjection = asRecord(record.projection);
+    const effectiveRecord = Object.keys(nestedProjection).length > 0 ? nestedProjection : record;
+    const workflowProjection = asRecord(effectiveRecord.workflowProjection || record.workflowProjection);
     return {
-        workflow: (record.workflow as SessionProjectionView["workflow"]) || null,
-        approvals: Array.isArray(record.approvals) ? (record.approvals as SessionApprovalView[]) : [],
-        controls: (record.controls as SessionProjectionView["controls"]) || null,
-        recoverable: (record.recoverable as SessionProjectionView["recoverable"]) || null,
-        summary: (record.summary as SessionProjectionView["summary"]) || null,
-        source: typeof record.source === "string" ? record.source : null,
-        contextGovernance: (record.contextGovernance as SessionProjectionView["contextGovernance"]) || null,
-        runtimeTimeline: Array.isArray(record.runtimeTimeline) ? normalizeRuntimeTimeline(record.runtimeTimeline) : [],
+        todos: normalizeTodoSnapshot(effectiveRecord.todos || record.todos || workflowProjection.todos),
+        currentRun: normalizeCurrentRun(effectiveRecord.currentRun || record.currentRun || workflowProjection.currentRun),
+        runtimeStatus: asNullableString(effectiveRecord.runtimeStatus || record.runtimeStatus || workflowProjection.runtimeStatus),
+        workflow: (effectiveRecord.workflow as SessionProjectionView["workflow"]) || null,
+        approvals: Array.isArray(effectiveRecord.approvals) ? (effectiveRecord.approvals as SessionApprovalView[]) : [],
+        controls: (effectiveRecord.controls as SessionProjectionView["controls"]) || null,
+        recoverable: (effectiveRecord.recoverable as SessionProjectionView["recoverable"]) || null,
+        summary: (effectiveRecord.summary as SessionProjectionView["summary"]) || null,
+        source: typeof effectiveRecord.source === "string" ? effectiveRecord.source : null,
+        contextGovernance: (effectiveRecord.contextGovernance as SessionProjectionView["contextGovernance"]) || null,
+        runtimeTimeline: Array.isArray(effectiveRecord.runtimeTimeline) ? normalizeRuntimeTimeline(effectiveRecord.runtimeTimeline) : [],
     };
 }
 
@@ -444,17 +542,20 @@ export default function ChatClient() {
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingConversationCreationRef = useRef<Promise<string | null> | null>(null);
     const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
-    const currentRun = runEntries[0] || null;
+    const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
     const hasPendingApproval = Boolean(askUserApprovalId);
-    const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.workflow?.rootRunId) ?? undefined;
+    const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
     const effectiveRunId = currentRun?.id || askUserRunId || projectionRunId;
     const effectiveStatus = hasPendingApproval
         ? "waiting_approval"
-        : currentRun?.status
+        : sessionProjection?.runtimeStatus
+            || currentRun?.status
             || normalizeWorkflowStatusForRunBar(sessionProjection?.controls?.workflowStatus)
             || normalizeWorkflowStatusForRunBar(sessionProjection?.workflow?.status);
     const projectionPendingApproval = (sessionProjection?.approvals?.length || 0) > 0;
     const effectivePendingApproval = hasPendingApproval || projectionPendingApproval || currentRun?.status === "waiting_approval";
+    const projectionTodos = sessionProjection?.todos?.items || [];
+    const projectionTodoStale = Boolean(sessionProjection?.todos?.isStale);
     const runtimeStageModel = useMemo(() => buildRuntimeStageModel(messages, {
         ownerRuntime: sessionProjection?.workflow?.ownerRuntime || sessionProjection?.summary?.ownerRuntime || null,
         status: effectiveStatus || null,
@@ -1451,7 +1552,7 @@ export default function ChatClient() {
                             style={hudStackStyle}
                         >
                             <ProcessesHUD />
-                            <TodosHUD sessionId={activeConversationId} />
+                            <TodosHUD items={projectionTodos} isStale={projectionTodoStale} />
                         </div>
                         <div className="relative shrink-0">
                             <div className="pointer-events-none absolute inset-x-4 -top-7 hidden h-7 bg-gradient-to-t from-background via-background/82 to-transparent blur-sm sm:block" />

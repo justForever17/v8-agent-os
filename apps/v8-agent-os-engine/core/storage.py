@@ -2108,7 +2108,13 @@ class StorageManager:
             task_path = tasks_root / f"{candidate_task_id}.json"
             if task_path.exists():
                 try:
-                    return json.loads(task_path.read_text(encoding="utf-8"))
+                    payload = json.loads(task_path.read_text(encoding="utf-8"))
+                    if normalized_run_id:
+                        payload_run_id = str(payload.get("runId") or "").strip()
+                        if payload_run_id != normalized_run_id:
+                            payload = None
+                    if payload:
+                        return payload
                 except Exception:
                     pass
 

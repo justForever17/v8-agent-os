@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Dict, Optional
 
 from core.context_governance import extract_latest_context_governance
 from core.database import db
@@ -16,6 +15,10 @@ from core.runtime_projection import (
 )
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
+from erc.session_realtime_contract import (
+    augment_workflow_projection,
+    resolve_authoritative_session_runtime_state,
+)
 from erc.session_admission_service import session_admission_service
 from erc.workflow_ledger import workflow_ledger_service
 from erc.workflow_projection import workflow_projection_service
@@ -85,10 +88,17 @@ class SnapshotService:
         runtime_events = db.get_runtime_events(session_id)
         runtime_timeline = project_runtime_timeline_from_events(runtime_events)
         context_governance = extract_latest_context_governance(runtime_events)
-        root_run_id = workflow_view.get("rootRunId") if isinstance(workflow_view, dict) else None
-        latest_run_id = root_run_id or (runtime_events[-1].get("run_id") if runtime_events else None)
-        run_record = db.get_run_record(latest_run_id) if latest_run_id else None
         lane_view = session_admission_service.get_lane_view(session_id)
+        session_runtime = resolve_authoritative_session_runtime_state(
+            session_id=session_id,
+            workflow_view=workflow_view,
+            lane_view=lane_view,
+            runtime_events=runtime_events,
+        )
+        run_record = session_runtime.run_record
+        current_run = session_runtime.current_run
+        todos = session_runtime.todos
+        runtime_status = session_runtime.runtime_status
         recovery_class = derive_recovery_class(run_record, workflow_view=workflow_view)
         liveness = build_liveness_view(
             run_record=run_record,
@@ -99,7 +109,13 @@ class SnapshotService:
         if not snapshot_row:
             overlay = workflow_ledger_service.get_session_projection_overlay(session_id)
             source = "projection_overlay"
-            workflow_projection = workflow_projection_service.build(session_id=session_id)
+            workflow_projection = augment_workflow_projection(
+                workflow_projection_service.build(session_id=session_id),
+                todos=todos,
+                current_run=current_run,
+                runtime_status=runtime_status,
+                latest_seq=0,
+            )
             if not overlay:
                 controls = build_projection_controls(workflow_view, pending_approvals)
                 return {
@@ -112,6 +128,9 @@ class SnapshotService:
                     "approvals": pending_approvals,
                     "controls": controls,
                     "recoverable": build_recoverable_view(workflow_view, controls),
+                    "todos": todos,
+                    "currentRun": current_run,
+                    "runtimeStatus": runtime_status,
                     "summary": build_projection_summary(
                         session=session_row,
                         snapshot=None,
@@ -129,6 +148,13 @@ class SnapshotService:
             base_snapshot = {"session_id": session_id, "latest_seq": 0, "messages": [], "artifacts": []}
             snapshot = apply_projection_overlay(base_snapshot, overlay)
             latest_seq = int(overlay.get("lastEventSeq") or 0)
+            workflow_projection = augment_workflow_projection(
+                workflow_projection,
+                todos=todos,
+                current_run=current_run,
+                runtime_status=runtime_status,
+                latest_seq=latest_seq,
+            )
             controls = build_projection_controls(workflow_view, pending_approvals)
             return {
                 "session_id": session_id,
@@ -140,6 +166,9 @@ class SnapshotService:
                 "approvals": pending_approvals,
                 "controls": controls,
                 "recoverable": build_recoverable_view(workflow_view, controls),
+                "todos": todos,
+                "currentRun": current_run,
+                "runtimeStatus": runtime_status,
                 "summary": build_projection_summary(
                     session=session_row,
                     snapshot=snapshot,
@@ -157,7 +186,13 @@ class SnapshotService:
         snapshot = snapshot_row.get("snapshot", {})
         latest_seq = int(snapshot_row.get("latest_seq", 0) or 0)
         controls = build_projection_controls(workflow_view, pending_approvals)
-        workflow_projection = workflow_projection_service.build(session_id=session_id)
+        workflow_projection = augment_workflow_projection(
+            workflow_projection_service.build(session_id=session_id),
+            todos=todos,
+            current_run=current_run,
+            runtime_status=runtime_status,
+            latest_seq=latest_seq,
+        )
         return {
             "session_id": session_id,
             "snapshot": snapshot,
@@ -168,6 +203,9 @@ class SnapshotService:
             "approvals": pending_approvals,
             "controls": controls,
             "recoverable": build_recoverable_view(workflow_view, controls),
+            "todos": todos,
+            "currentRun": current_run,
+            "runtimeStatus": runtime_status,
             "summary": build_projection_summary(
                 session=session_row,
                 snapshot=snapshot,

@@ -16,6 +16,7 @@ import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD
 import { MessageBubble } from "@/src/components/chat/MessageBubble";
 import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
 import { TodosHUD } from "@/src/components/chat/TodosHUD";
+import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ArtifactDetail, ChatArtifact, ChatMessage, PendingApproval, SessionTodoItem } from "@/src/types/admin";
@@ -23,6 +24,7 @@ import type { ArtifactDetail, ChatArtifact, ChatMessage, PendingApproval, Sessio
 type ChatWindowProps = {
     adminBaseUrl: string;
     messages: ChatMessage[];
+    scrollLocked?: boolean;
     refreshing?: boolean;
     onRefresh?: () => void;
     onDeleteMessage?: (message: ChatMessage) => void;
@@ -90,6 +92,9 @@ function isAskUserApproval(approval: PendingApproval | null | undefined) {
 }
 
 function hasRenderableMessage(message: ChatMessage) {
+    if (message.uiEphemeral || isActiveAssistantStreamPhase(message.uiStreamPhase)) {
+        return true;
+    }
     if (String(message.content || "").trim()) {
         return true;
     }
@@ -108,6 +113,7 @@ function hasRenderableMessage(message: ChatMessage) {
 export const ChatWindow = memo(function ChatWindow({
     adminBaseUrl,
     messages,
+    scrollLocked = false,
     refreshing = false,
     onRefresh,
     onDeleteMessage,
@@ -144,6 +150,19 @@ export const ChatWindow = memo(function ChatWindow({
         () => messages.filter(hasRenderableMessage),
         [messages],
     );
+    const lastVisibleMessage = visibleMessages[visibleMessages.length - 1] || null;
+    const lastVisibleSignature = useMemo(() => {
+        if (!lastVisibleMessage) {
+            return "";
+        }
+        return [
+            String(lastVisibleMessage.renderKey || lastVisibleMessage.id || ""),
+            String(lastVisibleMessage.content || "").length,
+            Array.isArray(lastVisibleMessage.nodes) ? lastVisibleMessage.nodes.length : 0,
+            String(lastVisibleMessage.uiStreamPhase || ""),
+            lastVisibleMessage.uiEphemeral ? "1" : "0",
+        ].join(":");
+    }, [lastVisibleMessage]);
     const resolvedEmptyState = emptyState || {
         icon: "robot-happy-outline" as const,
         title: t("没有消息历史", "No messages yet"),
@@ -154,7 +173,7 @@ export const ChatWindow = memo(function ChatWindow({
         if (isAtBottom) {
             requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
         }
-    }, [isAtBottom, visibleMessages.length]);
+    }, [isAtBottom, lastVisibleSignature, visibleMessages.length]);
 
     useEffect(() => {
         setAskUserOpen(Boolean(pendingApproval && isAskUserApproval(pendingApproval)));
@@ -185,6 +204,7 @@ export const ChatWindow = memo(function ChatWindow({
                 <ScrollView
                     ref={scrollRef}
                     style={styles.scroll}
+                    scrollEnabled={!scrollLocked}
                     contentContainerStyle={[
                         styles.messagesContent,
                         isLandscape && styles.messagesContentLandscape,
@@ -215,11 +235,14 @@ export const ChatWindow = memo(function ChatWindow({
                             ) : null}
                         </View>
                     ) : (
-                        visibleMessages.map((message) => (
+                        visibleMessages.map((message, index) => (
                             <MessageBubble
                                 key={message.renderKey || message.id}
                                 adminBaseUrl={adminBaseUrl}
                                 message={message}
+                                isLast={index === visibleMessages.length - 1}
+                                isLoading={message.role === "assistant" && isActiveAssistantStreamPhase(message.uiStreamPhase)}
+                                streamPhase={message.uiStreamPhase}
                                 onDelete={onDeleteMessage}
                                 onSpeakVoice={onSpeakVoice}
                                 speakingKey={speakingKey}

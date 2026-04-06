@@ -3,6 +3,7 @@ import sys
 import asyncio
 import importlib
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 
 def _configure_pycache_behavior() -> None:
@@ -44,6 +45,8 @@ from core.runtime.startup_profile import (
 )
 from core.storage import storage
 from core.system_base import get_allowed_origins
+from core.workspace_guard import ensure_workspace_auto_create_allowed
+from core.workspace_resolution import workspace_resolution_service
 from skills.loader import SkillLoader
 from erc.checkpoint_store import checkpoint_store
 
@@ -375,24 +378,28 @@ if _service_flags()["plugin_host"]:
 
 @app.get("/workspace/{file_path:path}")
 async def serve_workspace_file(file_path: str):
-    from core.storage import storage
     from fastapi.responses import FileResponse
     from fastapi import HTTPException
-    import os
-    
-    workspace_config = storage.get_workspace_config()
-    base_path = workspace_config.get("agent_workspace_path")
-    if not base_path:
-        raise HTTPException(status_code=404, detail="Workspace not configured")
-        
-    full_path = os.path.abspath(os.path.join(base_path, file_path))
-    if not full_path.startswith(os.path.abspath(base_path)):
-        raise HTTPException(status_code=403, detail="Access denied")
-        
-    if not os.path.exists(full_path) or not os.path.isfile(full_path):
+
+    try:
+        workspace_root = ensure_workspace_auto_create_allowed(
+            Path(workspace_resolution_service.get_main_workspace_path()).expanduser(),
+            source="engine.main.serve_workspace_file",
+            allow_missing=True,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    requested_path = (workspace_root / file_path).resolve(strict=False)
+    try:
+        requested_path.relative_to(workspace_root.resolve(strict=False))
+    except ValueError as error:
+        raise HTTPException(status_code=403, detail="Access denied") from error
+
+    if not requested_path.exists() or not requested_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-        
-    return FileResponse(full_path)
+
+    return FileResponse(requested_path)
 
 @app.get("/health")
 async def health_check():

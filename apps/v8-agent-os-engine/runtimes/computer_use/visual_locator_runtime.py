@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.system_base import get_desktop_tools_config
-from core.storage import storage
+from core.workspace_guard import ensure_workspace_auto_create_allowed
+from core.workspace_resolution import workspace_resolution_service
 from core.v8_agent_os_paths import ensure_v8_agent_os_tmp_path
+from erc.runtime_context import get_runtime_context
 from PIL import Image, ImageOps
 
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
@@ -47,10 +49,7 @@ def _resolve_image_locator_path(raw_value: str) -> str:
         return str(candidate)
     workspace_probe_root: Path | None = None
     try:
-        workspace_config = storage.get_workspace_config()
-        configured_workspace = Path(str(workspace_config.get("agent_workspace_path") or "").strip()).expanduser()
-        if str(configured_workspace).strip():
-            workspace_probe_root = configured_workspace if configured_workspace.is_absolute() else (ENGINE_ROOT / configured_workspace)
+        workspace_probe_root = _resolve_workspace_root()
     except Exception:
         workspace_probe_root = None
     probe_paths = [
@@ -72,14 +71,17 @@ def _resolve_image_locator_path(raw_value: str) -> str:
 
 
 def _resolve_workspace_root() -> Path:
-    try:
-        workspace_config = storage.get_workspace_config()
-        configured_workspace = Path(str(workspace_config.get("agent_workspace_path") or "").strip()).expanduser()
-        if str(configured_workspace).strip():
-            return configured_workspace if configured_workspace.is_absolute() else (ENGINE_ROOT / configured_workspace)
-    except Exception:
-        pass
-    return ENGINE_ROOT / "workspace"
+    runtime_context = get_runtime_context()
+    resolved = workspace_resolution_service.resolve_workspace_path(
+        runtime_kind="computer_use",
+        session_id=str(runtime_context.get("session_id") or "") or None,
+        explicit_workspace_path=str(runtime_context.get("workspace_path") or "") or None,
+    )
+    return ensure_workspace_auto_create_allowed(
+        Path(resolved).expanduser(),
+        source="computer_use.visual_locator_runtime._resolve_workspace_root",
+        allow_missing=True,
+    )
 
 
 @lru_cache(maxsize=1)

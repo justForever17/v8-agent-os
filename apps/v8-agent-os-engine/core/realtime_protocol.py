@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from core.json_safe import to_jsonable
 from core.system_base import get_internal_secret
 
 
@@ -120,7 +121,7 @@ def build_runtime_event(
             "node": "supervisor",
             "agent_id": "supervisor",
         },
-        "payload": payload,
+        "payload": to_jsonable(payload),
     }
 
 

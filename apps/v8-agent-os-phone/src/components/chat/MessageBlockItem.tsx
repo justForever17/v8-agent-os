@@ -37,12 +37,14 @@ function stringifyPayload(value: unknown) {
 export const MessageBlockItem = memo(function MessageBlockItem({
     block,
     node,
+    isStreaming = false,
     speaking = false,
     onSpeak,
     onOpenArtifact,
 }: {
     block?: PhoneContentBlock;
     node?: PhoneUiTimelineNode;
+    isStreaming?: boolean;
     speaking?: boolean;
     onSpeak?: (text: string) => void;
     onOpenArtifact?: (artifact: ChatArtifact) => void;
@@ -110,6 +112,8 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         return null;
     }
 
+    const resolvedStreaming = Boolean(block.isStreaming || isStreaming);
+
     if (block.type === "artifact") {
         const artifactTitle = String(block.data?.title || t("生成产物", "Generated artifact"));
         const artifactType = String(block.data?.type || "file").toLowerCase();
@@ -127,10 +131,10 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                     <CodeBlock
                         language={artifactType}
                         value={block.content}
-                        isStreaming={Boolean(block.isStreaming)}
+                        isStreaming={resolvedStreaming}
                     />
                 ) : null}
-                {!block.isStreaming ? (
+                {!resolvedStreaming ? (
                     <ArtifactCard
                         title={artifactTitle}
                         type={artifactType === "html" ? "html" : artifactType === "markdown" ? "markdown" : artifactType === "code" ? "code" : "file"}
@@ -161,7 +165,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             block.data?.language
             || (block.type === "html_snippet" ? "html" : "text"),
         );
-        return <CodeBlock language={language} value={block.content} isStreaming={Boolean(block.isStreaming)} />;
+        return <CodeBlock language={language} value={block.content} isStreaming={resolvedStreaming} />;
     }
 
     if (block.type === "file-ppt") {
@@ -193,7 +197,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         return (
             <ThinkingCard
                 content={block.content}
-                isStreaming={Boolean(block.isStreaming)}
+                isStreaming={resolvedStreaming}
                 elapsedTime={typeof block.data?.elapsedTime === "number" ? block.data.elapsedTime : undefined}
                 data={{
                     startTime: typeof block.data?.startTime === "number" ? block.data.startTime : undefined,

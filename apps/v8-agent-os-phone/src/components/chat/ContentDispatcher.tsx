@@ -46,12 +46,16 @@ function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel:
 export const ContentDispatcher = memo(function ContentDispatcher({
     node,
     messageIdentity,
+    isExecuting = false,
+    isStreaming = false,
     speakingKey,
     onSpeakVoice,
     onOpenArtifact,
 }: {
     node: PhoneUiTimelineNode;
     messageIdentity?: string;
+    isExecuting?: boolean;
+    isStreaming?: boolean;
     speakingKey?: string;
     onSpeakVoice?: (text: string, messageKey: string) => void;
     onOpenArtifact?: (artifact: ChatArtifact) => void;
@@ -96,6 +100,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
                         <MessageBlockItem
                             key={block.id}
                             block={block}
+                            isStreaming={isStreaming}
                             speaking={Boolean(voiceKey) && speakingKey === voiceKey}
                             onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
                             onOpenArtifact={onOpenArtifact}
@@ -149,6 +154,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     return (
         <MessageBlockItem
             node={node}
+            isStreaming={isStreaming}
             onOpenArtifact={onOpenArtifact}
         />
     );

@@ -1,7 +1,6 @@
 import { memo, useMemo } from "react";
 import {
     FlatList,
-    Modal,
     Pressable,
     StyleSheet,
     Text,
@@ -23,7 +22,6 @@ type ComposerPickerOverlayProps = {
     left: number;
     right: number;
     bottom: number;
-    onDismiss?: () => void;
     commands: CommandPresetSummary[];
     skills: SkillReferenceSummary[];
     onSelectCommand: (command: CommandPresetSummary) => void;
@@ -36,7 +34,6 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     left,
     right,
     bottom,
-    onDismiss,
     commands,
     skills,
     onSelectCommand,
@@ -88,78 +85,66 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     );
 
     return (
-        <Modal
-            visible={visible}
-            transparent
-            animationType="none"
-            statusBarTranslucent
-            onRequestClose={onDismiss}
+        <View
+            style={[
+                styles.overlay,
+                {
+                    left,
+                    right,
+                    bottom,
+                },
+            ]}
+            pointerEvents="box-none"
         >
-            <View style={styles.modalRoot} pointerEvents="box-none">
-                <Pressable style={StyleSheet.absoluteFill} onPress={onDismiss} />
-                <View
-                    style={[
-                        styles.overlay,
-                        {
-                            left,
-                            right,
-                            bottom,
-                        },
-                    ]}
-                    pointerEvents="box-none"
-                >
-                    <View
-                        style={[
-                            styles.panel,
-                            {
-                                backgroundColor: colors.surfaceStrong,
-                                borderColor: colors.border,
-                                shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
-                            },
-                        ]}
-                    >
-                        <Text style={[styles.hint, { color: colors.textMuted }]}>
-                            {isCommand
-                                ? t("输入 / 选择命令预设", "Type / to choose a preset")
-                                : t("输入 @ 选择一个或多个 Skill", "Type @ to choose one or more skills")}
-                        </Text>
+            <View
+                style={[
+                    styles.panel,
+                    {
+                        backgroundColor: colors.surfaceStrong,
+                        borderColor: colors.border,
+                        shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
+                    },
+                ]}
+            >
+                <Text style={[styles.hint, { color: colors.textMuted }]}>
+                    {isCommand
+                        ? t("输入 / 选择命令预设", "Type / to choose a preset")
+                        : t("输入 @ 选择一个或多个 Skill", "Type @ to choose one or more skills")}
+                </Text>
 
-                        <View style={[styles.viewport, { height: viewportHeight }]}>
-                            <FlatList
-                                data={data}
-                                keyExtractor={(item) => isCommand ? item.name : `${item.name}:${item.path || ""}`}
-                                renderItem={isCommand ? renderCommandItem : renderSkillItem}
-                                scrollEnabled
-                                nestedScrollEnabled
-                                persistentScrollbar
-                                keyboardShouldPersistTaps="always"
-                                showsVerticalScrollIndicator
-                                overScrollMode="never"
-                                removeClippedSubviews={false}
-                                contentContainerStyle={styles.listContent}
-                                ListEmptyComponent={(
-                                    <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-                                        {isCommand
-                                            ? t("没有匹配的命令预设", "No matching presets")
-                                            : t("没有匹配的 Skill", "No matching skills")}
-                                    </Text>
-                                )}
-                            />
-                        </View>
-                    </View>
+                <View style={[styles.viewport, { height: viewportHeight }]}>
+                    <FlatList
+                        data={data}
+                        keyExtractor={(item) => isCommand ? item.name : `${item.name}:${item.path || ""}`}
+                        renderItem={isCommand ? renderCommandItem : renderSkillItem}
+                        scrollEnabled
+                        nestedScrollEnabled
+                        persistentScrollbar
+                        keyboardShouldPersistTaps="handled"
+                        keyboardDismissMode="none"
+                        showsVerticalScrollIndicator
+                        overScrollMode="never"
+                        removeClippedSubviews={false}
+                        contentContainerStyle={styles.listContent}
+                        ListEmptyComponent={(
+                            <Text style={[styles.emptyText, { color: colors.textMuted }]}>
+                                {isCommand
+                                    ? t("没有匹配的命令预设", "No matching presets")
+                                    : t("没有匹配的 Skill", "No matching skills")}
+                            </Text>
+                        )}
+                    />
                 </View>
             </View>
-        </Modal>
+        </View>
     );
 });
 
 const styles = StyleSheet.create({
-    modalRoot: {
-        flex: 1,
-    },
     overlay: {
         position: "absolute",
         zIndex: 32,
+        elevation: 32,
     },
     panel: {
         borderRadius: 22,

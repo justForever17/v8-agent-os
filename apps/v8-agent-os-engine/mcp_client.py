@@ -15,7 +15,9 @@ import httpx
 
 from core.storage import storage
 
-MCP_SERVER_INIT_TIMEOUT_SECONDS = 15.0
+MCP_SERVER_INIT_TIMEOUT_SECONDS = float(
+    os.environ.get("V8_AGENT_OS_MCP_SERVER_INIT_TIMEOUT_SECONDS", "15.0").strip() or "15.0"
+)
 
 
 @dataclass(slots=True)
@@ -41,6 +43,14 @@ class MCPManager:
         self._startup_state = "cold"
         self._last_refresh_at: str | None = None
         self._last_refresh_error: str | None = None
+
+    def _log_server_task_result(self, name: str, task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            print(f"[MCP] Server task '{name}' exited: {type(exc).__name__}: {exc}")
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -165,6 +175,7 @@ class MCPManager:
     async def _start_server(self, name: str, srv_config: dict[str, Any]) -> None:
         await self._stop_server_task(name, cancel=True)
         transport_type = srv_config.get("type") or ("stdio" if srv_config.get("command") else ("http" if str(srv_config.get("url") or "").startswith("http") else "sse"))
+        started_at = self._now_iso()
         self._set_server_state(
             name,
             transport=transport_type,
@@ -174,6 +185,9 @@ class MCPManager:
             lastError=None,
             lastErrorKind=None,
             executionImpacted=False,
+            startedAt=started_at,
+            readyAt=None,
+            timedOutDuringStartup=False,
         )
         stop_event = asyncio.Event()
         ready_future = asyncio.get_running_loop().create_future()
@@ -181,6 +195,7 @@ class MCPManager:
             self._run_server_task(name, srv_config, stop_event, ready_future),
             name=f"mcp:{name}",
         )
+        task.add_done_callback(lambda completed_task, server_name=name: self._log_server_task_result(server_name, completed_task))
         self._server_tasks[name] = _ManagedServerTask(
             name=name,
             stop_event=stop_event,
@@ -189,6 +204,25 @@ class MCPManager:
         )
         try:
             await asyncio.wait_for(asyncio.shield(ready_future), timeout=MCP_SERVER_INIT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            self._set_server_state(
+                name,
+                transport=transport_type,
+                status="connecting",
+                impact="background_connect",
+                toolCount=len(self._server_tools.get(name) or []),
+                lastError=None,
+                lastErrorKind=None,
+                executionImpacted=False,
+                startedAt=started_at,
+                readyAt=None,
+                timedOutDuringStartup=True,
+            )
+            print(
+                f"[MCP] Server '{name}' is still warming after "
+                f"{MCP_SERVER_INIT_TIMEOUT_SECONDS:.0f}s; keeping it running in background."
+            )
+            return
         except BaseException:
             stop_event.set()
             if not ready_future.done():
@@ -300,6 +334,7 @@ class MCPManager:
                 lastError=None,
                 lastErrorKind=None,
                 executionImpacted=False,
+                readyAt=self._now_iso(),
             )
             if not ready_future.done():
                 ready_future.set_result({"tool_count": len(server_tools)})
@@ -423,6 +458,9 @@ class MCPManager:
                 "lastErrorKind": server_state.get("lastErrorKind"),
                 "executionImpacted": bool(server_state.get("executionImpacted", False)),
                 "updatedAt": server_state.get("updatedAt"),
+                "startedAt": server_state.get("startedAt"),
+                "readyAt": server_state.get("readyAt"),
+                "timedOutDuringStartup": bool(server_state.get("timedOutDuringStartup", False)),
             }
             if server_state.get("status"):
                 status[name]["status"] = server_state.get("status")
@@ -489,13 +527,16 @@ class MCPManager:
 
     def get_startup_status(self) -> dict[str, Any]:
         status = self.get_status()
+        startup_state = self._startup_state
+        if any(str(payload.get("status") or "").strip() == "connecting" for payload in status.values()):
+            startup_state = "refreshing"
         connected_servers = [
             name
             for name, payload in sorted(status.items(), key=lambda item: item[0].lower())
             if str(payload.get("status") or "").strip() == "connected"
         ]
         return {
-            "startupState": self._startup_state,
+            "startupState": startup_state,
             "lastRefreshAt": self._last_refresh_at,
             "lastRefreshError": self._last_refresh_error,
             "configuredServers": len(status),

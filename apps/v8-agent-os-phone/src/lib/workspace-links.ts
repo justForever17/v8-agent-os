@@ -1,15 +1,34 @@
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getWorkspaceFileUrl } from "@/src/lib/phone-api";
+import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
 
 const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/([^\s)]+)/gi;
+const LOOPBACK_WORKSPACE_API_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/api\/workspace\/files\/([^\s)]+)/gi;
+const LOOPBACK_ARTIFACT_CONTENT_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/(?:v1|api(?:\/client)?)\/artifacts\/([^/\s)]+)\/content(?:\?[^\s)]*)?/gi;
 const ABSOLUTE_WORKSPACE_PATH_PATTERN = /(^|[\s(])\/workspace\/([^\s)]+)/gi;
+const ABSOLUTE_WORKSPACE_API_PATH_PATTERN = /(^|[\s(])\/api\/workspace\/files\/([^\s)]+)/gi;
+const ABSOLUTE_ARTIFACT_CONTENT_PATH_PATTERN = /(^|[\s(])\/(?:v1|api(?:\/client)?)\/artifacts\/([^/\s)]+)\/content(?:\?[^\s)]*)?/gi;
 const WINDOWS_WORKSPACE_PATH_PATTERN = /([A-Za-z]:\\[^\s<>"]*?\\workspace\\[^\s<>"]+)/g;
 
-function normalizeWorkspaceSubpath(value: string) {
+function safeDecodePath(value: string) {
     return String(value || "")
+        .split("/")
+        .map((segment) => {
+            try {
+                return decodeURIComponent(segment);
+            } catch {
+                return segment;
+            }
+        })
+        .join("/");
+}
+
+function normalizeWorkspaceSubpath(value: string) {
+    return safeDecodePath(String(value || ""))
         .replace(/\\/g, "/")
         .replace(/^\/+/, "")
         .replace(/^workspace\//i, "")
+        .replace(/^api\/workspace\/files\//i, "")
+        .replace(/^api\/client\/workspace\/files\//i, "")
         .trim();
 }
 
@@ -37,8 +56,27 @@ export function normalizeRenderableWorkspaceUrl(adminBaseUrl: string, value?: st
         return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(loopbackMatch[1]));
     }
 
+    const loopbackApiMatch = raw.match(/^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/api\/workspace\/files\/(.+)$/i);
+    if (loopbackApiMatch?.[1]) {
+        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(loopbackApiMatch[1]));
+    }
+
+    const loopbackArtifactMatch = raw.match(/^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/(?:v1|api(?:\/client)?)\/artifacts\/([^/]+)\/content(?:\?.*)?$/i);
+    if (loopbackArtifactMatch?.[1]) {
+        return getArtifactContentUrl(adminBaseUrl, loopbackArtifactMatch[1]);
+    }
+
     if (raw.startsWith("/workspace/")) {
         return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(raw));
+    }
+
+    if (raw.startsWith("/api/workspace/files/")) {
+        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(raw));
+    }
+
+    const artifactContentMatch = raw.match(/^\/(?:v1|api(?:\/client)?)\/artifacts\/([^/]+)\/content(?:\?.*)?$/i);
+    if (artifactContentMatch?.[1]) {
+        return getArtifactContentUrl(adminBaseUrl, artifactContentMatch[1]);
     }
 
     const windowsSubpath = deriveWorkspaceSubpathFromWindowsPath(raw);
@@ -56,8 +94,24 @@ export function normalizeRenderableWorkspaceLinks(adminBaseUrl: string, content:
         return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath));
     });
 
+    normalized = normalized.replace(LOOPBACK_WORKSPACE_API_URL_PATTERN, (_match, subpath: string) => {
+        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath));
+    });
+
+    normalized = normalized.replace(LOOPBACK_ARTIFACT_CONTENT_URL_PATTERN, (_match, artifactId: string) => {
+        return getArtifactContentUrl(adminBaseUrl, String(artifactId || "").trim());
+    });
+
     normalized = normalized.replace(ABSOLUTE_WORKSPACE_PATH_PATTERN, (_match, prefix: string, subpath: string) => {
         return `${prefix}${getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath))}`;
+    });
+
+    normalized = normalized.replace(ABSOLUTE_WORKSPACE_API_PATH_PATTERN, (_match, prefix: string, subpath: string) => {
+        return `${prefix}${getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath))}`;
+    });
+
+    normalized = normalized.replace(ABSOLUTE_ARTIFACT_CONTENT_PATH_PATTERN, (_match, prefix: string, artifactId: string) => {
+        return `${prefix}${getArtifactContentUrl(adminBaseUrl, String(artifactId || "").trim())}`;
     });
 
     return normalized;

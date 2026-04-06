@@ -40,6 +40,14 @@ import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/Pho
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
+import {
+    applyRealtimeEventToMessages as applyRealtimeEventToPhoneMessages,
+    buildAssistantMessage,
+    deriveRealtimeStreamState,
+    isActiveAssistantStreamPhase,
+    type AgentProfile,
+    type PhoneRealtimeUiEvent,
+} from "@/src/lib/chat-stream-state";
 import { buildApprovalFromEvent, collectArtifactsFromMessages, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
 import {
     buildPhoneRuntimeTimelineEntryFromEvent,
@@ -65,6 +73,7 @@ import {
     dispatchRunCommand,
     getDesktopLiveStatus,
     getConversationDetail,
+    getRealtimeSnapshot,
     listCommandPresets,
     listConversations,
     listMusicTracks,
@@ -90,6 +99,7 @@ import type {
     ConversationSummary,
     MusicTrack,
     PendingApproval,
+    PhoneUiTimelineNode,
     DesktopLiveStatus,
     RealtimeSessionSnapshot,
     SessionTodoItem,
@@ -166,19 +176,11 @@ function buildUserMessage(
 }
 
 function buildAssistantPlaceholder(runId?: string): ChatMessage {
-    return {
-        id: `assistant-${Date.now()}`,
-        role: "assistant",
-        content: "",
-        timestamp: Date.now(),
-        runId,
+    return buildAssistantMessage({
         agentName: "智能主管",
         agentAvatar: "/brand-mark.png",
         agentRoleLabel: "主理人",
-        agentType: "supervisor",
-        artifacts: [],
-        images: [],
-    };
+    }, runId, "placeholder");
 }
 
 function extractSkillQuery(input: string) {
@@ -303,6 +305,220 @@ function summarizeRuntime(snapshot: RealtimeSessionSnapshot | null): RuntimeSumm
         latestSeq: Number(snapshot?.latestSeq || 0),
         runId: snapshot?.currentRun?.id,
     };
+}
+
+const REALTIME_SNAPSHOT_FALLBACK_GRACE_MS = 2600;
+const REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS = 1400;
+const REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS = 420;
+
+function buildArtifactFingerprint(artifact: ChatArtifact) {
+    return [
+        String(artifact.id || artifact.artifactId || artifact.workspacePath || artifact.sourcePath || artifact.previewUrl || artifact.externalUrl || "").trim(),
+        String(artifact.kind || "").trim(),
+        String(artifact.title || "").trim(),
+    ].join("::");
+}
+
+function buildMessagesFingerprint(messages: ChatMessage[]) {
+    const safeStringify = (value: unknown) => {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return String(value ?? "");
+        }
+    };
+    const buildNodeFingerprint = (node: PhoneUiTimelineNode) => {
+        if (!node) {
+            return "";
+        }
+        if (node.kind === "narrative") {
+            return [
+                node.kind,
+                node.role,
+                String(node.content || ""),
+                String(node.agentName || ""),
+            ].join("¦");
+        }
+        if (node.kind === "execution") {
+            return [
+                node.kind,
+                node.executionType,
+                String(node.toolCallId || ""),
+                String(node.toolName || ""),
+                String(node.topic || ""),
+                String(node.label || ""),
+                String(node.content || ""),
+                safeStringify(node.result ?? node.data ?? node.args ?? null),
+            ].join("¦");
+        }
+        if (node.kind === "governance") {
+            return [
+                node.kind,
+                node.governanceType,
+                String(node.approvalId || ""),
+                String(node.question || node.reason || node.topic || ""),
+                String(node.status || ""),
+            ].join("¦");
+        }
+        if (node.kind === "artifact") {
+            return [
+                node.kind,
+                String(node.artifact.id || ""),
+                String(node.artifact.workspacePath || node.artifact.previewUrl || node.artifact.externalUrl || ""),
+            ].join("¦");
+        }
+        return safeStringify(node);
+    };
+
+    return messages.map((message) => [
+        String(message.id || "").trim(),
+        String(message.renderKey || "").trim(),
+        String(message.role || "").trim(),
+        String(message.runId || "").trim(),
+        String(message.content || ""),
+        String(message.uiStreamPhase || ""),
+        message.uiEphemeral ? "1" : "0",
+        (message.images || []).join("|"),
+        (message.artifacts || []).map(buildArtifactFingerprint).join("|"),
+        Array.isArray(message.nodes) ? message.nodes.map(buildNodeFingerprint).join("§") : "0",
+    ].join("¦")).join("¶");
+}
+
+function buildSnapshotSequence(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
+    const root = asRecord(payload);
+    const nestedSnapshot = asRecord(root.snapshot);
+    return Number(root.latestSeq || root.latest_seq || nestedSnapshot.latest_seq || 0) || 0;
+}
+
+function isOptimisticLocalMessage(message: ChatMessage) {
+    const id = String(message.id || "").trim();
+    return id.startsWith("user-") || id.startsWith("assistant-");
+}
+
+function buildMessageComparisonKeys(message: ChatMessage) {
+    const keys = new Set<string>();
+    const id = String(message.id || "").trim();
+    if (id) {
+        keys.add(`id:${id}`);
+    }
+
+    const role = String(message.role || "").trim();
+    const runId = String(message.runId || message.metadata?.runId || "").trim();
+    const normalizedContent = String(message.content || "").trim().replace(/\s+/g, " ");
+    if (runId) {
+        keys.add(`run:${role}:${runId}`);
+        if (normalizedContent) {
+            keys.add(`run-content:${role}:${runId}:${normalizedContent}`);
+        }
+    }
+
+    if (normalizedContent) {
+        keys.add(`content:${role}:${normalizedContent}`);
+    }
+
+    const artifactKeys = (message.artifacts || [])
+        .map((artifact) => buildArtifactFingerprint(artifact))
+        .filter(Boolean)
+        .join("|");
+    if (artifactKeys) {
+        keys.add(`artifacts:${role}:${artifactKeys}`);
+    }
+
+    return Array.from(keys);
+}
+
+function hasRenderableMessagePayload(message: ChatMessage) {
+    return Boolean(
+        String(message.content || "").trim()
+        || (Array.isArray(message.images) && message.images.length > 0)
+        || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
+        || (Array.isArray(message.nodes) && message.nodes.length > 0),
+    );
+}
+
+function mergeAuthoritativeSnapshotMessages(
+    current: ChatMessage[],
+    snapshotMessages: ChatMessage[],
+    preserveOptimisticLocalState: boolean,
+) {
+    const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
+    if (!preserveOptimisticLocalState) {
+        return normalizedSnapshot;
+    }
+
+    const optimisticLocals = current.filter(isOptimisticLocalMessage);
+    if (optimisticLocals.length === 0) {
+        return normalizedSnapshot;
+    }
+
+    const usedOptimisticLocals = new Set<string>();
+    const mergedSnapshotMessages = normalizedSnapshot.map((snapshotMessage) => {
+        const snapshotKeys = new Set(buildMessageComparisonKeys(snapshotMessage));
+        const matchingLocal = optimisticLocals.find((candidate) => {
+            const localId = String(candidate.id || "").trim();
+            if (localId && usedOptimisticLocals.has(localId)) {
+                return false;
+            }
+            if (
+                candidate.role === "assistant"
+                && snapshotMessage.role === "assistant"
+                && candidate.runId
+                && snapshotMessage.runId
+                && candidate.runId === snapshotMessage.runId
+            ) {
+                return true;
+            }
+            return buildMessageComparisonKeys(candidate).some((key) => snapshotKeys.has(key));
+        });
+
+        if (!matchingLocal) {
+            return snapshotMessage;
+        }
+
+        const matchingLocalId = String(matchingLocal.id || "").trim();
+        if (matchingLocalId) {
+            usedOptimisticLocals.add(matchingLocalId);
+        }
+
+        const mergedMessage = normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage;
+        const localStreamActive = matchingLocal.role === "assistant" && isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase);
+        const snapshotRenderable = hasRenderableMessagePayload(snapshotMessage);
+
+        if (matchingLocal.role === "assistant" && matchingLocal.uiEphemeral) {
+            mergedMessage.uiEphemeral = !snapshotRenderable;
+            mergedMessage.uiStreamPhase = localStreamActive
+                ? matchingLocal.uiStreamPhase
+                : snapshotMessage.uiStreamPhase;
+        }
+
+        return mergedMessage;
+    });
+
+    const unmatchedOptimisticLocals = optimisticLocals.filter((message) => {
+        const messageId = String(message.id || "").trim();
+        if (messageId && usedOptimisticLocals.has(messageId)) {
+            return false;
+        }
+        const comparisonKeys = buildMessageComparisonKeys(message);
+        return !mergedSnapshotMessages.some((snapshotMessage) => {
+            const snapshotKeys = new Set(buildMessageComparisonKeys(snapshotMessage));
+            return comparisonKeys.some((key) => snapshotKeys.has(key));
+        });
+    });
+
+    return normalizeMessagesForState([...mergedSnapshotMessages, ...unmatchedOptimisticLocals]);
+}
+
+function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
+    const root = asRecord(payload);
+    const snapshot = asRecord(root.snapshot);
+    const messageCandidates = [root.messages, snapshot.messages];
+    for (const candidate of messageCandidates) {
+        if (Array.isArray(candidate)) {
+            return candidate.filter((item): item is ChatMessage => Boolean(item) && typeof item === "object");
+        }
+    }
+    return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -480,6 +696,21 @@ export default function ChatScreen() {
         lastSeenMessageKey: string;
         lastAutoPlayedKey: string;
     }>());
+    const realtimeSnapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const realtimeSnapshotInflightRef = useRef(false);
+    const realtimeSnapshotPendingRef = useRef(false);
+    const lastMessageFingerprintRef = useRef("");
+    const lastAppliedSnapshotSeqRef = useRef(0);
+    const lastAppliedSnapshotFingerprintRef = useRef("");
+    const lastRealtimeSnapshotAtRef = useRef(0);
+    const remoteCurrentAiMsgRef = useRef<ChatMessage | undefined>(undefined);
+    const remoteAgentProfileRef = useRef<AgentProfile>({
+        agentName: "智能主管",
+        agentAvatar: "/brand-mark.png",
+        agentRoleLabel: "主理人",
+    });
+    const pendingRuntimeEventsRef = useRef<PhoneRealtimeUiEvent[]>([]);
+    const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const previousConversationIdRef = useRef<string | null>(null);
@@ -570,10 +801,44 @@ export default function ChatScreen() {
         activeConversationIdRef.current = activeConversationId;
     }, [activeConversationId]);
 
+    useEffect(() => {
+        lastMessageFingerprintRef.current = buildMessagesFingerprint(messages);
+    }, [messages]);
+
+    const sendingRef = useRef(sending);
+
+    useEffect(() => {
+        sendingRef.current = sending;
+    }, [sending]);
+
     const syncArtifactsFromMessages = useCallback((nextMessages: ChatMessage[]) => {
         const derived = collectArtifactsFromMessages(nextMessages).map(toArtifactDetail);
-        setArtifacts((current) => mergeArtifactDetails(current, derived));
+        setArtifacts(mergeArtifactDetails([], derived));
     }, []);
+
+    const resetConversationStreamState = useCallback(() => {
+        remoteCurrentAiMsgRef.current = undefined;
+        remoteAgentProfileRef.current = {
+            agentName: "智能主管",
+            agentAvatar: "/brand-mark.png",
+            agentRoleLabel: "主理人",
+        };
+        pendingRuntimeEventsRef.current = [];
+        if (runtimeFlushTimerRef.current) {
+            clearTimeout(runtimeFlushTimerRef.current);
+            runtimeFlushTimerRef.current = null;
+        }
+    }, []);
+
+    const syncStreamStateFromMessages = useCallback((nextMessages: ChatMessage[]) => {
+        const derived = deriveRealtimeStreamState(nextMessages);
+        remoteCurrentAiMsgRef.current = derived.currentAiMsg;
+        remoteAgentProfileRef.current = derived.activeAgentProfile;
+    }, []);
+
+    useEffect(() => {
+        syncStreamStateFromMessages(messages);
+    }, [messages, syncStreamStateFromMessages]);
 
     const appendRuntimeTimeline = useCallback((entry: PhoneRuntimeTimelineEntry | null) => {
         if (!entry) {
@@ -582,14 +847,85 @@ export default function ChatScreen() {
         setRuntimeTimeline((current) => mergePhoneRuntimeTimeline(current, [entry]));
     }, []);
 
+    const applyStreamEventsToMessages = useCallback((events: PhoneRealtimeUiEvent[]) => {
+        if (events.length === 0) {
+            return;
+        }
+        setMessages((current) => {
+            const localMessages = normalizeMessagesForState(current);
+            let nextCurrentAiMsg = remoteCurrentAiMsgRef.current;
+            let nextActiveAgentProfile = remoteAgentProfileRef.current;
+
+            for (const event of events) {
+                const result = applyRealtimeEventToPhoneMessages(
+                    event,
+                    localMessages,
+                    nextCurrentAiMsg,
+                    nextActiveAgentProfile,
+                );
+                nextCurrentAiMsg = result.currentAiMsg;
+                nextActiveAgentProfile = result.activeAgentProfile;
+            }
+
+            const normalized = normalizeMessagesForState(localMessages);
+            const fingerprint = buildMessagesFingerprint(normalized);
+
+            remoteCurrentAiMsgRef.current = nextCurrentAiMsg;
+            remoteAgentProfileRef.current = nextActiveAgentProfile;
+
+            if (fingerprint === lastMessageFingerprintRef.current) {
+                return current;
+            }
+
+            lastMessageFingerprintRef.current = fingerprint;
+            syncArtifactsFromMessages(normalized);
+            return normalized;
+        });
+    }, [syncArtifactsFromMessages]);
+
+    const flushPendingRuntimeEvents = useCallback(() => {
+        if (runtimeFlushTimerRef.current) {
+            clearTimeout(runtimeFlushTimerRef.current);
+            runtimeFlushTimerRef.current = null;
+        }
+        const batch = pendingRuntimeEventsRef.current.splice(0, pendingRuntimeEventsRef.current.length);
+        if (batch.length === 0) {
+            return;
+        }
+        applyStreamEventsToMessages(batch);
+    }, [applyStreamEventsToMessages]);
+
+    const queueRuntimeMessageEvent = useCallback((event: PhoneRealtimeUiEvent, immediate = false) => {
+        pendingRuntimeEventsRef.current.push(event);
+        if (immediate) {
+            flushPendingRuntimeEvents();
+            return;
+        }
+        if (runtimeFlushTimerRef.current) {
+            return;
+        }
+        runtimeFlushTimerRef.current = setTimeout(() => {
+            runtimeFlushTimerRef.current = null;
+            flushPendingRuntimeEvents();
+        }, 48);
+    }, [flushPendingRuntimeEvents]);
+
     const stopRealtime = useCallback(() => {
         realtimeSubscriptionTokenRef.current += 1;
+        if (realtimeSnapshotTimerRef.current) {
+            clearTimeout(realtimeSnapshotTimerRef.current);
+            realtimeSnapshotTimerRef.current = null;
+        }
+        realtimeSnapshotPendingRef.current = false;
+        realtimeSnapshotInflightRef.current = false;
         if (realtimeAbortRef.current) {
             realtimeAbortRef.current.abort();
             realtimeAbortRef.current = null;
         }
         realtimeConversationIdRef.current = null;
-    }, []);
+        lastRealtimeSnapshotAtRef.current = 0;
+        resetConversationStreamState();
+    }, [resetConversationStreamState]);
 
     const refreshDesktopLiveStatus = useCallback(async () => {
         if (!desktopLiveUserIntentRef.current) {
@@ -1001,9 +1337,106 @@ export default function ChatScreen() {
         latestSeqRef.current = nextRuntime.latestSeq;
     }, []);
 
+    const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
+        const snapshotMessages = extractSnapshotMessages(payload);
+        const snapshotSeq = buildSnapshotSequence(payload);
+        if (snapshotMessages) {
+            const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
+            const snapshotFingerprint = buildMessagesFingerprint(normalizedSnapshot);
+            const snapshotOlderThanApplied = snapshotSeq > 0 && snapshotSeq < lastAppliedSnapshotSeqRef.current;
+            lastRealtimeSnapshotAtRef.current = Date.now();
+
+            if (snapshotOlderThanApplied && snapshotFingerprint === lastAppliedSnapshotFingerprintRef.current) {
+                applyConversationProjection(payload);
+                return;
+            }
+
+            lastAppliedSnapshotFingerprintRef.current = snapshotFingerprint;
+            if (snapshotSeq > 0) {
+                lastAppliedSnapshotSeqRef.current = Math.max(lastAppliedSnapshotSeqRef.current, snapshotSeq);
+            }
+
+            setMessages((current) => {
+                const normalized = mergeAuthoritativeSnapshotMessages(
+                    current,
+                    normalizedSnapshot,
+                    sendingRef.current,
+                );
+                const fingerprint = buildMessagesFingerprint(normalized);
+                if (fingerprint === lastMessageFingerprintRef.current) {
+                    return current;
+                }
+                lastMessageFingerprintRef.current = fingerprint;
+                syncStreamStateFromMessages(normalized);
+                syncArtifactsFromMessages(normalized);
+                return normalized;
+            });
+        }
+        if (snapshotSeq > 0) {
+            latestSeqRef.current = Math.max(latestSeqRef.current, snapshotSeq);
+            lastAppliedSnapshotSeqRef.current = Math.max(lastAppliedSnapshotSeqRef.current, snapshotSeq);
+            lastRealtimeSnapshotAtRef.current = Date.now();
+        }
+        applyConversationProjection(payload);
+    }, [applyConversationProjection, syncArtifactsFromMessages, syncStreamStateFromMessages]);
+
+    const scheduleRealtimeSnapshotRefresh = useCallback((conversationId?: string | null, options?: { force?: boolean }) => {
+        const targetConversationId = String(conversationId || activeConversationIdRef.current || "").trim();
+        if (!targetConversationId || activeConversationIdRef.current !== targetConversationId) {
+            return;
+        }
+        const force = options?.force === true;
+        if (!force && Date.now() - lastRealtimeSnapshotAtRef.current < REALTIME_SNAPSHOT_FALLBACK_GRACE_MS) {
+            return;
+        }
+
+        const runRefresh = async () => {
+            if (realtimeSnapshotInflightRef.current) {
+                realtimeSnapshotPendingRef.current = true;
+                return;
+            }
+            realtimeSnapshotInflightRef.current = true;
+            realtimeSnapshotPendingRef.current = false;
+            try {
+                if (!force && lastRealtimeSnapshotAtRef.current > scheduledAt) {
+                    return;
+                }
+                if (!force && Date.now() - lastRealtimeSnapshotAtRef.current < REALTIME_SNAPSHOT_FALLBACK_GRACE_MS) {
+                    return;
+                }
+                const snapshot = await getRealtimeSnapshot(authorizedFetch, targetConversationId);
+                if (activeConversationIdRef.current === targetConversationId) {
+                    applyRealtimeSnapshotPayload(snapshot);
+                }
+            } catch (error) {
+                console.warn("[phone] realtime snapshot refresh failed:", error);
+            } finally {
+                realtimeSnapshotInflightRef.current = false;
+                if (realtimeSnapshotPendingRef.current && activeConversationIdRef.current === targetConversationId) {
+                    realtimeSnapshotPendingRef.current = false;
+                    realtimeSnapshotTimerRef.current = setTimeout(() => {
+                        realtimeSnapshotTimerRef.current = null;
+                        void runRefresh();
+                    }, force ? REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS : REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS);
+                }
+            }
+        };
+
+        if (realtimeSnapshotTimerRef.current) {
+            realtimeSnapshotPendingRef.current = true;
+            return;
+        }
+
+        const scheduledAt = Date.now();
+        realtimeSnapshotTimerRef.current = setTimeout(() => {
+            realtimeSnapshotTimerRef.current = null;
+            void runRefresh();
+        }, force ? REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS : REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS);
+    }, [applyRealtimeSnapshotPayload, authorizedFetch]);
+
     const handleRealtimeEvent = useCallback((eventName: string, payload: unknown) => {
         if (eventName === "snapshot" && payload && typeof payload === "object") {
-            applyConversationProjection(payload as RealtimeSessionSnapshot);
+            applyRealtimeSnapshotPayload(payload as RealtimeSessionSnapshot);
             return;
         }
 
@@ -1017,6 +1450,26 @@ export default function ChatScreen() {
         }
         if (normalized.seq) {
             latestSeqRef.current = normalized.seq;
+        }
+
+        const shouldMergeIntoAssistant =
+            normalized.type === "agent_start"
+            || normalized.type === "text_chunk"
+            || normalized.type === "reasoning_chunk"
+            || normalized.type === "tool_start"
+            || normalized.type === "tool_result"
+            || normalized.type === "done"
+            || normalized.type === "error"
+            || (normalized.type === "custom_event" && (
+                normalized.name === "artifact_recorded"
+                || normalized.name === "runtime_progress"
+                || normalized.name === "runtime_event"
+                || normalized.name === "ask_user"
+                || normalized.name === "run_controlled"
+            ));
+
+        if (shouldMergeIntoAssistant) {
+            queueRuntimeMessageEvent(normalized, normalized.type === "agent_start" || normalized.type === "done" || normalized.type === "error");
         }
 
         if (normalized.name === "ask_user") {
@@ -1047,9 +1500,10 @@ export default function ChatScreen() {
                     timestamp: normalized.ts || Date.now(),
                     actorLabel: tRef.current("运行调度", "Automation"),
                 },
-            ),
+                ),
         );
             }
+            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             return;
         }
 
@@ -1075,11 +1529,7 @@ export default function ChatScreen() {
                     },
                 ),
             );
-            setMessages((current) => {
-                const next = applyArtifactEvent(current, normalized.artifact || null, normalized.run_id);
-                syncArtifactsFromMessages(next);
-                return next;
-            });
+            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             return;
         }
 
@@ -1108,6 +1558,7 @@ export default function ChatScreen() {
                 runId: normalized.run_id || current.runId,
                 label: typeof normalized.data?.label === "string" ? normalized.data.label : current.label,
             }));
+            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             return;
         }
 
@@ -1137,6 +1588,7 @@ export default function ChatScreen() {
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
             }));
+            scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             return;
         }
 
@@ -1188,7 +1640,13 @@ export default function ChatScreen() {
                 label: typeof normalized.data?.label === "string" ? normalized.data.label : current.label,
             };
         });
-    }, [appendRuntimeTimeline, applyConversationProjection, locale, syncArtifactsFromMessages]);
+        if (!topic.toLowerCase().includes("heartbeat")) {
+            scheduleRealtimeSnapshotRefresh(
+                normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
+                { force: normalized.type === "done" || normalized.type === "error" },
+            );
+        }
+    }, [appendRuntimeTimeline, applyRealtimeSnapshotPayload, locale, queueRuntimeMessageEvent, scheduleRealtimeSnapshotRefresh]);
 
     const startRealtime = useCallback(async (conversationId: string, transitionToken?: number) => {
         if (
@@ -1242,9 +1700,15 @@ export default function ChatScreen() {
                 return false;
             }
             const normalized = normalizeMessagesForState(detail.messages || []);
+            resetConversationStreamState();
+            syncStreamStateFromMessages(normalized);
+            lastMessageFingerprintRef.current = buildMessagesFingerprint(normalized);
             setMessages(normalized);
             syncArtifactsFromMessages(normalized);
             applyConversationProjection(detail);
+            lastAppliedSnapshotSeqRef.current = buildSnapshotSequence(detail);
+            lastAppliedSnapshotFingerprintRef.current = buildMessagesFingerprint(normalized);
+            lastRealtimeSnapshotAtRef.current = Date.now();
             hydratedConversationIdRef.current = conversationId;
             const overlayPatch = buildConversationOverlayPatch(detail);
             setConversations((current) => sortSessionHistory(current.map((item) => (
@@ -1278,7 +1742,7 @@ export default function ChatScreen() {
                 setConversationBusy(false);
             }
         }
-    }, [applyConversationProjection, authorizedFetch, syncArtifactsFromMessages]);
+    }, [applyConversationProjection, authorizedFetch, resetConversationStreamState, syncArtifactsFromMessages, syncStreamStateFromMessages]);
 
     const ensureConversation = useCallback(async () => {
         if (activeConversationId) {
@@ -1330,6 +1794,9 @@ export default function ChatScreen() {
             hydratedConversationIdRef.current = null;
             loadingConversationIdRef.current = null;
             latestSeqRef.current = 0;
+            lastAppliedSnapshotSeqRef.current = 0;
+            lastAppliedSnapshotFingerprintRef.current = "";
+            lastRealtimeSnapshotAtRef.current = 0;
             stopRealtimeRef.current();
             return;
         }
@@ -1338,6 +1805,7 @@ export default function ChatScreen() {
             previousConversationIdRef.current = null;
             hydratedConversationIdRef.current = null;
             loadingConversationIdRef.current = null;
+            resetConversationStreamState();
             setMessages([]);
             setApprovals([]);
             setTodos([]);
@@ -1345,6 +1813,9 @@ export default function ChatScreen() {
             setRuntime({ status: "idle", latestSeq: 0 });
             setRuntimeTimeline([]);
             latestSeqRef.current = 0;
+            lastAppliedSnapshotSeqRef.current = 0;
+            lastAppliedSnapshotFingerprintRef.current = "";
+            lastRealtimeSnapshotAtRef.current = 0;
             stopRealtimeRef.current();
             return;
         }
@@ -1354,7 +1825,10 @@ export default function ChatScreen() {
         conversationTransitionTokenRef.current = transitionToken;
         if (conversationChanged) {
             stopRealtimeRef.current();
+            resetConversationStreamState();
             latestSeqRef.current = 0;
+            lastAppliedSnapshotSeqRef.current = 0;
+            lastAppliedSnapshotFingerprintRef.current = "";
         }
         let cancelled = false;
         void (async () => {
@@ -1376,7 +1850,7 @@ export default function ChatScreen() {
         return () => {
             cancelled = true;
         };
-    }, [activeConversationId, status]);
+    }, [activeConversationId, resetConversationStreamState, status]);
 
     useEffect(() => {
         setSpeakingId("");
@@ -1409,6 +1883,7 @@ export default function ChatScreen() {
 
     const handleNewConversation = useCallback(async () => {
         stopRealtime();
+        resetConversationStreamState();
         hydratedConversationIdRef.current = null;
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
@@ -1427,8 +1902,11 @@ export default function ChatScreen() {
         setRuntime({ status: "idle", latestSeq: 0 });
         setRuntimeTimeline([]);
         latestSeqRef.current = 0;
+        lastAppliedSnapshotSeqRef.current = 0;
+        lastAppliedSnapshotFingerprintRef.current = "";
+        lastRealtimeSnapshotAtRef.current = 0;
         await setActiveConversationId(null);
-    }, [setActiveConversationId, stopRealtime]);
+    }, [resetConversationStreamState, setActiveConversationId, stopRealtime]);
 
     const handleBrandPress = useCallback(async () => {
         await handleNewConversation();
@@ -1803,7 +2281,20 @@ export default function ChatScreen() {
                 files: uploadedFiles,
             });
 
-            setMessages((current) => normalizeMessagesForState([...current, userMessage]));
+            setMessages((current) => {
+                const next = normalizeMessagesForState([
+                    ...current,
+                    userMessage,
+                    buildAssistantPlaceholder(),
+                ]);
+                syncStreamStateFromMessages(next);
+                lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                return next;
+            });
+            setRuntime((current) => ({
+                ...current,
+                status: "running",
+            }));
             setInput("");
 
             if (text) {
@@ -1838,18 +2329,25 @@ export default function ChatScreen() {
                     taskPlanningMode,
                 },
                 (event: ChatStreamEvent) => {
-                    if (event.type === "text_chunk") {
-                        setMessages((current) => applyTextChunk(current, String(event.content || ""), event.run_id));
+                    if (
+                        event.type === "agent_start"
+                        || event.type === "text_chunk"
+                        || event.type === "reasoning_chunk"
+                        || event.type === "tool_start"
+                        || event.type === "tool_result"
+                        || event.type === "custom_event"
+                        || event.type === "done"
+                        || event.type === "error"
+                    ) {
+                        handleRealtimeEvent("message", event);
+                    }
+
+                    if (event.type === "text_chunk" || event.type === "agent_start" || event.type === "reasoning_chunk" || event.type === "tool_start" || event.type === "tool_result" || event.type === "custom_event") {
                         setRuntime((current) => ({
                             ...current,
                             status: "running",
                             runId: event.run_id || current.runId,
                         }));
-                        return;
-                    }
-
-                    if (event.type === "custom_event" || event.type === "agent_start") {
-                        handleRealtimeEvent("message", event);
                         return;
                     }
 
@@ -1863,6 +2361,11 @@ export default function ChatScreen() {
                     }
 
                     if (event.type === "error") {
+                        setRuntime((current) => ({
+                            ...current,
+                            status: "failed",
+                            runId: event.run_id || current.runId,
+                        }));
                         throw new Error(String(event.error || t("聊天流失败", "Chat stream failed")));
                     }
                 },
@@ -2020,6 +2523,7 @@ export default function ChatScreen() {
                         <ChatWindow
                             adminBaseUrl={adminBaseUrl}
                             messages={projection.projectedMessages}
+                            scrollLocked={pickerOverlayVisible}
                             refreshing={conversationBusy}
                             onRefresh={() => {
                                 if (activeConversationId) {

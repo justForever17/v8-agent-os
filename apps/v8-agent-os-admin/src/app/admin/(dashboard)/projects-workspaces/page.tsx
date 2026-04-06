@@ -124,7 +124,7 @@ export default function ProjectsWorkspacesPage() {
         <AdminPageShell>
             <AdminPageHeader
                 title="项目与工作区"
-                description="设置默认工作区和项目级覆盖关系。"
+                description="查看当前 canonical 主工作区，并管理项目级工作区覆盖关系。"
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved && !workspaceHasChanges} label="主工作区" />
@@ -139,7 +139,7 @@ export default function ProjectsWorkspacesPage() {
             <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
                 <ConfigCard
                     title="主工作区"
-                    description="设置系统默认执行目录。"
+                    description="这里显示当前主链采用的 canonical 工作区，或你显式保存的工作区配置值。"
                     variant="editor"
                     bodyHeight="clamp"
                     bodyScroll="auto"
@@ -156,7 +156,7 @@ export default function ProjectsWorkspacesPage() {
                                 placeholder="例如：C:\\Users\\你的账户\\.v8-agent-os\\workspace"
                             />
                             <div className="text-xs leading-5 text-slate-500">
-                                只接受绝对路径。这里不要求目录当前已存在，但建议父目录可写。
+                                只接受绝对路径。这里展示的是当前执行主链实际采用的默认工作区，不是一次性迁移补丁路径。
                             </div>
                         </div>
 
@@ -192,6 +192,11 @@ export default function ProjectsWorkspacesPage() {
                                     )}
                                     {pathStatus.isLegacyResidue ? "Legacy Monorepo Residue" : "Canonical Workspace"}
                                 </div>
+                                <div className="mt-2 text-xs leading-5 text-slate-500">
+                                    {pathStatus.isLegacyResidue
+                                        ? "当前值已命中退役 monorepo residue 规则，主链不会再把它当成合法工作区。"
+                                        : "当前值属于主链认可的 canonical workspace / 显式配置值，并不是临时 workaround。"}
+                                </div>
                                 {pathStatus.isLegacyResidue && pathStatus.recommendedPath ? (
                                     <div className="mt-2 text-xs leading-5 text-rose-600">
                                         推荐改用：{formatPathSummary(pathStatus.recommendedPath)}
@@ -202,13 +207,20 @@ export default function ProjectsWorkspacesPage() {
 
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
                             <div className="font-medium text-slate-900">状态说明</div>
-                            <div className="mt-2 leading-6">{error || localValidationError || pathStatus.reason || "目录状态正常，可作为默认执行目录。"}</div>
+                            <div className="mt-2 leading-6">
+                                {error
+                                    || localValidationError
+                                    || pathStatus.reason
+                                    || (pathStatus.isLegacyResidue
+                                        ? "该路径已被识别为历史 monorepo residue，不会再被接受为当前默认工作区。"
+                                        : "当前工作区状态正常，这是系统当前主链认可的默认执行目录。")}
+                            </div>
                             {pathStatus.writableTarget ? (
                                 <div className="mt-2 text-xs text-slate-500">写入检测目录：{pathStatus.writableTarget}</div>
                             ) : null}
                             {pathStatus.isLegacyResidue && pathStatus.legacyReason ? (
                                 <div className="mt-2 text-xs leading-5 text-rose-600">
-                                    已识别为旧 monorepo 残留路径：{pathStatus.legacyReason}。此路径不会再被接受为当前主工作区，也不会允许自动建目录。
+                                    已识别为旧 monorepo 残留路径：{pathStatus.legacyReason}。这条规则来自当前主链默认规范，不是临时为某次报错追加的补丁，也不会允许继续自动建目录。
                                 </div>
                             ) : null}
                         </div>

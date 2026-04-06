@@ -226,6 +226,8 @@ export type ChatMessage = {
         taskPlanningMode?: boolean;
         [key: string]: unknown;
     };
+    uiEphemeral?: boolean;
+    uiStreamPhase?: "placeholder" | "agent_started" | "streaming" | "settling" | "error";
 };
 
 export type PendingApproval = {
@@ -281,11 +283,20 @@ export type RealtimeRunSnapshot = {
 export type RealtimeSessionSnapshot = {
     sessionId?: string;
     latestSeq?: number;
+    messages?: ChatMessage[];
     approvals?: PendingApproval[];
     todos?: SessionTodoSnapshot;
     runtimeEvents?: Array<Record<string, unknown>>;
     currentRun?: RealtimeRunSnapshot | null;
     runtimeStatus?: string;
+    projection?: Record<string, unknown>;
+    workflowProjection?: Record<string, unknown>;
+    summary?: Record<string, unknown>;
+    snapshot?: {
+        messages?: ChatMessage[];
+        artifacts?: ChatArtifact[];
+        [key: string]: unknown;
+    };
 };
 
 export type OperationsSummary = {

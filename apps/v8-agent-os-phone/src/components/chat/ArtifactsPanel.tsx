@@ -45,15 +45,15 @@ function inferArtifactKind(artifact: ArtifactDetail) {
 }
 
 function resolveArtifactPreviewUrl(adminBaseUrl: string, artifact: ArtifactDetail) {
+    if (artifact.id || artifact.artifactId) {
+        return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
+    }
     const previewCandidate = normalizeRenderableWorkspaceUrl(
         adminBaseUrl,
         artifact.previewUrl || artifact.externalUrl || "",
     );
     if (previewCandidate) {
         return previewCandidate;
-    }
-    if (artifact.id || artifact.artifactId) {
-        return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
     }
     return normalizeRenderableWorkspaceUrl(
         adminBaseUrl,

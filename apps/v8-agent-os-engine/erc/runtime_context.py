@@ -14,10 +14,14 @@ def get_runtime_context() -> Dict[str, Any]:
 
 @contextmanager
 def bind_runtime_context(**context: Any) -> Iterator[Dict[str, Any]]:
-    current = get_runtime_context()
+    previous = get_runtime_context()
+    current = dict(previous)
     current.update({key: value for key, value in context.items() if value is not None})
     token = _RUNTIME_CONTEXT.set(current)
     try:
         yield current
     finally:
-        _RUNTIME_CONTEXT.reset(token)
+        try:
+            _RUNTIME_CONTEXT.reset(token)
+        except ValueError:
+            _RUNTIME_CONTEXT.set(previous)

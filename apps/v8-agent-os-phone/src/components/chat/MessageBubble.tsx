@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -91,6 +91,9 @@ function readIdentityField(message: ChatMessage, keys: string[]) {
 export const MessageBubble = memo(function MessageBubble({
     adminBaseUrl,
     message,
+    isLast = false,
+    isLoading = false,
+    streamPhase,
     onDelete,
     onSpeakVoice,
     onOpenArtifact,
@@ -100,6 +103,9 @@ export const MessageBubble = memo(function MessageBubble({
 }: {
     adminBaseUrl: string;
     message: ChatMessage;
+    isLast?: boolean;
+    isLoading?: boolean;
+    streamPhase?: ChatMessage["uiStreamPhase"];
     onDelete?: (message: ChatMessage) => void;
     onSpeakVoice?: (text: string, messageKey: string) => void;
     onOpenArtifact?: (artifact: ChatArtifact) => void;
@@ -237,6 +243,29 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
+    const assistantActive = !isUser && isLast && isLoading;
+    const assistantPhaseLabel = streamPhase === "placeholder"
+        ? t("正在理解…", "Thinking…")
+        : streamPhase === "agent_started"
+            ? t("开始执行…", "Starting…")
+            : streamPhase === "streaming"
+                ? t("正在输出…", "Streaming…")
+                : streamPhase === "settling"
+                    ? t("即将完成…", "Finishing…")
+                    : streamPhase === "error"
+                        ? t("执行异常", "Stream error")
+                        : "";
+    const assistantPhaseSubtitle = streamPhase === "placeholder"
+        ? t("正在整理上下文并准备响应。", "Preparing context and the first response.")
+        : streamPhase === "agent_started"
+            ? t("已进入执行阶段，正在启动相关运行时。", "Execution has started and runtimes are warming up.")
+            : streamPhase === "streaming"
+                ? t("正在持续整理结果并刷新回复内容。", "Streaming updates into the current reply.")
+                : streamPhase === "settling"
+                    ? t("正在收尾并与最新快照对齐。", "Settling the run and aligning with the latest snapshot.")
+                    : streamPhase === "error"
+                        ? t("当前运行出现异常，请稍后查看结果。", "The current run hit an error. Please check the result in a moment.")
+                        : "";
 
     const openArtifact = async (artifact: ChatArtifact) => {
         if (onOpenArtifact) {
@@ -352,7 +381,7 @@ export const MessageBubble = memo(function MessageBubble({
                                 </View>
                             ) : null}
 
-                            <Text style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
+                            <Text selectable style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
                         </LinearGradient>
 
                         <View style={styles.actionRowUser}>
@@ -385,12 +414,17 @@ export const MessageBubble = memo(function MessageBubble({
 
     return (
         <View style={styles.assistantRow}>
-            <View style={styles.avatarShell}>
+            <View style={[styles.avatarShell, assistantActive && styles.avatarShellActive]}>
                 {avatarUri ? (
                     <Image source={{ uri: avatarUri }} style={styles.avatar} />
                 ) : (
                     <Image source={BRAND_MARK} style={styles.avatar} />
                 )}
+                {assistantActive ? (
+                    <View style={[styles.avatarStatusDot, { backgroundColor: palette.primary }]}>
+                        <View style={[styles.avatarStatusDotInner, { backgroundColor: "#FFFFFF" }]} />
+                    </View>
+                ) : null}
             </View>
 
             <View style={[styles.assistantColumn, { maxWidth: assistantBubbleWidth, minWidth: voiceOnly ? Math.min(width * 0.72, 300) : 140 }]}>
@@ -401,16 +435,31 @@ export const MessageBubble = memo(function MessageBubble({
                             <Text style={[styles.rolePillText, { color: rolePillTextColor }]}>{resolvedAgentRoleLabel}</Text>
                         </View>
                     ) : null}
+                    {assistantPhaseLabel ? (
+                        <View style={[styles.streamPill, { backgroundColor: `${palette.primary}14`, borderColor: `${palette.primary}2A` }]}>
+                            {assistantActive ? <ActivityIndicator size="small" color={palette.primary} /> : null}
+                            <Text style={[styles.streamPillText, { color: assistantActive ? palette.primary : palette.textSoft }]}>
+                                {assistantPhaseLabel}
+                            </Text>
+                        </View>
+                    ) : null}
                 </View>
 
-                <View style={[styles.assistantBubbleShell, voiceOnly && styles.assistantBubbleVoiceOnly]}>
+                <View style={[
+                    styles.assistantBubbleShell,
+                    voiceOnly && styles.assistantBubbleVoiceOnly,
+                    assistantActive && { shadowColor: palette.primaryDeep, shadowOpacity: 0.14, elevation: 4 },
+                ]}>
                     <View
                         style={[
                             styles.assistantBubbleClip,
-                            { backgroundColor: assistantBubbleBackground, borderColor: assistantBubbleBorder },
+                            {
+                                backgroundColor: assistantBubbleBackground,
+                                borderColor: assistantActive ? `${palette.primary}40` : assistantBubbleBorder,
+                            },
                         ]}
                     >
-                        <View style={[styles.assistantBubbleSheen, { backgroundColor: `${palette.primary}40` }]} />
+                        <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
                         <View style={[styles.assistantInner, voiceOnly && styles.assistantInnerVoiceOnly]}>
                             {hasStructuredNodes ? (
                                 (message.nodes || []).map((node, index) => (
@@ -418,6 +467,8 @@ export const MessageBubble = memo(function MessageBubble({
                                         key={node.id || `${messageIdentity}:node:${index}`}
                                         node={node}
                                         messageIdentity={`${messageIdentity}:node:${index}`}
+                                        isExecuting={assistantActive}
+                                        isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
                                         speakingKey={speakingKey}
                                         onSpeakVoice={onSpeakVoice}
                                         onOpenArtifact={openArtifact}
@@ -432,6 +483,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         <MessageBlockItem
                                             key={block.id}
                                             block={block}
+                                            isStreaming={assistantActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
                                             speaking={Boolean(voiceKey) && speakingKey === voiceKey}
                                             onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
                                             onOpenArtifact={openArtifact}
@@ -439,7 +491,20 @@ export const MessageBubble = memo(function MessageBubble({
                                     );
                                 })
                             ) : (
-                                <Text style={[styles.assistantText, { color: palette.text }]}>…</Text>
+                                <View style={styles.placeholderWrap}>
+                                    <View style={[styles.placeholderBadge, { backgroundColor: `${palette.primary}14`, borderColor: `${palette.primary}28` }]}>
+                                        {assistantActive ? <ActivityIndicator size="small" color={palette.primary} /> : null}
+                                        <MaterialCommunityIcons name="robot-excited-outline" size={16} color={palette.primary} />
+                                    </View>
+                                    <View style={styles.placeholderBody}>
+                                        <Text style={[styles.assistantText, styles.placeholderTitle, { color: palette.text }]}>
+                                            {assistantPhaseLabel || t("智能主管正在处理中…", "Supervisor is working...")}
+                                        </Text>
+                                        <Text style={[styles.placeholderSubtitle, { color: palette.textMuted }]}>
+                                            {assistantPhaseSubtitle}
+                                        </Text>
+                                    </View>
+                                </View>
                             )}
 
                             {supplementalArtifacts.length > 0 ? (
@@ -585,6 +650,28 @@ const styles = StyleSheet.create({
     avatarShell: {
         width: 42,
         paddingTop: 2,
+        position: "relative",
+    },
+    avatarShellActive: {
+        shadowOffset: { width: 0, height: 6 },
+        shadowRadius: 14,
+    },
+    avatarStatusDot: {
+        position: "absolute",
+        right: -2,
+        bottom: 1,
+        width: 14,
+        height: 14,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 2,
+        borderColor: "#FFFFFF",
+    },
+    avatarStatusDotInner: {
+        width: 4,
+        height: 4,
+        borderRadius: 999,
     },
     avatar: {
         width: 42,
@@ -611,6 +698,20 @@ const styles = StyleSheet.create({
         paddingLeft: 2,
         minHeight: 26,
         flexWrap: "wrap",
+    },
+    streamPill: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+    },
+    streamPillText: {
+        fontSize: 10,
+        fontWeight: "800",
+        letterSpacing: 0.2,
     },
     agentName: {
         fontSize: 14,
@@ -665,6 +766,34 @@ const styles = StyleSheet.create({
     assistantText: {
         fontSize: 14,
         lineHeight: 21,
+    },
+    placeholderWrap: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 10,
+        minHeight: 48,
+    },
+    placeholderBadge: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+    },
+    placeholderBody: {
+        flex: 1,
+        minWidth: 0,
+        gap: 4,
+    },
+    placeholderTitle: {
+        fontWeight: "800",
+        lineHeight: 20,
+    },
+    placeholderSubtitle: {
+        fontSize: 12,
+        lineHeight: 18,
     },
     voiceCardWrap: {
         alignSelf: "stretch",

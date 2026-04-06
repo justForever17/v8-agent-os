@@ -25,6 +25,7 @@ from core.multimodal_payload_adapter import (
     build_multimodal_payload_metadata,
     infer_media_kind,
 )
+from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 from core.system_base import get_engine_origin
@@ -80,13 +81,14 @@ async def _upload_to_temp_s3(file_path: Path) -> str:
 
 async def _mount_in_workspace(file_path: Path) -> str:
     import shutil
-    from core.storage import storage
-    config = storage.get_workspace_config()
-    default_workspace = Path(__file__).resolve().parents[2] / "workspace"
-    workspace_dir = Path(config.get("agent_workspace_path", str(default_workspace)))
-    if not workspace_dir.is_absolute():
-         base_dir = Path(os.getcwd())
-         workspace_dir = base_dir / workspace_dir
+    runtime_context = get_runtime_context()
+    workspace_dir = Path(
+        workspace_resolution_service.resolve_workspace_path(
+            runtime_kind=str(runtime_context.get("runtime_kind") or "") or None,
+            session_id=str(runtime_context.get("session_id") or "") or None,
+            explicit_workspace_path=str(runtime_context.get("workspace_path") or "") or None,
+        )
+    ).expanduser()
     workspace_dir = ensure_workspace_auto_create_allowed(
         workspace_dir,
         source="vision_media_analyzer.mount_in_workspace",

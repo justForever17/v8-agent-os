@@ -87,6 +87,9 @@ class RuntimeSnapshotPayload:
     latest_seq: int
     snapshot: Optional[Dict[str, Any]]
     runtime_timeline: List[Dict[str, Any]] = field(default_factory=list)
+    todos: Optional[Dict[str, Any]] = None
+    current_run: Optional[Dict[str, Any]] = None
+    runtime_status: Optional[str] = None
     workflow: Optional[Dict[str, Any]] = None
     workflow_projection: Optional[Dict[str, Any]] = None
     approvals: List[Dict[str, Any]] = field(default_factory=list)
@@ -105,6 +108,9 @@ class RuntimeSnapshotPayload:
             "latestSeq": self.latest_seq,
             "snapshot": self.snapshot,
             "runtimeTimeline": list(self.runtime_timeline),
+            "todos": self.todos,
+            "currentRun": self.current_run,
+            "runtimeStatus": self.runtime_status,
             "workflow": self.workflow,
             "workflowProjection": self.workflow_projection,
             "approvals": list(self.approvals),

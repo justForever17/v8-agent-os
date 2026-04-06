@@ -1,4 +1,4 @@
-import type { ChatArtifact, ChatMessage, PendingApproval } from "@/src/types/admin";
+import type { ChatArtifact, ChatMessage, PendingApproval, PhoneUiTimelineNode } from "@/src/types/admin";
 
 const LOOPBACK_AVATAR_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\//i;
 const ADMIN_AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
@@ -92,6 +92,31 @@ function mergeArtifacts(base: ChatArtifact[] = [], incoming: ChatArtifact[] = []
     return merged;
 }
 
+function mergeTimelineNodes(base: PhoneUiTimelineNode[] = [], incoming: PhoneUiTimelineNode[] = []) {
+    const merged: PhoneUiTimelineNode[] = [];
+    const indexById = new Map<string, number>();
+
+    for (const node of [...base, ...incoming]) {
+        const nodeId = String(node.id || "").trim();
+        if (!nodeId) {
+            merged.push({ ...node });
+            continue;
+        }
+        const existingIndex = indexById.get(nodeId);
+        if (existingIndex === undefined) {
+            indexById.set(nodeId, merged.length);
+            merged.push({ ...node });
+            continue;
+        }
+        merged[existingIndex] = {
+            ...merged[existingIndex],
+            ...node,
+        } as PhoneUiTimelineNode;
+    }
+
+    return merged;
+}
+
 function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): ChatMessage {
     const nextId = String(incoming.id || "").trim();
     const currentId = String(existing.id || "").trim();
@@ -106,6 +131,7 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
         id: preferIncomingId ? nextId : currentId || nextId || `message-${Date.now()}`,
         runId: incoming.runId || existing.runId,
         content,
+        nodes: mergeTimelineNodes(existing.nodes || [], incoming.nodes || []),
         timestamp: Math.min(existing.timestamp || Date.now(), incoming.timestamp || Date.now()),
         images: mergeUniqueStrings(existing.images, incoming.images),
         artifacts: mergeArtifacts(existing.artifacts, incoming.artifacts),
@@ -117,6 +143,8 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
         agentAvatar: resolveAgentAvatar(incoming.agentAvatar) || resolveAgentAvatar(existing.agentAvatar) || DEFAULT_AGENT_AVATAR,
         agentRoleLabel: incoming.agentRoleLabel || existing.agentRoleLabel,
         agentType: incoming.agentType || existing.agentType,
+        uiEphemeral: typeof incoming.uiEphemeral === "boolean" ? incoming.uiEphemeral : existing.uiEphemeral,
+        uiStreamPhase: incoming.uiStreamPhase || existing.uiStreamPhase,
     };
 }
 
@@ -145,9 +173,12 @@ export function normalizeMessagesForState(messages: ChatMessage[]) {
             agentAvatar: resolveAgentAvatar(message.agentAvatar) || (message.role === "assistant" ? DEFAULT_AGENT_AVATAR : undefined),
             agentRoleLabel: message.role === "assistant" ? (message.agentRoleLabel || "主理人") : message.agentRoleLabel,
             agentType: message.role === "assistant" ? (message.agentType || "supervisor") : message.agentType,
+            nodes: Array.isArray(message.nodes) ? message.nodes.map((node) => ({ ...node })) : [],
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
             metadata: message.metadata ? { ...message.metadata } : undefined,
+            uiEphemeral: message.uiEphemeral,
+            uiStreamPhase: message.uiStreamPhase,
         };
         const keys = buildMessageIdentityKeys(candidate);
         const existingIndex = keys

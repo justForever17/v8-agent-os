@@ -1,3 +1,4 @@
+import json
 import asyncio
 import uuid
 
@@ -6,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from .models import ChatRequest
 from core.database import db
+from core.json_safe import to_jsonable
 from core.realtime_protocol import (
     build_runtime_event,
     format_ndjson,
@@ -22,6 +24,10 @@ from runtimes.chat.runtime import chat_runtime
 
 
 router = APIRouter()
+
+
+async def _send_json_safe(websocket: WebSocket, payload: dict) -> None:
+    await websocket.send_text(json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")))
 
 
 def _runtime_error_event(topic: str, message: str, *, session_id: str | None = None, run_id: str | None = None):
@@ -120,14 +126,14 @@ async def chat_websocket(websocket: WebSocket):
         return
 
     await websocket.accept()
-    await websocket.send_json(hello_event())
+    await _send_json_safe(websocket, hello_event())
 
     try:
         while True:
             incoming = await websocket.receive_json()
 
             if not isinstance(incoming, dict):
-                await websocket.send_json(
+                await _send_json_safe(websocket,
                     {
                         "v": 1,
                         "kind": "error",
@@ -143,32 +149,32 @@ async def chat_websocket(websocket: WebSocket):
             topic = incoming.get("topic")
 
             if kind == "heartbeat" or topic == "session.heartbeat":
-                await websocket.send_json(heartbeat_event())
+                await _send_json_safe(websocket, heartbeat_event())
                 continue
 
             if kind == "command" and topic == "session.subscribe":
                 session_id = incoming.get("session_id") or incoming.get("payload", {}).get("session_id")
                 if not session_id:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.invalid_request", "session.subscribe requires session_id")
                     )
                     continue
                 include_snapshot = bool((incoming.get("payload") or {}).get("include_snapshot"))
                 subscription = session_runtime_service.subscribe(session_id, include_snapshot=include_snapshot)
-                await websocket.send_json(subscription["ack"])
+                await _send_json_safe(websocket, subscription["ack"])
                 if subscription.get("snapshot_event"):
-                    await websocket.send_json(subscription["snapshot_event"])
+                    await _send_json_safe(websocket, subscription["snapshot_event"])
                 continue
 
             if kind == "command" and topic == "session.snapshot.get":
                 session_id = incoming.get("session_id") or incoming.get("payload", {}).get("session_id")
                 if not session_id:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.invalid_request", "session.snapshot.get requires session_id")
                     )
                     continue
                 snapshot_payload = runtime_command_router.get_snapshot(session_id)
-                await websocket.send_json(
+                await _send_json_safe(websocket,
                     build_runtime_event(
                         kind="snapshot",
                         topic="session.snapshot.ready",
@@ -189,14 +195,14 @@ async def chat_websocket(websocket: WebSocket):
                 payload = incoming.get("payload") or {}
                 session_id = incoming.get("session_id") or payload.get("session_id")
                 if not session_id:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.invalid_request", "session.events.get requires session_id")
                     )
                     continue
                 after_seq = payload.get("after_seq")
                 events_payload = runtime_command_router.get_events(session_id, after_seq=after_seq)
                 snapshot_payload = runtime_command_router.get_snapshot(session_id)
-                await websocket.send_json(
+                await _send_json_safe(websocket,
                     _runtime_ack_event(
                         "session.events.replayed",
                         {
@@ -221,20 +227,20 @@ async def chat_websocket(websocket: WebSocket):
                     payload=dict(payload),
                 )
                 if not command.run_id:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.invalid_request", f"{topic} requires run_id")
                     )
                     continue
 
                 command_result = runtime_command_router.dispatch_run_command(command)
                 if not command_result:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.not_found", f"Run '{command.run_id}' does not exist", run_id=command.run_id)
                     )
                     continue
 
-                await websocket.send_json(command_result["transition_event"])
-                await websocket.send_json(command_result["command_event"])
+                await _send_json_safe(websocket, command_result["transition_event"])
+                await _send_json_safe(websocket, command_result["command_event"])
                 continue
 
             if kind == "command" and topic in {"run.interrupt", "run.retry"}:
@@ -246,21 +252,21 @@ async def chat_websocket(websocket: WebSocket):
                     payload=dict(payload),
                 )
                 if not command.run_id:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.invalid_request", f"{topic} requires run_id")
                     )
                     continue
 
                 command_result = runtime_command_router.dispatch_run_command(command)
                 if not command_result:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.not_found", f"Run '{command.run_id}' does not exist", run_id=command.run_id)
                     )
                     continue
 
                 if command_result.get("transition_event"):
-                    await websocket.send_json(command_result["transition_event"])
-                await websocket.send_json(command_result["command_event"])
+                    await _send_json_safe(websocket, command_result["transition_event"])
+                await _send_json_safe(websocket, command_result["command_event"])
                 continue
 
             if kind == "command" and topic in {"approval.approve", "approval.reject"}:
@@ -272,20 +278,20 @@ async def chat_websocket(websocket: WebSocket):
                     payload=dict(payload),
                 )
                 if not command.approval_id:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.invalid_request", f"{topic} requires approval_id")
                     )
                     continue
 
                 command_result = runtime_command_router.dispatch_approval_command(command)
                 if not command_result:
-                    await websocket.send_json(
+                    await _send_json_safe(websocket,
                         _runtime_error_event("runtime.not_found", f"Approval '{command.approval_id}' does not exist")
                     )
                     continue
 
-                await websocket.send_json(command_result["transition_event"])
-                await websocket.send_json(command_result["command_event"])
+                await _send_json_safe(websocket, command_result["transition_event"])
+                await _send_json_safe(websocket, command_result["command_event"])
                 continue
 
             request_payload = incoming.get("request")
@@ -297,7 +303,7 @@ async def chat_websocket(websocket: WebSocket):
             try:
                 request = ChatRequest.model_validate(request_payload)
             except Exception as exc:
-                await websocket.send_json(
+                await _send_json_safe(websocket,
                     {
                         "v": 1,
                         "kind": "error",
@@ -322,7 +328,7 @@ async def chat_websocket(websocket: WebSocket):
                 if legacy_event.get("type") == "agent_start":
                     current_agent_id = legacy_event.get("agent", {}).get("id") or current_agent_id or "supervisor"
                 seq += 1
-                await websocket.send_json(
+                await _send_json_safe(websocket,
                     runtime_envelope(
                         legacy_event,
                         session_id=request.session_id,

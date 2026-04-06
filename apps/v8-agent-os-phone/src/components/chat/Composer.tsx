@@ -1,6 +1,5 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 import {
-    Keyboard,
     Platform,
     Pressable,
     ScrollView,
@@ -55,7 +54,6 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
-    const [keyboardVisible, setKeyboardVisible] = useState(false);
     const inputRef = useRef<TextInput | null>(null);
     const canSend = Boolean(value.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0) && !busy;
     const inputShellBackground = themeMode === "dark"
@@ -72,33 +70,6 @@ export const Composer = memo(function Composer({
             WebkitAppearance: "none",
         }
         : null;
-
-    const forceFocusInput = () => {
-        if (!inputRef.current) {
-            return;
-        }
-        if (Platform.OS === "android" && isFocused && !keyboardVisible) {
-            inputRef.current.blur();
-            setTimeout(() => inputRef.current?.focus(), 40);
-            return;
-        }
-        inputRef.current.focus();
-    };
-
-    const handleInputShellPress = () => {
-        forceFocusInput();
-    };
-
-    useEffect(() => {
-        const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-        const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-        const showSubscription = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
-        const hideSubscription = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
-        return () => {
-            showSubscription.remove();
-            hideSubscription.remove();
-        };
-    }, []);
 
     return (
         <View style={styles.shell}>
@@ -165,7 +136,7 @@ export const Composer = memo(function Composer({
                         },
                     ]}
                 >
-                    <Pressable style={styles.inputFocusSurface} onPress={handleInputShellPress} onPressIn={handleInputShellPress}>
+                    <View style={styles.inputFocusSurface}>
                         <View style={styles.editorSurface}>
                             <TextInput
                                 ref={inputRef}
@@ -177,17 +148,23 @@ export const Composer = memo(function Composer({
                             placeholderTextColor={colors.textSoft}
                             multiline
                             underlineColorAndroid="transparent"
-                            selectionColor={Platform.OS === "android" ? "rgba(0,0,0,0)" : colors.primary}
+                            selectionColor={colors.primary}
                             cursorColor={colors.accent}
                             autoCorrect={false}
                             spellCheck={false}
                             autoComplete="off"
                             textAlignVertical="top"
-                            onTouchStart={handleInputShellPress}
                             style={[styles.input, { color: colors.text }, inputWebStyle]}
                             />
+                            <View
+                                pointerEvents="none"
+                                style={[
+                                    styles.inputLineMask,
+                                    { backgroundColor: inputShellBackground },
+                                ]}
+                            />
                         </View>
-                    </Pressable>
+                    </View>
 
                     <View style={styles.bottomControls}>
                         <Pressable
@@ -300,6 +277,7 @@ const styles = StyleSheet.create({
         justifyContent: "flex-start",
         backgroundColor: "transparent",
         overflow: "hidden",
+        position: "relative",
         paddingBottom: 2,
     },
     input: {
@@ -319,6 +297,13 @@ const styles = StyleSheet.create({
         borderRadius: 0,
         borderBottomWidth: 0,
         borderBottomColor: "transparent",
+    },
+    inputLineMask: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: 4,
     },
     bottomControls: {
         marginTop: 4,

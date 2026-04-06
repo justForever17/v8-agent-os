@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.storage import storage
+from core.workspace_guard import legacy_workspace_residue_status
 from core.v8_agent_os_paths import WORKSPACE_HOME
 from runtimes.memory.scope_resolution import session_scope_binding_service
 
@@ -32,7 +33,10 @@ class WorkspaceResolutionService:
     def get_main_workspace_path(self) -> str:
         configured = str(storage.get_workspace_config().get("agent_workspace_path") or "").strip()
         if configured:
-            return str(Path(configured).expanduser())
+            expanded = str(Path(configured).expanduser())
+            residue = legacy_workspace_residue_status(expanded)
+            if not residue["isLegacyResidue"]:
+                return expanded
         return str(WORKSPACE_HOME.expanduser())
 
     def runtime_uses_scoped_workspace(self, runtime_kind: str | None) -> bool:

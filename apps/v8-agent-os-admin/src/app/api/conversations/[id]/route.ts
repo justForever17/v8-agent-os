@@ -33,6 +33,9 @@ export async function GET(
                     messages: snapshotMessages,
                     latestSeq: snapshotData.latestSeq || 0,
                     source: snapshotData.source || "runtime_snapshot",
+                    todos: snapshotData.todos || null,
+                    currentRun: snapshotData.currentRun || null,
+                    runtimeStatus: snapshotData.runtimeStatus || null,
                     workflow: snapshotData.workflow || null,
                     workflowProjection: snapshotData.workflowProjection || null,
                     approvals: Array.isArray(snapshotData.approvals) ? snapshotData.approvals : [],
@@ -64,12 +67,16 @@ export async function GET(
             messages,
             latestSeq: data.latestSeq || 0,
             source: data.source || "durable_detail_projection",
+            todos: data.todos || null,
+            currentRun: data.currentRun || null,
+            runtimeStatus: data.runtimeStatus || null,
             workflow: data.workflow || null,
             workflowProjection: data.workflowProjection || null,
             approvals: Array.isArray(data.approvals) ? data.approvals : [],
             controls: data.controls || null,
             recoverable: data.recoverable || null,
             summary: data.summary || null,
+            projection: data,
         }));
     } catch (error) {
         console.error("Error communicating with Python engine:", error);

@@ -3,12 +3,15 @@ import hashlib
 import json
 import logging
 import platform
+from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
 from core.storage import storage
 from core.system_base import get_engine_origin
 from core.v8_agent_os_identity import render_system_identity_line
+from core.workspace_guard import build_workspace_path_status
+from core.workspace_resolution import workspace_resolution_service
 from erc.capability_registry import capability_registry
 
 
@@ -34,6 +37,16 @@ _PASSIVE_RAG_HINT_TOKENS = (
     "项目",
     "工作区",
 )
+
+
+def _resolved_workspace_prompt_path() -> str:
+    raw_workspace_path = str(storage.get_workspace_config().get("agent_workspace_path") or "").strip()
+    if raw_workspace_path:
+        status = build_workspace_path_status(raw_workspace_path)
+        if status.get("isLegacyResidue"):
+            return str(status.get("recommendedPath") or workspace_resolution_service.get_main_workspace_path())
+        return str(Path(raw_workspace_path).expanduser())
+    return workspace_resolution_service.get_main_workspace_path()
 
 
 def _build_memory_recall_block(items: list[dict]) -> tuple[str, list[dict]]:
@@ -143,8 +156,7 @@ def build_supervisor_system_content(
     memory_runtime,
     extension_prompt_addition: str = "",
 ):
-    workspace_config = storage.get_workspace_config()
-    workspace_path = workspace_config.get("agent_workspace_path", "Not configured")
+    workspace_path = _resolved_workspace_prompt_path()
     os_name = platform.system()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     identity_line = render_system_identity_line(storage.get_system_identity())

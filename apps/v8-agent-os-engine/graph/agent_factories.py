@@ -4,6 +4,7 @@ import logging
 import platform
 import re
 import uuid
+from pathlib import Path
 from typing import Annotated, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -20,6 +21,8 @@ from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.storage import storage
 from core.system_tools.baseline import select_baseline_system_tool_names
+from core.workspace_guard import build_workspace_path_status
+from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
 from skills.loader import SkillLoader
 from .tool_routing import create_routed_tool_node
@@ -168,6 +171,16 @@ def _resolve_selected_skill_names(selectors: list[str]) -> list[str]:
     return matched
 
 
+def _resolved_workspace_prompt_path() -> str:
+    raw_workspace_path = str(storage.get_workspace_config().get("agent_workspace_path") or "").strip()
+    if raw_workspace_path:
+        status = build_workspace_path_status(raw_workspace_path)
+        if status.get("isLegacyResidue"):
+            return str(status.get("recommendedPath") or workspace_resolution_service.get_main_workspace_path())
+        return str(Path(raw_workspace_path).expanduser())
+    return workspace_resolution_service.get_main_workspace_path()
+
+
 def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_id: str) -> dict[str, list[str] | str]:
     delegated = latest_delegation_context(list(state.get("delegation_contexts") or []), agent_id=agent_id)
     if any(delegated.get(key) for key in ("selectedSkillNames", "selectedSkillEntries", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
@@ -267,8 +280,7 @@ def build_agent_node(
         try:
             messages = state["messages"]
 
-            workspace_config = storage.get_workspace_config()
-            workspace_path = workspace_config.get("agent_workspace_path", "Not configured")
+            workspace_path = _resolved_workspace_prompt_path()
             os_name = platform.system()
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             env_context = (

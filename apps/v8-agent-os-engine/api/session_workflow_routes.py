@@ -21,6 +21,10 @@ from erc.capability_registry import capability_registry
 from erc.command_router import runtime_command_router
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
+from erc.session_realtime_contract import (
+    augment_workflow_projection,
+    resolve_authoritative_session_runtime_state,
+)
 from erc.session_admission_service import session_admission_service
 from erc.snapshot_service import snapshot_service
 from erc.runtime_stability import runtime_stability_service
@@ -97,10 +101,15 @@ def _build_durable_detail_payload(
     approvals = project_pending_approvals(db.list_pending_approvals(session_id=session_id, status="pending"))
     controls = build_projection_controls(workflow_view, approvals)
     runtime_events = list(runtime_events or [])
-    root_run_id = workflow_view.get("rootRunId") if isinstance(workflow_view, dict) else None
-    latest_run_id = root_run_id or (runtime_events[-1].get("run_id") if runtime_events else None)
-    run_record = db.get_run_record(latest_run_id) if latest_run_id else None
     lane = session_admission_service.get_lane_view(session_id)
+    session_runtime = resolve_authoritative_session_runtime_state(
+        session_id=session_id,
+        workflow_view=workflow_view,
+        lane_view=lane,
+        runtime_events=runtime_events,
+    )
+    latest_seq = max((int(event.get("seq") or 0) for event in runtime_events), default=0)
+    run_record = session_runtime.run_record
     recovery_class = derive_recovery_class(run_record, workflow_view=workflow_view)
     liveness = build_liveness_view(
         run_record=run_record,
@@ -108,20 +117,31 @@ def _build_durable_detail_payload(
         runtime_events=runtime_events,
         lane_view=lane,
     )
+    workflow_projection = augment_workflow_projection(
+        workflow_projection_service.build(session_id=session_id),
+        todos=session_runtime.todos,
+        current_run=session_runtime.current_run,
+        runtime_status=session_runtime.runtime_status,
+        latest_seq=latest_seq,
+    )
     return {
         "messages": messages,
+        "latestSeq": latest_seq,
         "runtimeTimeline": list(runtime_timeline or []),
         "workflow": workflow_view,
-        "workflowProjection": workflow_projection_service.build(session_id=session_id),
+        "workflowProjection": workflow_projection,
         "approvals": approvals,
         "controls": controls,
         "recoverable": build_recoverable_view(workflow_view, controls),
+        "todos": session_runtime.todos,
+        "currentRun": session_runtime.current_run,
+        "runtimeStatus": session_runtime.runtime_status,
         "summary": build_projection_summary(
             session=session_row,
             snapshot={"messages": messages},
             workflow=workflow_view,
             approvals=approvals,
-            latest_seq=0,
+            latest_seq=latest_seq,
             source=session_source or "durable_detail_projection",
         ),
         "source": "durable_detail_projection",
@@ -260,8 +280,12 @@ async def get_session_messages(session_id: str):
                 "approvals": snapshot_payload.get("approvals") or [],
                 "controls": snapshot_payload.get("controls") or {},
                 "recoverable": snapshot_payload.get("recoverable") or {},
+                "todos": snapshot_payload.get("todos") or {"items": [], "allCompleted": False},
+                "currentRun": snapshot_payload.get("currentRun"),
+                "runtimeStatus": snapshot_payload.get("runtimeStatus"),
                 "summary": snapshot_payload.get("summary") or {},
                 "contextGovernance": snapshot_payload.get("contextGovernance"),
+                "projection": snapshot_payload,
             }
 
         session_row = db.get_session(session_id) or {"id": session_id, "title": "New Chat", "metadata": {}}

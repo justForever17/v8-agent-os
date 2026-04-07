@@ -13,7 +13,7 @@ type TodosHUDProps = {
 
 export const TodosHUD = memo(function TodosHUD({ items }: TodosHUDProps) {
     const { colors, themeMode, t } = useUiPrefs();
-    const [isCollapsed, setIsCollapsed] = useState(false);
+    const [isCollapsed, setIsCollapsed] = useState(true);
     const progress = useRef(new Animated.Value(0)).current;
 
     const todos = useMemo(

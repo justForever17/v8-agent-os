@@ -338,9 +338,12 @@ def build_supervisor_system_content(
         "When `web_fetch` returns little text but includes media, analysisHints, or visionCandidates, "
         "prefer using vision_media_analyzer with the candidate sourceUrl instead of forcing a pure text summary.\n"
         "When a platform media page hides the real media source, or the URL likely requires browser cookies/session handling, "
-        "prefer download_media_for_vision first so the media can be analyzed as a stable local file.\n"
-        "If download_media_for_vision returns autoChainEligible=true and the user wants the media understood, "
-        "prefer enabling its auto_chain_to_vision flow or immediately follow with vision_media_analyzer using chainedVisionArgs.\n"
+        "prefer download_media_for_vision first so the media lands as a stable local workspace file.\n"
+        "download_media_for_vision already writes the media into the resolved workspace `downloaded_media` directory "
+        "and returns the canonical artifact/path for chat display.\n"
+        "Do NOT claim any temporary or inferred path as the final result, and do NOT use shell commands to move the file manually.\n"
+        "If the user wants the media understood, explicitly follow with vision_media_analyzer using the returned workspace path.\n"
+        "If the current workspace hits a protected or legacy residue path, surface the governance/runtime hint and recommended canonical workspace path instead of trying to fix paths with destructive shell commands.\n"
     )
 
     system_content = (

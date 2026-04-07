@@ -25,8 +25,6 @@ from core.models.factory import llm_factory
 from core.models.control_plane import model_control_plane
 from core.storage import storage
 from core.v8_agent_os_paths import OPENCLAW_DEFAULT_STATE_ROOT, PLUGIN_HOST_ROOT, PLUGIN_INSTALL_LOG_ROOT
-from core.context.workspace import workspace_resolution_service
-
 from .catalog import build_install_catalog
 from .health import evaluate_plugin_health
 from .inbound import normalize_inbound_message
@@ -3913,17 +3911,37 @@ Get-CimInstance Win32_Process |
         }
 
     def _build_asset_surface(self, runtime_state: dict[str, Any]) -> dict[str, Any]:
+        def _sanitize_asset_payload(value: Any) -> Any:
+            if isinstance(value, dict):
+                sanitized = {
+                    key: _sanitize_asset_payload(item)
+                    for key, item in value.items()
+                    if key not in {"workspaceRoot", "workspacePath", "sourcePath", "workspaceDirectory"}
+                }
+                if "pathPlane" not in sanitized:
+                    sanitized["pathPlane"] = "runtime_private"
+                return sanitized
+            if isinstance(value, list):
+                return [_sanitize_asset_payload(item) for item in value]
+            return value
+
         return {
-            "workspaceRoot": workspace_resolution_service.get_main_workspace_path(),
-            "lastInboundAsset": dict(runtime_state.get("lastInboundAsset") or {}) if isinstance(runtime_state.get("lastInboundAsset"), dict) else None,
-            "lastOutboundAsset": dict(runtime_state.get("lastOutboundAsset") or {}) if isinstance(runtime_state.get("lastOutboundAsset"), dict) else None,
-            "lastInboundMessageAssets": dict(runtime_state.get("lastInboundMessageAssets") or {})
+            "pathPlane": "runtime_private",
+            "lastInboundAsset": _sanitize_asset_payload(runtime_state.get("lastInboundAsset"))
+            if isinstance(runtime_state.get("lastInboundAsset"), dict)
+            else None,
+            "lastOutboundAsset": _sanitize_asset_payload(runtime_state.get("lastOutboundAsset"))
+            if isinstance(runtime_state.get("lastOutboundAsset"), dict)
+            else None,
+            "lastInboundMessageAssets": _sanitize_asset_payload(runtime_state.get("lastInboundMessageAssets"))
             if isinstance(runtime_state.get("lastInboundMessageAssets"), dict)
             else None,
-            "lastOutboundMessageAssets": dict(runtime_state.get("lastOutboundMessageAssets") or {})
+            "lastOutboundMessageAssets": _sanitize_asset_payload(runtime_state.get("lastOutboundMessageAssets"))
             if isinstance(runtime_state.get("lastOutboundMessageAssets"), dict)
             else None,
-            "lastTts": dict(runtime_state.get("lastTts") or {}) if isinstance(runtime_state.get("lastTts"), dict) else None,
+            "lastTts": _sanitize_asset_payload(runtime_state.get("lastTts"))
+            if isinstance(runtime_state.get("lastTts"), dict)
+            else None,
         }
 
     def _plugin_tool_surface(

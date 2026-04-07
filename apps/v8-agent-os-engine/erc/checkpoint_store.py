@@ -10,6 +10,31 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from core.v8_agent_os_paths import CHECKPOINT_DB_PATH
 
 
+def _patch_aiosqlite_destructor() -> None:
+    # aiosqlite 在连接初始化被取消时，偶发留下未完整构造的 Connection 对象，
+    # 其 __del__ 读取 _connection 会抛 AttributeError，导致 engine 日志刷屏。
+    if getattr(aiosqlite.Connection, "__v8_safe_destructor__", False):
+        return
+
+    original_del = getattr(aiosqlite.Connection, "__del__", None)
+
+    def _safe_del(self: aiosqlite.Connection) -> None:
+        if not hasattr(self, "_connection"):
+            return
+        if original_del is None:
+            return
+        try:
+            original_del(self)
+        except AttributeError:
+            return
+
+    setattr(aiosqlite.Connection, "__del__", _safe_del)
+    setattr(aiosqlite.Connection, "__v8_safe_destructor__", True)
+
+
+_patch_aiosqlite_destructor()
+
+
 class CheckpointStore:
     """
     统一管理 LangGraph 的持久化 checkpointer。
@@ -34,10 +59,21 @@ class CheckpointStore:
         async with lock:
             if self._saver is None:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                conn = await aiosqlite.connect(self._path, timeout=5)
-                await conn.execute("PRAGMA foreign_keys=ON;")
-                saver = AsyncSqliteSaver(conn)
-                await saver.setup()
+                conn: aiosqlite.Connection | None = None
+                saver: AsyncSqliteSaver | None = None
+                try:
+                    conn = await aiosqlite.connect(self._path, timeout=5)
+                    await conn.execute("PRAGMA foreign_keys=ON;")
+                    saver = AsyncSqliteSaver(conn)
+                    await saver.setup()
+                except BaseException:
+                    if conn is not None:
+                        try:
+                            await conn.close()
+                        except Exception:
+                            pass
+                    raise
+
                 self._conn = conn
                 self._saver = saver
             return self._saver
@@ -49,7 +85,10 @@ class CheckpointStore:
             self._saver = None
             self._conn = None
             if conn is not None:
-                await conn.close()
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
 
 
 checkpoint_store = CheckpointStore(CHECKPOINT_DB_PATH)

@@ -46,6 +46,17 @@ function normalizeTodoItems(value: unknown): SessionTodoItem[] {
     }));
 }
 
+export function isAskUserInteractionApproval(value: unknown) {
+  const record = asRecord(value);
+  const request = asRecord(record.request);
+  const approvalKind = String(record.approval_kind || record.approvalKind || "").trim().toLowerCase();
+  const interactionKind = String(request.interactionKind || request.interaction_kind || record.interactionKind || record.interaction_kind || "").trim().toLowerCase();
+  return interactionKind === "ask_user"
+    || approvalKind === "human_input_required"
+    || approvalKind === "ask_user"
+    || approvalKind === "waiting_input";
+}
+
 function normalizeProcesses(value: unknown): AdminProcessRef[] {
   if (!Array.isArray(value)) {
     return [];
@@ -502,6 +513,14 @@ export function selectProcessByToolCallId(state: SessionRealtimeStore, toolCallI
 
 export function selectAuthoritativeApprovals(state: SessionRealtimeStore) {
   return Array.isArray(state.snapshot?.approvals) ? state.snapshot.approvals || [] : [];
+}
+
+export function selectAskUserApprovals(state: SessionRealtimeStore) {
+  return selectAuthoritativeApprovals(state).filter((approval) => isAskUserInteractionApproval(approval));
+}
+
+export function selectGovernanceApprovals(state: SessionRealtimeStore) {
+  return selectAuthoritativeApprovals(state).filter((approval) => !isAskUserInteractionApproval(approval));
 }
 
 export function selectAuthoritativeRuntimeTimeline(state: SessionRealtimeStore) {

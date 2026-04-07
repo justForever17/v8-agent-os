@@ -138,13 +138,16 @@ def _derive_targets(topic: str, runtime_family: str, visibility: str) -> List[st
 def build_session_history_materialized_record(
     *,
     session_row: Dict[str, Any],
-    workflow_view: Dict[str, Any],
+    workflow_view: Optional[Dict[str, Any]],
     approvals: List[Dict[str, Any]],
     snapshot: Optional[Dict[str, Any]],
     latest_seq: int,
     source: str,
     run_record: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    session_row = session_row or {}
+    workflow_view = workflow_view or {}
+    approvals = approvals or []
     metadata = _parse_metadata(session_row.get("metadata"))
     summary = build_projection_summary(
         session=session_row,
@@ -254,7 +257,7 @@ def build_session_history_ledger_entries(
 def build_session_history_detail(
     *,
     session_row: Dict[str, Any],
-    workflow_view: Dict[str, Any],
+    workflow_view: Optional[Dict[str, Any]],
     approvals: List[Dict[str, Any]],
     snapshot: Optional[Dict[str, Any]],
     latest_seq: int,
@@ -262,6 +265,10 @@ def build_session_history_detail(
     runtime_events: List[Dict[str, Any]],
     run_record: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    session_row = session_row or {}
+    workflow_view = workflow_view or {}
+    approvals = approvals or []
+    runtime_events = runtime_events or []
     record = build_session_history_materialized_record(
         session_row=session_row,
         workflow_view=workflow_view,

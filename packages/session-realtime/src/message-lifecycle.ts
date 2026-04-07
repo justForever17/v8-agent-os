@@ -1,8 +1,17 @@
 import type { AdminResourceRef, NormalizedSessionRuntimeEvent } from "./contract.js";
 import { deriveAdminResourceRefFromArtifactLike } from "./resources.js";
-import { shouldForwardRuntimeEventToRealtimeSurface } from "./event-normalizer.js";
+import { isTodoToolRuntimePayload, shouldForwardRuntimeEventToRealtimeSurface } from "./event-normalizer.js";
 
-export type SessionStreamPhase = "placeholder" | "agent_started" | "streaming" | "settling" | "error";
+export type SessionStreamPhase =
+  | "placeholder"
+  | "agent_started"
+  | "task_planning"
+  | "tooling"
+  | "artifact_ready"
+  | "waiting_input"
+  | "streaming"
+  | "settling"
+  | "error";
 
 export type SessionAgentProfile = {
   agentName?: string;
@@ -83,7 +92,7 @@ export type SessionStreamExecutionNode = {
 export type SessionStreamGovernanceNode = {
   id: string;
   kind: "governance";
-  governanceType: "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance";
+  governanceType: "ask_user" | "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance" | "lane_updated";
   timestamp: number;
   agentName?: string;
   agentAvatar?: string;
@@ -91,6 +100,7 @@ export type SessionStreamGovernanceNode = {
   agentType?: "supervisor" | "agent" | "user";
   approvalId?: string;
   approvalKind?: string;
+  interactionKind?: string;
   question?: string;
   toolCallId?: string;
   requestInfo?: unknown;
@@ -433,7 +443,16 @@ function appendNarrativeContent(
 }
 
 export function isActiveAssistantStreamPhase(phase?: SessionStreamPhase | null) {
-  return phase === "placeholder" || phase === "agent_started" || phase === "streaming" || phase === "settling";
+  return (
+    phase === "placeholder"
+    || phase === "agent_started"
+    || phase === "task_planning"
+    || phase === "tooling"
+    || phase === "artifact_ready"
+    || phase === "waiting_input"
+    || phase === "streaming"
+    || phase === "settling"
+  );
 }
 
 export function buildAssistantMessage(
@@ -500,12 +519,12 @@ export function shouldApplyRuntimeEventToMessage(
   if (!shouldForwardRuntimeEventToRealtimeSurface(event)) {
     return false;
   }
+  const todoToolEvent = isTodoToolRuntimePayload(event);
   if (
     event.type === "agent_start"
     || event.type === "text_chunk"
     || event.type === "reasoning_chunk"
-    || event.type === "tool_start"
-    || event.type === "tool_result"
+    || ((event.type === "tool_start" || event.type === "tool_result") && !todoToolEvent)
     || event.type === "done"
     || event.type === "error"
   ) {
@@ -515,7 +534,9 @@ export function shouldApplyRuntimeEventToMessage(
     return false;
   }
   const targets = Array.isArray(event.targets) ? event.targets : [];
-  return targets.some((target) => ["message", "artifact", "approval", "runtime_card", "hud", "process", "terminal"].includes(target));
+  return targets.includes("message")
+    || event.name === "artifact_recorded"
+    || event.name === "ask_user";
 }
 
 export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessage = SessionStreamMessage>(
@@ -531,6 +552,15 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
   const resolveArtifact = options?.resolveArtifact || resolveArtifactFromEvent;
   const runtimeCoalesceTopics = new Set(options?.coalescedRuntimeTopics || DEFAULT_COALESCED_RUNTIME_TOPICS);
   let nextActiveAgentProfile = activeAgentProfile;
+  const eventData = asRecord(event.data);
+  const todoToolEvent = (event.type === "tool_start" || event.type === "tool_result") && isTodoToolRuntimePayload({
+    ...eventData,
+    toolName: event.tool?.toolName || eventData.toolName || eventData.tool_name,
+    tool: {
+      ...asRecord(eventData.tool),
+      toolName: event.tool?.toolName || eventData.toolName || eventData.tool_name,
+    },
+  });
 
   const ensureCurrent = () => {
     nextCurrentAiMsg = ensureCurrentAiMessage(
@@ -550,13 +580,6 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     if (shouldPromoteMessageIdentity(current, nextActiveAgentProfile, defaultAgentProfile)) {
       ensureAssistantIdentity(current, nextActiveAgentProfile, { overwrite: true });
     }
-    appendNode(current, {
-      id: nextId("node", options?.createId),
-      kind: "execution",
-      executionType: "agent_start",
-      timestamp: Date.now(),
-      ...nextActiveAgentProfile,
-    });
   } else if (event.type === "text_chunk") {
     const current = ensureCurrent();
     current.uiStreamPhase = "streaming";
@@ -595,9 +618,14 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       });
     }
   } else if (event.type === "tool_start") {
+    if (todoToolEvent) {
+      return {
+        currentAiMsg: nextCurrentAiMsg,
+        activeAgentProfile: nextActiveAgentProfile,
+      };
+    }
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-    const eventData = asRecord(event.data);
     const narrativeContent = typeof event.content === "string" && event.content.trim()
       ? event.content.trim()
       : typeof eventData.content === "string" && eventData.content.trim()
@@ -619,9 +647,14 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
     }
   } else if (event.type === "tool_result") {
+    if (todoToolEvent) {
+      return {
+        currentAiMsg: nextCurrentAiMsg,
+        activeAgentProfile: nextActiveAgentProfile,
+      };
+    }
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-    const eventData = asRecord(event.data);
     const toolCallId = event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined);
     const narrativeContent = typeof event.content === "string" && event.content.trim()
       ? event.content.trim()
@@ -695,23 +728,6 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     if (targets.includes("message") && narrativeContent && narrativeContent !== label) {
       appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
     }
-    const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
-    if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "runtime_progress" && lastNode.label === label) {
-      lastNode.data = eventData;
-      lastNode.timestamp = Date.now();
-    } else if (
-      runtimeCoalesceTopics.has(topic)
-      && lastNode
-      && lastNode.kind === "execution"
-      && lastNode.executionType === "runtime_progress"
-      && lastNode.topic === topic
-    ) {
-      lastNode.label = label;
-      lastNode.data = eventData;
-      lastNode.timestamp = Date.now();
-    } else {
-      appendNode(current, buildRuntimeProgressNode(topic, label, eventData, nextActiveAgentProfile, options));
-    }
   } else if (event.type === "custom_event" && event.name === "ask_user") {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
@@ -719,9 +735,35 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     appendNode(current, {
       id: nextId("node", options?.createId),
       kind: "governance",
+      governanceType: "ask_user",
+      approvalId: typeof eventData.approvalId === "string" ? eventData.approvalId : undefined,
+      approvalKind: typeof eventData.approvalKind === "string" ? eventData.approvalKind : undefined,
+      interactionKind: typeof eventData.interactionKind === "string" ? eventData.interactionKind : "ask_user",
+      question: typeof eventData.question === "string" ? eventData.question : undefined,
+      toolCallId: typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined,
+      requestInfo: eventData.request,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "approval_requested") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
+    const narrativeContent = typeof event.content === "string" && event.content.trim()
+      ? event.content.trim()
+      : typeof eventData.message === "string" && eventData.message.trim()
+        ? eventData.message.trim()
+        : "";
+    if (narrativeContent && Array.isArray(event.targets) && event.targets.includes("message")) {
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+    }
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
       governanceType: "approval_request",
       approvalId: typeof eventData.approvalId === "string" ? eventData.approvalId : undefined,
       approvalKind: typeof eventData.approvalKind === "string" ? eventData.approvalKind : undefined,
+      interactionKind: typeof eventData.interactionKind === "string" ? eventData.interactionKind : undefined,
       question: typeof eventData.question === "string" ? eventData.question : undefined,
       toolCallId: typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined,
       requestInfo: eventData.request,
@@ -808,13 +850,20 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
     const eventData = asRecord(event.data);
-    const topic = typeof eventData.topic === "string" ? eventData.topic : "run.lane.updated";
-    const label = typeof eventData.label === "string"
-      ? eventData.label
-      : typeof event.content === "string" && event.content.trim()
-        ? event.content.trim()
-        : topic;
-    appendNode(current, buildRuntimeProgressNode(topic, label, eventData, nextActiveAgentProfile, options));
+    appendNode(current, {
+      id: nextId("node", options?.createId),
+      kind: "governance",
+      governanceType: "lane_updated",
+      topic: typeof eventData.topic === "string" ? eventData.topic : "run.lane.updated",
+      status: typeof eventData.status === "string" ? eventData.status : undefined,
+      reason: typeof eventData.label === "string"
+        ? eventData.label
+        : typeof event.content === "string" && event.content.trim()
+          ? event.content.trim()
+          : undefined,
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+    });
   } else if (event.type === "done") {
     if (nextCurrentAiMsg) {
       nextCurrentAiMsg.uiStreamPhase = "settling";
@@ -844,26 +893,48 @@ export function isLifecycleTerminalEvent(event: Pick<NormalizedSessionRuntimeEve
 }
 
 export function shouldAuthoritativelyRefreshOnRuntimeEvent(
-  event: Pick<NormalizedSessionRuntimeEvent, "type" | "name" | "topic" | "seq" | "visibility">,
+  event: Pick<NormalizedSessionRuntimeEvent, "type" | "name" | "topic" | "seq" | "visibility" | "targets">,
 ) {
   if (!shouldForwardRuntimeEventToRealtimeSurface(event)) {
     return false;
   }
-  if (event.seq && event.seq > 0) {
-    const topic = String(event.topic || "").trim().toLowerCase();
-    return !topic.includes("heartbeat");
+
+  const topic = String(event.topic || "").trim().toLowerCase();
+  if (!topic || topic.includes("heartbeat")) {
+    return false;
   }
+
   if (event.type === "done" || event.type === "agent_start" || event.type === "error") {
     return true;
   }
-  return event.type === "custom_event"
+
+  if (event.type === "tool_start" || event.type === "tool_result") {
+    if (isTodoToolRuntimePayload({
+      ...asRecord((event as { data?: unknown }).data),
+      toolName: (event as { tool?: { toolName?: string } }).tool?.toolName,
+    })) {
+      return true;
+    }
+    return true;
+  }
+
+  if (Array.isArray(event.targets) && event.targets.includes("process")) {
+    return true;
+  }
+
+  if (event.type === "custom_event"
     && (
       event.name === "ask_user"
+      || event.name === "approval_requested"
       || event.name === "artifact_recorded"
       || event.name === "run_controlled"
       || event.name === "approval_resolved"
       || event.name === "safety_blocked"
       || event.name === "lane_updated"
       || event.name === "context_governance_changed"
-    );
+    )) {
+    return true;
+  }
+
+  return false;
 }

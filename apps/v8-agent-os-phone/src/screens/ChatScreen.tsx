@@ -33,6 +33,7 @@ import { ComposerPickerOverlay } from "@/src/components/chat/ComposerPickerOverl
 import { RunControlBar } from "@/src/components/chat/RunControlBar";
 import { RuntimeDock } from "@/src/components/chat/RuntimeDock";
 import { RuntimeTimelinePanel } from "@/src/components/chat/RuntimeTimelinePanel";
+import { TodosHUD } from "@/src/components/chat/TodosHUD";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
@@ -111,6 +112,7 @@ import {
     type ContextReferenceItem,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isAskUserInteractionApproval,
     queueSessionRealtimeRuntimeEvent,
     shouldAuthoritativelyRefreshOnRuntimeEvent,
     syncSessionRealtimeMessageState,
@@ -153,6 +155,35 @@ function buildRuntimeTimelineEntry(
         actorLabel: options?.actorLabel,
         status: options?.status,
     };
+}
+
+function buildPhaseRuntimeTimelineEntry(
+    runtimeId: PhoneRuntimeId,
+    phaseKey: string,
+    summary: string,
+    options?: {
+        runId?: string;
+        seq?: number;
+        timestamp?: number | string;
+        actorLabel?: string;
+        status?: string;
+        topic?: string;
+    },
+) {
+    const runIdentity = String(options?.runId || "active").trim() || "active";
+    return buildRuntimeTimelineEntry(
+        runtimeId,
+        options?.topic || phaseKey,
+        summary,
+        {
+            id: `phase:${runIdentity}:${phaseKey}`,
+            seq: options?.seq,
+            timestamp: options?.timestamp,
+            actorLabel: options?.actorLabel,
+            status: options?.status,
+            kind: "progress",
+        },
+    );
 }
 
 function buildUserMessage(
@@ -289,7 +320,15 @@ function toArtifactDetail(artifact: ChatArtifact): ArtifactDetail {
         externalUrl: artifact.externalUrl,
         sourcePath: artifact.sourcePath,
         workspacePath: artifact.workspacePath,
+        workspaceRoot: artifact.workspaceRoot,
+        workspaceRelativePath: artifact.workspaceRelativePath,
+        canonicalPath: artifact.canonicalPath,
+        projectId: artifact.projectId,
+        workspaceId: artifact.workspaceId,
+        storageClass: artifact.storageClass,
+        surfaceVisible: artifact.surfaceVisible,
         mimeType: artifact.mimeType,
+        resourceRef: artifact.resourceRef || null,
     };
 }
 
@@ -321,9 +360,238 @@ function summarizeRuntime(snapshot: RealtimeSessionSnapshot | null): RuntimeSumm
     };
 }
 
-const REALTIME_SNAPSHOT_FALLBACK_GRACE_MS = 2600;
-const REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS = 1400;
-const REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS = 420;
+const REALTIME_SNAPSHOT_FALLBACK_GRACE_MS = 8000;
+const REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS = 2400;
+const REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS = 900;
+const TODO_TOOL_NAMES = new Set(["write_todos", "update_todo"]);
+
+type AssistantTaskProgressPatch = {
+    phase?: NonNullable<ChatMessage["uiStreamPhase"]>;
+    label?: string;
+    subtitle?: string;
+    currentStep?: string;
+    completedCount?: number;
+    totalCount?: number;
+};
+
+function normalizeTodoStatus(value: unknown) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "done" || normalized === "in_progress" || normalized === "skipped"
+        ? normalized
+        : "pending";
+}
+
+function extractTodoText(value: unknown) {
+    if (typeof value === "string") {
+        return value.trim();
+    }
+    if (!value || typeof value !== "object") {
+        return "";
+    }
+    const record = value as Record<string, unknown>;
+    return String(record.content || record.text || record.title || "").trim();
+}
+
+function coerceSessionTodoItem(value: unknown, index: number): SessionTodoItem | null {
+    const content = extractTodoText(value);
+    if (!content) {
+        return null;
+    }
+    const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return {
+        id: typeof record.id === "string" ? record.id : `todo-${index}`,
+        content,
+        status: normalizeTodoStatus(record.status),
+    };
+}
+
+function normalizeTaskTodos(value: unknown): SessionTodoItem[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .map((item, index) => coerceSessionTodoItem(item, index))
+        .filter((item): item is SessionTodoItem => Boolean(item));
+}
+
+function buildAssistantTaskProgressPatch(
+    todos: SessionTodoItem[],
+    options?: {
+        phase?: AssistantTaskProgressPatch["phase"];
+        label?: string;
+        subtitle?: string;
+    },
+): AssistantTaskProgressPatch | null {
+    const normalizedTodos = todos.filter((item) => String(item.content || "").trim());
+    const totalCount = normalizedTodos.length;
+    if (totalCount === 0 && !options?.label && !options?.subtitle) {
+        return null;
+    }
+
+    const completedCount = normalizedTodos.filter((item) => normalizeTodoStatus(item.status) === "done").length;
+    const activeIndex = normalizedTodos.findIndex((item) => normalizeTodoStatus(item.status) === "in_progress");
+    const nextIndex = normalizedTodos.findIndex((item) => normalizeTodoStatus(item.status) === "pending");
+    const activeTodo = activeIndex >= 0 ? normalizedTodos[activeIndex] : null;
+    const nextTodo = nextIndex >= 0 ? normalizedTodos[nextIndex] : null;
+    const currentStep = String(activeTodo?.content || nextTodo?.content || normalizedTodos[normalizedTodos.length - 1]?.content || "").trim();
+
+    let phase = options?.phase;
+    let label = options?.label;
+    let subtitle = options?.subtitle;
+
+    if (!phase) {
+        if (completedCount >= totalCount && totalCount > 0) {
+            phase = "settling";
+        } else if (activeTodo) {
+            phase = "tooling";
+        } else if (nextTodo) {
+            phase = completedCount > 0 ? "tooling" : "task_planning";
+        } else {
+            phase = "task_planning";
+        }
+    }
+
+    if (!label) {
+        if (phase === "waiting_input") {
+            label = "等待你的输入";
+        } else if (phase === "artifact_ready") {
+            label = "产物已就绪";
+        } else if (phase === "settling") {
+            label = "任务即将完成";
+        } else if (activeTodo) {
+            label = `步骤 ${activeIndex + 1}/${Math.max(totalCount, 1)}`;
+        } else if (nextTodo) {
+            label = completedCount > 0
+                ? `准备步骤 ${nextIndex + 1}/${Math.max(totalCount, 1)}`
+                : "正在规划任务";
+        } else {
+            label = "正在规划任务";
+        }
+    }
+
+    if (!subtitle) {
+        if (phase === "artifact_ready") {
+            subtitle = currentStep || (totalCount > 0 ? `已完成 ${completedCount}/${totalCount} 个步骤` : "产物已经生成，可继续挂载到工作区。");
+        } else if (phase === "waiting_input") {
+            subtitle = currentStep || "请继续提供必要输入。";
+        } else if (activeTodo) {
+            subtitle = currentStep;
+        } else if (nextTodo) {
+            subtitle = currentStep || `已生成 ${totalCount} 个步骤`;
+        } else if (totalCount > 0) {
+            subtitle = `已完成 ${completedCount}/${totalCount} 个步骤`;
+        }
+    }
+
+    return {
+        phase,
+        label,
+        subtitle,
+        currentStep: currentStep || undefined,
+        completedCount,
+        totalCount,
+    };
+}
+
+function findLatestAssistantShellIndex(messages: ChatMessage[]) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message.role !== "assistant") {
+            continue;
+        }
+        if (message.uiEphemeral || isActiveAssistantStreamPhase(message.uiStreamPhase)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+function applyAssistantTaskProgressPatch(
+    current: ChatMessage[],
+    patch: AssistantTaskProgressPatch | null,
+    runId?: string,
+    options?: { createIfMissing?: boolean },
+) {
+    if (!patch) {
+        return current;
+    }
+
+    const next = [...current];
+    let targetIndex = findLatestAssistantShellIndex(next);
+
+    if (targetIndex < 0) {
+        if (!options?.createIfMissing) {
+            return current;
+        }
+        next.push(buildAssistantPlaceholder(runId));
+        targetIndex = next.length - 1;
+    }
+
+    const target = next[targetIndex];
+    const nextMetadata = {
+        ...(target.metadata || {}),
+        assistantTaskProgress: {
+            phase: patch.phase,
+            label: patch.label,
+            subtitle: patch.subtitle,
+            currentStep: patch.currentStep,
+            completedCount: patch.completedCount,
+            totalCount: patch.totalCount,
+        },
+    };
+
+    next[targetIndex] = {
+        ...target,
+        runId: runId || target.runId,
+        uiEphemeral: target.uiEphemeral !== false,
+        uiStreamPhase: patch.phase || target.uiStreamPhase,
+        metadata: nextMetadata,
+        timestamp: Date.now(),
+    };
+
+    return normalizeMessagesForState(next);
+}
+
+function applyTodoToolEvent(
+    currentTodos: SessionTodoItem[],
+    event: PhoneRealtimeUiEvent,
+): SessionTodoItem[] | null {
+    const toolName = String(event.tool?.toolName || event.data?.toolName || event.data?.tool_name || "").trim();
+    if (!TODO_TOOL_NAMES.has(toolName)) {
+        return null;
+    }
+
+    const args = asRecord(event.tool?.args);
+    if (toolName === "write_todos") {
+        const nextTodos = normalizeTaskTodos(args.todos);
+        return nextTodos.length > 0 ? nextTodos : currentTodos;
+    }
+
+    if (toolName === "update_todo") {
+        const index = Number(args.index);
+        const status = normalizeTodoStatus(args.status);
+        if (!Number.isFinite(index) || index < 0 || currentTodos.length === 0) {
+            return currentTodos;
+        }
+        return currentTodos.map((item, itemIndex) => {
+            if (itemIndex !== index) {
+                if (status === "in_progress" && normalizeTodoStatus(item.status) === "in_progress") {
+                    return {
+                        ...item,
+                        status: "pending",
+                    };
+                }
+                return item;
+            }
+            return {
+                ...item,
+                status,
+            };
+        });
+    }
+
+    return null;
+}
 
 function buildArtifactFingerprint(artifact: ChatArtifact) {
     return [
@@ -385,6 +653,17 @@ function buildMessagesFingerprint(messages: ChatMessage[]) {
     };
 
     return messages.map((message) => [
+        (() => {
+            const taskProgress = asRecord(message.metadata?.assistantTaskProgress);
+            return [
+                String(taskProgress.phase || ""),
+                String(taskProgress.label || ""),
+                String(taskProgress.subtitle || ""),
+                String(taskProgress.currentStep || ""),
+                String(taskProgress.completedCount || ""),
+                String(taskProgress.totalCount || ""),
+            ].join("¦");
+        })(),
         String(message.id || "").trim(),
         String(message.renderKey || "").trim(),
         String(message.role || "").trim(),
@@ -450,6 +729,29 @@ function hasRenderableMessagePayload(message: ChatMessage) {
     );
 }
 
+function hasActiveLocalAssistantShell(messages: ChatMessage[]) {
+    return messages.some((message) =>
+        message.role === "assistant"
+        && isActiveAssistantStreamPhase(message.uiStreamPhase),
+    );
+}
+
+function buildMessageRichness(message: ChatMessage | null | undefined) {
+    if (!message) {
+        return 0;
+    }
+    return (
+        String(message.content || "").trim().length
+        + ((message.nodes || []).length * 120)
+        + ((message.artifacts || []).length * 200)
+        + ((message.images || []).length * 80)
+    );
+}
+
+function mergeMessageImages(base: string[] = [], incoming: string[] = []) {
+    return Array.from(new Set([...base, ...incoming].filter(Boolean)));
+}
+
 function mergeAuthoritativeSnapshotMessages(
     current: ChatMessage[],
     snapshotMessages: ChatMessage[],
@@ -497,12 +799,50 @@ function mergeAuthoritativeSnapshotMessages(
         const mergedMessage = normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage;
         const localStreamActive = matchingLocal.role === "assistant" && isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase);
         const snapshotRenderable = hasRenderableMessagePayload(snapshotMessage);
+        const localRenderable = hasRenderableMessagePayload(matchingLocal);
+        const preferLocalPayload = localRenderable && buildMessageRichness(matchingLocal) > buildMessageRichness(snapshotMessage);
 
         if (matchingLocal.role === "assistant" && matchingLocal.uiEphemeral) {
             mergedMessage.uiEphemeral = !snapshotRenderable;
             mergedMessage.uiStreamPhase = localStreamActive
                 ? matchingLocal.uiStreamPhase
                 : snapshotMessage.uiStreamPhase;
+        }
+
+        if (matchingLocal.role === "assistant") {
+            const taskProgress = asRecord(matchingLocal.metadata?.assistantTaskProgress);
+            if (Object.keys(taskProgress).length > 0 && (localStreamActive || !snapshotRenderable)) {
+                mergedMessage.metadata = {
+                    ...(mergedMessage.metadata || {}),
+                    assistantTaskProgress: taskProgress,
+                };
+            }
+        }
+
+        if (matchingLocal.role === "assistant" && (localStreamActive || preferLocalPayload)) {
+            if (!snapshotRenderable || preferLocalPayload) {
+                if (String(matchingLocal.content || "").trim().length > String(mergedMessage.content || "").trim().length) {
+                    mergedMessage.content = matchingLocal.content;
+                }
+                if ((matchingLocal.nodes || []).length > (mergedMessage.nodes || []).length) {
+                    mergedMessage.nodes = matchingLocal.nodes;
+                }
+                if ((matchingLocal.images || []).length > 0) {
+                    mergedMessage.images = mergeMessageImages(mergedMessage.images || [], matchingLocal.images || []);
+                }
+                if ((matchingLocal.artifacts || []).length > 0) {
+                    mergedMessage.artifacts = mergeArtifacts(mergedMessage.artifacts || [], matchingLocal.artifacts || []);
+                }
+                if (matchingLocal.metadata) {
+                    mergedMessage.metadata = {
+                        ...(mergedMessage.metadata || {}),
+                        ...matchingLocal.metadata,
+                    };
+                }
+            }
+            if (!snapshotRenderable && matchingLocal.uiEphemeral) {
+                mergedMessage.uiEphemeral = true;
+            }
         }
 
         return mergedMessage;
@@ -537,6 +877,36 @@ function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeS
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function buildRealtimeEventDedupKey(event: PhoneRealtimeUiEvent) {
+    const eventId = String((event as Record<string, unknown>).event_id || "").trim();
+    if (eventId) {
+        return `event:${eventId}`;
+    }
+
+    const data = asRecord(event.data);
+    const tool = asRecord(event.tool);
+    const fingerprint = String(
+        event.content
+        || data.label
+        || data.summary
+        || data.topic
+        || tool.toolCallId
+        || data.toolCallId
+        || data.tool_call_id
+        || "",
+    ).trim().replace(/\s+/g, " ").slice(0, 160);
+
+    return [
+        "seq",
+        Number(event.seq || 0) || 0,
+        String(event.type || "").trim(),
+        String(event.name || "").trim(),
+        String(event.topic || "").trim(),
+        String(event.run_id || "").trim(),
+        fingerprint,
+    ].join("¦");
 }
 
 function buildConversationOverlayPatch(detail: Partial<ConversationDetail> | null | undefined): Partial<ConversationSummary> {
@@ -622,7 +992,7 @@ export default function ChatScreen() {
     const loadSupportDataRef = useRef<() => Promise<void>>(async () => undefined);
     const loadConversationRef = useRef<(conversationId: string, options?: { force?: boolean; token?: number }) => Promise<boolean>>(async () => false);
     const startRealtimeRef = useRef<(conversationId: string, transitionToken?: number) => Promise<void>>(async () => undefined);
-    const stopRealtimeRef = useRef<() => void>(() => undefined);
+    const stopRealtimeRef = useRef<(options?: { preserveMessageState?: boolean }) => void>(() => undefined);
     const closeDesktopPreviewRef = useRef<() => Promise<void>>(async () => undefined);
     const latestSeqRef = useRef(0);
     const desktopPreviewRequestIdRef = useRef(0);
@@ -640,7 +1010,9 @@ export default function ChatScreen() {
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
     const lastRealtimeSnapshotAtRef = useRef(0);
+    const seenRealtimeEventKeysRef = useRef<Set<string>>(new Set());
     const messagesRef = useRef<ChatMessage[]>([]);
+    const todosRef = useRef<SessionTodoItem[]>([]);
     const realtimeMessageStateRef = useRef(
         createInitialSessionRealtimeMessageState<ChatMessage>([], PHONE_STREAM_LIFECYCLE_OPTIONS),
     );
@@ -649,6 +1021,7 @@ export default function ChatScreen() {
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const previousConversationIdRef = useRef<string | null>(null);
     const conversationTransitionTokenRef = useRef(0);
+    const optimisticSeedConversationIdRef = useRef<string | null>(null);
     const ttsRequestIdRef = useRef(0);
     const tRef = useRef(t);
     const ttsPlayer = useAudioPlayer();
@@ -683,6 +1056,7 @@ export default function ChatScreen() {
     const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
     const [composerHeight, setComposerHeight] = useState(132);
+    const [todosDockHeight, setTodosDockHeight] = useState(0);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
@@ -746,6 +1120,10 @@ export default function ChatScreen() {
         );
     }, [messages]);
 
+    useEffect(() => {
+        todosRef.current = todos;
+    }, [todos]);
+
     const sendingRef = useRef(sending);
 
     useEffect(() => {
@@ -762,6 +1140,7 @@ export default function ChatScreen() {
             [],
             PHONE_STREAM_LIFECYCLE_OPTIONS,
         );
+        seenRealtimeEventKeysRef.current.clear();
         if (runtimeFlushTimerRef.current) {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
@@ -817,7 +1196,49 @@ export default function ChatScreen() {
         }, 48);
     }, [flushPendingRuntimeEvents]);
 
-    const stopRealtime = useCallback(() => {
+    const patchAssistantTaskShell = useCallback((
+        nextTodos: SessionTodoItem[],
+        options?: {
+            phase?: AssistantTaskProgressPatch["phase"];
+            label?: string;
+            subtitle?: string;
+            runId?: string;
+            createIfMissing?: boolean;
+        },
+    ) => {
+        const patch = buildAssistantTaskProgressPatch(nextTodos, {
+            phase: options?.phase,
+            label: options?.label,
+            subtitle: options?.subtitle,
+        });
+        if (!patch) {
+            return;
+        }
+        setMessages((current) => {
+            const next = applyAssistantTaskProgressPatch(
+                current,
+                patch,
+                options?.runId,
+                { createIfMissing: options?.createIfMissing },
+            );
+            if (next === current) {
+                return current;
+            }
+            const fingerprint = buildMessagesFingerprint(next);
+            if (fingerprint === lastMessageFingerprintRef.current) {
+                return current;
+            }
+            lastMessageFingerprintRef.current = fingerprint;
+            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                next,
+                PHONE_STREAM_LIFECYCLE_OPTIONS,
+            );
+            messagesRef.current = next;
+            return next;
+        });
+    }, []);
+
+    const stopRealtime = useCallback((options?: { preserveMessageState?: boolean }) => {
         realtimeSubscriptionTokenRef.current += 1;
         if (realtimeSnapshotTimerRef.current) {
             clearTimeout(realtimeSnapshotTimerRef.current);
@@ -831,7 +1252,9 @@ export default function ChatScreen() {
         }
         realtimeConversationIdRef.current = null;
         lastRealtimeSnapshotAtRef.current = 0;
-        resetConversationStreamState();
+        if (!options?.preserveMessageState) {
+            resetConversationStreamState();
+        }
     }, [resetConversationStreamState]);
 
     const refreshDesktopLiveStatus = useCallback(async () => {
@@ -1220,6 +1643,8 @@ export default function ChatScreen() {
             return;
         }
         const nextApprovals = view.approvals as PendingApproval[];
+        const hasAskUserPending = nextApprovals.some((item) => isAskUserInteractionApproval(item));
+        const hasGovernanceApprovalPending = nextApprovals.some((item) => !isAskUserInteractionApproval(item));
         const nextTodos = view.todos?.items || [];
         const nextRuntimeEvents = view.runtimeTimeline;
         const nextRuntimeStatus = view.runtimeStatus;
@@ -1229,11 +1654,17 @@ export default function ChatScreen() {
 
         setApprovals(nextApprovals);
         setTodos(nextTodos as SessionTodoItem[]);
+        todosRef.current = nextTodos as SessionTodoItem[];
         setProcesses(view.processes || []);
         setContextReferences(view.contextReferences || []);
         setRuntimeTimeline(normalizePhoneRuntimeTimeline(nextRuntimeEvents));
         const nextRuntime: RuntimeSummary = {
             status: String(
+                hasAskUserPending
+                ? "waiting_input"
+                : hasGovernanceApprovalPending
+                    ? "waiting_approval"
+                    :
                 nextRuntimeStatus
                 || nextCurrentRun.status
                 || workflowProjection.runtimeStatus
@@ -1254,7 +1685,18 @@ export default function ChatScreen() {
         };
         setRuntime(nextRuntime);
         latestSeqRef.current = nextRuntime.latestSeq;
-    }, []);
+        if ((nextTodos as SessionTodoItem[]).length > 0) {
+            patchAssistantTaskShell(nextTodos as SessionTodoItem[], {
+                phase: nextRuntime.status === "waiting_input"
+                    ? "waiting_input"
+                    : nextRuntime.status === "completed"
+                        ? "settling"
+                        : undefined,
+                runId: nextRuntime.runId,
+                createIfMissing: false,
+            });
+        }
+    }, [patchAssistantTaskShell]);
 
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const snapshotMessages = extractSnapshotMessages(payload);
@@ -1276,10 +1718,11 @@ export default function ChatScreen() {
             }
 
             setMessages((current) => {
+                const preserveOptimisticLocalState = sendingRef.current || hasActiveLocalAssistantShell(current);
                 const normalized = mergeAuthoritativeSnapshotMessages(
                     current,
                     normalizedSnapshot,
-                    sendingRef.current,
+                    preserveOptimisticLocalState,
                 );
                 const fingerprint = buildMessagesFingerprint(normalized);
                 if (fingerprint === lastMessageFingerprintRef.current) {
@@ -1363,44 +1806,365 @@ export default function ChatScreen() {
             return;
         }
 
+        const isLocalStreamEvent = eventName === "local_stream";
         const normalized = normalizePhoneRealtimeEvent(payload, locale);
         if (!normalized) {
             return;
         }
 
-        if (normalized.seq && normalized.seq <= latestSeqRef.current) {
+        const dedupKey = buildRealtimeEventDedupKey(normalized);
+        if (seenRealtimeEventKeysRef.current.has(dedupKey)) {
             return;
         }
+        if (!isLocalStreamEvent && normalized.seq && normalized.seq < latestSeqRef.current) {
+            return;
+        }
+        seenRealtimeEventKeysRef.current.add(dedupKey);
+        if (seenRealtimeEventKeysRef.current.size > 2048) {
+            const first = seenRealtimeEventKeysRef.current.values().next();
+            if (!first.done) {
+                seenRealtimeEventKeysRef.current.delete(first.value);
+            }
+        }
         if (normalized.seq) {
-            latestSeqRef.current = normalized.seq;
+            latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
         }
 
         const shouldFallbackRefresh = shouldAuthoritativelyRefreshOnRuntimeEvent(normalized);
+        const normalizedToolName = String(
+            normalized.tool?.toolName
+            || normalized.data?.toolName
+            || normalized.data?.tool_name
+            || "",
+        ).trim();
+        const isTodoToolEvent = (normalized.type === "tool_start" || normalized.type === "tool_result")
+            && TODO_TOOL_NAMES.has(normalizedToolName);
 
-        if (shouldApplyRuntimeEventToMessage(normalized)) {
-            queueRuntimeMessageEvent(normalized, normalized.type === "agent_start" || normalized.type === "done" || normalized.type === "error");
+        if (isTodoToolEvent) {
+            const nextTodos = applyTodoToolEvent(todosRef.current, normalized) || todosRef.current;
+            todosRef.current = nextTodos;
+            setTodos(nextTodos);
+
+            const taskProgress = buildAssistantTaskProgressPatch(nextTodos, {
+                phase: "tooling",
+            });
+            const taskLabel = taskProgress?.label || tRef.current("任务步骤推进中", "Task progress updated");
+            const taskSubtitle = taskProgress?.subtitle || tRef.current("正在更新任务进度", "Updating task progress");
+
+            patchAssistantTaskShell(nextTodos, {
+                phase: taskProgress?.phase || "tooling",
+                label: taskLabel,
+                subtitle: taskSubtitle,
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+
+            appendRuntimeTimeline(
+                buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
+                    normalized.topic || `todo.${normalizedToolName}`,
+                    `${taskLabel}${taskSubtitle ? ` · ${taskSubtitle}` : ""}`,
+                    {
+                        id: normalized.event_id || `todo:${normalizedToolName}:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        status: "running",
+                        kind: "progress",
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                status: "running",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: taskLabel,
+            }));
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
+            return;
         }
 
-        if (normalized.name === "ask_user") {
+        if (shouldApplyRuntimeEventToMessage(normalized)) {
+            const shouldFlushImmediately = normalized.type === "agent_start"
+                || normalized.type === "reasoning_chunk"
+                || normalized.type === "text_chunk"
+                || normalized.type === "tool_start"
+                || normalized.type === "tool_result"
+                || normalized.type === "done"
+                || normalized.type === "error"
+                || normalized.name === "ask_user"
+                || normalized.name === "approval_requested"
+                || normalized.name === "artifact_recorded";
+            queueRuntimeMessageEvent(normalized, shouldFlushImmediately);
+        }
+
+        if (normalized.type === "agent_start") {
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
+                    normalized.topic || "agent.started",
+                    String(normalized.actorLabel || tRef.current("智能主管已开始处理", "Supervisor started working")),
+                    {
+                        id: normalized.event_id || `agent:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "handoff",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
+                        status: "running",
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                status: "running",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: normalized.actorLabel || tRef.current("开始处理", "Started"),
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "task_planning",
+                label: tRef.current("开始执行任务", "Task started"),
+                subtitle: tRef.current("正在整理上下文并准备响应。", "Preparing context and response."),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
+            return;
+        }
+
+        if (normalized.type === "reasoning_chunk") {
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildPhaseRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
+                    "reasoning",
+                    String(normalized.content || tRef.current("正在思考", "Thinking")).trim() || tRef.current("正在思考", "Thinking"),
+                    {
+                        runId: normalized.run_id,
+                        seq: normalized.seq,
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
+                        status: "running",
+                        topic: normalized.topic || "run.reasoning.delta",
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                status: "running",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: tRef.current("正在思考", "Thinking"),
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "task_planning",
+                label: tRef.current("正在规划任务", "Planning task"),
+                subtitle: tRef.current("正在分析任务步骤与执行顺序。", "Analyzing steps and execution order."),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            return;
+        }
+
+        if (normalized.type === "text_chunk") {
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildPhaseRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
+                    "streaming",
+                    String(normalized.content || tRef.current("正在回复", "Replying")).trim() || tRef.current("正在回复", "Replying"),
+                    {
+                        runId: normalized.run_id,
+                        seq: normalized.seq,
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
+                        status: "running",
+                        topic: normalized.topic || "run.text.delta",
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                status: "running",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: tRef.current("正在回复", "Replying"),
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "streaming",
+                label: tRef.current("正在回复", "Replying"),
+                subtitle: tRef.current("正在持续输出结果。", "Streaming the response."),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            return;
+        }
+
+        if (normalized.type === "tool_start" || normalized.type === "tool_result") {
+            const toolLabel = String(
+                normalized.data?.toolName
+                || normalized.data?.tool_name
+                || normalized.data?.label
+                || normalized.content
+                || tRef.current("工具调用", "Tool call"),
+            ).trim();
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || "chat")) || "chat",
+                    normalized.topic || (normalized.type === "tool_start" ? "tool.started" : "tool.finished"),
+                    normalized.type === "tool_start"
+                        ? tRef.current(`开始调用 ${toolLabel}`, `Starting ${toolLabel}`)
+                        : tRef.current(`已完成 ${toolLabel}`, `Finished ${toolLabel}`),
+                    {
+                        id: normalized.event_id || `${normalized.type}:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "tool",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                status: "running",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: toolLabel || current.label,
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "tooling",
+                label: toolLabel || tRef.current("正在执行工具", "Running tool"),
+                subtitle: normalized.type === "tool_start"
+                    ? tRef.current("任务正在调用工具执行步骤。", "Task is calling a tool.")
+                    : tRef.current("工具已返回结果，正在整理后续步骤。", "Tool returned and next step is being prepared."),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
+            return;
+        }
+
+        if (normalized.type === "done") {
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
+                    normalized.topic || "run.completed",
+                    String(normalized.content || tRef.current("本轮任务已完成", "Run completed")),
+                    {
+                        id: normalized.event_id || `done:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "progress",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
+                        status: "completed",
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                ...current,
+                status: current.status === "waiting_approval" || current.status === "waiting_input" ? current.status : "completed",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: tRef.current("已完成", "Completed"),
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "settling",
+                label: tRef.current("任务已完成", "Task completed"),
+                subtitle: tRef.current("正在整理最终回复与产物。", "Preparing final response and artifacts."),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(
+                    normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
+                    { force: true },
+                );
+            }
+            return;
+        }
+
+        if (normalized.type === "error") {
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
+                    normalized.topic || "run.failed",
+                    String(normalized.error || normalized.content || tRef.current("本轮任务失败", "Run failed")),
+                    {
+                        id: normalized.event_id || `error:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "progress",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel,
+                        status: "failed",
+                    },
+                ),
+            );
+            setRuntime((current) => ({
+                ...current,
+                status: "failed",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: tRef.current("运行失败", "Failed"),
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "error",
+                label: tRef.current("任务失败", "Task failed"),
+                subtitle: String(normalized.error || normalized.content || tRef.current("运行过程中出现错误。", "An error interrupted the run.")),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(
+                    normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
+                    { force: true },
+                );
+            }
+            return;
+        }
+
+        if (normalized.name === "ask_user" || normalized.name === "approval_requested") {
             const approval = buildApprovalFromEvent(normalized);
             if (approval) {
+                const askUserInteraction = isAskUserInteractionApproval(approval);
                 setApprovals((current) => upsertApproval(current, approval));
                 setRuntime((current) => ({
                     ...current,
-                    status: "waiting_approval",
-                        runId: normalized.run_id || current.runId,
-                    }));
+                    status: askUserInteraction ? "waiting_input" : "waiting_approval",
+                    latestSeq: normalized.seq || current.latestSeq,
+                    runId: normalized.run_id || current.runId,
+                    label: askUserInteraction
+                        ? tRef.current("等待你的输入", "Waiting for your answer")
+                        : tRef.current("等待授权确认", "Waiting for approval"),
+                }));
+                patchAssistantTaskShell(todosRef.current, {
+                    phase: askUserInteraction ? "waiting_input" : "tooling",
+                    label: askUserInteraction
+                        ? tRef.current("等待你的输入", "Waiting for your answer")
+                        : tRef.current("等待授权确认", "Waiting for approval"),
+                    subtitle: typeof normalized.data?.question === "string"
+                        ? normalized.data.question
+                        : (askUserInteraction
+                            ? tRef.current("请继续补充必要信息。", "Please provide the requested input.")
+                            : tRef.current("需要你的授权后才能继续。", "Approval is required to continue.")),
+                    runId: normalized.run_id,
+                    createIfMissing: true,
+                });
                 appendRuntimeTimeline(
                     buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
-                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "automation")) || "automation",
+                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || (askUserInteraction ? "chat" : "automation"))) || (askUserInteraction ? "chat" : "automation"),
                         normalized.topic || "approval.requested",
-                        String(normalized.data?.question || tRef.current("等待用户确认", "Waiting for approval")),
+                        String(
+                            normalized.data?.question
+                            || (askUserInteraction
+                                ? tRef.current("等待你的输入", "Waiting for your answer")
+                                : tRef.current("等待授权确认", "Waiting for approval")),
+                        ),
                         {
-                            id: normalized.event_id || `approval:${normalized.seq || Date.now()}`,
+                            id: normalized.event_id || `${askUserInteraction ? "ask-user" : "approval"}:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
                             timestamp: normalized.ts || Date.now(),
-                            actorLabel: normalized.actorLabel || tRef.current("运行调度", "Automation"),
+                            actorLabel: normalized.actorLabel || (askUserInteraction ? tRef.current("智能主管", "Supervisor") : tRef.current("运行调度", "Automation")),
                         },
                     ),
                 );
@@ -1409,6 +2173,21 @@ export default function ChatScreen() {
                 scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             }
             return;
+        }
+
+        if (normalized.type === "custom_event" && normalized.name === "artifact_recorded") {
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "artifact_ready",
+                label: tRef.current("产物已就绪", "Artifact ready"),
+                subtitle: String(
+                    normalized.artifact?.title
+                    || normalized.data?.title
+                    || normalized.data?.displayLabel
+                    || tRef.current("新的产物已经生成。", "A new artifact is ready."),
+                ),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
         }
 
         if (normalized.name === "artifact_recorded") {
@@ -1536,7 +2315,14 @@ export default function ChatScreen() {
                 { force: normalized.type === "done" || normalized.type === "error" },
             );
         }
-    }, [appendRuntimeTimeline, applyRealtimeSnapshotPayload, locale, queueRuntimeMessageEvent, scheduleRealtimeSnapshotRefresh]);
+    }, [
+        appendRuntimeTimeline,
+        applyRealtimeSnapshotPayload,
+        locale,
+        patchAssistantTaskShell,
+        queueRuntimeMessageEvent,
+        scheduleRealtimeSnapshotRefresh,
+    ]);
 
     const startRealtime = useCallback(async (conversationId: string, transitionToken?: number) => {
         if (
@@ -1548,13 +2334,51 @@ export default function ChatScreen() {
         if (realtimeConversationIdRef.current === conversationId && realtimeAbortRef.current) {
             return;
         }
-        stopRealtime();
+        stopRealtime({ preserveMessageState: true });
         const controller = new AbortController();
         const subscriptionToken = realtimeSubscriptionTokenRef.current;
         realtimeAbortRef.current = controller;
         realtimeConversationIdRef.current = conversationId;
+        let reconnectAttempt = 0;
         try {
-            await streamRealtimeSession(authorizedFetch, conversationId, handleRealtimeEvent, controller.signal);
+            while (
+                !controller.signal.aborted
+                && realtimeSubscriptionTokenRef.current === subscriptionToken
+                && activeConversationIdRef.current === conversationId
+                && (typeof transitionToken !== "number" || conversationTransitionTokenRef.current === transitionToken)
+            ) {
+                try {
+                    await streamRealtimeSession(authorizedFetch, conversationId, handleRealtimeEvent, controller.signal);
+                } catch (error) {
+                    if (!controller.signal.aborted) {
+                        console.warn("[phone] realtime stream stopped:", error);
+                    }
+                }
+
+                if (
+                    controller.signal.aborted
+                    || realtimeSubscriptionTokenRef.current !== subscriptionToken
+                    || activeConversationIdRef.current !== conversationId
+                    || (typeof transitionToken === "number" && conversationTransitionTokenRef.current !== transitionToken)
+                ) {
+                    break;
+                }
+
+                scheduleRealtimeSnapshotRefresh(conversationId, { force: true });
+                const currentStatus = String(runtimeRef.current.status || "").trim().toLowerCase();
+                const keepRealtimeAlive = sendingRef.current
+                    || currentStatus === "running"
+                    || currentStatus === "waiting_input"
+                    || currentStatus === "waiting_approval";
+
+                if (!keepRealtimeAlive) {
+                    break;
+                }
+
+                reconnectAttempt += 1;
+                const backoffMs = Math.min(800 + reconnectAttempt * 600, 3200);
+                await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            }
         } catch (error) {
             if (!controller.signal.aborted) {
                 console.warn("[phone] realtime stream stopped:", error);
@@ -1567,7 +2391,7 @@ export default function ChatScreen() {
                 realtimeConversationIdRef.current = null;
             }
         }
-    }, [authorizedFetch, handleRealtimeEvent, stopRealtime]);
+    }, [authorizedFetch, handleRealtimeEvent, scheduleRealtimeSnapshotRefresh, stopRealtime]);
 
     const loadConversation = useCallback(async (conversationId: string, options?: { force?: boolean; token?: number }) => {
         const transitionToken = options?.token ?? conversationTransitionTokenRef.current;
@@ -1589,8 +2413,18 @@ export default function ChatScreen() {
             ) {
                 return false;
             }
-            const normalized = normalizeMessagesForState(detail.messages || []);
-            resetConversationStreamState();
+            const snapshotMessages = normalizeMessagesForState(detail.messages || []);
+            const preserveOptimisticLocalState = (
+                optimisticSeedConversationIdRef.current === conversationId
+                || sendingRef.current
+                || hasActiveLocalAssistantShell(messagesRef.current)
+            );
+            const normalized = preserveOptimisticLocalState
+                ? mergeAuthoritativeSnapshotMessages(messagesRef.current, snapshotMessages, true)
+                : snapshotMessages;
+            if (!preserveOptimisticLocalState) {
+                resetConversationStreamState();
+            }
             realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
                 normalized,
                 PHONE_STREAM_LIFECYCLE_OPTIONS,
@@ -1644,6 +2478,7 @@ export default function ChatScreen() {
         }
 
         const created = await createConversation(authorizedFetch, "");
+        optimisticSeedConversationIdRef.current = created.id;
         setConversations((current) => [created, ...current.filter((item) => item.id !== created.id)]);
         await setActiveConversationId(created.id);
         return { id: created.id, created: true };
@@ -1685,6 +2520,7 @@ export default function ChatScreen() {
         if (status !== "authenticated") {
             conversationTransitionTokenRef.current += 1;
             previousConversationIdRef.current = null;
+            optimisticSeedConversationIdRef.current = null;
             hydratedConversationIdRef.current = null;
             loadingConversationIdRef.current = null;
             latestSeqRef.current = 0;
@@ -1697,6 +2533,7 @@ export default function ChatScreen() {
         if (!activeConversationId) {
             conversationTransitionTokenRef.current += 1;
             previousConversationIdRef.current = null;
+            optimisticSeedConversationIdRef.current = null;
             hydratedConversationIdRef.current = null;
             loadingConversationIdRef.current = null;
             resetConversationStreamState();
@@ -1720,15 +2557,21 @@ export default function ChatScreen() {
         previousConversationIdRef.current = activeConversationId;
         const transitionToken = conversationTransitionTokenRef.current + 1;
         conversationTransitionTokenRef.current = transitionToken;
+        const skipInitialHydration = conversationChanged && optimisticSeedConversationIdRef.current === activeConversationId;
         if (conversationChanged) {
-            stopRealtimeRef.current();
-            resetConversationStreamState();
+            seenRealtimeEventKeysRef.current.clear();
+            stopRealtimeRef.current(skipInitialHydration ? { preserveMessageState: true } : undefined);
             latestSeqRef.current = 0;
             lastAppliedSnapshotSeqRef.current = 0;
             lastAppliedSnapshotFingerprintRef.current = "";
         }
         let cancelled = false;
         void (async () => {
+            if (skipInitialHydration) {
+                optimisticSeedConversationIdRef.current = null;
+                await startRealtimeRef.current(activeConversationId, transitionToken);
+                return;
+            }
             const loaded = await loadConversationRef.current(activeConversationId, {
                 force: conversationChanged,
                 token: transitionToken,
@@ -1747,7 +2590,7 @@ export default function ChatScreen() {
         return () => {
             cancelled = true;
         };
-    }, [activeConversationId, resetConversationStreamState, status]);
+    }, [activeConversationId, status]);
 
     useEffect(() => {
         setSpeakingId("");
@@ -1781,6 +2624,7 @@ export default function ChatScreen() {
     const handleNewConversation = useCallback(async () => {
         stopRealtime();
         resetConversationStreamState();
+        optimisticSeedConversationIdRef.current = null;
         hydratedConversationIdRef.current = null;
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
@@ -2190,12 +3034,24 @@ export default function ChatScreen() {
                 taskPlanningMode,
                 files: uploadedFiles,
             });
+            const assistantPlaceholder = buildAssistantPlaceholder();
+            if (taskPlanningMode) {
+                assistantPlaceholder.uiStreamPhase = "task_planning";
+                assistantPlaceholder.metadata = {
+                    ...(assistantPlaceholder.metadata || {}),
+                    assistantTaskProgress: {
+                        phase: "task_planning",
+                        label: t("正在规划任务", "Planning task"),
+                        subtitle: t("正在拆解步骤并准备执行。", "Breaking down the steps and preparing execution."),
+                    },
+                };
+            }
 
             setMessages((current) => {
                 const next = normalizeMessagesForState([
                     ...current,
                     userMessage,
-                    buildAssistantPlaceholder(),
+                    assistantPlaceholder,
                 ]);
                 realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
                     next,
@@ -2226,7 +3082,7 @@ export default function ChatScreen() {
                 ));
             }
 
-            const historyMessages = messages.map((message) => ({
+            const historyMessages = messagesRef.current.map((message) => ({
                 role: message.role,
                 content: message.content,
             }));
@@ -2237,50 +3093,19 @@ export default function ChatScreen() {
                 {
                     messages: historyMessages,
                     conversationId: ensuredConversation.id,
-                commandPresetName: selectedCommand?.name || null,
+                    commandPresetName: selectedCommand?.name || null,
                     skillReferences: selectedSkills,
                     fileUrls: uploadedFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     taskPlanningMode,
                 },
                 (event: ChatStreamEvent) => {
-                    if (
-                        event.type === "agent_start"
-                        || event.type === "text_chunk"
-                        || event.type === "reasoning_chunk"
-                        || event.type === "tool_start"
-                        || event.type === "tool_result"
-                        || event.type === "custom_event"
-                        || event.type === "done"
-                        || event.type === "error"
-                    ) {
-                        handleRealtimeEvent("message", event);
-                    }
-
-                    if (event.type === "text_chunk" || event.type === "agent_start" || event.type === "reasoning_chunk" || event.type === "tool_start" || event.type === "tool_result" || event.type === "custom_event") {
-                        setRuntime((current) => ({
-                            ...current,
-                            status: "running",
-                            runId: event.run_id || current.runId,
-                        }));
+                    handleRealtimeEvent("local_stream", event);
+                    const normalized = normalizePhoneRealtimeEvent(event, locale);
+                    if (!normalized) {
                         return;
                     }
-
-                    if (event.type === "done") {
-                        setRuntime((current) => ({
-                            ...current,
-                            status: current.status === "waiting_approval" ? current.status : "completed",
-                            runId: event.run_id || current.runId,
-                        }));
-                        return;
-                    }
-
-                    if (event.type === "error") {
-                        setRuntime((current) => ({
-                            ...current,
-                            status: "failed",
-                            runId: event.run_id || current.runId,
-                        }));
-                        throw new Error(String(event.error || t("聊天流失败", "Chat stream failed")));
+                    if (normalized.type === "error") {
+                        throw new Error(String(normalized.error || normalized.content || t("聊天流失败", "Chat stream failed")));
                     }
                 },
             );
@@ -2297,7 +3122,7 @@ export default function ChatScreen() {
         ensureConversation,
         handleRealtimeEvent,
         input,
-        messages,
+        locale,
         selectedCommand,
         selectedSkills,
         taskPlanningMode,
@@ -2323,9 +3148,12 @@ export default function ChatScreen() {
         : null;
     const composerHorizontalInset = isLandscape ? 18 : 10;
     const composerBottomInset = Platform.OS === "ios" ? 8 : 4;
+    const todosVisible = projection.todos.length > 0;
+    const todosDockBottom = composerBottomInset + composerHeight + 8;
+    const chatBottomInset = composerHeight + composerBottomInset + (todosVisible ? todosDockHeight + 24 : 16);
     const pickerOverlayVisible = commandPickerOpen || skillPickerOpen;
     const pickerOverlayMode = commandPickerOpen ? "command" : skillPickerOpen ? "skill" : null;
-    const pickerOverlayBottom = composerBottomInset + composerHeight + 8;
+    const pickerOverlayBottom = todosDockBottom + (todosVisible ? todosDockHeight + 8 : 0);
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
         setSelectedCommand(command);
@@ -2336,6 +3164,12 @@ export default function ChatScreen() {
         setSelectedSkills((current) => [...current, skill]);
         setInput("");
     };
+
+    useEffect(() => {
+        if (!todosVisible && todosDockHeight !== 0) {
+            setTodosDockHeight(0);
+        }
+    }, [todosDockHeight, todosVisible]);
 
     return (
         <LinearGradient
@@ -2449,7 +3283,6 @@ export default function ChatScreen() {
                             onSpeakVoice={handleSpeakVoice}
                             userImageUri={profileImageUri || ""}
                             userDisplayName={user?.name || user?.login || user?.email || ""}
-                            todos={projection.todos}
                             artifacts={projection.artifacts}
                             processes={projection.processes}
                             contextReferences={projection.contextReferences}
@@ -2459,8 +3292,32 @@ export default function ChatScreen() {
                             onResolveApproval={handleApprovalResolve}
                             onOpenApprovalPanel={openApprovalPanel}
                             isLandscape={isLandscape}
+                            bottomInset={chatBottomInset}
                             emptyState={greetingEmptyState}
                         />
+
+                        {todosVisible ? (
+                            <View
+                                pointerEvents="box-none"
+                                style={[
+                                    styles.todosDock,
+                                    isLandscape && styles.todosDockLandscape,
+                                    {
+                                        left: composerHorizontalInset,
+                                        right: composerHorizontalInset,
+                                        bottom: todosDockBottom,
+                                    },
+                                ]}
+                                onLayout={(event) => {
+                                    const nextHeight = Math.round(event.nativeEvent.layout.height);
+                                    if (nextHeight >= 0 && nextHeight !== todosDockHeight) {
+                                        setTodosDockHeight(nextHeight);
+                                    }
+                                }}
+                            >
+                                <TodosHUD items={projection.todos} />
+                            </View>
+                        ) : null}
 
                         <ComposerPickerOverlay
                             visible={pickerOverlayVisible}
@@ -2476,6 +3333,7 @@ export default function ChatScreen() {
 
                         <View
                             style={[styles.composerWrap, isLandscape && styles.composerWrapLandscape]}
+                            pointerEvents="box-none"
                             onLayout={(event) => {
                                 const nextHeight = Math.round(event.nativeEvent.layout.height);
                                 if (nextHeight > 0 && nextHeight !== composerHeight) {
@@ -2730,6 +3588,14 @@ const styles = StyleSheet.create({
         zIndex: 22,
     },
     composerWrapLandscape: {
+        left: 18,
+        right: 18,
+    },
+    todosDock: {
+        position: "absolute",
+        zIndex: 24,
+    },
+    todosDockLandscape: {
         left: 18,
         right: 18,
     },

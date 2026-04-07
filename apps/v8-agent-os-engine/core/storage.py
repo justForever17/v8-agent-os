@@ -17,8 +17,10 @@ from core.v8_agent_os_paths import (
     OPENCLAW_DEFAULT_STATE_ROOT,
     PLUGIN_INSTALL_LOG_ROOT,
     PLUGIN_JSON_PATH,
+    RUNTIME_DATA_HOME,
     WORKSPACE_HOME,
     protected_runtime_paths,
+    runtime_private_root,
 )
 
 
@@ -420,17 +422,16 @@ class StorageManager:
             self.base_dir / "core" / "oauth",
             self.base_dir / "core" / "oauth" / "providers",
             self.base_dir / "workspace",
+            RUNTIME_DATA_HOME,
+            runtime_private_root("computer_use"),
+            runtime_private_root("rpa"),
+            runtime_private_root("plugin_host"),
             self.base_dir / "agents",
             self.base_dir / "commands",
             self.base_dir / "sessions",
-            self.base_dir / "computer_use_traces",
             self.base_dir / "web_fetch",
             self.base_dir / "plugins",
             PLUGIN_INSTALL_LOG_ROOT,
-            self.base_dir / "rpa",
-            self.base_dir / "rpa" / "drafts",
-            self.base_dir / "rpa" / "scripts",
-            self.base_dir / "rpa" / "templates",
         ]
         for d in dirs_to_create:
             d.mkdir(parents=True, exist_ok=True)

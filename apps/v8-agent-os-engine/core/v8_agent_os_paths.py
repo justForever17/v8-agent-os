@@ -9,6 +9,7 @@ V8_AGENT_OS_CORE_PATH = V8_AGENT_OS_HOME / "core"
 OAUTH_CORE_PATH = V8_AGENT_OS_CORE_PATH / "oauth"
 OAUTH_PROVIDERS_PATH = OAUTH_CORE_PATH / "providers"
 WORKSPACE_HOME = V8_AGENT_OS_HOME / "workspace"
+RUNTIME_DATA_HOME = V8_AGENT_OS_HOME / "runtime-data"
 CONFIG_JSON_PATH = V8_AGENT_OS_HOME / "config.json"
 COMPUTER_USE_JSON_PATH = V8_AGENT_OS_HOME / "computer_use.json"
 PLUGIN_JSON_PATH = V8_AGENT_OS_HOME / "plugin.json"
@@ -24,6 +25,7 @@ STATE_DB_PATH = V8_AGENT_OS_HOME / "state.db"
 CHECKPOINT_DB_PATH = V8_AGENT_OS_HOME / "checkpoints.db"
 V8_AGENT_OS_TMP_PATH = V8_AGENT_OS_HOME / "tmp"
 V8_AGENT_OS_TEST_TMP_PATH = V8_AGENT_OS_TMP_PATH / "tests"
+WORKSPACE_ARTIFACT_NAMESPACE = ".v8-agent-os"
 
 
 def ensure_v8_agent_os_tmp_path(*, scope: str = "runtime") -> Path:
@@ -36,6 +38,52 @@ def ensure_v8_agent_os_tmp_path(*, scope: str = "runtime") -> Path:
         path = V8_AGENT_OS_TMP_PATH / normalized if normalized and normalized != "runtime" else V8_AGENT_OS_TMP_PATH
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _safe_path_segment(value: str | None, *, fallback: str) -> str:
+    normalized = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "-"
+        for char in str(value or "").strip()
+    ).strip(" .-_")
+    return normalized or fallback
+
+
+def runtime_private_root(runtime_name: str) -> Path:
+    return RUNTIME_DATA_HOME / _safe_path_segment(runtime_name, fallback="runtime")
+
+
+def workspace_download_root(workspace_root: str | Path) -> Path:
+    return Path(workspace_root).expanduser() / "downloaded_media"
+
+
+def workspace_artifacts_root(workspace_root: str | Path) -> Path:
+    return Path(workspace_root).expanduser() / WORKSPACE_ARTIFACT_NAMESPACE / "artifacts"
+
+
+def workspace_artifact_run_root(
+    workspace_root: str | Path,
+    *,
+    session_id: str | None,
+    run_id: str | None,
+) -> Path:
+    root = workspace_artifacts_root(workspace_root)
+    root = root / _safe_path_segment(session_id, fallback="session")
+    root = root / _safe_path_segment(run_id, fallback="run")
+    return root
+
+
+def workspace_artifact_item_root(
+    workspace_root: str | Path,
+    *,
+    session_id: str | None,
+    run_id: str | None,
+    artifact_id: str | None,
+) -> Path:
+    return workspace_artifact_run_root(
+        workspace_root,
+        session_id=session_id,
+        run_id=run_id,
+    ) / _safe_path_segment(artifact_id, fallback="artifact")
 
 
 def protected_runtime_paths(*, include_home: bool = True) -> list[str]:

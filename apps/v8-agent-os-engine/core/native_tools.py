@@ -30,6 +30,7 @@ else:
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.types import Command, interrupt
 from core.artifact_store import artifact_store
+from core.database import db
 from core.computer_use_execution_route import (
     _compact_environment_signal_summary,
     _compact_timing_signal_summary,
@@ -890,7 +891,7 @@ def _computer_use_compact_response(
             "artifactPath": primary_artifact.get("filePath"),
             "workspacePath": primary_artifact.get("workspacePath"),
             "previewUrl": primary_artifact.get("previewUrl"),
-            "artifactRootHint": ".v8-agent-os-artifacts/computer_use",
+            "artifactRootHint": ".v8-agent-os/artifacts",
         }
     runtime_recommended = str(metadata.get("recommendedNextAction") or "").strip() or None
     visual_decision = dict(metadata.get("visualDecision") or {})
@@ -2219,73 +2220,6 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
         return output
     except Exception as e:
         return f"Error performing search: {str(e)}"
-
-@tool
-def inspect_and_move_media(path: str) -> str:
-    """[Compatibility] Inspect a binary media file and move it into the workspace.
-    
-    If the user asks you to analyze or show an image/video located randomly on their OS, 
-    use this tool. It will extract its size, and copy it into the active workspace so you 
-    can return the HTTP URL to the user.
-    
-    Arguments:
-        path (str): Absolute native path to the media file.
-    """
-    try:
-        source_path = Path(path)
-        if not source_path.exists() or not source_path.is_file():
-            return f"Error: Media file '{path}' does not exist."
-            
-        size_bytes = source_path.stat().st_size
-        mime_type, _ = mimetypes.guess_type(path)
-        
-        runtime_context = get_runtime_context()
-        workspace_dir = Path(
-            workspace_resolution_service.resolve_workspace_path(
-                runtime_kind=str(runtime_context.get("runtime_kind") or "chat"),
-                session_id=str(runtime_context.get("session_id") or "") or None,
-                explicit_workspace_path=str(runtime_context.get("workspace_path") or "") or None,
-            )
-        )
-        workspace_dir = ensure_workspace_auto_create_allowed(
-            workspace_dir,
-            source="native_tools.inspect_and_move_media",
-            allow_missing=True,
-        )
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Copy to workspace
-        target_path = workspace_dir / source_path.name
-        
-        # Avoid unnecessary copy if it's already in the workspace
-        if str(source_path.absolute()) != str(target_path.absolute()):
-            shutil.copy2(source_path, target_path)
-            
-        artifact = artifact_store.record_local_file(
-            file_path=source_path,
-            session_id=runtime_context.get("session_id"),
-            run_id=runtime_context.get("run_id"),
-            workspace_path=str(target_path),
-            metadata={"source": "inspect_and_move_media"},
-            source_component="native_tools",
-            node="inspect_and_move_media",
-        )
-        preview_url = str(artifact.get("previewUrl") or artifact.get("contentUrl") or "")
-        
-        return (
-            f"Media Inspected & Mounted!\n"
-            f"Original Path: {path}\n"
-            f"Size: {size_bytes / (1024*1024):.2f} MB\n"
-            f"MIME Type: {mime_type or 'Unknown'}\n"
-            f"Artifact ID: {artifact['artifactId']}\n"
-            f"--- ACTION REQUIRED ---\n"
-            f"To show this media to the user in the Chat UI, return the following markdown element in your final response:\n"
-            f"![{source_path.name}]({preview_url})\n"
-        )
-            
-    except Exception as e:
-        return f"Error moving media file: {str(e)}"
-
 
 def _launch_background_command(
     command: str,
@@ -5584,7 +5518,6 @@ NATIVE_TOOLS = [
     read_native_file,
     write_native_file,
     grep_search,
-    inspect_and_move_media,
     download_media_for_vision,
     web_fetch,
     web_read,

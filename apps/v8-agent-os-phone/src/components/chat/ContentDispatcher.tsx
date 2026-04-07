@@ -9,10 +9,51 @@ import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
 import {
     isBackgroundCommandTraceTool,
 } from "@/src/lib/chat/command-session";
+import { isHiddenPhoneTimelineNode } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks, type PhoneContentBlock } from "@/src/lib/content-detector";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { spacing } from "@/src/theme/tokens";
 import type { ChatArtifact, PhoneUiExecutionNode, PhoneUiTimelineNode } from "@/src/types/admin";
+
+const HIDDEN_TOOL_NAMES = new Set(["write_todos", "update_todo", "inspect_and_move_media"]);
+const TRACE_TOOL_NAMES = new Set(["download_media_for_vision"]);
+
+function tryParseJsonRecord(value: unknown): Record<string, unknown> | null {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    if (typeof value !== "string") {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function compactToolResult(toolName: string, value: unknown) {
+    if (toolName !== "download_media_for_vision") {
+        return value;
+    }
+    const record = tryParseJsonRecord(value);
+    if (!record) {
+        return value;
+    }
+    return {
+        ok: record.ok,
+        artifactId: record.artifactId ?? record.primaryArtifactId,
+        kind: record.kind ?? record.primaryKind,
+        mimeType: record.mimeType,
+        fileName: record.fileName,
+        workspacePath: record.workspacePath ?? record.canonicalPath ?? record.userVisiblePath ?? record.primaryFile,
+        workspaceRelativePath: record.workspaceRelativePath,
+        message: record.message ?? record.statusMessage ?? record.error,
+    };
+}
 
 function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel: string): ToolInvocation {
     const toolName = String(
@@ -38,7 +79,7 @@ function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel:
         toolName,
         args: executionNode.args ?? executionNode.data?.args ?? executionNode.data?.request ?? {},
         state: executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call",
-        result,
+        result: compactToolResult(toolName, result),
     };
 }
 
@@ -62,6 +103,9 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     processes?: AdminProcessRef[];
 }) {
     const { colors, t } = useUiPrefs();
+    if (isHiddenPhoneTimelineNode(node)) {
+        return null;
+    }
     const narrativeBlocks = useMemo(
         () => (node.kind === "narrative" ? parsePhoneContentBlocks(String(node.content || "")) : []),
         [node],
@@ -69,6 +113,9 @@ export const ContentDispatcher = memo(function ContentDispatcher({
 
     const renderExecutionTool = (executionNode: PhoneUiExecutionNode) => {
         const toolInvocation = buildToolInvocation(executionNode, t("工具调用", "Tool call"));
+        if (HIDDEN_TOOL_NAMES.has(toolInvocation.toolName)) {
+            return null;
+        }
         const matchedProcess = toolInvocation.toolCallId
             ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)
             : undefined;
@@ -83,6 +130,10 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         }
 
         if (isBackgroundCommandTraceTool(toolInvocation.toolName)) {
+            return <GenericToolTraceCard toolInvocation={toolInvocation} />;
+        }
+
+        if (TRACE_TOOL_NAMES.has(toolInvocation.toolName)) {
             return <GenericToolTraceCard toolInvocation={toolInvocation} />;
         }
 
@@ -129,6 +180,10 @@ export const ContentDispatcher = memo(function ContentDispatcher({
 
         if (executionNode.executionType === "tool_call" || executionNode.executionType === "tool_result") {
             return renderExecutionTool(executionNode);
+        }
+
+        if (executionNode.executionType === "agent_start") {
+            return null;
         }
 
         if (executionNode.executionType === "runtime_progress") {

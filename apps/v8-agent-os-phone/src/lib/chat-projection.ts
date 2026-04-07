@@ -1,7 +1,7 @@
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import type { ArtifactDetail, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
-import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
+import { isAskUserInteractionApproval, type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageActivity, PhoneRuntimeStageCard, PhoneRuntimeTimelineEntry } from "@/src/lib/runtime-stage";
 import { buildPhoneRuntimeStageModel } from "@/src/lib/runtime-stage";
@@ -234,6 +234,8 @@ export function buildPhoneChatProjection({
     const resolvedRuntimeId = runtimeStageModel.items.some((item) => item.id === selectedRuntimeId)
         ? selectedRuntimeId
         : preferredRuntimeId;
+    const governanceApprovals = approvals.filter((item) => !isAskUserInteractionApproval(item));
+    const preferredPendingApproval = approvals.find((item) => isAskUserInteractionApproval(item)) || approvals[0] || null;
 
     return {
         activeConversation,
@@ -248,8 +250,8 @@ export function buildPhoneChatProjection({
         currentRunLabel: summarizePhoneRuntimeStatus(runtime.status, t),
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         historyPreview,
-        pendingApproval: approvals[0] || null,
-        pendingApprovalCount: approvals.length,
+        pendingApproval: preferredPendingApproval,
+        pendingApprovalCount: governanceApprovals.length,
         todoCount: todos.length,
         artifactCount: artifacts.length,
         artifacts,
@@ -260,8 +262,8 @@ export function buildPhoneChatProjection({
         runControlState: {
             runId: runtime.runId,
             status: runtime.status,
-            pendingApproval: approvals.length > 0,
-            canOpenApproval: approvals.length > 0 || activeConversation?.controls?.canOpenApproval,
+            pendingApproval: governanceApprovals.length > 0,
+            canOpenApproval: governanceApprovals.length > 0 || activeConversation?.controls?.canOpenApproval,
             canResume: activeConversation?.controls?.canResume,
             canRetry: activeConversation?.controls?.canRetry,
             canInterrupt: activeConversation?.controls?.canInterrupt,

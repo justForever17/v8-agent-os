@@ -167,8 +167,11 @@ function summarizeExecutionNode(node: PhoneUiExecutionNode): string | null {
 }
 
 function summarizeGovernanceNode(node: PhoneUiGovernanceNode): string | null {
+    if (node.governanceType === "ask_user") {
+        return node.question || "等待你的输入";
+    }
     if (node.governanceType === "approval_request") {
-        return node.question || "等待用户审批";
+        return node.question || "等待授权确认";
     }
     if (node.governanceType === "approval_resolved") {
         return node.reason || node.status || "审批状态已更新";
@@ -270,6 +273,22 @@ function buildTimelineArtifactNode(entry: PhoneRuntimeTimelineEntry): PhoneUiArt
 function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTimelineNode {
     const governanceType = (() => {
         const topic = String(entry.topic || "").trim().toLowerCase();
+        const metadata = entry.metadata && typeof entry.metadata === "object"
+            ? entry.metadata as Record<string, unknown>
+            : {};
+        const approvalKind = String(metadata.approvalKind || metadata.approval_kind || "").trim().toLowerCase();
+        const interactionKind = String(metadata.interactionKind || metadata.interaction_kind || "").trim().toLowerCase();
+        if (topic === "approval.requested") {
+            if (
+                interactionKind === "ask_user"
+                || approvalKind === "human_input_required"
+                || approvalKind === "ask_user"
+                || approvalKind === "waiting_input"
+            ) {
+                return "ask_user" as const;
+            }
+            return "approval_request" as const;
+        }
         if (topic.startsWith("approval.")) return "approval_resolved" as const;
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
         if (topic.startsWith("context.")) return "context_governance" as const;

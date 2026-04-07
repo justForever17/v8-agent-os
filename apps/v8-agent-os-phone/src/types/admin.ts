@@ -88,6 +88,14 @@ export type ChatArtifact = {
     externalUrl?: string;
     sourcePath?: string;
     workspacePath?: string;
+    workspaceRoot?: string;
+    workspaceRelativePath?: string;
+    canonicalPath?: string;
+    projectId?: string;
+    workspaceId?: string;
+    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact";
+    storageClass?: string;
+    surfaceVisible?: boolean;
     mimeType?: string;
     resourceRef?: AdminResourceRef | null;
 };
@@ -126,6 +134,7 @@ export type PhoneUiExecutionNode = PhoneUiTimelineNodeBase & {
 export type PhoneUiGovernanceNode = PhoneUiTimelineNodeBase & {
     kind: "governance";
     governanceType:
+        | "ask_user"
         | "approval_request"
         | "approval_resolved"
         | "run_controlled"
@@ -134,6 +143,7 @@ export type PhoneUiGovernanceNode = PhoneUiTimelineNodeBase & {
         | "lane_updated";
     approvalId?: string;
     approvalKind?: string;
+    interactionKind?: string;
     question?: string;
     toolCallId?: string;
     requestInfo?: unknown;
@@ -166,6 +176,14 @@ export type ArtifactDetail = {
     messageId?: string;
     sourcePath?: string;
     workspacePath?: string;
+    workspaceRoot?: string;
+    workspaceRelativePath?: string;
+    canonicalPath?: string;
+    projectId?: string;
+    workspaceId?: string;
+    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact";
+    storageClass?: string;
+    surfaceVisible?: boolean;
     externalUrl?: string;
     previewUrl?: string;
     resourceRef?: AdminResourceRef | null;
@@ -203,10 +221,38 @@ export type ChatMessage = {
         commandPreset?: { name?: string };
         skillReferences?: SkillReferenceSummary[];
         taskPlanningMode?: boolean;
+        assistantTaskProgress?: {
+            phase?:
+                | "placeholder"
+                | "agent_started"
+                | "task_planning"
+                | "tooling"
+                | "artifact_ready"
+                | "waiting_input"
+                | "streaming"
+                | "settling"
+                | "error";
+            label?: string;
+            subtitle?: string;
+            currentStep?: string;
+            completedCount?: number;
+            totalCount?: number;
+            toolName?: string;
+            artifactTitle?: string;
+        };
         [key: string]: unknown;
     };
     uiEphemeral?: boolean;
-    uiStreamPhase?: "placeholder" | "agent_started" | "streaming" | "settling" | "error";
+    uiStreamPhase?:
+        | "placeholder"
+        | "agent_started"
+        | "task_planning"
+        | "tooling"
+        | "artifact_ready"
+        | "waiting_input"
+        | "streaming"
+        | "settling"
+        | "error";
 };
 
 export type PendingApproval = {

@@ -23,7 +23,7 @@ from core.models.control_plane import model_control_plane
 from core.multimodal_payload_adapter import utc_now_iso
 from core.storage import storage
 from core.runtime_signal_ingress import build_normalized_signal_payload
-from core.v8_agent_os_paths import ensure_v8_agent_os_tmp_path
+from core.v8_agent_os_paths import ensure_v8_agent_os_tmp_path, workspace_artifact_run_root
 from core.context.workspace import workspace_resolution_service
 from core.tools.vision_media_analyzer import vision_media_analyzer
 from core.workspace_guard import ensure_workspace_auto_create_allowed
@@ -672,6 +672,8 @@ class ComputerUseRuntime:
         resolved = workspace_resolution_service.resolve_workspace_path(
             runtime_kind="computer_use",
             session_id=str(runtime_context.get("session_id") or "") or None,
+            explicit_workspace_id=str(runtime_context.get("workspace_id") or "") or None,
+            explicit_project_id=str(runtime_context.get("project_id") or "") or None,
             explicit_workspace_path=workspace_path or str(runtime_context.get("workspace_path") or "") or None,
         )
         return ensure_workspace_auto_create_allowed(
@@ -2225,14 +2227,21 @@ class ComputerUseRuntime:
     def _artifact_output_path(
         self,
         *,
+        session_id: str,
         run_id: str,
         kind: str,
         suffix: str = ".png",
         workspace_path: str | None = None,
-    ) -> tuple[Path, str | None, str | None]:
+    ) -> tuple[Path, str | None, str | None, Path]:
         workspace_root = self._workspace_root(workspace_path)
-        relative_path = Path(".v8-agent-os-artifacts") / "computer_use" / run_id / f"{kind}_{uuid.uuid4().hex[:8]}{suffix}"
-        full_path = workspace_root / relative_path
+        artifact_root = workspace_artifact_run_root(
+            workspace_root,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        full_path = artifact_root / f"{kind}_{uuid.uuid4().hex[:8]}{suffix}"
+        relative_path = full_path.relative_to(workspace_root)
         preview_url = None
         try:
             from core.system_base import get_engine_origin
@@ -2240,7 +2249,7 @@ class ComputerUseRuntime:
             preview_url = f"{get_engine_origin().rstrip('/')}/workspace/{relative_path.as_posix()}"
         except Exception:
             preview_url = None
-        return full_path, relative_path.as_posix(), preview_url
+        return full_path, relative_path.as_posix(), preview_url, workspace_root
 
     def _capture_runtime_screenshot_artifact(
         self,
@@ -2251,7 +2260,9 @@ class ComputerUseRuntime:
         metadata: Optional[Dict[str, Any]] = None,
         **capture_kwargs,
     ) -> tuple[Dict[str, Any], Path]:
-        output_path, workspace_rel, preview_url = self._artifact_output_path(
+        runtime_context = get_runtime_context()
+        output_path, workspace_rel, preview_url, workspace_root = self._artifact_output_path(
+            session_id=run_handle.session_id,
             run_id=run_handle.run_id,
             kind=kind,
             workspace_path=workspace_path,
@@ -2267,6 +2278,14 @@ class ComputerUseRuntime:
                 "runtime": "computer_use",
                 "capture": capture,
                 "capturedAt": utc_now_iso(),
+                "projectId": str(runtime_context.get("project_id") or "") or None,
+                "workspaceId": str(runtime_context.get("workspace_id") or "") or None,
+                "workspaceRoot": str(workspace_root),
+                "workspaceRelativePath": workspace_rel,
+                "storageClass": "workspace",
+                "surfaceVisible": True,
+                "canonicalPath": workspace_rel,
+                "pathPlane": "workspace_artifact",
                 **(metadata or {}),
             },
             source_component="computer_use_runtime",
@@ -8866,7 +8885,9 @@ class ComputerUseRuntime:
         invocation_metadata = self._pop_invocation_metadata(payload)
 
         def _runner(run_handle, runtime_payload):
-            output_path, workspace_rel, preview_url = self._artifact_output_path(
+            runtime_context = get_runtime_context()
+            output_path, workspace_rel, preview_url, workspace_root = self._artifact_output_path(
+                session_id=run_handle.session_id,
                 run_id=run_handle.run_id,
                 kind="capture",
                 workspace_path=workspace_path,
@@ -8887,6 +8908,14 @@ class ComputerUseRuntime:
                     "runtime": "computer_use",
                     "capture": capture,
                     "capturedAt": utc_now_iso(),
+                    "projectId": str(runtime_context.get("project_id") or "") or None,
+                    "workspaceId": str(runtime_context.get("workspace_id") or "") or None,
+                    "workspaceRoot": str(workspace_root),
+                    "workspaceRelativePath": workspace_rel,
+                    "storageClass": "workspace",
+                    "surfaceVisible": True,
+                    "canonicalPath": workspace_rel,
+                    "pathPlane": "workspace_artifact",
                 },
                 source_component="computer_use_runtime",
                 node="artifact_store",

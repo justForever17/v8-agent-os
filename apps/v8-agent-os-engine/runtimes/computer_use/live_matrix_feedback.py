@@ -5,8 +5,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from core.v8_agent_os_paths import runtime_private_root
 
-REPORT_ROOT = Path.home() / ".v8-agent-os" / "reports" / "computer_use"
+REPORT_ROOT = runtime_private_root("computer_use") / "reports"
 REPORT_GLOB = "primitive_live_matrix_*.json"
 
 

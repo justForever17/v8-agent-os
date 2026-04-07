@@ -56,12 +56,15 @@ export const Composer = memo(function Composer({
     const [isFocused, setIsFocused] = useState(false);
     const inputRef = useRef<TextInput | null>(null);
     const canSend = Boolean(value.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0) && !busy;
-    const inputShellBackground = themeMode === "dark"
-        ? "rgba(28,25,23,0.86)"
-        : "rgba(255,255,255,0.92)";
-    const inputShellBorder = isFocused
+    const shellBackground = themeMode === "dark"
+        ? "rgba(28,25,23,0.9)"
+        : "rgba(255,255,255,0.94)";
+    const shellBorder = isFocused
         ? (themeMode === "dark" ? "rgba(245,158,11,0.32)" : "rgba(249,115,22,0.28)")
-        : "transparent";
+        : colors.border;
+    const editorBackground = themeMode === "dark"
+        ? "rgba(17,24,39,0.46)"
+        : "rgba(248,250,252,0.92)";
     const inputWebStyle: any = Platform.OS === "web"
         ? {
             outlineStyle: "none",
@@ -128,63 +131,76 @@ export const Composer = memo(function Composer({
 
                 <View
                     style={[
-                        styles.inputShell,
+                        styles.composerCard,
                         {
-                            backgroundColor: inputShellBackground,
-                            borderColor: inputShellBorder,
+                            backgroundColor: shellBackground,
+                            borderColor: shellBorder,
                             shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
                         },
                     ]}
                 >
-                    <View style={styles.inputFocusSurface}>
-                        <View style={styles.editorSurface}>
-                            <TextInput
-                                ref={inputRef}
-                                value={value}
-                                onChangeText={onChange}
-                                onFocus={() => setIsFocused(true)}
-                                onBlur={() => setIsFocused(false)}
-                                placeholder={t("给 智能主管 发送消息...", "Message Supervisor...")}
+                <View
+                    style={[
+                        styles.editorCard,
+                        {
+                            backgroundColor: editorBackground,
+                                borderColor: isFocused ? `${colors.primary}2F` : "transparent",
+                            },
+                        ]}
+                >
+                        <TextInput
+                            ref={inputRef}
+                            value={value}
+                            onChangeText={onChange}
+                            onFocus={() => setIsFocused(true)}
+                            onBlur={() => setIsFocused(false)}
+                            placeholder={t("给 智能主管 发送消息...", "Message Supervisor...")}
                             placeholderTextColor={colors.textSoft}
                             multiline
+                            editable
+                            scrollEnabled
+                            showSoftInputOnFocus
+                            blurOnSubmit={false}
                             underlineColorAndroid="transparent"
                             selectionColor={colors.primary}
+                            selectionHandleColor={colors.primary}
                             cursorColor={colors.accent}
+                            caretHidden={false}
                             autoCorrect={false}
                             spellCheck={false}
                             autoComplete="off"
+                            importantForAutofill="no"
+                            selectTextOnFocus={false}
+                            contextMenuHidden={false}
+                            disableFullscreenUI
+                            returnKeyType="default"
                             textAlignVertical="top"
                             style={[styles.input, { color: colors.text }, inputWebStyle]}
-                            />
-                            <View
-                                pointerEvents="none"
-                                style={[
-                                    styles.inputLineMask,
-                                    { backgroundColor: inputShellBackground },
-                                ]}
-                            />
-                        </View>
+                        />
                     </View>
 
                     <View style={styles.bottomControls}>
-                        <Pressable
-                            style={[
-                                styles.taskModeButton,
-                                taskPlanningMode && { backgroundColor: colors.primarySoft },
-                            ]}
-                            onPress={onToggleTaskPlanningMode}
-                        >
-                            <MaterialCommunityIcons
-                                name="format-list-checks"
-                                size={15}
-                                color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
-                            />
-                            <Text style={[styles.taskModeText, { color: taskPlanningMode ? colors.primaryDeep : colors.textMuted }]}>
-                                {t("任务模式", "Task mode")}
-                            </Text>
-                        </Pressable>
+                        <View style={styles.leftControls}>
+                            <Pressable
+                                style={[
+                                    styles.taskModeButton,
+                                    {
+                                        backgroundColor: taskPlanningMode ? colors.primarySoft : "transparent",
+                                        borderColor: taskPlanningMode ? `${colors.primary}26` : "transparent",
+                                    },
+                                ]}
+                                onPress={onToggleTaskPlanningMode}
+                            >
+                                <MaterialCommunityIcons
+                                    name="format-list-checks"
+                                    size={15}
+                                    color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
+                                />
+                                <Text style={[styles.taskModeText, { color: taskPlanningMode ? colors.primaryDeep : colors.textMuted }]}>
+                                    {t("任务模式", "Task mode")}
+                                </Text>
+                            </Pressable>
 
-                        <View style={styles.actionRow}>
                             <Pressable
                                 style={[styles.inlineButton, attachmentBusy && styles.disabled]}
                                 onPress={onPickAttachment}
@@ -204,24 +220,24 @@ export const Composer = memo(function Composer({
                                 ]}
                                 onPress={onToggleRecording}
                                 disabled={transcribing}
-                            >
-                                <MaterialCommunityIcons
-                                    name={transcribing ? "loading" : recording ? "stop" : "microphone-outline"}
-                                    size={18}
-                                    color={recording ? "#FFFFFF" : colors.textMuted}
-                                />
-                            </Pressable>
-                            <Pressable disabled={!canSend} onPress={onSend} style={[styles.sendWrap, !canSend && styles.disabled]}>
-                                <LinearGradient
-                                    colors={canSend ? [colors.accent, "#F59E0B"] : ["#CBD5E1", "#CBD5E1"]}
-                                    start={{ x: 0, y: 0 }}
-                                    end={{ x: 1, y: 1 }}
-                                    style={styles.sendButton}
                                 >
-                                    <MaterialCommunityIcons name={busy ? "loading" : "send"} size={18} color="#FFFFFF" />
-                                </LinearGradient>
-                            </Pressable>
+                                    <MaterialCommunityIcons
+                                        name={transcribing ? "loading" : recording ? "stop" : "microphone-outline"}
+                                        size={18}
+                                        color={recording ? "#FFFFFF" : colors.textMuted}
+                                    />
+                                </Pressable>
                         </View>
+                        <Pressable disabled={!canSend} onPress={onSend} style={[styles.sendWrap, !canSend && styles.disabled]}>
+                            <LinearGradient
+                                colors={canSend ? [colors.accent, "#F59E0B"] : ["#CBD5E1", "#CBD5E1"]}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 1 }}
+                                style={styles.sendButton}
+                            >
+                                <MaterialCommunityIcons name={busy ? "loading" : "send"} size={18} color="#FFFFFF" />
+                            </LinearGradient>
+                        </Pressable>
                     </View>
                 </View>
             </View>
@@ -255,84 +271,76 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: "700",
     },
-    inputShell: {
-        borderRadius: 30,
-        minHeight: 108,
-        paddingHorizontal: 14,
-        paddingTop: 14,
-        paddingBottom: 12,
+    composerCard: {
+        borderRadius: 28,
+        paddingHorizontal: 12,
+        paddingTop: 12,
+        paddingBottom: 8,
         borderWidth: 1,
         shadowOpacity: 0.08,
         shadowRadius: 16,
         shadowOffset: { width: 0, height: 8 },
         elevation: 2,
+        gap: 8,
     },
-    inputFocusSurface: {
-        minHeight: 56,
-        justifyContent: "flex-start",
-    },
-    editorSurface: {
-        minHeight: 56,
-        borderRadius: 20,
-        justifyContent: "flex-start",
-        backgroundColor: "transparent",
+    editorCard: {
+        minHeight: 82,
+        borderRadius: 22,
+        borderWidth: 1,
         overflow: "hidden",
-        position: "relative",
-        paddingBottom: 2,
+        justifyContent: "flex-start",
+        width: "100%",
     },
     input: {
-        minHeight: 56,
-        maxHeight: 140,
-        fontSize: 15,
-        lineHeight: 22,
+        minHeight: 82,
+        maxHeight: 220,
+        width: "100%",
+        flexGrow: 1,
+        fontSize: 16,
+        lineHeight: 24,
         textAlignVertical: "top",
         backgroundColor: "transparent",
         borderWidth: 0,
-        paddingTop: 2,
-        paddingBottom: 6,
-        paddingHorizontal: 0,
-        paddingVertical: 0,
-        margin: 0,
         includeFontPadding: false,
+        paddingTop: 12,
+        paddingBottom: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        margin: 0,
         borderRadius: 0,
         borderBottomWidth: 0,
         borderBottomColor: "transparent",
     },
-    inputLineMask: {
-        position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        height: 4,
-    },
     bottomControls: {
-        marginTop: 4,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 8,
     },
+    leftControls: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        flex: 1,
+        flexWrap: "wrap",
+    },
     taskModeButton: {
-        minHeight: 28,
+        minHeight: 30,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        paddingHorizontal: 6,
-        borderRadius: 10,
+        paddingHorizontal: 8,
+        borderRadius: 12,
+        borderWidth: 1,
     },
     taskModeText: {
         fontSize: 12,
         fontWeight: "600",
     },
-    actionRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-    },
     inlineButton: {
-        width: 28,
-        height: 28,
-        borderRadius: 10,
+        width: 32,
+        height: 32,
+        borderRadius: 12,
         alignItems: "center",
         justifyContent: "center",
     },

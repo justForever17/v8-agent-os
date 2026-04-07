@@ -180,8 +180,17 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
     const resourceRef: AdminResourceRef = {
       kind,
       adminPath: typeof record.adminPath === "string" ? normalizeAdminPath(record.adminPath) : undefined,
+      signedUrl: typeof record.signedUrl === "string"
+        ? record.signedUrl
+        : typeof record.signed_url === "string"
+          ? record.signed_url
+          : undefined,
       artifactId: typeof record.artifactId === "string" ? record.artifactId : undefined,
       workspacePath: typeof record.workspacePath === "string" ? normalizeWorkspacePath(record.workspacePath) : undefined,
+      workspaceRoot: typeof record.workspaceRoot === "string" ? record.workspaceRoot : undefined,
+      workspaceRelativePath: typeof record.workspaceRelativePath === "string"
+        ? normalizeWorkspacePath(record.workspaceRelativePath)
+        : undefined,
       url: typeof record.url === "string" ? record.url : undefined,
       mimeType: typeof record.mimeType === "string" ? record.mimeType : undefined,
       displayLabel: typeof record.displayLabel === "string" ? record.displayLabel : undefined,
@@ -189,7 +198,20 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
       previewable: typeof record.previewable === "boolean" ? record.previewable : undefined,
       downloadable: typeof record.downloadable === "boolean" ? record.downloadable : undefined,
       sourcePath: typeof record.sourcePath === "string" ? record.sourcePath : undefined,
+      surfaceVisible: typeof record.surfaceVisible === "boolean"
+        ? record.surfaceVisible
+        : typeof record.surface_visible === "boolean"
+          ? record.surface_visible
+          : undefined,
+      pathPlane: typeof record.pathPlane === "string"
+        ? record.pathPlane as AdminResourceRef["pathPlane"]
+        : typeof record.path_plane === "string"
+          ? record.path_plane as AdminResourceRef["pathPlane"]
+          : undefined,
     };
+    if (!resourceRef.workspacePath && resourceRef.workspaceRelativePath) {
+      resourceRef.workspacePath = resourceRef.workspaceRelativePath;
+    }
     if (!resourceRef.adminPath) {
       if (kind === "artifact_content" && resourceRef.artifactId) {
         resourceRef.adminPath = buildAdminArtifactContentPath(resourceRef.artifactId);
@@ -237,6 +259,26 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
         : typeof record.source_path === "string"
           ? record.source_path
           : undefined,
+      workspaceRoot: typeof record.workspaceRoot === "string"
+        ? record.workspaceRoot
+        : typeof record.workspace_root === "string"
+          ? record.workspace_root
+          : undefined,
+      workspaceRelativePath: typeof record.workspaceRelativePath === "string"
+        ? normalizeWorkspacePath(record.workspaceRelativePath)
+        : typeof record.workspace_relative_path === "string"
+          ? normalizeWorkspacePath(record.workspace_relative_path)
+          : undefined,
+      surfaceVisible: typeof record.surfaceVisible === "boolean"
+        ? record.surfaceVisible
+        : typeof record.surface_visible === "boolean"
+          ? record.surface_visible
+          : undefined,
+      pathPlane: typeof record.pathPlane === "string"
+        ? record.pathPlane as AdminResourceRef["pathPlane"]
+        : typeof record.path_plane === "string"
+          ? record.path_plane as AdminResourceRef["pathPlane"]
+          : undefined,
     });
   }
 
@@ -245,11 +287,15 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
       ? record.workspacePath
       : typeof record.workspace_path === "string"
         ? record.workspace_path
-        : typeof record.sourcePath === "string"
-          ? record.sourcePath
-          : typeof record.source_path === "string"
-            ? record.source_path
-            : "";
+        : typeof record.workspaceRelativePath === "string"
+          ? record.workspaceRelativePath
+          : typeof record.workspace_relative_path === "string"
+            ? record.workspace_relative_path
+            : typeof record.canonicalPath === "string"
+              ? record.canonicalPath
+              : typeof record.canonical_path === "string"
+                ? record.canonical_path
+                : "";
   const workspaceRef = buildAdminWorkspaceFileRef(workspacePath, {
     mimeType: typeof record.mimeType === "string"
       ? record.mimeType
@@ -266,6 +312,26 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
       ? record.sourcePath
       : typeof record.source_path === "string"
         ? record.source_path
+        : undefined,
+    workspaceRoot: typeof record.workspaceRoot === "string"
+      ? record.workspaceRoot
+      : typeof record.workspace_root === "string"
+        ? record.workspace_root
+        : undefined,
+    workspaceRelativePath: typeof record.workspaceRelativePath === "string"
+      ? normalizeWorkspacePath(record.workspaceRelativePath)
+      : typeof record.workspace_relative_path === "string"
+        ? normalizeWorkspacePath(record.workspace_relative_path)
+        : undefined,
+    surfaceVisible: typeof record.surfaceVisible === "boolean"
+      ? record.surfaceVisible
+      : typeof record.surface_visible === "boolean"
+        ? record.surface_visible
+        : undefined,
+    pathPlane: typeof record.pathPlane === "string"
+      ? record.pathPlane as AdminResourceRef["pathPlane"]
+      : typeof record.path_plane === "string"
+        ? record.path_plane as AdminResourceRef["pathPlane"]
         : undefined,
   });
   if (workspaceRef) {
@@ -316,6 +382,9 @@ export function resolveAdminResourceUrl(
   const normalized = coerceAdminResourceRef(resource);
   if (!normalized) {
     return "";
+  }
+  if (normalized.signedUrl) {
+    return normalized.signedUrl;
   }
   if (normalized.kind === "external_url") {
     return normalized.url || "";

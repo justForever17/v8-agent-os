@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { fetchClientAdmin } from "@/lib/server/client-proxy";
+import { fetchSignedClientAdminPath, verifySignedClientSurfaceRequest } from "@/lib/server/client-surface-resource";
 
 export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
     try {
         const { id } = await context.params;
-        const response = await fetchClientAdmin(req, `/memory/artifacts/${encodeURIComponent(id)}/content`, {
-            method: "GET",
-        });
+        const response = verifySignedClientSurfaceRequest(req)
+            ? await fetchSignedClientAdminPath(`/memory/artifacts/${encodeURIComponent(id)}/content`, { method: "GET" })
+            : await fetchClientAdmin(req, `/memory/artifacts/${encodeURIComponent(id)}/content`, {
+                method: "GET",
+            });
         if (!response.ok || !response.body) {
             const payload = await response.json().catch(() => ({}));
             return NextResponse.json(payload, { status: response.status });

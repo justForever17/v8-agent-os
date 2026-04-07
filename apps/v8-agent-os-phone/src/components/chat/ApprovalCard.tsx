@@ -79,6 +79,9 @@ export const ApprovalCard = memo(function ApprovalCard({
     const { themeMode, t } = useUiPrefs();
     const accent = TONE_STYLES[tone];
     const isDark = themeMode === "dark";
+    const displayStatus = typeof status === "string" && status.trim().toLowerCase() !== "unknown"
+        ? status.trim()
+        : "";
     const hint = tone === "control"
         ? t("这是运行时发出的控制状态，不属于普通工具输出。", "This is a runtime control state rather than a regular tool result.")
         : t("这是一个需要人工确认的运行节点。", "This is a run node waiting for human review.");
@@ -111,7 +114,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                 <View style={styles.body}>
                     <View style={styles.header}>
                         <Text style={[styles.title, { color: isDark ? accent.darkText : accent.lightText }]}>{title}</Text>
-                        {status ? <Badge variant="outline">{status}</Badge> : null}
+                        {displayStatus ? <Badge variant="outline">{displayStatus}</Badge> : null}
                     </View>
                     <Text style={[styles.copy, { color: isDark ? accent.darkText : accent.lightText }]}>{body}</Text>
                     <Text

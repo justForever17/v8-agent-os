@@ -18,7 +18,9 @@ export type SessionRuntimeVisibility = "visible" | "hidden" | "history_only" | "
 export type SessionRuntimeEventTarget =
   | "message"
   | "runtime_card"
+  | "runtime_timeline"
   | "hud"
+  | "todos_hud"
   | "approval"
   | "artifact"
   | "terminal"
@@ -39,11 +41,19 @@ export type AdminResourceKind =
   | "admin_api"
   | "external_url";
 
+export type PathPlane =
+  | "runtime_private"
+  | "workspace_download"
+  | "workspace_artifact";
+
 export type AdminResourceRef = {
   kind: AdminResourceKind;
   adminPath?: string;
+  signedUrl?: string;
   artifactId?: string;
   workspacePath?: string;
+  workspaceRoot?: string;
+  workspaceRelativePath?: string;
   url?: string;
   mimeType?: string;
   displayLabel?: string;
@@ -51,6 +61,8 @@ export type AdminResourceRef = {
   previewable?: boolean;
   downloadable?: boolean;
   sourcePath?: string;
+  surfaceVisible?: boolean;
+  pathPlane?: PathPlane;
 };
 
 export type AdminProcessRef = {
@@ -97,6 +109,7 @@ export type SessionRuntimeEventName =
   | "runtime_progress"
   | "runtime_event"
   | "ask_user"
+  | "approval_requested"
   | "approval_resolved"
   | "safety_blocked"
   | "lane_updated"

@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { fetchClientAdmin } from "@/lib/server/client-proxy";
+import { fetchSignedClientAdminPath, verifySignedClientSurfaceRequest } from "@/lib/server/client-surface-resource";
 
 export async function GET(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
     try {
         const { path } = await context.params;
-        const response = await fetchClientAdmin(req, `/workspace/files/${path.join("/")}`, { method: "GET" });
+        const targetPath = `/workspace/files/${path.join("/")}`;
+        const response = verifySignedClientSurfaceRequest(req)
+            ? await fetchSignedClientAdminPath(targetPath, { method: "GET" })
+            : await fetchClientAdmin(req, targetPath, { method: "GET" });
         if (!response.ok || !response.body) {
             return new NextResponse(await response.arrayBuffer(), { status: response.status });
         }

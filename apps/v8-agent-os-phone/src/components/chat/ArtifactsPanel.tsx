@@ -17,7 +17,7 @@ import { resolveAdminResourceUrl } from "@v8/session-realtime";
 
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
-import { getArtifactContentUrl } from "@/src/lib/phone-api";
+import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -45,6 +45,21 @@ function inferArtifactKind(artifact: ArtifactDetail) {
     return "document";
 }
 
+function resolveArtifactWorkspacePath(artifact: ArtifactDetail) {
+    const candidate = String(
+        artifact.workspacePath
+        || artifact.workspaceRelativePath
+        || artifact.canonicalPath
+        || "",
+    ).trim();
+    if (!candidate || /^[a-z]+:\/\//i.test(candidate) || /^[a-z]:\\/i.test(candidate)) {
+        return "";
+    }
+    return candidate
+        .replace(/^\/workspace\//, "")
+        .replace(/^workspace\//, "");
+}
+
 function resolveArtifactPreviewUrl(adminBaseUrl: string, artifact: ArtifactDetail) {
     const resolved = resolveAdminResourceUrl("phone", adminBaseUrl, artifact.resourceRef || null);
     if (resolved) {
@@ -60,10 +75,8 @@ function resolveArtifactPreviewUrl(adminBaseUrl: string, artifact: ArtifactDetai
     if (previewCandidate) {
         return previewCandidate;
     }
-    return normalizeRenderableWorkspaceUrl(
-        adminBaseUrl,
-        artifact.workspacePath || artifact.sourcePath || "",
-    );
+    const workspacePath = resolveArtifactWorkspacePath(artifact);
+    return workspacePath ? getWorkspaceFileUrl(adminBaseUrl, workspacePath) : "";
 }
 
 export const ArtifactsPanel = memo(function ArtifactsPanel({
@@ -148,7 +161,7 @@ export const ArtifactsPanel = memo(function ArtifactsPanel({
                                     {activeArtifact.displayLabel || activeArtifact.title || t("产物", "Artifact")}
                                 </Text>
                                 <Text style={[styles.subtitle, { color: colors.textMuted }]} numberOfLines={1}>
-                                    {activeArtifact.displaySubtitle || activeArtifact.workspacePath || activeArtifact.sourcePath || kind}
+                                    {activeArtifact.displaySubtitle || activeArtifact.canonicalPath || activeArtifact.workspaceRelativePath || kind}
                                 </Text>
                             </View>
                         </View>
@@ -244,8 +257,8 @@ export const ArtifactsPanel = memo(function ArtifactsPanel({
                                     </View>
                                     <View style={styles.metaSection}>
                                         <Text style={[styles.metaLabel, { color: colors.textSoft }]}>Paths</Text>
-                                        <Text style={[styles.metaValue, { color: colors.text }]}>{activeArtifact.workspacePath || "—"}</Text>
-                                        <Text style={[styles.metaValue, { color: colors.textMuted }]}>{activeArtifact.sourcePath || "—"}</Text>
+                                        <Text style={[styles.metaValue, { color: colors.text }]}>{activeArtifact.canonicalPath || activeArtifact.workspaceRelativePath || "—"}</Text>
+                                        <Text style={[styles.metaValue, { color: colors.textMuted }]}>{activeArtifact.pathPlane || activeArtifact.kind || "—"}</Text>
                                     </View>
                                     <View style={styles.metaActions}>
                                         <Button variant="outline" onPress={() => void openExternal()} disabled={!previewUrl}>

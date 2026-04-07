@@ -412,7 +412,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             key={artifact.id}
                                             id={artifact.id}
                                             title={artifact.displayLabel || artifact.title || artifact.id}
-                                            subtitle={artifact.displaySubtitle || artifact.workspacePath || artifact.sourcePath || artifactUrl || "暂无路径信息"}
+                                            subtitle={artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifactUrl || "暂无路径信息"}
                                             type={inferArtifactCardType(artifact)}
                                             onClick={() => setActiveArtifactId(artifact.id)}
                                             onDownload={artifactUrl ? () => window.open(artifactUrl, "_blank", "noopener,noreferrer") : undefined}

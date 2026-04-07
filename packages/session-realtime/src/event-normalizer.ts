@@ -1,5 +1,6 @@
 import type {
   NormalizedSessionRuntimeEvent,
+  SessionRuntimeEventTarget,
   SessionRuntimeEventSource,
   SessionRuntimeId,
   SessionRuntimeScope,
@@ -30,6 +31,77 @@ function tr(locale: NormalizeRuntimeEventOptions["locale"], zh: string, en: stri
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" ? (value as JsonRecord) : {};
+}
+
+const TODO_TOOL_NAMES = new Set(["write_todos", "update_todo"]);
+
+function normalizeToolName(value: unknown) {
+  return normalizeString(value);
+}
+
+function resolveToolName(value: unknown): string {
+  const payload = asRecord(value);
+  const nestedTool = asRecord(payload.tool);
+  return normalizeToolName(
+    payload.toolName
+    || payload.tool_name
+    || nestedTool.toolName
+    || nestedTool.tool_name
+    || payload.name,
+  );
+}
+
+function resolveArtifactMetadata(value: unknown) {
+  const payload = asRecord(value);
+  const artifact = asRecord(payload.artifact);
+  return asRecord(
+    artifact.metadata
+    || payload.metadata
+    || payload.artifactMetadata
+    || payload.artifact_metadata,
+  );
+}
+
+export function isTodoToolName(value: unknown) {
+  return TODO_TOOL_NAMES.has(normalizeToolName(value));
+}
+
+export function isTodoToolRuntimePayload(value: unknown) {
+  return isTodoToolName(resolveToolName(value));
+}
+
+export function isSurfaceVisibleArtifactPayload(value: unknown) {
+  const metadata = resolveArtifactMetadata(value);
+  if (typeof metadata.surfaceVisible === "boolean") {
+    return metadata.surfaceVisible;
+  }
+  if (typeof metadata.surface_visible === "boolean") {
+    return metadata.surface_visible;
+  }
+  return true;
+}
+
+function applySurfaceVisibilityOverrides(
+  event: NormalizedSessionRuntimeEvent,
+  payload: JsonRecord,
+): NormalizedSessionRuntimeEvent {
+  if ((event.type === "tool_start" || event.type === "tool_result") && isTodoToolRuntimePayload(payload)) {
+    return {
+      ...event,
+      visibility: "hidden",
+      targets: ["todos_hud", "runtime_timeline"],
+    };
+  }
+
+  if (event.type === "custom_event" && event.name === "artifact_recorded" && !isSurfaceVisibleArtifactPayload(payload)) {
+    return {
+      ...event,
+      visibility: "excluded",
+      targets: ["artifact"],
+    };
+  }
+
+  return event;
 }
 
 function withEnvelopeFields(event: NormalizedSessionRuntimeEvent, envelope: RuntimeEnvelope): NormalizedSessionRuntimeEvent {
@@ -235,6 +307,114 @@ function resolveTargets(topic: string, payload: JsonRecord) {
   return resolveMatrixEntry(topic, payload)?.targets || ["runtime_card"];
 }
 
+function normalizeApprovalKind(payload: JsonRecord) {
+  return normalizeString(payload.approval_kind || payload.approvalKind);
+}
+
+function normalizeInteractionKind(payload: JsonRecord) {
+  const request = asRecord(payload.request);
+  return normalizeString(request.interactionKind || request.interaction_kind || payload.interactionKind || payload.interaction_kind);
+}
+
+function isAskUserPayload(payload: JsonRecord) {
+  const approvalKind = normalizeApprovalKind(payload);
+  const interactionKind = normalizeInteractionKind(payload);
+  return interactionKind === "ask_user"
+    || approvalKind === "human_input_required"
+    || approvalKind === "ask_user"
+    || approvalKind === "waiting_input";
+}
+
+function normalizeTypedEventType(type: string) {
+  if (type === "tool_call") {
+    return "tool_start";
+  }
+  return type;
+}
+
+function resolveTypedEventRuntimeId(type: string, name: string, payload: JsonRecord): SessionRuntimeId | null {
+  const normalizedType = normalizeTypedEventType(type);
+  if (normalizedType === "agent_start" || normalizedType === "text_chunk" || normalizedType === "reasoning_chunk" || normalizedType === "tool_start" || normalizedType === "tool_result" || normalizedType === "done" || normalizedType === "error") {
+    return "chat";
+  }
+
+  if (normalizedType !== "custom_event") {
+    return null;
+  }
+
+  if (name === "ask_user") {
+    return "chat";
+  }
+  if (name === "approval_requested" || name === "approval_resolved") {
+    return "automation";
+  }
+  if (name === "artifact_recorded" || name === "runtime_progress" || name === "runtime_event" || name === "run_controlled" || name === "safety_blocked" || name === "lane_updated" || name === "context_governance_changed") {
+    return "chat";
+  }
+  return null;
+}
+
+function resolveTypedEventTargets(type: string, name: string): SessionRuntimeEventTarget[] | null {
+  const normalizedType = normalizeTypedEventType(type);
+  if (normalizedType === "text_chunk") {
+    return ["message"];
+  }
+  if (normalizedType === "reasoning_chunk") {
+    return ["message", "runtime_card"];
+  }
+  if (normalizedType === "agent_start") {
+    return ["runtime_card", "hud"];
+  }
+  if (normalizedType === "tool_start" || normalizedType === "tool_result") {
+    return ["message", "runtime_card", "process"];
+  }
+  if (normalizedType === "done" || normalizedType === "error") {
+    return ["message", "runtime_card", "hud"];
+  }
+  if (normalizedType !== "custom_event") {
+    return null;
+  }
+  if (name === "ask_user") {
+    return ["message", "hud", "runtime_card"];
+  }
+  if (name === "approval_requested") {
+    return ["approval", "hud", "runtime_card"];
+  }
+  if (name === "approval_resolved") {
+    return ["approval", "hud", "runtime_card"];
+  }
+  if (name === "artifact_recorded") {
+    return ["artifact", "message", "hud"];
+  }
+  if (name === "runtime_progress" || name === "runtime_event") {
+    return ["runtime_card", "hud", "process", "terminal"];
+  }
+  if (name === "run_controlled" || name === "lane_updated") {
+    return ["runtime_card", "hud"];
+  }
+  if (name === "safety_blocked") {
+    return ["runtime_card", "hud"];
+  }
+  if (name === "context_governance_changed") {
+    return ["runtime_card", "hud", "context"];
+  }
+  return null;
+}
+
+function resolveTypedEventVisibility(type: string, name: string): SessionRuntimeVisibility | null {
+  const normalizedType = normalizeTypedEventType(type);
+  if (normalizedType === "agent_start" || normalizedType === "text_chunk" || normalizedType === "reasoning_chunk" || normalizedType === "tool_start" || normalizedType === "tool_result" || normalizedType === "done" || normalizedType === "error") {
+    return "visible";
+  }
+  if (normalizedType !== "custom_event") {
+    return null;
+  }
+  if (name === "approval_resolved" || name === "run_controlled" || name === "lane_updated" || name === "context_governance_changed") {
+    return "hidden";
+  }
+  return "visible";
+}
+
 export function isRuntimeEventVisibleInRealtimeSurface(
   event: Pick<NormalizedSessionRuntimeEvent, "visibility"> | SessionRuntimeVisibility | null | undefined,
 ) {
@@ -316,8 +496,8 @@ function buildProgressLabel(topic: string, payload: JsonRecord, locale: Normaliz
     return String(payload.title || payload.kind || payload.workspacePath || tr(locale, "记录新的产物", "Recorded a new artifact"));
   }
   if (topic === "run.state.changed") {
-    const fromStatus = pickFirstString(payload.from_status, payload.fromStatus);
-    const toStatus = pickFirstString(payload.to_status, payload.toStatus, payload.status);
+    const fromStatus = normalizeDisplayStatus(payload.from_status) || normalizeDisplayStatus(payload.fromStatus);
+    const toStatus = normalizeDisplayStatus(payload.to_status) || normalizeDisplayStatus(payload.toStatus) || normalizeDisplayStatus(payload.status);
     const reason = pickFirstString(payload.reason);
     const statusPart = fromStatus && toStatus
       ? tr(locale, `运行状态：${fromStatus} -> ${toStatus}`, `Run state: ${fromStatus} -> ${toStatus}`)
@@ -380,6 +560,14 @@ function pickFirstString(...values: unknown[]) {
     }
   }
   return undefined;
+}
+
+function normalizeDisplayStatus(value: unknown) {
+  const normalized = pickFirstString(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.toLowerCase() === "unknown" ? undefined : normalized;
 }
 
 function buildTypedEventFromMatrixEntry(
@@ -506,25 +694,36 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
 
   if (typeof direct.type === "string") {
     const source = resolveSource(direct as RuntimeEnvelope, direct.data);
+    const directPayload = direct as unknown as JsonRecord;
+    const normalizedType = normalizeTypedEventType(direct.type);
+    const directEventName = typeof direct.name === "string" ? direct.name : "";
+    const typedRuntimeId =
+      resolveTypedEventRuntimeId(normalizedType, directEventName, directPayload)
+      || (typeof direct.topic === "string" ? resolveRuntimeId(direct.topic, directPayload, source) : null);
     const normalizedRuntimeId = normalizeRuntimeId(
       typeof direct.runtimeId === "string"
         ? direct.runtimeId
-        : typeof direct.topic === "string"
-          ? direct.topic
-          : typeof direct.name === "string"
-            ? direct.name
-            : "",
+        : typedRuntimeId
+          ? typedRuntimeId
+          : typeof direct.topic === "string"
+            ? direct.topic
+            : typeof direct.name === "string"
+              ? direct.name
+              : "",
     );
-    return {
+    const typedTargets = resolveTypedEventTargets(normalizedType, directEventName);
+    const typedVisibility = resolveTypedEventVisibility(normalizedType, directEventName);
+    return applySurfaceVisibilityOverrides({
       ...direct,
+      type: normalizedType,
       runtimeId: normalizedRuntimeId || undefined,
       source: source || direct.source,
       scope: direct.scope || (typeof direct.topic === "string" ? resolveScope(direct.topic, direct as unknown as JsonRecord) : "active_run"),
-      visibility: direct.visibility || (typeof direct.topic === "string" ? resolveVisibility(direct.topic, direct as unknown as JsonRecord) : "visible"),
-      targets: Array.isArray(direct.targets) ? direct.targets : (typeof direct.topic === "string" ? resolveTargets(direct.topic, direct as unknown as JsonRecord) : ["runtime_card"]),
+      visibility: direct.visibility || typedVisibility || (typeof direct.topic === "string" ? resolveVisibility(direct.topic, direct as unknown as JsonRecord) : "visible"),
+      targets: Array.isArray(direct.targets) ? direct.targets : typedTargets || (typeof direct.topic === "string" ? resolveTargets(direct.topic, direct as unknown as JsonRecord) : ["runtime_card"]),
       actorLabel: direct.actorLabel || (normalizedRuntimeId ? resolveActorLabel(normalizedRuntimeId, options.locale) : undefined),
       raw: asRecord(direct.raw || direct),
-    };
+    }, directPayload);
   }
 
   const envelope = raw as RuntimeEnvelope;
@@ -537,17 +736,26 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
 
   if (typeof payload.type === "string") {
     const matrixEntry = resolveMatrixEntry(topic, payload);
-    const baseRuntimeId = resolveRuntimeId(topic, payload, source) || matrixEntry?.runtimeId || null;
-    return withEnvelopeFields({
+    const normalizedType = normalizeTypedEventType(payload.type);
+    const typedEventName = typeof payload.name === "string" ? payload.name : "";
+    const baseRuntimeId =
+      resolveRuntimeId(topic, payload, source)
+      || resolveTypedEventRuntimeId(normalizedType, typedEventName, payload)
+      || matrixEntry?.runtimeId
+      || null;
+    const typedTargets = resolveTypedEventTargets(normalizedType, typedEventName);
+    const typedVisibility = resolveTypedEventVisibility(normalizedType, typedEventName);
+    return applySurfaceVisibilityOverrides(withEnvelopeFields({
       ...(payload as unknown as NormalizedSessionRuntimeEvent),
+      type: normalizedType,
       runtimeId: baseRuntimeId || undefined,
       scope: resolveScope(topic, payload),
-      visibility: resolveVisibility(topic, payload),
-      targets: resolveTargets(topic, payload),
+      visibility: typedVisibility || (topic ? resolveVisibility(topic, payload) : "visible"),
+      targets: typedTargets || (topic ? resolveTargets(topic, payload) : ["runtime_card"]),
       actorLabel: resolveActorLabel(baseRuntimeId, options.locale),
       source,
       raw: asRecord(raw),
-    }, envelope);
+    }, envelope), payload);
   }
 
   const matrixEntry = resolveMatrixEntry(topic, payload);
@@ -557,31 +765,16 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
   const targets = resolveTargets(topic, payload);
   const actorLabel = resolveActorLabel(runtimeId, options.locale);
 
-  if (matrixEntry?.explicit && (matrixEntry.eventType || matrixEntry.eventName)) {
-    return withEnvelopeFields(
-      buildTypedEventFromMatrixEntry(topic, payload, {
-        matrixEntry,
-        runtimeId,
-        scope,
-        visibility,
-        targets,
-        actorLabel,
-        source,
-        locale: options.locale,
-      }),
-      envelope,
-    );
-  }
-
   if (topic === "approval.requested") {
     const request = asRecord(payload.request);
-    return withEnvelopeFields({
+    const askUserInteraction = isAskUserPayload(payload);
+    return applySurfaceVisibilityOverrides(withEnvelopeFields({
       type: "custom_event",
-      name: "ask_user",
-      runtimeId: runtimeId || "automation",
+      name: askUserInteraction ? "ask_user" : "approval_requested",
+      runtimeId: runtimeId || (askUserInteraction ? "chat" : "automation"),
       scope,
       visibility,
-      targets,
+      targets: askUserInteraction ? ["message", "hud", "runtime_card"] : ["approval", "hud", "runtime_card", "message"],
       actorLabel,
       data: {
         question:
@@ -596,15 +789,31 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
         approvalKind: typeof payload.approval_kind === "string" ? payload.approval_kind : undefined,
         interactionKind: typeof request.interactionKind === "string" ? request.interactionKind : undefined,
         request,
-        runtimeId: runtimeId || "automation",
+        runtimeId: runtimeId || (askUserInteraction ? "chat" : "automation"),
         actorLabel,
       },
       source,
-    }, envelope);
+    }, envelope), payload);
+  }
+
+  if (matrixEntry?.explicit && (matrixEntry.eventType || matrixEntry.eventName)) {
+    return applySurfaceVisibilityOverrides(withEnvelopeFields(
+      buildTypedEventFromMatrixEntry(topic, payload, {
+        matrixEntry,
+        runtimeId,
+        scope,
+        visibility,
+        targets,
+        actorLabel,
+        source,
+        locale: options.locale,
+      }),
+      envelope,
+    ), payload);
   }
 
   if (["run.paused", "run.cancelled", "run.interrupted", "run.resumed", "run.retry.requested", "run.state.changed"].includes(topic)) {
-    return withEnvelopeFields({
+    return applySurfaceVisibilityOverrides(withEnvelopeFields({
       type: "custom_event",
       name: "run_controlled",
       runtimeId: runtimeId || "chat",
@@ -620,11 +829,11 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
         actorLabel,
       },
       source,
-    }, envelope);
+    }, envelope), payload);
   }
 
   if (topic === "artifact.recorded") {
-    return withEnvelopeFields({
+    return applySurfaceVisibilityOverrides(withEnvelopeFields({
       type: "custom_event",
       name: "artifact_recorded",
       runtimeId: runtimeId || "chat",
@@ -639,11 +848,11 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       },
       artifact: payload,
       source,
-    }, envelope);
+    }, envelope), payload);
   }
 
   if (topic === "context.prepared") {
-    return withEnvelopeFields({
+    return applySurfaceVisibilityOverrides(withEnvelopeFields({
       type: "custom_event",
       name: "context_governance_changed",
       runtimeId: runtimeId || "chat",
@@ -659,11 +868,11 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
         actorLabel,
       },
       source,
-    }, envelope);
+    }, envelope), payload);
   }
 
   const label = buildProgressLabel(topic, payload, options.locale);
-  return withEnvelopeFields({
+  return applySurfaceVisibilityOverrides(withEnvelopeFields({
     type: "custom_event",
     name: label && label !== topic ? "runtime_progress" : "runtime_event",
     runtimeId: runtimeId || undefined,
@@ -680,5 +889,5 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       actorLabel,
     },
     source,
-  }, envelope);
+  }, envelope), payload);
 }

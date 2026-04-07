@@ -75,6 +75,8 @@ def _resolve_workspace_root() -> Path:
     resolved = workspace_resolution_service.resolve_workspace_path(
         runtime_kind="computer_use",
         session_id=str(runtime_context.get("session_id") or "") or None,
+        explicit_workspace_id=str(runtime_context.get("workspace_id") or "") or None,
+        explicit_project_id=str(runtime_context.get("project_id") or "") or None,
         explicit_workspace_path=str(runtime_context.get("workspace_path") or "") or None,
     )
     return ensure_workspace_auto_create_allowed(

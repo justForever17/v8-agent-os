@@ -86,6 +86,8 @@ async def _mount_in_workspace(file_path: Path) -> str:
         workspace_resolution_service.resolve_workspace_path(
             runtime_kind=str(runtime_context.get("runtime_kind") or "") or None,
             session_id=str(runtime_context.get("session_id") or "") or None,
+            explicit_workspace_id=str(runtime_context.get("workspace_id") or "") or None,
+            explicit_project_id=str(runtime_context.get("project_id") or "") or None,
             explicit_workspace_path=str(runtime_context.get("workspace_path") or "") or None,
         )
     ).expanduser()

@@ -14,6 +14,9 @@ from langchain_core.tools import InjectedToolCallId, tool
 
 from core.artifact_store import artifact_store
 from core.storage import storage
+from core.v8_agent_os_paths import workspace_download_root
+from core.workspace_guard import build_workspace_path_status, ensure_workspace_auto_create_allowed
+from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 
@@ -153,16 +156,30 @@ def _slugify(value: str) -> str:
     return cleaned.strip("-._") or "media"
 
 
-def _media_download_root() -> Path:
-    root = storage.base_dir / "downloaded_media"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+def _resolve_workspace_download_root(runtime_context: dict[str, Any]) -> tuple[Path, Path, dict[str, Any]]:
+    resolved_workspace_path = workspace_resolution_service.resolve_workspace_path(
+        runtime_kind=str(runtime_context.get("runtime_kind") or "chat"),
+        session_id=str(runtime_context.get("session_id") or "").strip() or None,
+        explicit_workspace_id=str(runtime_context.get("workspace_id") or "").strip() or None,
+        explicit_workspace_path=str(runtime_context.get("workspace_path") or "").strip() or None,
+        explicit_project_id=str(runtime_context.get("project_id") or "").strip() or None,
+    )
+    workspace_status = build_workspace_path_status(resolved_workspace_path)
+    workspace_root = ensure_workspace_auto_create_allowed(
+        resolved_workspace_path,
+        source="media_downloader.download_media_for_vision",
+        allow_missing=True,
+    )
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    download_root = workspace_download_root(workspace_root)
+    download_root.mkdir(parents=True, exist_ok=True)
+    return workspace_root, download_root, workspace_status
 
 
-def _build_download_dir(url: str) -> Path:
+def _build_download_dir(download_root: Path, url: str) -> Path:
     parsed = urlparse(url)
     host = _slugify(parsed.hostname or "unknown-host")
-    target = _media_download_root() / host / uuid.uuid4().hex
+    target = download_root / host / uuid.uuid4().hex
     target.mkdir(parents=True, exist_ok=True)
     return target
 
@@ -640,7 +657,13 @@ def download_media_for_vision(
     analysis_prompt: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Resolve share pages and download remote media to stable local files, primarily for videos and remote media artifacts."""
+    """Resolve share pages and download remote media into the current workspace.
+
+    Important:
+    - Downloaded media is written directly into the resolved workspace `downloaded_media` directory.
+    - The returned artifact is already the canonical surface artifact for chat/web/phone display.
+    - Do not use shell commands to move or rename the file unless the user explicitly asks for it.
+    """
 
     raw_input = _safe_text(url)
     normalized_url = _extract_first_url(raw_input)
@@ -653,8 +676,8 @@ def download_media_for_vision(
             {
                 "ok": False,
                 "blocked": True,
-                "url": normalized_url,
                 "error": error_message or "Safety Guardian 已阻止媒体下载。",
+                "message": "Safety Guardian 已阻止媒体下载。",
             },
             ensure_ascii=False,
             indent=2,
@@ -668,10 +691,8 @@ def download_media_for_vision(
                 {
                     "ok": False,
                     "blocked": True,
-                    "url": normalized_url,
-                    "resolvedUrl": resolved_url,
                     "error": error_message or "Safety Guardian 已阻止短链跳转后的媒体下载。",
-                    "shortLinkResolution": shortlink_resolution,
+                    "message": "Safety Guardian 已阻止短链跳转后的媒体下载。",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -709,17 +730,39 @@ def download_media_for_vision(
         return json.dumps(
             {
                 "ok": False,
-                "url": normalized_url,
-                "resolvedUrl": resolved_url,
-                "platform": platform,
                 "error": f"未安装 yt-dlp，无法下载平台媒体：{import_error}",
-                "shortLinkResolution": shortlink_resolution,
+                "message": "当前环境缺少 yt-dlp，媒体下载不可用。",
             },
             ensure_ascii=False,
             indent=2,
         )
 
-    download_dir = _build_download_dir(normalized_url)
+    runtime_context = get_runtime_context()
+    try:
+        workspace_root, download_root, workspace_status = _resolve_workspace_download_root(runtime_context)
+    except ValueError as exc:
+        resolved_workspace_path = workspace_resolution_service.resolve_workspace_path(
+            runtime_kind=str(runtime_context.get("runtime_kind") or "chat"),
+            session_id=str(runtime_context.get("session_id") or "").strip() or None,
+            explicit_workspace_id=str(runtime_context.get("workspace_id") or "").strip() or None,
+            explicit_workspace_path=str(runtime_context.get("workspace_path") or "").strip() or None,
+            explicit_project_id=str(runtime_context.get("project_id") or "").strip() or None,
+        )
+        workspace_status = build_workspace_path_status(resolved_workspace_path)
+        return json.dumps(
+            {
+                "ok": False,
+                "blocked": True,
+                "workspacePath": resolved_workspace_path,
+                "recommendedWorkspacePath": workspace_status.get("recommendedPath"),
+                "error": str(exc),
+                "message": "当前工作区不适合媒体落盘，请改用推荐的 canonical workspace 后重试。",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    download_dir = _build_download_dir(download_root, normalized_url)
     warnings: list[str] = []
     ffmpeg_available = shutil.which("ffmpeg") is not None
     if not ffmpeg_available:
@@ -744,7 +787,6 @@ def download_media_for_vision(
     if cookie_option:
         ydl_opts["cookiesfrombrowser"] = cookie_option
 
-    runtime_context = get_runtime_context()
     info: dict[str, Any] | None = None
     direct_kind = _guess_kind_from_url(download_target_url)
     used_direct_download = False
@@ -786,15 +828,8 @@ def download_media_for_vision(
                 return json.dumps(
                     {
                         "ok": False,
-                        "url": normalized_url,
-                        "resolvedUrl": resolved_url,
-                        "downloadTargetUrl": download_target_url,
-                        "platform": _platform_from_url(resolved_url),
-                        "downloadDir": str(download_dir),
                         "error": f"yt-dlp 下载失败：{ydl_error}",
-                        "warnings": warnings,
-                        "shortLinkResolution": shortlink_resolution,
-                        "shareResolution": share_resolution or {},
+                        "message": "媒体下载失败，未生成可展示产物。",
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -805,11 +840,8 @@ def download_media_for_vision(
         return json.dumps(
             {
                 "ok": False,
-                "url": normalized_url,
-                "platform": _platform_from_url(normalized_url),
-                "downloadDir": str(download_dir),
                 "error": "yt-dlp 已执行，但未发现可供视觉分析的本地媒体文件。",
-                "warnings": warnings,
+                "message": "媒体下载未产出有效本地文件。",
             },
             ensure_ascii=False,
             indent=2,
@@ -818,12 +850,26 @@ def download_media_for_vision(
     file_entries: list[dict[str, Any]] = []
     for file_path in media_files:
         kind, mime_type = _guess_kind(file_path)
+        try:
+            workspace_relative_path = file_path.relative_to(workspace_root).as_posix()
+        except ValueError:
+            workspace_relative_path = file_path.name
+        canonical_path = str(file_path)
         artifact = artifact_store.record_local_file(
             file_path=file_path,
             session_id=runtime_context.get("session_id"),
             run_id=runtime_context.get("run_id"),
+            workspace_path=canonical_path,
             metadata={
                 "source": "download_media_for_vision",
+                "storageClass": "workspace",
+                "surfaceVisible": True,
+                "pathPlane": "workspace_download",
+                "canonicalPath": canonical_path,
+                "workspaceRoot": str(workspace_root),
+                "workspaceRelativePath": workspace_relative_path,
+                "projectId": str(runtime_context.get("project_id") or "").strip() or None,
+                "workspaceId": str(runtime_context.get("workspace_id") or "").strip() or None,
                 "sourceUrl": normalized_url,
                 "resolvedUrl": resolved_url,
                 "downloadTargetUrl": download_target_url,
@@ -844,6 +890,9 @@ def download_media_for_vision(
                 "mimeType": mime_type,
                 "sizeBytes": file_path.stat().st_size,
                 "artifactId": artifact.get("artifactId"),
+                "workspacePath": canonical_path,
+                "workspaceRelativePath": workspace_relative_path,
+                "canonicalPath": canonical_path,
             }
         )
 
@@ -852,11 +901,8 @@ def download_media_for_vision(
         return json.dumps(
             {
                 "ok": False,
-                "url": normalized_url,
-                "platform": platform,
-                "downloadDir": str(download_dir),
                 "error": "下载完成，但未能选择可供视觉分析的主文件。",
-                "warnings": warnings,
+                "message": "媒体已落盘，但未能确定主文件。",
             },
             ensure_ascii=False,
             indent=2,
@@ -867,73 +913,21 @@ def download_media_for_vision(
     if effective_prefer == "images" and primary.get("kind") != "image":
         warnings.append("未找到图片文件，已回退使用第一个可用媒体文件。")
 
-    analysis_prompt_hint = _safe_text(analysis_prompt)
-    if not analysis_prompt_hint:
-        analysis_prompt_hint = (
-            "请详细理解这个媒体文件中的关键内容、文字、人物、界面元素与主要视觉变化。"
-            if primary["kind"] != "image"
-            else "请提取图片中的文字、布局、主体对象与关键视觉信息。"
-        )
-
-    chained_vision_args = {
-        "file_path": primary["path"],
-        "prompt": analysis_prompt_hint,
-    }
-    vision_analysis = ""
-    auto_chain_error = ""
-    if auto_chain_to_vision:
-        try:
-            from core.tools.vision_media_analyzer import vision_media_analyzer
-
-            vision_analysis = str(
-                vision_media_analyzer.func(
-                    file_path=primary["path"],
-                    prompt=analysis_prompt_hint,
-                    tool_call_id=tool_call_id,
-                )
-            )
-        except Exception as exc:
-            auto_chain_error = str(exc)
-            warnings.append(f"自动转交视觉分析失败：{exc}")
+    wants_analysis = bool(auto_chain_to_vision or _safe_text(analysis_prompt))
+    message = "媒体已下载到当前工作区，可直接在聊天中展示。"
+    if wants_analysis:
+        message += " 如需继续理解内容，请显式调用 vision_media_analyzer。"
+    if len(file_entries) > 1:
+        message += f" 本次共下载 {len(file_entries)} 个文件，当前返回的是主文件。"
 
     result = {
         "ok": True,
-        "input": raw_input,
-        "url": normalized_url,
-        "resolvedUrl": resolved_url,
-        "downloadTargetUrl": download_target_url,
-        "platform": platform,
-        "prefer": effective_prefer,
-        "downloadDir": str(download_dir),
-        "fileCount": len(file_entries),
-        "isGallery": len(file_entries) > 1,
-        "primaryFile": primary["path"],
-        "primaryKind": primary["kind"],
-        "files": file_entries,
-        "warnings": warnings,
-        "usedCookiesFromBrowser": bool(cookie_option),
-        "cookiesFromBrowser": effective_cookies_from_browser,
-        "referer": effective_referer,
-        "profileSource": profile_source,
-        "platformProfile": platform_profile,
-        "shortLinkResolution": shortlink_resolution,
-        "shareResolution": share_resolution or {},
-        "visionReady": True,
-        "autoChainEligible": True,
-        "autoChained": bool(vision_analysis) and not auto_chain_error,
-        "analysisPromptHint": analysis_prompt_hint,
-        "chainedVisionArgs": chained_vision_args,
-        "visionAnalysis": vision_analysis,
-        "autoChainError": auto_chain_error,
-        "recommendedNextStep": {
-            "tool": "vision_media_analyzer",
-            "args": chained_vision_args,
-        },
-        "extractor": {
-            "engine": "direct-http" if used_direct_download else "yt-dlp",
-            "hasFfmpeg": ffmpeg_available,
-            "infoId": _safe_text((info or {}).get("id")) if isinstance(info, dict) else "",
-            "title": _safe_text((info or {}).get("title")) if isinstance(info, dict) else "",
-        },
+        "artifactId": primary.get("artifactId"),
+        "kind": primary["kind"],
+        "mimeType": primary["mimeType"],
+        "fileName": primary["fileName"],
+        "workspacePath": primary["workspacePath"],
+        "workspaceRelativePath": primary["workspaceRelativePath"],
+        "message": message,
     }
     return json.dumps(result, ensure_ascii=False, indent=2)

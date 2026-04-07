@@ -216,8 +216,37 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             "previewKind": preview_kind,
             "preview_kind": preview_kind,
             "hasPreview": bool(preview_url),
+            "projectId": metadata.get("projectId") or metadata.get("project_id"),
+            "project_id": metadata.get("projectId") or metadata.get("project_id"),
+            "workspaceId": metadata.get("workspaceId") or metadata.get("workspace_id"),
+            "workspace_id": metadata.get("workspaceId") or metadata.get("workspace_id"),
+            "workspaceRoot": metadata.get("workspaceRoot") or metadata.get("workspace_root"),
+            "workspace_root": metadata.get("workspaceRoot") or metadata.get("workspace_root"),
+            "workspaceRelativePath": metadata.get("workspaceRelativePath") or metadata.get("workspace_relative_path"),
+            "workspace_relative_path": metadata.get("workspaceRelativePath") or metadata.get("workspace_relative_path"),
+            "storageClass": metadata.get("storageClass") or metadata.get("storage_class"),
+            "storage_class": metadata.get("storageClass") or metadata.get("storage_class"),
+            "surfaceVisible": metadata.get("surfaceVisible")
+                if metadata.get("surfaceVisible") is not None
+                else metadata.get("surface_visible"),
+            "surface_visible": metadata.get("surfaceVisible")
+                if metadata.get("surfaceVisible") is not None
+                else metadata.get("surface_visible"),
+            "pathPlane": metadata.get("pathPlane") or metadata.get("path_plane"),
+            "path_plane": metadata.get("pathPlane") or metadata.get("path_plane"),
+            "canonicalPath": metadata.get("canonicalPath") or metadata.get("canonical_path") or workspace_path,
+            "canonical_path": metadata.get("canonicalPath") or metadata.get("canonical_path") or workspace_path,
             "displayLabel": title or artifact_id,
-            "displaySubtitle": workspace_path or source_path or preview_url or "暂无路径信息",
+            "displaySubtitle": (
+                metadata.get("canonicalPath")
+                or metadata.get("canonical_path")
+                or metadata.get("workspaceRelativePath")
+                or metadata.get("workspace_relative_path")
+                or workspace_path
+                or source_path
+                or preview_url
+                or "暂无路径信息"
+            ),
         }
     )
     return normalized

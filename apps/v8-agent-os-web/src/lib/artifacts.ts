@@ -17,6 +17,14 @@ export interface RuntimeArtifact {
     messageId?: string;
     sourcePath?: string;
     workspacePath?: string;
+    workspaceRoot?: string;
+    workspaceRelativePath?: string;
+    canonicalPath?: string;
+    projectId?: string;
+    workspaceId?: string;
+    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact";
+    storageClass?: string;
+    surfaceVisible?: boolean;
     externalUrl?: string;
     previewUrl?: string;
     resourceRef?: AdminResourceRef | null;
@@ -58,10 +66,12 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
     const title = String(record.displayLabel || record.title || artifactId);
     const displaySubtitle = String(
         record.displaySubtitle
+            || record.canonicalPath
+            || record.canonical_path
+            || record.workspaceRelativePath
+            || record.workspace_relative_path
             || record.workspacePath
             || record.workspace_path
-            || record.sourcePath
-            || record.source_path
             || resolvedUrl
             || "暂无路径信息",
     );
@@ -79,6 +89,16 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
         messageId: typeof (record.messageId || record.message_id) === "string" ? String(record.messageId || record.message_id) : undefined,
         sourcePath: typeof (record.sourcePath || record.source_path) === "string" ? String(record.sourcePath || record.source_path) : undefined,
         workspacePath: typeof (record.workspacePath || record.workspace_path) === "string" ? String(record.workspacePath || record.workspace_path) : undefined,
+        workspaceRoot: typeof (record.workspaceRoot || record.workspace_root) === "string" ? String(record.workspaceRoot || record.workspace_root) : undefined,
+        workspaceRelativePath: typeof (record.workspaceRelativePath || record.workspace_relative_path) === "string" ? String(record.workspaceRelativePath || record.workspace_relative_path) : undefined,
+        canonicalPath: typeof (record.canonicalPath || record.canonical_path) === "string" ? String(record.canonicalPath || record.canonical_path) : undefined,
+        projectId: typeof (record.projectId || record.project_id) === "string" ? String(record.projectId || record.project_id) : undefined,
+        workspaceId: typeof (record.workspaceId || record.workspace_id) === "string" ? String(record.workspaceId || record.workspace_id) : undefined,
+        pathPlane: typeof (record.pathPlane || record.path_plane) === "string"
+            ? String(record.pathPlane || record.path_plane) as RuntimeArtifact["pathPlane"]
+            : undefined,
+        storageClass: typeof (record.storageClass || record.storage_class) === "string" ? String(record.storageClass || record.storage_class) : undefined,
+        surfaceVisible: typeof (record.surfaceVisible ?? record.surface_visible) === "boolean" ? Boolean(record.surfaceVisible ?? record.surface_visible) : undefined,
         externalUrl: resolvedUrl,
         previewUrl: resolvedUrl,
         resourceRef,

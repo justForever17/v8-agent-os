@@ -142,12 +142,14 @@ export async function GET(
                     return;
                 }
 
-                const eventRecord = event as Record<string, unknown>;
                 const normalizedEvent = normalizeSessionRuntimeEvent(event);
-                if (normalizedEvent && !shouldForwardRuntimeEventToRealtimeSurface(normalizedEvent)) {
+                if (!normalizedEvent) {
                     return;
                 }
-                const eventId = typeof eventRecord.event_id === "string" ? eventRecord.event_id : null;
+                if (!shouldForwardRuntimeEventToRealtimeSurface(normalizedEvent)) {
+                    return;
+                }
+                const eventId = typeof normalizedEvent.event_id === "string" ? normalizedEvent.event_id : null;
                 if (eventId) {
                     if (seenEventIds.has(eventId)) {
                         return;
@@ -161,12 +163,12 @@ export async function GET(
                     }
                 }
 
-                const seq = Number(eventRecord.seq || 0);
+                const seq = Number(normalizedEvent.seq || 0);
                 if (seq > latestSeq) {
                     latestSeq = seq;
                 }
-                sendSse(normalizeRuntimeEventForRealtimeSurface(normalizedEvent || event), "runtime");
-                if (normalizedEvent ? shouldAuthoritativelyRefreshOnRuntimeEvent(normalizedEvent) : false) {
+                sendSse(normalizeRuntimeEventForRealtimeSurface(normalizedEvent), "runtime");
+                if (shouldAuthoritativelyRefreshOnRuntimeEvent(normalizedEvent)) {
                     queueSnapshotPush();
                 }
             };

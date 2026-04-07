@@ -296,6 +296,8 @@ class ChatRuntime:
                 workspace_dir = workspace_resolution_service.resolve_workspace_path(
                     runtime_kind="chat",
                     session_id=request.conversationId or request.session_id,
+                    explicit_workspace_id=request.workspace_id,
+                    explicit_project_id=request.project_id,
                     explicit_workspace_path=request.workspace_path,
                 )
                 local_path = Path(workspace_dir) / subpath

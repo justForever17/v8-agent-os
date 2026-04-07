@@ -22,6 +22,7 @@ import type { ChatArtifact, PhoneUiTimelineNode } from "@/src/types/admin";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
+import { coerceAdminResourceRef } from "@v8/session-realtime";
 
 function stringifyPayload(value: unknown) {
     if (typeof value === "string") {
@@ -54,24 +55,25 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 
     if (node?.kind === "governance") {
         const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
-        const isAskUser = approvalKind === "human_input_required" || approvalKind === "ask_user" || approvalKind === "waiting_input";
-        if (isAskUser) {
+        if (node.governanceType === "ask_user") {
             return <AskUserCard question={node.question || node.reason || node.topic || ""} status={node.status} />;
         }
         const title = node.governanceType === "safety_blocked"
             ? t("安全阻断", "Safety blocked")
             : node.governanceType === "context_governance"
                 ? t("上下文治理", "Context governance")
-                : node.governanceType === "lane_updated"
+                    : node.governanceType === "lane_updated"
                     ? t("运行调度", "Run scheduling")
-                    : approvalKind === "safety_blocked"
+                    : node.governanceType === "approval_request"
+                        ? t("系统确认", "Approval")
+                        : approvalKind === "safety_blocked"
                         ? t("安全阻断", "Safety blocked")
-                        : t("系统确认", "Approval");
+                        : t("系统控制", "Runtime control");
         const tone = node.governanceType === "safety_blocked" || approvalKind === "safety_blocked"
             ? "safety"
             : node.governanceType === "run_controlled" || node.governanceType === "lane_updated" || node.governanceType === "context_governance"
                 ? "control"
-                : "approval";
+            : "approval";
         return (
             <ApprovalCard
                 title={title}
@@ -87,7 +89,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             <ArtifactCard
                 title={node.artifact.displayLabel || node.artifact.title || t("产物", "Artifact")}
                 type="file"
-                subtitle={node.artifact.displaySubtitle || node.artifact.workspacePath || node.artifact.sourcePath || ""}
+                subtitle={node.artifact.displaySubtitle || node.artifact.canonicalPath || node.artifact.workspaceRelativePath || node.artifact.kind || ""}
                 onPress={() => onOpenArtifact?.(node.artifact)}
             />
         );
@@ -138,6 +140,14 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             externalUrl: typeof block.data?.url === "string" ? block.data.url : undefined,
             workspacePath: typeof block.data?.workspacePath === "string" ? block.data.workspacePath : undefined,
             sourcePath: typeof block.data?.sourcePath === "string" ? block.data.sourcePath : undefined,
+            workspaceRoot: typeof block.data?.workspaceRoot === "string" ? block.data.workspaceRoot : undefined,
+            workspaceRelativePath: typeof block.data?.workspaceRelativePath === "string" ? block.data.workspaceRelativePath : undefined,
+            canonicalPath: typeof block.data?.canonicalPath === "string" ? block.data.canonicalPath : undefined,
+            projectId: typeof block.data?.projectId === "string" ? block.data.projectId : undefined,
+            workspaceId: typeof block.data?.workspaceId === "string" ? block.data.workspaceId : undefined,
+            storageClass: typeof block.data?.storageClass === "string" ? block.data.storageClass : undefined,
+            surfaceVisible: typeof block.data?.surfaceVisible === "boolean" ? block.data.surfaceVisible : undefined,
+            resourceRef: coerceAdminResourceRef(block.data?.resourceRef || null),
         };
         return (
             <View style={styles.artifactStack}>

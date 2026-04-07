@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.multimodal_payload_adapter import utc_now_iso
-from core.storage import storage
+from core.v8_agent_os_paths import runtime_private_root
 from runtimes.computer_use.types import ComputerUseTraceStep
 
 
@@ -41,15 +41,8 @@ class ComputerUseTraceStore:
     )
 
     def __init__(self, root_dir: Path | None = None) -> None:
-        base_dir = root_dir
-        if base_dir is None:
-            configured_base = getattr(storage, "base_dir", None)
-            if configured_base:
-                base_dir = Path(configured_base)
-            else:
-                base_dir = Path.home() / ".v8-agent-os"
-        self.base_dir = Path(base_dir)
-        self.trace_dir = self.base_dir / "computer_use_traces"
+        self.base_dir = Path(root_dir) if root_dir is not None else runtime_private_root("computer_use")
+        self.trace_dir = self.base_dir / "traces"
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 
     def _trace_path(self, run_id: str) -> Path:

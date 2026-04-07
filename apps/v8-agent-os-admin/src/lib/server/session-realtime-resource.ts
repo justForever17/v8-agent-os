@@ -5,6 +5,7 @@ import {
     type AdminProcessRef,
     type AdminResourceRef,
 } from "@v8/session-realtime";
+import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resource";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -22,10 +23,31 @@ function materializeSurfaceUrl(resourceRef: AdminResourceRef | null) {
     if (!resourceRef) {
         return undefined;
     }
+    if (resourceRef.signedUrl) {
+        return resourceRef.signedUrl;
+    }
     if (resourceRef.kind === "external_url") {
         return resourceRef.url || undefined;
     }
     return resourceRef.adminPath || undefined;
+}
+
+function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null) {
+    if (!resourceRef || resourceRef.kind === "external_url") {
+        return resourceRef;
+    }
+    const adminPath = String(resourceRef.adminPath || "").trim();
+    if (!adminPath) {
+        return resourceRef;
+    }
+    const signedUrl = buildSignedClientSurfaceUrl(adminPath);
+    if (!signedUrl) {
+        return resourceRef;
+    }
+    return {
+        ...resourceRef,
+        signedUrl,
+    };
 }
 
 function normalizeSurfaceUrl(value: unknown) {
@@ -59,7 +81,7 @@ function normalizeContextReference(raw: unknown) {
     }
     return {
         ...record,
-        resourceRef: record.resourceRef ? coerceAdminResourceRef(record.resourceRef) : record.resourceRef,
+        resourceRef: record.resourceRef ? attachSignedSurfaceUrl(coerceAdminResourceRef(record.resourceRef)) : record.resourceRef,
     };
 }
 
@@ -69,7 +91,7 @@ export function normalizeArtifactForRealtimeSurface(raw: unknown) {
         return raw;
     }
 
-    const resourceRef = deriveAdminResourceRefFromArtifactLike(record);
+    const resourceRef = attachSignedSurfaceUrl(deriveAdminResourceRefFromArtifactLike(record));
     const materializedUrl = materializeSurfaceUrl(resourceRef);
 
     return {

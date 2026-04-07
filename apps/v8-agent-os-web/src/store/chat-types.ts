@@ -47,6 +47,7 @@ export interface UiExecutionNode extends UiTimelineNodeBase {
 export interface UiGovernanceNode extends UiTimelineNodeBase {
     kind: 'governance';
     governanceType:
+        | 'ask_user'
         | 'approval_request'
         | 'approval_resolved'
         | 'run_controlled'
@@ -57,6 +58,7 @@ export interface UiGovernanceNode extends UiTimelineNodeBase {
     // Approval
     approvalId?: string;
     approvalKind?: string;
+    interactionKind?: string;
     question?: string;
     toolCallId?: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

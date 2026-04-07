@@ -8,11 +8,11 @@ from typing import Any
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-from core.workspace_resolution import workspace_resolution_service
+from core.v8_agent_os_paths import runtime_private_root
 
 
 def _plugin_host_workspace_root() -> Path:
-    root = Path(workspace_resolution_service.get_main_workspace_path()).expanduser() / "plugin_host"
+    root = runtime_private_root("plugin_host") / "media-assets"
     root.mkdir(parents=True, exist_ok=True)
     return root
 

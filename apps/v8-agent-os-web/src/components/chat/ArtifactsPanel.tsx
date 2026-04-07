@@ -69,7 +69,7 @@ function getRuntimeArtifactTitle(artifact: RuntimeArtifact) {
 }
 
 function getRuntimeArtifactSubtitle(artifact: RuntimeArtifact) {
-    return artifact.displaySubtitle || artifact.workspacePath || artifact.sourcePath || artifact.previewUrl || "暂无路径信息";
+    return artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifact.previewUrl || "暂无路径信息";
 }
 
 function renderRuntimeArtifactIcon(kind: string) {
@@ -332,8 +332,8 @@ export function ArtifactsPanel({ sessionId }: { sessionId?: string | null }) {
                                     <div>
                                         <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Paths</div>
                                         <div className="mt-2 space-y-2 text-sm">
-                                            <div className="break-all">{activeArtifact.workspacePath || "—"}</div>
-                                            <div className="break-all text-muted-foreground">{activeArtifact.sourcePath || "—"}</div>
+                                            <div className="break-all">{activeArtifact.canonicalPath || activeArtifact.workspaceRelativePath || "—"}</div>
+                                            <div className="break-all text-muted-foreground">{activeArtifact.pathPlane || activeArtifact.kind || "—"}</div>
                                         </div>
                                     </div>
                                     <div>

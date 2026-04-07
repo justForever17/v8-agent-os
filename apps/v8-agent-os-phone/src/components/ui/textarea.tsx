@@ -7,7 +7,7 @@ import { radii } from "@/src/theme/tokens";
 export type TextareaProps = TextInputProps;
 
 export const Textarea = forwardRef<TextInput, TextareaProps>(function Textarea(
-    { style, multiline = true, textAlignVertical = "top", placeholderTextColor, ...rest },
+    { style, multiline = true, textAlignVertical = "top", placeholderTextColor, selectionColor, cursorColor, ...rest },
     ref,
 ) {
     const { colors } = useUiPrefs();
@@ -17,6 +17,10 @@ export const Textarea = forwardRef<TextInput, TextareaProps>(function Textarea(
             multiline={multiline}
             textAlignVertical={textAlignVertical}
             placeholderTextColor={placeholderTextColor ?? colors.textSoft}
+            selectionColor={selectionColor ?? colors.primary}
+            cursorColor={cursorColor ?? colors.accent}
+            contextMenuHidden={false}
+            disableFullscreenUI
             {...rest}
             style={[
                 styles.textarea,
@@ -39,7 +43,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         paddingHorizontal: 12,
         paddingVertical: 10,
-        fontSize: 14,
-        lineHeight: 20,
+        fontSize: 16,
+        lineHeight: 24,
     },
 });

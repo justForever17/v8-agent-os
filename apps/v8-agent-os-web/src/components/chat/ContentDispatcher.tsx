@@ -16,6 +16,43 @@ import { parseContentToBlocks } from '@/lib/chat/content-detector';
 import { isCommandSessionTool } from '@/lib/chat/command-session';
 import { MessageBlockItem } from './MessageBlockItem';
 
+function tryParseJsonRecord(value: unknown): Record<string, unknown> | null {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    if (typeof value !== 'string') {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function compactToolResult(toolName: string, value: unknown) {
+    if (toolName !== 'download_media_for_vision') {
+        return value;
+    }
+    const record = tryParseJsonRecord(value);
+    if (!record) {
+        return value;
+    }
+    return {
+        ok: record.ok,
+        artifactId: record.artifactId ?? record.primaryArtifactId,
+        kind: record.kind ?? record.primaryKind,
+        mimeType: record.mimeType,
+        fileName: record.fileName,
+        workspacePath: record.workspacePath ?? record.canonicalPath ?? record.userVisiblePath ?? record.primaryFile,
+        workspaceRelativePath: record.workspaceRelativePath,
+        message: record.message ?? record.statusMessage ?? record.error,
+    };
+}
+
 interface ToolRendererProps {
     toolInvocation: ToolInvocation;
     isFinished: boolean;
@@ -41,8 +78,10 @@ const ToolRegistry: Record<string, React.FC<ToolRendererProps> | null> = {
     'start_background_command': CommandSessionToolRenderer,
     'run_system_command': CommandSessionToolRenderer,
     // Tools that we want to render subtly using GenericToolTraceCard (previously blacklisted)
-    'write_todos': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
-    'update_todo': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
+    'write_todos': null,
+    'update_todo': null,
+    'inspect_and_move_media': null,
+    'download_media_for_vision': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
     'read_background_output': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
     'send_background_input': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
     'terminate_background_command': ({ toolInvocation }) => <GenericToolTraceCard toolInvocation={toolInvocation} />,
@@ -87,7 +126,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     toolName,
                     args: node.args || {},
                     state: isFinished ? 'result' : 'call',
-                    result: result
+                    result: compactToolResult(toolName, result)
                 };
                 const matchedProcess = toolInvocation.toolCallId
                     ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)
@@ -161,10 +200,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                             ? t(lt("运行调度", "Run scheduling"))
                             : t(lt("系统控制信号", "System control"));
             const question = node.question || node.reason || node.topic || node.status || "";
-            const isAskUser =
-                isApproval &&
-                (approvalKind === "human_input_required" || approvalKind === "ask_user" || approvalKind === "waiting_input");
-            if (isAskUser) {
+            if (node.governanceType === "ask_user") {
                 return <AskUserCard question={question} status={node.status} />;
             }
             return (

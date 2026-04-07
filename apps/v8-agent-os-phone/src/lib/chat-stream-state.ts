@@ -5,6 +5,7 @@ import type {
 import {
     applyRealtimeEventToMessages as applySharedRealtimeEventToMessages,
     buildAssistantMessage as buildSharedAssistantMessage,
+    coerceAdminResourceRef,
     deriveRealtimeStreamState as deriveSharedRealtimeStreamState,
     type SessionAgentProfile,
     type SessionStreamLifecycleOptions,
@@ -13,7 +14,12 @@ import {
     type SessionStreamUiEvent,
 } from "@v8/session-realtime";
 
-export type PhoneUiStreamPhase = SessionStreamPhase;
+export type PhoneUiStreamPhase =
+    | SessionStreamPhase
+    | "task_planning"
+    | "tooling"
+    | "artifact_ready"
+    | "waiting_input";
 
 export type AgentProfile = SessionAgentProfile;
 
@@ -66,11 +72,47 @@ function buildArtifact(value: unknown): ChatArtifact | null {
             : typeof record.workspace_path === "string"
                 ? record.workspace_path
                 : undefined,
+        workspaceRoot: typeof record.workspaceRoot === "string"
+            ? record.workspaceRoot
+            : typeof record.workspace_root === "string"
+                ? record.workspace_root
+                : undefined,
+        workspaceRelativePath: typeof record.workspaceRelativePath === "string"
+            ? record.workspaceRelativePath
+            : typeof record.workspace_relative_path === "string"
+                ? record.workspace_relative_path
+                : undefined,
+        canonicalPath: typeof record.canonicalPath === "string"
+            ? record.canonicalPath
+            : typeof record.canonical_path === "string"
+                ? record.canonical_path
+                : undefined,
+        projectId: typeof record.projectId === "string"
+            ? record.projectId
+            : typeof record.project_id === "string"
+                ? record.project_id
+                : undefined,
+        workspaceId: typeof record.workspaceId === "string"
+            ? record.workspaceId
+            : typeof record.workspace_id === "string"
+                ? record.workspace_id
+                : undefined,
+        storageClass: typeof record.storageClass === "string"
+            ? record.storageClass
+            : typeof record.storage_class === "string"
+                ? record.storage_class
+                : undefined,
+        surfaceVisible: typeof record.surfaceVisible === "boolean"
+            ? record.surfaceVisible
+            : typeof record.surface_visible === "boolean"
+                ? record.surface_visible
+                : undefined,
         mimeType: typeof record.mimeType === "string"
             ? record.mimeType
             : typeof record.mime_type === "string"
                 ? record.mime_type
                 : undefined,
+        resourceRef: coerceAdminResourceRef(record.resourceRef || record.resource_ref || null),
     };
 
     if (
@@ -133,7 +175,14 @@ export const PHONE_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
 };
 
 export function isActiveAssistantStreamPhase(phase?: PhoneUiStreamPhase | null) {
-    return phase === "placeholder" || phase === "agent_started" || phase === "streaming" || phase === "settling";
+    return phase === "placeholder"
+        || phase === "agent_started"
+        || phase === "task_planning"
+        || phase === "tooling"
+        || phase === "artifact_ready"
+        || phase === "waiting_input"
+        || phase === "streaming"
+        || phase === "settling";
 }
 
 export function buildAssistantMessage(

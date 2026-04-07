@@ -219,6 +219,12 @@ def project_artifacts_from_events(events: List[Dict[str, Any]]) -> List[Dict[str
         if event.get("topic") != "artifact.recorded":
             continue
         payload = event.get("payload") or {}
+        metadata = payload.get("metadata") or {}
+        surface_visible = metadata.get("surfaceVisible")
+        if surface_visible is None:
+            surface_visible = metadata.get("surface_visible")
+        if surface_visible is False:
+            continue
         artifact_id = payload.get("artifactId")
         if not artifact_id or artifact_id in seen:
             continue
@@ -243,6 +249,18 @@ def project_artifacts_from_events(events: List[Dict[str, Any]]) -> List[Dict[str
             )
         )
     return artifacts
+
+
+def _is_todo_tool_payload(value: Dict[str, Any]) -> bool:
+    tool = value.get("tool") or value
+    tool_name = str(
+        tool.get("toolName")
+        or tool.get("tool_name")
+        or value.get("toolName")
+        or value.get("tool_name")
+        or ""
+    ).strip().lower()
+    return tool_name in {"write_todos", "update_todo"}
 
 
 def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -331,7 +349,6 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                 assistant["agentType"] = "supervisor"
             else:
                 assistant["agentType"] = "agent"
-            assistant["parts"].append({"type": "agent_start", **active_agent_profile})
             continue
 
         if topic == "run.text.delta":
@@ -385,6 +402,8 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             continue
 
         if topic == "tool.started":
+            if _is_todo_tool_payload(payload):
+                continue
             assistant = ensure_assistant(event)
             tool = payload.get("tool") or payload
             assistant["parts"].append(
@@ -399,6 +418,8 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             continue
 
         if topic == "tool.finished":
+            if _is_todo_tool_payload(payload):
+                continue
             assistant = ensure_assistant(event)
             tool = payload.get("tool") or payload
             assistant["parts"].append(

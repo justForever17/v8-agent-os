@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -7,6 +7,7 @@ import { resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realt
 
 import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
+import { getRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import { formatClock } from "@/src/lib/time";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
@@ -26,13 +27,19 @@ function artifactUrl(adminBaseUrl: string, artifact: ChatArtifact) {
     if (artifact.id || artifact.artifactId) {
         return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
     }
-    if (artifact.workspacePath || artifact.sourcePath?.startsWith("/workspace/")) {
-        const workspacePath = String(artifact.workspacePath || artifact.sourcePath || "")
+    const workspacePath = String(
+        artifact.workspacePath
+        || artifact.workspaceRelativePath
+        || artifact.canonicalPath
+        || "",
+    ).trim();
+    if (workspacePath && !/^[a-z]+:\/\//i.test(workspacePath) && !/^[a-z]:\\/i.test(workspacePath)) {
+        const normalizedWorkspacePath = workspacePath
             .replace(/^\/workspace\//, "")
             .replace(/^workspace\//, "");
-        return getWorkspaceFileUrl(adminBaseUrl, workspacePath);
+        return getWorkspaceFileUrl(adminBaseUrl, normalizedWorkspacePath);
     }
-    const candidate = artifact.previewUrl || artifact.externalUrl || artifact.sourcePath || "";
+    const candidate = artifact.previewUrl || artifact.externalUrl || "";
     return normalizeRenderableWorkspaceUrl(adminBaseUrl, candidate);
 }
 
@@ -194,7 +201,11 @@ export const MessageBubble = memo(function MessageBubble({
     const rolePillBackground = message.agentType === "supervisor" ? "#FFF7ED" : palette.accentSoft;
     const rolePillBorder = message.agentType === "supervisor" ? "rgba(245,158,11,0.24)" : `${palette.accent}33`;
     const rolePillTextColor = message.agentType === "supervisor" ? "#D97706" : palette.accent;
-    const hasStructuredNodes = Array.isArray(message.nodes) && message.nodes.length > 0;
+    const renderableNodes = useMemo(
+        () => getRenderablePhoneTimelineNodes(message.nodes),
+        [message.nodes],
+    );
+    const hasStructuredNodes = renderableNodes.length > 0;
     const fallbackBlocks = useMemo(
         () => (hasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
         [hasStructuredNodes, message.content],
@@ -202,7 +213,7 @@ export const MessageBubble = memo(function MessageBubble({
     const voiceDescriptors = useMemo(() => {
         const descriptors: Array<{ key: string; text: string }> = [];
         if (hasStructuredNodes) {
-            (message.nodes || []).forEach((node, nodeIndex) => {
+            renderableNodes.forEach((node, nodeIndex) => {
                 if (node.kind !== "narrative") {
                     return;
                 }
@@ -228,15 +239,15 @@ export const MessageBubble = memo(function MessageBubble({
             });
         });
         return descriptors;
-    }, [fallbackBlocks, hasStructuredNodes, message.nodes, messageIdentity]);
-    const hasArtifactNode = Boolean(message.nodes?.some((node) => node.kind === "artifact"));
+    }, [fallbackBlocks, hasStructuredNodes, messageIdentity, renderableNodes]);
+    const hasArtifactNode = Boolean(renderableNodes.some((node) => node.kind === "artifact"));
     const supplementalArtifacts = useMemo(
         () => (Array.isArray(message.artifacts) && !hasArtifactNode ? message.artifacts : []),
         [hasArtifactNode, message.artifacts],
     );
     const hasRenderableText = useMemo(() => {
         if (hasStructuredNodes) {
-            return (message.nodes || []).some((node) => {
+            return renderableNodes.some((node) => {
                 if (node.kind === "narrative") {
                     return parsePhoneContentBlocks(String(node.content || "")).some((block) => block.type !== "voice" && block.content.trim());
                 }
@@ -244,15 +255,33 @@ export const MessageBubble = memo(function MessageBubble({
             });
         }
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
-    }, [fallbackBlocks, hasStructuredNodes, message.nodes]);
+    }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText && supplementalArtifacts.length === 0;
     const horizontalBubbleLimit = Math.max(180, width - (isLandscape ? 232 : 134));
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
     const assistantActive = !isUser && isLast && isLoading;
-    const assistantPhaseLabel = streamPhase === "placeholder"
+    const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
+        ? message.metadata.assistantTaskProgress as {
+            phase?: string;
+            label?: string;
+            subtitle?: string;
+            currentStep?: string;
+            completedCount?: number;
+            totalCount?: number;
+        }
+        : null;
+    const assistantPhaseLabel = taskProgress?.label || (streamPhase === "placeholder"
         ? t("正在理解…", "Thinking…")
+        : streamPhase === "task_planning"
+            ? t("正在推进任务…", "Advancing task…")
+            : streamPhase === "tooling"
+                ? t("正在调用工具…", "Using tools…")
+                : streamPhase === "artifact_ready"
+                    ? t("产物已就绪…", "Artifact ready…")
+                    : streamPhase === "waiting_input"
+                        ? t("等待你的输入…", "Waiting for your input…")
         : streamPhase === "agent_started"
             ? t("开始执行…", "Starting…")
             : streamPhase === "streaming"
@@ -261,18 +290,38 @@ export const MessageBubble = memo(function MessageBubble({
                     ? t("即将完成…", "Finishing…")
                     : streamPhase === "error"
                         ? t("执行异常", "Stream error")
-                        : "";
-    const assistantPhaseSubtitle = streamPhase === "placeholder"
+                        : "");
+    const assistantPhaseSubtitle = taskProgress?.subtitle || (streamPhase === "placeholder"
         ? t("正在整理上下文并准备响应。", "Preparing context and the first response.")
+        : streamPhase === "task_planning"
+            ? taskProgress?.currentStep
+                ? t(`当前步骤：${taskProgress.currentStep}`, `Current step: ${taskProgress.currentStep}`)
+                : (typeof taskProgress?.completedCount === "number" && typeof taskProgress?.totalCount === "number" && taskProgress.totalCount > 0)
+                    ? t(
+                        `任务进度 ${taskProgress.completedCount}/${taskProgress.totalCount}，正在继续推进。`,
+                        `Task progress ${taskProgress.completedCount}/${taskProgress.totalCount}, continuing execution.`,
+                    )
+                    : t("任务步骤已建立，正在继续推进。", "Task steps are ready and execution is progressing.")
+        : streamPhase === "tooling"
+            ? taskProgress?.currentStep
+                ? t(`正在处理：${taskProgress.currentStep}`, `Working on: ${taskProgress.currentStep}`)
+                : t("正在调用相关工具并整理产物。", "Calling tools and preparing artifacts.")
+        : streamPhase === "artifact_ready"
+            ? taskProgress?.currentStep
+                ? t(`已生成产物：${taskProgress.currentStep}`, `Artifact ready: ${taskProgress.currentStep}`)
+                : t("产物已就绪，正在准备最终回复。", "Artifact is ready and preparing the final reply.")
+        : streamPhase === "waiting_input"
+            ? t("需要你的补充信息后才能继续。", "More input is needed before continuing.")
         : streamPhase === "agent_started"
             ? t("已进入执行阶段，正在启动相关运行时。", "Execution has started and runtimes are warming up.")
-            : streamPhase === "streaming"
-                ? t("正在持续整理结果并刷新回复内容。", "Streaming updates into the current reply.")
-                : streamPhase === "settling"
-                    ? t("正在收尾并与最新快照对齐。", "Settling the run and aligning with the latest snapshot.")
-                    : streamPhase === "error"
-                        ? t("当前运行出现异常，请稍后查看结果。", "The current run hit an error. Please check the result in a moment.")
-                        : "";
+        : streamPhase === "streaming"
+            ? t("正在持续整理结果并刷新回复内容。", "Streaming updates into the current reply.")
+        : streamPhase === "settling"
+            ? t("正在收尾并与最新快照对齐。", "Settling the run and aligning with the latest snapshot.")
+        : streamPhase === "error"
+            ? t("当前运行出现异常，请稍后查看结果。", "The current run hit an error. Please check the result in a moment.")
+                        : "");
+    const showAssistantPhasePill = Boolean(assistantPhaseLabel) && !assistantActive;
 
     const openArtifact = async (artifact: ChatArtifact) => {
         if (onOpenArtifact) {
@@ -299,8 +348,8 @@ export const MessageBubble = memo(function MessageBubble({
         if (directContent) {
             return directContent;
         }
-        if (Array.isArray(message.nodes) && message.nodes.length > 0) {
-            const nodeContent = message.nodes
+        if (renderableNodes.length > 0) {
+            const nodeContent = renderableNodes
                 .map((node) => {
                     if ("content" in node && typeof node.content === "string") {
                         return node.content.trim();
@@ -321,7 +370,7 @@ export const MessageBubble = memo(function MessageBubble({
             }
         }
         return "";
-    }, [message.content, message.nodes]);
+    }, [message.content, renderableNodes]);
 
     useEffect(() => {
         if (!copied) {
@@ -442,9 +491,13 @@ export const MessageBubble = memo(function MessageBubble({
                             <Text style={[styles.rolePillText, { color: rolePillTextColor }]}>{resolvedAgentRoleLabel}</Text>
                         </View>
                     ) : null}
-                    {assistantPhaseLabel ? (
+                    {showAssistantPhasePill ? (
                         <View style={[styles.streamPill, { backgroundColor: `${palette.primary}14`, borderColor: `${palette.primary}2A` }]}>
-                            {assistantActive ? <ActivityIndicator size="small" color={palette.primary} /> : null}
+                            <MaterialCommunityIcons
+                                name={assistantActive ? "progress-clock" : "robot-excited-outline"}
+                                size={14}
+                                color={assistantActive ? palette.primary : palette.textSoft}
+                            />
                             <Text style={[styles.streamPillText, { color: assistantActive ? palette.primary : palette.textSoft }]}>
                                 {assistantPhaseLabel}
                             </Text>
@@ -469,7 +522,7 @@ export const MessageBubble = memo(function MessageBubble({
                         <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
                         <View style={[styles.assistantInner, voiceOnly && styles.assistantInnerVoiceOnly]}>
                             {hasStructuredNodes ? (
-                                (message.nodes || []).map((node, index) => (
+                                renderableNodes.map((node, index) => (
                                     <ContentDispatcher
                                         key={node.id || `${messageIdentity}:node:${index}`}
                                         node={node}
@@ -501,7 +554,6 @@ export const MessageBubble = memo(function MessageBubble({
                             ) : (
                                 <View style={styles.placeholderWrap}>
                                     <View style={[styles.placeholderBadge, { backgroundColor: `${palette.primary}14`, borderColor: `${palette.primary}28` }]}>
-                                        {assistantActive ? <ActivityIndicator size="small" color={palette.primary} /> : null}
                                         <MaterialCommunityIcons name="robot-excited-outline" size={16} color={palette.primary} />
                                     </View>
                                     <View style={styles.placeholderBody}>
@@ -519,7 +571,7 @@ export const MessageBubble = memo(function MessageBubble({
                                 <View style={styles.artifactList}>
                                     {supplementalArtifacts.map((artifact, index) => (
                                         <Pressable
-                                            key={`${artifact.id || artifact.artifactId || artifact.workspacePath || artifact.sourcePath || artifact.title || "artifact"}:${index}`}
+                                            key={`${artifact.id || artifact.artifactId || artifact.canonicalPath || artifact.workspaceRelativePath || artifact.title || "artifact"}:${index}`}
                                             onPress={() => openArtifact(artifact)}
                                             style={[styles.artifactCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
                                         >
@@ -529,7 +581,7 @@ export const MessageBubble = memo(function MessageBubble({
                                                     {artifact.displayLabel || artifact.title || artifact.kind || t("产物", "Artifact")}
                                                 </Text>
                                                 <Text style={[styles.artifactSubtitle, { color: palette.textMuted }]} numberOfLines={1}>
-                                                    {artifact.displaySubtitle || artifact.kind || artifact.workspacePath || artifact.sourcePath || t("点击打开", "Tap to open")}
+                                                {artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifact.kind || t("点击打开", "Tap to open")}
                                                 </Text>
                                             </View>
                                             <MaterialCommunityIcons name="open-in-new" size={15} color={palette.textSoft} />

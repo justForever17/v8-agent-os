@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import { sessionFanoutHub } from "@/lib/realtime/session-fanout";
 import { resolveEngineWsBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import { normalizeRuntimeEventForRealtimeSurface } from "@/lib/server/session-realtime-resource";
+import { buildSessionStreamUiEvent } from "@v8/session-realtime";
 
 function resolveEngineWsUrl() {
     return `${resolveEngineWsBaseUrl().replace(/\/$/, "")}/chat/ws`;
@@ -54,10 +56,15 @@ export function createEngineChatGatewayStream(requestPayload: unknown, userEmail
 
             const emit = (raw: unknown) => {
                 if (streamClosed) return;
-                controller.enqueue(encoder.encode(`${JSON.stringify(raw)}\n`));
-                const sessionId = inferSessionId(raw, initialSessionId);
+                const normalizedRuntimeEvent = buildSessionStreamUiEvent(raw, { locale: "zh-CN" });
+                if (!normalizedRuntimeEvent) {
+                    return;
+                }
+                const nextPayload = normalizeRuntimeEventForRealtimeSurface(normalizedRuntimeEvent);
+                controller.enqueue(encoder.encode(`${JSON.stringify(nextPayload)}\n`));
+                const sessionId = inferSessionId(nextPayload, initialSessionId);
                 if (sessionId) {
-                    sessionFanoutHub.publish(sessionId, raw);
+                    sessionFanoutHub.publish(sessionId, nextPayload);
                 }
             };
 

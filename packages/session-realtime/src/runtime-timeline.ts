@@ -103,6 +103,7 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
     normalized.name === "artifact_recorded"
       ? "artifact"
       : normalized.name === "ask_user"
+        || normalized.name === "approval_requested"
         || normalized.name === "run_controlled"
         || normalized.name === "approval_resolved"
         || normalized.name === "safety_blocked"

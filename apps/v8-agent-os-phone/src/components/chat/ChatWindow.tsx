@@ -9,18 +9,18 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
+import { isAskUserInteractionApproval, type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
 
 import { ArtifactsPanel } from "@/src/components/chat/ArtifactsPanel";
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
 import { MessageBubble } from "@/src/components/chat/MessageBubble";
 import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
-import { TodosHUD } from "@/src/components/chat/TodosHUD";
+import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ArtifactDetail, ChatArtifact, ChatMessage, PendingApproval, SessionTodoItem } from "@/src/types/admin";
+import type { ArtifactDetail, ChatArtifact, ChatMessage, PendingApproval } from "@/src/types/admin";
 
 type ChatWindowProps = {
     adminBaseUrl: string;
@@ -33,7 +33,6 @@ type ChatWindowProps = {
     onSpeakVoice?: (text: string, messageKey: string) => void;
     userImageUri?: string;
     userDisplayName?: string;
-    todos: SessionTodoItem[];
     artifacts: ArtifactDetail[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
@@ -43,6 +42,7 @@ type ChatWindowProps = {
     onResolveApproval?: (approval: PendingApproval, answer: string, approve: boolean) => void | Promise<void>;
     onOpenApprovalPanel?: () => void;
     isLandscape?: boolean;
+    bottomInset?: number;
     emptyState?: {
         icon?: keyof typeof MaterialCommunityIcons.glyphMap;
         title: string;
@@ -55,6 +55,8 @@ function toArtifactDetail(artifact: ChatArtifact): ArtifactDetail {
         id: String(
             artifact.id
             || artifact.artifactId
+            || artifact.canonicalPath
+            || artifact.workspaceRelativePath
             || artifact.workspacePath
             || artifact.sourcePath
             || artifact.previewUrl
@@ -68,7 +70,15 @@ function toArtifactDetail(artifact: ChatArtifact): ArtifactDetail {
         externalUrl: artifact.externalUrl,
         sourcePath: artifact.sourcePath,
         workspacePath: artifact.workspacePath,
+        workspaceRoot: artifact.workspaceRoot,
+        workspaceRelativePath: artifact.workspaceRelativePath,
+        canonicalPath: artifact.canonicalPath,
+        projectId: artifact.projectId,
+        workspaceId: artifact.workspaceId,
+        storageClass: artifact.storageClass,
+        surfaceVisible: artifact.surfaceVisible,
         mimeType: artifact.mimeType,
+        resourceRef: artifact.resourceRef || null,
     };
 }
 
@@ -80,18 +90,15 @@ function matchesArtifact(detail: ArtifactDetail, target: ChatArtifact) {
     return (
         Boolean(target.previewUrl && detail.previewUrl === target.previewUrl)
         || Boolean(target.externalUrl && detail.externalUrl === target.externalUrl)
+        || Boolean(target.canonicalPath && detail.canonicalPath === target.canonicalPath)
+        || Boolean(target.workspaceRelativePath && detail.workspaceRelativePath === target.workspaceRelativePath)
         || Boolean(target.workspacePath && detail.workspacePath === target.workspacePath)
         || Boolean(target.sourcePath && detail.sourcePath === target.sourcePath)
     );
 }
 
 function isAskUserApproval(approval: PendingApproval | null | undefined) {
-    const approvalKind = String(approval?.approval_kind || "").trim().toLowerCase();
-    const interactionKind = String(approval?.request?.interactionKind || "").trim().toLowerCase();
-    return approvalKind === "human_input_required"
-        || approvalKind === "ask_user"
-        || approvalKind === "waiting_input"
-        || interactionKind === "ask_user";
+    return isAskUserInteractionApproval(approval);
 }
 
 function hasRenderableMessage(message: ChatMessage) {
@@ -107,7 +114,7 @@ function hasRenderableMessage(message: ChatMessage) {
     if (Array.isArray(message.artifacts) && message.artifacts.length > 0) {
         return true;
     }
-    if (Array.isArray(message.nodes) && message.nodes.length > 0) {
+    if (hasRenderablePhoneTimelineNodes(message.nodes)) {
         return true;
     }
     return false;
@@ -124,7 +131,6 @@ export const ChatWindow = memo(function ChatWindow({
     onSpeakVoice,
     userImageUri,
     userDisplayName,
-    todos,
     artifacts,
     processes,
     contextReferences,
@@ -134,6 +140,7 @@ export const ChatWindow = memo(function ChatWindow({
     onResolveApproval,
     onOpenApprovalPanel,
     isLandscape = false,
+    bottomInset = 172,
     emptyState,
 }: ChatWindowProps) {
     const { colors, t } = useUiPrefs();
@@ -210,9 +217,12 @@ export const ChatWindow = memo(function ChatWindow({
                     ref={scrollRef}
                     style={styles.scroll}
                     scrollEnabled={!scrollLocked}
+                    keyboardShouldPersistTaps="always"
+                    keyboardDismissMode="none"
                     contentContainerStyle={[
                         styles.messagesContent,
                         isLandscape && styles.messagesContentLandscape,
+                        { paddingBottom: bottomInset },
                         visibleMessages.length === 0 && styles.messagesContentEmpty,
                     ]}
                     refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} /> : undefined}
@@ -276,7 +286,6 @@ export const ChatWindow = memo(function ChatWindow({
             ) : null}
 
             <View style={[styles.hudStack, isLandscape && styles.hudStackLandscape]}>
-                {todos.length > 0 ? <TodosHUD items={todos} /> : null}
                 {processes.length > 0 ? <ProcessesHUD processes={processes} /> : null}
                 {pendingApproval && isAskUserApproval(pendingApproval) ? (
                     <Pressable

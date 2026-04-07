@@ -7,27 +7,19 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.multimodal_payload_adapter import utc_now_iso
-from core.storage import storage
+from core.v8_agent_os_paths import runtime_private_root
 from runtimes.rpa.execution_semantics import outcome_family_for_execution_state
 from runtimes.rpa.types import RPAScript
 
 
 class RPAScriptStore:
     def __init__(self, root_dir: Path | None = None) -> None:
-        base_dir = root_dir
-        if base_dir is None:
-            configured_base = getattr(storage, "base_dir", None)
-            if configured_base:
-                base_dir = Path(configured_base)
-            else:
-                base_dir = Path.home() / ".v8-agent-os"
-        self.base_dir = Path(base_dir)
-        self.rpa_dir = self.base_dir / "rpa"
-        self.draft_dir = self.rpa_dir / "drafts"
-        self.script_dir = self.rpa_dir / "scripts"
-        self.template_dir = self.rpa_dir / "templates"
-        self.template_history_dir = self.rpa_dir / "template_history"
-        self.trust_metrics_path = self.rpa_dir / "trust_metrics.json"
+        self.base_dir = Path(root_dir) if root_dir is not None else runtime_private_root("rpa")
+        self.draft_dir = self.base_dir / "drafts"
+        self.script_dir = self.base_dir / "scripts"
+        self.template_dir = self.base_dir / "templates"
+        self.template_history_dir = self.base_dir / "template_history"
+        self.trust_metrics_path = self.base_dir / "trust_metrics.json"
         self.draft_dir.mkdir(parents=True, exist_ok=True)
         self.script_dir.mkdir(parents=True, exist_ok=True)
         self.template_dir.mkdir(parents=True, exist_ok=True)

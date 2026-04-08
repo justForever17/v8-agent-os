@@ -47,16 +47,28 @@ export async function GET(
             let latestSeq = 0;
             let lastSnapshotFingerprint = "";
             const seenEventIds = new Set<string>();
-            let idleBackoffMs = 2500;
+            let idleBackoffMs = 350;
             let idlePollCount = 0;
+            let lastForwardedAt = 0;
             let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
             let snapshotInflight = false;
             let snapshotPending = false;
 
             const sendSse = (event: unknown, eventName = "message") => {
                 if (closed) return;
+                const adminForwardedAt = new Date().toISOString();
+                const payload = event && typeof event === "object"
+                    ? {
+                        ...(event as Record<string, unknown>),
+                        _diagnostics: {
+                            ...asRecord((event as Record<string, unknown>)._diagnostics),
+                            adminForwardedAt,
+                        },
+                    }
+                    : event;
+                lastForwardedAt = Date.now();
                 controller.enqueue(
-                    encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`)
+                    encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`)
                 );
             };
 
@@ -195,24 +207,30 @@ export async function GET(
                             const events = Array.isArray(eventsData?.events) ? eventsData.events : [];
                             if (events.length > 0) {
                                 idlePollCount = 0;
-                                idleBackoffMs = 2200;
+                                idleBackoffMs = 260;
                             } else {
-                                idlePollCount += 1;
-                                idleBackoffMs = Math.min(2500 + idlePollCount * 1800, 15000);
+                                const recentlyForwarded = Date.now() - lastForwardedAt < 6000;
+                                if (recentlyForwarded) {
+                                    idlePollCount = 0;
+                                    idleBackoffMs = 320;
+                                } else {
+                                    idlePollCount += 1;
+                                    idleBackoffMs = Math.min(500 + idlePollCount * 450, 2400);
+                                }
                             }
                             for (const runtimeEvent of events) {
                                 forwardRuntimeEvent(runtimeEvent);
                             }
                         } else {
                             idlePollCount += 1;
-                            idleBackoffMs = Math.min(4000 + idlePollCount * 2000, 18000);
+                            idleBackoffMs = Math.min(900 + idlePollCount * 800, 4200);
                         }
                     } catch (error) {
                         if (!closed) {
                             console.warn("[Admin Realtime SSE] polling runtime events failed:", error);
                         }
                         idlePollCount += 1;
-                        idleBackoffMs = Math.min(4000 + idlePollCount * 2000, 18000);
+                        idleBackoffMs = Math.min(1200 + idlePollCount * 1000, 5200);
                     }
 
                     await sleep(idleBackoffMs);

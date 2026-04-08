@@ -9,6 +9,9 @@ import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resourc
 
 type JsonRecord = Record<string, unknown>;
 
+const SURFACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/[^\s"'<>\\]+/gi;
+const SURFACE_RELATIVE_URL_PATTERN = /(?:^|[\s("'=])((?:\/)?(?:workspace\/[^\s"'<>\\]+|api\/workspace\/files\/[^\s"'<>\\]+|api\/client\/workspace\/files\/[^\s"'<>\\]+|(?:v1|api(?:\/client)?)\/artifacts\/[^/\s"'<>\\]+\/content(?:\?[^\s"'<>\\]+)?))/gi;
+
 function asRecord(value: unknown): JsonRecord {
     return value && typeof value === "object" ? value as JsonRecord : {};
 }
@@ -51,15 +54,84 @@ function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null) {
 }
 
 function normalizeSurfaceUrl(value: unknown) {
-    const resourceRef = coerceAdminResourceRef(value);
+    const rawValue = String(value || "").trim();
+    if (
+        /^\/api\/client\/(?:workspace\/files\/|artifacts\/[^/]+\/content)/i.test(rawValue)
+        && /[?&]v8(?:sig|exp)=/i.test(rawValue)
+    ) {
+        return rawValue;
+    }
+    const resourceRef = attachSignedSurfaceUrl(coerceAdminResourceRef(value));
     if (!resourceRef) {
-        const normalized = String(value || "").trim();
-        return normalized || undefined;
+        return rawValue || undefined;
     }
     return materializeSurfaceUrl(resourceRef);
 }
 
-function normalizeProcessForRealtimeSurface(raw: unknown): AdminProcessRef | null {
+function normalizeSurfaceContent(value: unknown) {
+    if (typeof value !== "string") {
+        return value;
+    }
+
+    const raw = value;
+    if (!raw.trim()) {
+        return raw;
+    }
+
+    const replaceMatch = (match: string) => normalizeSurfaceUrl(match) || match;
+
+    return raw
+        .replace(SURFACE_URL_PATTERN, replaceMatch)
+        .replace(SURFACE_RELATIVE_URL_PATTERN, (match, path: string) => {
+            const normalized = normalizeSurfaceUrl(path);
+            if (!normalized) {
+                return match;
+            }
+            return match.replace(path, normalized);
+        });
+}
+
+function normalizeNodeForRealtimeSurface(raw: unknown) {
+    const record = asRecord(raw);
+    if (!Object.keys(record).length) {
+        return raw;
+    }
+
+    const data = asRecord(record.data);
+    const nextNode: JsonRecord = {
+        ...record,
+        content: normalizeSurfaceContent(record.content),
+        label: normalizeSurfaceContent(record.label),
+        question: normalizeSurfaceContent(record.question),
+        reason: normalizeSurfaceContent(record.reason),
+    };
+
+    if (typeof record.result === "string") {
+        nextNode.result = normalizeSurfaceContent(record.result);
+    }
+
+    if (record.kind === "artifact" && record.artifact) {
+        nextNode.artifact = normalizeArtifactForRealtimeSurface(record.artifact);
+    }
+
+    if (Object.keys(data).length) {
+        nextNode.data = {
+            ...data,
+            content: normalizeSurfaceContent(data.content),
+            message: normalizeSurfaceContent(data.message),
+            summary: normalizeSurfaceContent(data.summary),
+            url: normalizeSurfaceUrl(data.url),
+            src: normalizeSurfaceUrl(data.src),
+            image: normalizeSurfaceUrl(data.image),
+            previewUrl: normalizeSurfaceUrl(data.previewUrl),
+            externalUrl: normalizeSurfaceUrl(data.externalUrl),
+        };
+    }
+
+    return nextNode;
+}
+
+export function normalizeProcessForRealtimeSurface(raw: unknown): AdminProcessRef | null {
     const normalized = coerceAdminProcessRef(raw);
     if (!normalized) {
         return null;
@@ -68,6 +140,7 @@ function normalizeProcessForRealtimeSurface(raw: unknown): AdminProcessRef | nul
     const baseAdminPath = encodedProcessId ? `/api/client/bg_processes/${encodedProcessId}` : "";
     return {
         ...normalized,
+        outputAdminPath: normalized.outputAdminPath || baseAdminPath || undefined,
         streamAdminPath: normalized.streamAdminPath || (baseAdminPath ? `${baseAdminPath}/ws` : undefined),
         inputAdminPath: normalized.inputAdminPath || (baseAdminPath ? `${baseAdminPath}/input` : undefined),
         terminateAdminPath: normalized.terminateAdminPath || (baseAdminPath ? `${baseAdminPath}/terminate` : undefined),
@@ -109,16 +182,7 @@ export function normalizeMessageForRealtimeSurface(raw: unknown) {
     }
 
     const nodes = Array.isArray(record.nodes)
-        ? record.nodes.map((node) => {
-            const nodeRecord = asRecord(node);
-            if (nodeRecord.kind === "artifact" && nodeRecord.artifact) {
-                return {
-                    ...nodeRecord,
-                    artifact: normalizeArtifactForRealtimeSurface(nodeRecord.artifact),
-                };
-            }
-            return nodeRecord;
-        })
+        ? record.nodes.map((node) => normalizeNodeForRealtimeSurface(node))
         : record.nodes;
 
     const artifacts = Array.isArray(record.artifacts)
@@ -131,6 +195,7 @@ export function normalizeMessageForRealtimeSurface(raw: unknown) {
 
     return {
         ...record,
+        content: normalizeSurfaceContent(record.content),
         nodes,
         artifacts,
         images,
@@ -147,6 +212,9 @@ function normalizeRuntimeTimelineEntry(raw: unknown) {
     const normalizedMetadata = {
         ...metadata,
         resourceRef: metadata.resourceRef || deriveAdminResourceRefFromArtifactLike(metadata),
+        content: normalizeSurfaceContent(metadata.content),
+        message: normalizeSurfaceContent(metadata.message),
+        summary: normalizeSurfaceContent(metadata.summary),
         previewUrl: normalizeSurfaceUrl(metadata.previewUrl),
         externalUrl: normalizeSurfaceUrl(metadata.externalUrl),
     };
@@ -223,6 +291,17 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown) {
             artifacts: Array.isArray(snapshot.artifacts)
                 ? snapshot.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact))
                 : snapshot.artifacts,
+            runtimeTimeline: Array.isArray(snapshot.runtimeTimeline)
+                ? snapshot.runtimeTimeline.map((entry) => normalizeRuntimeTimelineEntry(entry))
+                : snapshot.runtimeTimeline,
+            processes: Array.isArray(snapshot.processes)
+                ? snapshot.processes
+                    .map((item) => normalizeProcessForRealtimeSurface(item))
+                    .filter(Boolean)
+                : snapshot.processes,
+            contextReferences: Array.isArray(snapshot.contextReferences)
+                ? snapshot.contextReferences.map((item) => normalizeContextReference(item))
+                : snapshot.contextReferences,
         } : record.snapshot,
     };
 }
@@ -239,9 +318,13 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown) {
 
     return {
         ...record,
+        content: normalizeSurfaceContent(record.content),
         artifact: record.artifact ? normalizeArtifactForRealtimeSurface(record.artifact) : record.artifact,
         data: Object.keys(data).length ? {
             ...data,
+            content: normalizeSurfaceContent(data.content),
+            message: normalizeSurfaceContent(data.message),
+            summary: normalizeSurfaceContent(data.summary),
             artifact: data.artifact ? normalizeArtifactForRealtimeSurface(data.artifact) : data.artifact,
             process: data.process ? normalizeProcessForRealtimeSurface(data.process) : data.process,
             processes: Array.isArray(data.processes)
@@ -256,6 +339,9 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown) {
             ...rawPayload,
             payload: Object.keys(payload).length ? {
                 ...payload,
+                content: normalizeSurfaceContent(payload.content),
+                message: normalizeSurfaceContent(payload.message),
+                summary: normalizeSurfaceContent(payload.summary),
                 artifact: payload.artifact ? normalizeArtifactForRealtimeSurface(payload.artifact) : payload.artifact,
                 process: payload.process ? normalizeProcessForRealtimeSurface(payload.process) : payload.process,
                 processes: Array.isArray(payload.processes)

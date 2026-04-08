@@ -12,9 +12,28 @@ type ProcessesHUDProps = {
     processes: AdminProcessRef[];
 };
 
+const PROCESS_FINISHED_GRACE_SECONDS = 3;
+
 function isActiveProcess(process: AdminProcessRef) {
     const status = String(process.status || "").trim().toLowerCase();
     return status !== "stopped" && status !== "terminated" && status !== "completed" && status !== "failed";
+}
+
+function isRecentlyFinishedProcess(process: AdminProcessRef) {
+    const status = String(process.status || "").trim().toLowerCase();
+    if (!status || !["stopped", "terminated", "completed", "failed"].includes(status)) {
+        return false;
+    }
+    const secondsSinceOutput = Number(process.secondsSinceOutput);
+    if (Number.isFinite(secondsSinceOutput)) {
+        return secondsSinceOutput <= PROCESS_FINISHED_GRACE_SECONDS;
+    }
+    const completedAt = String(process.completedAt || "").trim();
+    if (!completedAt) {
+        return false;
+    }
+    const completedMs = Date.parse(completedAt);
+    return Number.isFinite(completedMs) && (Date.now() - completedMs) <= PROCESS_FINISHED_GRACE_SECONDS * 1000;
 }
 
 export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesHUDProps) {
@@ -22,12 +41,12 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
     const [terminatedIds, setTerminatedIds] = useState<Set<string>>(new Set());
     const [isCollapsed, setIsCollapsed] = useState(false);
     const progress = useRef(new Animated.Value(0)).current;
-    const activeProcesses = useMemo(
-        () => processes.filter((process) => isActiveProcess(process) && !terminatedIds.has(process.processId)),
+    const visibleProcesses = useMemo(
+        () => processes.filter((process) => (isActiveProcess(process) || isRecentlyFinishedProcess(process)) && !terminatedIds.has(process.processId)),
         [processes, terminatedIds],
     );
 
-    if (activeProcesses.length === 0) {
+    if (visibleProcesses.length === 0) {
         return null;
     }
 
@@ -76,7 +95,7 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
                         <View style={styles.counterDotWrap}>
                             <View style={styles.counterDot} />
                         </View>
-                        <Text style={[styles.counterText, { color: colors.textMuted }]}>{activeProcesses.length}</Text>
+                        <Text style={[styles.counterText, { color: colors.textMuted }]}>{visibleProcesses.length}</Text>
                     </View>
                 </View>
                 <Animated.View style={{ transform: [{ rotate: rotation }] }}>
@@ -87,7 +106,7 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
             {!isCollapsed ? (
                 <CardContent style={styles.content}>
                     <ScrollView nestedScrollEnabled style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
-                        {activeProcesses.map((process) => (
+                        {visibleProcesses.map((process) => (
                             <InteractiveTerminalCard
                                 key={process.processId}
                                 process={process}

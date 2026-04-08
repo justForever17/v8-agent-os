@@ -289,7 +289,8 @@ def build_agent_node(
                 f"Current Time: {current_time}\n"
                 f"Local Workspace Absolute Path: {workspace_path}\n"
                 f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them to the Local Workspace above.\n"
-                "To display a workspace file in the chat, return a markdown image or link using the same-origin URL format: /api/workspace/files/YOUR_FILE_NAME\n"
+                "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "
+                "Reference generated media naturally in prose and rely on the runtime artifact/resource pipeline for rendering.\n"
                 f"</environment>\n"
             )
 
@@ -371,6 +372,12 @@ def build_agent_node(
                     "[Interactive CLI Rule]\n"
                     "If you need to use an interactive CLI or REPL (examples: qwen, python REPL, node REPL, powershell, bash, cmd), NEVER use sync mode.\n"
                     "You MUST use `run_system_command` with `mode=session`, then inspect with `read_background_output`, send replies with `send_background_input`, and clean up with `terminate_background_command`.\n"
+                    "For `interactive + tty + terminal_screen` sessions, treat `screenSnapshot`, `observationState`, `awaitingInput`, and `status` as the primary truth.\n"
+                    "If the prompt/input box is already rendered and `awaitingInput=true`, the CLI is ready for dialogue even if MCP/debug banners are still visible.\n"
+                    "When sending input, treat a rendered prompt as ready immediately. `send_background_input` accepts both actual newlines and common escaped sequences like `\\n` to represent Enter.\n"
+                    "NEVER conclude that the CLI has stalled or produced no reply solely because appended text is empty; full-screen TUIs often redraw the screen in place.\n"
+                    "If observation indicates `render_stalled`, report that V8 has not yet confirmed a new reply from the terminal observation chain instead of claiming the CLI definitely failed to answer.\n"
+                    "If `encodingState` indicates mojibake or undecodable text, report that the terminal text is currently distorted instead of interpreting the corrupted content as a real answer.\n"
                     "If the environment reports that TTY/interactive automation is unavailable, stop retrying and return a concise failure summary to the supervisor.\n\n"
                     "When you have fully completed your assigned task, respond with your findings or status to return control to the supervisor."
                 )

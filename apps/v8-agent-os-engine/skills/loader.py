@@ -251,6 +251,59 @@ class SkillLoader:
         return dict(cls._skills_registry)
 
     @classmethod
+    def _skill_registry_signature(cls, item: dict[str, Any]) -> str:
+        instruction_path = Path(str(item.get("instructionPath") or item.get("path") or "").strip())
+        parts = [
+            str(item.get("name") or ""),
+            str(item.get("description") or ""),
+            str(instruction_path),
+        ]
+        if instruction_path.exists() and instruction_path.is_file():
+            try:
+                stat = instruction_path.stat()
+                parts.extend([str(stat.st_mtime_ns), str(stat.st_size)])
+            except OSError:
+                pass
+        return "|".join(parts)
+
+    @classmethod
+    def reload_if_changed(cls) -> dict[str, Any]:
+        roots = cls._resolve_skill_roots()
+        fingerprint = cls._compute_fingerprint(roots)
+        if fingerprint == cls._skills_fingerprint and cls._skills_registry:
+            cls._skills_roots = roots
+            cls._last_check_at = time.monotonic()
+            return {
+                "changed": False,
+                "fingerprint": fingerprint,
+                "roots": [str(root.resolve(strict=False)) for root in roots],
+                "addedSkills": [],
+                "removedSkills": [],
+                "updatedSkills": [],
+            }
+
+        before = {
+            name: cls._skill_registry_signature(item)
+            for name, item in cls._skills_registry.items()
+        }
+        cls.reload_skills(skill_roots=roots, fingerprint=fingerprint)
+        after = {
+            name: cls._skill_registry_signature(item)
+            for name, item in cls._skills_registry.items()
+        }
+        before_names = set(before)
+        after_names = set(after)
+        shared_names = before_names & after_names
+        return {
+            "changed": True,
+            "fingerprint": fingerprint,
+            "roots": [str(root.resolve(strict=False)) for root in roots],
+            "addedSkills": sorted(after_names - before_names),
+            "removedSkills": sorted(before_names - after_names),
+            "updatedSkills": sorted(name for name in shared_names if before.get(name) != after.get(name)),
+        }
+
+    @classmethod
     def reload_skills(
         cls,
         skills_dir: str = "skills",
@@ -321,7 +374,9 @@ class SkillLoader:
             "lastRefreshAt": cls._last_refresh_at,
             "lastRefreshError": cls._last_refresh_error,
             "skillCount": len(cls._skills_registry),
+            "fingerprint": cls._skills_fingerprint,
             "root": str(roots[0]) if roots else "",
+            "roots": [str(root) for root in roots],
             "cacheFile": str(cls._cache_file()),
         }
 

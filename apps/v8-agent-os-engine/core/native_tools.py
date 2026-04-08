@@ -1,11 +1,14 @@
 import os
 import json
 import shutil
+import shlex
 import subprocess
 import mimetypes
+import locale
 import platform
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 import httpx
 import psutil
@@ -13,6 +16,8 @@ import threading
 import queue
 import uuid
 import sys
+import logging
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional, Annotated, Dict
 
@@ -28,7 +33,65 @@ else:
     HAS_WINPTY = False
 
 from langchain_core.tools import tool, InjectedToolCallId
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, Interrupt as LangGraphInterrupt, interrupt
+try:
+    from langgraph.errors import GraphBubbleUp, GraphInterrupt, Interrupt as ErrorInterrupt, NodeInterrupt
+    LANGGRAPH_INTERRUPT_EXCEPTIONS = tuple(
+        interrupt_type
+        for interrupt_type in (GraphBubbleUp, GraphInterrupt, ErrorInterrupt, NodeInterrupt, LangGraphInterrupt)
+        if interrupt_type is not None
+    )
+except Exception:  # pragma: no cover - defensive fallback for older langgraph builds
+    LANGGRAPH_INTERRUPT_EXCEPTIONS = (LangGraphInterrupt,)
+
+
+_LANGGRAPH_INTERRUPT_CLASS_NAMES = {
+    "GraphBubbleUp",
+    "GraphInterrupt",
+    "Interrupt",
+    "NodeInterrupt",
+}
+
+
+def _is_langgraph_interrupt(value: Any, *, _depth: int = 0) -> bool:
+    if _depth > 4 or value is None:
+        return False
+
+    if LANGGRAPH_INTERRUPT_EXCEPTIONS and isinstance(value, LANGGRAPH_INTERRUPT_EXCEPTIONS):
+        return True
+
+    if value.__class__.__name__ in _LANGGRAPH_INTERRUPT_CLASS_NAMES:
+        return True
+
+    if isinstance(value, BaseException):
+        return any(_is_langgraph_interrupt(item, _depth=_depth + 1) for item in value.args)
+
+    if isinstance(value, (list, tuple, set)):
+        return any(_is_langgraph_interrupt(item, _depth=_depth + 1) for item in value)
+
+    if isinstance(value, dict):
+        interrupt_keys = {"approvalKind", "approval_kind", "interactionKind", "interaction_kind", "question", "prompt", "toolCallId", "tool_call_id"}
+        if any(key in value for key in interrupt_keys):
+            return True
+        return any(_is_langgraph_interrupt(item, _depth=_depth + 1) for item in value.values())
+
+    nested_value = getattr(value, "value", None)
+    if nested_value is not None and nested_value is not value:
+        return _is_langgraph_interrupt(nested_value, _depth=_depth + 1)
+
+    return False
+
+
+def _raise_langgraph_interrupt_if_needed(exc: Exception) -> None:
+    if _is_langgraph_interrupt(exc):
+        raise exc
+
+
+def _raise_runtime_governance_exception_if_needed(exc: Exception) -> None:
+    if isinstance(exc, ModelGovernanceInterventionRequired):
+        raise exc
+    _raise_langgraph_interrupt_if_needed(exc)
+
 from core.artifact_store import artifact_store
 from core.database import db
 from core.computer_use_execution_route import (
@@ -37,6 +100,7 @@ from core.computer_use_execution_route import (
     _compact_visual_signal_summary,
     build_compact_execution_route,
 )
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.storage import StorageManager
 from runtimes.computer_use.primitives import list_computer_use_primitives, primitive_validation_matrix
 from runtimes.rpa.promotion_gate import draft_environment_signal_summary, draft_timing_signal_summary
@@ -56,6 +120,7 @@ from runtimes.computer_use.verification_contract import (
 )
 
 storage = StorageManager()
+logger = logging.getLogger(__name__)
 
 _COMPUTER_USE_APP_RESOLUTION_CACHE_TTL_MS = 3000
 _COMPUTER_USE_APP_RESOLUTION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -94,25 +159,16 @@ def _enforce_safety_decision(
     if decision.is_block() or not decision.allow_override:
         return False, f"Safety Guardian 已阻止该操作：{decision.reason}"
 
-    try:
-        response = interrupt(decision.to_interrupt_request(question=question, tool_call_id=tool_call_id))
-    except RuntimeError as exc:
-        message = str(exc)
-        if "Called get_config outside of a runnable context" in message:
-            return (
-                False,
-                f"Safety Guardian 需要审批上下文，当前验证环境已改为非中断阻断：{decision.reason}",
-            )
-        raise
-
-    approved = True
-    if isinstance(response, dict):
-        approved = bool(response.get("approved", True))
-
-    if not approved:
-        return False, f"Safety Guardian 未获得批准，操作已取消：{decision.reason}"
-
-    return True, None
+    raise ModelGovernanceInterventionRequired(
+        f"Safety Guardian 检测到治理审批请求：{decision.reason}",
+        approval_kind="safety_review",
+        question=question,
+        details={
+            "safety": decision.to_payload(),
+            "toolCallId": tool_call_id,
+        },
+        request_payload=decision.to_interrupt_request(question=question, tool_call_id=tool_call_id),
+    )
 
 # Default text extensions to allow reading if mimetype fails
 TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.json', '.yaml', '.yml', '.csv', '.log', '.sh', '.bat', '.ps1', '.html', '.css', '.js', '.ts', '.tsx', '.jsx'}
@@ -202,6 +258,8 @@ def _detect_session_preferred_command(command: str) -> str | None:
     lowered = str(command or "").strip().lower()
     if not lowered:
         return None
+    if lowered.startswith("npx skills "):
+        return f"检测到 `{command}` 可能进入 Skills CLI 的交互会话，建议进入 session 模式。"
     long_running_markers = (
         "uvicorn ",
         "gunicorn ",
@@ -227,6 +285,54 @@ def _normalize_background_input(data: str) -> str:
     if sys.platform == "win32":
         return data.replace("\r\n", "\n").replace("\n", "\r\n")
     return data
+
+
+def _decode_background_input_escapes(data: str) -> str:
+    """Decode a small, safe subset of escape sequences for interactive terminal input.
+
+    Supervisors sometimes pass literal ``\\n`` / ``\\r`` / ``\\u001b`` strings instead of
+    actual control characters. We only decode a narrow set that maps to terminal
+    control input so we don't accidentally rewrite ordinary Windows paths.
+    """
+    text = str(data or "")
+    if "\\" not in text:
+        return text
+
+    replacements = (
+        ("\\r\\n", "\n"),
+        ("\\n", "\n"),
+        ("\\r", "\r"),
+        ("\\u001b", "\x1b"),
+        ("\\x1b", "\x1b"),
+        ("\\e", "\x1b"),
+    )
+    normalized = text
+    for source, target in replacements:
+        normalized = normalized.replace(source, target)
+    return normalized
+
+
+def _write_winpty_input(pty_win: Any, data: str) -> None:
+    """Feed Windows PTY input in a way that mimics a user pressing Enter.
+
+    Some TUI CLIs (notably AI coding agents) do not reliably submit prompts when a
+    full `text + CRLF` payload is written in one shot. Splitting text and Enter
+    into separate writes makes the interaction behave much closer to a real user.
+    """
+    normalized = str(data or "").replace("\r\n", "\n").replace("\r", "\n")
+    segments = normalized.split("\n")
+    last_index = len(segments) - 1
+
+    for index, segment in enumerate(segments):
+        if segment:
+            pty_win.write(segment)
+            # Give Ink/TUI input handlers a moment to commit the typed content
+            # before we inject Enter.
+            time.sleep(0.03)
+        should_send_enter = index < last_index
+        if should_send_enter:
+            pty_win.write("\r")
+            time.sleep(0.05)
 
 
 def _terminate_run_background_commands(run_id: str | None, *, interactive_only: bool = True) -> int:
@@ -2024,10 +2130,13 @@ def execute_system_command(
             details={"command": command, "return_code": result.returncode},
             runtime_context=runtime_context,
         )
+        if result.returncode == 0:
+            _notify_skills_inventory_command_completed(command)
         return output
     except subprocess.TimeoutExpired:
         return f"Error: Command timed out after 120 seconds."
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error executing command: {str(e)}"
 
 @tool
@@ -2146,6 +2255,7 @@ def write_native_file(
         action = "Appended" if append else "Created/Overwritten"
         return f"Successfully {action} file: {path} ({len(content)} chars written)"
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error writing file '{path}': {str(e)}"
 
 @tool
@@ -2245,6 +2355,7 @@ def _launch_background_command(
     cmd_id = str(uuid.uuid4())[:8]
     bg_proc = BackgroundProcess(
         command,
+        session_id=runtime_context.get("session_id"),
         run_id=runtime_context.get("run_id"),
         interactive=interactive_mode,
     )
@@ -2281,6 +2392,7 @@ def _launch_background_command(
         "commandId": cmd_id,
         "mode": "interactive" if interactive_mode else "background",
         "tty": tty_label,
+        "sessionId": runtime_context.get("session_id"),
         "runId": runtime_context.get("run_id"),
         "status": status,
         "interactive": interactive_mode,
@@ -2337,6 +2449,7 @@ def http_request(
             )
             return result
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Request failed: {str(e)}"
 
 @tool
@@ -2443,6 +2556,7 @@ def manage_process(
     except psutil.NoSuchProcess:
         return f"Process with PID {pid} not found."
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error managing process: {str(e)}"
 
 @tool
@@ -2556,6 +2670,7 @@ def manage_cron(
         else:
             return "Invalid action."
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error managing cron: {str(e)}"
 
 @tool
@@ -2640,6 +2755,7 @@ def manage_hook(
         else:
              return "Invalid action. Only 'list' and 'add' are supported."
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error managing hooks: {str(e)}"
 
 @tool
@@ -2908,9 +3024,751 @@ def update_todo(index: int, status: str, tool_call_id: Annotated[str, InjectedTo
 
 
 # --- Background Command Manager ---
+_BACKGROUND_PROCESS_RETENTION_SECONDS = 300
+_SKILLS_ADD_COMMAND_PATTERN = re.compile(r"(?i)(?:^|[;&|]\s*)npx\s+skills\s+add\b")
+_PROMPT_HINT_PATTERN = re.compile(
+    r"(^|\n)\s*(?:[>$#»❯]\s*|输入您的消息|Type your message|Press \? for shortcuts|按 \? 查看快捷键)",
+    re.IGNORECASE,
+)
+_BUSY_HINT_PATTERN = re.compile(
+    r"(thinking|generating|loading|connecting|处理中|思考中|生成中|连接中|\.\.\.|⋯|█)",
+    re.IGNORECASE,
+)
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_RAW_FRAME_HISTORY_LIMIT = 12
+_RAW_FRAME_PREVIEW_LIMIT = 240
+_TERMINAL_TEXT_SNIPPET_LIMIT = 4000
+_SPACED_CJK_SEQUENCE_PATTERN = re.compile(r"(?:[\u3400-\u9fff]\s){4,}[\u3400-\u9fff]")
+_REPEATED_CJK_PATTERN = re.compile(r"([\u3400-\u9fff])\1{7,}")
+
+
+def _is_skills_add_command(command: str) -> bool:
+    return bool(_SKILLS_ADD_COMMAND_PATTERN.search(str(command or "")))
+
+
+def _notify_skills_inventory_command_completed(command: str) -> None:
+    if not _is_skills_add_command(command):
+        return
+    try:
+        from core.extensions_runtime import extensions_runtime_service
+
+        extensions_runtime_service.request_skill_inventory_refresh(reason="skills_add_completed")
+    except Exception as exc:
+        print(f"[SkillsInventory] Failed to request refresh after skills install: {type(exc).__name__}: {exc}")
+
+
+def _extract_command_head(command: str) -> str:
+    raw = str(command or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = shlex.split(raw, posix=False)
+    except Exception:
+        parts = raw.split()
+    return str(parts[0] if parts else "").strip()
+
+
+def _build_command_diagnostics_snapshot(command: str) -> dict[str, Any]:
+    command_head = _extract_command_head(command)
+    path_value = str(os.environ.get("PATH") or "")
+    appdata = str(os.environ.get("APPDATA") or "").strip()
+    roaming_npm = str(Path(appdata) / "npm") if appdata else ""
+    local_npm = str(Path.home() / "AppData" / "Roaming" / "npm")
+    resolved_path = shutil.which(command_head, path=path_value) if command_head else None
+    oauth_candidates = {
+        "qwen": Path.home() / ".qwen" / "oauth_creds.json",
+        "codex": Path.home() / ".codex" / "auth.json",
+        "gemini": Path.home() / ".gemini" / "oauth_creds.json",
+        "claude": Path.home() / ".claude" / "oauth_creds.json",
+    }
+    normalized_path_entries = [item.strip().lower() for item in path_value.split(os.pathsep) if item.strip()]
+    cli_health_matrix: dict[str, dict[str, Any]] = {}
+    cli_heads = {
+        "qwen": ["qwen", "qwen.cmd", "qwen.ps1"],
+        "codex": ["codex", "codex.cmd", "codex.ps1"],
+        "gemini": ["gemini", "gemini.cmd", "gemini.ps1", "gemini-cli", "gemini-cli.cmd", "gemini-cli.ps1"],
+        "claude": ["claude", "claude.cmd", "claude.ps1", "claude-code", "claude-code.cmd", "claude-code.ps1"],
+    }
+    for cli_name, candidates in cli_heads.items():
+        resolved_candidates = []
+        for candidate in candidates:
+            resolved_candidate = shutil.which(candidate, path=path_value)
+            if resolved_candidate:
+                resolved_candidates.append(resolved_candidate)
+        oauth_path = oauth_candidates.get(cli_name)
+        cli_health_matrix[cli_name] = {
+            "available": bool(resolved_candidates),
+            "resolvedExecutables": resolved_candidates,
+            "oauthFile": str(oauth_path) if oauth_path and oauth_path.exists() else "",
+        }
+    return {
+        "commandHead": command_head,
+        "resolvedExecutable": resolved_path or "",
+        "currentWorkingDirectory": os.getcwd(),
+        "shellPath": str(os.environ.get("COMSPEC") or ""),
+        "nodeExecutable": shutil.which("node", path=path_value) or "",
+        "preferredEncoding": locale.getpreferredencoding(False),
+        "stdinEncoding": getattr(sys.stdin, "encoding", "") or "",
+        "stdoutEncoding": getattr(sys.stdout, "encoding", "") or "",
+        "filesystemEncoding": sys.getfilesystemencoding() or "",
+        "appData": appdata,
+        "roamingNpmPath": roaming_npm,
+        "localNpmPath": local_npm,
+        "pathContainsRoamingNpm": roaming_npm.lower() in normalized_path_entries if roaming_npm else False,
+        "pathContainsLocalNpm": local_npm.lower() in normalized_path_entries if local_npm else False,
+        "pathEntryCount": len(normalized_path_entries),
+        "pathEntriesHead": [item for item in path_value.split(os.pathsep) if item.strip()][:8],
+        "oauthFiles": {
+            key: str(path) for key, path in oauth_candidates.items() if path.exists()
+        },
+        "cliHealthMatrix": cli_health_matrix,
+    }
+
+
+def _locale_looks_utf8(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return "utf-8" in normalized or "utf8" in normalized
+
+
+def _preferred_utf8_locale() -> str:
+    if sys.platform == "linux":
+        return "C.UTF-8"
+    return "en_US.UTF-8"
+
+
+def _build_terminal_env_overrides() -> dict[str, str]:
+    overrides: dict[str, str] = {
+        "TERM": "xterm-256color",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
+    preferred_locale = _preferred_utf8_locale()
+    if sys.platform == "win32":
+        overrides["LANG"] = preferred_locale
+        overrides["LC_ALL"] = preferred_locale
+        return overrides
+
+    current_lang = str(os.environ.get("LANG") or "").strip()
+    if not _locale_looks_utf8(current_lang):
+        overrides["LANG"] = preferred_locale
+    current_lc_all = str(os.environ.get("LC_ALL") or "").strip()
+    if current_lc_all and not _locale_looks_utf8(current_lc_all):
+        overrides["LC_ALL"] = preferred_locale
+    return overrides
+
+
+def _build_winpty_bootstrap_commands(env_overrides: dict[str, str]) -> list[str]:
+    commands = ["@echo off", "chcp 65001 >NUL"]
+    for key, value in env_overrides.items():
+        commands.append(f"set {key}={value}")
+    return commands
+
+
+def _extend_command_diagnostics_for_terminal(
+    diagnostics: dict[str, Any],
+    *,
+    env_overrides: dict[str, str],
+    uses_winpty: bool,
+) -> dict[str, Any]:
+    next_diagnostics = dict(diagnostics or {})
+    next_diagnostics["targetTextEncoding"] = "utf-8"
+    next_diagnostics["terminalEnvOverrides"] = dict(env_overrides)
+    if uses_winpty:
+        next_diagnostics["ptyShell"] = "cmd.exe /q /d"
+        next_diagnostics["winptyBootstrapCodePage"] = "65001"
+        next_diagnostics["winptyBootstrapCommands"] = _build_winpty_bootstrap_commands(env_overrides)
+    return next_diagnostics
+
+
+def _run_winpty_bootstrap(pty_win: Any, env_overrides: dict[str, str]) -> None:
+    for command in _build_winpty_bootstrap_commands(env_overrides):
+        _write_winpty_input(pty_win, f"{command}\n")
+        time.sleep(0.05)
+
+
+def _strip_terminal_bootstrap_noise(text: str, env_overrides: dict[str, str] | None = None) -> str:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized:
+        return ""
+    removable_lines = {"@echo off", "chcp 65001 >nul"}
+    for key, value in (env_overrides or {}).items():
+        removable_lines.add(f"set {key}={value}".lower())
+    filtered_lines: list[str] = []
+    for line in normalized.split("\n"):
+        if line.strip().lower() in removable_lines:
+            continue
+        filtered_lines.append(line)
+    while filtered_lines and not filtered_lines[0].strip():
+        filtered_lines.pop(0)
+    while filtered_lines and not filtered_lines[-1].strip():
+        filtered_lines.pop()
+    return "\n".join(filtered_lines)
+
+
+_TERMINAL_STABLE_DUPLICATE_LIMIT = 1
+_TERMINAL_VOLATILE_LINE_PATTERNS = (
+    re.compile(r"^\s*[✦●]\s+"),
+    re.compile(r"^\s*(?:\?|按\s*\?)\s+.*(?:shortcuts|快捷键)", re.IGNORECASE),
+    re.compile(r"^\s*.*(?:verbose|used\s*\|)", re.IGNORECASE),
+    re.compile(r"^\s*(?:connecting to mcp|tasting the snozberries|spinning)", re.IGNORECASE),
+)
+
+
+def _normalize_terminal_snapshot_lines(text: str) -> list[str]:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\u200b", "")
+    return [line.rstrip() for line in normalized.split("\n")]
+
+
+def _looks_like_terminal_volatile_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    return any(pattern.search(stripped) for pattern in _TERMINAL_VOLATILE_LINE_PATTERNS)
+
+
+def _build_stable_terminal_snapshot(text: str) -> str:
+    lines = _normalize_terminal_snapshot_lines(text)
+    if not lines:
+        return ""
+
+    stabilized: list[str] = []
+    duplicate_counts: dict[str, int] = {}
+    last_non_empty_line: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if stabilized and stabilized[-1] == "":
+                continue
+            stabilized.append("")
+            continue
+        if last_non_empty_line == stripped:
+            continue
+        if stabilized and stabilized[-1] == line:
+            continue
+        if _looks_like_terminal_volatile_line(line):
+            count = duplicate_counts.get(stripped, 0)
+            if count >= _TERMINAL_STABLE_DUPLICATE_LIMIT:
+                continue
+            duplicate_counts[stripped] = count + 1
+        stabilized.append(line)
+        last_non_empty_line = stripped
+
+    while stabilized and not stabilized[0].strip():
+        stabilized.pop(0)
+    while stabilized and not stabilized[-1].strip():
+        stabilized.pop()
+
+    return "\n".join(stabilized)
+
+
+def _looks_like_terminal_mojibake(text: str) -> bool:
+    normalized = str(text or "")
+    if not normalized.strip():
+        return False
+    cjk_count = sum(1 for char in normalized if "\u3400" <= char <= "\u9fff")
+    if cjk_count < 8:
+        return False
+    if _SPACED_CJK_SEQUENCE_PATTERN.search(normalized):
+        return True
+    if _REPEATED_CJK_PATTERN.search(normalized):
+        return True
+    return False
+
+
+def _derive_terminal_encoding_status(
+    *,
+    screen_snapshot: str,
+    raw_preview: str,
+    diagnostics: dict[str, Any] | None,
+) -> tuple[str, str | None, str]:
+    normalized_screen = str(screen_snapshot or "")
+    normalized_raw = str(raw_preview or "")
+    resolved_encoding = str((diagnostics or {}).get("targetTextEncoding") or "utf-8").strip() or "utf-8"
+    notes: list[str] = []
+    state = "clean"
+
+    if "\ufffd" in normalized_screen or "\ufffd" in normalized_raw:
+        state = "undecodable"
+        notes.append("终端输出包含替换字符，说明当前文本解码不完整。")
+    elif _looks_like_terminal_mojibake(normalized_screen) or _looks_like_terminal_mojibake(normalized_raw):
+        state = "suspect_mojibake"
+        notes.append("检测到疑似 mojibake 特征，当前终端文本可能发生了编码失真。")
+
+    stdin_encoding = str((diagnostics or {}).get("stdinEncoding") or "").strip().lower()
+    stdout_encoding = str((diagnostics or {}).get("stdoutEncoding") or "").strip().lower()
+    if stdin_encoding and stdout_encoding and stdin_encoding != stdout_encoding:
+        notes.append(f"父进程标准输入/输出编码不一致（{stdin_encoding} / {stdout_encoding}）。")
+
+    if sys.platform == "win32" and str((diagnostics or {}).get("winptyBootstrapCodePage") or "") != "65001":
+        notes.append("Windows PTY 未明确切换到 UTF-8 代码页。")
+
+    return state, " ".join(dict.fromkeys(note for note in notes if note)) or None, resolved_encoding
+
+
+def _terminal_snapshot_looks_like_prompt(snapshot: str) -> bool:
+    normalized = str(snapshot or "").strip()
+    if not normalized:
+        return False
+    tail = "\n".join(normalized.splitlines()[-4:])
+    return bool(_PROMPT_HINT_PATTERN.search(tail))
+
+
+def _terminal_snapshot_looks_busy(snapshot: str) -> bool:
+    normalized = str(snapshot or "").strip()
+    if not normalized:
+        return False
+    tail = "\n".join(normalized.splitlines()[-6:])
+    return bool(_BUSY_HINT_PATTERN.search(tail))
+
+
+def _normalize_status_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return text
+    except Exception:
+        pass
+    try:
+        return datetime.fromtimestamp(float(text), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _preview_terminal_frame(text: str, *, limit: int = _RAW_FRAME_PREVIEW_LIMIT) -> str:
+    normalized = str(text or "").replace("\r", "\\r").replace("\n", "\\n")
+    normalized = normalized.replace("\x1b", "\\u001b")
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 3]}..."
+
+
+def _contains_terminal_escape(text: str) -> bool:
+    return bool(_ANSI_ESCAPE_PATTERN.search(str(text or "")))
+
+
+def _truncate_terminal_text(text: str, *, limit: int = _TERMINAL_TEXT_SNIPPET_LIMIT) -> str:
+    normalized = str(text or "")
+    if len(normalized) <= limit:
+        return normalized
+    omitted = len(normalized) - limit
+    return f"{normalized[-limit:]}\n\n[Truncated {omitted} earlier characters]"
+
+
+class _SimpleTerminalScreen:
+    def __init__(self, cols: int = 80, rows: int = 24):
+        self.cols = max(int(cols or 80), 20)
+        self.rows = max(int(rows or 24), 4)
+        self.cursor_row = 0
+        self.cursor_col = 0
+        self.alternate_screen = False
+        self.scroll_top = 0
+        self.scroll_bottom = self.rows - 1
+        self._saved_primary_cursor = (0, 0)
+        self._saved_alternate_cursor = (0, 0)
+        self._primary = self._new_buffer()
+        self._alternate = self._new_buffer()
+
+    def _new_buffer(self) -> list[list[str]]:
+        return [[" "] * self.cols for _ in range(self.rows)]
+
+    def _blank_line(self) -> list[str]:
+        return [" "] * self.cols
+
+    def _buffer(self) -> list[list[str]]:
+        return self._alternate if self.alternate_screen else self._primary
+
+    def _saved_cursor(self) -> tuple[int, int]:
+        return self._saved_alternate_cursor if self.alternate_screen else self._saved_primary_cursor
+
+    def _set_saved_cursor(self, row: int, col: int) -> None:
+        value = (max(0, min(self.rows - 1, row)), max(0, min(self.cols - 1, col)))
+        if self.alternate_screen:
+            self._saved_alternate_cursor = value
+        else:
+            self._saved_primary_cursor = value
+
+    def _clamp_cursor(self) -> None:
+        self.cursor_row = max(0, min(self.rows - 1, self.cursor_row))
+        self.cursor_col = max(0, min(self.cols - 1, self.cursor_col))
+
+    def _scroll_if_needed(self) -> None:
+        buffer = self._buffer()
+        while self.cursor_row >= self.rows:
+            buffer.pop(0)
+            buffer.append([" "] * self.cols)
+            self.cursor_row -= 1
+
+    def _line_feed(self) -> None:
+        if self.scroll_top <= self.cursor_row <= self.scroll_bottom:
+            if self.cursor_row == self.scroll_bottom:
+                self._scroll_region_up(1)
+                return
+        self.cursor_row += 1
+        self._scroll_if_needed()
+
+    def _set_cursor(self, row: int | None = None, col: int | None = None) -> None:
+        if row is not None:
+            self.cursor_row = max(0, min(self.rows - 1, row))
+        if col is not None:
+            self.cursor_col = max(0, min(self.cols - 1, col))
+        self._clamp_cursor()
+
+    def _clear_screen(self) -> None:
+        buffer = self._buffer()
+        for row in range(self.rows):
+            buffer[row] = self._blank_line()
+        self.cursor_row = 0
+        self.cursor_col = 0
+        self.scroll_top = 0
+        self.scroll_bottom = self.rows - 1
+
+    def _clear_screen_mode(self, mode: int = 0) -> None:
+        buffer = self._buffer()
+        if mode in {2, 3}:
+            for row in range(self.rows):
+                buffer[row] = self._blank_line()
+            if mode == 2:
+                self.cursor_row = 0
+                self.cursor_col = 0
+            return
+        if mode == 1:
+            for row in range(0, self.cursor_row):
+                buffer[row] = self._blank_line()
+            self._clear_line(1)
+            return
+        for row in range(self.cursor_row + 1, self.rows):
+            buffer[row] = self._blank_line()
+        self._clear_line(0)
+
+    def _clear_line(self, mode: int = 0) -> None:
+        buffer = self._buffer()
+        line = buffer[self.cursor_row]
+        if mode == 1:
+            start, end = 0, self.cursor_col + 1
+        elif mode == 2:
+            start, end = 0, self.cols
+        else:
+            start, end = self.cursor_col, self.cols
+        for index in range(max(0, start), min(self.cols, end)):
+            line[index] = " "
+
+    def _insert_blank_chars(self, count: int) -> None:
+        count = max(1, min(int(count or 1), self.cols))
+        line = self._buffer()[self.cursor_row]
+        start = self.cursor_col
+        preserved = line[start : self.cols - count]
+        line[start:] = [" "] * count + preserved
+
+    def _delete_chars(self, count: int) -> None:
+        count = max(1, min(int(count or 1), self.cols))
+        line = self._buffer()[self.cursor_row]
+        start = self.cursor_col
+        tail = line[min(self.cols, start + count) :]
+        line[start:] = tail + [" "] * min(count, self.cols - start)
+
+    def _erase_chars(self, count: int) -> None:
+        count = max(1, min(int(count or 1), self.cols - self.cursor_col))
+        line = self._buffer()[self.cursor_row]
+        for index in range(self.cursor_col, min(self.cols, self.cursor_col + count)):
+            line[index] = " "
+
+    def _scroll_region_up(self, count: int = 1) -> None:
+        count = max(1, int(count or 1))
+        buffer = self._buffer()
+        top = self.scroll_top
+        bottom = self.scroll_bottom
+        for _ in range(count):
+            if top >= bottom:
+                break
+            buffer.pop(top)
+            buffer.insert(bottom, self._blank_line())
+        self.cursor_row = min(max(self.cursor_row, top), bottom)
+
+    def _scroll_region_down(self, count: int = 1) -> None:
+        count = max(1, int(count or 1))
+        buffer = self._buffer()
+        top = self.scroll_top
+        bottom = self.scroll_bottom
+        for _ in range(count):
+            if top >= bottom:
+                break
+            buffer.pop(bottom)
+            buffer.insert(top, self._blank_line())
+        self.cursor_row = min(max(self.cursor_row, top), bottom)
+
+    def _insert_lines(self, count: int = 1) -> None:
+        if not (self.scroll_top <= self.cursor_row <= self.scroll_bottom):
+            return
+        count = max(1, min(int(count or 1), self.scroll_bottom - self.cursor_row + 1))
+        buffer = self._buffer()
+        for _ in range(count):
+            buffer.pop(self.scroll_bottom)
+            buffer.insert(self.cursor_row, self._blank_line())
+
+    def _delete_lines(self, count: int = 1) -> None:
+        if not (self.scroll_top <= self.cursor_row <= self.scroll_bottom):
+            return
+        count = max(1, min(int(count or 1), self.scroll_bottom - self.cursor_row + 1))
+        buffer = self._buffer()
+        for _ in range(count):
+            buffer.pop(self.cursor_row)
+            buffer.insert(self.scroll_bottom, self._blank_line())
+
+    def _set_scroll_region(self, top: int | None, bottom: int | None) -> None:
+        next_top = max(0, min(self.rows - 1, top if top is not None else 0))
+        next_bottom = max(next_top, min(self.rows - 1, bottom if bottom is not None else self.rows - 1))
+        self.scroll_top = next_top
+        self.scroll_bottom = next_bottom
+        self.cursor_row = self.scroll_top
+        self.cursor_col = 0
+
+    def _save_cursor(self) -> None:
+        self._set_saved_cursor(self.cursor_row, self.cursor_col)
+
+    def _restore_cursor(self) -> None:
+        row, col = self._saved_cursor()
+        self.cursor_row = row
+        self.cursor_col = col
+        self._clamp_cursor()
+
+    def _reverse_index(self) -> None:
+        if self.scroll_top <= self.cursor_row <= self.scroll_bottom and self.cursor_row == self.scroll_top:
+            self._scroll_region_down(1)
+            return
+        self.cursor_row = max(0, self.cursor_row - 1)
+
+    def _char_width(self, char: str) -> int:
+        if not char:
+            return 0
+        if unicodedata.combining(char):
+            return 0
+        if unicodedata.east_asian_width(char) in {"W", "F"}:
+            return 2
+        return 1
+
+    def _write_char(self, char: str) -> None:
+        if not char:
+            return
+        if unicodedata.combining(char):
+            return
+        buffer = self._buffer()
+        width = self._char_width(char)
+        if width <= 0:
+            return
+        if width == 2 and self.cursor_col >= self.cols - 1:
+            self.cursor_col = 0
+            self.cursor_row += 1
+            self._scroll_if_needed()
+        buffer[self.cursor_row][self.cursor_col] = char
+        if width == 2 and self.cursor_col + 1 < self.cols:
+            buffer[self.cursor_row][self.cursor_col + 1] = ""
+        self.cursor_col += width
+        if self.cursor_col >= self.cols:
+            self.cursor_col = 0
+            self.cursor_row += 1
+            self._scroll_if_needed()
+
+    def _handle_csi(self, parameters: str, final: str) -> None:
+        private_mode = parameters.startswith("?")
+        parameter_text = parameters[1:] if private_mode else parameters
+        parts = [part for part in parameter_text.split(";")] if parameter_text else []
+        values = [int(part) if part.isdigit() else 0 for part in parts]
+
+        if private_mode and final in {"h", "l"}:
+            enable = final == "h"
+            for value in values:
+                if value == 1048:
+                    if enable:
+                        self._save_cursor()
+                    else:
+                        self._restore_cursor()
+                elif value in {47, 1047, 1049}:
+                    self.alternate_screen = enable
+                    if enable:
+                        self._alternate = self._new_buffer()
+                    self.cursor_row = 0
+                    self.cursor_col = 0
+                elif value == 25:
+                    continue
+            return
+
+        if final in {"H", "f"}:
+            row = (values[0] - 1) if len(values) >= 1 and values[0] > 0 else 0
+            col = (values[1] - 1) if len(values) >= 2 and values[1] > 0 else 0
+            self._set_cursor(row=row, col=col)
+            return
+        if final == "s":
+            self._save_cursor()
+            return
+        if final == "u":
+            self._restore_cursor()
+            return
+        if final == "A":
+            self._set_cursor(row=self.cursor_row - max(values[0] if values else 1, 1))
+            return
+        if final == "B":
+            self._set_cursor(row=self.cursor_row + max(values[0] if values else 1, 1))
+            return
+        if final == "C":
+            self._set_cursor(col=self.cursor_col + max(values[0] if values else 1, 1))
+            return
+        if final == "D":
+            self._set_cursor(col=self.cursor_col - max(values[0] if values else 1, 1))
+            return
+        if final == "G":
+            self._set_cursor(col=(values[0] - 1) if values and values[0] > 0 else 0)
+            return
+        if final == "d":
+            self._set_cursor(row=(values[0] - 1) if values and values[0] > 0 else 0)
+            return
+        if final == "E":
+            self.cursor_col = 0
+            self._set_cursor(row=self.cursor_row + max(values[0] if values else 1, 1))
+            return
+        if final == "F":
+            self.cursor_col = 0
+            self._set_cursor(row=self.cursor_row - max(values[0] if values else 1, 1))
+            return
+        if final == "a":
+            self._set_cursor(col=self.cursor_col + max(values[0] if values else 1, 1))
+            return
+        if final == "J":
+            self._clear_screen_mode(values[0] if values else 0)
+            return
+        if final == "K":
+            self._clear_line(values[0] if values else 0)
+            return
+        if final == "L":
+            self._insert_lines(values[0] if values else 1)
+            return
+        if final == "M":
+            self._delete_lines(values[0] if values else 1)
+            return
+        if final == "@":
+            self._insert_blank_chars(values[0] if values else 1)
+            return
+        if final == "P":
+            self._delete_chars(values[0] if values else 1)
+            return
+        if final == "X":
+            self._erase_chars(values[0] if values else 1)
+            return
+        if final == "S":
+            self._scroll_region_up(values[0] if values else 1)
+            return
+        if final == "T":
+            self._scroll_region_down(values[0] if values else 1)
+            return
+        if final == "r":
+            top = (values[0] - 1) if len(values) >= 1 and values[0] > 0 else 0
+            bottom = (values[1] - 1) if len(values) >= 2 and values[1] > 0 else self.rows - 1
+            self._set_scroll_region(top, bottom)
+            return
+        if final == "m":
+            return
+
+    def feed(self, text: str) -> None:
+        index = 0
+        length = len(text or "")
+        while index < length:
+            char = text[index]
+            if char == "\x1b":
+                if index + 1 < length and text[index + 1] == "[":
+                    cursor = index + 2
+                    while cursor < length and not ("@" <= text[cursor] <= "~"):
+                        cursor += 1
+                    if cursor < length:
+                        self._handle_csi(text[index + 2:cursor], text[cursor])
+                        index = cursor + 1
+                        continue
+                if index + 1 < length and text[index + 1] == "]":
+                    cursor = index + 2
+                    while cursor < length:
+                        if text[cursor] == "\x07":
+                            cursor += 1
+                            break
+                        if text[cursor] == "\x1b" and cursor + 1 < length and text[cursor + 1] == "\\":
+                            cursor += 2
+                            break
+                        cursor += 1
+                    index = cursor
+                    continue
+                if index + 1 < length and text[index + 1] == "7":
+                    self._save_cursor()
+                    index += 2
+                    continue
+                if index + 1 < length and text[index + 1] == "8":
+                    self._restore_cursor()
+                    index += 2
+                    continue
+                if index + 1 < length and text[index + 1] == "D":
+                    self._line_feed()
+                    index += 2
+                    continue
+                if index + 1 < length and text[index + 1] == "E":
+                    self.cursor_col = 0
+                    self._line_feed()
+                    index += 2
+                    continue
+                if index + 1 < length and text[index + 1] == "M":
+                    self._reverse_index()
+                    index += 2
+                    continue
+                if index + 1 < length and text[index + 1] == "c":
+                    self._clear_screen()
+                    index += 2
+                    continue
+                index += 1
+                continue
+
+            if char == "\r":
+                self.cursor_col = 0
+                index += 1
+                continue
+            if char == "\n":
+                self._line_feed()
+                index += 1
+                continue
+            if char == "\b":
+                self._set_cursor(col=self.cursor_col - 1)
+                index += 1
+                continue
+            if char == "\t":
+                next_stop = ((self.cursor_col // 4) + 1) * 4
+                self._set_cursor(col=min(next_stop, self.cols - 1))
+                index += 1
+                continue
+            if ord(char) < 32:
+                index += 1
+                continue
+            self._write_char(char)
+            index += 1
+
+    def snapshot(self) -> str:
+        lines = ["".join(row).rstrip() for row in self._buffer()]
+        while lines and not lines[-1]:
+            lines.pop()
+        return "\n".join(lines).strip("\n")
+
+
 class BackgroundProcess:
-    def __init__(self, command: str, *, run_id: str | None = None, interactive: bool = False):
+    def __init__(
+        self,
+        command: str,
+        *,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        interactive: bool = False,
+    ):
         self.command = command
+        self.session_id = session_id
         self.run_id = run_id
         self.interactive = interactive
         self.output_queue = queue.Queue()
@@ -2920,33 +3778,95 @@ class BackgroundProcess:
         self.proc = None
         self.fd = None
         self.uses_tty = False
+        self.cols = 80
+        self.rows = 24
+        self.screen = _SimpleTerminalScreen(self.cols, self.rows)
+        self.screen_snapshot_cache = ""
+        self.screen_version = 0
+        self.last_reported_screen_version = -1
+        self.last_screen_at = None
+        self.raw_frame_version = 0
+        self.last_reported_raw_frame_version = -1
+        self.raw_bytes = 0
+        self.last_raw_frame_at = None
+        self.last_raw_frame_preview = ""
+        self.raw_frame_history = deque(maxlen=_RAW_FRAME_HISTORY_LIMIT)
         self.started_at = time.time()
         self.last_output_at = self.started_at
         self.last_input_at = None
+        self.completed_at = None
+        self.return_code = None
+        self.terminal_env_overrides = _build_terminal_env_overrides()
+        self.command_diagnostics = _extend_command_diagnostics_for_terminal(
+            _build_command_diagnostics_snapshot(command),
+            env_overrides=self.terminal_env_overrides,
+            uses_winpty=bool(sys.platform == "win32" and HAS_WINPTY),
+        )
         
         if sys.platform == "win32" and HAS_WINPTY:
-            self.pty_win = PTY(80, 24)
+            self.pty_win = PTY(self.cols, self.rows)
             self.uses_tty = True
-            self.pty_win.spawn("cmd.exe")
+            self.pty_win.spawn("cmd.exe /q /d")
             time.sleep(0.5)
-            # Send the command to cmd
-            self.pty_win.write(command + "\r\n")
+            _run_winpty_bootstrap(self.pty_win, self.terminal_env_overrides)
+            _write_winpty_input(self.pty_win, f"{command}\n")
         elif sys.platform != "win32":
             pid, self.fd = pty.fork()
             if pid == 0:
-                os.execlp("sh", "sh", "-c", command)
+                child_env = dict(os.environ)
+                child_env.update(self.terminal_env_overrides)
+                os.execvpe("sh", ["sh", "-c", command], child_env)
             else:
                 self.proc = pid
                 self.uses_tty = True
         else:
             # Fallback for Windows without pywinpty
+            child_env = dict(os.environ)
+            child_env.update(self.terminal_env_overrides)
             self.proc = subprocess.Popen(
                 command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env
             )
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
+
+    def _read_return_code(self) -> int | None:
+        if self.proc is not None and hasattr(self.proc, "poll"):
+            try:
+                return self.proc.poll()
+            except Exception:
+                return None
+        return None
+
+    def _ingest_output(self, data: str) -> None:
+        if not data:
+            return
+        now = time.time()
+        self.last_output_at = now
+        self.output_history.append(data)
+        self.raw_frame_version += 1
+        self.raw_bytes += len(data.encode("utf-8", "replace"))
+        self.last_raw_frame_at = now
+        self.last_raw_frame_preview = _preview_terminal_frame(data)
+        self.raw_frame_history.append(
+            {
+                "ts": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                "bytes": len(data.encode("utf-8", "replace")),
+                "containsAnsi": _contains_terminal_escape(data),
+                "preview": self.last_raw_frame_preview,
+            }
+        )
+        if self.uses_tty:
+            previous_snapshot = self.screen_snapshot_cache
+            self.screen.feed(data)
+            next_snapshot = self._compute_screen_snapshot()
+            if next_snapshot != previous_snapshot:
+                self.screen_snapshot_cache = next_snapshot
+                self.last_screen_at = now
+                self.screen_version += 1
+        for char in data:
+            self.output_queue.put(char)
 
     def _read_output(self):
         try:
@@ -2955,9 +3875,7 @@ class BackgroundProcess:
                     try:
                         data = self.pty_win.read()
                         if data:
-                            self.last_output_at = time.time()
-                            for char in data:
-                                self.output_queue.put(char)
+                            self._ingest_output(data)
                         else:
                             time.sleep(0.05)
                     except Exception:
@@ -2967,9 +3885,7 @@ class BackgroundProcess:
                     try:
                         data = os.read(self.fd, 4096).decode('utf-8', 'replace')
                         if data:
-                            self.last_output_at = time.time()
-                            for char in data:
-                                self.output_queue.put(char)
+                            self._ingest_output(data)
                         else:
                             break
                     except OSError:
@@ -2979,46 +3895,140 @@ class BackgroundProcess:
                     char = self.proc.stdout.read(1)
                     if not char:
                         break
-                    self.last_output_at = time.time()
-                    self.output_queue.put(char)
+                    self._ingest_output(char)
         except Exception:
             pass
         finally:
             self.is_running = False
+            self.completed_at = time.time()
+            self.return_code = self._read_return_code()
+            if self.return_code in (None, 0):
+                _notify_skills_inventory_command_completed(self.command)
 
     def get_new_output(self) -> str:
         chars = []
         while not self.output_queue.empty():
             chars.append(self.output_queue.get())
-        new_text = "".join(chars)
-        if new_text:
-            self.output_history.append(new_text)
-        return new_text
+        return "".join(chars)
+
+    def discard_pending_output(self) -> str:
+        return self.get_new_output()
+
+    def has_unreported_screen_change(self) -> bool:
+        return bool(self.uses_tty and self.screen_version > self.last_reported_screen_version)
+
+    def mark_screen_reported(self) -> None:
+        if self.uses_tty:
+            self.last_reported_screen_version = self.screen_version
+
+    def has_unreported_raw_frame_change(self) -> bool:
+        return bool(self.raw_frame_version > self.last_reported_raw_frame_version)
+
+    def mark_raw_frame_reported(self) -> None:
+        self.last_reported_raw_frame_version = self.raw_frame_version
 
     def write_input(self, data: str):
-        normalized_data = _normalize_background_input(data)
         self.last_input_at = time.time()
+        normalized_input = _decode_background_input_escapes(data)
         if sys.platform == "win32" and HAS_WINPTY:
-            self.pty_win.write(normalized_data)
+            _write_winpty_input(self.pty_win, normalized_input)
         elif sys.platform != "win32" and self.fd is not None:
+            normalized_data = _normalize_background_input(normalized_input)
             os.write(self.fd, normalized_data.encode('utf-8'))
         elif self.proc and self.proc.stdin:
+            normalized_data = _normalize_background_input(normalized_input)
             self.proc.stdin.write(normalized_data)
             self.proc.stdin.flush()
 
+    def _compute_screen_snapshot(self) -> str:
+        if self.uses_tty:
+            snapshot = self.screen.snapshot()
+            if len(snapshot) > 6000:
+                return snapshot[-6000:]
+            return snapshot
+        history = "".join(self.output_history[-8:]).strip()
+        if len(history) > 4000:
+            return history[-4000:]
+        return history
+
+    def _render_screen_snapshot(self) -> str:
+        if self.uses_tty:
+            if not self.screen_snapshot_cache:
+                self.screen_snapshot_cache = self._compute_screen_snapshot()
+            return _strip_terminal_bootstrap_noise(self.screen_snapshot_cache, self.terminal_env_overrides)
+        return _strip_terminal_bootstrap_noise(self._compute_screen_snapshot(), self.terminal_env_overrides)
+
+    def _derive_observation_state(self) -> str:
+        if not (self.interactive and self.is_running):
+            return "idle"
+        snapshot = self._render_screen_snapshot()
+        now = time.time()
+        since_raw = now - self.last_raw_frame_at if self.last_raw_frame_at else float("inf")
+        since_screen = now - self.last_screen_at if self.last_screen_at else float("inf")
+        raw_recent = since_raw <= 0.9
+        screen_recent = since_screen <= 0.9
+
+        if raw_recent and not screen_recent:
+            return "render_stalled"
+        if raw_recent or screen_recent:
+            return "busy"
+        if _terminal_snapshot_looks_like_prompt(snapshot):
+            return "awaiting_input"
+        if _terminal_snapshot_looks_busy(snapshot):
+            return "busy"
+        return "idle"
+
+    def _derive_awaiting_input(self) -> bool:
+        return self._derive_observation_state() == "awaiting_input"
+
     def status_snapshot(self) -> dict:
+        tty_mode = "pty" if self.uses_tty else "pipe"
+        observation_state = self._derive_observation_state()
+        screen_snapshot = self._render_screen_snapshot()
+        stable_screen_snapshot = _build_stable_terminal_snapshot(screen_snapshot)
+        encoding_state, encoding_notes, text_encoding = _derive_terminal_encoding_status(
+            screen_snapshot=screen_snapshot,
+            raw_preview=self.last_raw_frame_preview,
+            diagnostics=self.command_diagnostics,
+        )
         return {
             "command_id": getattr(self, "command_id", None),
             "command": self.command,
+            "session_id": self.session_id,
             "is_running": self.is_running,
             "uses_tty": self.uses_tty,
             "interactive": self.interactive,
+            "tty_mode": tty_mode,
+            "screen_mode": "terminal_screen" if self.uses_tty else "append_only",
+            "screen_snapshot": screen_snapshot,
+            "stable_screen_snapshot": stable_screen_snapshot,
+            "screen_version": int(self.screen_version),
+            "raw_frame_version": int(self.raw_frame_version),
+            "raw_bytes": int(self.raw_bytes),
+            "cursor": {
+                "row": int(self.screen.cursor_row),
+                "col": int(self.screen.cursor_col),
+            } if self.uses_tty else None,
+            "cols": self.cols,
+            "rows": self.rows,
+            "alternate_screen": bool(self.screen.alternate_screen) if self.uses_tty else False,
+            "awaiting_input": observation_state == "awaiting_input",
+            "observation_state": observation_state,
+            "text_encoding": text_encoding,
+            "encoding_state": encoding_state,
+            "encoding_notes": encoding_notes,
+            "last_screen_at": None if self.last_screen_at is None else datetime.fromtimestamp(self.last_screen_at, timezone.utc).isoformat(),
+            "last_raw_frame_at": None if self.last_raw_frame_at is None else datetime.fromtimestamp(self.last_raw_frame_at, timezone.utc).isoformat(),
+            "last_raw_frame_preview": self.last_raw_frame_preview,
             "run_id": self.run_id,
             "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "return_code": self.return_code,
             "seconds_since_output": round(max(0.0, time.time() - self.last_output_at), 2),
             "seconds_since_input": None
             if self.last_input_at is None
             else round(max(0.0, time.time() - self.last_input_at), 2),
+            "command_diagnostics": dict(self.command_diagnostics),
         }
 
     def terminate(self):
@@ -3037,31 +4047,77 @@ class BackgroundProcess:
 _bg_processes = {}
 
 
-def list_background_process_snapshots(run_id: str | None = None) -> list[dict]:
+def _prune_stale_background_processes(*, max_age_seconds: int = _BACKGROUND_PROCESS_RETENTION_SECONDS) -> None:
+    now = time.time()
+    for command_id, bg_proc in list(_bg_processes.items()):
+        if bg_proc.is_running:
+            continue
+        completed_at = getattr(bg_proc, "completed_at", None)
+        if completed_at is None:
+            continue
+        if now - float(completed_at) > max_age_seconds:
+            _bg_processes.pop(command_id, None)
+
+
+def list_background_process_snapshots(
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+) -> list[dict]:
+    _prune_stale_background_processes()
     snapshots: list[dict] = []
+    normalized_session_id = str(session_id or "").strip() or None
     normalized_run_id = str(run_id or "").strip() or None
     for command_id, bg_proc in list(_bg_processes.items()):
+        process_session_id = str(getattr(bg_proc, "session_id", "") or "").strip() or None
         process_run_id = str(getattr(bg_proc, "run_id", "") or "").strip() or None
-        if normalized_run_id and process_run_id != normalized_run_id:
+        if normalized_session_id and process_session_id and process_session_id != normalized_session_id:
+            continue
+        if normalized_run_id and not normalized_session_id and process_run_id and process_run_id != normalized_run_id:
             continue
         status = dict(bg_proc.status_snapshot())
         command = str(getattr(bg_proc, "command", "") or "").strip()
         command_preview = command if len(command) <= 240 else f"{command[:237]}..."
+        return_code = status.get("return_code")
+        is_running = bool(status.get("is_running"))
+        process_status = "running" if is_running else (
+            "failed" if return_code not in (None, 0, "0") else "completed" if status.get("completed_at") else "stopped"
+        )
         snapshots.append({
             "processId": str(command_id),
             "commandId": str(command_id),
+            "sessionId": process_session_id,
             "runId": process_run_id,
             "title": command.splitlines()[0][:96] if command else str(command_id),
             "commandPreview": command_preview,
-            "status": "running" if bool(status.get("is_running")) else "stopped",
+            "command": command,
+            "status": process_status,
             "interactive": bool(status.get("interactive")),
             "usesTty": bool(status.get("uses_tty")),
+            "ttyMode": status.get("tty_mode"),
+            "screenMode": status.get("screen_mode"),
+            "screenSnapshot": status.get("screen_snapshot"),
+            "stableScreenSnapshot": status.get("stable_screen_snapshot"),
+            "screenVersion": status.get("screen_version"),
+            "rawFrameVersion": status.get("raw_frame_version"),
+            "rawBytes": status.get("raw_bytes"),
+            "cursor": status.get("cursor"),
+            "cols": status.get("cols"),
+            "rows": status.get("rows"),
+            "alternateScreen": bool(status.get("alternate_screen")),
+            "awaitingInput": bool(status.get("awaiting_input")),
+            "observationState": status.get("observation_state"),
+            "textEncoding": status.get("text_encoding"),
+            "encodingState": status.get("encoding_state"),
+            "encodingNotes": status.get("encoding_notes"),
+            "lastScreenAt": _normalize_status_timestamp(status.get("last_screen_at")),
+            "lastRawFrameAt": _normalize_status_timestamp(status.get("last_raw_frame_at")),
+            "lastRawFramePreview": status.get("last_raw_frame_preview"),
+            "commandDiagnostics": status.get("command_diagnostics"),
             "canTerminate": True,
             "canInput": bool(status.get("interactive")),
-            "startedAt": datetime.fromtimestamp(
-                float(status.get("started_at") or time.time()),
-                tz=timezone.utc,
-            ).isoformat(),
+            "startedAt": _normalize_status_timestamp(status.get("started_at") or time.time()),
+            "completedAt": _normalize_status_timestamp(status.get("completed_at")),
             "secondsSinceOutput": status.get("seconds_since_output"),
             "secondsSinceInput": status.get("seconds_since_input"),
         })
@@ -3106,6 +4162,7 @@ def start_background_command(
             f"Initial output:\n{initial_section}{guidance}"
         )
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error starting background command: {e}"
 
 
@@ -3158,39 +4215,153 @@ def run_system_command(
                 payload["initialOutput"] = launched["initialOutput"]
             return json.dumps(payload, ensure_ascii=False)
         except Exception as exc:
+            _raise_runtime_governance_exception_if_needed(exc)
             return f"Error starting session command: {exc}"
 
     return "Error: 未能解析命令执行模式。"
+
+
+def _build_terminal_status_tool_view(status: dict) -> dict:
+    if not isinstance(status, dict):
+        return {}
+    compact: dict = {}
+    for key in (
+        "command_id",
+        "command",
+        "session_id",
+        "is_running",
+        "uses_tty",
+        "interactive",
+        "tty_mode",
+        "screen_mode",
+        "screen_version",
+        "raw_frame_version",
+        "observation_state",
+        "awaiting_input",
+        "text_encoding",
+        "encoding_state",
+        "encoding_notes",
+        "cols",
+        "rows",
+        "alternate_screen",
+        "run_id",
+        "started_at",
+        "completed_at",
+        "return_code",
+        "seconds_since_output",
+        "seconds_since_input",
+        "last_screen_at",
+        "last_raw_frame_at",
+    ):
+        value = status.get(key)
+        if value is None or value == "":
+            continue
+        compact[key] = value
+    cursor = status.get("cursor")
+    if isinstance(cursor, dict) and cursor:
+        compact["cursor"] = cursor
+    return compact
+
+
+def _extract_preferred_terminal_snapshot(status: dict) -> str:
+    stable_snapshot = str(status.get("stable_screen_snapshot") or "").strip()
+    if stable_snapshot:
+        return stable_snapshot
+    return str(status.get("screen_snapshot") or "").strip()
 
 @tool
 def read_background_output(command_id: str) -> str:
     """Read the latest output from a background command.
     
     Arguments:
-        command_id (str): The ID returned by `run_system_command(mode="session")` or `start_background_command`.
+        command_id (str): The ID returned by `run_system_command(mode="session")`.
     """
+    _prune_stale_background_processes()
     if command_id not in _bg_processes:
         return f"Error: No active background command with ID {command_id}."
     bg_proc = _bg_processes[command_id]
     new_out = bg_proc.get_new_output()
+    status = bg_proc.status_snapshot()
+    screen_snapshot = _extract_preferred_terminal_snapshot(status)
+    screen_changed = bool(bg_proc.has_unreported_screen_change())
+    raw_changed = bool(bg_proc.has_unreported_raw_frame_change())
+    appended_output = new_out.strip()
+    observation_state = str(status.get("observation_state") or "idle")
+    raw_frame_preview = str(status.get("last_raw_frame_preview") or "").strip()
+    prompt_ready = observation_state == "awaiting_input"
+    encoding_state = str(status.get("encoding_state") or "").strip().lower()
+    include_raw_preview = observation_state == "render_stalled" or encoding_state not in {"", "clean"}
+    include_appended_delta = not screen_snapshot
+    compact_status = _build_terminal_status_tool_view(status)
+
+    def _format_interactive_screen_response(observation: str) -> str:
+        sections = [f"Observation: {observation}"]
+        if include_raw_preview and raw_frame_preview:
+            sections.append(f"Raw Frame Preview:\n{raw_frame_preview}")
+        if screen_snapshot:
+            sections.append(f"Screen Snapshot:\n{screen_snapshot}")
+        if include_appended_delta and appended_output:
+            sections.append(f"Appended Output:\n{_truncate_terminal_text(new_out)}")
+        sections.append(f"Status: {json.dumps(compact_status, ensure_ascii=False)}")
+        return "\n\n".join(section for section in sections if section)
+
     if not bg_proc.is_running:
-        rcode = bg_proc.process.poll() if hasattr(bg_proc.proc, "poll") else 0
-        del _bg_processes[command_id]
-        return f"{new_out}\n\n[Process terminated with exit code {rcode}]"
+        rcode = bg_proc.return_code
+        if rcode is None and hasattr(bg_proc.proc, "poll"):
+            try:
+                rcode = bg_proc.proc.poll()
+            except Exception:
+                rcode = None
+        if screen_changed:
+            bg_proc.mark_screen_reported()
+        if raw_changed:
+            bg_proc.mark_raw_frame_reported()
+        if bg_proc.interactive and bg_proc.uses_tty:
+            return f"{_format_interactive_screen_response('终端会话已结束。')}\n\n[Process terminated with exit code {rcode}]"
+        terminal_state = (
+            f"\n\nScreen Snapshot:\n{screen_snapshot}\n\nStatus: {json.dumps(compact_status, ensure_ascii=False)}"
+            if screen_snapshot
+            else f"\n\nStatus: {json.dumps(compact_status, ensure_ascii=False)}"
+        )
+        return f"{new_out}{terminal_state}\n\n[Process terminated with exit code {rcode}]"
+
+    if bg_proc.interactive and bg_proc.uses_tty and screen_snapshot:
+        if screen_changed:
+            bg_proc.mark_screen_reported()
+            if raw_changed:
+                bg_proc.mark_raw_frame_reported()
+            observation = "观测到新的终端屏幕变化。"
+            if prompt_ready:
+                observation = "观测到新的终端屏幕变化，prompt 已就绪，可继续输入。"
+            return _format_interactive_screen_response(observation)
+        if raw_changed:
+            bg_proc.mark_raw_frame_reported()
+            if observation_state == "render_stalled":
+                return _format_interactive_screen_response("观测到新的原始终端数据，但屏幕渲染没有前进。V8 观测链可能失真。")
+            return _format_interactive_screen_response("观测到新的原始终端数据，但当前屏幕快照未变化。")
+        if appended_output:
+            return _format_interactive_screen_response("观测到新的终端文本增量，但当前屏幕快照未变化。")
+        if prompt_ready:
+            return _format_interactive_screen_response("当前未观测到新的 terminal change，prompt 已就绪，可继续输入。")
+        return _format_interactive_screen_response("当前未观测到新的 terminal change。")
+
     if not new_out:
-        status = bg_proc.status_snapshot()
         if bg_proc.interactive:
             return (
-                "No new output yet. 该交互式命令可能正在等待输入或初始化终端。\n"
-                f"Status: {json.dumps(status, ensure_ascii=False)}"
+                f"当前未观测到新的终端文本增量。Observation: {observation_state}\n"
+                f"Status: {json.dumps(compact_status, ensure_ascii=False)}"
             )
         return f"No new output yet. Status: {json.dumps(status, ensure_ascii=False)}"
+    if raw_changed:
+        bg_proc.mark_raw_frame_reported()
+    if screen_changed:
+        bg_proc.mark_screen_reported()
     return new_out
 
 @tool
 def send_background_input(command_id: str, input_text: str) -> str:
     """Send input (like 'y' or option choices) to an interactive background command.
-    Remember to include '\\n' if simulating the Enter key.
+    You can include a real newline or a common escaped sequence like '\\n' to simulate Enter.
     
     Arguments:
         command_id (str): The ID of the command.
@@ -3202,11 +4373,56 @@ def send_background_input(command_id: str, input_text: str) -> str:
     if not bg_proc.is_running:
         return "Error: The process has already terminated."
     try:
-        bg_proc.write_input(input_text)
+        discarded_backlog = bg_proc.discard_pending_output()
+        status_before = bg_proc.status_snapshot()
+        previous_screen_version = int(status_before.get("screen_version") or 0)
+        previous_raw_frame_version = int(status_before.get("raw_frame_version") or 0)
+        normalized_input = _decode_background_input_escapes(input_text)
+        bg_proc.write_input(normalized_input)
         time.sleep(0.5)  # Wait for response
         resp = bg_proc.get_new_output()
         status = bg_proc.status_snapshot()
-        return f"Input sent. New output:\n{resp}\n\nStatus: {json.dumps(status, ensure_ascii=False)}"
+        screen_snapshot = _extract_preferred_terminal_snapshot(status)
+        appended_output = resp.strip()
+        screen_changed = int(status.get("screen_version") or 0) > previous_screen_version
+        raw_changed = int(status.get("raw_frame_version") or 0) > previous_raw_frame_version
+        if raw_changed:
+            bg_proc.mark_raw_frame_reported()
+        if screen_changed:
+            bg_proc.mark_screen_reported()
+        observation_state = str(status.get("observation_state") or "idle")
+        prompt_ready = observation_state == "awaiting_input"
+        encoding_state = str(status.get("encoding_state") or "").strip().lower()
+        raw_frame_preview = str(status.get("last_raw_frame_preview") or "").strip()
+        include_raw_preview = observation_state == "render_stalled" or encoding_state not in {"", "clean"}
+        include_appended_delta = not screen_snapshot
+        compact_status = _build_terminal_status_tool_view(status)
+        observation = "已发送输入，当前未观测到新的终端变化。"
+        if screen_changed:
+            observation = "已发送输入，并观测到新的终端屏幕变化。"
+            if prompt_ready:
+                observation = "已发送输入，并观测到新的终端屏幕变化。当前 prompt 已就绪，可继续对话。"
+        elif raw_changed:
+            observation = (
+                "已发送输入，并观测到新的原始终端数据，但屏幕渲染没有前进。"
+                if observation_state == "render_stalled"
+                else "已发送输入，并观测到新的原始终端数据。"
+            )
+        elif prompt_ready:
+            observation = "已发送输入，当前终端回到可输入状态。V8 尚未确认新的终端回复。"
+        sections = [f"Observation: {observation}"]
+        if normalized_input != input_text:
+            sections.append("Input normalization: 已将常见转义序列按终端控制字符解释（例如 \\n => Enter）。")
+        if discarded_backlog.strip():
+            sections.append(f"Pre-send backlog discarded: {len(discarded_backlog)} chars")
+        if include_raw_preview and raw_frame_preview:
+            sections.append(f"Raw Frame Preview:\n{raw_frame_preview}")
+        if screen_snapshot:
+            sections.append(f"Screen Snapshot:\n{screen_snapshot}")
+        if include_appended_delta and appended_output:
+            sections.append(f"Appended Output:\n{_truncate_terminal_text(resp)}")
+        sections.append(f"Status: {json.dumps(compact_status, ensure_ascii=False)}")
+        return "\n\n".join(section for section in sections if section)
     except Exception as e:
         return f"Error sending input: {e}"
 
@@ -5476,8 +6692,6 @@ NATIVE_TOOLS = [
     read_background_output,
     send_background_input,
     terminate_background_command,
-    execute_system_command,
-    start_background_command,
     rpa_list_robot_scripts,
     rpa_run_draft,
     rpa_run_existing_flow,

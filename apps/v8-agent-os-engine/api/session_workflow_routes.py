@@ -1,5 +1,6 @@
 import uuid
 import importlib
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +24,7 @@ from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
 from erc.session_realtime_contract import (
     augment_workflow_projection,
+    build_processes_snapshot,
     resolve_authoritative_session_runtime_state,
 )
 from erc.session_history_contract import (
@@ -43,6 +45,82 @@ from runtimes.memory.scope_resolution import (
 router = APIRouter()
 
 
+def _merge_authoritative_timeline_messages(
+    durable_messages: list[dict],
+    snapshot_messages: list[dict] | None,
+) -> list[dict]:
+    """Prefer durable/runtime-backed timeline, but keep snapshot-only residues if they are not yet persisted."""
+    def _message_richness(message: dict | None) -> int:
+        if not isinstance(message, dict):
+            return 0
+        return (
+            len(str(message.get("content") or "").strip())
+            + (len(message.get("nodes") or []) * 120 if isinstance(message.get("nodes"), list) else 0)
+            + (len(message.get("artifacts") or []) * 200 if isinstance(message.get("artifacts"), list) else 0)
+            + (len(message.get("images") or []) * 80 if isinstance(message.get("images"), list) else 0)
+        )
+
+    def _merge_message_payload(base: dict, incoming: dict) -> dict:
+        merged = dict(base)
+        for key, value in incoming.items():
+            if value is None:
+                continue
+            if key in {"nodes", "artifacts", "images"} and isinstance(value, list):
+                base_list = merged.get(key) if isinstance(merged.get(key), list) else []
+                if len(value) >= len(base_list):
+                    merged[key] = value
+                elif not base_list:
+                    merged[key] = value
+                continue
+            if key == "metadata" and isinstance(value, dict):
+                merged[key] = {
+                    **(merged.get("metadata") if isinstance(merged.get("metadata"), dict) else {}),
+                    **value,
+                }
+                continue
+            if key == "content":
+                current_content = str(merged.get("content") or "").strip()
+                next_content = str(value or "").strip()
+                if next_content or not current_content:
+                    merged[key] = value
+                continue
+            if key == "toolInvocations" and isinstance(value, list):
+                current_invocations = merged.get("toolInvocations") if isinstance(merged.get("toolInvocations"), list) else []
+                if len(value) >= len(current_invocations):
+                    merged[key] = value
+                continue
+            merged[key] = value
+        return merged
+
+    merged: list[dict] = []
+    seen_by_id: dict[str, int] = {}
+
+    for item in list(durable_messages or []):
+        if not isinstance(item, dict):
+            continue
+        merged.append(dict(item))
+        message_id = str(item.get("id") or "").strip()
+        if message_id:
+            seen_by_id[message_id] = len(merged) - 1
+
+    for item in list(snapshot_messages or []):
+        if not isinstance(item, dict):
+            continue
+        message_id = str(item.get("id") or "").strip()
+        if message_id and message_id in seen_by_id:
+            index = seen_by_id[message_id]
+            current = merged[index]
+            if _message_richness(item) > _message_richness(current):
+                merged[index] = _merge_message_payload(current, item)
+            else:
+                merged[index] = _merge_message_payload(item, current)
+            continue
+        merged.append(dict(item))
+        if message_id:
+            seen_by_id[message_id] = len(merged) - 1
+    return merged
+
+
 def _memory_runtime():
     return importlib.import_module("runtimes.memory.runtime").memory_runtime
 
@@ -50,19 +128,49 @@ def _memory_runtime():
 def _format_db_session_messages(rows: list[dict]) -> list[dict]:
     formatted = []
     for row in rows:
+        created_at = row.get("created_at")
+        try:
+            timestamp = int(datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).timestamp() * 1000) if created_at else 0
+        except Exception:
+            timestamp = 0
+        nodes = []
         msg_obj = {
             "id": row["id"],
             "role": row["role"],
             "content": row["content"],
             "reasoningContent": row.get("reasoning_content"),
             "createdAt": row["created_at"],
+            "timestamp": timestamp,
             "agentName": row.get("agent_name"),
             "agentAvatar": row.get("agent_avatar"),
             "agentRoleLabel": row.get("agent_role_label"),
             "agentId": row.get("agent_id"),
             "images": row.get("images") or [],
             "metadata": row.get("metadata") or {},
+            "nodes": nodes,
         }
+        if row.get("reasoning_content"):
+            nodes.append({
+                "id": f"{row['id']}:reasoning",
+                "kind": "execution",
+                "executionType": "reasoning",
+                "content": row.get("reasoning_content"),
+                "timestamp": timestamp,
+                "agentName": row.get("agent_name"),
+                "agentAvatar": row.get("agent_avatar"),
+                "agentRoleLabel": row.get("agent_role_label"),
+            })
+        if row.get("content"):
+            nodes.append({
+                "id": f"{row['id']}:content",
+                "kind": "narrative",
+                "role": row.get("role"),
+                "content": row.get("content"),
+                "timestamp": timestamp,
+                "agentName": row.get("agent_name"),
+                "agentAvatar": row.get("agent_avatar"),
+                "agentRoleLabel": row.get("agent_role_label"),
+            })
         if row.get("tool_calls"):
             try:
                 tool_calls = row["tool_calls"]
@@ -74,14 +182,47 @@ def _format_db_session_messages(rows: list[dict]) -> list[dict]:
                 invocations = []
                 for tool_call in tool_calls:
                     if isinstance(tool_call, dict):
+                        tool_call_id = tool_call.get("id", "")
+                        tool_name = tool_call.get("name", tool_call.get("function", {}).get("name", ""))
+                        tool_args = tool_call.get("args", tool_call.get("function", {}).get("arguments", {}))
+                        tool_result = tool_call.get("result", None)
                         invocations.append(
                             {
-                                "toolCallId": tool_call.get("id", ""),
-                                "toolName": tool_call.get("name", tool_call.get("function", {}).get("name", "")),
-                                "args": tool_call.get("args", tool_call.get("function", {}).get("arguments", {})),
-                                "result": tool_call.get("result", None),
+                                "toolCallId": tool_call_id,
+                                "toolName": tool_name,
+                                "args": tool_args,
+                                "result": tool_result,
                             }
                         )
+                        nodes.append(
+                            {
+                                "id": f"{row['id']}:tool:{tool_call_id or len(invocations)}:call",
+                                "kind": "execution",
+                                "executionType": "tool_call",
+                                "toolCallId": tool_call_id,
+                                "toolName": tool_name,
+                                "args": tool_args,
+                                "timestamp": timestamp,
+                                "agentName": row.get("agent_name"),
+                                "agentAvatar": row.get("agent_avatar"),
+                                "agentRoleLabel": row.get("agent_role_label"),
+                            }
+                        )
+                        if tool_result is not None:
+                            nodes.append(
+                                {
+                                    "id": f"{row['id']}:tool:{tool_call_id or len(invocations)}:result",
+                                    "kind": "execution",
+                                    "executionType": "tool_result",
+                                    "toolCallId": tool_call_id,
+                                    "toolName": tool_name,
+                                    "result": tool_result,
+                                    "timestamp": timestamp,
+                                    "agentName": row.get("agent_name"),
+                                    "agentAvatar": row.get("agent_avatar"),
+                                    "agentRoleLabel": row.get("agent_role_label"),
+                                }
+                            )
                 if invocations:
                     msg_obj["toolInvocations"] = invocations
             except Exception as exc:
@@ -534,6 +675,12 @@ async def get_session_history(session_id: str):
         snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
         snapshot = snapshot_payload.get("snapshot")
         latest_seq = int(snapshot_payload.get("latestSeq") or 0)
+        snapshot_messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
+        durable_messages = _format_db_session_messages(db.get_messages(session_id))
+        timeline_messages = _merge_authoritative_timeline_messages(
+            durable_messages,
+            list(snapshot_messages) if isinstance(snapshot_messages, list) else None,
+        )
         root_run_id = str(workflow_view.get("rootRunId") or "").strip()
         run_record = db.get_run_record(root_run_id) if root_run_id else None
         session_source = _derive_session_source(session_row, run_record)
@@ -542,11 +689,46 @@ async def get_session_history(session_id: str):
             workflow_view=workflow_view,
             approvals=approvals,
             snapshot=snapshot,
+            timeline_messages=timeline_messages,
             latest_seq=latest_seq,
             source=session_source,
             runtime_events=runtime_events,
+            runtime_timeline=project_runtime_timeline_from_events(runtime_events),
             run_record=run_record,
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}/processes")
+async def get_session_processes(session_id: str):
+    try:
+        session_row = db.get_session(session_id)
+        if session_row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
+        snapshot = snapshot_payload.get("snapshot") or {}
+        current_run = snapshot_payload.get("currentRun") if isinstance(snapshot_payload.get("currentRun"), dict) else {}
+        current_run_id = str(
+            current_run.get("id")
+            or snapshot_payload.get("currentRunId")
+            or (snapshot_payload.get("workflow") or {}).get("rootRunId")
+            or ""
+        ).strip() or None
+        processes = build_processes_snapshot(
+            session_id=session_id,
+            snapshot=snapshot if isinstance(snapshot, dict) else {},
+            run_id=current_run_id,
+        )
+        return {
+            "sessionId": session_id,
+            "currentRunId": current_run_id,
+            "latestSeq": int(snapshot_payload.get("latestSeq") or 0),
+            "processes": processes,
+        }
     except HTTPException:
         raise
     except Exception as e:

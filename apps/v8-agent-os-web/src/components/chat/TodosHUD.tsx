@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, Circle, Loader2, MinusCircle, ListTodo } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -15,10 +15,13 @@ export interface TodoHudItem {
 type TodosHUDProps = {
     items: TodoHudItem[];
     isStale?: boolean;
+    shouldAutoHide?: boolean;
+    dismissDelayMs?: number;
 };
 
-export function TodosHUD({ items, isStale = false }: TodosHUDProps) {
+export function TodosHUD({ items, isStale = false, shouldAutoHide = false, dismissDelayMs = 2600 }: TodosHUDProps) {
     const [isCollapsed, setIsCollapsed] = useState(false);
+    const [dismissed, setDismissed] = useState(false);
 
     const todos = useMemo(
         () =>
@@ -34,7 +37,21 @@ export function TodosHUD({ items, isStale = false }: TodosHUDProps) {
 
     const allCompleted = todos.length > 0 && todos.every((todo) => todo.status === "done" || todo.status === "skipped");
 
-    if (todos.length === 0) {
+    useEffect(() => {
+        setDismissed(false);
+    }, [todos.map((todo) => `${todo.id}:${todo.status}:${todo.text}`).join("|")]);
+
+    useEffect(() => {
+        if (!shouldAutoHide || !allCompleted || todos.length === 0) {
+            return undefined;
+        }
+        const timer = window.setTimeout(() => {
+            setDismissed(true);
+        }, dismissDelayMs);
+        return () => window.clearTimeout(timer);
+    }, [allCompleted, dismissDelayMs, shouldAutoHide, todos.length]);
+
+    if (todos.length === 0 || dismissed) {
         return null;
     }
 

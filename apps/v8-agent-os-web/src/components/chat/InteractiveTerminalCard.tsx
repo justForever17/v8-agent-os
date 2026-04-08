@@ -20,8 +20,12 @@ interface InteractiveTerminalCardProps {
 }
 
 export function InteractiveTerminalCard({ process, compact = false, onTerminated }: InteractiveTerminalCardProps) {
+    const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
     const [isRunning, setIsRunning] = useState<boolean>(() => String(process.status || '').trim().toLowerCase() !== 'stopped');
     const [isCollapsed, setIsCollapsed] = useState(compact);
+    const [compactSnapshot, setCompactSnapshot] = useState<string>(() =>
+        String(processRecord.stableScreenSnapshot || process.screenSnapshot || '').trim(),
+    );
     const terminalRef = useRef<HTMLDivElement>(null);
     const xtermRef = useRef<Terminal | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
@@ -32,6 +36,13 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
     useEffect(() => {
         setIsRunning(String(process.status || '').trim().toLowerCase() !== 'stopped');
     }, [process.status]);
+
+    useEffect(() => {
+        const nextSnapshot = String(processRecord.stableScreenSnapshot || process.screenSnapshot || '').trim();
+        if (nextSnapshot) {
+            setCompactSnapshot(nextSnapshot);
+        }
+    }, [process.screenSnapshot, processRecord.stableScreenSnapshot]);
 
     useEffect(() => {
         if (!isCollapsed && fitAddonRef.current) {
@@ -54,7 +65,7 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
     }, [onTerminated, process]);
 
     useEffect(() => {
-        if (initRef.current || !terminalRef.current) return;
+        if (compact || initRef.current || !terminalRef.current) return;
         initRef.current = true;
 
         const fitAddon = new FitAddon();
@@ -132,10 +143,70 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
         };
     }, [compact, onTerminated, process]);
 
+    useEffect(() => {
+        if (!compact) {
+            return;
+        }
+        const outputPath = String(process.outputAdminPath || '').trim();
+        if (!outputPath) {
+            return;
+        }
+        let cancelled = false;
+        const poll = async () => {
+            try {
+                const response = await fetch(outputPath);
+                if (!response.ok) {
+                    return;
+                }
+                const payload = await response.json() as {
+                    is_running?: boolean;
+                    isRunning?: boolean;
+                    stableScreenSnapshot?: string;
+                    screenSnapshot?: string;
+                    process?: {
+                        status?: string;
+                        is_running?: boolean;
+                        stable_screen_snapshot?: string;
+                        screen_snapshot?: string;
+                    };
+                };
+                if (cancelled) {
+                    return;
+                }
+                const nextSnapshot = String(
+                    payload.stableScreenSnapshot
+                    || payload.screenSnapshot
+                    || payload.process?.stable_screen_snapshot
+                    || payload.process?.screen_snapshot
+                    || '',
+                ).trim();
+                if (nextSnapshot) {
+                    setCompactSnapshot(nextSnapshot);
+                }
+                const stillRunning = typeof payload.process?.status === 'string'
+                    ? String(payload.process.status || '').trim().toLowerCase() !== 'stopped'
+                    : Boolean(payload.is_running ?? payload.isRunning ?? payload.process?.is_running);
+                setIsRunning(stillRunning);
+            } catch (error) {
+                console.error('Compact terminal polling error:', error);
+            }
+        };
+        void poll();
+        const timer = window.setInterval(() => void poll(), 1200);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [compact, process]);
+
     const shortId = (process.commandId || process.processId).length > 12
         ? `…${(process.commandId || process.processId).slice(-8)}`
         : (process.commandId || process.processId);
     const title = process.title || process.commandPreview || shortId;
+    const encodingState = String(process.encodingState || '').trim().toLowerCase();
+    const encodingWarning = encodingState && encodingState !== 'clean'
+        ? (String(process.encodingNotes || '').trim() || '终端编码异常，内容可能失真。')
+        : '';
 
     return (
         <div className="flex flex-col w-full rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800 shadow-sm transition-all">
@@ -192,9 +263,22 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
                         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                         className="overflow-hidden"
                     >
-                        <div className={cn("p-2 bg-[#000000]", compact ? "h-[132px] sm:h-[160px]" : "h-[240px] sm:h-[280px]")}>
-                            <div ref={terminalRef} className="h-full w-full" />
-                        </div>
+                        {encodingWarning ? (
+                            <div className="mx-2 mt-2 rounded-md border border-amber-500/50 bg-amber-50 px-3 py-2 text-[11px] font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">
+                                {encodingWarning}
+                            </div>
+                        ) : null}
+                        {compact ? (
+                            <div className="max-h-[160px] overflow-auto bg-[#000000] p-3">
+                                <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-zinc-200">
+                                    {compactSnapshot || '[No terminal output yet]'}
+                                </pre>
+                            </div>
+                        ) : (
+                            <div className={cn("p-2 bg-[#000000]", "h-[240px] sm:h-[280px]")}>
+                                <div ref={terminalRef} className="h-full w-full" />
+                            </div>
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>

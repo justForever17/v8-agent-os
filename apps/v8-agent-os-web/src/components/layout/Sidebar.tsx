@@ -116,6 +116,7 @@ export function Sidebar() {
                 {(isOpen || collapsed) && (
                     <div className="space-y-0.5">
                         {items.map((conv) => {
+                            const canonicalSessionId = conv.sessionId || conv.id;
                             const scopeTags = Array.isArray(conv.scopeTags) ? conv.scopeTags : [];
                             const ownerRuntime = typeof conv.ownerRuntime === "string" ? conv.ownerRuntime : null;
                             const workflowStatus = typeof conv.workflowStatus === "string" ? conv.workflowStatus : null;
@@ -129,22 +130,22 @@ export function Sidebar() {
 
                             return (
                                 <div
-                                    key={conv.id}
+                                    key={canonicalSessionId}
                                     className={cn(
                                         "group relative flex cursor-pointer flex-col justify-center overflow-hidden rounded-xl transition-all duration-200",
                                         collapsed ? "mx-auto h-10 w-10 items-center" : "w-full py-2.5 pl-3 pr-9 hover:bg-accent/60",
-                                        currentId === conv.id
+                                        currentId === canonicalSessionId
                                             ? "bg-accent/80 font-medium text-accent-foreground shadow-sm"
                                             : "text-muted-foreground hover:text-foreground",
                                     )}
-                                    onClick={() => handleNavigation(conv.id)}
+                                    onClick={() => handleNavigation(canonicalSessionId)}
                                     title={conv.title || t(lt("新对话", "New chat"))}
                                 >
                                     <div className="flex w-full items-center">
                                         <div
                                             className={cn(
                                                 "shrink-0 text-muted-foreground/70 transition-colors [&>svg]:h-4 [&>svg]:w-4",
-                                                currentId === conv.id && "text-primary",
+                                                currentId === canonicalSessionId && "text-primary",
                                                 !collapsed && "mr-3",
                                             )}
                                         >
@@ -217,7 +218,7 @@ export function Sidebar() {
                                                     className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 scale-90 text-muted-foreground opacity-0 transition-all duration-200 hover:bg-destructive/10 hover:text-destructive group-hover:scale-100 group-hover:opacity-100"
                                                     onClick={(event) => {
                                                         event.stopPropagation();
-                                                        setDeleteId(conv.id);
+                                                        setDeleteId(canonicalSessionId);
                                                     }}
                                                 >
                                                     <Trash2 className="h-3.5 w-3.5" />

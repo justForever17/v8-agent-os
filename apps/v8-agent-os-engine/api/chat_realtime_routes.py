@@ -118,6 +118,22 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
     )
 
 
+@router.post("/chat/submit")
+async def chat_submit(request: ChatRequest):
+    if not request.session_id:
+        request.session_id = str(uuid.uuid4())
+
+    run_id = request.resume_run_id or f"run_{uuid.uuid4().hex}"
+    _schedule_chat_run(request, transport="submit", run_id=run_id)
+    return {
+        "accepted": True,
+        "session_id": request.session_id,
+        "conversationId": request.session_id,
+        "run_id": run_id,
+        "runId": run_id,
+    }
+
+
 @router.websocket("/chat/ws")
 async def chat_websocket(websocket: WebSocket):
     ticket_payload = verify_ws_ticket(websocket.query_params.get("ticket"))

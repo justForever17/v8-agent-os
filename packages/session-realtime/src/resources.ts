@@ -441,6 +441,12 @@ export function coerceAdminProcessRef(value: unknown): AdminProcessRef | null {
   const normalized: AdminProcessRef = {
     processId,
     commandId: commandId || processId,
+    sessionId:
+      typeof record.sessionId === "string"
+        ? record.sessionId.trim()
+        : typeof record.session_id === "string"
+          ? record.session_id.trim()
+          : undefined,
     runId:
       typeof record.runId === "string"
         ? record.runId.trim()
@@ -459,6 +465,12 @@ export function coerceAdminProcessRef(value: unknown): AdminProcessRef | null {
     usesTty: coerceBoolean(record.usesTty ?? record.uses_tty),
     canTerminate: coerceBoolean(record.canTerminate ?? record.can_terminate),
     canInput: coerceBoolean(record.canInput ?? record.can_input),
+    outputAdminPath:
+      typeof record.outputAdminPath === "string"
+        ? normalizeAdminPath(record.outputAdminPath)
+        : typeof record.output_admin_path === "string"
+          ? normalizeAdminPath(record.output_admin_path)
+          : undefined,
     streamAdminPath:
       typeof record.streamAdminPath === "string"
         ? normalizeAdminPath(record.streamAdminPath)
@@ -495,8 +507,100 @@ export function coerceAdminProcessRef(value: unknown): AdminProcessRef | null {
         : typeof record.started_at === "string"
           ? record.started_at
           : undefined,
+    completedAt:
+      typeof record.completedAt === "string"
+        ? record.completedAt
+        : typeof record.completed_at === "string"
+          ? record.completed_at
+          : null,
     secondsSinceOutput: coerceNumber(record.secondsSinceOutput ?? record.seconds_since_output) ?? null,
     secondsSinceInput: coerceNumber(record.secondsSinceInput ?? record.seconds_since_input) ?? null,
+    ttyMode:
+      typeof record.ttyMode === "string"
+        ? record.ttyMode.trim()
+        : typeof record.tty_mode === "string"
+          ? record.tty_mode.trim()
+          : undefined,
+    screenMode:
+      typeof record.screenMode === "string"
+        ? record.screenMode.trim()
+        : typeof record.screen_mode === "string"
+          ? record.screen_mode.trim()
+          : undefined,
+    screenSnapshot:
+      typeof record.screenSnapshot === "string"
+        ? record.screenSnapshot
+        : typeof record.screen_snapshot === "string"
+          ? record.screen_snapshot
+          : undefined,
+    stableScreenSnapshot:
+      typeof record.stableScreenSnapshot === "string"
+        ? record.stableScreenSnapshot
+        : typeof record.stable_screen_snapshot === "string"
+          ? record.stable_screen_snapshot
+          : undefined,
+    screenVersion: coerceNumber(record.screenVersion ?? record.screen_version) ?? null,
+    rawFrameVersion: coerceNumber(record.rawFrameVersion ?? record.raw_frame_version) ?? null,
+    rawBytes: coerceNumber(record.rawBytes ?? record.raw_bytes) ?? null,
+    cursor:
+      record.cursor && typeof record.cursor === "object"
+        ? {
+            row: coerceNumber((record.cursor as Record<string, unknown>).row) ?? undefined,
+            col: coerceNumber((record.cursor as Record<string, unknown>).col) ?? undefined,
+          }
+        : null,
+    cols: coerceNumber(record.cols) ?? null,
+    rows: coerceNumber(record.rows) ?? null,
+    alternateScreen: coerceBoolean(record.alternateScreen ?? record.alternate_screen),
+    awaitingInput: coerceBoolean(record.awaitingInput ?? record.awaiting_input),
+    observationState:
+      typeof record.observationState === "string"
+        ? record.observationState.trim()
+        : typeof record.observation_state === "string"
+          ? record.observation_state.trim()
+          : undefined,
+    textEncoding:
+      typeof record.textEncoding === "string"
+        ? record.textEncoding.trim()
+        : typeof record.text_encoding === "string"
+          ? record.text_encoding.trim()
+          : null,
+    encodingState:
+      typeof record.encodingState === "string"
+        ? record.encodingState.trim()
+        : typeof record.encoding_state === "string"
+          ? record.encoding_state.trim()
+          : undefined,
+    encodingNotes:
+      typeof record.encodingNotes === "string"
+        ? record.encodingNotes
+        : typeof record.encoding_notes === "string"
+          ? record.encoding_notes
+          : null,
+    lastScreenAt:
+      typeof record.lastScreenAt === "string"
+        ? record.lastScreenAt
+        : typeof record.last_screen_at === "string"
+          ? record.last_screen_at
+          : null,
+    lastRawFrameAt:
+      typeof record.lastRawFrameAt === "string"
+        ? record.lastRawFrameAt
+        : typeof record.last_raw_frame_at === "string"
+          ? record.last_raw_frame_at
+          : null,
+    lastRawFramePreview:
+      typeof record.lastRawFramePreview === "string"
+        ? record.lastRawFramePreview
+        : typeof record.last_raw_frame_preview === "string"
+          ? record.last_raw_frame_preview
+          : null,
+    commandDiagnostics:
+      record.commandDiagnostics && typeof record.commandDiagnostics === "object"
+        ? (record.commandDiagnostics as Record<string, unknown>)
+        : record.command_diagnostics && typeof record.command_diagnostics === "object"
+          ? (record.command_diagnostics as Record<string, unknown>)
+          : null,
   };
   return normalized;
 }
@@ -505,13 +609,17 @@ export function resolveAdminProcessHttpPath(
   surface: "web" | "phone",
   adminBaseUrl: string | undefined,
   process: AdminProcessRef | null | undefined,
-  kind: "input" | "terminate",
+  kind: "input" | "output" | "terminate",
 ) {
   const normalized = coerceAdminProcessRef(process);
   if (!normalized) {
     return "";
   }
-  const targetPath = kind === "input" ? normalized.inputAdminPath : normalized.terminateAdminPath;
+  const targetPath = kind === "input"
+    ? normalized.inputAdminPath
+    : kind === "output"
+      ? normalized.outputAdminPath
+      : normalized.terminateAdminPath;
   if (!targetPath) {
     return "";
   }

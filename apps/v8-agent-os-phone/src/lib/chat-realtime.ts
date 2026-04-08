@@ -110,25 +110,54 @@ export function buildApprovalFromEvent(event: PhoneRealtimeEvent): PendingApprov
     if (event.type !== "custom_event" || (event.name !== "ask_user" && event.name !== "approval_requested")) {
         return null;
     }
-    const approvalKind = typeof event.data?.approvalKind === "string" ? event.data.approvalKind : undefined;
-    const interactionKind = typeof event.data?.interactionKind === "string" ? event.data.interactionKind : undefined;
+    const approvalId = typeof event.data?.approvalId === "string"
+        ? event.data.approvalId
+        : typeof event.data?.approval_id === "string"
+            ? event.data.approval_id
+            : undefined;
+    const approvalKind = typeof event.data?.approvalKind === "string"
+        ? event.data.approvalKind
+        : typeof event.data?.approval_kind === "string"
+            ? event.data.approval_kind
+            : undefined;
+    const interactionKind = typeof event.data?.interactionKind === "string"
+        ? event.data.interactionKind
+        : typeof event.data?.interaction_kind === "string"
+            ? event.data.interaction_kind
+            : undefined;
     const request = {
         ...(event.data?.request && typeof event.data.request === "object" ? event.data.request as Record<string, unknown> : {}),
         question: typeof event.data?.question === "string" ? event.data.question : undefined,
+        prompt: typeof event.data?.prompt === "string" ? event.data.prompt : undefined,
         toolCallId: typeof event.data?.toolCallId === "string" ? event.data.toolCallId : undefined,
         interactionKind,
     };
     const candidate: PendingApproval = {
-        id: typeof event.data?.approvalId === "string" ? event.data.approvalId : undefined,
-        approval_id: typeof event.data?.approvalId === "string" ? event.data.approvalId : undefined,
-        run_id: typeof event.run_id === "string" ? event.run_id : undefined,
-        session_id: typeof event.session_id === "string" ? event.session_id : undefined,
+        id: approvalId,
+        approval_id: approvalId,
+        run_id: typeof event.run_id === "string"
+            ? event.run_id
+            : typeof event.data?.run_id === "string"
+                ? event.data.run_id
+                : undefined,
+        session_id: typeof event.session_id === "string"
+            ? event.session_id
+            : typeof event.data?.session_id === "string"
+                ? event.data.session_id
+                : undefined,
         approval_kind: approvalKind,
         request,
     };
+    if (event.name === "ask_user" && !candidate.approval_kind) {
+        candidate.approval_kind = "ask_user";
+    }
+    if (event.name === "ask_user" && !request.interactionKind) {
+        request.interactionKind = "ask_user";
+    }
     return {
         ...candidate,
-        approval_kind: isAskUserInteractionApproval(candidate) ? (candidate.approval_kind || "human_input_required") : candidate.approval_kind,
+        request,
+        approval_kind: isAskUserInteractionApproval(candidate) ? (candidate.approval_kind || "ask_user") : candidate.approval_kind,
     };
 }
 

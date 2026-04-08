@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
-import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
+import { normalizeMessageForRealtimeSurface, normalizeProcessForRealtimeSurface, normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -23,11 +23,18 @@ export async function GET(
     const { id } = await params;
 
     try {
-        const snapshotResponse = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
-            method: "GET",
-            headers: { "Content-Type": "application/json" },
-            cache: "no-store",
-        });
+        const [snapshotResponse, historyResponse] = await Promise.all([
+            fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
+                method: "GET",
+                headers: { "Content-Type": "application/json" },
+                cache: "no-store",
+            }),
+            fetch(`${ENGINE_URL}/sessions/${id}/history`, {
+                method: "GET",
+                headers: { "Content-Type": "application/json" },
+                cache: "no-store",
+            }),
+        ]);
 
         if (!snapshotResponse.ok) {
             console.error("[Client Conversations] Failed to fetch session snapshot:", await snapshotResponse.text());
@@ -35,15 +42,33 @@ export async function GET(
         }
 
         const snapshotData = normalizeSnapshotForRealtimeSurface(await snapshotResponse.json().catch(() => ({}))) as Record<string, unknown>;
+        const historyData = historyResponse.ok
+            ? await historyResponse.json().catch(() => ({}))
+            : null;
+        const historyRecord = asRecord(historyData);
         const snapshotMessages = Array.isArray(asRecord(snapshotData.snapshot).messages)
             ? asRecord(snapshotData.snapshot).messages
             : Array.isArray(snapshotData.messages)
                 ? snapshotData.messages
                 : [];
+        const historyMessages = Array.isArray(historyRecord.messages)
+            ? historyRecord.messages.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
+            : Array.isArray(historyRecord.timeline)
+                ? historyRecord.timeline.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
+                : [];
+        const detailMessages = historyMessages.length > 0 ? historyMessages : snapshotMessages;
+        const historyProcesses = Array.isArray(historyRecord.processes)
+            ? historyRecord.processes
+                .map((process: unknown) => normalizeProcessForRealtimeSurface(process))
+                .filter((process): process is NonNullable<ReturnType<typeof normalizeProcessForRealtimeSurface>> => Boolean(process))
+            : [];
+        const snapshotProcesses = Array.isArray(snapshotData.processes) ? snapshotData.processes : [];
 
         return NextResponse.json(applyCanonicalSourceGroup({
             id,
-            messages: snapshotMessages,
+            messages: detailMessages,
+            timeline: historyMessages,
+            ledger: Array.isArray(historyRecord.ledger) ? historyRecord.ledger : [],
             latestSeq: snapshotData.latestSeq || 0,
             source: snapshotData.source || "runtime_snapshot",
             todos: snapshotData.todos || null,
@@ -55,6 +80,10 @@ export async function GET(
             controls: snapshotData.controls || null,
             recoverable: snapshotData.recoverable || null,
             summary: snapshotData.summary || null,
+            processes: historyProcesses.length > 0 ? historyProcesses : snapshotProcesses,
+            runtimeTimeline: Array.isArray(historyRecord.runtimeTimeline) ? historyRecord.runtimeTimeline : snapshotData.runtimeTimeline || [],
+            contextReferences: Array.isArray(historyRecord.contextReferences) ? historyRecord.contextReferences : snapshotData.contextReferences || [],
+            artifacts: Array.isArray(historyRecord.artifacts) ? historyRecord.artifacts : snapshotData.artifacts || [],
             projection: snapshotData,
         }));
     } catch (error) {

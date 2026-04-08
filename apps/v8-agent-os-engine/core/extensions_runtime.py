@@ -262,9 +262,12 @@ class ExtensionsRuntimeService:
         self._cached_catalog: dict[str, Any] | None = None
         self._cached_health: dict[str, Any] | None = None
         self._background_refresh_task: asyncio.Task | None = None
+        self._skills_inventory_watcher_task: asyncio.Task | None = None
         self._refresh_lock = asyncio.Lock()
         self._route_cache: dict[str, tuple[float, ExtensionRouteBundle]] = {}
         self._route_cache_ttl_seconds = 20.0
+        self._last_skill_inventory_change: dict[str, Any] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -290,6 +293,7 @@ class ExtensionsRuntimeService:
             "skills": skills_state,
             "mcp": mcp_state,
             "silk": silk_toolchain_status(),
+            "lastSkillInventoryChange": self._last_skill_inventory_change,
         }
 
     def _decorate_catalog(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -362,6 +366,7 @@ class ExtensionsRuntimeService:
         skills = list(SkillLoader.get_all_skills(force_refresh=False).values())
         skills_sorted = sorted(skills, key=lambda item: str(item.get("name") or "").lower())
         mcp_status = mcp_manager.get_status()
+        skills_state = SkillLoader.get_startup_status()
 
         servers: list[dict[str, Any]] = []
         total_tools = 0
@@ -390,7 +395,16 @@ class ExtensionsRuntimeService:
             )
 
         roots = SkillLoader._skills_roots or SkillLoader._resolve_skill_roots()
+        skills_fingerprint = str(skills_state.get("fingerprint") or "").strip()
+        changed_at = str(
+            ((self._last_skill_inventory_change or {}).get("changedAt"))
+            or skills_state.get("lastRefreshAt")
+            or "",
+        ).strip() or None
         return {
+            "fingerprint": skills_fingerprint,
+            "changedAt": changed_at,
+            "lastSkillInventoryChange": self._last_skill_inventory_change,
             "summary": {
                 "skillCount": len(skills_sorted),
                 "mcpServerCount": len(servers),
@@ -400,6 +414,9 @@ class ExtensionsRuntimeService:
             "skillDependencyPolicy": get_skill_dependency_policy(),
             "skills": {
                 "root": str(roots[0]) if roots else "",
+                "roots": [str(root) for root in roots],
+                "fingerprint": skills_fingerprint,
+                "changedAt": changed_at,
                 "items": [
                     {
                         "name": str(item.get("name") or item.get("folder") or ""),
@@ -471,8 +488,69 @@ class ExtensionsRuntimeService:
             self._snapshot_freshness = "live"
             self._last_refresh_at = self._now_iso()
             self._last_refresh_error = None
+            self._route_cache.clear()
             self._persist_cache()
             return self._decorate_health(health)
+
+    async def _refresh_skill_inventory_if_changed(self, *, reason: str = "watcher") -> dict[str, Any]:
+        change = await asyncio.to_thread(SkillLoader.reload_if_changed)
+        if not change.get("changed"):
+            return change
+        self._last_skill_inventory_change = {
+            **change,
+            "changedAt": self._now_iso(),
+            "reason": reason,
+        }
+        await self._refresh_runtime_snapshot()
+        print(
+            "[ExtensionsRuntime] Skills inventory changed: "
+            f"reason={reason}, "
+            f"added={change.get('addedSkills') or []}, "
+            f"removed={change.get('removedSkills') or []}, "
+            f"updated={change.get('updatedSkills') or []}"
+        )
+        return change
+
+    def request_skill_inventory_refresh(self, *, reason: str = "manual") -> None:
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._refresh_skill_inventory_if_changed(reason=reason),
+                loop,
+            )
+            return
+        try:
+            change = SkillLoader.reload_if_changed()
+            if change.get("changed"):
+                self._last_skill_inventory_change = {
+                    **change,
+                    "changedAt": self._now_iso(),
+                    "reason": reason,
+                }
+                self._route_cache.clear()
+                self._cached_catalog = None
+                self._cached_health = None
+        except Exception as exc:
+            self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
+            print(f"[ExtensionsRuntime] Immediate skills inventory refresh failed: {type(exc).__name__}: {exc}")
+
+    def _ensure_skill_inventory_watcher(self) -> None:
+        task = self._skills_inventory_watcher_task
+        if task and not task.done():
+            return
+
+        async def _runner() -> None:
+            while True:
+                await asyncio.sleep(2.0)
+                try:
+                    await self._refresh_skill_inventory_if_changed(reason="watcher")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
+                    print(f"[ExtensionsRuntime] Skills inventory watcher failed: {type(exc).__name__}: {exc}")
+
+        self._skills_inventory_watcher_task = asyncio.create_task(_runner(), name="extensions_runtime:skills_inventory_watcher")
 
     async def start(
         self,
@@ -480,6 +558,7 @@ class ExtensionsRuntimeService:
         skill_refresh_task: asyncio.Task | None = None,
         mcp_init_task: asyncio.Task | None = None,
     ) -> None:
+        self._loop = asyncio.get_running_loop()
         if self._cached_catalog is None or self._cached_health is None:
             self._load_cache()
         if self._cached_catalog is None or self._cached_health is None:
@@ -491,6 +570,7 @@ class ExtensionsRuntimeService:
         self._last_refresh_error = None
 
         if self._background_refresh_task and not self._background_refresh_task.done():
+            self._ensure_skill_inventory_watcher()
             return
 
         async def _runner() -> None:
@@ -505,8 +585,18 @@ class ExtensionsRuntimeService:
                 print(f"[ExtensionsRuntime] Background refresh failed: {type(exc).__name__}: {exc}")
 
         self._background_refresh_task = asyncio.create_task(_runner(), name="extensions_runtime:refresh")
+        self._ensure_skill_inventory_watcher()
 
     async def stop(self) -> None:
+        self._loop = None
+        watcher_task = self._skills_inventory_watcher_task
+        if watcher_task and not watcher_task.done():
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
+        self._skills_inventory_watcher_task = None
         task = self._background_refresh_task
         if task and not task.done():
             task.cancel()

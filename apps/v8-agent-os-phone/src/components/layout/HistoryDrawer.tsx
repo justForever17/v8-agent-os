@@ -161,10 +161,11 @@ export function HistoryDrawer({
                                             {isOpen ? (
                                                 <View style={styles.items}>
                                                     {entries.map((item) => {
-                                                        const active = item.id === activeConversationId;
+                                                        const canonicalSessionId = item.sessionId || item.id;
+                                                        const active = canonicalSessionId === activeConversationId;
                                                     return (
                                                         <Pressable
-                                                            key={item.id}
+                                                            key={canonicalSessionId}
                                                             style={[
                                                                 styles.item,
                                                                 { backgroundColor: active ? colors.primarySoft : "transparent" },
@@ -178,7 +179,7 @@ export function HistoryDrawer({
                                                             />
                                                             <View style={styles.itemBody}>
                                                                 <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text }]} numberOfLines={1}>
-                                                                    {item.title || t(`会话 ${item.id.slice(0, 8)}`, `Conversation ${item.id.slice(0, 8)}`)}
+                                                                    {item.title || t(`会话 ${canonicalSessionId.slice(0, 8)}`, `Conversation ${canonicalSessionId.slice(0, 8)}`)}
                                                                 </Text>
                                                                 {(item.ownerRuntime || item.workflowStatus || Number(item.pendingApprovalCount || 0) > 0 || item.recoverable) ? (
                                                                     <View style={styles.badgeRow}>

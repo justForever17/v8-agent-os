@@ -15,7 +15,6 @@ import { ArtifactsPanel } from "@/src/components/chat/ArtifactsPanel";
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
 import { MessageBubble } from "@/src/components/chat/MessageBubble";
-import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
 import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -180,6 +179,8 @@ export const ChatWindow = memo(function ChatWindow({
         title: t("没有消息历史", "No messages yet"),
         subtitle: t("打个招呼吧", "Start the conversation"),
     };
+    const scrollToBottomOffset = Math.max(92, bottomInset - 40);
+    const hudBottomOffset = Math.max(56, bottomInset - 96);
 
     useEffect(() => {
         if (isAtBottom) {
@@ -278,15 +279,28 @@ export const ChatWindow = memo(function ChatWindow({
 
             {!isAtBottom ? (
                 <Pressable
-                    style={[styles.scrollToBottom, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
+                    style={[
+                        styles.scrollToBottom,
+                        {
+                            backgroundColor: colors.surfaceStrong,
+                            borderColor: colors.border,
+                            bottom: scrollToBottomOffset,
+                        },
+                    ]}
                     onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
                 >
                     <MaterialCommunityIcons name="arrow-down" size={18} color={colors.text} />
                 </Pressable>
             ) : null}
 
-            <View style={[styles.hudStack, isLandscape && styles.hudStackLandscape]}>
-                {processes.length > 0 ? <ProcessesHUD processes={processes} /> : null}
+            <View
+                pointerEvents="box-none"
+                style={[
+                    styles.hudStack,
+                    isLandscape && styles.hudStackLandscape,
+                    { bottom: hudBottomOffset },
+                ]}
+            >
                 {pendingApproval && isAskUserApproval(pendingApproval) ? (
                     <Pressable
                         style={[styles.artifactsPill, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
@@ -415,7 +429,6 @@ const styles = StyleSheet.create({
     scrollToBottom: {
         position: "absolute",
         right: 18,
-        bottom: 190,
         zIndex: 12,
         width: 38,
         height: 38,
@@ -432,14 +445,12 @@ const styles = StyleSheet.create({
     hudStack: {
         position: "absolute",
         right: 16,
-        bottom: 132,
         zIndex: 18,
         width: 228,
         gap: 6,
     },
     hudStackLandscape: {
         right: 18,
-        bottom: 118,
     },
     artifactsPill: {
         minHeight: 28,

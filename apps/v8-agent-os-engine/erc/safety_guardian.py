@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import shlex
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,7 +46,7 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
             "patterns": [
                 "taskkill",
                 "pkill",
-                "kill ",
+                "kill",
                 "git push",
                 "curl -x post",
                 "invoke-webrequest",
@@ -371,11 +372,17 @@ class SafetyDecision:
         }
 
     def to_interrupt_request(self, *, question: str, tool_call_id: str = "") -> Dict[str, Any]:
+        runtime_context = self.details.get("runtime_context") if isinstance(self.details, dict) else {}
+        runtime_kind = runtime_context.get("runtime_kind") if isinstance(runtime_context, dict) else None
         return {
             "question": question,
             "prompt": question,
             "toolCallId": tool_call_id,
             "approvalKind": "safety_review" if self.is_review() else "safety_blocked",
+            "riskCode": self.risk_code,
+            "reviewMode": "human_approval" if self.is_review() else "blocked",
+            "runtimeKind": runtime_kind or "unknown",
+            "targetSurface": "governance_hud",
             "safety": self.to_payload(),
         }
 
@@ -655,7 +662,7 @@ class SafetyGuardian:
 
         for rule in config["commandRules"]:
             for pattern in rule["patterns"]:
-                if pattern and pattern.lower() in normalized:
+                if self._matches_command_pattern(command, pattern):
                     verdict = "block" if rule["verdict"] == "block" else "review"
                     return SafetyDecision(
                         verdict=verdict,
@@ -1439,6 +1446,35 @@ class SafetyGuardian:
     def _matches_patterns(self, value: str, patterns: list[str]) -> bool:
         lower = (value or "").lower()
         return any(pattern.lower() in lower for pattern in patterns if pattern)
+
+    def _command_tokens(self, command: str) -> list[str]:
+        normalized = (command or "").strip().lower()
+        if not normalized:
+            return []
+        try:
+            return [token.lower() for token in shlex.split(normalized, posix=False) if token]
+        except Exception:
+            return [token for token in re.split(r"\s+", normalized) if token]
+
+    def _matches_command_pattern(self, command: str, pattern: str) -> bool:
+        normalized_pattern = str(pattern or "").strip().lower()
+        normalized_command = str(command or "").strip().lower()
+        if not normalized_pattern or not normalized_command:
+            return False
+
+        pattern_tokens = self._command_tokens(normalized_pattern)
+        command_tokens = self._command_tokens(normalized_command)
+        if pattern_tokens and command_tokens:
+            window = len(pattern_tokens)
+            for index in range(0, len(command_tokens) - window + 1):
+                if command_tokens[index:index + window] == pattern_tokens:
+                    return True
+
+        if " " in normalized_pattern:
+            return normalized_pattern in normalized_command
+
+        boundary_pattern = rf"(?<![a-z0-9_./-]){re.escape(normalized_pattern)}(?![a-z0-9_./-])"
+        return re.search(boundary_pattern, normalized_command) is not None
 
     def _command_patterns(self, command_rules: list[Dict[str, Any]], *, verdict: str) -> list[str]:
         patterns: list[str] = []

@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef } from "react";
-import { Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
+import { memo, type ReactNode, useEffect, useRef } from "react";
+import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Blocks, Bot, Cpu, Database, Globe, RadioTower, TerminalSquare, Workflow } from "lucide-react-native";
 
@@ -184,14 +184,30 @@ export const RuntimeDock = memo(function RuntimeDock({
     selectedRuntimeId,
     panelOpen,
     onSelectRuntime,
+    leadingAccessory,
 }: {
     items: PhoneRuntimeStageCard[];
     selectedRuntimeId: PhoneRuntimeId | null;
     panelOpen: boolean;
     onSelectRuntime: (runtimeId: PhoneRuntimeId) => void;
+    leadingAccessory?: ReactNode;
 }) {
     const { colors, themeMode } = useUiPrefs();
     const dark = themeMode === "dark";
+    const scrollRef = useRef<ScrollView | null>(null);
+
+    useEffect(() => {
+        const selectedIndex = items.findIndex((item) => item.id === selectedRuntimeId);
+        if (selectedIndex < 0) {
+            return;
+        }
+        const estimatedItemWidth = 31;
+        const leadingAccessoryOffset = leadingAccessory ? 78 : 0;
+        const estimatedOffset = Math.max(0, leadingAccessoryOffset + (selectedIndex * estimatedItemWidth) - 48);
+        requestAnimationFrame(() => {
+            scrollRef.current?.scrollTo({ x: estimatedOffset, animated: true });
+        });
+    }, [items, leadingAccessory, selectedRuntimeId]);
 
     return (
         <View
@@ -203,38 +219,62 @@ export const RuntimeDock = memo(function RuntimeDock({
                 },
             ]}
         >
-            {items.map((item) => {
-                const selected = panelOpen && item.id === selectedRuntimeId;
-                return (
-                    <RuntimeDockItem
-                        key={item.id}
-                        item={item}
-                        selected={selected}
-                        dark={dark}
-                        colors={colors}
-                        onSelectRuntime={onSelectRuntime}
-                    />
-                );
-            })}
+            <ScrollView
+                ref={scrollRef}
+                style={styles.scroll}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                overScrollMode="never"
+                directionalLockEnabled
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.scrollContent}
+            >
+                {leadingAccessory ? <View style={styles.leadingAccessory}>{leadingAccessory}</View> : null}
+                {items.map((item) => {
+                    const selected = panelOpen && item.id === selectedRuntimeId;
+                    return (
+                        <RuntimeDockItem
+                            key={item.id}
+                            item={item}
+                            selected={selected}
+                            dark={dark}
+                            colors={colors}
+                            onSelectRuntime={onSelectRuntime}
+                        />
+                    );
+                })}
+            </ScrollView>
         </View>
     );
 });
 
 const styles = StyleSheet.create({
     wrap: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 0.5,
         borderWidth: 1,
         borderRadius: radii.pill,
         paddingHorizontal: 3,
         paddingVertical: 3,
-        flexShrink: 0,
+        flex: 1,
+        minWidth: 0,
+        flexShrink: 1,
         shadowColor: "#0F172A",
         shadowOpacity: 0.08,
         shadowRadius: 20,
         shadowOffset: { width: 0, height: 10 },
         elevation: 2,
+    },
+    scrollContent: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 3,
+        paddingRight: 2,
+    },
+    scroll: {
+        flexGrow: 0,
+        minWidth: 0,
+    },
+    leadingAccessory: {
+        flexShrink: 0,
     },
     item: {
         width: 28,

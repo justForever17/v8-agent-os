@@ -70,7 +70,7 @@ export default function SessionsScreen() {
         setBusy(true);
         try {
             const created = await createConversation(authorizedFetch, t("新对话", "New chat"));
-            await setActiveConversationId(created.id);
+            await setActiveConversationId(created.sessionId || created.id);
             await load();
             router.push("/chat" as Href);
         } catch (error) {
@@ -81,6 +81,7 @@ export default function SessionsScreen() {
     };
 
     const remove = async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
         Alert.alert(t("删除会话", "Delete conversation"), t("确定删除这个会话吗？", "Delete this conversation?"), [
             { text: t("取消", "Cancel"), style: "cancel" },
             {
@@ -88,8 +89,8 @@ export default function SessionsScreen() {
                 style: "destructive",
                 onPress: async () => {
                     try {
-                        await deleteConversation(authorizedFetch, item.id);
-                        if (activeConversationId === item.id) {
+                        await deleteConversation(authorizedFetch, canonicalSessionId);
+                        if (activeConversationId === canonicalSessionId) {
                             await setActiveConversationId(null);
                         }
                         await load();
@@ -145,12 +146,13 @@ export default function SessionsScreen() {
                                 </View>
 
                                 {grouped[groupKey].map((item) => {
-                                    const active = item.id === activeConversationId;
+                                    const canonicalSessionId = item.sessionId || item.id;
+                                    const active = canonicalSessionId === activeConversationId;
                                     return (
                                         <Pressable
-                                            key={item.id}
+                                            key={canonicalSessionId}
                                             onPress={async () => {
-                                                await setActiveConversationId(item.id);
+                                                await setActiveConversationId(canonicalSessionId);
                                                 router.push("/chat" as Href);
                                             }}
                                         >
@@ -159,7 +161,7 @@ export default function SessionsScreen() {
                                                     <View style={[styles.itemDot, active && styles.itemDotActive]} />
                                                     <View style={styles.itemBody}>
                                                         <Text style={styles.itemTitle} numberOfLines={1}>
-                                                            {item.title || t(`会话 ${item.id.slice(0, 8)}`, `Conversation ${item.id.slice(0, 8)}`)}
+                                                            {item.title || t(`会话 ${canonicalSessionId.slice(0, 8)}`, `Conversation ${canonicalSessionId.slice(0, 8)}`)}
                                                         </Text>
                                                         <Text style={styles.itemMeta}>
                                                             {formatRelativeTime(item.updatedAt || item.createdAt || "", locale)}

@@ -34,6 +34,12 @@ function asRecord(value: unknown): JsonRecord {
 }
 
 const TODO_TOOL_NAMES = new Set(["write_todos", "update_todo"]);
+const TODO_MUTATION_PATTERNS = [
+  /command\s*\(\s*update\s*=\s*\{[^)]*todos/i,
+  /\bpersistent task plan\b/i,
+  /\btodo\s*#?\d+\b.*\b(marked|updated|done|in_progress|pending|skipped|created)\b/i,
+  /\bcreated with\s+\d+\s+items\b/i,
+];
 
 function normalizeToolName(value: unknown) {
   return normalizeString(value);
@@ -62,12 +68,59 @@ function resolveArtifactMetadata(value: unknown) {
   );
 }
 
+function stringLooksLikeTodoMutation(value: unknown) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return false;
+  }
+  return TODO_MUTATION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function containsTodoMutationHint(value: unknown, depth = 0): boolean {
+  if (depth > 4 || value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    return stringLooksLikeTodoMutation(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => containsTodoMutationHint(item, depth + 1));
+  }
+
+  if (typeof value !== "object") {
+    return false;
+  }
+
+  const record = asRecord(value);
+  if (isTodoToolName(resolveToolName(record))) {
+    return true;
+  }
+
+  if (Array.isArray(record.todos) || typeof record.todos === "object" && record.todos !== null) {
+    return true;
+  }
+
+  const update = asRecord(record.update);
+  if (Array.isArray(update.todos) || typeof update.todos === "object" && update.todos !== null || "todo" in update) {
+    return true;
+  }
+
+  const request = asRecord(record.request);
+  if (Array.isArray(request.todos) || typeof request.todos === "object" && request.todos !== null || "todo" in request) {
+    return true;
+  }
+
+  return Object.values(record).some((nested) => containsTodoMutationHint(nested, depth + 1));
+}
+
 export function isTodoToolName(value: unknown) {
   return TODO_TOOL_NAMES.has(normalizeToolName(value));
 }
 
 export function isTodoToolRuntimePayload(value: unknown) {
-  return isTodoToolName(resolveToolName(value));
+  return isTodoToolName(resolveToolName(value)) || containsTodoMutationHint(value);
 }
 
 export function isSurfaceVisibleArtifactPayload(value: unknown) {
@@ -320,9 +373,7 @@ function isAskUserPayload(payload: JsonRecord) {
   const approvalKind = normalizeApprovalKind(payload);
   const interactionKind = normalizeInteractionKind(payload);
   return interactionKind === "ask_user"
-    || approvalKind === "human_input_required"
-    || approvalKind === "ask_user"
-    || approvalKind === "waiting_input";
+    || approvalKind === "ask_user";
 }
 
 function normalizeTypedEventType(type: string) {
@@ -774,7 +825,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       runtimeId: runtimeId || (askUserInteraction ? "chat" : "automation"),
       scope,
       visibility,
-      targets: askUserInteraction ? ["message", "hud", "runtime_card"] : ["approval", "hud", "runtime_card", "message"],
+      targets: askUserInteraction ? ["message", "hud", "runtime_card"] : ["approval", "hud", "runtime_card"],
       actorLabel,
       data: {
         question:

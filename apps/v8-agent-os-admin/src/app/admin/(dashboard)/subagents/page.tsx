@@ -81,12 +81,26 @@ type BridgeToolsPayload = {
 };
 
 type ExtensionsCatalogPayload = {
+    fingerprint?: string | null;
+    changedAt?: string | null;
+    lastSkillInventoryChange?: {
+        reason?: string | null;
+        changedAt?: string | null;
+        fingerprint?: string | null;
+        addedSkills?: string[];
+        removedSkills?: string[];
+        updatedSkills?: string[];
+    } | null;
     summary?: {
         mcpServerCount?: number;
         connectedMcpServerCount?: number;
         mcpToolCount?: number;
     };
     skills?: {
+        root?: string;
+        roots?: string[];
+        fingerprint?: string | null;
+        changedAt?: string | null;
         items?: SkillEntry[];
     };
     mcp?: {

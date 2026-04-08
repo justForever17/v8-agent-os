@@ -36,8 +36,10 @@ import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import {
     createInitialSessionRealtimeMessageState,
+    type AdminProcessRef,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isAskUserInteractionApproval,
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
@@ -46,6 +48,11 @@ import {
 
 const AskUserModal = dynamic(
     () => import("@/components/chat/AskUserModal").then((mod) => mod.AskUserModal),
+    { ssr: false }
+);
+
+const GovernanceApprovalModal = dynamic(
+    () => import("@/components/chat/GovernanceApprovalModal").then((mod) => mod.GovernanceApprovalModal),
     { ssr: false }
 );
 
@@ -147,6 +154,128 @@ function deriveHistoryPreview(
     return undefined;
 }
 
+function buildWebMessageComparisonKeys(message: Message) {
+    const keys = new Set<string>();
+    const id = String(message.id || "").trim();
+    const runId = String(message.runId || "").trim();
+    const role = String(message.role || "").trim();
+    const timestamp = Number(message.timestamp || 0) || 0;
+    if (id) keys.add(`id:${id}`);
+    if (runId && role) keys.add(`run:${runId}:${role}`);
+    if (role && timestamp > 0) keys.add(`role:${role}:ts:${timestamp}`);
+    return Array.from(keys);
+}
+
+function buildWebMessageRichness(message: Message | null | undefined) {
+    if (!message) {
+        return 0;
+    }
+    return (
+        String(message.content || "").trim().length
+        + ((message.nodes || []).length * 120)
+        + ((message.artifacts || []).length * 200)
+        + ((message.images || []).length * 80)
+    );
+}
+
+function mergeWebMessagePayload(base: Message, incoming: Message): Message {
+    const merged: Message = {
+        ...base,
+        ...incoming,
+        metadata: {
+            ...(base.metadata || {}),
+            ...(incoming.metadata || {}),
+        },
+    };
+    if ((base.nodes?.length || 0) > (incoming.nodes?.length || 0)) {
+        merged.nodes = base.nodes;
+    }
+    if ((base.artifacts?.length || 0) > (incoming.artifacts?.length || 0)) {
+        merged.artifacts = base.artifacts;
+    }
+    if ((base.images?.length || 0) > (incoming.images?.length || 0)) {
+        merged.images = base.images;
+    }
+    if (buildWebMessageRichness(base) > buildWebMessageRichness(incoming) && !String(incoming.content || "").trim()) {
+        merged.content = base.content;
+    }
+    if (!merged.agentName && base.agentName) merged.agentName = base.agentName;
+    if (!merged.agentAvatar && base.agentAvatar) merged.agentAvatar = base.agentAvatar;
+    if (!merged.agentRoleLabel && base.agentRoleLabel) merged.agentRoleLabel = base.agentRoleLabel;
+    if (!merged.toolInvocations?.length && base.toolInvocations?.length) {
+        merged.toolInvocations = base.toolInvocations;
+    }
+    return merged;
+}
+
+function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: unknown[]) {
+    const normalizedSnapshot = normalizeProjectedMessages(projectedMessages);
+    if (current.length === 0) {
+        return normalizeMessagesForState(normalizedSnapshot);
+    }
+    const currentByKey = new Map<string, Message>();
+    current.forEach((message) => {
+        buildWebMessageComparisonKeys(message).forEach((key) => {
+            if (!currentByKey.has(key)) {
+                currentByKey.set(key, message);
+            }
+        });
+    });
+    return normalizeMessagesForState(
+        normalizedSnapshot.map((snapshotMessage) => {
+            const matchingCurrent = buildWebMessageComparisonKeys(snapshotMessage)
+                .map((key) => currentByKey.get(key))
+                .find(Boolean);
+            if (!matchingCurrent) {
+                return snapshotMessage;
+            }
+            return mergeWebMessagePayload(matchingCurrent, snapshotMessage);
+        }),
+    );
+}
+
+function dedupeProcesses(processes: AdminProcessRef[]) {
+    return Array.from(
+        new Map(
+            processes
+                .filter((process) => String(process.processId || process.commandId || "").trim())
+                .map((process) => [String(process.processId || process.commandId || "").trim(), process]),
+        ).values(),
+    );
+}
+
+function filterConversationProcesses(
+    processes: AdminProcessRef[],
+    {
+        activeConversationId,
+        currentConversationRunId,
+        messageIds,
+    }: {
+        activeConversationId: string | null;
+        currentConversationRunId: string;
+        messageIds: Set<string>;
+    },
+) {
+    return processes.filter((process) => {
+        if (!activeConversationId) {
+            return true;
+        }
+        const processSessionId = String((process as AdminProcessRef & { sessionId?: string | null }).sessionId || "").trim();
+        if (processSessionId) {
+            return processSessionId === activeConversationId;
+        }
+        const processRunId = String(process.runId || "").trim();
+        if (currentConversationRunId && processRunId) {
+            return processRunId === currentConversationRunId;
+        }
+        const sourceMessageId = String(process.sourceMessageId || "").trim();
+        if (sourceMessageId) {
+            return messageIds.has(sourceMessageId);
+        }
+        return true;
+    });
+}
+
 
 
 export default function ChatClient() {
@@ -188,7 +317,9 @@ export default function ChatClient() {
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
     const [askUserApprovalId, setAskUserApprovalId] = useState("");
     const [askUserRunId, setAskUserRunId] = useState("");
-    const [askUserInteractionKind, setAskUserInteractionKind] = useState<"ask_user" | "approval">("approval");
+    const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
+    const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
+    const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
     const [projects, setProjects] = useState<ProjectDescriptor[]>([]);
     const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
     const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -198,6 +329,7 @@ export default function ChatClient() {
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [runActionLoading, setRunActionLoading] = useState(false);
     const [sessionProjection, setSessionProjection] = useState<AuthoritativeSessionView | null>(null);
+    const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
     const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -298,7 +430,7 @@ export default function ChatClient() {
         },
         onCustomEvent: (event) => {
             if (event.name === "ask_user") {
-                applyPendingApproval({
+                applyAskUserPendingApproval({
                     id: event.data.approvalId || "",
                     run_id: event.run_id || event.data.runId || "",
                     approval_kind: event.data.approvalKind || "",
@@ -336,25 +468,83 @@ export default function ChatClient() {
     const pendingConversationCreationRef = useRef<Promise<string | null> | null>(null);
     const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
-    const hasPendingApproval = Boolean(askUserApprovalId);
+    const askUserPendingProjection = useMemo(
+        () => (sessionProjection?.approvals || []).find((item) => isAskUserInteractionApproval(item)) || null,
+        [sessionProjection?.approvals],
+    );
+    const governanceApprovals = useMemo(
+        () => (sessionProjection?.approvals || []).filter((item) => !isAskUserInteractionApproval(item)),
+        [sessionProjection?.approvals],
+    );
+    const governancePendingApproval = governanceApprovals[0] || null;
+    const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
+    const hasAskUserPending = Boolean(askUserApprovalId);
     const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
     const effectiveRunId = currentRun?.id || askUserRunId || projectionRunId;
-    const effectiveStatus = hasPendingApproval
-        ? "waiting_approval"
+    const effectiveStatus = hasAskUserPending
+        ? "waiting_input"
+        : governancePendingApprovalId || currentRun?.status === "waiting_approval"
+            ? "waiting_approval"
         : sessionProjection?.runtimeStatus
             || currentRun?.status
             || normalizeWorkflowStatusForRunBar(sessionProjection?.controls?.workflowStatus)
             || normalizeWorkflowStatusForRunBar(sessionProjection?.workflow?.status);
-    const projectionPendingApproval = (sessionProjection?.approvals?.length || 0) > 0;
-    const effectivePendingApproval = hasPendingApproval || projectionPendingApproval || currentRun?.status === "waiting_approval";
+    const effectivePendingApproval = Boolean(
+        governancePendingApprovalId
+        || currentRun?.status === "waiting_approval",
+    );
     const projectionTodos = sessionProjection?.todos?.items || [];
     const projectionTodoStale = Boolean(sessionProjection?.todos?.isStale);
-    const projectionProcesses = sessionProjection?.processes || [];
+    const projectionProcesses = useMemo(
+        () => {
+            const messageIds = new Set(
+                messages
+                    .map((message) => String(message.id || "").trim())
+                    .filter(Boolean),
+            );
+            const currentConversationRunId = String(currentRun?.id || projectionRunId || "").trim();
+            const projectionScopedProcesses = filterConversationProcesses(
+                dedupeProcesses(sessionProjection?.processes || []),
+                {
+                    activeConversationId,
+                    currentConversationRunId,
+                    messageIds,
+                },
+            );
+            const sessionScopedProcesses = dedupeProcesses(
+                (sessionProcessSurface || []).filter((process) => {
+                    const processSessionId = String((process as AdminProcessRef & { sessionId?: string | null }).sessionId || "").trim();
+                    return !activeConversationId || !processSessionId || processSessionId === activeConversationId;
+                }),
+            );
+            return dedupeProcesses([
+                ...projectionScopedProcesses,
+                ...sessionScopedProcesses,
+            ]);
+        },
+        [activeConversationId, currentRun?.id, messages, projectionRunId, sessionProcessSurface, sessionProjection?.processes],
+    );
     const projectionContextReferences = sessionProjection?.contextReferences || [];
     const projectionRuntimeTimeline = useMemo(
         () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
         [sessionProjection?.runtimeTimeline],
     );
+    const projectionTodosAllCompleted = projectionTodos.length > 0
+        && projectionTodos.every((item) => {
+            const status = String(item.status || "").trim().toLowerCase();
+            return status === "done" || status === "skipped";
+        });
+    const projectionHasActiveProcess = projectionProcesses.some((process) => {
+        const status = String(process.status || "").trim().toLowerCase();
+        return status !== "stopped"
+            && status !== "terminated"
+            && status !== "completed"
+            && status !== "failed";
+    });
+    const todoHudShouldAutoHide = projectionTodosAllCompleted
+        && !effectivePendingApproval
+        && !projectionHasActiveProcess
+        && !["running", "waiting_input", "waiting_approval", "queued", "pending", "starting", "streaming"].includes(String(effectiveStatus || "").trim().toLowerCase());
     const runtimeStageModel = useMemo(() => buildRuntimeStageModel(messages, {
         ownerRuntime: sessionProjection?.workflow?.ownerRuntime || sessionProjection?.summary?.ownerRuntime || null,
         status: effectiveStatus || null,
@@ -409,9 +599,8 @@ export default function ChatClient() {
                 : (sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || undefined),
             pendingApprovalCount: effectivePendingApproval
                 ? Math.max(
-                    Number(sessionProjection?.approvals?.length || 0),
+                    Number(governanceApprovals.length || 0),
                     Number(sessionProjection?.controls?.pendingApprovalCount || 0),
-                    askUserApprovalId ? 1 : 0,
                 )
                 : 0,
             hasPendingApproval: effectivePendingApproval,
@@ -420,9 +609,9 @@ export default function ChatClient() {
         });
     }, [
         activeConversationId,
-        askUserApprovalId,
         effectivePendingApproval,
         effectiveStatus,
+        governanceApprovals.length,
         historyPreview,
         patchConversationSummary,
         sessionProjection,
@@ -433,13 +622,12 @@ export default function ChatClient() {
         setAskUserQuestion("");
         setAskUserToolCallId("");
         setAskUserRunId("");
-        setAskUserInteractionKind("approval");
         if (options?.closeModal !== false) {
             setAskUserModalOpen(false);
         }
     }, []);
 
-    const applyPendingApproval = useCallback((approval: {
+    const applyAskUserPendingApproval = useCallback((approval: {
         id?: string;
         approval_id?: string;
         run_id?: string;
@@ -457,6 +645,11 @@ export default function ChatClient() {
         }
 
         const request = approval.request || {};
+        const interactionKind = approval.interactionKind || request.interactionKind || approval.approval_kind || request.approvalKind || "";
+        if (String(interactionKind).trim() !== "ask_user") {
+            clearApprovalState({ closeModal: false });
+            return;
+        }
         const approvalId = approval.id || approval.approval_id || "";
         const question = approval.question || approval.prompt || request.question || request.prompt || "";
         if (!approvalId || !question) {
@@ -464,23 +657,85 @@ export default function ChatClient() {
             return;
         }
 
-        const interactionKind =
-            approval.interactionKind
-            || request.interactionKind
-            || (approvalId ? "approval" : "ask_user");
         setAskUserApprovalId(approvalId);
         setAskUserToolCallId(approval.toolCallId || request.toolCallId || "");
         setAskUserQuestion(question);
         setAskUserRunId(approval.run_id || approval.runId || "");
-        setAskUserInteractionKind(interactionKind === "ask_user" ? "ask_user" : "approval");
         const shouldOpenModal =
             typeof options?.openModal === "boolean"
                 ? options.openModal
-                : interactionKind === "ask_user";
+                : true;
         if (shouldOpenModal) {
             setAskUserModalOpen(true);
         }
     }, [clearApprovalState]);
+
+    useEffect(() => {
+        const nextAskUserApprovalId = String(askUserPendingProjection?.id || "").trim();
+        if (!nextAskUserApprovalId) {
+            if (askUserApprovalId) {
+                clearApprovalState({ closeModal: true });
+            }
+            return;
+        }
+        if (nextAskUserApprovalId !== askUserApprovalId) {
+            applyAskUserPendingApproval(askUserPendingProjection, { openModal: false });
+        }
+    }, [applyAskUserPendingApproval, askUserApprovalId, askUserPendingProjection, clearApprovalState]);
+
+    useEffect(() => {
+        if (!governancePendingApprovalId) {
+            setGovernanceApprovalOpen(false);
+            if (dismissedGovernanceApprovalId) {
+                setDismissedGovernanceApprovalId("");
+            }
+            return;
+        }
+        if (dismissedGovernanceApprovalId === governancePendingApprovalId) {
+            return;
+        }
+        setGovernanceApprovalOpen(true);
+    }, [dismissedGovernanceApprovalId, governancePendingApprovalId]);
+
+    const openGovernanceApproval = useCallback(() => {
+        if (!governancePendingApprovalId) {
+            setSelectedRuntimeId("automation");
+            setIsTimelineOpen(true);
+            return;
+        }
+        setDismissedGovernanceApprovalId("");
+        setGovernanceApprovalOpen(true);
+    }, [governancePendingApprovalId]);
+
+    const handleGovernanceApprovalDismiss = useCallback(() => {
+        if (governancePendingApprovalId) {
+            setDismissedGovernanceApprovalId(governancePendingApprovalId);
+        }
+        setGovernanceApprovalOpen(false);
+    }, [governancePendingApprovalId]);
+
+    const handleGovernanceApprovalViewDetails = useCallback(() => {
+        if (governancePendingApprovalId) {
+            setDismissedGovernanceApprovalId(governancePendingApprovalId);
+        }
+        setGovernanceApprovalOpen(false);
+        setSelectedRuntimeId("automation");
+        setIsTimelineOpen(true);
+    }, [governancePendingApprovalId]);
+
+    const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean) => {
+        if (!governancePendingApprovalId) {
+            return;
+        }
+        setGovernanceApprovalBusy(true);
+        try {
+            await resolveApproval(governancePendingApprovalId, answer, approve);
+            setGovernanceApprovalOpen(false);
+            setDismissedGovernanceApprovalId("");
+        } finally {
+            setGovernanceApprovalBusy(false);
+        }
+    }, [governancePendingApprovalId, resolveApproval]);
 
     useEffect(() => {
         activeConversationIdRef.current = activeConversationId;
@@ -512,7 +767,7 @@ export default function ChatClient() {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
         }
-        const normalized = normalizeProjectedMessages(projectedMessages);
+        const normalized = mergeProjectedSnapshotMessages(messagesRef.current, projectedMessages);
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
@@ -524,37 +779,49 @@ export default function ChatClient() {
     }, [setMessages]);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
-        const snapshotRes = await fetch(`/api/realtime/sessions/${conversationId}/snapshot`, { cache: "no-store" });
-        if (!snapshotRes.ok) {
-            if (snapshotRes.status === 404) {
+        const detailRes = await fetch(`/api/client/conversations/${conversationId}`, { cache: "no-store" });
+        if (!detailRes.ok) {
+            if (detailRes.status === 404) {
                 router.replace("/chat");
                 return;
             }
-            throw new Error(`Failed to load authoritative snapshot: ${snapshotRes.status}`);
+            throw new Error(`Failed to load conversation detail: ${detailRes.status}`);
         }
 
-        const data = await snapshotRes.json();
-        const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
-        const projection = deriveAuthoritativeSessionView(snapshotPayload).view;
+        const data = await detailRes.json();
+        const detailPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+        const projectionPayload = (detailPayload?.projection && typeof detailPayload.projection === "object")
+            ? detailPayload.projection
+            : detailPayload;
+        const projection = deriveAuthoritativeSessionView(projectionPayload).view;
         setSessionProjection(projection);
-        if ((projection?.approvals?.length || 0) > 0) {
-            applyPendingApproval(projection?.approvals?.[0] || null, { openModal: false });
+        if (projection?.approvals?.length) {
+            const askUserApproval = projection.approvals.find((item) => isAskUserInteractionApproval(item)) || null;
+            if (askUserApproval) {
+                applyAskUserPendingApproval(askUserApproval, { openModal: false });
+            }
         }
 
-        const authoritativeMessages = Array.isArray(snapshotPayload?.snapshot?.messages)
-            ? snapshotPayload.snapshot.messages
-            : Array.isArray(snapshotPayload?.messages)
-                ? snapshotPayload.messages
+        const authoritativeMessages = Array.isArray(detailPayload?.messages)
+            ? detailPayload.messages
+            : Array.isArray(projectionPayload?.snapshot?.messages)
+                ? projectionPayload.snapshot.messages
+                : Array.isArray(projectionPayload?.messages)
+                    ? projectionPayload.messages
                 : [];
-        const normalized = normalizeProjectedMessages(authoritativeMessages);
-        latestRealtimeSeqRef.current = Number(snapshotPayload?.latestSeq || snapshotPayload?.snapshot?.latest_seq || 0);
+        const hasTimelineNodes = authoritativeMessages.some((message: Record<string, unknown>) => Array.isArray(message?.nodes));
+        const normalized = hasTimelineNodes
+            ? normalizeMessagesForState(authoritativeMessages as Message[])
+            : normalizeProjectedMessages(authoritativeMessages);
+        latestRealtimeSeqRef.current = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
         messagesRef.current = normalizeMessagesForState(normalized);
         setMessages(normalizeMessagesForState(normalized));
-    }, [applyPendingApproval, applyProjectedSnapshot, router, setMessages]);
+        setSessionProcessSurface(Array.isArray(detailPayload?.processes) ? detailPayload.processes : []);
+    }, [applyAskUserPendingApproval, applyProjectedSnapshot, router, setMessages]);
 
     const loadProjects = useCallback(async () => {
         setProjectsLoading(true);
@@ -619,6 +886,37 @@ export default function ChatClient() {
             setRunEntries([]);
         }
     }, []);
+
+    const loadSessionProcesses = useCallback(async (conversationId: string) => {
+        try {
+            const res = await fetch(`/api/client/sessions/${encodeURIComponent(conversationId)}/processes`, { cache: "no-store" });
+            if (!res.ok) {
+                setSessionProcessSurface([]);
+                return;
+            }
+            const data = await res.json().catch(() => ({}));
+            setSessionProcessSurface(Array.isArray(data?.processes) ? data.processes : []);
+        } catch (error) {
+            console.warn("[ChatClient] Failed to load session processes:", error);
+            setSessionProcessSurface([]);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!activeConversationId) {
+            setSessionProcessSurface([]);
+            return;
+        }
+
+        void loadSessionProcesses(activeConversationId);
+        const timer = window.setInterval(() => {
+            void loadSessionProcesses(activeConversationId);
+        }, 1800);
+
+        return () => {
+            window.clearInterval(timer);
+        };
+    }, [activeConversationId, loadSessionProcesses]);
 
     const buildScopePayload = useCallback((conversationId?: string | null) => ({
         conversationId: conversationId || activeConversationIdRef.current || undefined,
@@ -793,7 +1091,7 @@ export default function ChatClient() {
             const eventData = typeof normalizedEvent.data === "object" && normalizedEvent.data !== null
                 ? normalizedEvent.data as Record<string, unknown>
                 : {};
-            applyPendingApproval({
+            applyAskUserPendingApproval({
                 id: String(eventData.approvalId || ""),
                 run_id: String((normalizedEvent as Record<string, unknown>).run_id || ""),
                 request: {
@@ -883,7 +1181,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, setMessages]);
+    }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, setMessages]);
 
     useEffect(() => {
         return () => {
@@ -1081,14 +1379,12 @@ export default function ChatClient() {
         const eventSource = new EventSource(`/api/realtime/sessions/${activeConversationId}/stream`);
 
         const handleSnapshot = (event: MessageEvent) => {
-            if (isLocalStreamActive(activeConversationId)) {
-                return;
-            }
             try {
                 const data = JSON.parse(event.data);
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+                const localStreamActive = isLocalStreamActive(activeConversationId);
                 setSessionProjection((current) => deriveAuthoritativeSessionView(snapshotPayload).view || current);
-                if (Array.isArray(snapshotPayload?.snapshot?.messages)) {
+                if (!localStreamActive && Array.isArray(snapshotPayload?.snapshot?.messages)) {
                     applyProjectedSnapshot(
                         snapshotPayload.snapshot.messages,
                         Number(snapshotPayload.latestSeq || snapshotPayload.snapshot?.latest_seq || 0),
@@ -1127,6 +1423,25 @@ export default function ChatClient() {
             eventSource.close();
         };
     }, [activeConversationId, applyProjectedSnapshot, applyRemoteRuntimeEvent, isLocalStreamActive, loadConversationHistory]);
+
+    useEffect(() => {
+        if (!activeConversationId) {
+            return;
+        }
+        const hasRuntimeNeed = Boolean(
+            currentRun?.id
+            || sessionProjection?.runtimeStatus === "running"
+            || sessionProjection?.controls?.canInterrupt,
+        );
+        if (hasRuntimeNeed && sessionProcessSurface.length > 0 && projectionProcesses.length === 0) {
+            console.warn("[ChatClient] process surface dropped after hydration/filtering", {
+                activeConversationId,
+                currentRunId: currentRun?.id || projectionRunId || null,
+                sessionProcessSurface: sessionProcessSurface.length,
+                projectionProcessSurface: (sessionProjection?.processes || []).length,
+            });
+        }
+    }, [activeConversationId, currentRun?.id, projectionProcesses.length, projectionRunId, sessionProcessSurface.length, sessionProjection?.controls?.canInterrupt, sessionProjection?.processes, sessionProjection?.runtimeStatus]);
 
     // Auth Check UI
     if (status === "loading") {
@@ -1186,19 +1501,7 @@ export default function ChatClient() {
                             onInterrupt={handleInterruptRun}
                             onRetry={handleRetryRun}
                             onOpenApproval={() => {
-                                if (askUserApprovalId && askUserInteractionKind === "ask_user") {
-                                    setAskUserModalOpen(true);
-                                    return;
-                                }
-                                if ((sessionProjection?.approvals?.length || 0) > 0) {
-                                    applyPendingApproval(sessionProjection?.approvals?.[0] || null, {
-                                        openModal:
-                                            String(
-                                                sessionProjection?.approvals?.[0]?.request?.interactionKind
-                                                || "",
-                                            ).trim() === "ask_user",
-                                    });
-                                }
+                                openGovernanceApproval();
                             }}
                         />
                         <div className="ml-auto flex shrink-0 justify-end">
@@ -1330,7 +1633,11 @@ export default function ChatClient() {
                             style={hudStackStyle}
                         >
                             <ProcessesHUD processes={projectionProcesses} />
-                            <TodosHUD items={projectionTodos} isStale={projectionTodoStale} />
+                            <TodosHUD
+                                items={projectionTodos}
+                                isStale={projectionTodoStale}
+                                shouldAutoHide={todoHudShouldAutoHide}
+                            />
                         </div>
                         <div className="relative shrink-0">
                             <div className="pointer-events-none absolute inset-x-4 -top-7 hidden h-7 bg-gradient-to-t from-background via-background/82 to-transparent blur-sm sm:block" />
@@ -1364,6 +1671,16 @@ export default function ChatClient() {
                 onCancel={() => {
                     setAskUserModalOpen(false);
                 }}
+            />
+
+            <GovernanceApprovalModal
+                isOpen={governanceApprovalOpen}
+                approval={governancePendingApproval}
+                busy={governanceApprovalBusy}
+                onApprove={(answer) => handleGovernanceApprovalResolve(answer, true)}
+                onReject={(answer) => handleGovernanceApprovalResolve(answer, false)}
+                onViewDetails={handleGovernanceApprovalViewDetails}
+                onCancel={handleGovernanceApprovalDismiss}
             />
 
             <ArtifactsPanel sessionId={activeConversationId} />

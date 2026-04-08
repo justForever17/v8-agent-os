@@ -1,5 +1,14 @@
+import { useEffect } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import Animated, {
+    Easing,
+    cancelAnimation,
+    useAnimatedStyle,
+    useSharedValue,
+    withRepeat,
+    withTiming,
+} from "react-native-reanimated";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -21,12 +30,18 @@ function toneForStatus(status: string, colors: ReturnType<typeof useUiPrefs>["co
                 stateLabel: { zh: "运行中", en: "Running" },
             };
         case "waiting_approval":
-        case "waiting_input":
             return {
                 dot: colors.warning,
                 surface: "rgba(245,158,11,0.10)",
                 border: "rgba(245,158,11,0.18)",
                 stateLabel: { zh: "等待审批", en: "Waiting approval" },
+            };
+        case "waiting_input":
+            return {
+                dot: colors.warning,
+                surface: "rgba(245,158,11,0.10)",
+                border: "rgba(245,158,11,0.18)",
+                stateLabel: { zh: "等待输入", en: "Waiting input" },
             };
         case "failed":
         case "cancelled":
@@ -130,6 +145,29 @@ export function RunControlBar({
                 ? t("中断运行", "Interrupt run")
                 : t("当前无可执行动作", "No action available");
     const actionDisabled = !actionPress || busy || stateMode === "idle";
+    const motion = useSharedValue(0);
+    const highlightState = normalizedStatus === "running" || normalizedStatus === "waiting_approval";
+
+    useEffect(() => {
+        if (!highlightState) {
+            cancelAnimation(motion);
+            motion.value = withTiming(0, { duration: 160 });
+            return;
+        }
+        motion.value = withRepeat(
+            withTiming(1, { duration: 960, easing: Easing.inOut(Easing.ease) }),
+            -1,
+            true,
+        );
+        return () => {
+            cancelAnimation(motion);
+        };
+    }, [highlightState, motion]);
+
+    const stateMotionStyle = useAnimatedStyle(() => ({
+        opacity: highlightState ? 0.18 + (motion.value * 0.38) : 0,
+        transform: [{ scale: 0.94 + (motion.value * 0.2) }],
+    }));
 
     return (
         <View
@@ -147,6 +185,10 @@ export function RunControlBar({
                     },
                 ]}
             >
+                <Animated.View
+                    pointerEvents="none"
+                    style={[styles.stateMotionRing, { borderColor: tone.dot }, stateMotionStyle]}
+                />
                 <View style={[styles.stateLightOuter, { borderColor: tone.border }]} />
                 <View style={[styles.stateLight, { backgroundColor: tone.dot }]} />
             </View>
@@ -207,6 +249,13 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         borderWidth: 1,
         opacity: 0.52,
+    },
+    stateMotionRing: {
+        position: "absolute",
+        width: 23,
+        height: 23,
+        borderRadius: 999,
+        borderWidth: 1,
     },
     stateLight: {
         width: 8,

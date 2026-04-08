@@ -113,11 +113,12 @@ export const ApprovalCard = memo(function ApprovalCard({
                 </View>
                 <View style={styles.body}>
                     <View style={styles.header}>
-                        <Text style={[styles.title, { color: isDark ? accent.darkText : accent.lightText }]}>{title}</Text>
+                        <Text selectable style={[styles.title, { color: isDark ? accent.darkText : accent.lightText }]}>{title}</Text>
                         {displayStatus ? <Badge variant="outline">{displayStatus}</Badge> : null}
                     </View>
-                    <Text style={[styles.copy, { color: isDark ? accent.darkText : accent.lightText }]}>{body}</Text>
+                    <Text selectable style={[styles.copy, { color: isDark ? accent.darkText : accent.lightText }]}>{body}</Text>
                     <Text
+                        selectable
                         style={[
                             styles.hint,
                             {

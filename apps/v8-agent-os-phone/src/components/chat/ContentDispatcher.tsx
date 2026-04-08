@@ -3,7 +3,6 @@ import { StyleSheet, Text, View } from "react-native";
 import type { AdminProcessRef } from "@v8/session-realtime";
 
 import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
-import { InteractiveTerminalCard } from "@/src/components/chat/InteractiveTerminalCard";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
 import {
@@ -17,6 +16,12 @@ import type { ChatArtifact, PhoneUiExecutionNode, PhoneUiTimelineNode } from "@/
 
 const HIDDEN_TOOL_NAMES = new Set(["write_todos", "update_todo", "inspect_and_move_media"]);
 const TRACE_TOOL_NAMES = new Set(["download_media_for_vision"]);
+const TODO_MUTATION_PATTERNS = [
+    /command\s*\(\s*update\s*=\s*\{[^)]*todos/i,
+    /\bpersistent task plan\b/i,
+    /\btodo\s*#?\d+\b.*\b(marked|updated|done|in_progress|pending|skipped|created)\b/i,
+    /\bcreated with\s+\d+\s+items\b/i,
+];
 
 function tryParseJsonRecord(value: unknown): Record<string, unknown> | null {
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -55,6 +60,44 @@ function compactToolResult(toolName: string, value: unknown) {
     };
 }
 
+function looksLikeTodoMutationText(value: unknown) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return false;
+    }
+    return TODO_MUTATION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function containsTodoMutationHint(value: unknown, depth = 0): boolean {
+    if (depth > 4 || value === null || value === undefined) {
+        return false;
+    }
+    if (typeof value === "string") {
+        return looksLikeTodoMutationText(value);
+    }
+    if (Array.isArray(value)) {
+        return value.some((item) => containsTodoMutationHint(item, depth + 1));
+    }
+    if (typeof value !== "object") {
+        return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    const update = tryParseJsonRecord(record.update);
+    const request = tryParseJsonRecord(record.request);
+    if ("todos" in record || "todo" in record) {
+        return true;
+    }
+    if (update && ("todos" in update || "todo" in update)) {
+        return true;
+    }
+    if (request && ("todos" in request || "todo" in request)) {
+        return true;
+    }
+
+    return Object.values(record).some((nested) => containsTodoMutationHint(nested, depth + 1));
+}
+
 function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel: string): ToolInvocation {
     const toolName = String(
         executionNode.toolName
@@ -81,6 +124,26 @@ function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel:
         state: executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call",
         result: compactToolResult(toolName, result),
     };
+}
+
+function isTodoLikeExecutionNode(executionNode: PhoneUiExecutionNode) {
+    const toolName = String(
+        executionNode.toolName
+        || executionNode.data?.toolName
+        || executionNode.data?.tool_name
+        || "",
+    ).trim();
+    if (HIDDEN_TOOL_NAMES.has(toolName)) {
+        return true;
+    }
+
+    return (
+        looksLikeTodoMutationText(executionNode.label)
+        || looksLikeTodoMutationText(executionNode.content)
+        || containsTodoMutationHint(executionNode.args)
+        || containsTodoMutationHint(executionNode.result)
+        || containsTodoMutationHint(executionNode.data)
+    );
 }
 
 export const ContentDispatcher = memo(function ContentDispatcher({
@@ -112,6 +175,9 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     );
 
     const renderExecutionTool = (executionNode: PhoneUiExecutionNode) => {
+        if (isTodoLikeExecutionNode(executionNode)) {
+            return null;
+        }
         const toolInvocation = buildToolInvocation(executionNode, t("工具调用", "Tool call"));
         if (HIDDEN_TOOL_NAMES.has(toolInvocation.toolName)) {
             return null;
@@ -121,12 +187,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
             : undefined;
 
         if (matchedProcess) {
-            return (
-                <View style={styles.stack}>
-                    <ToolCard toolInvocation={toolInvocation} hideResult />
-                    <InteractiveTerminalCard process={matchedProcess} compact />
-                </View>
-            );
+            return <ToolCard toolInvocation={toolInvocation} hideResult />;
         }
 
         if (isBackgroundCommandTraceTool(toolInvocation.toolName)) {

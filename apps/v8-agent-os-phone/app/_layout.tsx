@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { Fragment, useEffect } from "react";
+import { Platform } from "react-native";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import "react-native-reanimated";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { AppSessionProvider } from "@/src/providers/app-session";
 import { UiPrefsProvider, useUiPrefs } from "@/src/providers/ui-prefs";
@@ -61,7 +63,15 @@ function AppNavigation() {
 export default function RootLayout() {
     return (
         <UiPrefsProvider>
-            <AppNavigation />
+            {Platform.OS === "web" ? (
+                <Fragment>
+                    <AppNavigation />
+                </Fragment>
+            ) : (
+                <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
+                    <AppNavigation />
+                </KeyboardProvider>
+            )}
         </UiPrefsProvider>
     );
 }

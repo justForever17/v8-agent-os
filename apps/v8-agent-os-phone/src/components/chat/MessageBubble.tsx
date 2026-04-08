@@ -4,6 +4,14 @@ import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
+import Animated, {
+    Easing,
+    cancelAnimation,
+    useAnimatedStyle,
+    useSharedValue,
+    withRepeat,
+    withTiming,
+} from "react-native-reanimated";
 
 import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
@@ -50,6 +58,91 @@ function imageUrl(adminBaseUrl: string, value: string) {
         return getWorkspaceFileUrl(adminBaseUrl, trimmed.replace(/^\/workspace\//, ""));
     }
     return normalizeRenderableWorkspaceUrl(adminBaseUrl, trimmed);
+}
+
+function AssistantWorkIndicator({
+    label,
+    subtitle,
+    active,
+    primaryColor,
+    textColor,
+    mutedColor,
+}: {
+    label: string;
+    subtitle?: string;
+    active: boolean;
+    primaryColor: string;
+    textColor: string;
+    mutedColor: string;
+}) {
+    const scan = useSharedValue(0);
+    const pulse = useSharedValue(0);
+
+    useEffect(() => {
+        if (!active) {
+            cancelAnimation(scan);
+            cancelAnimation(pulse);
+            scan.value = withTiming(0, { duration: 180 });
+            pulse.value = withTiming(0, { duration: 180 });
+            return;
+        }
+
+        scan.value = withRepeat(
+            withTiming(1, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
+            -1,
+            false,
+        );
+        pulse.value = withRepeat(
+            withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
+            -1,
+            true,
+        );
+
+        return () => {
+            cancelAnimation(scan);
+            cancelAnimation(pulse);
+        };
+    }, [active, pulse, scan]);
+
+    const scanStyle = useAnimatedStyle(() => ({
+        opacity: active ? 0.28 : 0.12,
+        transform: [{ translateX: -96 + (scan.value * 192) }],
+    }));
+    const pulseStyle = useAnimatedStyle(() => ({
+        opacity: active ? 0.2 + (pulse.value * 0.42) : 0.28,
+        transform: [{ scale: 0.92 + (pulse.value * 0.16) }],
+    }));
+    const dotStyle = useAnimatedStyle(() => ({
+        opacity: active ? 0.48 + (pulse.value * 0.42) : 0.6,
+        transform: [{ scale: 0.88 + (pulse.value * 0.2) }],
+    }));
+
+    return (
+        <View style={[styles.workIndicator, { borderColor: `${primaryColor}24`, backgroundColor: `${primaryColor}0F` }]}>
+            <Animated.View pointerEvents="none" style={[styles.workIndicatorScan, { backgroundColor: primaryColor }, scanStyle]} />
+            <View style={styles.workIndicatorOrbWrap}>
+                <Animated.View pointerEvents="none" style={[styles.workIndicatorPulse, { backgroundColor: primaryColor }, pulseStyle]} />
+                <View style={[styles.workIndicatorOrb, { borderColor: `${primaryColor}3A`, backgroundColor: `${primaryColor}16` }]}>
+                    <Animated.View style={[styles.workIndicatorDot, { backgroundColor: primaryColor }, dotStyle]} />
+                </View>
+            </View>
+            <View style={styles.workIndicatorCopy}>
+                <Text style={[styles.workIndicatorTitle, { color: textColor }]} numberOfLines={1}>
+                    {label}
+                </Text>
+                {subtitle ? (
+                    <Text style={[styles.workIndicatorSubtitle, { color: mutedColor }]} numberOfLines={1}>
+                        {subtitle}
+                    </Text>
+                ) : (
+                    <View style={styles.workIndicatorBars} pointerEvents="none">
+                        <View style={[styles.workIndicatorBar, { backgroundColor: `${primaryColor}42`, width: 70 }]} />
+                        <View style={[styles.workIndicatorBar, { backgroundColor: `${primaryColor}26`, width: 118 }]} />
+                    </View>
+                )}
+            </View>
+        </View>
+    );
 }
 
 function extractCommandPresetName(message: ChatMessage) {
@@ -258,6 +351,13 @@ export const MessageBubble = memo(function MessageBubble({
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText && supplementalArtifacts.length === 0;
     const horizontalBubbleLimit = Math.max(180, width - (isLandscape ? 232 : 134));
+    const sharedTextBubbleWidth = Math.max(
+        176,
+        Math.min(
+            horizontalBubbleLimit,
+            isLandscape ? 360 : 308,
+        ),
+    );
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
@@ -291,36 +391,6 @@ export const MessageBubble = memo(function MessageBubble({
                     : streamPhase === "error"
                         ? t("执行异常", "Stream error")
                         : "");
-    const assistantPhaseSubtitle = taskProgress?.subtitle || (streamPhase === "placeholder"
-        ? t("正在整理上下文并准备响应。", "Preparing context and the first response.")
-        : streamPhase === "task_planning"
-            ? taskProgress?.currentStep
-                ? t(`当前步骤：${taskProgress.currentStep}`, `Current step: ${taskProgress.currentStep}`)
-                : (typeof taskProgress?.completedCount === "number" && typeof taskProgress?.totalCount === "number" && taskProgress.totalCount > 0)
-                    ? t(
-                        `任务进度 ${taskProgress.completedCount}/${taskProgress.totalCount}，正在继续推进。`,
-                        `Task progress ${taskProgress.completedCount}/${taskProgress.totalCount}, continuing execution.`,
-                    )
-                    : t("任务步骤已建立，正在继续推进。", "Task steps are ready and execution is progressing.")
-        : streamPhase === "tooling"
-            ? taskProgress?.currentStep
-                ? t(`正在处理：${taskProgress.currentStep}`, `Working on: ${taskProgress.currentStep}`)
-                : t("正在调用相关工具并整理产物。", "Calling tools and preparing artifacts.")
-        : streamPhase === "artifact_ready"
-            ? taskProgress?.currentStep
-                ? t(`已生成产物：${taskProgress.currentStep}`, `Artifact ready: ${taskProgress.currentStep}`)
-                : t("产物已就绪，正在准备最终回复。", "Artifact is ready and preparing the final reply.")
-        : streamPhase === "waiting_input"
-            ? t("需要你的补充信息后才能继续。", "More input is needed before continuing.")
-        : streamPhase === "agent_started"
-            ? t("已进入执行阶段，正在启动相关运行时。", "Execution has started and runtimes are warming up.")
-        : streamPhase === "streaming"
-            ? t("正在持续整理结果并刷新回复内容。", "Streaming updates into the current reply.")
-        : streamPhase === "settling"
-            ? t("正在收尾并与最新快照对齐。", "Settling the run and aligning with the latest snapshot.")
-        : streamPhase === "error"
-            ? t("当前运行出现异常，请稍后查看结果。", "The current run hit an error. Please check the result in a moment.")
-                        : "");
     const showAssistantPhasePill = Boolean(assistantPhaseLabel) && !assistantActive;
 
     const openArtifact = async (artifact: ChatArtifact) => {
@@ -341,8 +411,15 @@ export const MessageBubble = memo(function MessageBubble({
         setCopied(true);
     };
 
-    const bubbleWidth = Math.min(Math.min(width * (isLandscape ? 0.66 : 0.82), isUser ? 420 : 560), horizontalBubbleLimit);
-    const assistantBubbleWidth = bubbleWidth;
+    const assistantBubbleWidth = voiceOnly
+        ? Math.min(width * 0.72, 300)
+        : sharedTextBubbleWidth;
+    const assistantMinWidth = voiceOnly
+        ? Math.min(width * 0.72, 300)
+        : sharedTextBubbleWidth;
+    const assistantColumnWidthStyle = voiceOnly
+        ? { maxWidth: assistantBubbleWidth, minWidth: assistantMinWidth }
+        : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
         const directContent = String(message.content || "").trim();
         if (directContent) {
@@ -380,18 +457,8 @@ export const MessageBubble = memo(function MessageBubble({
         return () => clearTimeout(timer);
     }, [copied]);
 
-    const userActionCount = Number(Boolean(copyValue)) + Number(Boolean(onDelete));
-    const userActionFootprint = userActionCount > 0
-        ? (userActionCount * 26) + (Math.max(userActionCount - 1, 0) * 6) + 8
-        : 0;
-    const userColumnWidth = Math.max(
-        156,
-        Math.min(
-            width - 42 - 12 - (isLandscape ? 178 : 108),
-            isLandscape ? 328 : 272,
-        ),
-    );
-    const userBubbleWidth = Math.max(152, userColumnWidth - Math.max(userActionFootprint - 2, 0));
+    const userColumnWidth = sharedTextBubbleWidth;
+    const userBubbleWidth = sharedTextBubbleWidth;
 
     if (isUser) {
         return (
@@ -483,7 +550,7 @@ export const MessageBubble = memo(function MessageBubble({
                 ) : null}
             </View>
 
-            <View style={[styles.assistantColumn, { maxWidth: assistantBubbleWidth, minWidth: voiceOnly ? Math.min(width * 0.72, 300) : 140 }]}>
+            <View style={[styles.assistantColumn, assistantColumnWidthStyle]}>
                 <View style={styles.agentMeta}>
                     <Text style={[styles.agentName, { color: palette.text }]} numberOfLines={1}>{resolvedAgentName}</Text>
                     {resolvedAgentRoleLabel ? (
@@ -552,19 +619,14 @@ export const MessageBubble = memo(function MessageBubble({
                                     );
                                 })
                             ) : (
-                                <View style={styles.placeholderWrap}>
-                                    <View style={[styles.placeholderBadge, { backgroundColor: `${palette.primary}14`, borderColor: `${palette.primary}28` }]}>
-                                        <MaterialCommunityIcons name="robot-excited-outline" size={16} color={palette.primary} />
-                                    </View>
-                                    <View style={styles.placeholderBody}>
-                                        <Text style={[styles.assistantText, styles.placeholderTitle, { color: palette.text }]}>
-                                            {assistantPhaseLabel || t("智能主管正在处理中…", "Supervisor is working...")}
-                                        </Text>
-                                        <Text style={[styles.placeholderSubtitle, { color: palette.textMuted }]}>
-                                            {assistantPhaseSubtitle}
-                                        </Text>
-                                    </View>
-                                </View>
+                                <AssistantWorkIndicator
+                                    active={assistantActive}
+                                    primaryColor={palette.primary}
+                                    textColor={palette.text}
+                                    mutedColor={palette.textMuted}
+                                    label={assistantPhaseLabel || t("工作中", "Working")}
+                                    subtitle={taskProgress?.currentStep || ""}
+                                />
                             )}
 
                             {supplementalArtifacts.length > 0 ? (
@@ -798,6 +860,7 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 10 },
         elevation: 2,
         overflow: "visible",
+        width: "100%",
     },
     assistantBubbleVoiceOnly: {
         minWidth: 260,
@@ -807,6 +870,7 @@ const styles = StyleSheet.create({
         borderRadius: 24,
         borderTopLeftRadius: 9,
         borderWidth: 1,
+        width: "100%",
     },
     assistantBubbleSheen: {
         height: 2,
@@ -818,6 +882,7 @@ const styles = StyleSheet.create({
         gap: 14,
         minWidth: 0,
         overflow: "visible",
+        width: "100%",
     },
     assistantInnerVoiceOnly: {
         paddingTop: 18,
@@ -827,33 +892,71 @@ const styles = StyleSheet.create({
         fontSize: 14,
         lineHeight: 21,
     },
-    placeholderWrap: {
+    workIndicator: {
+        minHeight: 56,
+        borderRadius: 18,
+        borderWidth: 1,
+        overflow: "hidden",
         flexDirection: "row",
-        alignItems: "flex-start",
-        gap: 10,
-        minHeight: 48,
+        alignItems: "center",
+        gap: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 11,
+        position: "relative",
     },
-    placeholderBadge: {
-        width: 32,
-        height: 32,
-        borderRadius: 16,
+    workIndicatorScan: {
+        position: "absolute",
+        top: 0,
+        bottom: 0,
+        width: 54,
+        borderRadius: 999,
+    },
+    workIndicatorOrbWrap: {
+        width: 36,
+        height: 36,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    workIndicatorPulse: {
+        position: "absolute",
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+    },
+    workIndicatorOrb: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
-        gap: 4,
     },
-    placeholderBody: {
+    workIndicatorDot: {
+        width: 9,
+        height: 9,
+        borderRadius: 999,
+    },
+    workIndicatorCopy: {
         flex: 1,
         minWidth: 0,
-        gap: 4,
+        gap: 5,
     },
-    placeholderTitle: {
-        fontWeight: "800",
-        lineHeight: 20,
+    workIndicatorTitle: {
+        fontSize: 13,
+        fontWeight: "900",
+        letterSpacing: -0.1,
     },
-    placeholderSubtitle: {
-        fontSize: 12,
-        lineHeight: 18,
+    workIndicatorSubtitle: {
+        fontSize: 11,
+        lineHeight: 16,
+        fontWeight: "600",
+    },
+    workIndicatorBars: {
+        gap: 5,
+    },
+    workIndicatorBar: {
+        height: 5,
+        borderRadius: 999,
     },
     voiceCardWrap: {
         alignSelf: "stretch",

@@ -34,26 +34,83 @@ function trimTerminalBuffer(value: string, limit = 24000) {
     return value.slice(value.length - limit);
 }
 
+const ANSI_ESCAPE_PATTERN = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
+
+function cleanTerminalOutput(value: string) {
+    return String(value || "")
+        .replace(ANSI_ESCAPE_PATTERN, "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n");
+}
+
+function appendTerminalOutput(current: string, chunk: string) {
+    const cleaned = cleanTerminalOutput(chunk);
+    return cleaned ? trimTerminalBuffer(`${current}${cleaned}`) : current;
+}
+
+function normalizeTerminalScreen(value: string) {
+    return trimTerminalBuffer(cleanTerminalOutput(value || ""), 32000);
+}
+
+function isRunningStatus(status: unknown) {
+    const normalized = String(status || "").trim().toLowerCase();
+    return normalized !== "stopped" && normalized !== "terminated" && normalized !== "completed" && normalized !== "failed";
+}
+
+function processOutputPath(process: AdminProcessRef) {
+    const explicitOutputPath = String(process.outputAdminPath || "").trim();
+    if (explicitOutputPath) {
+        return explicitOutputPath;
+    }
+    const explicitStreamPath = String(process.streamAdminPath || "").trim();
+    const sourcePath = explicitStreamPath || `/api/client/bg_processes/${encodeURIComponent(process.processId)}/ws`;
+    let pathOnly = sourcePath;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(sourcePath)) {
+        try {
+            const parsed = new URL(sourcePath);
+            pathOnly = `${parsed.pathname}${parsed.search || ""}`;
+        } catch {
+            pathOnly = "";
+        }
+    }
+    return pathOnly.replace(/\/ws(?:\?.*)?$/i, "");
+}
+
 export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     process,
     compact = false,
     onTerminated,
 }: InteractiveTerminalCardProps) {
+    const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
     const { adminBaseUrl, authorizedFetch } = useAppSession();
     const { colors, themeMode, t } = useUiPrefs();
-    const [isRunning, setIsRunning] = useState(() => String(process.status || "").trim().toLowerCase() !== "stopped");
+    const [isRunning, setIsRunning] = useState(() => isRunningStatus(process.status));
     const [isCollapsed, setIsCollapsed] = useState(compact);
-    const [terminalOutput, setTerminalOutput] = useState("");
+    const [terminalOutput, setTerminalOutput] = useState(() => normalizeTerminalScreen(String(processRecord.stableScreenSnapshot || process.screenSnapshot || "")));
     const [inputText, setInputText] = useState("");
     const [sendingInput, setSendingInput] = useState(false);
+    const [pollingEnabled, setPollingEnabled] = useState(false);
     const rotation = useRef(new Animated.Value(compact ? 1 : 0)).current;
     const scrollRef = useRef<ScrollView | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
+    const wsOpenedRef = useRef(false);
     const notifiedTerminationRef = useRef(false);
+    const outputPath = useMemo(
+        () => processOutputPath(process),
+        [process.outputAdminPath, process.processId, process.streamAdminPath],
+    );
+    const prefersScreenPolling = Boolean(process.usesTty && process.interactive);
 
     useEffect(() => {
-        setIsRunning(String(process.status || "").trim().toLowerCase() !== "stopped");
+        setIsRunning(isRunningStatus(process.status));
     }, [process.status]);
+
+    useEffect(() => {
+        const screenSnapshot = normalizeTerminalScreen(String(processRecord.stableScreenSnapshot || process.screenSnapshot || ""));
+        if (screenSnapshot) {
+            setTerminalOutput(screenSnapshot);
+        }
+    }, [process.screenSnapshot, processRecord.stableScreenSnapshot]);
 
     useEffect(() => {
         Animated.timing(rotation, {
@@ -69,45 +126,129 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             return undefined;
         }
 
-        const wsUrl = resolveAdminProcessWsUrl("phone", adminBaseUrl, process);
-        if (!wsUrl) {
+        if (prefersScreenPolling) {
+            setPollingEnabled(true);
             return undefined;
         }
+
+        const wsUrl = resolveAdminProcessWsUrl("phone", adminBaseUrl, process);
+        if (!wsUrl) {
+            setPollingEnabled(true);
+            return undefined;
+        }
+        let disposed = false;
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
+        wsOpenedRef.current = false;
         notifiedTerminationRef.current = false;
 
+        ws.onopen = () => {
+            if (disposed) {
+                return;
+            }
+            wsOpenedRef.current = true;
+            setPollingEnabled(false);
+        };
+
         ws.onmessage = (event) => {
+            if (disposed) {
+                return;
+            }
             const nextChunk = typeof event.data === "string" ? event.data : String(event.data ?? "");
             if (!nextChunk) {
                 return;
             }
-            setTerminalOutput((current) => trimTerminalBuffer(`${current}${nextChunk}`));
+            setTerminalOutput((current) => appendTerminalOutput(current, nextChunk));
         };
 
         ws.onclose = () => {
-            setIsRunning(false);
-            setTerminalOutput((current) => trimTerminalBuffer(`${current}\n[Process terminated]`));
-            if (!notifiedTerminationRef.current) {
-                notifiedTerminationRef.current = true;
-                onTerminated?.(process.processId);
+            if (disposed) {
+                return;
             }
+            if (!wsOpenedRef.current) {
+                setPollingEnabled(true);
+                return;
+            }
+            setIsRunning(false);
+            setTerminalOutput((current) => appendTerminalOutput(current, "\n[Process terminated]"));
         };
 
         ws.onerror = () => {
-            setIsRunning(false);
-            setTerminalOutput((current) => trimTerminalBuffer(`${current}\n[Connection error]`));
-            if (!notifiedTerminationRef.current) {
-                notifiedTerminationRef.current = true;
-                onTerminated?.(process.processId);
+            if (disposed) {
+                return;
             }
+            if (!wsOpenedRef.current) {
+                setPollingEnabled(true);
+                return;
+            }
+            setIsRunning(false);
+            setTerminalOutput((current) => appendTerminalOutput(current, "\n[Connection error]"));
         };
 
         return () => {
+            disposed = true;
             ws.close();
             wsRef.current = null;
         };
-    }, [adminBaseUrl, onTerminated, process]);
+    }, [adminBaseUrl, prefersScreenPolling, process]);
+
+    useEffect(() => {
+        if (!pollingEnabled || !process?.processId) {
+            return undefined;
+        }
+        if (!outputPath) {
+            return undefined;
+        }
+        let cancelled = false;
+        const poll = async () => {
+            try {
+                const response = await authorizedFetch(outputPath);
+                if (!response.ok) {
+                    return;
+                }
+                const payload = await response.json() as {
+                    output?: string;
+                    stableScreenSnapshot?: string;
+                    screenSnapshot?: string;
+                    awaitingInput?: boolean;
+                    is_running?: boolean;
+                    isRunning?: boolean;
+                    process?: {
+                        status?: string;
+                        is_running?: boolean;
+                        stable_screen_snapshot?: string;
+                        screen_snapshot?: string;
+                    };
+                };
+                if (cancelled) {
+                    return;
+                }
+                const nextScreen = normalizeTerminalScreen(
+                    String(payload.stableScreenSnapshot || payload.screenSnapshot || payload.process?.stable_screen_snapshot || payload.process?.screen_snapshot || ""),
+                );
+                if (prefersScreenPolling && nextScreen) {
+                    setTerminalOutput(nextScreen);
+                } else if (payload.output) {
+                    setTerminalOutput((current) => appendTerminalOutput(current, payload.output || ""));
+                }
+                const stillRunning = typeof payload.process?.status === "string"
+                    ? isRunningStatus(payload.process.status)
+                    : Boolean(payload.is_running ?? payload.isRunning ?? payload.process?.is_running);
+                setIsRunning(stillRunning);
+                if (!stillRunning) {
+                    setPollingEnabled(false);
+                }
+            } catch {
+                // Polling is a best-effort fallback for mobile WebSocket failures.
+            }
+        };
+        void poll();
+        const timer = setInterval(() => void poll(), 1200);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [authorizedFetch, outputPath, pollingEnabled, prefersScreenPolling, process.processId]);
 
     const handleTerminate = async () => {
         if (!process?.terminateAdminPath) {
@@ -163,6 +304,14 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     );
     const inputEnabled = Boolean(process.canInput) && isRunning;
     const canTerminate = Boolean(process.canTerminate) && isRunning;
+    const encodingWarning = useMemo(() => {
+        const state = String(process.encodingState || "").trim().toLowerCase();
+        if (!state || state === "clean") {
+            return "";
+        }
+        const note = String(process.encodingNotes || "").trim();
+        return note || t("终端编码异常，内容可能失真。", "Terminal encoding looks abnormal, content may be distorted.");
+    }, [process.encodingNotes, process.encodingState, t]);
 
     return (
         <Card style={styles.wrap}>
@@ -210,6 +359,14 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
 
             {!isCollapsed ? (
                 <CardContent style={styles.content}>
+                    {encodingWarning ? (
+                        <View style={[styles.warningBanner, { backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.14)" : "rgba(254,243,199,0.92)", borderColor: colors.warning }]}>
+                            <MaterialCommunityIcons name="alert-circle-outline" size={14} color={colors.warning} />
+                            <Text style={[styles.warningText, { color: colors.warning }]}>
+                                {encodingWarning}
+                            </Text>
+                        </View>
+                    ) : null}
                     <View style={[styles.terminalFrame, { backgroundColor: "#020617", borderColor: colors.border }]}>
                         <ScrollView
                             ref={scrollRef}
@@ -305,6 +462,21 @@ const styles = StyleSheet.create({
     content: {
         gap: spacing.sm,
         paddingTop: spacing.sm,
+    },
+    warningBanner: {
+        borderRadius: radii.md,
+        borderWidth: 1,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+    },
+    warningText: {
+        flex: 1,
+        fontSize: 11,
+        lineHeight: 16,
+        fontWeight: "600",
     },
     terminalFrame: {
         borderRadius: radii.md,

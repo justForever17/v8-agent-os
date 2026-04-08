@@ -708,7 +708,7 @@ export function InputArea({
             )}
 
             <div className="flex flex-col relative">
-                {(selectedCommandPreset || taskPlanningMode || selectedSkills.length > 0) && (
+                {(selectedCommandPreset || selectedSkills.length > 0) && (
                     <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
                         {selectedCommandPreset && (
                             <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
@@ -742,12 +742,6 @@ export function InputArea({
                                 </button>
                             </div>
                         ))}
-                        {taskPlanningMode && (
-                            <div className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200 sm:text-[11px]">
-                                <ListTodo className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
-                                <span>{t(lt("任务模式", "Task mode"))}</span>
-                            </div>
-                        )}
                     </div>
                 )}
 

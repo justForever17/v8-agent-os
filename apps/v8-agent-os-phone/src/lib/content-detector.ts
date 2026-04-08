@@ -3,6 +3,9 @@ export type PhoneContentBlockType =
     | "tool"
     | "artifact"
     | "voice"
+    | "image"
+    | "video"
+    | "audio"
     | "code"
     | "mermaid"
     | "html_snippet"
@@ -20,6 +23,97 @@ export type PhoneContentBlock = {
     data?: Record<string, unknown>;
 };
 
+function normalizeMediaTagAttributes(raw: string) {
+    return String(raw || "")
+        .replace(/\\"/g, "\"")
+        .replace(/\\'/g, "'")
+        .replace(/&quot;/gi, "\"")
+        .replace(/&#39;/gi, "'");
+}
+
+function pushPlainTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex: { current: number }) {
+    const text = String(content || "");
+    if (!text) {
+        return;
+    }
+
+    blocks.push({
+        id: `text-${blockIndex.current++}`,
+        type: text.includes("```") ? "markdown" : "text",
+        content: text,
+    });
+}
+
+function parseInlineMediaTag(raw: string) {
+    const trimmed = normalizeMediaTagAttributes(String(raw || "").trim());
+    if (!trimmed) {
+        return null;
+    }
+
+    const pairedMatch = trimmed.match(/^<(video|audio)\b([^>]*)>(?:[\s\S]*?)<\/\1>$/i);
+    const imageMatch = trimmed.match(/^<img\b([^>]*)\/?>$/i);
+    const type = pairedMatch?.[1]?.toLowerCase() || (imageMatch ? "image" : "");
+    const attrs = pairedMatch?.[2] || imageMatch?.[1] || "";
+    if (!type || !attrs) {
+        return null;
+    }
+
+    const src = attrs.match(/\ssrc=(["'])(.*?)\1/i)?.[2]
+        || attrs.match(/\ssrc=([^\s>]+)/i)?.[1]
+        || "";
+    if (!src.trim()) {
+        return null;
+    }
+
+    const title = attrs.match(/\stitle=(["'])(.*?)\1/i)?.[2]
+        || attrs.match(/\salt=(["'])(.*?)\1/i)?.[2]
+        || "";
+
+    return {
+        type: type as "image" | "video" | "audio",
+        src: src.trim(),
+        title: title.trim() || undefined,
+    };
+}
+
+function pushRenderableTextBlocks(blocks: PhoneContentBlock[], content: string, blockIndex: { current: number }) {
+    const text = String(content || "");
+    if (!text) {
+        return;
+    }
+
+    const mediaTagRegex = /<(video|audio)\b[^>]*>[\s\S]*?<\/\1>|<img\b[^>]*\/?>/gi;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = mediaTagRegex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+            pushPlainTextBlock(blocks, text.slice(lastIndex, match.index), blockIndex);
+        }
+
+        const media = parseInlineMediaTag(match[0]);
+        if (media) {
+            blocks.push({
+                id: `${media.type}-${blockIndex.current++}`,
+                type: media.type,
+                content: media.src,
+                data: {
+                    src: media.src,
+                    title: media.title,
+                },
+            });
+        } else {
+            pushPlainTextBlock(blocks, match[0], blockIndex);
+        }
+
+        lastIndex = mediaTagRegex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+        pushPlainTextBlock(blocks, text.slice(lastIndex), blockIndex);
+    }
+}
+
 function pushTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex: { current: number }) {
     const text = String(content || "");
     if (!text) {
@@ -34,11 +128,7 @@ function pushTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex:
         if (match.index > lastIndex) {
             const before = text.slice(lastIndex, match.index);
             if (before) {
-                blocks.push({
-                    id: `text-${blockIndex.current++}`,
-                    type: "text",
-                    content: before,
-                });
+                pushRenderableTextBlocks(blocks, before, blockIndex);
             }
         }
 
@@ -63,11 +153,7 @@ function pushTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex:
     if (lastIndex < text.length) {
         const rest = text.slice(lastIndex);
         if (rest) {
-            blocks.push({
-                id: `text-${blockIndex.current++}`,
-                type: rest.includes("```") ? "markdown" : "text",
-                content: rest,
-            });
+            pushRenderableTextBlocks(blocks, rest, blockIndex);
         }
     }
 }
@@ -91,8 +177,8 @@ export function parsePhoneContentBlocks(content: string, isStreaming = false, st
     }
 
     if (isStreaming) {
-        const incompleteTagMatch = processedContent.match(/<(?:t|th|thi|thin|think|to|too|tool|a|ar|art|arti|artif|artifa|artifac|artifact|v|vo|voi|voic|voice|\/|\/t|\/th|\/thi|\/thin|\/think|\/a|\/ar|\/art|\/arti|\/artif|\/artifac|\/artifact|\/v|\/vo|\/voi|\/voic|\/voice)[^>]*$/i);
-        const incompleteAttrMatch = processedContent.match(/<(?:tool-call|artifact|voice)[^>]+$/i);
+        const incompleteTagMatch = processedContent.match(/<(?:t|th|thi|thin|think|to|too|tool|a|ar|art|arti|artif|artifa|artifac|artifact|v|vo|voi|voic|voice|vid|vide|video|au|aud|audi|audio|im|img|\/|\/t|\/th|\/thi|\/thin|\/think|\/a|\/ar|\/art|\/arti|\/artif|\/artifac|\/artifact|\/v|\/vo|\/voi|\/voic|\/voice|\/vid|\/vide|\/video|\/au|\/aud|\/audi|\/audio)[^>]*$/i);
+        const incompleteAttrMatch = processedContent.match(/<(?:tool-call|artifact|voice|video|audio|img)[^>]+$/i);
         if (incompleteTagMatch) {
             processedContent = processedContent.slice(0, incompleteTagMatch.index);
         } else if (incompleteAttrMatch && !incompleteAttrMatch[0].endsWith(">")) {

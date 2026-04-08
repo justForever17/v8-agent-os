@@ -197,7 +197,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                                 },
                             ]}
                         >
-                            <Text style={[styles.contentText, { color: themeMode === "dark" ? "#A1A1AA" : "#52525B" }]}>
+                            <Text selectable style={[styles.contentText, { color: themeMode === "dark" ? "#A1A1AA" : "#52525B" }]}>
                                 {content}
                             </Text>
                             {isStreaming ? <View style={[styles.cursor, { backgroundColor: colors.primary }]} /> : null}

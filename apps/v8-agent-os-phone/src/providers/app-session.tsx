@@ -1,7 +1,13 @@
 import React from "react";
 import { Platform } from "react-native";
 
-import { buildAdminApiUrl, normalizeAdminBaseUrl, parseJsonSafe } from "@/src/lib/admin-client";
+import {
+    buildAdminApiUrl,
+    normalizeAdminBaseUrl,
+    parseJsonSafe,
+    streamSse,
+    streamSseWithXmlHttpRequest,
+} from "@/src/lib/admin-client";
 import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import { signUp as registerPhoneUser } from "@/src/lib/phone-api";
 import type { PhoneUser, RegisterInput } from "@/src/types/admin";
@@ -28,6 +34,11 @@ type SessionContextValue = {
     refreshUser: () => Promise<PhoneUser | null>;
     updateCurrentUser: (next: PhoneUser | null) => Promise<void>;
     authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>;
+    authorizedRealtimeStream: (
+        path: string,
+        onEvent: (eventName: string, payload: unknown) => void,
+        signal?: AbortSignal,
+    ) => Promise<void>;
 };
 
 type MobileAuthPayload = {
@@ -372,7 +383,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
     }, []);
 
-    const authorizedFetch = React.useCallback(async (path: string, init?: RequestInit) => {
+    const performAuthorizedRequest = React.useCallback(async (
+        path: string,
+        init?: RequestInit,
+    ) => {
         const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
         if (!baseUrl || !accessToken) {
             throw new Error("当前尚未连接到 Admin");
@@ -385,7 +399,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                     ...(init?.headers || {}),
                     Authorization: `Bearer ${token}`,
                 },
-            });
+            }) as Promise<Response>;
         const attemptFetch = async (token: string) => {
             const candidates = getPreferredBrowserAdminBaseUrls(baseUrl);
             let lastError: unknown = null;
@@ -420,6 +434,92 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         return response;
     }, [accessToken, adminBaseUrl, refreshSession, signOut]);
 
+    const authorizedFetch = React.useCallback((path: string, init?: RequestInit) => {
+        return performAuthorizedRequest(path, init);
+    }, [performAuthorizedRequest]);
+
+    const authorizedRealtimeStream = React.useCallback(async (
+        path: string,
+        onEvent: (eventName: string, payload: unknown) => void,
+        signal?: AbortSignal,
+    ) => {
+        const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
+        if (!baseUrl || !accessToken) {
+            throw new Error("当前尚未连接到 Admin");
+        }
+
+        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
+
+        const openStream = async (token: string) => {
+            let lastError: unknown = null;
+            for (const candidateBaseUrl of candidateBaseUrls) {
+                try {
+                    if (Platform.OS === "web") {
+                        const response = await fetch(buildAdminApiUrl(candidateBaseUrl, path), {
+                            method: "GET",
+                            headers: {
+                                Authorization: `Bearer ${token}`,
+                                Accept: "text/event-stream",
+                            },
+                            signal,
+                        });
+                        if (!response.ok) {
+                            const error = new Error(`连接实时流失败（${response.status}）`) as Error & { status?: number };
+                            error.status = response.status;
+                            throw error;
+                        }
+                        await streamSse(response, onEvent);
+                    } else {
+                        await streamSseWithXmlHttpRequest({
+                            url: buildAdminApiUrl(candidateBaseUrl, path),
+                            headers: {
+                                Authorization: `Bearer ${token}`,
+                                Accept: "text/event-stream",
+                            },
+                            signal,
+                            onEvent,
+                        });
+                    }
+                    if (candidateBaseUrl !== baseUrl) {
+                        setAdminBaseUrlState(candidateBaseUrl);
+                        await setStoredValue("adminBaseUrl", candidateBaseUrl);
+                    }
+                    return;
+                } catch (error) {
+                    lastError = error;
+                    const status = typeof error === "object" && error && "status" in error
+                        ? Number((error as { status?: number }).status || 0)
+                        : 0;
+                    if (status === 401) {
+                        throw error;
+                    }
+                }
+            }
+            throw lastError instanceof Error ? lastError : new Error(`无法连接 Admin：${baseUrl}`);
+        };
+
+        try {
+            await openStream(accessToken);
+            return;
+        } catch (error) {
+            const status = typeof error === "object" && error && "status" in error
+                ? Number((error as { status?: number }).status || 0)
+                : 0;
+            if (status !== 401) {
+                throw error instanceof Error ? error : new Error("实时流连接失败");
+            }
+        }
+
+        const refreshed = await refreshSession();
+        if (!refreshed) {
+            await signOut();
+            throw new Error("登录状态已失效，请重新登录");
+        }
+
+        const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
+        await openStream(nextAccessToken);
+    }, [accessToken, adminBaseUrl, refreshSession, signOut]);
+
     const contextValue = React.useMemo<SessionContextValue>(() => ({
         status,
         user,
@@ -434,7 +534,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         refreshUser,
         updateCurrentUser,
         authorizedFetch,
-    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, signIn, signUp, signOut, refreshUser, updateCurrentUser, authorizedFetch]);
+        authorizedRealtimeStream,
+    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, signIn, signUp, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream]);
 
     return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
 }

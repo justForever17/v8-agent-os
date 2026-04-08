@@ -19,7 +19,6 @@ export const CodeBlock = memo(function CodeBlock({
 }: CodeBlockProps) {
     const { colors } = useUiPrefs();
     const resolvedContent = useMemo(() => String(value ?? content ?? ""), [content, value]);
-    const lines = useMemo(() => resolvedContent.split("\n"), [resolvedContent]);
 
     return (
         <View style={[styles.wrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
@@ -28,11 +27,9 @@ export const CodeBlock = memo(function CodeBlock({
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
                 <View style={styles.codeStack}>
-                    {lines.map((line, index) => (
-                        <Text key={`${index}:${line.slice(0, 16)}`} style={[styles.text, { color: colors.textMuted }]}>
-                            {line || " "}
-                        </Text>
-                    ))}
+                    <Text selectable style={[styles.text, { color: colors.textMuted }]}>
+                        {resolvedContent || " "}
+                    </Text>
                 </View>
             </ScrollView>
         </View>
@@ -64,7 +61,6 @@ const styles = StyleSheet.create({
         minWidth: "100%",
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
-        gap: 2,
     },
     text: {
         fontSize: 12,

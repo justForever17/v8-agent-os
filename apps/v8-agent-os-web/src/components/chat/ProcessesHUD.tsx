@@ -11,16 +11,35 @@ type ProcessesHUDProps = {
     processes: AdminProcessRef[];
 };
 
+const PROCESS_FINISHED_GRACE_SECONDS = 3;
+
 function isActiveProcess(process: AdminProcessRef) {
     const status = String(process.status || '').trim().toLowerCase();
     return status !== 'stopped' && status !== 'terminated' && status !== 'completed' && status !== 'failed';
 }
 
+function isRecentlyFinishedProcess(process: AdminProcessRef) {
+    const status = String(process.status || '').trim().toLowerCase();
+    if (!status || !['stopped', 'terminated', 'completed', 'failed'].includes(status)) {
+        return false;
+    }
+    const secondsSinceOutput = Number(process.secondsSinceOutput);
+    if (Number.isFinite(secondsSinceOutput)) {
+        return secondsSinceOutput <= PROCESS_FINISHED_GRACE_SECONDS;
+    }
+    const completedAt = String(process.completedAt || '').trim();
+    if (!completedAt) {
+        return false;
+    }
+    const completedMs = Date.parse(completedAt);
+    return Number.isFinite(completedMs) && (Date.now() - completedMs) <= PROCESS_FINISHED_GRACE_SECONDS * 1000;
+}
+
 export function ProcessesHUD({ processes }: ProcessesHUDProps) {
     const [terminatedIds, setTerminatedIds] = useState<Set<string>>(new Set());
     const [isCollapsed, setIsCollapsed] = useState(false);
-    const activeProcesses = useMemo(
-        () => processes.filter((process) => isActiveProcess(process) && !terminatedIds.has(process.processId)),
+    const visibleProcesses = useMemo(
+        () => processes.filter((process) => (isActiveProcess(process) || isRecentlyFinishedProcess(process)) && !terminatedIds.has(process.processId)),
         [processes, terminatedIds],
     );
 
@@ -28,7 +47,7 @@ export function ProcessesHUD({ processes }: ProcessesHUDProps) {
         setTerminatedIds((prev) => new Set(prev).add(processId));
     }, []);
 
-    if (activeProcesses.length === 0) return null;
+    if (visibleProcesses.length === 0) return null;
 
     return (
         <AnimatePresence>
@@ -56,7 +75,7 @@ export function ProcessesHUD({ processes }: ProcessesHUDProps) {
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
                             </span>
-                            {activeProcesses.length}
+                            {visibleProcesses.length}
                         </span>
                         <motion.div
                             animate={{ rotate: isCollapsed ? -90 : 0 }}
@@ -76,7 +95,7 @@ export function ProcessesHUD({ processes }: ProcessesHUDProps) {
                                 className="overflow-hidden"
                             >
                                 <div className="flex max-h-[132px] sm:max-h-[208px] flex-col gap-2 overflow-y-auto p-2 sm:p-2.5">
-                                    {activeProcesses.map((process) => (
+                                    {visibleProcesses.map((process) => (
                                         <InteractiveTerminalCard
                                             key={process.processId}
                                             process={process}

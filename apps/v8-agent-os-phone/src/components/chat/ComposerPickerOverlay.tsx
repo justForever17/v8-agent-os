@@ -22,6 +22,7 @@ type ComposerPickerOverlayProps = {
     left: number;
     right: number;
     bottom: number;
+    position?: "absolute" | "inline";
     commands: CommandPresetSummary[];
     skills: SkillReferenceSummary[];
     onSelectCommand: (command: CommandPresetSummary) => void;
@@ -34,6 +35,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     left,
     right,
     bottom,
+    position = "absolute",
     commands,
     skills,
     onSelectCommand,
@@ -87,14 +89,18 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     return (
         <View
             style={[
-                styles.overlay,
-                {
-                    left,
-                    right,
-                    bottom,
-                },
+                position === "absolute"
+                    ? [
+                        styles.overlay,
+                        {
+                            left,
+                            right,
+                            bottom,
+                        },
+                    ]
+                    : styles.inlineOverlay,
             ]}
-            pointerEvents="box-none"
+            pointerEvents={position === "absolute" ? "box-none" : "auto"}
         >
             <View
                 style={[
@@ -143,6 +149,11 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
 const styles = StyleSheet.create({
     overlay: {
         position: "absolute",
+        zIndex: 32,
+        elevation: 32,
+    },
+    inlineOverlay: {
+        width: "100%",
         zIndex: 32,
         elevation: 32,
     },

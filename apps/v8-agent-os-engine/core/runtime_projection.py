@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from core.multimodal_payload_adapter import normalize_artifact_record
@@ -251,6 +252,45 @@ def project_artifacts_from_events(events: List[Dict[str, Any]]) -> List[Dict[str
     return artifacts
 
 
+TODO_MUTATION_PATTERNS = [
+    re.compile(r"command\s*\(\s*update\s*=\s*\{[^)]*todos", re.IGNORECASE),
+    re.compile(r"\bpersistent task plan\b", re.IGNORECASE),
+    re.compile(r"\btodo\s*#?\d+\b.*\b(marked|updated|done|in_progress|pending|skipped|created)\b", re.IGNORECASE),
+    re.compile(r"\bcreated with\s+\d+\s+items\b", re.IGNORECASE),
+]
+
+
+def _string_looks_like_todo_mutation(value: Any) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in TODO_MUTATION_PATTERNS)
+
+
+def _contains_todo_mutation_hint(value: Any, depth: int = 0) -> bool:
+    if depth > 4 or value is None:
+        return False
+    if isinstance(value, str):
+        return _string_looks_like_todo_mutation(value)
+    if isinstance(value, list):
+        return any(_contains_todo_mutation_hint(item, depth + 1) for item in value)
+    if not isinstance(value, dict):
+        return False
+
+    if isinstance(value.get("todos"), (list, dict)):
+        return True
+
+    update = value.get("update")
+    if isinstance(update, dict) and ("todos" in update or "todo" in update):
+        return True
+
+    request = value.get("request")
+    if isinstance(request, dict) and ("todos" in request or "todo" in request):
+        return True
+
+    return any(_contains_todo_mutation_hint(item, depth + 1) for item in value.values())
+
+
 def _is_todo_tool_payload(value: Dict[str, Any]) -> bool:
     tool = value.get("tool") or value
     tool_name = str(
@@ -260,7 +300,7 @@ def _is_todo_tool_payload(value: Dict[str, Any]) -> bool:
         or value.get("tool_name")
         or ""
     ).strip().lower()
-    return tool_name in {"write_todos", "update_todo"}
+    return tool_name in {"write_todos", "update_todo"} or _contains_todo_mutation_hint(value)
 
 
 def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -314,6 +354,8 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             continue
 
         if topic == "message.tool.recorded":
+            if _is_todo_tool_payload(payload):
+                continue
             current_assistant = None
             current_assistant_run_id = None
             messages.append(
@@ -433,9 +475,24 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             continue
 
         if topic == "approval.requested":
+            request = payload.get("request") or {}
+            interaction_kind = str(
+                request.get("interactionKind")
+                or request.get("interaction_kind")
+                or payload.get("interactionKind")
+                or payload.get("interaction_kind")
+                or ""
+            ).strip().lower()
+            approval_kind = str(
+                payload.get("approval_kind")
+                or payload.get("approvalKind")
+                or ""
+            ).strip().lower()
+            if interaction_kind != "ask_user" and approval_kind != "ask_user":
+                continue
             assistant = ensure_assistant(event)
             tool_call_id = (
-                ((payload.get("request") or {}).get("toolCallId"))
+                (request.get("toolCallId"))
                 or payload.get("approval_id")
                 or event.get("event_id")
             )
@@ -456,13 +513,28 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                         "type": "tool_call",
                         "toolCallId": tool_call_id,
                         "toolName": "ask_user",
-                        "args": payload.get("request") or {},
+                        "args": request,
                         **active_agent_profile,
                     }
                 )
             continue
 
         if topic == "approval.rejected":
+            request = payload.get("request") or {}
+            interaction_kind = str(
+                request.get("interactionKind")
+                or request.get("interaction_kind")
+                or payload.get("interactionKind")
+                or payload.get("interaction_kind")
+                or ""
+            ).strip().lower()
+            approval_kind = str(
+                payload.get("approval_kind")
+                or payload.get("approvalKind")
+                or ""
+            ).strip().lower()
+            if interaction_kind != "ask_user" and approval_kind != "ask_user":
+                continue
             assistant = ensure_assistant(event)
             assistant["parts"].append(
                 {

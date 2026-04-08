@@ -3,6 +3,7 @@ import {
     FlatList,
     Modal,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     View,
@@ -126,6 +127,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
 }) {
     const { colors, themeMode, t, locale } = useUiPrefs();
     const contentScrollRef = useRef<FlatList<PhoneRuntimeStageActivity> | null>(null);
+    const runtimeTabsScrollRef = useRef<ScrollView | null>(null);
     const shouldForceScrollTopRef = useRef(false);
     const effectiveSelectedRuntimeId = useMemo(
         () => (selectedRuntimeId && items.some((item) => item.id === selectedRuntimeId) ? selectedRuntimeId : (items[0]?.id ?? null)),
@@ -161,6 +163,18 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
             onSelectRuntime(effectiveSelectedRuntimeId);
         }
     }, [effectiveSelectedRuntimeId, items.length, onSelectRuntime, selectedRuntimeId]);
+
+    useEffect(() => {
+        const selectedIndex = items.findIndex((item) => item.id === effectiveSelectedRuntimeId);
+        if (selectedIndex < 0) {
+            return;
+        }
+        const estimatedItemWidth = 44;
+        const estimatedOffset = Math.max(0, selectedIndex * estimatedItemWidth - 36);
+        requestAnimationFrame(() => {
+            runtimeTabsScrollRef.current?.scrollTo({ x: estimatedOffset, animated: true });
+        });
+    }, [effectiveSelectedRuntimeId, items]);
 
     useEffect(() => {
         if (!visible) {
@@ -240,7 +254,13 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                         </View>
 
                         <View style={styles.tabsWrap}>
-                            <View style={styles.tabsRow}>
+                            <ScrollView
+                                ref={runtimeTabsScrollRef}
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                overScrollMode="never"
+                                contentContainerStyle={styles.tabsRow}
+                            >
                                 {items.map((item) => (
                                     <Pressable
                                         key={item.id}
@@ -266,7 +286,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                         ) : null}
                                     </Pressable>
                                 ))}
-                            </View>
+                            </ScrollView>
                         </View>
 
                         <FlatList

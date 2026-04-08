@@ -18,6 +18,17 @@ const IMAGE_URL = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i;
 const VIDEO_URL = /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i;
 const AUDIO_URL = /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i;
 const ARTIFACT_CONTENT_URL = /\/(?:v1|api(?:\/client)?)\/artifacts\/[^/]+\/content(?:[?#].*)?$/i;
+const RAW_VIDEO_TAG = /^<video\b([^>]*)>(?:[\s\S]*?)<\/video>$/i;
+const RAW_AUDIO_TAG = /^<audio\b([^>]*)>(?:[\s\S]*?)<\/audio>$/i;
+const RAW_IMAGE_TAG = /^<img\b([^>]*)\/?>$/i;
+
+function normalizeMediaTagAttributes(raw: string) {
+    return String(raw || "")
+        .replace(/\\"/g, "\"")
+        .replace(/\\'/g, "'")
+        .replace(/&quot;/gi, "\"")
+        .replace(/&#39;/gi, "'");
+}
 
 function isArtifactContentHref(value: string) {
     return ARTIFACT_CONTENT_URL.test(String(value || "").trim());
@@ -92,7 +103,29 @@ function tokenizeInline(content: string, windowsPathLinks: Map<string, string>):
 }
 
 function resolveMedia(line: string, adminBaseUrl: string) {
-    const trimmed = line.trim();
+    const trimmed = normalizeMediaTagAttributes(line.trim());
+    const rawMediaMatch = trimmed.match(RAW_VIDEO_TAG) || trimmed.match(RAW_AUDIO_TAG) || trimmed.match(RAW_IMAGE_TAG);
+    if (rawMediaMatch) {
+        const attrs = rawMediaMatch[1] || "";
+        const rawHref = attrs.match(/\ssrc=(["'])(.*?)\1/i)?.[2]
+            || attrs.match(/\ssrc=([^\s>]+)/i)?.[1]
+            || "";
+        const href = rawHref ? normalizeRenderableWorkspaceUrl(adminBaseUrl, rawHref) : null;
+        const label = attrs.match(/\stitle=(["'])(.*?)\1/i)?.[2]
+            || attrs.match(/\salt=(["'])(.*?)\1/i)?.[2]
+            || undefined;
+        if (!href) {
+            return null;
+        }
+        if (RAW_VIDEO_TAG.test(trimmed)) {
+            return { kind: "video" as const, href, label };
+        }
+        if (RAW_AUDIO_TAG.test(trimmed)) {
+            return { kind: "audio" as const, href, label };
+        }
+        return { kind: "image" as const, href, label };
+    }
+
     const markdownImage = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
     const markdownLink = trimmed.match(/^\[([^\]]*)\]\(([^)]+)\)$/);
     const rawHref = markdownImage?.[2]

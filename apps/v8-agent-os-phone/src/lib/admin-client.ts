@@ -1,5 +1,7 @@
 import type { ChatStreamEvent } from "@/src/types/admin";
 
+type StreamEventHandler = (eventName: string, payload: unknown) => void;
+
 export function normalizeAdminBaseUrl(value: string) {
     const trimmed = String(value || "").trim();
     if (!trimmed) return "";
@@ -54,7 +56,7 @@ export async function streamNdjson(
     onEvent: (event: ChatStreamEvent) => void,
 ) {
     const flushBuffer = (raw: string) => {
-        const lines = raw.split("\n");
+        const lines = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
         const rest = lines.pop() || "";
         for (const line of lines) {
             const trimmed = line.trim();
@@ -101,10 +103,10 @@ export async function streamNdjson(
 
 export async function streamSse(
     response: Response,
-    onEvent: (eventName: string, payload: unknown) => void,
+    onEvent: StreamEventHandler,
 ) {
     const flushBuffer = (raw: string) => {
-        const chunks = raw.split("\n\n");
+        const chunks = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n\n");
         const rest = chunks.pop() || "";
 
         for (const chunk of chunks) {
@@ -159,4 +161,181 @@ export async function streamSse(
     if (buffer.trim()) {
         flushBuffer(`${buffer}\n\n`);
     }
+}
+
+function buildStreamError(message: string, status?: number) {
+    const error = new Error(message) as Error & { status?: number };
+    if (typeof status === "number" && Number.isFinite(status) && status > 0) {
+        error.status = status;
+    }
+    return error;
+}
+
+export async function streamSseWithXmlHttpRequest(options: {
+    url: string;
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+    onEvent: StreamEventHandler;
+}) {
+    if (typeof XMLHttpRequest !== "function") {
+        throw buildStreamError("当前环境不支持原生实时事件流");
+    }
+
+    const { url, headers, signal, onEvent } = options;
+
+    const flushBuffer = (raw: string) => {
+        const chunks = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n\n");
+        const rest = chunks.pop() || "";
+
+        for (const chunk of chunks) {
+            const lines = chunk.split("\n");
+            let eventName = "message";
+            const dataLines: string[] = [];
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                if (trimmed.startsWith("event:")) {
+                    eventName = trimmed.slice("event:".length).trim() || "message";
+                    continue;
+                }
+                if (trimmed.startsWith("data:")) {
+                    dataLines.push(trimmed.slice("data:".length).trim());
+                }
+            }
+
+            if (!dataLines.length) continue;
+            const rawPayload = dataLines.join("\n");
+            try {
+                onEvent(eventName, JSON.parse(rawPayload));
+            } catch {
+                onEvent(eventName, rawPayload);
+            }
+        }
+
+        return rest;
+    };
+
+    await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        let settled = false;
+        let aborted = false;
+        let responseCursor = 0;
+        let buffer = "";
+
+        const cleanup = () => {
+            if (signal) {
+                signal.removeEventListener("abort", handleAbort);
+            }
+            xhr.onreadystatechange = null;
+            xhr.onprogress = null;
+            xhr.onerror = null;
+            xhr.ontimeout = null;
+            xhr.onabort = null;
+        };
+
+        const finish = (callback: () => void) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cleanup();
+            callback();
+        };
+
+        const pumpResponseText = () => {
+            const responseText = typeof xhr.responseText === "string" ? xhr.responseText : "";
+            if (responseText.length <= responseCursor) {
+                return;
+            }
+            buffer += responseText.slice(responseCursor);
+            responseCursor = responseText.length;
+            buffer = flushBuffer(buffer);
+        };
+
+        const handleAbort = () => {
+            aborted = true;
+            try {
+                xhr.abort();
+            } catch {
+                // noop
+            }
+            finish(resolve);
+        };
+
+        if (signal?.aborted) {
+            handleAbort();
+            return;
+        }
+
+        xhr.open("GET", url, true);
+        xhr.setRequestHeader("Accept", "text/event-stream");
+        xhr.setRequestHeader("Cache-Control", "no-cache");
+        if (headers) {
+            for (const [key, value] of Object.entries(headers)) {
+                if (!value) continue;
+                xhr.setRequestHeader(key, value);
+            }
+        }
+
+        xhr.onreadystatechange = () => {
+            if (xhr.readyState >= XMLHttpRequest.LOADING) {
+                pumpResponseText();
+            }
+            if (xhr.readyState !== XMLHttpRequest.DONE) {
+                return;
+            }
+
+            pumpResponseText();
+
+            if (aborted) {
+                finish(resolve);
+                return;
+            }
+
+            const status = Number(xhr.status || 0);
+            if (status >= 200 && status < 300) {
+                if (buffer.trim()) {
+                    flushBuffer(`${buffer}\n\n`);
+                    buffer = "";
+                }
+                finish(resolve);
+                return;
+            }
+
+            finish(() => reject(buildStreamError(
+                xhr.responseText?.trim() || `连接实时流失败（${status || "unknown"}）`,
+                status || undefined,
+            )));
+        };
+
+        xhr.onprogress = pumpResponseText;
+        xhr.onerror = () => {
+            if (aborted) {
+                finish(resolve);
+                return;
+            }
+            finish(() => reject(buildStreamError("实时流网络错误", Number(xhr.status || 0) || undefined)));
+        };
+        xhr.ontimeout = () => {
+            if (aborted) {
+                finish(resolve);
+                return;
+            }
+            finish(() => reject(buildStreamError("实时流连接超时", Number(xhr.status || 0) || undefined)));
+        };
+        xhr.onabort = () => {
+            finish(resolve);
+        };
+
+        if (signal) {
+            signal.addEventListener("abort", handleAbort, { once: true });
+        }
+
+        try {
+            xhr.send();
+        } catch (error) {
+            finish(() => reject(error instanceof Error ? error : new Error("实时流连接失败")));
+        }
+    });
 }

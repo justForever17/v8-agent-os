@@ -56,6 +56,9 @@ function buildMessageIdentityKeys(message: ChatMessage) {
 
     const normalizedContent = String(message.content || "").trim().replace(/\s+/g, " ");
     const semanticRunId = String(message.runId || message.metadata?.runId || "").trim();
+    if (semanticRunId && message.role === "assistant") {
+        keys.push(`run:${message.role}:${semanticRunId}`);
+    }
     if (semanticRunId && message.role !== "user") {
         keys.push(`semantic:${message.role}:${semanticRunId}:${hashMessageContent(normalizedContent)}`);
     }

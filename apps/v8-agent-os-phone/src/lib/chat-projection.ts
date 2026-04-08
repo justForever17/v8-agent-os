@@ -14,6 +14,24 @@ type RuntimeSummary = {
 
 type Translate = (zh: string, en?: string) => string;
 
+const ACTIVE_PROCESS_STATUSES = new Set([
+    "queued",
+    "pending",
+    "starting",
+    "running",
+    "streaming",
+    "waiting_input",
+    "waiting_approval",
+]);
+
+const TERMINAL_RUN_STATUSES = new Set([
+    "completed",
+    "failed",
+    "cancelled",
+    "paused",
+    "idle",
+]);
+
 const STATUS_LABELS: Record<string, { zh: string; en: string }> = {
     queued: { zh: "排队中", en: "Queued" },
     running: { zh: "执行中", en: "Running" },
@@ -38,6 +56,8 @@ export type PhoneChatProjection = {
     currentStepTitle: string | null;
     historyPreview: string | null;
     pendingApproval: PendingApproval | null;
+    governancePendingApproval: PendingApproval | null;
+    askUserPendingApproval: PendingApproval | null;
     pendingApprovalCount: number;
     todoCount: number;
     artifactCount: number;
@@ -173,6 +193,137 @@ function collectVoiceCardDescriptors(messages: ChatMessage[]) {
     });
 }
 
+function normalizeRunStatus(value: unknown, fallback = "idle") {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized || fallback;
+}
+
+function isActiveProcess(process: AdminProcessRef, runId?: string) {
+    const status = normalizeRunStatus(process.status, "");
+    if (!status) {
+        return false;
+    }
+    if (runId && process.runId && String(process.runId).trim() && String(process.runId).trim() !== runId) {
+        return false;
+    }
+    if (ACTIVE_PROCESS_STATUSES.has(status)) {
+        return true;
+    }
+    return !process.completedAt && !TERMINAL_RUN_STATUSES.has(status);
+}
+
+function matchesConversationProcess(
+    process: AdminProcessRef,
+    {
+        conversationId,
+        runId,
+        messageIds,
+    }: {
+        conversationId?: string | null;
+        runId?: string;
+        messageIds: Set<string>;
+    },
+) {
+    const processRecord = process as AdminProcessRef & {
+        sessionId?: string | null;
+    };
+    const normalizedConversationId = String(conversationId || "").trim();
+    if (!normalizedConversationId) {
+        return true;
+    }
+    const processSessionId = String(processRecord.sessionId || "").trim();
+    if (processSessionId) {
+        return processSessionId === normalizedConversationId;
+    }
+    const processRunId = String(process.runId || "").trim();
+    if (runId && processRunId && processRunId === runId) {
+        return true;
+    }
+    const sourceMessageId = String(process.sourceMessageId || "").trim();
+    if (sourceMessageId) {
+        return messageIds.has(sourceMessageId);
+    }
+    // 会话级 process route 已经按 session 做过 authoritative 过滤；
+    // 如果 process 元数据不完整，这里宁可保留也不要把 HUD 再次误杀。
+    return true;
+}
+
+function deriveRunControlState({
+    activeConversation,
+    runtime,
+    approvals,
+    processes,
+}: {
+    activeConversation: ConversationSummary | null;
+    runtime: RuntimeSummary;
+    approvals: PendingApproval[];
+    processes: AdminProcessRef[];
+}) {
+    const governanceApprovals = approvals.filter((item) => !isAskUserInteractionApproval(item));
+    const controls = activeConversation?.controls;
+    const authoritativeStatus = normalizeRunStatus(
+        activeConversation?.workflowStatus
+        || activeConversation?.status
+        || activeConversation?.workflowSummary?.workflowStatus
+        || activeConversation?.workflowSummary?.stepStatus,
+        "",
+    );
+    const optimisticStatus = normalizeRunStatus(runtime.status);
+    const runIdentity = String(
+        activeConversation?.currentRunId
+        || activeConversation?.lastRunId
+        || runtime.runId
+        || "",
+    ).trim() || undefined;
+    const hasPendingApproval = governanceApprovals.length > 0 || Boolean(activeConversation?.hasPendingApproval);
+    const hasActiveProcess = processes.some((process) => isActiveProcess(process, runIdentity));
+    const canInterrupt = Boolean(controls?.canInterrupt || hasActiveProcess);
+    const canRetry = Boolean(controls?.canRetry);
+    const canResume = Boolean(controls?.canResume);
+    const canOpenApproval = Boolean(hasPendingApproval || controls?.canOpenApproval);
+
+    let status = optimisticStatus;
+    if (hasPendingApproval) {
+        status = "waiting_approval";
+    } else if (authoritativeStatus === "waiting_input") {
+        status = "waiting_input";
+    } else if (authoritativeStatus && TERMINAL_RUN_STATUSES.has(authoritativeStatus) && !hasActiveProcess) {
+        status = authoritativeStatus;
+    } else if (optimisticStatus === "running") {
+        const authoritativeRunning = authoritativeStatus === "running";
+        const hasCurrentRun = Boolean(activeConversation?.currentRunId);
+        status = authoritativeRunning || hasCurrentRun || canInterrupt || hasActiveProcess
+            ? "running"
+            : (authoritativeStatus || "idle");
+    } else if (authoritativeStatus && optimisticStatus === "idle") {
+        status = authoritativeStatus;
+    }
+
+    const shouldKeepRunId = Boolean(
+        runIdentity
+        && (
+            status === "running"
+            || status === "waiting_approval"
+            || status === "waiting_input"
+            || status === "failed"
+            || status === "cancelled"
+            || status === "paused"
+            || canRetry
+            || canResume
+        ),
+    );
+
+    return {
+        runId: shouldKeepRunId ? runIdentity : undefined,
+        status,
+        pendingApproval: hasPendingApproval,
+        canOpenApproval,
+        canResume,
+        canRetry,
+        canInterrupt,
+    };
+}
+
 export function summarizePhoneRuntimeStatus(status: string, t: Translate) {
     const normalized = String(status || "idle").trim().toLowerCase();
     const label = STATUS_LABELS[normalized];
@@ -215,12 +366,28 @@ export function buildPhoneChatProjection({
     t: Translate;
     locale: LocaleCode;
 }): PhoneChatProjection {
-    const activeConversation = conversations.find((item) => item.id === activeConversationId) || null;
+    const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null;
+    const activeMessageIds = new Set(
+        messages
+            .map((message) => String(message.id || "").trim())
+            .filter(Boolean),
+    );
+    const activeRunId = String(
+        activeConversation?.currentRunId
+        || activeConversation?.lastRunId
+        || runtime.runId
+        || "",
+    ).trim() || undefined;
+    const scopedProcesses = processes.filter((process) => matchesConversationProcess(process, {
+        conversationId: activeConversationId,
+        runId: activeRunId,
+        messageIds: activeMessageIds,
+    }));
     const historyPreview = deriveHistoryPreview(messages, activeConversation);
     const runtimeStageModel = buildPhoneRuntimeStageModel(messages, {
         ownerRuntime: activeConversation?.ownerRuntime || null,
         status: runtime.status,
-        pendingApproval: approvals.length > 0,
+        pendingApproval: approvals.filter((item) => !isAskUserInteractionApproval(item)).length > 0,
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         runtimeTimeline,
         locale,
@@ -235,7 +402,15 @@ export function buildPhoneChatProjection({
         ? selectedRuntimeId
         : preferredRuntimeId;
     const governanceApprovals = approvals.filter((item) => !isAskUserInteractionApproval(item));
-    const preferredPendingApproval = approvals.find((item) => isAskUserInteractionApproval(item)) || approvals[0] || null;
+    const askUserPendingApproval = approvals.find((item) => isAskUserInteractionApproval(item)) || null;
+    const governancePendingApproval = governanceApprovals[0] || null;
+    const preferredPendingApproval = askUserPendingApproval || governancePendingApproval;
+    const runControlState = deriveRunControlState({
+        activeConversation,
+        runtime,
+        approvals,
+        processes: scopedProcesses,
+    });
 
     return {
         activeConversation,
@@ -251,23 +426,17 @@ export function buildPhoneChatProjection({
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         historyPreview,
         pendingApproval: preferredPendingApproval,
+        governancePendingApproval,
+        askUserPendingApproval,
         pendingApprovalCount: governanceApprovals.length,
         todoCount: todos.length,
         artifactCount: artifacts.length,
         artifacts,
         todos,
-        processes,
+        processes: scopedProcesses,
         contextReferences,
         sidebarGroups: groupSidebarConversations(conversations),
-        runControlState: {
-            runId: runtime.runId,
-            status: runtime.status,
-            pendingApproval: governanceApprovals.length > 0,
-            canOpenApproval: governanceApprovals.length > 0 || activeConversation?.controls?.canOpenApproval,
-            canResume: activeConversation?.controls?.canResume,
-            canRetry: activeConversation?.controls?.canRetry,
-            canInterrupt: activeConversation?.controls?.canInterrupt,
-        },
+        runControlState,
         voiceCardDescriptors: collectVoiceCardDescriptors(messages),
     };
 }

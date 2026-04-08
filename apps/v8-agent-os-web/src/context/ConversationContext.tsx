@@ -47,6 +47,10 @@ function isSameConversationList(left: Conversation[], right: Conversation[]): bo
     return true;
 }
 
+function getConversationSessionId(item: Pick<Conversation, "id" | "sessionId">): string {
+    return item.sessionId || item.id;
+}
+
 export function ConversationProvider({ children }: { children: ReactNode }) {
     const { status } = useSession();
     const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -80,8 +84,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             });
             if (res.ok) {
                 const newConv = normalizeSessionHistoryItem(await res.json());
+                const newSessionId = getConversationSessionId(newConv);
                 setConversations((prev) => {
-                    const next = sortSessionHistory([newConv, ...prev.filter(item => item.id !== newConv.id)]);
+                    const next = sortSessionHistory([newConv, ...prev.filter(item => getConversationSessionId(item) !== newSessionId)]);
                     return isSameConversationList(prev, next) ? prev : next;
                 });
                 return newConv;
@@ -95,7 +100,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     const patchConversationSummary = useCallback((id: string, patch: Partial<Conversation>) => {
         if (!id) return;
         setConversations((prev) => {
-            const index = prev.findIndex((item) => item.id === id);
+            const index = prev.findIndex((item) => getConversationSessionId(item) === id);
             if (index < 0) {
                 return prev;
             }
@@ -117,7 +122,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
                 method: 'DELETE',
             });
             if (res.ok) {
-                setConversations(prev => prev.filter(c => c.id !== id));
+                setConversations(prev => prev.filter(c => getConversationSessionId(c) !== id));
                 return true;
             }
         } catch (error) {

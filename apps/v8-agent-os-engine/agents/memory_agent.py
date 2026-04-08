@@ -153,9 +153,11 @@ def _normalize_durability(value: str, *, default: str) -> str:
 def _message_hash(messages: List[Dict[str, Any]]) -> str:
     payload = [
         {
-            "id": msg.get("id"),
+            "id": msg.get("id") or msg.get("entry_id"),
             "role": msg.get("role"),
-            "content": msg.get("content"),
+            "content": msg.get("content") or msg.get("text") or "",
+            "source": msg.get("source"),
+            "seq": msg.get("seq"),
             "created_at": msg.get("created_at"),
         }
         for msg in messages
@@ -176,16 +178,166 @@ def _resolve_incremental_messages(
     if last_count < 0 or last_count > len(messages):
         return messages, state, "checkpoint_reset"
 
+    last_hash = str(state.get("last_content_hash") or "").strip()
+    current_full_hash = _message_hash(messages)
+    if last_hash and current_full_hash == last_hash:
+        return [], state, "duplicate_transcript"
+
     new_messages = messages[last_count:]
     if not new_messages:
-        return [], state, "no_new_messages"
+        return messages, state, "transcript_changed"
 
-    last_hash = str(state.get("last_content_hash") or "").strip()
     current_incremental_hash = _message_hash(new_messages)
     if last_hash and current_incremental_hash == last_hash:
         return [], state, "duplicate_increment"
 
     return new_messages, state, "incremental"
+
+
+def _safe_json_excerpt(value: Any, *, limit: int = 1200) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        normalized = value.strip()
+    else:
+        try:
+            normalized = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            normalized = str(value)
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _looks_like_todo_update(value: Any) -> bool:
+    text = _safe_json_excerpt(value, limit=500).lower()
+    return "command(update={'todos'" in text or ('"todos"' in text and "task_" in text)
+
+
+def _append_if_present(lines: List[str], label: str, value: Any, *, limit: int = 1200) -> None:
+    text = _safe_json_excerpt(value, limit=limit)
+    if text:
+        lines.append(f"{label}: {text}")
+
+
+def _projection_message_to_transcript_entry(message: Dict[str, Any], index: int) -> Dict[str, Any] | None:
+    role = str(message.get("role") or "unknown").strip().lower()
+    lines: List[str] = []
+    _append_if_present(lines, "content", message.get("content"), limit=2400)
+
+    for part in list(message.get("parts") or []):
+        if not isinstance(part, dict) or _looks_like_todo_update(part):
+            continue
+        part_type = str(part.get("type") or "").strip().lower()
+        if part_type in {"text", "markdown"}:
+            _append_if_present(lines, "text", part.get("content"), limit=2400)
+        elif part_type == "reasoning":
+            _append_if_present(lines, "reasoning", part.get("content"), limit=1600)
+        elif part_type in {"tool_call", "tool_start"}:
+            tool_name = part.get("toolName") or part.get("tool_name") or "tool"
+            _append_if_present(lines, f"tool_call {tool_name}", part.get("args") or part.get("input"), limit=1000)
+        elif part_type in {"tool_result", "tool_output"}:
+            tool_name = part.get("toolName") or part.get("tool_name") or "tool"
+            _append_if_present(lines, f"tool_result {tool_name}", part.get("result") or part.get("output"), limit=1200)
+        elif part_type in {"artifact", "image", "video", "audio", "file"}:
+            _append_if_present(lines, f"artifact {part_type}", part, limit=1000)
+
+    for artifact in list(message.get("artifacts") or []):
+        if isinstance(artifact, dict):
+            _append_if_present(lines, "artifact", {
+                "id": artifact.get("artifactId") or artifact.get("id"),
+                "kind": artifact.get("kind"),
+                "title": artifact.get("title"),
+                "mimeType": artifact.get("mimeType"),
+                "workspaceRelativePath": artifact.get("workspaceRelativePath"),
+            }, limit=800)
+
+    content = "\n".join(dict.fromkeys(line for line in lines if line.strip())).strip()
+    if not content:
+        return None
+    return {
+        "id": message.get("id") or f"projection:{index}",
+        "role": role,
+        "content": content,
+        "created_at": message.get("createdAt") or message.get("timestamp"),
+        "source": "projection",
+        "run_id": message.get("runId") or message.get("run_id"),
+    }
+
+
+def _durable_message_to_transcript_entry(message: Dict[str, Any], index: int) -> Dict[str, Any] | None:
+    role = str(message.get("role") or "unknown").strip().lower()
+    lines: List[str] = []
+    _append_if_present(lines, "content", message.get("content"), limit=2400)
+    _append_if_present(lines, "reasoning", message.get("reasoning_content"), limit=1600)
+    if message.get("tool_calls") and not _looks_like_todo_update(message.get("tool_calls")):
+        _append_if_present(lines, "tool_calls", message.get("tool_calls"), limit=1200)
+    if message.get("tool_results") and not _looks_like_todo_update(message.get("tool_results")):
+        _append_if_present(lines, "tool_results", message.get("tool_results"), limit=1200)
+    if message.get("images"):
+        _append_if_present(lines, "images", message.get("images"), limit=800)
+
+    content = "\n".join(dict.fromkeys(line for line in lines if line.strip())).strip()
+    if not content:
+        return None
+    return {
+        "id": message.get("id") or f"durable:{index}",
+        "role": role,
+        "content": content,
+        "created_at": message.get("created_at") or message.get("createdAt"),
+        "source": "durable",
+        "run_id": (message.get("metadata") or {}).get("run_id") if isinstance(message.get("metadata"), dict) else None,
+    }
+
+
+def _build_canonical_session_transcript(session_id: str, durable_messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    runtime_events = db.get_runtime_events(session_id)
+    latest_runtime_seq = db.get_latest_runtime_seq(session_id)
+    snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
+    snapshot = snapshot_row.get("snapshot") if snapshot_row else None
+    snapshot_seq = int(snapshot_row.get("latest_seq") or 0) if snapshot_row else 0
+    source = "runtime_snapshot"
+
+    if not isinstance(snapshot, dict) or snapshot_seq < latest_runtime_seq:
+        try:
+            from core.runtime_projection import build_chat_projection_snapshot
+
+            snapshot = build_chat_projection_snapshot(session_id, runtime_events)
+            snapshot_seq = int(snapshot.get("latest_seq") or latest_runtime_seq or 0)
+            source = "runtime_projection"
+        except Exception as exc:
+            logger.warning(f"[MemoryAgent] Failed to build runtime projection transcript for {session_id}: {exc}")
+            snapshot = None
+
+    entries: List[Dict[str, Any]] = []
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("messages"), list):
+        for index, message in enumerate(snapshot.get("messages") or []):
+            if isinstance(message, dict):
+                entry = _projection_message_to_transcript_entry(message, index)
+                if entry:
+                    entries.append(entry)
+
+    if not entries:
+        source = "durable_messages"
+        for index, message in enumerate(durable_messages):
+            entry = _durable_message_to_transcript_entry(message, index)
+            if entry:
+                entries.append(entry)
+
+    transcript_hash = _message_hash(entries)
+    semantic_text = "\n".join(f"{entry.get('role', 'unknown').upper()}: {entry.get('content', '')}" for entry in entries).strip()
+    return {
+        "session_id": session_id,
+        "source": source,
+        "entries": entries,
+        "latest_seq": snapshot_seq or latest_runtime_seq,
+        "durable_message_count": len(durable_messages),
+        "runtime_event_count": len(runtime_events),
+        "user_message_count": sum(1 for entry in entries if entry.get("role") == "user"),
+        "content_length": len(semantic_text),
+        "hash": transcript_hash,
+        "text": semantic_text,
+    }
 
 def _extract_with_llm(
     chat_text: str,
@@ -506,10 +658,22 @@ def analyze_session_memory(
             "parent_run_id": parent_run_id,
         }
 
-    # 1. 获取会话日志
-    messages = db.get_messages(session_id)
-    if not messages:
-        logger.info(f"[MemoryAgent] No messages for session {session_id}, skipping.")
+    # 1. 获取 canonical transcript：优先 runtime projection，其次 durable messages。
+    durable_messages = db.get_messages(session_id)
+    transcript = _build_canonical_session_transcript(session_id, durable_messages)
+    transcript_entries = transcript["entries"]
+    if not transcript_entries:
+        logger.info(f"[MemoryAgent] No transcript entries for session {session_id}, skipping.")
+        audit_logger.log(
+            source_type=source_type,
+            action=f"Memory Agent: Session Extraction",
+            status="SKIPPED",
+            details=(
+                f"Session {session_id[:8]} skipped: no_messages "
+                f"(source={transcript['source']}, durable={transcript['durable_message_count']}, "
+                f"events={transcript['runtime_event_count']})"
+            ),
+        )
         _emit_memory_event(
             run_handle,
             "memory.session_extraction.skipped",
@@ -517,6 +681,9 @@ def analyze_session_memory(
                 "session_id": session_id,
                 "reason": "no_messages",
                 "parent_run_id": parent_run_id,
+                "transcript_source": transcript["source"],
+                "durable_message_count": transcript["durable_message_count"],
+                "runtime_event_count": transcript["runtime_event_count"],
             },
         )
         return {
@@ -525,14 +692,53 @@ def analyze_session_memory(
             "session_id": session_id,
             "reason": "no_messages",
             "parent_run_id": parent_run_id,
+            "transcript_source": transcript["source"],
+        }
+
+    if int(transcript.get("user_message_count") or 0) <= 0:
+        logger.info(f"[MemoryAgent] No user transcript entries for session {session_id}, skipping.")
+        audit_logger.log(
+            source_type=source_type,
+            action=f"Memory Agent: Session Extraction",
+            status="SKIPPED",
+            details=f"Session {session_id[:8]} skipped: no_user_message (source={transcript['source']}, entries={len(transcript_entries)})",
+        )
+        _emit_memory_event(
+            run_handle,
+            "memory.session_extraction.skipped",
+            {
+                "session_id": session_id,
+                "reason": "no_user_message",
+                "parent_run_id": parent_run_id,
+                "transcript_source": transcript["source"],
+                "entry_count": len(transcript_entries),
+            },
+        )
+        return {
+            "status": "skipped",
+            "task_kind": "session_extraction",
+            "session_id": session_id,
+            "reason": "no_user_message",
+            "parent_run_id": parent_run_id,
+            "transcript_source": transcript["source"],
+            "entry_count": len(transcript_entries),
         }
     
     incremental_messages, extraction_state, extraction_mode = _resolve_incremental_messages(
         session_id=session_id,
-        messages=messages,
+        messages=transcript_entries,
     )
     if not incremental_messages:
         logger.info(f"[MemoryAgent] No incremental messages for session {session_id}, skipping extraction.")
+        audit_logger.log(
+            source_type=source_type,
+            action=f"Memory Agent: Session Extraction",
+            status="SKIPPED",
+            details=(
+                f"Session {session_id[:8]} skipped: {extraction_mode} "
+                f"(source={transcript['source']}, entries={len(transcript_entries)}, seq={transcript['latest_seq']})"
+            ),
+        )
         _emit_memory_event(
             run_handle,
             "memory.session_extraction.skipped",
@@ -540,7 +746,9 @@ def analyze_session_memory(
                 "session_id": session_id,
                 "reason": extraction_mode,
                 "parent_run_id": parent_run_id,
-                "message_count": len(messages),
+                "message_count": len(transcript_entries),
+                "transcript_source": transcript["source"],
+                "latest_seq": transcript["latest_seq"],
             },
         )
         return {
@@ -549,7 +757,9 @@ def analyze_session_memory(
             "session_id": session_id,
             "reason": extraction_mode,
             "parent_run_id": parent_run_id,
-            "message_count": len(messages),
+            "message_count": len(transcript_entries),
+            "transcript_source": transcript["source"],
+            "latest_seq": transcript["latest_seq"],
         }
 
     chat_history_text = ""
@@ -565,25 +775,28 @@ def analyze_session_memory(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
             status="SKIPPED",
-            details=f"Session {session_id[:8]} too short (< 50 chars)"
+            details=f"Session {session_id[:8]} skipped: no_semantic_content (< 50 chars, source={transcript['source']})"
         )
         _emit_memory_event(
             run_handle,
             "memory.session_extraction.skipped",
             {
                 "session_id": session_id,
-                "reason": "session_too_short",
+                "reason": "no_semantic_content",
                 "content_length": len(chat_history_text.strip()),
                 "parent_run_id": parent_run_id,
+                "transcript_source": transcript["source"],
+                "entry_count": len(incremental_messages),
             },
         )
         return {
             "status": "skipped",
             "task_kind": "session_extraction",
             "session_id": session_id,
-            "reason": "session_too_short",
+            "reason": "no_semantic_content",
             "content_length": len(chat_history_text.strip()),
             "parent_run_id": parent_run_id,
+            "transcript_source": transcript["source"],
         }
     
     logger.info(f"[MemoryAgent] === System Command: Analyze Session {session_id[:8]} ===")
@@ -595,6 +808,9 @@ def analyze_session_memory(
                 "trigger_source": trigger_source,
                 "parent_run_id": parent_run_id,
                 "message_count": len(incremental_messages),
+                "canonical_entry_count": len(transcript_entries),
+                "transcript_source": transcript["source"],
+                "latest_seq": transcript["latest_seq"],
                 "extraction_mode": extraction_mode,
                 "previous_checkpoint": extraction_state or {},
             },
@@ -688,7 +904,8 @@ def analyze_session_memory(
             "memory.session_extraction.failed",
             {
                 "session_id": session_id,
-                "reason": str(e),
+                "reason": "extractor_error",
+                "error": str(e),
                 "resolved_scope": scope,
             },
         )
@@ -696,7 +913,8 @@ def analyze_session_memory(
             "status": "failed",
             "task_kind": "session_extraction",
             "session_id": session_id,
-            "reason": str(e),
+            "reason": "extractor_error",
+            "error": str(e),
             "resolved_scope": scope,
         }
         
@@ -713,7 +931,7 @@ def analyze_session_memory(
             "memory.session_extraction.failed",
             {
                 "session_id": session_id,
-                "reason": "llm_returned_invalid_extraction",
+                "reason": "model_empty",
                 "resolved_scope": scope,
             },
         )
@@ -721,7 +939,7 @@ def analyze_session_memory(
             "status": "failed",
             "task_kind": "session_extraction",
             "session_id": session_id,
-            "reason": "llm_returned_invalid_extraction",
+            "reason": "model_empty",
             "resolved_scope": scope,
         }
 
@@ -788,11 +1006,16 @@ def analyze_session_memory(
     
     # 增量 FTS5 刷新
     _run_incremental_index()
-    current_hash = _message_hash(incremental_messages)
+    no_persisted_memory_reason = ""
+    if stored_preferences + stored_knowledge <= 0:
+        extracted_memory_items = len(result.preferences) + len(result.knowledge)
+        no_persisted_memory_reason = "policy_filtered" if extracted_memory_items > 0 else "model_empty"
+    current_hash = _message_hash(transcript_entries)
+    last_entry = transcript_entries[-1] if transcript_entries else {}
     memory_runtime.save_extraction_state(
         session_id=session_id,
-        last_processed_message_id=messages[-1].get("id"),
-        last_processed_message_count=len(messages),
+        last_processed_message_id=last_entry.get("id"),
+        last_processed_message_count=len(transcript_entries),
         last_content_hash=current_hash,
         last_run_id=getattr(run_handle, "run_id", None),
         last_processed_at=_utc_now_iso(),
@@ -811,6 +1034,9 @@ def analyze_session_memory(
             "relation_count": len(result.relations),
             "status": "completed",
             "extraction_mode": extraction_mode,
+            "transcript_source": transcript["source"],
+            "latest_seq": transcript["latest_seq"],
+            "no_persisted_memory_reason": no_persisted_memory_reason or None,
         },
     )
     
@@ -825,7 +1051,13 @@ def analyze_session_memory(
         source_type=source_type,
         action=f"Memory Agent: Session Extraction",
         status="SUCCESS",
-        details=f"Session {session_id[:8]} => {len(result.knowledge)} facts, {len(result.preferences)} prefs, {len(result.relations)} relations."
+        details=(
+            f"Session {session_id[:8]} => {len(result.knowledge)} facts, "
+            f"{len(result.preferences)} prefs, {len(result.relations)} relations. "
+            f"source={transcript['source']}, entries={len(transcript_entries)}, "
+            f"seq={transcript['latest_seq']}"
+            + (f", no_persisted_memory_reason={no_persisted_memory_reason}" if no_persisted_memory_reason else "")
+        )
     )
     return {
         "status": "completed",
@@ -840,6 +1072,9 @@ def analyze_session_memory(
         "relation_count": len(result.relations),
         "parent_run_id": parent_run_id,
         "extraction_mode": extraction_mode,
+        "transcript_source": transcript["source"],
+        "latest_seq": transcript["latest_seq"],
+        "no_persisted_memory_reason": no_persisted_memory_reason or None,
     }
 
 async def generate_periodic_summary(

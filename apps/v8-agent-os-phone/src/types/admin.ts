@@ -49,8 +49,23 @@ export type ProjectSummary = {
     name?: string;
     slug?: string;
     summary?: string;
+    description?: string;
+    workspaceId?: string;
+    workspacePath?: string;
+    defaultScope?: string;
+    tags?: string[];
+    active?: boolean;
     status?: string;
     updatedAt?: string;
+};
+
+export type ScopeBindingView = {
+    projectId?: string;
+    workspaceId?: string;
+    workspacePath?: string;
+    resolvedScope: string;
+    scopeSource?: string;
+    scopeConfidence?: number;
 };
 
 export type MusicTrack = {
@@ -274,12 +289,18 @@ export type PendingApproval = {
 export type ConversationDetail = {
     id: string;
     messages: ChatMessage[];
+    timeline?: ChatMessage[];
+    ledger?: Record<string, unknown>[];
     latestSeq?: number;
     approvals?: PendingApproval[];
     controls?: SessionHistoryControls;
     recoverable?: boolean | null;
+    processes?: AdminProcessRef[];
     workflow?: Record<string, unknown> | null;
     workflowProjection?: Record<string, unknown> | null;
+    runtimeTimeline?: Record<string, unknown>[];
+    contextReferences?: ContextReferenceItem[];
+    artifacts?: ArtifactDetail[];
     projection?: RealtimeSessionSnapshot & Record<string, unknown>;
     summary?: { title?: string };
 };
@@ -414,4 +435,12 @@ export type ChatStreamEvent = {
     data?: Record<string, unknown>;
     run_id?: string;
     error?: string;
+};
+
+export type ChatSubmitResponse = {
+    accepted?: boolean;
+    session_id?: string;
+    conversationId?: string;
+    run_id?: string;
+    runId?: string;
 };

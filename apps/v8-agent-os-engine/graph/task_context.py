@@ -72,6 +72,7 @@ def resolve_todos(raw_todos):
     for item in raw_todos:
         if item.get("_task_init"):
             created_at = str(item.get("createdAt") or _now_iso())
+            resolved = []
             task_info = {
                 "taskId": str(item.get("taskId") or _fallback_task_id(item.get("name", ""), item.get("plan", ""))),
                 "name": item.get("name", ""),

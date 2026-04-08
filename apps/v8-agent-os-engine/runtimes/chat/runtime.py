@@ -243,8 +243,14 @@ class ChatRuntime:
 
         question = payload.get("question") or payload.get("prompt") or "我需要您的输入以继续执行任务。"
         tool_call_id = payload.get("toolCallId") or payload.get("tool_call_id")
-        approval_kind = payload.get("approvalKind") or payload.get("approval_kind") or "human_input_required"
-        interaction_kind = payload.get("interactionKind") or payload.get("interaction_kind") or "approval"
+        interaction_kind = payload.get("interactionKind") or payload.get("interaction_kind")
+        approval_kind = payload.get("approvalKind") or payload.get("approval_kind")
+        if not interaction_kind and approval_kind == "ask_user":
+            interaction_kind = "ask_user"
+        if not interaction_kind:
+            interaction_kind = "approval"
+        if not approval_kind:
+            approval_kind = "ask_user" if interaction_kind == "ask_user" else "human_input_required"
         request_payload = dict(payload)
         request_payload["question"] = question
         request_payload["prompt"] = question
@@ -255,6 +261,58 @@ class ChatRuntime:
         if interrupt_id:
             request_payload["interruptId"] = interrupt_id
         return request_payload
+
+    def _is_ask_user_request(self, request_payload: dict[str, Any] | None) -> bool:
+        payload = request_payload or {}
+        approval_kind = str(payload.get("approvalKind") or payload.get("approval_kind") or "").strip().lower()
+        interaction_kind = str(payload.get("interactionKind") or payload.get("interaction_kind") or "").strip().lower()
+        return interaction_kind == "ask_user" or approval_kind == "ask_user"
+
+    def _build_ask_user_event(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        request_payload: dict[str, Any],
+        approval: dict[str, Any] | None = None,
+        governance: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        event_data = {
+            "question": request_payload.get("question"),
+            "toolCallId": request_payload.get("toolCallId") or (approval or {}).get("approval_id"),
+            "approvalId": (approval or {}).get("approval_id"),
+            "interactionKind": request_payload.get("interactionKind") or "ask_user",
+            "approvalKind": request_payload.get("approvalKind") or (approval or {}).get("approval_kind"),
+            "request": request_payload,
+        }
+        if governance:
+            event_data["governance"] = governance
+        return {
+            "type": "custom_event",
+            "name": "ask_user",
+            "run_id": chat_run.active_run_id,
+            "data": event_data,
+        }
+
+    def _build_safety_blocked_event(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        reason: str,
+        risk_code: str | None = None,
+        details: dict[str, Any] | None = None,
+        request_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "type": "custom_event",
+            "name": "safety_blocked",
+            "run_id": chat_run.active_run_id,
+            "data": {
+                "reason": reason,
+                "riskCode": risk_code,
+                "details": details or {},
+                "request": request_payload or {},
+            },
+        }
 
     def _to_langchain_messages(self, request: ChatRequest) -> list[Any]:
         lc_messages: list[Any] = []
@@ -946,18 +1004,6 @@ class ChatRuntime:
             decision=decision,
             subject=chat_run.prepared.latest_user_content or chat_run.session_id,
         )
-        ask_user_event = {
-            "type": "custom_event",
-            "name": "ask_user",
-            "run_id": chat_run.active_run_id,
-            "data": {
-                "question": request_payload["question"],
-                "interactionKind": request_payload.get("interactionKind") or "approval",
-                "approvalKind": request_payload["approvalKind"],
-                "request": request_payload,
-                "safety": decision.to_payload(),
-            },
-        }
 
         if decision.is_review():
             approval = chat_run.run_handle.request_approval(
@@ -968,9 +1014,7 @@ class ChatRuntime:
                 chat_run.run_handle.refresh_chat_snapshot()
                 return []
             chat_run.run_handle.refresh_chat_snapshot()
-            ask_user_event["data"]["approvalId"] = approval.get("approval_id")
-            ask_user_event["data"]["toolCallId"] = approval.get("approval_id")
-            return [ask_user_event, {"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
+            return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
 
         chat_run.emit_runtime_event(
             "safety.preflight.blocked",
@@ -983,7 +1027,16 @@ class ChatRuntime:
             node="safety_guardian",
         )
         chat_run.run_handle.fail(f"Safety Guardian blocked chat run: {decision.reason}", node="safety_guardian")
-        return [ask_user_event, {"type": "done", "status": "blocked", "run_id": chat_run.active_run_id}]
+        return [
+            self._build_safety_blocked_event(
+                chat_run,
+                reason=decision.reason,
+                risk_code=decision.risk_code,
+                details=decision.details,
+                request_payload=request_payload,
+            ),
+            {"type": "done", "status": "blocked", "run_id": chat_run.active_run_id},
+        ]
 
     async def _emit_text_delta(self, chat_run: ChatRunContext, stream_state: ChatStreamState, delta: str) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
@@ -1041,32 +1094,26 @@ class ChatRuntime:
         if kind == "on_chain_stream":
             interrupt_request = self._extract_interrupt_request(data.get("chunk"))
             if interrupt_request:
+                approval_kind = interrupt_request.get("approvalKind") or "human_input_required"
                 approval = chat_run.run_handle.request_approval(
-                    approval_kind=interrupt_request.get("approvalKind") or "human_input_required",
+                    approval_kind=approval_kind,
                     request=interrupt_request,
                 )
                 if str(approval.get("status") or "").strip().lower() != "pending":
                     chat_run.run_handle.refresh_chat_snapshot()
                     return emitted_events
                 chat_run.run_handle.refresh_chat_snapshot()
-                emitted_events.append(
-                    {
-                        "type": "custom_event",
-                        "name": "ask_user",
-                        "run_id": chat_run.active_run_id,
-                        "data": {
-                            "question": interrupt_request.get("question"),
-                            "toolCallId": interrupt_request.get("toolCallId") or approval.get("approval_id"),
-                            "approvalId": approval.get("approval_id"),
-                            "interactionKind": interrupt_request.get("interactionKind") or "approval",
-                            "approvalKind": approval.get("approval_kind"),
-                            "request": interrupt_request,
-                        },
-                    }
-                )
+                if self._is_ask_user_request(interrupt_request):
+                    emitted_events.append(
+                        self._build_ask_user_event(
+                            chat_run,
+                            request_payload=interrupt_request,
+                            approval=approval,
+                        )
+                    )
                 stream_state.interrupted_signal = {
                     "command": "approval_requested",
-                    "reason": approval.get("approval_kind") or "human_input_required",
+                    "reason": approval.get("approval_kind") or approval_kind,
                     "payload": {"approval_id": approval.get("approval_id")},
                 }
                 return emitted_events
@@ -1245,26 +1292,20 @@ class ChatRuntime:
             )
             chat_run.run_handle.refresh_chat_snapshot()
             if str(approval.get("status") or "").strip().lower() == "pending":
-                return [
-                    {
-                        "type": "custom_event",
-                        "name": "ask_user",
-                        "run_id": chat_run.active_run_id,
-                        "data": {
-                            "question": request_payload["question"],
-                            "interactionKind": request_payload.get("interactionKind") or "approval",
-                            "approvalKind": exc.approval_kind,
-                            "approvalId": approval.get("approval_id"),
-                            "toolCallId": approval.get("approval_id"),
-                            "request": request_payload,
-                            "governance": {
+                if self._is_ask_user_request(request_payload):
+                    return [
+                        self._build_ask_user_event(
+                            chat_run,
+                            request_payload=request_payload,
+                            approval=approval,
+                            governance={
                                 "message": str(exc),
                                 "details": exc.details,
                             },
-                        },
-                    },
-                    {"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id},
-                ]
+                        ),
+                        {"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id},
+                    ]
+                return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
         normalized = normalize_provider_error(exc)
         if chat_run:
             try:

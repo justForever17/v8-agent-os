@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
@@ -9,11 +9,18 @@ import type { SessionTodoItem } from "@/src/types/admin";
 
 type TodosHUDProps = {
     items: SessionTodoItem[];
+    shouldAutoHide?: boolean;
+    dismissDelayMs?: number;
 };
 
-export const TodosHUD = memo(function TodosHUD({ items }: TodosHUDProps) {
+export const TodosHUD = memo(function TodosHUD({
+    items,
+    shouldAutoHide = false,
+    dismissDelayMs = 2600,
+}: TodosHUDProps) {
     const { colors, themeMode, t } = useUiPrefs();
     const [isCollapsed, setIsCollapsed] = useState(true);
+    const [dismissed, setDismissed] = useState(false);
     const progress = useRef(new Animated.Value(0)).current;
 
     const todos = useMemo(
@@ -21,8 +28,27 @@ export const TodosHUD = memo(function TodosHUD({ items }: TodosHUDProps) {
         [items],
     );
     const completedCount = todos.filter((item) => item.status === "done").length;
+    const todosSignature = useMemo(
+        () => todos.map((item, index) => `${item.id || index}:${item.status}:${String(item.content || "").trim()}`).join("|"),
+        [todos],
+    );
+    const allCompleted = todos.length > 0 && todos.every((item) => item.status === "done" || item.status === "skipped");
 
-    if (todos.length === 0) {
+    useEffect(() => {
+        setDismissed(false);
+    }, [todosSignature]);
+
+    useEffect(() => {
+        if (!shouldAutoHide || !allCompleted || todos.length === 0) {
+            return undefined;
+        }
+        const timer = setTimeout(() => {
+            setDismissed(true);
+        }, dismissDelayMs);
+        return () => clearTimeout(timer);
+    }, [allCompleted, dismissDelayMs, shouldAutoHide, todos.length]);
+
+    if (todos.length === 0 || dismissed) {
         return null;
     }
 

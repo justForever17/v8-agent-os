@@ -2,21 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
-    KeyboardAvoidingView,
     Modal,
     Platform,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     View,
     useWindowDimensions,
 } from "react-native";
 import { Redirect, router, type Href } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import {
     RecordingPresets,
     requestRecordingPermissionsAsync,
@@ -30,6 +31,8 @@ import {
 import { ChatWindow } from "@/src/components/chat/ChatWindow";
 import { Composer } from "@/src/components/chat/Composer";
 import { ComposerPickerOverlay } from "@/src/components/chat/ComposerPickerOverlay";
+import { GovernanceApprovalModal } from "@/src/components/chat/GovernanceApprovalModal";
+import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/src/components/chat/RunControlBar";
 import { RuntimeDock } from "@/src/components/chat/RuntimeDock";
 import { RuntimeTimelinePanel } from "@/src/components/chat/RuntimeTimelinePanel";
@@ -72,18 +75,23 @@ import {
     dispatchRunCommand,
     getDesktopLiveStatus,
     getConversationDetail,
+    getProjectsRegistry,
     getRealtimeSnapshot,
+    getSessionProcesses,
+    getSessionScope,
     listCommandPresets,
     listConversations,
     listMusicTracks,
     listSkills,
+    reresolveSessionScope,
     requestTextToSpeech,
     releaseDesktopLiveSession,
-    sendChatMessageStream,
+    submitChatMessage,
     sendDesktopLiveCandidate,
     speechToText,
     streamRealtimeSession,
     uploadAttachment,
+    updateSessionScope,
 } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -92,7 +100,6 @@ import type {
     ArtifactDetail,
     ChatArtifact,
     ChatMessage,
-    ChatStreamEvent,
     CommandPresetSummary,
     ConversationDetail,
     ConversationSummary,
@@ -101,6 +108,8 @@ import type {
     PhoneUiTimelineNode,
     DesktopLiveStatus,
     RealtimeSessionSnapshot,
+    ProjectSummary,
+    ScopeBindingView,
     SessionTodoItem,
     SkillReferenceSummary,
     UploadedWorkspaceFile,
@@ -252,6 +261,21 @@ function mergeArtifacts(base: ChatArtifact[] = [], incoming: ChatArtifact[] = []
             ...(merged.get(key) || {}),
             ...artifact,
         });
+    }
+    return Array.from(merged.values());
+}
+
+function mergeTimelineNodes(base: PhoneUiTimelineNode[] = [], incoming: PhoneUiTimelineNode[] = []) {
+    const merged = new Map<string, PhoneUiTimelineNode>();
+    for (const node of [...base, ...incoming]) {
+        const key = String(node.id || "").trim();
+        if (!key) {
+            continue;
+        }
+        merged.set(key, {
+            ...(merged.get(key) || {}),
+            ...node,
+        } as PhoneUiTimelineNode);
     }
     return Array.from(merged.values());
 }
@@ -493,7 +517,58 @@ function buildAssistantTaskProgressPatch(
     };
 }
 
-function findLatestAssistantShellIndex(messages: ChatMessage[]) {
+function readAssistantTaskProgress(message: ChatMessage | null | undefined) {
+    return asRecord(message?.metadata?.assistantTaskProgress);
+}
+
+function countDefinedAssistantTaskProgressFields(value: Record<string, unknown>) {
+    return [
+        value.phase,
+        value.label,
+        value.subtitle,
+        value.currentStep,
+        value.completedCount,
+        value.totalCount,
+    ].filter((item) => item !== undefined && item !== null && String(item).trim() !== "").length;
+}
+
+function hasStructuredAssistantPayload(message: ChatMessage | null | undefined) {
+    if (!message) {
+        return false;
+    }
+    return Boolean(
+        (message.nodes || []).length > 0
+        || (message.artifacts || []).length > 0
+        || (message.images || []).length > 0
+        || countDefinedAssistantTaskProgressFields(readAssistantTaskProgress(message)) > 0,
+    );
+}
+
+function shouldPreserveLocalAssistantMessage(message: ChatMessage | null | undefined) {
+    if (!message || message.role !== "assistant") {
+        return false;
+    }
+    return Boolean(
+        isOptimisticLocalMessage(message)
+        || isActiveAssistantStreamPhase(message.uiStreamPhase)
+        || hasStructuredAssistantPayload(message),
+    );
+}
+
+function findLatestAssistantShellIndex(messages: ChatMessage[], runId?: string) {
+    const normalizedRunId = String(runId || "").trim();
+    if (normalizedRunId) {
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index];
+            if (message.role !== "assistant") {
+                continue;
+            }
+            if (String(message.runId || message.metadata?.runId || "").trim() === normalizedRunId) {
+                return index;
+            }
+        }
+    }
+
     for (let index = messages.length - 1; index >= 0; index -= 1) {
         const message = messages[index];
         if (message.role !== "assistant") {
@@ -517,7 +592,7 @@ function applyAssistantTaskProgressPatch(
     }
 
     const next = [...current];
-    let targetIndex = findLatestAssistantShellIndex(next);
+    let targetIndex = findLatestAssistantShellIndex(next, runId);
 
     if (targetIndex < 0) {
         if (!options?.createIfMissing) {
@@ -543,7 +618,7 @@ function applyAssistantTaskProgressPatch(
     next[targetIndex] = {
         ...target,
         runId: runId || target.runId,
-        uiEphemeral: target.uiEphemeral !== false,
+        uiEphemeral: target.uiEphemeral !== false || !hasRenderableMessagePayload(target),
         uiStreamPhase: patch.phase || target.uiStreamPhase,
         metadata: nextMetadata,
         timestamp: Date.now(),
@@ -717,6 +792,16 @@ function buildMessageComparisonKeys(message: ChatMessage) {
         keys.add(`artifacts:${role}:${artifactKeys}`);
     }
 
+    const taskProgress = readAssistantTaskProgress(message);
+    const taskProgressKey = [
+        String(taskProgress.phase || "").trim(),
+        String(taskProgress.currentStep || "").trim(),
+        String(taskProgress.label || "").trim(),
+    ].filter(Boolean).join("|");
+    if (taskProgressKey) {
+        keys.add(`task:${role}:${taskProgressKey}`);
+    }
+
     return Array.from(keys);
 }
 
@@ -725,15 +810,28 @@ function hasRenderableMessagePayload(message: ChatMessage) {
         String(message.content || "").trim()
         || (Array.isArray(message.images) && message.images.length > 0)
         || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
-        || (Array.isArray(message.nodes) && message.nodes.length > 0),
+        || (Array.isArray(message.nodes) && message.nodes.length > 0)
+        || countDefinedAssistantTaskProgressFields(readAssistantTaskProgress(message)) > 0,
     );
 }
 
-function hasActiveLocalAssistantShell(messages: ChatMessage[]) {
-    return messages.some((message) =>
-        message.role === "assistant"
-        && isActiveAssistantStreamPhase(message.uiStreamPhase),
-    );
+function hasPreservableLocalAssistantState(messages: ChatMessage[]) {
+    return messages.some((message) => shouldPreserveLocalAssistantMessage(message));
+}
+
+function describeLatestAssistantMessage(messages: ChatMessage[]) {
+    const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+    if (!latestAssistant) {
+        return null;
+    }
+    return {
+        id: String(latestAssistant.id || "").trim(),
+        runId: String(latestAssistant.runId || latestAssistant.metadata?.runId || "").trim(),
+        phase: String(latestAssistant.uiStreamPhase || "").trim(),
+        nodes: Array.isArray(latestAssistant.nodes) ? latestAssistant.nodes.length : 0,
+        artifacts: Array.isArray(latestAssistant.artifacts) ? latestAssistant.artifacts.length : 0,
+        contentLength: String(latestAssistant.content || "").trim().length,
+    };
 }
 
 function buildMessageRichness(message: ChatMessage | null | undefined) {
@@ -752,6 +850,61 @@ function mergeMessageImages(base: string[] = [], incoming: string[] = []) {
     return Array.from(new Set([...base, ...incoming].filter(Boolean)));
 }
 
+function mergeStructuredSnapshotMessages(
+    current: ChatMessage[],
+    snapshotMessages: ChatMessage[],
+) {
+    const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
+    if (current.length === 0) {
+        return normalizedSnapshot;
+    }
+
+    const currentByKey = new Map<string, ChatMessage>();
+    current.forEach((message) => {
+        buildMessageComparisonKeys(message).forEach((key) => {
+            if (!currentByKey.has(key)) {
+                currentByKey.set(key, message);
+            }
+        });
+    });
+
+    return normalizeMessagesForState(normalizedSnapshot.map((snapshotMessage) => {
+        const matchingLocal = buildMessageComparisonKeys(snapshotMessage)
+            .map((key) => currentByKey.get(key))
+            .find(Boolean);
+        if (!matchingLocal) {
+            return snapshotMessage;
+        }
+
+        const mergedMessage = normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage;
+        const localHasStructuredState = hasStructuredAssistantPayload(matchingLocal);
+        const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
+        const preferLocalPayload = buildMessageRichness(matchingLocal) > buildMessageRichness(snapshotMessage);
+
+        if (matchingLocal.role === "assistant" && (localHasStructuredState || preferLocalPayload)) {
+            mergedMessage.nodes = (matchingLocal.nodes?.length || 0) >= (snapshotMessage.nodes?.length || 0)
+                ? matchingLocal.nodes
+                : snapshotMessage.nodes;
+            mergedMessage.artifacts = (matchingLocal.artifacts?.length || 0) >= (snapshotMessage.artifacts?.length || 0)
+                ? matchingLocal.artifacts
+                : snapshotMessage.artifacts;
+            mergedMessage.images = mergeMessageImages(matchingLocal.images || [], snapshotMessage.images || []);
+            mergedMessage.metadata = {
+                ...(matchingLocal.metadata || {}),
+                ...(snapshotMessage.metadata || {}),
+            };
+            if (preferLocalPayload && !hasRenderableMessagePayload(snapshotMessage)) {
+                mergedMessage.content = matchingLocal.content;
+            }
+            if (!snapshotHasStructuredState && localHasStructuredState && matchingLocal.toolInvocations?.length) {
+                mergedMessage.toolInvocations = matchingLocal.toolInvocations;
+            }
+        }
+
+        return mergedMessage;
+    }));
+}
+
 function mergeAuthoritativeSnapshotMessages(
     current: ChatMessage[],
     snapshotMessages: ChatMessage[],
@@ -759,20 +912,23 @@ function mergeAuthoritativeSnapshotMessages(
 ) {
     const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
     if (!preserveOptimisticLocalState) {
+        return mergeStructuredSnapshotMessages(current, normalizedSnapshot);
+    }
+
+    const preservableLocals = current.filter((message) =>
+        isOptimisticLocalMessage(message)
+        || shouldPreserveLocalAssistantMessage(message),
+    );
+    if (preservableLocals.length === 0) {
         return normalizedSnapshot;
     }
 
-    const optimisticLocals = current.filter(isOptimisticLocalMessage);
-    if (optimisticLocals.length === 0) {
-        return normalizedSnapshot;
-    }
-
-    const usedOptimisticLocals = new Set<string>();
+    const usedPreservableLocals = new Set<string>();
     const mergedSnapshotMessages = normalizedSnapshot.map((snapshotMessage) => {
         const snapshotKeys = new Set(buildMessageComparisonKeys(snapshotMessage));
-        const matchingLocal = optimisticLocals.find((candidate) => {
+        const matchingLocal = preservableLocals.find((candidate) => {
             const localId = String(candidate.id || "").trim();
-            if (localId && usedOptimisticLocals.has(localId)) {
+            if (localId && usedPreservableLocals.has(localId)) {
                 return false;
             }
             if (
@@ -793,7 +949,7 @@ function mergeAuthoritativeSnapshotMessages(
 
         const matchingLocalId = String(matchingLocal.id || "").trim();
         if (matchingLocalId) {
-            usedOptimisticLocals.add(matchingLocalId);
+            usedPreservableLocals.add(matchingLocalId);
         }
 
         const mergedMessage = normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage;
@@ -801,56 +957,73 @@ function mergeAuthoritativeSnapshotMessages(
         const snapshotRenderable = hasRenderableMessagePayload(snapshotMessage);
         const localRenderable = hasRenderableMessagePayload(matchingLocal);
         const preferLocalPayload = localRenderable && buildMessageRichness(matchingLocal) > buildMessageRichness(snapshotMessage);
+        const localTaskProgress = readAssistantTaskProgress(matchingLocal);
+        const snapshotTaskProgress = readAssistantTaskProgress(snapshotMessage);
+        const localHasStructuredState = hasStructuredAssistantPayload(matchingLocal);
+        const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
+        const localTaskProgressRicher = countDefinedAssistantTaskProgressFields(localTaskProgress) > countDefinedAssistantTaskProgressFields(snapshotTaskProgress);
 
         if (matchingLocal.role === "assistant" && matchingLocal.uiEphemeral) {
-            mergedMessage.uiEphemeral = !snapshotRenderable;
+            mergedMessage.uiEphemeral = !snapshotRenderable || localStreamActive;
             mergedMessage.uiStreamPhase = localStreamActive
                 ? matchingLocal.uiStreamPhase
                 : snapshotMessage.uiStreamPhase;
         }
 
         if (matchingLocal.role === "assistant") {
-            const taskProgress = asRecord(matchingLocal.metadata?.assistantTaskProgress);
-            if (Object.keys(taskProgress).length > 0 && (localStreamActive || !snapshotRenderable)) {
+            if (
+                countDefinedAssistantTaskProgressFields(localTaskProgress) > 0
+                && (localStreamActive || !snapshotRenderable || !snapshotHasStructuredState || localTaskProgressRicher)
+            ) {
                 mergedMessage.metadata = {
                     ...(mergedMessage.metadata || {}),
-                    assistantTaskProgress: taskProgress,
+                    assistantTaskProgress: localTaskProgress,
                 };
             }
         }
 
-        if (matchingLocal.role === "assistant" && (localStreamActive || preferLocalPayload)) {
+        if (matchingLocal.role === "assistant" && (localStreamActive || preferLocalPayload || localHasStructuredState)) {
             if (!snapshotRenderable || preferLocalPayload) {
                 if (String(matchingLocal.content || "").trim().length > String(mergedMessage.content || "").trim().length) {
                     mergedMessage.content = matchingLocal.content;
                 }
+            }
+            if (localHasStructuredState && (!snapshotHasStructuredState || localStreamActive)) {
+                mergedMessage.nodes = mergeTimelineNodes(mergedMessage.nodes || [], matchingLocal.nodes || []);
+                mergedMessage.images = mergeMessageImages(mergedMessage.images || [], matchingLocal.images || []);
+                mergedMessage.artifacts = mergeArtifacts(mergedMessage.artifacts || [], matchingLocal.artifacts || []);
+            } else if (localHasStructuredState) {
                 if ((matchingLocal.nodes || []).length > (mergedMessage.nodes || []).length) {
-                    mergedMessage.nodes = matchingLocal.nodes;
+                    mergedMessage.nodes = mergeTimelineNodes(mergedMessage.nodes || [], matchingLocal.nodes || []);
                 }
-                if ((matchingLocal.images || []).length > 0) {
+                if ((matchingLocal.images || []).length > (mergedMessage.images || []).length) {
                     mergedMessage.images = mergeMessageImages(mergedMessage.images || [], matchingLocal.images || []);
                 }
-                if ((matchingLocal.artifacts || []).length > 0) {
+                if ((matchingLocal.artifacts || []).length > (mergedMessage.artifacts || []).length) {
                     mergedMessage.artifacts = mergeArtifacts(mergedMessage.artifacts || [], matchingLocal.artifacts || []);
                 }
-                if (matchingLocal.metadata) {
-                    mergedMessage.metadata = {
-                        ...(mergedMessage.metadata || {}),
-                        ...matchingLocal.metadata,
-                    };
-                }
             }
-            if (!snapshotRenderable && matchingLocal.uiEphemeral) {
+            if (matchingLocal.metadata) {
+                mergedMessage.metadata = {
+                    ...(mergedMessage.metadata || {}),
+                    ...matchingLocal.metadata,
+                    assistantTaskProgress: (mergedMessage.metadata || {}).assistantTaskProgress,
+                };
+            }
+            if ((!snapshotRenderable || localStreamActive || !snapshotHasStructuredState) && matchingLocal.uiEphemeral) {
                 mergedMessage.uiEphemeral = true;
+            }
+            if (localStreamActive && matchingLocal.uiStreamPhase) {
+                mergedMessage.uiStreamPhase = matchingLocal.uiStreamPhase;
             }
         }
 
         return mergedMessage;
     });
 
-    const unmatchedOptimisticLocals = optimisticLocals.filter((message) => {
+    const unmatchedOptimisticLocals = preservableLocals.filter((message) => {
         const messageId = String(message.id || "").trim();
-        if (messageId && usedOptimisticLocals.has(messageId)) {
+        if (messageId && usedPreservableLocals.has(messageId)) {
             return false;
         }
         const comparisonKeys = buildMessageComparisonKeys(message);
@@ -877,6 +1050,22 @@ function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeS
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function readRealtimeDiagnostics(value: unknown) {
+    const record = asRecord(value);
+    return asRecord(record._diagnostics);
+}
+
+function debugRealtimeTrace(stage: string, payload: Record<string, unknown>) {
+    if (!__DEV__) {
+        return;
+    }
+    try {
+        console.debug(`[phone/realtime/${stage}]`, payload);
+    } catch {
+        // ignore debug log failures
+    }
 }
 
 function buildRealtimeEventDedupKey(event: PhoneRealtimeUiEvent) {
@@ -924,6 +1113,9 @@ function buildConversationOverlayPatch(detail: Partial<ConversationDetail> | nul
         previewExcerpt: String(summary.previewExcerpt || record.previewExcerpt || "").trim() || undefined,
         lastNarrativeExcerpt: String(summary.lastNarrativeExcerpt || record.lastNarrativeExcerpt || "").trim() || undefined,
         lastRuntimeSummary: String(summary.lastRuntimeSummary || record.lastRuntimeSummary || "").trim() || undefined,
+        currentRunId: String(summary.currentRunId || record.currentRunId || "").trim() || undefined,
+        lastRunId: String(summary.lastRunId || record.lastRunId || "").trim() || undefined,
+        endedAt: String(summary.endedAt || record.endedAt || "").trim() || undefined,
         pendingApprovalCount: Number(summary.pendingApprovalCount || record.pendingApprovalCount || 0) || 0,
         hasPendingApproval: Boolean(summary.hasPendingApproval || record.hasPendingApproval),
         controls: (record.controls as ConversationSummary["controls"]) || undefined,
@@ -973,6 +1165,7 @@ export default function ChatScreen() {
         activeConversationId,
         setActiveConversationId,
         authorizedFetch,
+        authorizedRealtimeStream,
     } = useAppSession();
     const {
         locale,
@@ -1006,18 +1199,22 @@ export default function ChatScreen() {
     const realtimeSnapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const realtimeSnapshotInflightRef = useRef(false);
     const realtimeSnapshotPendingRef = useRef(false);
+    const waitingApprovalRefreshAtRef = useRef(0);
     const lastMessageFingerprintRef = useRef("");
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
     const lastRealtimeSnapshotAtRef = useRef(0);
     const seenRealtimeEventKeysRef = useRef<Set<string>>(new Set());
+    const pendingRealtimeRenderDiagnosticRef = useRef<Record<string, unknown> | null>(null);
     const messagesRef = useRef<ChatMessage[]>([]);
+    const messageConversationIdRef = useRef<string | null>(activeConversationId);
     const todosRef = useRef<SessionTodoItem[]>([]);
     const realtimeMessageStateRef = useRef(
         createInitialSessionRealtimeMessageState<ChatMessage>([], PHONE_STREAM_LIFECYCLE_OPTIONS),
     );
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
+    const activeRunIdRef = useRef<string>("");
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const previousConversationIdRef = useRef<string | null>(null);
     const conversationTransitionTokenRef = useRef(0);
@@ -1029,6 +1226,7 @@ export default function ChatScreen() {
     const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
     const recorderState = useAudioRecorderState(recorder);
     const { width, height } = useWindowDimensions();
+    const safeAreaInsets = useSafeAreaInsets();
     const isLandscape = width > height;
 
     const [loading, setLoading] = useState(true);
@@ -1043,6 +1241,11 @@ export default function ChatScreen() {
     const [input, setInput] = useState("");
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const [projects, setProjects] = useState<ProjectSummary[]>([]);
+    const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
+    const [selectedProjectId, setSelectedProjectId] = useState("");
+    const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
+    const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [artifacts, setArtifacts] = useState<ArtifactDetail[]>([]);
@@ -1055,13 +1258,15 @@ export default function ChatScreen() {
     const [selectedCommand, setSelectedCommand] = useState<CommandPresetSummary | null>(null);
     const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
-    const [composerHeight, setComposerHeight] = useState(132);
-    const [todosDockHeight, setTodosDockHeight] = useState(0);
+    const [bottomLayerHeight, setBottomLayerHeight] = useState(132);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
+    const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
+    const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
+    const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<PhoneRuntimeId>("chat");
-    const [contextExpanded, setContextExpanded] = useState(false);
+    const [scopeSheetOpen, setScopeSheetOpen] = useState(false);
     const [desktopPreviewOpen, setDesktopPreviewOpen] = useState(false);
     const [desktopPreviewBusy, setDesktopPreviewBusy] = useState(false);
     const [desktopPreviewSessionId, setDesktopPreviewSessionId] = useState("");
@@ -1098,6 +1303,14 @@ export default function ChatScreen() {
             || String(item.path || "").toLowerCase().includes(skillQuery),
         );
     }, [selectedSkills, skillQuery, skills]);
+    const selectedProject = useMemo(
+        () => projects.find((project) => project.id === selectedProjectId) || null,
+        [projects, selectedProjectId],
+    );
+    const availableProjects = useMemo(
+        () => projects.filter((project) => project.active !== false),
+        [projects],
+    );
 
     useEffect(() => {
         runtimeRef.current = runtime;
@@ -1119,6 +1332,21 @@ export default function ChatScreen() {
             PHONE_STREAM_LIFECYCLE_OPTIONS,
         );
     }, [messages]);
+
+    useEffect(() => {
+        if (!pendingRealtimeRenderDiagnosticRef.current) {
+            return;
+        }
+        const diagnostic = pendingRealtimeRenderDiagnosticRef.current;
+        pendingRealtimeRenderDiagnosticRef.current = null;
+        debugRealtimeTrace("render", {
+            ...diagnostic,
+            phoneRenderedAt: new Date().toISOString(),
+            latestSeq: latestSeqRef.current,
+            runtimeStatus: runtimeRef.current.status,
+            messageFingerprint: lastMessageFingerprintRef.current,
+        });
+    }, [messages, runtimeTimeline, todos, runtime.status]);
 
     useEffect(() => {
         todosRef.current = todos;
@@ -1146,6 +1374,30 @@ export default function ChatScreen() {
             runtimeFlushTimerRef.current = null;
         }
     }, []);
+
+    const clearActiveConversationViewState = useCallback(() => {
+        resetConversationStreamState();
+        messagesRef.current = [];
+        messageConversationIdRef.current = null;
+        setMessages([]);
+        setApprovals([]);
+        setTodos([]);
+        todosRef.current = [];
+        setArtifacts([]);
+        setProcesses([]);
+        setContextReferences([]);
+        setRuntime({ status: "idle", latestSeq: 0 });
+        runtimeRef.current = { status: "idle", latestSeq: 0 };
+        activeRunIdRef.current = "";
+        setRuntimeTimeline([]);
+        latestSeqRef.current = 0;
+        lastAppliedSnapshotSeqRef.current = 0;
+        lastAppliedSnapshotFingerprintRef.current = "";
+        lastRealtimeSnapshotAtRef.current = 0;
+        waitingApprovalRefreshAtRef.current = 0;
+        setGovernanceApprovalOpen(false);
+        setDismissedGovernanceApprovalId("");
+    }, [resetConversationStreamState]);
 
     const appendRuntimeTimeline = useCallback((entry: PhoneRuntimeTimelineEntry | null) => {
         if (!entry) {
@@ -1178,6 +1430,7 @@ export default function ChatScreen() {
         lastMessageFingerprintRef.current = fingerprint;
         syncArtifactsFromMessages(nextState.messages);
         messagesRef.current = nextState.messages;
+        messageConversationIdRef.current = String(activeConversationIdRef.current || "").trim() || messageConversationIdRef.current;
         setMessages(nextState.messages);
     }, [syncArtifactsFromMessages]);
 
@@ -1234,6 +1487,7 @@ export default function ChatScreen() {
                 PHONE_STREAM_LIFECYCLE_OPTIONS,
             );
             messagesRef.current = next;
+            messageConversationIdRef.current = String(activeConversationIdRef.current || "").trim() || messageConversationIdRef.current;
             return next;
         });
     }, []);
@@ -1616,6 +1870,138 @@ export default function ChatScreen() {
         maybeStartDesktopPreviewNegotiation(desktopPreviewSessionId);
     }, [desktopPreviewSessionId, maybeStartDesktopPreviewNegotiation]);
 
+    const loadProjects = useCallback(async () => {
+        try {
+            const payload = await getProjectsRegistry(authorizedFetch);
+            const nextProjects = Array.isArray(payload.projects) ? payload.projects : [];
+            const nextDefaultProjectId = typeof payload.defaultProjectId === "string" ? payload.defaultProjectId : null;
+            setProjects(nextProjects);
+            setDefaultProjectId(nextDefaultProjectId);
+            setSelectedProjectId((current) => {
+                if (current || activeConversationIdRef.current || !nextDefaultProjectId) {
+                    return current;
+                }
+                return nextDefaultProjectId;
+            });
+        } catch (error) {
+            console.warn("[phone/chat] loadProjects failed", error instanceof Error ? error.message : error);
+            setProjects([]);
+            setDefaultProjectId(null);
+        }
+    }, [authorizedFetch]);
+
+    const loadSessionScope = useCallback(async (conversationId: string) => {
+        setScopeLoading(true);
+        try {
+            const binding = await getSessionScope(authorizedFetch, conversationId);
+            setScopeBinding(binding);
+            if (binding?.projectId) {
+                setSelectedProjectId(binding.projectId);
+            } else if (!binding && defaultProjectId) {
+                setSelectedProjectId(defaultProjectId);
+            }
+        } catch (error) {
+            console.warn("[phone/chat] loadSessionScope failed", error instanceof Error ? error.message : error);
+            setScopeBinding(null);
+        } finally {
+            setScopeLoading(false);
+        }
+    }, [authorizedFetch, defaultProjectId]);
+
+    const buildScopePayload = useCallback(() => ({
+        projectId: selectedProjectId || undefined,
+        workspaceId: selectedProject?.workspaceId,
+        workspacePath: selectedProject?.workspacePath,
+        scopeHint: selectedProjectId
+            ? (selectedProject?.defaultScope || undefined)
+            : (scopeBinding?.resolvedScope || selectedProject?.defaultScope),
+        scopeMode: selectedProjectId ? "explicit" : "mixed",
+    }), [scopeBinding?.resolvedScope, selectedProject, selectedProjectId]);
+
+    const handleProjectSelect = useCallback(async (projectId: string) => {
+        const nextProjectId = projectId === "__auto__" ? "" : projectId;
+        setSelectedProjectId(nextProjectId);
+
+        const activeSessionId = activeConversationIdRef.current;
+        if (!activeSessionId) {
+            if (!nextProjectId) {
+                setScopeBinding(null);
+            }
+            setScopeSheetOpen(false);
+            return;
+        }
+
+        setScopeLoading(true);
+        try {
+            if (nextProjectId) {
+                const nextProject = projects.find((project) => project.id === nextProjectId);
+                const binding = await updateSessionScope(authorizedFetch, activeSessionId, {
+                    projectId: nextProjectId,
+                    workspaceId: nextProject?.workspaceId,
+                    workspacePath: nextProject?.workspacePath,
+                    scopeHint: nextProject?.defaultScope,
+                    scopeSource: "phone_selected",
+                    scopeConfidence: 1,
+                });
+                setScopeBinding(binding);
+            } else {
+                const latestUserText = [...messagesRef.current].reverse().find((message) => message.role === "user")?.content || input;
+                const binding = await reresolveSessionScope(authorizedFetch, activeSessionId, {
+                    userQuery: latestUserText,
+                    scopeMode: "mixed",
+                });
+                setScopeBinding(binding);
+            }
+            await loadSessionScope(activeSessionId);
+            await Promise.all([
+                loadSupportDataRef.current(),
+                loadConversationRef.current(activeSessionId, { force: true }),
+            ]);
+            setScopeSheetOpen(false);
+        } catch (error) {
+            console.warn("[phone/chat] updateSessionScope failed", error instanceof Error ? error.message : error);
+            Alert.alert(
+                t("项目上下文更新失败", "Project context update failed"),
+                t("暂时无法更新当前会话的项目上下文，请稍后重试。", "Unable to update the current session scope right now. Please try again shortly."),
+            );
+        } finally {
+            setScopeLoading(false);
+        }
+    }, [authorizedFetch, input, loadSessionScope, projects, t]);
+
+    const handleReresolveScope = useCallback(async () => {
+        const activeSessionId = activeConversationIdRef.current;
+        if (!activeSessionId) {
+            return;
+        }
+
+        setScopeLoading(true);
+        try {
+            const latestUserText = [...messagesRef.current].reverse().find((message) => message.role === "user")?.content || input;
+            const binding = await reresolveSessionScope(authorizedFetch, activeSessionId, {
+                userQuery: latestUserText,
+                projectId: selectedProjectId || undefined,
+                workspaceId: selectedProject?.workspaceId,
+                workspacePath: selectedProject?.workspacePath,
+                scopeMode: selectedProjectId ? "explicit" : "mixed",
+            });
+            setScopeBinding(binding);
+            await loadSessionScope(activeSessionId);
+            await Promise.all([
+                loadSupportDataRef.current(),
+                loadConversationRef.current(activeSessionId, { force: true }),
+            ]);
+        } catch (error) {
+            console.warn("[phone/chat] re-resolve scope failed", error instanceof Error ? error.message : error);
+            Alert.alert(
+                t("重新解析失败", "Re-resolve failed"),
+                t("当前会话的项目与 scope 还没重新解析成功，请稍后再试。", "The current session scope could not be re-resolved yet. Please try again shortly."),
+            );
+        } finally {
+            setScopeLoading(false);
+        }
+    }, [authorizedFetch, input, loadSessionScope, selectedProject?.workspaceId, selectedProject?.workspacePath, selectedProjectId, t]);
+
     const loadSupportData = useCallback(async () => {
         const [nextConversations, nextCommands, nextSkills, nextMusic] = await Promise.all([
             listConversations(authorizedFetch),
@@ -1628,20 +2014,22 @@ export default function ChatScreen() {
         setCommands(nextCommands);
         setSkills(nextSkills);
         setMusicTracks(nextMusic);
+        await loadProjects();
 
         if (
             activeConversationIdRef.current
-            && !nextConversations.some((item) => item.id === activeConversationIdRef.current)
+            && !nextConversations.some((item) => (item.sessionId || item.id) === activeConversationIdRef.current)
         ) {
             await setActiveConversationId(null);
         }
-    }, [authorizedFetch, setActiveConversationId]);
+    }, [authorizedFetch, loadProjects, setActiveConversationId]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const { store, view } = deriveAuthoritativeSessionView(payload);
         if (!view) {
             return;
         }
+        const record = asRecord(payload);
         const nextApprovals = view.approvals as PendingApproval[];
         const hasAskUserPending = nextApprovals.some((item) => isAskUserInteractionApproval(item));
         const hasGovernanceApprovalPending = nextApprovals.some((item) => !isAskUserInteractionApproval(item));
@@ -1651,11 +2039,39 @@ export default function ChatScreen() {
         const nextSummary = asRecord(view.summary);
         const nextCurrentRun = asRecord(view.currentRun);
         const workflowProjection = asRecord(view.workflowProjection);
+        const nextRunId = String(
+            nextCurrentRun.id
+            || nextCurrentRun.runId
+            || nextSummary.currentRunId
+            || record.currentRunId
+            || "",
+        ).trim() || undefined;
+        const nextLastRunId = String(
+            nextSummary.lastRunId
+            || record.lastRunId
+            || nextRunId
+            || "",
+        ).trim() || undefined;
+        const nextEndedAt = String(
+            nextSummary.endedAt
+            || record.endedAt
+            || nextCurrentRun.finished_at
+            || nextCurrentRun.completed_at
+            || "",
+        ).trim() || undefined;
+        const nextLastActivityAt = String(
+            nextSummary.lastActivityAt
+            || record.lastActivityAt
+            || record.updatedAt
+            || record.updated_at
+            || record.createdAt
+            || "",
+        ).trim() || undefined;
+        const overlayPatch = buildConversationOverlayPatch(payload as Partial<ConversationDetail>);
 
         setApprovals(nextApprovals);
         setTodos(nextTodos as SessionTodoItem[]);
         todosRef.current = nextTodos as SessionTodoItem[];
-        setProcesses(view.processes || []);
         setContextReferences(view.contextReferences || []);
         setRuntimeTimeline(normalizePhoneRuntimeTimeline(nextRuntimeEvents));
         const nextRuntime: RuntimeSummary = {
@@ -1668,23 +2084,46 @@ export default function ChatScreen() {
                 nextRuntimeStatus
                 || nextCurrentRun.status
                 || workflowProjection.runtimeStatus
-                || runtimeRef.current.status
                 || "idle",
             ).trim() || "idle",
             latestSeq: Number(store.latestSeq || 0) || 0,
-            runId: typeof nextCurrentRun.id === "string"
-                ? nextCurrentRun.id
-                : typeof nextCurrentRun.runId === "string"
-                    ? nextCurrentRun.runId
-                    : runtimeRef.current.runId,
+            runId: nextRunId,
             label: typeof nextSummary.currentStepTitle === "string"
                 ? nextSummary.currentStepTitle
                 : typeof nextSummary.lastRuntimeSummary === "string"
                     ? nextSummary.lastRuntimeSummary
-                    : runtimeRef.current.label,
+                    : undefined,
         };
         setRuntime(nextRuntime);
+        runtimeRef.current = nextRuntime;
         latestSeqRef.current = nextRuntime.latestSeq;
+        const activeConversationId = String(activeConversationIdRef.current || "").trim();
+        if (activeConversationId) {
+            setConversations((current) => {
+                const index = current.findIndex((item) => (item.sessionId || item.id) === activeConversationId);
+                if (index < 0) {
+                    return current;
+                }
+                const currentConversation = current[index];
+                const merged = mergeSessionHistoryOverlay(currentConversation, {
+                    ...overlayPatch,
+                    lastActivityAt: nextLastActivityAt || undefined,
+                    currentRunId: nextRunId,
+                    lastRunId: nextLastRunId,
+                    endedAt: nextEndedAt,
+                    controls: (record.controls as ConversationSummary["controls"]) || overlayPatch.controls || currentConversation.controls,
+                    recoverable: typeof record.recoverable === "boolean"
+                        ? record.recoverable
+                        : overlayPatch.recoverable ?? currentConversation.recoverable,
+                });
+                if (JSON.stringify(currentConversation) === JSON.stringify(merged)) {
+                    return current;
+                }
+                const next = [...current];
+                next[index] = merged;
+                return sortSessionHistory(next);
+            });
+        }
         if ((nextTodos as SessionTodoItem[]).length > 0) {
             patchAssistantTaskShell(nextTodos as SessionTodoItem[], {
                 phase: nextRuntime.status === "waiting_input"
@@ -1701,6 +2140,7 @@ export default function ChatScreen() {
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const snapshotMessages = extractSnapshotMessages(payload);
         const snapshotSeq = buildSnapshotSequence(payload);
+        const targetConversationId = String(activeConversationIdRef.current || "").trim();
         if (snapshotMessages) {
             const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
             const snapshotFingerprint = buildMessagesFingerprint(normalizedSnapshot);
@@ -1718,12 +2158,30 @@ export default function ChatScreen() {
             }
 
             setMessages((current) => {
-                const preserveOptimisticLocalState = sendingRef.current || hasActiveLocalAssistantShell(current);
+                const preserveOptimisticLocalState = Boolean(
+                    targetConversationId
+                    && messageConversationIdRef.current === targetConversationId
+                    && (
+                        sendingRef.current
+                        || optimisticSeedConversationIdRef.current === targetConversationId
+                        || hasPreservableLocalAssistantState(current)
+                    )
+                );
                 const normalized = mergeAuthoritativeSnapshotMessages(
                     current,
                     normalizedSnapshot,
                     preserveOptimisticLocalState,
                 );
+                const beforeAssistant = describeLatestAssistantMessage(current);
+                const afterAssistant = describeLatestAssistantMessage(normalized);
+                if (__DEV__ && beforeAssistant && afterAssistant) {
+                    debugRealtimeTrace("message-merge", {
+                        beforeAssistant,
+                        afterAssistant,
+                        snapshotSeq,
+                        preserveOptimisticLocalState,
+                    });
+                }
                 const fingerprint = buildMessagesFingerprint(normalized);
                 if (fingerprint === lastMessageFingerprintRef.current) {
                     return current;
@@ -1735,6 +2193,7 @@ export default function ChatScreen() {
                 );
                 syncArtifactsFromMessages(normalized);
                 messagesRef.current = normalized;
+                messageConversationIdRef.current = targetConversationId || null;
                 return normalized;
             });
         }
@@ -1801,12 +2260,26 @@ export default function ChatScreen() {
     }, [applyRealtimeSnapshotPayload, authorizedFetch]);
 
     const handleRealtimeEvent = useCallback((eventName: string, payload: unknown) => {
+        const upstreamDiagnostics = readRealtimeDiagnostics(payload);
+        const phoneReceivedAt = new Date().toISOString();
         if (eventName === "snapshot" && payload && typeof payload === "object") {
+            pendingRealtimeRenderDiagnosticRef.current = {
+                eventName,
+                adminForwardedAt: upstreamDiagnostics.adminForwardedAt,
+                phoneReceivedAt,
+                eventKind: "snapshot",
+                latestSeq: buildSnapshotSequence(payload as RealtimeSessionSnapshot),
+            };
+            debugRealtimeTrace("receive", {
+                eventName,
+                adminForwardedAt: upstreamDiagnostics.adminForwardedAt,
+                phoneReceivedAt,
+                latestSeq: buildSnapshotSequence(payload as RealtimeSessionSnapshot),
+            });
             applyRealtimeSnapshotPayload(payload as RealtimeSessionSnapshot);
             return;
         }
 
-        const isLocalStreamEvent = eventName === "local_stream";
         const normalized = normalizePhoneRealtimeEvent(payload, locale);
         if (!normalized) {
             return;
@@ -1816,7 +2289,7 @@ export default function ChatScreen() {
         if (seenRealtimeEventKeysRef.current.has(dedupKey)) {
             return;
         }
-        if (!isLocalStreamEvent && normalized.seq && normalized.seq < latestSeqRef.current) {
+        if (normalized.seq && normalized.seq < latestSeqRef.current) {
             return;
         }
         seenRealtimeEventKeysRef.current.add(dedupKey);
@@ -1829,6 +2302,26 @@ export default function ChatScreen() {
         if (normalized.seq) {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
         }
+        pendingRealtimeRenderDiagnosticRef.current = {
+            eventName,
+            eventType: normalized.type,
+            normalizedName: normalized.name,
+            topic: normalized.topic,
+            seq: normalized.seq,
+            engineEmittedAt: normalized.ts,
+            adminForwardedAt: upstreamDiagnostics.adminForwardedAt,
+            phoneReceivedAt,
+        };
+        debugRealtimeTrace("receive", {
+            eventName,
+            type: normalized.type,
+            name: normalized.name,
+            topic: normalized.topic,
+            seq: normalized.seq,
+            engineEmittedAt: normalized.ts,
+            adminForwardedAt: upstreamDiagnostics.adminForwardedAt,
+            phoneReceivedAt,
+        });
 
         const shouldFallbackRefresh = shouldAuthoritativelyRefreshOnRuntimeEvent(normalized);
         const normalizedToolName = String(
@@ -2348,7 +2841,7 @@ export default function ChatScreen() {
                 && (typeof transitionToken !== "number" || conversationTransitionTokenRef.current === transitionToken)
             ) {
                 try {
-                    await streamRealtimeSession(authorizedFetch, conversationId, handleRealtimeEvent, controller.signal);
+                    await streamRealtimeSession(authorizedRealtimeStream, conversationId, handleRealtimeEvent, controller.signal);
                 } catch (error) {
                     if (!controller.signal.aborted) {
                         console.warn("[phone] realtime stream stopped:", error);
@@ -2391,7 +2884,7 @@ export default function ChatScreen() {
                 realtimeConversationIdRef.current = null;
             }
         }
-    }, [authorizedFetch, handleRealtimeEvent, scheduleRealtimeSnapshotRefresh, stopRealtime]);
+    }, [authorizedRealtimeStream, handleRealtimeEvent, scheduleRealtimeSnapshotRefresh, stopRealtime]);
 
     const loadConversation = useCallback(async (conversationId: string, options?: { force?: boolean; token?: number }) => {
         const transitionToken = options?.token ?? conversationTransitionTokenRef.current;
@@ -2406,7 +2899,10 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = conversationId;
         setConversationBusy(true);
         try {
-            const detail = await getConversationDetail(authorizedFetch, conversationId);
+            const [detail, processSurface] = await Promise.all([
+                getConversationDetail(authorizedFetch, conversationId),
+                getSessionProcesses(authorizedFetch, conversationId).catch(() => ({ processes: [] as AdminProcessRef[] })),
+            ]);
             if (
                 activeConversationIdRef.current !== conversationId
                 || conversationTransitionTokenRef.current !== transitionToken
@@ -2414,10 +2910,13 @@ export default function ChatScreen() {
                 return false;
             }
             const snapshotMessages = normalizeMessagesForState(detail.messages || []);
-            const preserveOptimisticLocalState = (
-                optimisticSeedConversationIdRef.current === conversationId
-                || sendingRef.current
-                || hasActiveLocalAssistantShell(messagesRef.current)
+            const preserveOptimisticLocalState = Boolean(
+                messageConversationIdRef.current === conversationId
+                && (
+                    optimisticSeedConversationIdRef.current === conversationId
+                    || sendingRef.current
+                    || hasPreservableLocalAssistantState(messagesRef.current)
+                )
             );
             const normalized = preserveOptimisticLocalState
                 ? mergeAuthoritativeSnapshotMessages(messagesRef.current, snapshotMessages, true)
@@ -2431,25 +2930,15 @@ export default function ChatScreen() {
             );
             lastMessageFingerprintRef.current = buildMessagesFingerprint(normalized);
             messagesRef.current = normalized;
+            messageConversationIdRef.current = conversationId;
             setMessages(normalized);
             syncArtifactsFromMessages(normalized);
             applyConversationProjection(detail);
+            setProcesses(processSurface.processes || []);
             lastAppliedSnapshotSeqRef.current = buildSnapshotSequence(detail);
             lastAppliedSnapshotFingerprintRef.current = buildMessagesFingerprint(normalized);
             lastRealtimeSnapshotAtRef.current = Date.now();
             hydratedConversationIdRef.current = conversationId;
-            const overlayPatch = buildConversationOverlayPatch(detail);
-            setConversations((current) => sortSessionHistory(current.map((item) => (
-                item.id === conversationId
-                    ? mergeSessionHistoryOverlay(item, {
-                        ...overlayPatch,
-                        controls: detail.controls || overlayPatch.controls || item.controls,
-                        recoverable: typeof detail.recoverable === "boolean"
-                            ? detail.recoverable
-                            : overlayPatch.recoverable ?? item.recoverable,
-                    })
-                    : item
-            ))));
             return true;
         } catch (error) {
             if (
@@ -2477,18 +2966,64 @@ export default function ChatScreen() {
             return { id: activeConversationId, created: false };
         }
 
-        const created = await createConversation(authorizedFetch, "");
-        optimisticSeedConversationIdRef.current = created.id;
-        setConversations((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-        await setActiveConversationId(created.id);
-        return { id: created.id, created: true };
-    }, [activeConversationId, authorizedFetch, setActiveConversationId]);
+        const scopePayload = buildScopePayload();
+        const created = await createConversation(authorizedFetch, {
+            title: "",
+            projectId: scopePayload.projectId,
+            workspaceId: scopePayload.workspaceId,
+            workspacePath: scopePayload.workspacePath,
+            scopeHint: scopePayload.scopeHint,
+            scopeMode: scopePayload.scopeMode,
+        });
+        const createdSessionId = created.sessionId || created.id;
+        optimisticSeedConversationIdRef.current = createdSessionId;
+        activeConversationIdRef.current = createdSessionId;
+        setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
+        await setActiveConversationId(createdSessionId);
+        await loadSessionScope(createdSessionId);
+        return { id: createdSessionId, created: true };
+    }, [activeConversationId, authorizedFetch, buildScopePayload, loadSessionScope, setActiveConversationId]);
 
     loadSupportDataRef.current = loadSupportData;
     loadConversationRef.current = loadConversation;
     startRealtimeRef.current = startRealtime;
     stopRealtimeRef.current = stopRealtime;
     closeDesktopPreviewRef.current = closeDesktopPreview;
+
+    useEffect(() => {
+        if (!activeConversationId) {
+            setProcesses([]);
+            return;
+        }
+
+        void getSessionProcesses(authorizedFetch, activeConversationId)
+            .then((payload) => {
+                setProcesses(payload.processes || []);
+            })
+            .catch((error) => {
+                console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
+                setProcesses([]);
+            });
+
+        const timer = setInterval(() => {
+            void getSessionProcesses(authorizedFetch, activeConversationId)
+                .then((payload) => {
+                    if (activeConversationIdRef.current === activeConversationId) {
+                        setProcesses(payload.processes || []);
+                    }
+                })
+                .catch((error) => {
+                    if (activeConversationIdRef.current === activeConversationId) {
+                        console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
+                        setProcesses([]);
+                    }
+                });
+        }, 1800);
+
+        return () => {
+            clearInterval(timer);
+        };
+    }, [activeConversationId, authorizedFetch]);
 
     useEffect(() => {
         if (status !== "authenticated") {
@@ -2518,6 +3053,21 @@ export default function ChatScreen() {
 
     useEffect(() => {
         if (status !== "authenticated") {
+            return;
+        }
+        if (!activeConversationId) {
+            setScopeBinding(null);
+            setScopeLoading(false);
+            if (defaultProjectId) {
+                setSelectedProjectId((current) => current || defaultProjectId);
+            }
+            return;
+        }
+        void loadSessionScope(activeConversationId);
+    }, [activeConversationId, defaultProjectId, loadSessionScope, status]);
+
+    useEffect(() => {
+        if (status !== "authenticated") {
             conversationTransitionTokenRef.current += 1;
             previousConversationIdRef.current = null;
             optimisticSeedConversationIdRef.current = null;
@@ -2536,21 +3086,8 @@ export default function ChatScreen() {
             optimisticSeedConversationIdRef.current = null;
             hydratedConversationIdRef.current = null;
             loadingConversationIdRef.current = null;
-            resetConversationStreamState();
-            messagesRef.current = [];
-            setMessages([]);
-            setApprovals([]);
-            setTodos([]);
-            setArtifacts([]);
-            setProcesses([]);
-            setContextReferences([]);
-            setRuntime({ status: "idle", latestSeq: 0 });
-            setRuntimeTimeline([]);
-            latestSeqRef.current = 0;
-            lastAppliedSnapshotSeqRef.current = 0;
-            lastAppliedSnapshotFingerprintRef.current = "";
-            lastRealtimeSnapshotAtRef.current = 0;
             stopRealtimeRef.current();
+            clearActiveConversationViewState();
             return;
         }
         const conversationChanged = previousConversationIdRef.current !== activeConversationId;
@@ -2561,9 +3098,9 @@ export default function ChatScreen() {
         if (conversationChanged) {
             seenRealtimeEventKeysRef.current.clear();
             stopRealtimeRef.current(skipInitialHydration ? { preserveMessageState: true } : undefined);
-            latestSeqRef.current = 0;
-            lastAppliedSnapshotSeqRef.current = 0;
-            lastAppliedSnapshotFingerprintRef.current = "";
+            if (!skipInitialHydration) {
+                clearActiveConversationViewState();
+            }
         }
         let cancelled = false;
         void (async () => {
@@ -2590,7 +3127,7 @@ export default function ChatScreen() {
         return () => {
             cancelled = true;
         };
-    }, [activeConversationId, status]);
+    }, [activeConversationId, clearActiveConversationViewState, status]);
 
     useEffect(() => {
         setSpeakingId("");
@@ -2615,42 +3152,39 @@ export default function ChatScreen() {
     }, []);
 
     const handleSelectConversation = useCallback(async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
         setHistoryOpen(false);
         setInput("");
         setUploadedFiles([]);
-        await setActiveConversationId(item.id);
-    }, [setActiveConversationId]);
+        if (canonicalSessionId === activeConversationIdRef.current) {
+            return;
+        }
+        stopRealtimeRef.current();
+        optimisticSeedConversationIdRef.current = null;
+        hydratedConversationIdRef.current = null;
+        loadingConversationIdRef.current = null;
+        clearActiveConversationViewState();
+        await setActiveConversationId(canonicalSessionId);
+    }, [clearActiveConversationViewState, setActiveConversationId]);
 
     const handleNewConversation = useCallback(async () => {
         stopRealtime();
-        resetConversationStreamState();
         optimisticSeedConversationIdRef.current = null;
         hydratedConversationIdRef.current = null;
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
-        messagesRef.current = [];
-        setMessages([]);
-        setApprovals([]);
-        setTodos([]);
-        setArtifacts([]);
-        setProcesses([]);
-        setContextReferences([]);
+        clearActiveConversationViewState();
         setUploadedFiles([]);
         setSelectedCommand(null);
         setSelectedSkills([]);
         setTaskPlanningMode(false);
-        setContextExpanded(false);
+        setScopeSheetOpen(false);
+        setScopeBinding(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
-        setRuntime({ status: "idle", latestSeq: 0 });
-        setRuntimeTimeline([]);
-        latestSeqRef.current = 0;
-        lastAppliedSnapshotSeqRef.current = 0;
-        lastAppliedSnapshotFingerprintRef.current = "";
-        lastRealtimeSnapshotAtRef.current = 0;
         await setActiveConversationId(null);
-    }, [resetConversationStreamState, setActiveConversationId, stopRealtime]);
+    }, [clearActiveConversationViewState, setActiveConversationId, stopRealtime]);
 
     const handleBrandPress = useCallback(async () => {
         await handleNewConversation();
@@ -2658,6 +3192,7 @@ export default function ChatScreen() {
     }, [handleNewConversation]);
 
     const handleDeleteConversation = useCallback((item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
         Alert.alert(t("删除会话", "Delete conversation"), t("确定删除这个会话吗？", "Delete this conversation?"), [
             { text: t("取消", "Cancel"), style: "cancel" },
             {
@@ -2665,11 +3200,11 @@ export default function ChatScreen() {
                 style: "destructive",
                 onPress: () => {
                     void (async () => {
-                        await deleteConversation(authorizedFetch, item.id);
-                        const nextConversations = conversations.filter((conversation) => conversation.id !== item.id);
+                        await deleteConversation(authorizedFetch, canonicalSessionId);
+                        const nextConversations = conversations.filter((conversation) => (conversation.sessionId || conversation.id) !== canonicalSessionId);
                         setConversations(nextConversations);
-                        if (activeConversationId === item.id) {
-                            const fallbackId = nextConversations[0]?.id || null;
+                        if (activeConversationId === canonicalSessionId) {
+                            const fallbackId = nextConversations[0]?.sessionId || nextConversations[0]?.id || null;
                             await setActiveConversationId(fallbackId);
                         }
                     })().catch((error) => {
@@ -2825,13 +3360,8 @@ export default function ChatScreen() {
         setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
     }, [authorizedFetch]);
 
-    const openApprovalPanel = useCallback(() => {
-        setSelectedRuntimeId("automation");
-        setRuntimePanelOpen(true);
-    }, []);
-
     const handleRunCommand = useCallback(async (command: "interrupt" | "retry") => {
-        const runId = String(runtime.runId || "").trim();
+        const runId = String(activeRunIdRef.current || "").trim();
         if (!runId || runActionBusy) {
             return;
         }
@@ -2849,7 +3379,7 @@ export default function ChatScreen() {
         } finally {
             setRunActionBusy(false);
         }
-    }, [authorizedFetch, runActionBusy, runtime.runId, t]);
+    }, [authorizedFetch, runActionBusy, t]);
 
     const projection = useMemo(
         () => buildPhoneChatProjection({
@@ -2877,6 +3407,38 @@ export default function ChatScreen() {
         || latestProjectedMessage?.id
         || "",
     ).trim();
+    const governancePendingApprovalId = String(
+        projection.governancePendingApproval?.id
+        || projection.governancePendingApproval?.approval_id
+        || "",
+    ).trim();
+    const governanceApprovalShouldSurface = Boolean(
+        governancePendingApprovalId
+        || projection.runControlState.status === "waiting_approval",
+    );
+
+    useEffect(() => {
+        activeRunIdRef.current = String(projection.runControlState.runId || "").trim();
+    }, [projection.runControlState.runId]);
+
+    useEffect(() => {
+        if (!activeConversationId) {
+            return;
+        }
+        const hasRuntimeNeed = Boolean(
+            projection.runControlState.runId
+            || projection.runControlState.canInterrupt
+            || projection.runControlState.status === "running",
+        );
+        if (hasRuntimeNeed && processes.length > 0 && projection.processes.length === 0) {
+            console.warn("[phone/chat] process surface dropped after hydration/filtering", {
+                activeConversationId,
+                polledProcesses: processes.length,
+                projectedProcesses: projection.processes.length,
+                runId: projection.runControlState.runId || null,
+            });
+        }
+    }, [activeConversationId, processes.length, projection.processes.length, projection.runControlState.canInterrupt, projection.runControlState.runId, projection.runControlState.status]);
 
     useEffect(() => {
         if (projection.selectedRuntimeId !== selectedRuntimeId) {
@@ -2885,65 +3447,82 @@ export default function ChatScreen() {
     }, [projection.selectedRuntimeId, selectedRuntimeId]);
 
     useEffect(() => {
-        if (!activeConversationId) {
+        if (!governanceApprovalShouldSurface) {
+            setGovernanceApprovalOpen(false);
+            if (dismissedGovernanceApprovalId) {
+                setDismissedGovernanceApprovalId("");
+            }
             return;
         }
+        if (governancePendingApprovalId && dismissedGovernanceApprovalId === governancePendingApprovalId) {
+            return;
+        }
+        setGovernanceApprovalOpen(true);
+    }, [dismissedGovernanceApprovalId, governanceApprovalShouldSurface, governancePendingApprovalId]);
 
-        setConversations((current) => {
-            const index = current.findIndex((item) => item.id === activeConversationId);
-            if (index < 0) {
-                return current;
-            }
+    useEffect(() => {
+        if (
+            projection.runControlState.status !== "waiting_approval"
+            || governancePendingApprovalId
+            || !activeConversationIdRef.current
+        ) {
+            return;
+        }
+        const now = Date.now();
+        if (now - waitingApprovalRefreshAtRef.current < 1200) {
+            return;
+        }
+        waitingApprovalRefreshAtRef.current = now;
+        scheduleRealtimeSnapshotRefresh(activeConversationIdRef.current, { force: true });
+    }, [governancePendingApprovalId, projection.runControlState.status, scheduleRealtimeSnapshotRefresh]);
 
-            const currentConversation = current[index];
-            const nextWorkflowStatus = String(runtime.status || currentConversation.workflowStatus || "idle").trim() || "idle";
-            const nextPreview = projection.historyPreview || currentConversation.previewExcerpt || currentConversation.lastNarrativeExcerpt || undefined;
-            const nextRuntimeSummary = projection.selectedRuntimeActivities[0]?.summary
-                || projection.selectedRuntimeDockItem?.lastActivity
-                || projection.currentStepTitle
-                || currentConversation.lastRuntimeSummary
-                || undefined;
-            const latestActivityTimestamp = projection.projectedMessages[projection.projectedMessages.length - 1]?.timestamp
-                || projection.selectedRuntimeActivities[0]?.timestamp
-                || currentConversation.lastActivityAt;
-            const merged = mergeSessionHistoryOverlay(currentConversation, {
-                lastActivityAt: typeof latestActivityTimestamp === "number"
-                    ? new Date(latestActivityTimestamp).toISOString()
-                    : latestActivityTimestamp,
-                workflowStatus: nextWorkflowStatus,
-                statusLabel: currentConversation.workflowStatus === nextWorkflowStatus ? currentConversation.statusLabel : undefined,
-                ownerRuntime: projection.activeConversation?.ownerRuntime || projection.runtimeStageModel.activeRuntimeId || currentConversation.ownerRuntime,
-                currentStepTitle: projection.currentStepTitle || currentConversation.currentStepTitle,
-                previewExcerpt: nextPreview,
-                lastNarrativeExcerpt: nextPreview,
-                lastRuntimeSummary: nextRuntimeSummary,
-                pendingApprovalCount: projection.pendingApprovalCount,
-                hasPendingApproval: projection.pendingApprovalCount > 0,
-                recoverable: Boolean(currentConversation.recoverable || currentConversation.controls?.canRetry),
-                controls: currentConversation.controls,
-                scopeTags: projection.activeScopeTags.length > 0 ? projection.activeScopeTags : currentConversation.scopeTags,
-            });
+    const openGovernanceApproval = useCallback(() => {
+        if (!governanceApprovalShouldSurface) {
+            return;
+        }
+        setDismissedGovernanceApprovalId("");
+        setGovernanceApprovalOpen(true);
+    }, [governanceApprovalShouldSurface]);
 
-            if (JSON.stringify(currentConversation) === JSON.stringify(merged)) {
-                return current;
-            }
+    const openApprovalPanel = useCallback(() => {
+        if (governancePendingApprovalId) {
+            openGovernanceApproval();
+            return;
+        }
+        setSelectedRuntimeId("automation");
+        setRuntimePanelOpen(true);
+    }, [governancePendingApprovalId, openGovernanceApproval]);
 
-            const next = [...current];
-            next[index] = merged;
-            return sortSessionHistory(next);
-        });
-    }, [
-        activeConversationId,
-        projection.activeConversation?.ownerRuntime,
-        projection.activeScopeTags,
-        projection.currentStepTitle,
-        projection.historyPreview,
-        projection.pendingApprovalCount,
-        projection.runtimeStageModel.activeRuntimeId,
-        projection.selectedRuntimeDockItem?.lastActivity,
-        projection.selectedRuntimeActivities,
-        runtime.status,
-    ]);
+    const handleGovernanceApprovalDismiss = useCallback(() => {
+        if (governancePendingApprovalId) {
+            setDismissedGovernanceApprovalId(governancePendingApprovalId);
+        }
+        setGovernanceApprovalOpen(false);
+    }, [governancePendingApprovalId]);
+
+    const handleGovernanceApprovalViewDetails = useCallback(() => {
+        if (governancePendingApprovalId) {
+            setDismissedGovernanceApprovalId(governancePendingApprovalId);
+        }
+        setGovernanceApprovalOpen(false);
+        setSelectedRuntimeId("automation");
+        setRuntimePanelOpen(true);
+    }, [governancePendingApprovalId]);
+
+    const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean) => {
+        const approval = projection.governancePendingApproval;
+        if (!approval) {
+            return;
+        }
+        setGovernanceApprovalBusy(true);
+        try {
+            await handleApprovalResolve(approval, answer, approve);
+            setGovernanceApprovalOpen(false);
+            setDismissedGovernanceApprovalId("");
+        } finally {
+            setGovernanceApprovalBusy(false);
+        }
+    }, [handleApprovalResolve, projection.governancePendingApproval]);
 
     useEffect(() => {
         if (!activeConversationId || !latestProjectedMessageKey) {
@@ -3025,9 +3604,24 @@ export default function ChatScreen() {
             return;
         }
 
+        const pendingCommand = selectedCommand;
+        const pendingSkills = [...selectedSkills];
+        const pendingFiles = [...uploadedFiles];
         setSending(true);
         try {
             const ensuredConversation = await ensureConversation();
+            const historyMessages = messagesRef.current
+                .filter((message) => !message.uiEphemeral)
+                .map((message) => ({
+                    role: message.role,
+                    content: message.content,
+                }));
+
+            if (realtimeConversationIdRef.current !== ensuredConversation.id || !realtimeAbortRef.current) {
+                activeConversationIdRef.current = ensuredConversation.id;
+                void startRealtimeRef.current(ensuredConversation.id);
+            }
+
             const userMessage = buildUserMessage(text, {
                 command: selectedCommand,
                 skills: selectedSkills,
@@ -3059,6 +3653,7 @@ export default function ChatScreen() {
                 );
                 lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
                 messagesRef.current = next;
+                messageConversationIdRef.current = ensuredConversation.id;
                 return next;
             });
             setRuntime((current) => ({
@@ -3066,6 +3661,9 @@ export default function ChatScreen() {
                 status: "running",
             }));
             setInput("");
+            setSelectedCommand(null);
+            setSelectedSkills([]);
+            setUploadedFiles([]);
 
             if (text) {
                 setConversations((current) => current.map((conversation) =>
@@ -3082,12 +3680,7 @@ export default function ChatScreen() {
                 ));
             }
 
-            const historyMessages = messagesRef.current.map((message) => ({
-                role: message.role,
-                content: message.content,
-            }));
-
-            await sendChatMessageStream(
+            const submitResult = await submitChatMessage(
                 authorizedFetch,
                 text,
                 {
@@ -3098,31 +3691,55 @@ export default function ChatScreen() {
                     fileUrls: uploadedFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     taskPlanningMode,
                 },
-                (event: ChatStreamEvent) => {
-                    handleRealtimeEvent("local_stream", event);
-                    const normalized = normalizePhoneRealtimeEvent(event, locale);
-                    if (!normalized) {
-                        return;
-                    }
-                    if (normalized.type === "error") {
-                        throw new Error(String(normalized.error || normalized.content || t("聊天流失败", "Chat stream failed")));
-                    }
-                },
             );
+            if (submitResult.accepted === false) {
+                throw new Error(t("消息提交失败", "Unable to submit message"));
+            }
 
-            setUploadedFiles([]);
+            const submittedRunId = String(
+                submitResult.runId
+                || submitResult.run_id
+                || "",
+            ).trim();
+            if (submittedRunId) {
+                setRuntime((current) => ({
+                    ...current,
+                    status: current.status === "waiting_input" || current.status === "waiting_approval" ? current.status : "running",
+                    runId: submittedRunId,
+                }));
+                setMessages((current) => {
+                    const targetIndex = findLatestAssistantShellIndex(current);
+                    if (targetIndex < 0) {
+                        return current;
+                    }
+                    const next = [...current];
+                    next[targetIndex] = {
+                        ...next[targetIndex],
+                        runId: submittedRunId,
+                    };
+                    messagesRef.current = next;
+                    messageConversationIdRef.current = ensuredConversation.id;
+                    realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                        next,
+                        PHONE_STREAM_LIFECYCLE_OPTIONS,
+                    );
+                    lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                    return next;
+                });
+            }
+
         } catch (error) {
+            setSelectedCommand(pendingCommand);
+            setSelectedSkills(pendingSkills);
+            setUploadedFiles(pendingFiles);
             Alert.alert(t("发送失败", "Send failed"), error instanceof Error ? error.message : t("无法发送消息", "Unable to send message"));
         } finally {
             setSending(false);
         }
     }, [
-        activeConversationId,
         authorizedFetch,
         ensureConversation,
-        handleRealtimeEvent,
         input,
-        locale,
         selectedCommand,
         selectedSkills,
         taskPlanningMode,
@@ -3147,13 +3764,38 @@ export default function ChatScreen() {
         }
         : null;
     const composerHorizontalInset = isLandscape ? 18 : 10;
-    const composerBottomInset = Platform.OS === "ios" ? 8 : 4;
+    const composerBottomInset = Math.max(safeAreaInsets.bottom, Platform.OS === "ios" ? 8 : 10);
     const todosVisible = projection.todos.length > 0;
-    const todosDockBottom = composerBottomInset + composerHeight + 8;
-    const chatBottomInset = composerHeight + composerBottomInset + (todosVisible ? todosDockHeight + 24 : 16);
+    const chatBottomInset = Math.max(isLandscape ? 32 : 24, bottomLayerHeight + 18);
     const pickerOverlayVisible = commandPickerOpen || skillPickerOpen;
     const pickerOverlayMode = commandPickerOpen ? "command" : skillPickerOpen ? "skill" : null;
-    const pickerOverlayBottom = todosDockBottom + (todosVisible ? todosDockHeight + 8 : 0);
+    const runControlStatus = String(projection.runControlState.status || "").trim().toLowerCase();
+    const todosAllCompleted = projection.todos.length > 0
+        && projection.todos.every((item) => {
+            const status = String(item.status || "").trim().toLowerCase();
+            return status === "done" || status === "skipped";
+        });
+    const projectionHasActiveProcess = projection.processes.some((process) => {
+        const status = String(process.status || "").trim().toLowerCase();
+        return status !== "stopped"
+            && status !== "terminated"
+            && status !== "completed"
+            && status !== "failed";
+    });
+    const todoHudShouldAutoHide = todosAllCompleted
+        && !projection.runControlState.pendingApproval
+        && !projectionHasActiveProcess
+        && !["running", "waiting_input", "waiting_approval", "queued", "pending", "starting", "streaming"].includes(runControlStatus);
+    const composerRunActive = runControlStatus === "running";
+    const composerCanStop = Boolean(composerRunActive && (projection.runControlState.canInterrupt || projection.runControlState.runId));
+    const hasAccessoryTray = Boolean(
+        selectedCommand
+        || selectedSkills.length > 0
+        || uploadedFiles.length > 0,
+    );
+    const accessoryBottomOffset = bottomLayerHeight > 0 ? bottomLayerHeight + 8 : 144;
+    const hudBottomOffset = accessoryBottomOffset + (hasAccessoryTray ? 50 : 0) + 10;
+    const pickerBottomOffset = accessoryBottomOffset + (hasAccessoryTray ? 12 : 0);
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
         setSelectedCommand(command);
@@ -3165,11 +3807,164 @@ export default function ChatScreen() {
         setInput("");
     };
 
-    useEffect(() => {
-        if (!todosVisible && todosDockHeight !== 0) {
-            setTodosDockHeight(0);
-        }
-    }, [todosDockHeight, todosVisible]);
+    const bottomDockContent = (
+        <View
+            pointerEvents="box-none"
+            style={[
+                styles.composerDock,
+                isLandscape && styles.composerDockLandscape,
+                {
+                    paddingBottom: composerBottomInset,
+                    paddingLeft: composerHorizontalInset,
+                    paddingRight: composerHorizontalInset,
+                },
+            ]}
+            onLayout={(event) => {
+                const nextHeight = Math.round(event.nativeEvent.layout.height);
+                if (nextHeight > 0 && nextHeight !== bottomLayerHeight) {
+                    setBottomLayerHeight(nextHeight);
+                }
+            }}
+        >
+            {pickerOverlayVisible ? (
+                <ComposerPickerOverlay
+                    visible={pickerOverlayVisible}
+                    mode={pickerOverlayMode}
+                    left={0}
+                    right={0}
+                    bottom={pickerBottomOffset}
+                    position="absolute"
+                    commands={filteredCommands}
+                    skills={filteredSkills}
+                    onSelectCommand={handleSelectCommandFromPicker}
+                    onSelectSkill={handleSelectSkillFromPicker}
+                />
+            ) : null}
+
+            <View
+                pointerEvents="box-none"
+                style={[
+                    styles.hudOverlayStack,
+                    {
+                        bottom: hudBottomOffset,
+                    },
+                ]}
+            >
+                {projection.processes.length > 0 ? (
+                    <View style={styles.processesOverlayDock} pointerEvents="box-none">
+                        <ProcessesHUD processes={projection.processes} />
+                    </View>
+                ) : null}
+                {todosVisible ? (
+                    <View style={styles.todosOverlayDock} pointerEvents="box-none">
+                        <TodosHUD items={projection.todos} shouldAutoHide={todoHudShouldAutoHide} />
+                    </View>
+                ) : null}
+            </View>
+
+            {hasAccessoryTray ? (
+                <View
+                    pointerEvents="box-none"
+                    style={[
+                        styles.composerAccessoryTray,
+                        {
+                            bottom: accessoryBottomOffset,
+                        },
+                    ]}
+                >
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.composerAccessoryTrayContent}
+                    >
+                        {selectedCommand ? (
+                            <Pressable
+                                style={[
+                                    styles.accessoryChip,
+                                    {
+                                        backgroundColor: palette.accentSoft,
+                                        borderColor: palette.accentSoft,
+                                    },
+                                ]}
+                                onPress={() => setSelectedCommand(null)}
+                            >
+                                <MaterialCommunityIcons name="slash-forward" size={13} color={palette.accent} />
+                                <Text style={[styles.accessoryChipText, { color: palette.accent }]} numberOfLines={1}>
+                                    {selectedCommand.name}
+                                </Text>
+                                <MaterialCommunityIcons name="close" size={14} color={palette.accent} />
+                            </Pressable>
+                        ) : null}
+                        {selectedSkills.map((skill) => (
+                            <Pressable
+                                key={`${skill.name}:${skill.path || ""}`}
+                                style={[
+                                    styles.accessoryChip,
+                                    {
+                                        backgroundColor: palette.primarySoft,
+                                        borderColor: palette.primarySoft,
+                                    },
+                                ]}
+                                onPress={() => setSelectedSkills((current) =>
+                                    current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
+                                )}
+                            >
+                                <MaterialCommunityIcons name="at" size={13} color={palette.primary} />
+                                <Text style={[styles.accessoryChipText, { color: palette.primaryDeep }]} numberOfLines={1}>
+                                    {skill.name}
+                                </Text>
+                                <MaterialCommunityIcons name="close" size={14} color={palette.primaryDeep} />
+                            </Pressable>
+                        ))}
+                        {uploadedFiles.map((file) => (
+                            <Pressable
+                                key={`${file.url || file.publicUrl || file.name || "file"}:${file.createdAt || ""}`}
+                                style={[
+                                    styles.accessoryChip,
+                                    {
+                                        backgroundColor: palette.surfaceStrong,
+                                        borderColor: palette.border,
+                                    },
+                                ]}
+                                onPress={() => setUploadedFiles((current) => current.filter((item) => item !== file))}
+                            >
+                                <MaterialCommunityIcons name="paperclip" size={13} color={palette.textMuted} />
+                                <Text style={[styles.accessoryChipText, { color: palette.text, maxWidth: 168 }]} numberOfLines={1}>
+                                    {file.name || t("附件", "Attachment")}
+                                </Text>
+                                <MaterialCommunityIcons name="close" size={14} color={palette.textMuted} />
+                            </Pressable>
+                        ))}
+                    </ScrollView>
+                </View>
+            ) : null}
+
+            <Composer
+                value={input}
+                onChange={setInput}
+                onSend={() => void handleSend()}
+                busy={sending}
+                isRunning={composerRunActive}
+                canStop={composerCanStop}
+                onStop={() => void handleRunCommand("interrupt")}
+                selectedCommand={selectedCommand}
+                onClearCommand={() => setSelectedCommand(null)}
+                selectedSkills={selectedSkills}
+                onRemoveSkill={(skill) => setSelectedSkills((current) =>
+                    current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
+                )}
+                taskPlanningMode={taskPlanningMode}
+                onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
+                uploadedFiles={uploadedFiles}
+                onRemoveUploadedFile={(file) => setUploadedFiles((current) => current.filter((item) => item !== file))}
+                onPickAttachment={() => void handlePickAttachment()}
+                onToggleRecording={() => void handleToggleRecording()}
+                attachmentBusy={attachmentBusy}
+                recording={recorderState.isRecording}
+                transcribing={transcribing}
+            />
+        </View>
+    );
 
     return (
         <LinearGradient
@@ -3186,11 +3981,7 @@ export default function ChatScreen() {
                     onProfilePress={() => router.push("/settings" as Href)}
                 />
 
-                <KeyboardAvoidingView
-                    style={styles.chatShell}
-                    behavior={Platform.OS === "ios" ? "padding" : undefined}
-                    keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
-                >
+                <View style={styles.chatShell}>
                     <View style={[styles.chatStage, isLandscape && styles.chatStageLandscape]}>
                         <Pressable
                             style={[
@@ -3206,66 +3997,57 @@ export default function ChatScreen() {
                         <View style={[styles.controlRail, isLandscape && styles.controlRailLandscape]}>
                             <View style={styles.controlRailTopRow}>
                                 <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t("项目上下文", "Project context")}
                                     style={[
-                                        styles.contextButton,
-                                        { backgroundColor: contextExpanded ? palette.primarySoft : palette.surfaceStrong, borderColor: contextExpanded ? `${palette.primary}33` : palette.border },
+                                        styles.scopeTrigger,
+                                        {
+                                            backgroundColor: scopeSheetOpen ? palette.primarySoft : palette.surfaceStrong,
+                                            borderColor: scopeSheetOpen ? `${palette.primary}33` : palette.border,
+                                        },
                                     ]}
-                                    onPress={() => setContextExpanded((current) => !current)}
+                                    onPress={() => setScopeSheetOpen(true)}
                                 >
-                                    <MaterialCommunityIcons
-                                        name="file-tree-outline"
-                                        size={13}
-                                        color={contextExpanded ? palette.primary : palette.textMuted}
-                                    />
+                                    <View style={styles.scopeTriggerIconWrap}>
+                                        {scopeLoading ? (
+                                            <ActivityIndicator size="small" color={scopeSheetOpen ? palette.primary : palette.textMuted} />
+                                        ) : (
+                                            <MaterialCommunityIcons
+                                                name="file-tree-outline"
+                                                size={13}
+                                                color={scopeSheetOpen ? palette.primary : palette.textMuted}
+                                            />
+                                        )}
+                                    </View>
                                 </Pressable>
 
-                                <View style={styles.runControlWrap}>
-                                    <RunControlBar
-                                        runId={projection.runControlState.runId || runtime.runId}
-                                        status={projection.runControlState.status || runtime.status}
-                                        pendingApproval={projection.pendingApprovalCount > 0}
-                                        canOpenApproval={projection.runControlState.canOpenApproval}
-                                        canResume={projection.runControlState.canResume}
-                                        canRetry={projection.runControlState.canRetry}
-                                        canInterrupt={projection.runControlState.canInterrupt}
-                                        busy={runActionBusy}
-                                        onOpenApproval={openApprovalPanel}
-                                        onRetry={() => void handleRunCommand("retry")}
-                                        onInterrupt={() => void handleRunCommand("interrupt")}
+                                <View style={styles.runtimeDockWrap}>
+                                    <RuntimeDock
+                                        leadingAccessory={(
+                                            <RunControlBar
+                                                runId={projection.runControlState.runId}
+                                                status={projection.runControlState.status}
+                                                pendingApproval={projection.runControlState.pendingApproval}
+                                                canOpenApproval={projection.runControlState.canOpenApproval}
+                                                canResume={projection.runControlState.canResume}
+                                                canRetry={projection.runControlState.canRetry}
+                                                canInterrupt={projection.runControlState.canInterrupt}
+                                                busy={runActionBusy}
+                                                onOpenApproval={openApprovalPanel}
+                                                onRetry={() => void handleRunCommand("retry")}
+                                                onInterrupt={() => void handleRunCommand("interrupt")}
+                                            />
+                                        )}
+                                        items={projection.runtimeStageModel.items}
+                                        selectedRuntimeId={projection.selectedRuntimeId}
+                                        panelOpen={runtimePanelOpen}
+                                        onSelectRuntime={(runtimeId) => {
+                                            setSelectedRuntimeId(runtimeId);
+                                            setRuntimePanelOpen(true);
+                                        }}
                                     />
                                 </View>
-
-                                <RuntimeDock
-                                    items={projection.runtimeStageModel.items}
-                                    selectedRuntimeId={projection.selectedRuntimeId}
-                                    panelOpen={runtimePanelOpen}
-                                    onSelectRuntime={(runtimeId) => {
-                                        setSelectedRuntimeId(runtimeId);
-                                        setRuntimePanelOpen(true);
-                                    }}
-                                />
                             </View>
-
-                            {contextExpanded ? (
-                                <GlassCard style={[styles.contextCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
-                                    <Text style={[styles.contextTitle, { color: palette.text }]}>{t("项目上下文", "Project context")}</Text>
-                                    <Text style={[styles.contextSubtitle, { color: palette.textMuted }]}>
-                                        {t("仅在需要时手动切换项目与 scope。", "Manually switch project and scope only when needed.")}
-                                    </Text>
-                                    <View style={styles.contextChips}>
-                                        <View style={[styles.contextChip, { backgroundColor: palette.primarySoft }]}>
-                                            <Text style={[styles.contextChipText, { color: palette.primaryDeep }]}>
-                                                {t("项目", "Project")}：{projection.activeConversation?.title || t("自动", "Auto")}
-                                            </Text>
-                                        </View>
-                                        {projection.activeScopeTags.map((tag) => (
-                                            <View key={tag} style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                                                <Text style={[styles.contextChipText, { color: palette.textMuted }]}>{tag}</Text>
-                                            </View>
-                                        ))}
-                                    </View>
-                                </GlassCard>
-                            ) : null}
                         </View>
 
                         <ChatWindow
@@ -3295,76 +4077,21 @@ export default function ChatScreen() {
                             bottomInset={chatBottomInset}
                             emptyState={greetingEmptyState}
                         />
-
-                        {todosVisible ? (
-                            <View
-                                pointerEvents="box-none"
-                                style={[
-                                    styles.todosDock,
-                                    isLandscape && styles.todosDockLandscape,
-                                    {
-                                        left: composerHorizontalInset,
-                                        right: composerHorizontalInset,
-                                        bottom: todosDockBottom,
-                                    },
-                                ]}
-                                onLayout={(event) => {
-                                    const nextHeight = Math.round(event.nativeEvent.layout.height);
-                                    if (nextHeight >= 0 && nextHeight !== todosDockHeight) {
-                                        setTodosDockHeight(nextHeight);
-                                    }
-                                }}
-                            >
-                                <TodosHUD items={projection.todos} />
-                            </View>
-                        ) : null}
-
-                        <ComposerPickerOverlay
-                            visible={pickerOverlayVisible}
-                            mode={pickerOverlayMode}
-                            left={composerHorizontalInset}
-                            right={composerHorizontalInset}
-                            bottom={pickerOverlayBottom}
-                            commands={filteredCommands}
-                            skills={filteredSkills}
-                            onSelectCommand={handleSelectCommandFromPicker}
-                            onSelectSkill={handleSelectSkillFromPicker}
-                        />
-
-                        <View
-                            style={[styles.composerWrap, isLandscape && styles.composerWrapLandscape]}
-                            pointerEvents="box-none"
-                            onLayout={(event) => {
-                                const nextHeight = Math.round(event.nativeEvent.layout.height);
-                                if (nextHeight > 0 && nextHeight !== composerHeight) {
-                                    setComposerHeight(nextHeight);
-                                }
-                            }}
-                        >
-                            <Composer
-                                value={input}
-                                onChange={setInput}
-                                onSend={() => void handleSend()}
-                                busy={sending}
-                                selectedCommand={selectedCommand}
-                                onClearCommand={() => setSelectedCommand(null)}
-                                selectedSkills={selectedSkills}
-                                onRemoveSkill={(skill) => setSelectedSkills((current) =>
-                                    current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
-                                )}
-                                taskPlanningMode={taskPlanningMode}
-                                onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
-                                uploadedFiles={uploadedFiles}
-                                onRemoveUploadedFile={(file) => setUploadedFiles((current) => current.filter((item) => item !== file))}
-                                onPickAttachment={() => void handlePickAttachment()}
-                                onToggleRecording={() => void handleToggleRecording()}
-                                attachmentBusy={attachmentBusy}
-                                recording={recorderState.isRecording}
-                                transcribing={transcribing}
-                            />
-                        </View>
                     </View>
-                </KeyboardAvoidingView>
+                    {Platform.OS === "web" ? (
+                        <View style={styles.keyboardDockHost} pointerEvents="box-none">
+                            {bottomDockContent}
+                        </View>
+                    ) : (
+                        <KeyboardStickyView
+                            style={styles.keyboardDockHost}
+                            pointerEvents="box-none"
+                            offset={{ closed: 0, opened: 0 }}
+                        >
+                            {bottomDockContent}
+                        </KeyboardStickyView>
+                    )}
+                </View>
 
                 <RuntimeTimelinePanel
                     visible={runtimePanelOpen}
@@ -3378,6 +4105,147 @@ export default function ChatScreen() {
                     onClose={() => setRuntimePanelOpen(false)}
                     onSelectRuntime={setSelectedRuntimeId}
                 />
+
+                <GovernanceApprovalModal
+                    visible={governanceApprovalOpen}
+                    approval={projection.governancePendingApproval}
+                    busy={governanceApprovalBusy}
+                    onApprove={(answer) => handleGovernanceApprovalResolve(answer, true)}
+                    onReject={(answer) => handleGovernanceApprovalResolve(answer, false)}
+                    onViewDetails={handleGovernanceApprovalViewDetails}
+                    onClose={handleGovernanceApprovalDismiss}
+                />
+
+                <Modal visible={scopeSheetOpen} transparent animationType="fade" onRequestClose={() => setScopeSheetOpen(false)}>
+                    <View style={[styles.scopeSheetOverlay, { backgroundColor: palette.overlay }]}>
+                        <Pressable style={StyleSheet.absoluteFill} onPress={() => setScopeSheetOpen(false)} />
+                        <GlassCard style={[styles.scopeSheetCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                            <View style={[styles.scopeSheetHandle, { backgroundColor: palette.border }]} />
+                            <View style={styles.scopeSheetHeader}>
+                                <View style={styles.scopeSheetHeaderText}>
+                                    <Text style={[styles.contextTitle, { color: palette.text }]}>{t("项目上下文", "Project context")}</Text>
+                                    <Text style={[styles.contextSubtitle, { color: palette.textMuted }]}>
+                                        {t("和网页端保持同一条 session scope 真相链。", "Keep the same session scope truth as web.")}
+                                    </Text>
+                                </View>
+                                <Pressable
+                                    style={[styles.scopeSheetCloseButton, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                    onPress={() => setScopeSheetOpen(false)}
+                                >
+                                    <MaterialCommunityIcons name="close" size={18} color={palette.textMuted} />
+                                </Pressable>
+                            </View>
+
+                            <ScrollView
+                                style={styles.scopeSheetScroll}
+                                contentContainerStyle={styles.scopeSheetScrollContent}
+                                keyboardShouldPersistTaps="handled"
+                                showsVerticalScrollIndicator={false}
+                            >
+                                <View style={styles.scopeSheetSection}>
+                                    <Text style={[styles.scopeSheetSectionLabel, { color: palette.textMuted }]}>
+                                        {t("项目选择", "Project selection")}
+                                    </Text>
+                                    <View style={styles.scopeOptionGrid}>
+                                        <Pressable
+                                            style={[
+                                                styles.scopeOptionChip,
+                                                {
+                                                    backgroundColor: !selectedProjectId ? palette.primarySoft : palette.surface,
+                                                    borderColor: !selectedProjectId ? `${palette.primary}33` : palette.border,
+                                                },
+                                            ]}
+                                            disabled={scopeLoading}
+                                            onPress={() => void handleProjectSelect("__auto__")}
+                                        >
+                                            <Text style={[styles.scopeOptionTitle, { color: !selectedProjectId ? palette.primaryDeep : palette.text }]}>
+                                                {t("自动推断项目", "Auto-detect project")}
+                                            </Text>
+                                            <Text style={[styles.scopeOptionMeta, { color: palette.textMuted }]}>
+                                                {t("继续使用会话内容重新解析。", "Re-resolve from the current session context.")}
+                                            </Text>
+                                        </Pressable>
+                                        {availableProjects.map((project) => {
+                                            const active = project.id === selectedProjectId;
+                                            return (
+                                                <Pressable
+                                                    key={project.id || project.name}
+                                                    style={[
+                                                        styles.scopeOptionChip,
+                                                        {
+                                                            backgroundColor: active ? palette.primarySoft : palette.surface,
+                                                            borderColor: active ? `${palette.primary}33` : palette.border,
+                                                        },
+                                                    ]}
+                                                    disabled={scopeLoading}
+                                                    onPress={() => void handleProjectSelect(project.id || "")}
+                                                >
+                                                    <Text style={[styles.scopeOptionTitle, { color: active ? palette.primaryDeep : palette.text }]}>
+                                                        {project.name || project.id || t("未命名项目", "Unnamed project")}
+                                                    </Text>
+                                                    <Text style={[styles.scopeOptionMeta, { color: palette.textMuted }]}>
+                                                        {project.defaultScope || project.workspaceId || t("未绑定工作区", "No workspace bound")}
+                                                    </Text>
+                                                </Pressable>
+                                            );
+                                        })}
+                                    </View>
+                                </View>
+
+                                <View style={styles.scopeSheetSection}>
+                                    <Text style={[styles.scopeSheetSectionLabel, { color: palette.textMuted }]}>
+                                        {t("当前绑定", "Current binding")}
+                                    </Text>
+                                    <View style={styles.contextChips}>
+                                        <View style={[styles.contextChip, { backgroundColor: palette.primarySoft, borderColor: `${palette.primary}1A` }]}>
+                                            <Text style={[styles.contextChipText, { color: palette.primaryDeep }]}>
+                                                {t("项目", "Project")}：{selectedProject?.name || t("自动", "Auto")}
+                                            </Text>
+                                        </View>
+                                        <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                                            <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
+                                                Scope：{scopeBinding?.resolvedScope || t("待解析", "Pending")}
+                                            </Text>
+                                        </View>
+                                        <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                                            <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
+                                                {t("来源", "Source")}：{scopeBinding?.scopeSource || t("未绑定", "Unbound")}
+                                            </Text>
+                                        </View>
+                                        {scopeBinding?.workspaceId ? (
+                                            <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                                                <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
+                                                    {t("工作区", "Workspace")}：{scopeBinding.workspaceId}
+                                                </Text>
+                                            </View>
+                                        ) : null}
+                                        {availableProjects.length === 0 && !scopeLoading ? (
+                                            <Text style={[styles.scopeHintText, { color: palette.textMuted }]}>
+                                                {t("当前还没有可用的项目注册表。", "No project registry is available yet.")}
+                                            </Text>
+                                        ) : null}
+                                    </View>
+                                </View>
+
+                                <View style={styles.scopeSheetActions}>
+                                    <Pressable
+                                        style={[
+                                            styles.scopeActionButton,
+                                            { backgroundColor: palette.surface, borderColor: palette.border, opacity: activeConversationId && !scopeLoading ? 1 : 0.56 },
+                                        ]}
+                                        disabled={!activeConversationId || scopeLoading}
+                                        onPress={() => void handleReresolveScope()}
+                                    >
+                                        {scopeLoading ? <ActivityIndicator size="small" color={palette.textMuted} /> : <MaterialCommunityIcons name="refresh" size={15} color={palette.textMuted} />}
+                                        <Text style={[styles.scopeActionButtonText, { color: palette.text }]}>
+                                            {t("重新解析", "Re-resolve")}
+                                        </Text>
+                                    </Pressable>
+                                </View>
+                            </ScrollView>
+                        </GlassCard>
+                    </View>
+                </Modal>
 
                 <Modal visible={desktopPreviewOpen} transparent animationType="fade" onRequestClose={() => void closeDesktopPreview()}>
                     <View style={[styles.previewOverlay, { backgroundColor: palette.overlay }]}>
@@ -3495,6 +4363,11 @@ const styles = StyleSheet.create({
         gap: 6,
         minWidth: 0,
     },
+    runtimeDockWrap: {
+        flex: 1,
+        minWidth: 0,
+        flexShrink: 1,
+    },
     controlRailPrimary: {
         minHeight: 36,
         flexDirection: "row",
@@ -3512,28 +4385,19 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 6 },
         elevation: 2,
     },
-    contextButton: {
-        width: 28,
-        height: 28,
-        borderRadius: 14,
+    scopeTrigger: {
+        width: 34,
+        height: 34,
         alignItems: "center",
         justifyContent: "center",
+        borderRadius: radii.pill,
         borderWidth: 1,
     },
-    runControlWrap: {
-        minHeight: 32,
-        flexDirection: "row",
+    scopeTriggerIconWrap: {
+        width: 16,
+        height: 16,
         alignItems: "center",
         justifyContent: "center",
-        paddingHorizontal: 0,
-        paddingVertical: 0,
-        width: 72,
-        minWidth: 72,
-        maxWidth: 72,
-        flexGrow: 0,
-        flexShrink: 0,
-        overflow: "visible",
-        zIndex: 4,
     },
     statusPill: {
         minHeight: 22,
@@ -3565,7 +4429,7 @@ const styles = StyleSheet.create({
         alignSelf: "center",
         paddingHorizontal: 14,
         paddingTop: 64,
-        paddingBottom: 172,
+        paddingBottom: 32,
     },
     emptyState: {
         minHeight: 340,
@@ -3580,24 +4444,55 @@ const styles = StyleSheet.create({
         letterSpacing: -0.8,
         textAlign: "center",
     },
-    composerWrap: {
+    keyboardDockHost: {
+        width: "100%",
+        zIndex: 30,
+    },
+    composerDock: {
+        width: "100%",
+        zIndex: 30,
+        overflow: "visible",
+    },
+    composerDockLandscape: {
+        alignSelf: "stretch",
+    },
+    hudOverlayStack: {
         position: "absolute",
-        left: 10,
-        right: 10,
-        bottom: Platform.OS === "ios" ? 8 : 4,
-        zIndex: 22,
+        left: 0,
+        right: 0,
+        zIndex: 34,
+        gap: 10,
     },
-    composerWrapLandscape: {
-        left: 18,
-        right: 18,
+    processesOverlayDock: {
+        width: "100%",
     },
-    todosDock: {
+    todosOverlayDock: {
+        width: "100%",
+    },
+    composerAccessoryTray: {
         position: "absolute",
-        zIndex: 24,
+        left: 0,
+        right: 0,
+        zIndex: 33,
     },
-    todosDockLandscape: {
-        left: 18,
-        right: 18,
+    composerAccessoryTrayContent: {
+        flexDirection: "row",
+        gap: 8,
+        paddingHorizontal: 2,
+    },
+    accessoryChip: {
+        minHeight: 34,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    accessoryChipText: {
+        fontSize: 11,
+        fontWeight: "700",
     },
     panelOverlay: {
         flex: 1,
@@ -3774,6 +4669,99 @@ const styles = StyleSheet.create({
     contextChipText: {
         fontSize: 11,
         fontWeight: "700",
+    },
+    scopeSheetOverlay: {
+        flex: 1,
+        justifyContent: "flex-end",
+    },
+    scopeSheetCard: {
+        borderTopLeftRadius: 26,
+        borderTopRightRadius: 26,
+        borderBottomLeftRadius: 0,
+        borderBottomRightRadius: 0,
+        borderWidth: 1,
+        paddingHorizontal: 16,
+        paddingTop: 10,
+        paddingBottom: 18,
+        maxHeight: "74%",
+    },
+    scopeSheetHandle: {
+        alignSelf: "center",
+        width: 42,
+        height: 5,
+        borderRadius: 999,
+        marginBottom: 12,
+        opacity: 0.72,
+    },
+    scopeSheetHeader: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 12,
+    },
+    scopeSheetHeaderText: {
+        flex: 1,
+        minWidth: 0,
+    },
+    scopeSheetCloseButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    scopeSheetScroll: {
+        marginTop: 12,
+    },
+    scopeSheetScrollContent: {
+        gap: 16,
+        paddingBottom: 12,
+    },
+    scopeSheetSection: {
+        gap: 10,
+    },
+    scopeSheetSectionLabel: {
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    scopeOptionGrid: {
+        gap: 9,
+    },
+    scopeOptionChip: {
+        borderRadius: 18,
+        borderWidth: 1,
+        paddingHorizontal: 12,
+        paddingVertical: 11,
+        gap: 4,
+    },
+    scopeOptionTitle: {
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    scopeOptionMeta: {
+        fontSize: 11,
+        lineHeight: 16,
+    },
+    scopeHintText: {
+        fontSize: 11,
+        lineHeight: 16,
+    },
+    scopeSheetActions: {
+        flexDirection: "row",
+        justifyContent: "flex-end",
+    },
+    scopeActionButton: {
+        minHeight: 34,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 14,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+    },
+    scopeActionButtonText: {
+        fontSize: 12,
+        fontWeight: "800",
     },
     previewOverlay: {
         flex: 1,

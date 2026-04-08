@@ -50,20 +50,20 @@ export const AskUserCard = memo(function AskUserCard({
                                 size={14}
                                 color={isDark ? "#BAE6FD" : "#0369A1"}
                             />
-                            <Text style={[styles.headerLabelText, { color: skyText }]}>
+                            <Text selectable style={[styles.headerLabelText, { color: skyText }]}>
                                 {t("等待你的输入", "Waiting for your answer")}
                             </Text>
                         </View>
                         {status ? <Badge variant="outline">{status}</Badge> : null}
                     </View>
-                    <Text style={[styles.copy, { color: cardText }]}>{question}</Text>
+                    <Text selectable style={[styles.copy, { color: cardText }]}>{question}</Text>
                     <View style={styles.footer}>
                         <MaterialCommunityIcons
                             name="arrow-right"
                             size={14}
                             color={isDark ? "#BAE6FD" : "#0369A1"}
                         />
-                        <Text style={[styles.footerText, { color: skyText }]}>
+                        <Text selectable style={[styles.footerText, { color: skyText }]}>
                             {t("请回答这个问题，当前运行会在收到回答后继续。", "Answer this question and the current run will continue once it receives your response.")}
                         </Text>
                     </View>

@@ -8,13 +8,19 @@ import type { AdminProcessRef } from '@v8/session-realtime';
 import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
 import { ToolCard, ToolInvocation } from './ToolCard';
-import { InteractiveTerminalCard } from './InteractiveTerminalCard';
 import { GenericToolTraceCard } from './GenericToolTraceCard';
 import { AskUserCard } from './AskUserCard';
 import { ApprovalCard } from './ApprovalCard';
 import { parseContentToBlocks } from '@/lib/chat/content-detector';
 import { isCommandSessionTool } from '@/lib/chat/command-session';
 import { MessageBlockItem } from './MessageBlockItem';
+
+const TODO_MUTATION_PATTERNS = [
+    /command\s*\(\s*update\s*=\s*\{[^)]*todos/i,
+    /\bpersistent task plan\b/i,
+    /\btodo\s*#?\d+\b.*\b(marked|updated|done|in_progress|pending|skipped|created)\b/i,
+    /\bcreated with\s+\d+\s+items\b/i,
+];
 
 function tryParseJsonRecord(value: unknown): Record<string, unknown> | null {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -53,6 +59,55 @@ function compactToolResult(toolName: string, value: unknown) {
     };
 }
 
+function looksLikeTodoMutationText(value: unknown) {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+        return false;
+    }
+    return TODO_MUTATION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function containsTodoMutationHint(value: unknown, depth = 0): boolean {
+    if (depth > 4 || value === null || value === undefined) {
+        return false;
+    }
+    if (typeof value === 'string') {
+        return looksLikeTodoMutationText(value);
+    }
+    if (Array.isArray(value)) {
+        return value.some((item) => containsTodoMutationHint(item, depth + 1));
+    }
+    if (typeof value !== 'object') {
+        return false;
+    }
+    const record = value as Record<string, unknown>;
+    const update = tryParseJsonRecord(record.update);
+    const request = tryParseJsonRecord(record.request);
+    if ('todos' in record || 'todo' in record) {
+        return true;
+    }
+    if (update && ('todos' in update || 'todo' in update)) {
+        return true;
+    }
+    if (request && ('todos' in request || 'todo' in request)) {
+        return true;
+    }
+    return Object.values(record).some((nested) => containsTodoMutationHint(nested, depth + 1));
+}
+
+function isTodoLikeExecutionNode(node: UiExecutionNode) {
+    const toolName = String(node.toolName || '').trim();
+    if (toolName === 'write_todos' || toolName === 'update_todo') {
+        return true;
+    }
+    return (
+        looksLikeTodoMutationText(node.label)
+        || looksLikeTodoMutationText(node.content)
+        || containsTodoMutationHint(node.args)
+        || containsTodoMutationHint(node.result)
+    );
+}
+
 interface ToolRendererProps {
     toolInvocation: ToolInvocation;
     isFinished: boolean;
@@ -63,12 +118,6 @@ function CommandSessionToolRenderer({ toolInvocation, process }: ToolRendererPro
     return (
         <motion.div layout className="flex flex-col">
             <ToolCard toolInvocation={toolInvocation} hideResult={!!process} />
-            {process && (
-                <div className="mt-1 mb-2 ml-[15px] relative z-10 w-[calc(100%-15px)]">
-                    <div className="absolute -left-[14px] top-0 w-3 h-4 border-l-[1.5px] border-b-[1.5px] border-zinc-300 dark:border-zinc-700 rounded-bl-xl" />
-                    <InteractiveTerminalCard process={process} />
-                </div>
-            )}
         </motion.div>
     );
 }
@@ -116,6 +165,9 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             }
 
             if (node.executionType === 'tool_call' || node.executionType === 'tool_result') {
+                if (isTodoLikeExecutionNode(node)) {
+                    return null;
+                }
                 const toolName = node.toolName || 'Unknown Tool';
                 const resultExecNode = resultNode as UiExecutionNode | undefined;
                 const isFinished = node.executionType === 'tool_result' || !!resultNode || !!node.result || !isExecuting;

@@ -283,11 +283,40 @@ async def delete_memory_document(filename: str):
 @router.get("/bg_processes/{cmd_id}")
 async def get_bg_process_output(cmd_id: str):
     try:
-        from core.native_tools import _bg_processes, read_background_output
+        from core.native_tools import _bg_processes, _prune_stale_background_processes
 
-        output = read_background_output.invoke(cmd_id)
-        is_running = cmd_id in _bg_processes and _bg_processes[cmd_id].is_running
-        return {"status": "success", "output": output, "is_running": is_running}
+        _prune_stale_background_processes()
+        bg_proc = _bg_processes.get(cmd_id)
+        if not bg_proc:
+            return {"status": "not_found", "output": "", "is_running": False}
+        output = bg_proc.get_new_output()
+        process = bg_proc.status_snapshot()
+        return {
+            "status": "success",
+            "output": output,
+            "is_running": bg_proc.is_running,
+            "ttyMode": process.get("tty_mode"),
+            "screenMode": process.get("screen_mode"),
+            "screenSnapshot": process.get("screen_snapshot"),
+            "stableScreenSnapshot": process.get("stable_screen_snapshot"),
+            "screenVersion": process.get("screen_version"),
+            "rawFrameVersion": process.get("raw_frame_version"),
+            "rawBytes": process.get("raw_bytes"),
+            "cursor": process.get("cursor"),
+            "cols": process.get("cols"),
+            "rows": process.get("rows"),
+            "alternateScreen": process.get("alternate_screen"),
+            "awaitingInput": process.get("awaiting_input"),
+            "observationState": process.get("observation_state"),
+            "textEncoding": process.get("text_encoding"),
+            "encodingState": process.get("encoding_state"),
+            "encodingNotes": process.get("encoding_notes"),
+            "lastScreenAt": process.get("last_screen_at"),
+            "lastRawFrameAt": process.get("last_raw_frame_at"),
+            "lastRawFramePreview": process.get("last_raw_frame_preview"),
+            "commandDiagnostics": process.get("command_diagnostics"),
+            "process": process,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

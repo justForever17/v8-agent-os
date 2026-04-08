@@ -238,9 +238,7 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         if (topic === "approval.requested") {
             if (
                 interactionKind === "ask_user"
-                || approvalKind === "human_input_required"
                 || approvalKind === "ask_user"
-                || approvalKind === "waiting_input"
             ) {
                 return "ask_user" as const;
             }

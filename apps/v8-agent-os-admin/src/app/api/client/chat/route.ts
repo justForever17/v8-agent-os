@@ -1,9 +1,8 @@
-import crypto from "crypto";
-
 import { NextRequest, NextResponse } from "next/server";
 
 import { generateImageWithDoubao } from "@/lib/volcengine";
 import { createEngineChatGatewayStream } from "@/lib/realtime/engine-chat-gateway";
+import { buildEngineChatRequestPayload } from "@/lib/realtime/engine-chat-request";
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 
 export const runtime = "nodejs";
@@ -17,17 +16,13 @@ export async function POST(req: NextRequest) {
 
     try {
         const payload = await req.json();
-        const { messages, data, agentId, tool_outputs } = payload;
-        const projectId = payload.project_id ?? payload.projectId ?? data?.projectId;
-        const workspaceId = payload.workspace_id ?? payload.workspaceId ?? data?.workspaceId;
-        const workspacePath = payload.workspace_path ?? payload.workspacePath ?? data?.workspacePath;
-        const scopeHint = payload.scope_hint ?? payload.scopeHint ?? data?.scopeHint;
-        const scopeMode = payload.scope_mode ?? payload.scopeMode ?? data?.scopeMode ?? "mixed";
-        const conversationId = payload.session_id || payload.conversationId || data?.conversationId || crypto.randomUUID();
-        const currentContent = tool_outputs?.[0]?.output || messages?.[messages.length - 1]?.content || "";
-        const fileUrls = data?.fileUrls || [];
-        const provider = data?.provider;
-        const modelName = data?.model;
+        const {
+            conversationId,
+            currentContent,
+            fileUrls,
+            provider,
+            pythonPayload,
+        } = buildEngineChatRequestPayload(payload, userEmail);
 
         if (provider === "volcengine" && currentContent && fileUrls.length > 0) {
             const response = await generateImageWithDoubao(currentContent, fileUrls);
@@ -48,32 +43,6 @@ export async function POST(req: NextRequest) {
                 },
             );
         }
-
-        const pythonPayload = {
-            session_id: conversationId,
-            conversationId,
-            user_id: userEmail,
-            stream: true,
-            title: currentContent.substring(0, 30) || "New Chat",
-            tool_outputs,
-            project_id: projectId,
-            workspace_id: workspaceId,
-            workspace_path: workspacePath,
-            scope_hint: scopeHint,
-            scope_mode: scopeMode,
-            config: {
-                provider,
-                model_name: modelName,
-                agent_id: agentId,
-            },
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            messages: messages.map((message: any) => ({
-                role: message.role,
-                content: message.content || "",
-                tool_call_id: message.tool_call_id,
-                name: message.name,
-            })),
-        };
 
         const stream = createEngineChatGatewayStream(pythonPayload, userEmail);
 

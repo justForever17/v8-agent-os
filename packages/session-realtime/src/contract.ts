@@ -68,6 +68,7 @@ export type AdminResourceRef = {
 export type AdminProcessRef = {
   processId: string;
   commandId?: string;
+  sessionId?: string | null;
   runId?: string | null;
   title?: string;
   commandPreview?: string;
@@ -76,14 +77,39 @@ export type AdminProcessRef = {
   usesTty?: boolean;
   canTerminate?: boolean;
   canInput?: boolean;
+  outputAdminPath?: string;
   streamAdminPath?: string;
   inputAdminPath?: string;
   terminateAdminPath?: string;
   sourceMessageId?: string;
   toolCallId?: string;
   startedAt?: string;
+  completedAt?: string | null;
   secondsSinceOutput?: number | null;
   secondsSinceInput?: number | null;
+  ttyMode?: string;
+  screenMode?: string;
+  screenSnapshot?: string;
+  stableScreenSnapshot?: string;
+  screenVersion?: number | null;
+  rawFrameVersion?: number | null;
+  rawBytes?: number | null;
+  cursor?: {
+    row?: number;
+    col?: number;
+  } | null;
+  cols?: number | null;
+  rows?: number | null;
+  alternateScreen?: boolean;
+  awaitingInput?: boolean;
+  observationState?: "busy" | "awaiting_input" | "render_stalled" | "idle" | string;
+  textEncoding?: string | null;
+  encodingState?: "clean" | "suspect_mojibake" | "undecodable" | string;
+  encodingNotes?: string | null;
+  lastScreenAt?: string | null;
+  lastRawFrameAt?: string | null;
+  lastRawFramePreview?: string | null;
+  commandDiagnostics?: Record<string, unknown> | null;
 };
 
 export type ContextReferenceType = "file" | "memory" | "search" | "web";

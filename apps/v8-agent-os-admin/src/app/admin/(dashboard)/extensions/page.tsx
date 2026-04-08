@@ -29,6 +29,16 @@ type ExtensionCatalogResponse = {
     snapshotFreshness?: "cold" | "cached" | "live";
     lastRefreshAt?: string | null;
     lastRefreshError?: string | null;
+    fingerprint?: string | null;
+    changedAt?: string | null;
+    lastSkillInventoryChange?: {
+        reason?: string | null;
+        changedAt?: string | null;
+        fingerprint?: string | null;
+        addedSkills?: string[];
+        removedSkills?: string[];
+        updatedSkills?: string[];
+    } | null;
     skillsStartupState?: string | null;
     mcpStartupState?: string | null;
     runtime?: {
@@ -46,7 +56,13 @@ type ExtensionCatalogResponse = {
         systemWideInstallAllowed?: boolean;
         nodeGlobalInstallAllowed?: boolean;
     };
-    skills: { root: string; items: Array<{ name: string; description: string; path: string }> };
+    skills: {
+        root: string;
+        roots?: string[];
+        fingerprint?: string | null;
+        changedAt?: string | null;
+        items: Array<{ name: string; description: string; path: string }>;
+    };
     mcp: {
         servers: Array<{
             name: string;

@@ -207,7 +207,8 @@ def build_supervisor_system_content(
             f"Local Workspace Absolute Path: {workspace_path}\n"
             "When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, "
             "you MUST save them to the Local Workspace above.\n"
-            "To display a workspace file in the chat, return a markdown image or link using the same-origin URL format: /api/workspace/files/YOUR_FILE_NAME\n"
+            "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "
+            "Reference generated media naturally in prose and rely on the runtime artifact/resource pipeline for rendering.\n"
         )
         available_tools_context = "--- SUPERVISOR DIRECT TOOL REGISTRY ---\n"
         available_tools_context += "下面只列出你当前可直接调用的工具。模块级任务优先参考 Runtime 能力卡片来路由，而不是硬记所有模块细节。\n"

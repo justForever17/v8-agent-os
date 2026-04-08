@@ -8,6 +8,7 @@ import { AskUserCard } from "@/src/components/chat/AskUserCard";
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { MarkdownRenderer } from "@/src/components/chat/MarkdownRenderer";
 import { MermaidRenderer } from "@/src/components/chat/MermaidRenderer";
+import { ImagePreview, MediaPlayer } from "@/src/components/chat/MediaRenderers";
 import { ModelViewer } from "@/src/components/chat/ModelViewer";
 import { HTMLFileCard } from "@/src/components/chat/HTMLFileCard";
 import { PPTCard } from "@/src/components/chat/PPTCard";
@@ -178,6 +179,19 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                 onSpeak={() => onSpeak?.(block.content)}
             />
         );
+    }
+
+    if (block.type === "image" || block.type === "video" || block.type === "audio") {
+        const rawSrc = String(block.data?.src || block.content || "").trim();
+        const src = normalizeRenderableWorkspaceUrl(adminBaseUrl, rawSrc);
+        const title = typeof block.data?.title === "string" ? block.data.title : undefined;
+        if (!src) {
+            return null;
+        }
+        if (block.type === "image") {
+            return <ImagePreview src={src} alt={title} />;
+        }
+        return <MediaPlayer src={src} type={block.type} title={title} />;
     }
 
     if (block.type === "mermaid") {

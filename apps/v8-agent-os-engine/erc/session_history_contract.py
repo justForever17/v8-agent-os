@@ -26,6 +26,13 @@ def _coerce_string(value: Any) -> Optional[str]:
     return normalized or None
 
 
+def _latest_timestamp(*values: Any) -> Optional[str]:
+    candidates = [str(value).strip() for value in values if str(value or "").strip()]
+    if not candidates:
+        return None
+    return max(candidates)
+
+
 def _derive_scope_tags(metadata: Dict[str, Any], session_row: Dict[str, Any]) -> List[str]:
     explicit = [
         *([str(item or "").strip() for item in (metadata.get("scopeTags") or [])]),
@@ -99,6 +106,8 @@ def _derive_runtime_family(event: Dict[str, Any], payload: Dict[str, Any]) -> st
 
 
 def _derive_visibility(runtime_family: str, topic: str) -> str:
+    if runtime_family == "memory":
+        return "hidden"
     if runtime_family == "plugin_host_channel":
         return "history_only"
     if runtime_family == "desktop_live":
@@ -160,7 +169,18 @@ def build_session_history_materialized_record(
     workflow_status = _coerce_string(workflow_view.get("status")) or _coerce_string(summary.get("workflowStatus")) or "idle"
     root_run_id = _coerce_string(workflow_view.get("rootRunId"))
     owner_runtime = _coerce_string(workflow_view.get("ownerRuntime")) or _coerce_string(summary.get("ownerRuntime"))
-    last_activity_at = _coerce_string(summary.get("lastActivityAt")) or _coerce_string(session_row.get("updated_at")) or _coerce_string(session_row.get("updatedAt"))
+    last_activity_at = _latest_timestamp(
+        summary.get("lastActivityAt"),
+        session_row.get("lastActivityAt"),
+        workflow_view.get("updatedAt"),
+        session_row.get("workflowUpdatedAt"),
+        session_row.get("latestRuntimeEventAt"),
+        session_row.get("latestMessageAt"),
+        session_row.get("updated_at"),
+        session_row.get("updatedAt"),
+        run_record.get("finished_at") if run_record else None,
+        run_record.get("started_at") if run_record else None,
+    )
     channel = _build_channel_history_subdocument(summary)
 
     return {
@@ -260,9 +280,11 @@ def build_session_history_detail(
     workflow_view: Optional[Dict[str, Any]],
     approvals: List[Dict[str, Any]],
     snapshot: Optional[Dict[str, Any]],
+    timeline_messages: Optional[List[Dict[str, Any]]],
     latest_seq: int,
     source: str,
     runtime_events: List[Dict[str, Any]],
+    runtime_timeline: Optional[List[Dict[str, Any]]] = None,
     run_record: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     session_row = session_row or {}
@@ -279,10 +301,15 @@ def build_session_history_detail(
         run_record=run_record,
     )
     current_run_id = _coerce_string(record.get("currentRunId"))
+    normalized_timeline = list(timeline_messages or [])
     return {
         "record": record,
+        "timeline": normalized_timeline,
+        "messages": normalized_timeline,
         "ledger": build_session_history_ledger_entries(session_id=record["sessionId"], runtime_events=runtime_events),
-        "processes": build_processes_snapshot(snapshot=snapshot or {}, run_id=current_run_id),
+        "processes": build_processes_snapshot(session_id=record["sessionId"], snapshot=snapshot or {}, run_id=current_run_id),
+        "runtimeTimeline": list(runtime_timeline or []),
+        "artifacts": list((snapshot or {}).get("artifacts") or []),
         "contextReferences": build_context_references(snapshot or {}),
         "contextGovernance": extract_latest_context_governance(runtime_events),
     }

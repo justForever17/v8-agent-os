@@ -172,8 +172,8 @@ function deriveChannelSubdocument(record: Record<string, unknown>, parsedMetadat
 
 function sortHistoryItems(items: AuthoritativeSessionHistoryRecord[]) {
   return [...items].sort((left, right) => {
-    const leftTs = left.lastActivityAt || left.startedAt || "";
-    const rightTs = right.lastActivityAt || right.startedAt || "";
+    const leftTs = left.lastActivityAt || left.updatedAt || left.updated_at || left.startedAt || left.createdAt || "";
+    const rightTs = right.lastActivityAt || right.updatedAt || right.updated_at || right.startedAt || right.createdAt || "";
     return rightTs.localeCompare(leftTs);
   });
 }
@@ -184,13 +184,14 @@ export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): Author
   const channel = deriveChannelSubdocument(record, parsedMetadata);
   const sourceGroup = normalizeSourceGroup(record.sourceGroup || record.source_group) || "web";
   const previewExcerpt = coerceString(record.previewExcerpt) || coerceString(record.lastNarrativeExcerpt);
+  const canonicalSessionId = coerceString(record.sessionId || record.session_id || record.id) || "";
   const workflowSummary = record.workflowSummary && typeof record.workflowSummary === "object"
     ? record.workflowSummary as SessionHistoryWorkflowSummary
     : undefined;
 
   return {
-    id: coerceString(record.id || record.sessionId || record.session_id) || "",
-    sessionId: coerceString(record.sessionId || record.session_id || record.id),
+    id: canonicalSessionId,
+    sessionId: canonicalSessionId,
     title: coerceString(record.title) || "新对话",
     source: coerceString(record.source),
     sourceGroup,
@@ -237,7 +238,13 @@ export function normalizeAuthoritativeSessionHistoryList(raw: unknown[]): Author
   return sortHistoryItems(
     raw
       .map((item) => normalizeAuthoritativeSessionHistoryRecord(item))
-      .filter((item) => item.parsedMetadata?.hiddenFromHistory !== true),
+      .filter((item) => {
+        if (!item.id) return false;
+        if (item.parsedMetadata?.hiddenFromHistory === true) return false;
+        if (item.ownerRuntime === "memory" || item.runtimeOwner === "memory") return false;
+        if (item.id.startsWith("hook:on_chat_end:memory:") || item.id.startsWith("memory:summary:")) return false;
+        return true;
+      }),
   );
 }
 

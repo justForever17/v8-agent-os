@@ -52,9 +52,7 @@ export function isAskUserInteractionApproval(value: unknown) {
   const approvalKind = String(record.approval_kind || record.approvalKind || "").trim().toLowerCase();
   const interactionKind = String(request.interactionKind || request.interaction_kind || record.interactionKind || record.interaction_kind || "").trim().toLowerCase();
   return interactionKind === "ask_user"
-    || approvalKind === "human_input_required"
-    || approvalKind === "ask_user"
-    || approvalKind === "waiting_input";
+    || approvalKind === "ask_user";
 }
 
 function normalizeProcesses(value: unknown): AdminProcessRef[] {
@@ -156,6 +154,7 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
   }
 
   const root = raw as Record<string, unknown>;
+  const nestedSnapshot = asRecord(root.snapshot);
   const projection = asRecord(root.projection);
   const workflowProjection = asRecord(root.workflowProjection || projection.workflowProjection);
   const effectiveProjection = Object.keys(projection).length > 0 ? projection : root;
@@ -188,23 +187,30 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
     latestSeq: Number(root.latestSeq || root.latest_seq || asRecord(root.snapshot).latest_seq || 0) || 0,
     messages: Array.isArray(root.messages)
       ? root.messages
-      : Array.isArray(asRecord(root.snapshot).messages)
-        ? (asRecord(root.snapshot).messages as unknown[])
+      : Array.isArray(nestedSnapshot.messages)
+        ? (nestedSnapshot.messages as unknown[])
         : undefined,
     approvals: asRecordArray(effectiveProjection.approvals, root.approvals, workflowProjection.approvals),
     controls: asRecord(effectiveProjection.controls || root.controls),
     recoverable: effectiveProjection.recoverable ?? root.recoverable ?? null,
     artifacts: Array.isArray(asRecord(root.snapshot).artifacts)
-      ? (asRecord(root.snapshot).artifacts as unknown[])
+      ? (nestedSnapshot.artifacts as unknown[])
       : Array.isArray(root.artifacts)
         ? (root.artifacts as unknown[])
         : undefined,
-    processes: normalizeProcesses(root.processes || effectiveProjection.processes || workflowProjection.processes),
+    processes: normalizeProcesses(
+      root.processes
+      || effectiveProjection.processes
+      || nestedSnapshot.processes
+      || workflowProjection.processes,
+    ),
     contextReferences: normalizeContextReferences(
       root.contextReferences
       || root.context_references
       || effectiveProjection.contextReferences
       || effectiveProjection.context_references
+      || nestedSnapshot.contextReferences
+      || nestedSnapshot.context_references
       || workflowProjection.contextReferences
       || workflowProjection.context_references,
     ),
@@ -213,6 +219,8 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
       || root.context_governance
       || effectiveProjection.contextGovernance
       || effectiveProjection.context_governance
+      || nestedSnapshot.contextGovernance
+      || nestedSnapshot.context_governance
       || workflowProjection.contextGovernance
       || workflowProjection.context_governance,
     ),
@@ -224,21 +232,30 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
       effectiveProjection.runtimeEvents,
       root.runtimeTimeline,
       root.runtimeEvents,
+      nestedSnapshot.runtimeTimeline,
+      nestedSnapshot.runtimeEvents,
       workflowProjection.runtimeTimeline,
       workflowProjection.runtimeEvents,
       workflowProjection.eventTail,
       workflowProjection.activities,
     ),
-    currentRun: asRecord(effectiveProjection.currentRun || root.currentRun || workflowProjection.currentRun),
+    currentRun: asRecord(
+      effectiveProjection.currentRun
+      || root.currentRun
+      || nestedSnapshot.currentRun
+      || workflowProjection.currentRun,
+    ),
     runtimeStatus:
       typeof effectiveProjection.runtimeStatus === "string"
         ? effectiveProjection.runtimeStatus
         : typeof root.runtimeStatus === "string"
           ? root.runtimeStatus
+          : typeof nestedSnapshot.runtimeStatus === "string"
+            ? nestedSnapshot.runtimeStatus
           : typeof workflowProjection.runtimeStatus === "string"
             ? workflowProjection.runtimeStatus
             : null,
-    summary: asRecord(effectiveProjection.summary || root.summary || workflowProjection.summary),
+    summary: asRecord(effectiveProjection.summary || root.summary || nestedSnapshot.summary || workflowProjection.summary),
     source:
       typeof effectiveProjection.source === "string"
         ? effectiveProjection.source
@@ -246,7 +263,7 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
           ? root.source
           : null,
     workflow: asRecord(effectiveProjection.workflow || root.workflow),
-    snapshot: asRecord(root.snapshot) as AuthoritativeSessionSnapshot["snapshot"],
+    snapshot: nestedSnapshot as AuthoritativeSessionSnapshot["snapshot"],
   };
 }
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from core.database import db
 from core.storage import storage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -82,10 +85,9 @@ def select_current_run_record(
 
 
 def build_todos_snapshot(*, session_id: str, run_id: Optional[str]) -> Dict[str, Any]:
-    if not run_id:
-        return {"items": [], "allCompleted": False, "runId": None, "sessionId": session_id}
-
     snapshot = storage.get_active_todo_snapshot(session_id=session_id, run_id=run_id) or {}
+    if not snapshot:
+        return {"items": [], "allCompleted": False, "runId": run_id, "sessionId": session_id}
     items = snapshot.get("items")
     normalized_items = items if isinstance(items, list) else []
     return {
@@ -155,6 +157,8 @@ def _build_process_message_index(snapshot: Dict[str, Any]) -> Dict[str, Dict[str
     messages = _as_record_list(snapshot.get("messages"))
     for message in messages:
         message_id = _string(message.get("id"))
+        message_run_id = _string(message.get("runId"))
+        message_session_id = _string(message.get("sessionId") or snapshot.get("session_id") or snapshot.get("sessionId"))
         nodes = _as_record_list(message.get("nodes"))
         tool_calls: Dict[str, Dict[str, Any]] = {}
         for node in nodes:
@@ -169,11 +173,15 @@ def _build_process_message_index(snapshot: Dict[str, Any]) -> Dict[str, Dict[str
                     mapping[_string(command_session["commandId"])] = {
                         "toolCallId": tool_call_id or None,
                         "sourceMessageId": message_id or None,
+                        "runId": _string(command_session.get("runId")) or message_run_id or None,
+                        "sessionId": message_session_id or None,
                     }
                 if tool_call_id:
                     tool_calls[tool_call_id] = {
                         "toolCallId": tool_call_id,
                         "sourceMessageId": message_id or None,
+                        "runId": _string(command_session.get("runId")) or message_run_id or None,
+                        "sessionId": message_session_id or None,
                     }
             elif execution_type == "tool_result":
                 command_session = _extract_command_session_payload(node.get("result"))
@@ -186,28 +194,70 @@ def _build_process_message_index(snapshot: Dict[str, Any]) -> Dict[str, Dict[str
                     link = {
                         "toolCallId": tool_call_id or None,
                         "sourceMessageId": message_id or None,
+                        "runId": _string(command_session.get("runId")) or message_run_id or None,
+                        "sessionId": message_session_id or None,
                     }
+                else:
+                    if not link.get("runId"):
+                        link["runId"] = _string(command_session.get("runId")) or message_run_id or None
+                    if not link.get("sessionId"):
+                        link["sessionId"] = message_session_id or None
                 mapping[command_id] = link
     return mapping
 
 
-def build_processes_snapshot(*, snapshot: Dict[str, Any], run_id: Optional[str]) -> list[Dict[str, Any]]:
+def build_processes_snapshot(*, session_id: Optional[str], snapshot: Dict[str, Any], run_id: Optional[str]) -> list[Dict[str, Any]]:
     from core.native_tools import list_background_process_snapshots
 
-    process_links = _build_process_message_index(snapshot)
-    processes: list[Dict[str, Any]] = []
-    for item in list_background_process_snapshots(run_id=run_id):
-        command_id = _string(item.get("commandId") or item.get("processId"))
-        link = process_links.get(command_id, {})
-        process = {
-            **item,
-            "processId": command_id or _string(item.get("processId")),
-            "commandId": command_id or _string(item.get("processId")),
-            "toolCallId": link.get("toolCallId"),
-            "sourceMessageId": link.get("sourceMessageId"),
+    try:
+        process_links = _build_process_message_index(snapshot)
+        message_ids = {
+            _string(message.get("id"))
+            for message in _as_record_list(snapshot.get("messages"))
+            if _string(message.get("id"))
         }
-        processes.append(process)
-    return processes
+        current_run_ids = {
+            value
+            for value in {
+                _string(run_id),
+                _string(snapshot.get("currentRunId")),
+                _string(_as_record(snapshot.get("currentRun")).get("id")),
+            }
+            if value
+        }
+        processes: list[Dict[str, Any]] = []
+        for item in list_background_process_snapshots(session_id=session_id):
+            command_id = _string(item.get("commandId") or item.get("processId"))
+            link = process_links.get(command_id, {})
+            process_session_id = _string(item.get("sessionId"))
+            process_run_id = _string(item.get("runId"))
+            linked_session_id = _string(link.get("sessionId"))
+            linked_run_id = _string(link.get("runId"))
+            source_message_id = _string(link.get("sourceMessageId"))
+            if session_id:
+                session_match = process_session_id == session_id or linked_session_id == session_id
+                message_match = bool(source_message_id and source_message_id in message_ids)
+                run_match = bool(current_run_ids and ({process_run_id, linked_run_id} & current_run_ids))
+                if not (session_match or message_match or run_match):
+                    continue
+            elif current_run_ids and process_run_id and process_run_id not in current_run_ids and linked_run_id not in current_run_ids:
+                continue
+            process = {
+                **item,
+                "sessionId": process_session_id or linked_session_id or session_id,
+                "processId": command_id or _string(item.get("processId")),
+                "commandId": command_id or _string(item.get("processId")),
+                "toolCallId": link.get("toolCallId"),
+                "sourceMessageId": link.get("sourceMessageId"),
+            }
+            processes.append(process)
+        return processes
+    except Exception:
+        logger.exception(
+            "Failed to build process snapshot; degrading to empty process surface",
+            extra={"run_id": run_id},
+        )
+        return []
 
 
 def build_context_references(snapshot: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -324,7 +374,14 @@ def resolve_authoritative_session_runtime_state(
     current_run = build_current_run_view(run_record)
     resolved_run_id = current_run_id or (current_run or {}).get("id")
     todos = build_todos_snapshot(session_id=session_id, run_id=resolved_run_id)
-    processes = list_background_process_snapshots(run_id=resolved_run_id)
+    try:
+        processes = list_background_process_snapshots(session_id=session_id)
+    except Exception:
+        logger.exception(
+            "Failed to resolve authoritative process snapshots; degrading to empty process list",
+            extra={"session_id": session_id, "run_id": resolved_run_id},
+        )
+        processes = []
     runtime_status = derive_runtime_status(
         current_run=current_run,
         workflow_view=normalized_workflow,

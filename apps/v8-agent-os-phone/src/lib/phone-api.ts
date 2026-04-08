@@ -1,9 +1,10 @@
-import { buildAdminApiUrl, parseJsonSafe, parseTextSafe, streamNdjson, streamSse } from "@/src/lib/admin-client";
+import { buildAdminApiUrl, parseJsonSafe, parseTextSafe, streamNdjson } from "@/src/lib/admin-client";
 import { normalizeSessionHistoryItem, normalizeSessionHistoryList } from "@/src/lib/session-history";
 import type {
     ArtifactDetail,
     AuthSessionPayload,
     ChatStreamEvent,
+    ChatSubmitResponse,
     CommandPresetSummary,
     ConnectionSummary,
     ConversationDetail,
@@ -16,16 +17,32 @@ import type {
     PhoneUser,
     ProfileUpdatePayload,
     ProjectSummary,
+    ScopeBindingView,
     RegisterInput,
     RealtimeSessionSnapshot,
     RPAAvailability,
     RPADraftSummary,
     SkillReferenceSummary,
+    AdminProcessRef,
     MusicTrack,
     UploadedWorkspaceFile,
 } from "@/src/types/admin";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
+type AuthorizedRealtimeStream = (
+    path: string,
+    onEvent: (eventName: string, payload: unknown) => void,
+    signal?: AbortSignal,
+) => Promise<void>;
+
+type CreateConversationInput = {
+    title?: string;
+    projectId?: string;
+    workspaceId?: string;
+    workspacePath?: string;
+    scopeHint?: string;
+    scopeMode?: string;
+};
 
 function normalizeArray<T>(value: unknown): T[] {
     return Array.isArray(value) ? (value as T[]) : [];
@@ -158,6 +175,84 @@ export async function listProjects(authorizedFetch: AuthorizedFetch) {
     return normalizeArray<ProjectSummary>(payload.projects);
 }
 
+export async function getProjectsRegistry(authorizedFetch: AuthorizedFetch) {
+    const payload = await authorizedJson<{ projects?: ProjectSummary[] }>(
+        authorizedFetch,
+        "/api/client/projects",
+        "读取项目列表失败",
+        { cache: "no-store" },
+    );
+    return {
+        projects: normalizeArray<ProjectSummary>(payload.projects),
+        defaultProjectId: typeof (payload as { defaultProjectId?: unknown }).defaultProjectId === "string"
+            ? (payload as { defaultProjectId?: string }).defaultProjectId
+            : null,
+    };
+}
+
+export async function getSessionScope(authorizedFetch: AuthorizedFetch, sessionId: string) {
+    const payload = await authorizedJson<{ binding?: ScopeBindingView | null }>(
+        authorizedFetch,
+        `/api/client/sessions/${encodeURIComponent(sessionId)}/scope`,
+        "读取会话 scope 失败",
+        { cache: "no-store" },
+    );
+    return payload.binding || null;
+}
+
+export async function updateSessionScope(
+    authorizedFetch: AuthorizedFetch,
+    sessionId: string,
+    input: {
+        projectId?: string;
+        workspaceId?: string;
+        workspacePath?: string;
+        scopeHint?: string;
+        scopeSource?: string;
+        scopeConfidence?: number;
+    },
+) {
+    const payload = await authorizedJson<{ binding?: ScopeBindingView | null }>(
+        authorizedFetch,
+        `/api/client/sessions/${encodeURIComponent(sessionId)}/scope`,
+        "更新会话 scope 失败",
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+        },
+    );
+    return payload.binding || null;
+}
+
+export async function reresolveSessionScope(
+    authorizedFetch: AuthorizedFetch,
+    sessionId: string,
+    input: {
+        userQuery?: string;
+        projectId?: string;
+        workspaceId?: string;
+        workspacePath?: string;
+        scopeHint?: string;
+        scopeMode?: string;
+    },
+) {
+    const payload = await authorizedJson<{ binding?: ScopeBindingView | null }>(
+        authorizedFetch,
+        `/api/client/sessions/${encodeURIComponent(sessionId)}/scope/re-resolve`,
+        "重新解析会话 scope 失败",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                sessionId,
+                ...input,
+            }),
+        },
+    );
+    return payload.binding || null;
+}
+
 export async function listMusicTracks(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ tracks?: MusicTrack[]; items?: MusicTrack[] }>(
         authorizedFetch,
@@ -181,10 +276,32 @@ export async function listConversations(authorizedFetch: AuthorizedFetch) {
     return normalizeSessionHistoryList(Array.isArray(payload) ? payload : []);
 }
 
-export async function createConversation(authorizedFetch: AuthorizedFetch, title?: string) {
+export async function createConversation(
+    authorizedFetch: AuthorizedFetch,
+    input?: string | CreateConversationInput,
+) {
     const requestBody: Record<string, unknown> = {};
-    if (typeof title === "string") {
-        requestBody.title = title;
+    if (typeof input === "string") {
+        requestBody.title = input;
+    } else if (input && typeof input === "object") {
+        if (typeof input.title === "string") {
+            requestBody.title = input.title;
+        }
+        if (typeof input.projectId === "string" && input.projectId.trim()) {
+            requestBody.projectId = input.projectId.trim();
+        }
+        if (typeof input.workspaceId === "string" && input.workspaceId.trim()) {
+            requestBody.workspaceId = input.workspaceId.trim();
+        }
+        if (typeof input.workspacePath === "string" && input.workspacePath.trim()) {
+            requestBody.workspacePath = input.workspacePath.trim();
+        }
+        if (typeof input.scopeHint === "string" && input.scopeHint.trim()) {
+            requestBody.scopeHint = input.scopeHint.trim();
+        }
+        if (typeof input.scopeMode === "string" && input.scopeMode.trim()) {
+            requestBody.scopeMode = input.scopeMode.trim();
+        }
     }
     const payload = await authorizedJson<ConversationSummary>(authorizedFetch, "/api/client/conversations", "创建会话失败", {
         method: "POST",
@@ -210,6 +327,26 @@ export async function getConversationDetail(authorizedFetch: AuthorizedFetch, id
         "读取会话详情失败",
         { cache: "no-store" },
     );
+}
+
+export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: string) {
+    const payload = await authorizedJson<{
+        sessionId?: string;
+        currentRunId?: string | null;
+        latestSeq?: number;
+        processes?: AdminProcessRef[];
+    }>(
+        authorizedFetch,
+        `/api/client/sessions/${encodeURIComponent(id)}/processes`,
+        "读取会话进程失败",
+        { cache: "no-store" },
+    );
+    return {
+        sessionId: String(payload.sessionId || id),
+        currentRunId: typeof payload.currentRunId === "string" ? payload.currentRunId : null,
+        latestSeq: Number(payload.latestSeq || 0) || 0,
+        processes: normalizeArray<AdminProcessRef>(payload.processes),
+    };
 }
 
 export async function listCommandPresets(authorizedFetch: AuthorizedFetch) {
@@ -352,7 +489,7 @@ export async function dispatchRunCommand(
 ) {
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
-        `/api/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(command)}`,
+        `/api/client/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(command)}`,
         command === "interrupt" ? "中断运行失败" : "重试运行失败",
         {
             method: "POST",
@@ -372,24 +509,48 @@ export async function getRealtimeSnapshot(authorizedFetch: AuthorizedFetch, conv
 }
 
 export async function streamRealtimeSession(
-    authorizedFetch: AuthorizedFetch,
+    authorizedRealtimeStream: AuthorizedRealtimeStream,
     conversationId: string,
     onEvent: (eventName: string, payload: unknown) => void,
     signal?: AbortSignal,
 ) {
-    const response = await authorizedFetch(
+    await authorizedRealtimeStream(
         `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/stream`,
-        {
-            method: "GET",
-            headers: { Accept: "text/event-stream" },
-            signal,
-        },
+        onEvent,
+        signal,
     );
-    if (!response.ok) {
-        const detail = await parseTextSafe(response);
-        throw new Error(detail || "连接实时流失败");
-    }
-    await streamSse(response, onEvent);
+}
+
+export async function submitChatMessage(
+    authorizedFetch: AuthorizedFetch,
+    userText: string,
+    options: SendChatOptions,
+) {
+    const response = await authorizedFetch("/api/client/chat-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            messages: [
+                ...options.messages,
+                { role: "user", content: userText },
+            ],
+            data: {
+                conversationId: options.conversationId || undefined,
+                commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
+                fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
+                taskPlanningMode: options.taskPlanningMode ? true : undefined,
+                skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
+                    ? options.skillReferences.map((skill) => ({
+                        name: skill.name,
+                        description: skill.description,
+                        path: skill.path,
+                    }))
+                    : undefined,
+            },
+        }),
+    });
+
+    return readJsonOrThrow<ChatSubmitResponse>(response, "消息提交失败");
 }
 
 export async function getDesktopLiveStatus(authorizedFetch: AuthorizedFetch) {

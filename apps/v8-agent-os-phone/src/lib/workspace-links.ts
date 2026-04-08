@@ -71,7 +71,21 @@ export function normalizeRenderableWorkspaceUrl(adminBaseUrl: string, value?: st
     }
 
     if (raw.startsWith("/api/workspace/files/")) {
+        if (/[?&]v8(?:sig|exp)=/i.test(raw)) {
+            return resolveAdminAssetUrl(adminBaseUrl, raw);
+        }
         return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(raw));
+    }
+
+    if (raw.startsWith("/api/client/workspace/files/") || raw.startsWith("api/client/workspace/files/")) {
+        return resolveAdminAssetUrl(adminBaseUrl, raw.startsWith("/") ? raw : `/${raw}`);
+    }
+
+    if (
+        (raw.startsWith("/api/client/artifacts/") || raw.startsWith("api/client/artifacts/"))
+        && /[?&]v8(?:sig|exp)=/i.test(raw)
+    ) {
+        return resolveAdminAssetUrl(adminBaseUrl, raw.startsWith("/") ? raw : `/${raw}`);
     }
 
     const artifactContentMatch = raw.match(/^\/(?:v1|api(?:\/client)?)\/artifacts\/([^/]+)\/content(?:\?.*)?$/i);

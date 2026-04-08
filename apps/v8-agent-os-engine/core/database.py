@@ -637,6 +637,35 @@ class DatabaseManager:
                 else:
                     data["hasDurablePreview"] = False
 
+                activity_cursor = conn.cursor()
+                activity_cursor.execute(
+                    '''
+                    SELECT
+                        MAX(COALESCE(event_ts, created_at)) AS latest_runtime_event_at
+                    FROM runtime_events
+                    WHERE session_id = ?
+                    ''',
+                    (data["id"],),
+                )
+                activity_row = activity_cursor.fetchone()
+                latest_runtime_event_at = activity_row["latest_runtime_event_at"] if activity_row else None
+                if latest_runtime_event_at:
+                    data["latestRuntimeEventAt"] = latest_runtime_event_at
+
+                message_cursor = conn.cursor()
+                message_cursor.execute(
+                    '''
+                    SELECT MAX(created_at) AS latest_message_at
+                    FROM messages
+                    WHERE session_id = ?
+                    ''',
+                    (data["id"],),
+                )
+                message_row = message_cursor.fetchone()
+                latest_message_at = message_row["latest_message_at"] if message_row else None
+                if latest_message_at:
+                    data["latestMessageAt"] = latest_message_at
+
                 if (
                     self._is_internal_runtime_title(data.get("title"))
                     and data.get("ownerRuntime") not in {"automation", "computer_use"}
@@ -646,7 +675,19 @@ class DatabaseManager:
                     if repaired_title:
                         data["title"] = repaired_title
 
-                latest_activity = workflow_updated_at or data.get("updated_at")
+                latest_activity = max(
+                    [
+                        str(value or "").strip()
+                        for value in (
+                            workflow_updated_at,
+                            latest_runtime_event_at,
+                            latest_message_at,
+                            data.get("updated_at"),
+                        )
+                        if str(value or "").strip()
+                    ],
+                    default="",
+                )
                 data["lastActivityAt"] = latest_activity
                 sessions.append(data)
 

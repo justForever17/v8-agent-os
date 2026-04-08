@@ -2059,6 +2059,24 @@ class StorageManager:
         session_id = str(snapshot.get("sessionId") or "").strip()
         if session_id:
             session_index_path = sessions_root / f"{session_id}.json"
+            previous_active_task_id: str | None = None
+            if session_index_path.exists():
+                try:
+                    previous_index = json.loads(session_index_path.read_text(encoding="utf-8"))
+                    previous_active_task_id = str(previous_index.get("activeTaskId") or "").strip() or None
+                except Exception:
+                    previous_active_task_id = None
+            if previous_active_task_id and previous_active_task_id != task_id:
+                previous_task_path = tasks_root / f"{previous_active_task_id}.json"
+                if previous_task_path.exists():
+                    try:
+                        previous_snapshot = json.loads(previous_task_path.read_text(encoding="utf-8"))
+                        if bool(previous_snapshot.get("isActive", False)):
+                            previous_snapshot["isActive"] = False
+                            with open(previous_task_path, "w", encoding="utf-8") as f:
+                                json.dump(previous_snapshot, f, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
             index_payload = {
                 "sessionId": session_id,
                 "activeTaskId": task_id if snapshot.get("isActive") else None,
@@ -2110,7 +2128,8 @@ class StorageManager:
             if task_path.exists():
                 try:
                     payload = json.loads(task_path.read_text(encoding="utf-8"))
-                    if normalized_run_id:
+                    normalized_run_id = str(run_id or "").strip()
+                    if normalized_run_id and not normalized_session_id:
                         payload_run_id = str(payload.get("runId") or "").strip()
                         if payload_run_id != normalized_run_id:
                             payload = None
@@ -2128,7 +2147,7 @@ class StorageManager:
                 continue
             if normalized_session_id and str(payload.get("sessionId") or "").strip() != normalized_session_id:
                 continue
-            if normalized_run_id and str(payload.get("runId") or "").strip() != normalized_run_id:
+            if normalized_run_id and not normalized_session_id and str(payload.get("runId") or "").strip() != normalized_run_id:
                 continue
             snapshots.append(payload)
 

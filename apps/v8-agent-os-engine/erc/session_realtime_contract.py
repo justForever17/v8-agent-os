@@ -238,7 +238,27 @@ def build_processes_snapshot(*, session_id: Optional[str], snapshot: Dict[str, A
                 session_match = process_session_id == session_id or linked_session_id == session_id
                 message_match = bool(source_message_id and source_message_id in message_ids)
                 run_match = bool(current_run_ids and ({process_run_id, linked_run_id} & current_run_ids))
-                if not (session_match or message_match or run_match):
+                has_linkage_evidence = bool(
+                    process_session_id
+                    or linked_session_id
+                    or source_message_id
+                    or process_run_id
+                    or linked_run_id
+                )
+                contradictory_session_evidence = bool(
+                    (process_session_id and process_session_id != session_id)
+                    or (linked_session_id and linked_session_id != session_id)
+                )
+                contradictory_message_or_run_evidence = bool(
+                    source_message_id
+                    or process_run_id
+                    or linked_run_id
+                )
+                if (
+                    not (session_match or message_match or run_match)
+                    and has_linkage_evidence
+                    and (contradictory_session_evidence or contradictory_message_or_run_evidence)
+                ):
                     continue
             elif current_run_ids and process_run_id and process_run_id not in current_run_ids and linked_run_id not in current_run_ids:
                 continue

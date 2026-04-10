@@ -8,13 +8,17 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from .models import RuntimeCapabilityPolicyPayload, RuntimeStabilityConfigPayload, ScopeResolvePayload, SessionScopeBindingPayload
-from core.context_governance import extract_latest_context_governance
+from core.context_governance import (
+    extract_context_governance_history,
+    extract_latest_context_governance,
+)
 from core.database import db
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
+    project_chat_messages_from_events,
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
@@ -45,16 +49,56 @@ from runtimes.memory.scope_resolution import (
 router = APIRouter()
 
 
+def _scope_resolution_payload(result) -> dict:
+    evidence = dict(getattr(result, "evidence", {}) or {})
+    return {
+        "binding": result.binding.model_dump(exclude_none=True),
+        "scopeChain": list(getattr(result, "scope_chain", []) or []),
+        "evidence": evidence,
+        "requestedScope": getattr(result, "requested_scope", None),
+        "reusedExistingBinding": bool(getattr(result, "reused_existing_binding", False)),
+        "rebindReason": str(evidence.get("rebind_reason") or "").strip() or None,
+        "previousScope": str(evidence.get("previous_scope") or "").strip() or None,
+        "nextScope": str(evidence.get("next_scope") or "").strip() or None,
+    }
+
+
+def _scope_history_event_payload(event) -> dict:
+    payload = event.model_dump(exclude_none=True)
+    evidence = dict(payload.get("evidence") or {})
+    payload["rebindReason"] = str(evidence.get("rebind_reason") or "").strip() or None
+    payload["previousScope"] = str(evidence.get("previous_scope") or "").strip() or None
+    payload["nextScope"] = str(evidence.get("next_scope") or "").strip() or None
+    payload["scopeAnchorComparison"] = evidence.get("scope_anchor_comparison") if isinstance(evidence.get("scope_anchor_comparison"), dict) else None
+    return payload
+
+
 def _merge_authoritative_timeline_messages(
     durable_messages: list[dict],
     snapshot_messages: list[dict] | None,
 ) -> list[dict]:
     """Prefer durable/runtime-backed timeline, but keep snapshot-only residues if they are not yet persisted."""
+    def _message_identity_keys(message: dict | None) -> list[str]:
+        if not isinstance(message, dict):
+            return []
+        keys: list[str] = []
+        message_id = str(message.get("id") or "").strip()
+        if message_id:
+            keys.append(f"id:{message_id}")
+        role = str(message.get("role") or "").strip().lower()
+        run_id = str(message.get("runId") or message.get("run_id") or "").strip()
+        if role == "assistant" and run_id:
+            keys.append(f"assistant-run:{run_id}")
+        if role == "tool" and run_id:
+            keys.append(f"tool-run:{run_id}")
+        return keys
+
     def _message_richness(message: dict | None) -> int:
         if not isinstance(message, dict):
             return 0
         return (
             len(str(message.get("content") or "").strip())
+            + (len(message.get("parts") or []) * 140 if isinstance(message.get("parts"), list) else 0)
             + (len(message.get("nodes") or []) * 120 if isinstance(message.get("nodes"), list) else 0)
             + (len(message.get("artifacts") or []) * 200 if isinstance(message.get("artifacts"), list) else 0)
             + (len(message.get("images") or []) * 80 if isinstance(message.get("images"), list) else 0)
@@ -65,7 +109,7 @@ def _merge_authoritative_timeline_messages(
         for key, value in incoming.items():
             if value is None:
                 continue
-            if key in {"nodes", "artifacts", "images"} and isinstance(value, list):
+            if key in {"parts", "nodes", "artifacts", "images"} and isinstance(value, list):
                 base_list = merged.get(key) if isinstance(merged.get(key), list) else []
                 if len(value) >= len(base_list):
                     merged[key] = value
@@ -93,31 +137,39 @@ def _merge_authoritative_timeline_messages(
         return merged
 
     merged: list[dict] = []
-    seen_by_id: dict[str, int] = {}
+    seen_by_identity: dict[str, int] = {}
 
     for item in list(durable_messages or []):
         if not isinstance(item, dict):
             continue
         merged.append(dict(item))
-        message_id = str(item.get("id") or "").strip()
-        if message_id:
-            seen_by_id[message_id] = len(merged) - 1
+        for identity_key in _message_identity_keys(item):
+            seen_by_identity[identity_key] = len(merged) - 1
 
     for item in list(snapshot_messages or []):
         if not isinstance(item, dict):
             continue
-        message_id = str(item.get("id") or "").strip()
-        if message_id and message_id in seen_by_id:
-            index = seen_by_id[message_id]
+        matching_index = next(
+            (
+                seen_by_identity[identity_key]
+                for identity_key in _message_identity_keys(item)
+                if identity_key in seen_by_identity
+            ),
+            None,
+        )
+        if matching_index is not None:
+            index = matching_index
             current = merged[index]
             if _message_richness(item) > _message_richness(current):
                 merged[index] = _merge_message_payload(current, item)
             else:
                 merged[index] = _merge_message_payload(item, current)
+            for identity_key in _message_identity_keys(merged[index]):
+                seen_by_identity[identity_key] = index
             continue
         merged.append(dict(item))
-        if message_id:
-            seen_by_id[message_id] = len(merged) - 1
+        for identity_key in _message_identity_keys(item):
+            seen_by_identity[identity_key] = len(merged) - 1
     return merged
 
 
@@ -237,6 +289,7 @@ def _build_durable_detail_payload(
     session_row: dict,
     messages: list[dict],
     context_governance: dict | None,
+    context_governance_history: list[dict] | None = None,
     session_source: str | None = None,
     runtime_timeline: list[dict] | None = None,
     runtime_events: list[dict] | None = None,
@@ -290,6 +343,7 @@ def _build_durable_detail_payload(
         ),
         "source": "durable_detail_projection",
         "contextGovernance": context_governance,
+        "contextGovernanceHistory": list(context_governance_history or []),
         "lane": lane,
         "liveness": liveness,
         "recoveryClass": recovery_class,
@@ -376,6 +430,7 @@ async def create_session(data: dict = Body(...)):
                 project_id=data.get("projectId"),
                 workspace_id=data.get("workspaceId"),
                 workspace_path=data.get("workspacePath"),
+                thread_id=data.get("threadId"),
                 scope_hint=data.get("scopeHint"),
                 scope_mode=data.get("scopeMode", "mixed"),
             )
@@ -428,6 +483,7 @@ async def get_session_messages(session_id: str):
                 "runtimeStatus": snapshot_payload.get("runtimeStatus"),
                 "summary": snapshot_payload.get("summary") or {},
                 "contextGovernance": snapshot_payload.get("contextGovernance"),
+                "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
                 "projection": snapshot_payload,
             }
 
@@ -435,11 +491,13 @@ async def get_session_messages(session_id: str):
         durable_messages = _format_db_session_messages(db.get_messages(session_id))
         runtime_events = db.get_runtime_events(session_id)
         context_governance = extract_latest_context_governance(runtime_events)
+        context_governance_history = extract_context_governance_history(runtime_events)
         return _build_durable_detail_payload(
             session_id=session_id,
             session_row=session_row,
             messages=durable_messages,
             context_governance=context_governance,
+            context_governance_history=context_governance_history,
             session_source=_derive_session_source(
                 session_row,
                 db.get_run_record((session_row.get("rootRunId") or "")) if session_row.get("rootRunId") else None,
@@ -531,15 +589,11 @@ async def reresolve_session_scope(session_id: str, payload: Optional[ScopeResolv
             workflow_id=payload.workflow_id if payload else None,
             channel_type=payload.channel_type if payload else None,
             channel_remote_id=payload.channel_remote_id if payload else None,
+            thread_id=payload.thread_id if payload else None,
             scope_hint=payload.scope_hint if payload else None,
             scope_mode=payload.scope_mode if payload else "mixed",
         )
-        return {
-            "sessionId": session_id,
-            "binding": result.binding.model_dump(exclude_none=True),
-            "scopeChain": result.scope_chain,
-            "evidence": result.evidence,
-        }
+        return {"sessionId": session_id, **_scope_resolution_payload(result)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -550,7 +604,7 @@ async def get_session_scope_history(session_id: str):
         history = scope_resolution_service.get_scope_history(session_id)
         return {
             "sessionId": session_id,
-            "events": [item.model_dump(exclude_none=True) for item in history],
+            "events": [_scope_history_event_payload(item) for item in history],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -569,15 +623,11 @@ async def resolve_scope(payload: ScopeResolvePayload):
             workflow_id=payload.workflow_id,
             channel_type=payload.channel_type,
             channel_remote_id=payload.channel_remote_id,
+            thread_id=payload.thread_id,
             scope_hint=payload.scope_hint,
             scope_mode=payload.scope_mode,
         )
-        return {
-            "binding": result.binding.model_dump(exclude_none=True),
-            "scopeChain": result.scope_chain,
-            "evidence": result.evidence,
-            "requestedScope": result.requested_scope,
-        }
+        return _scope_resolution_payload(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -677,8 +727,13 @@ async def get_session_history(session_id: str):
         latest_seq = int(snapshot_payload.get("latestSeq") or 0)
         snapshot_messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
         durable_messages = _format_db_session_messages(db.get_messages(session_id))
+        event_projected_messages = project_chat_messages_from_events(runtime_events)
         timeline_messages = _merge_authoritative_timeline_messages(
+            event_projected_messages,
             durable_messages,
+        )
+        timeline_messages = _merge_authoritative_timeline_messages(
+            timeline_messages,
             list(snapshot_messages) if isinstance(snapshot_messages, list) else None,
         )
         root_run_id = str(workflow_view.get("rootRunId") or "").strip()

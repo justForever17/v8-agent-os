@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import uuid
 
-from core.context_governance import extract_latest_context_governance
+from core.context_governance import (
+    extract_context_governance_history,
+    extract_latest_context_governance,
+)
 from core.database import db
 from core.runtime_projection import (
     apply_projection_overlay,
@@ -90,6 +93,7 @@ class SnapshotService:
         runtime_events = db.get_runtime_events(session_id)
         runtime_timeline = project_runtime_timeline_from_events(runtime_events)
         context_governance = extract_latest_context_governance(runtime_events)
+        context_governance_history = extract_context_governance_history(runtime_events, limit=12)
         lane_view = session_admission_service.get_lane_view(session_id)
         session_runtime = resolve_authoritative_session_runtime_state(
             session_id=session_id,
@@ -145,6 +149,7 @@ class SnapshotService:
                     ),
                     "source": source,
                     "contextGovernance": context_governance,
+                    "contextGovernanceHistory": context_governance_history,
                     "lane": lane_view,
                     "liveness": liveness,
                     "recoveryClass": recovery_class,
@@ -185,6 +190,7 @@ class SnapshotService:
                 ),
                 "source": source,
                 "contextGovernance": context_governance,
+                "contextGovernanceHistory": context_governance_history,
                 "lane": lane_view,
                 "liveness": liveness,
                 "recoveryClass": recovery_class,
@@ -224,6 +230,7 @@ class SnapshotService:
             ),
             "source": "runtime_snapshot",
             "contextGovernance": context_governance,
+            "contextGovernanceHistory": context_governance_history,
             "lane": lane_view,
             "liveness": liveness,
             "recoveryClass": recovery_class,

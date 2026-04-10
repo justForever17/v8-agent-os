@@ -22,7 +22,12 @@ import {
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
-import type { AdminProcessRef } from "@v8/session-realtime";
+import {
+    type AdminProcessRef,
+    type ContextGovernanceView,
+    normalizeContextGovernanceDigest,
+    normalizeContextGovernanceHistory,
+} from "@v8/session-realtime";
 
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
     switch (kind) {
@@ -111,6 +116,8 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     processes,
     currentRunLabel,
     currentStepTitle,
+    contextGovernance,
+    contextGovernanceHistory,
     onClose,
     onSelectRuntime,
 }: {
@@ -122,6 +129,8 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     processes: AdminProcessRef[];
     currentRunLabel: string;
     currentStepTitle?: string | null;
+    contextGovernance?: ContextGovernanceView | null;
+    contextGovernanceHistory?: ContextGovernanceView[];
     onClose: () => void;
     onSelectRuntime: (runtimeId: PhoneRuntimeId) => void;
 }) {
@@ -207,6 +216,138 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         ),
         [colors.border, colors.surfaceStrong, colors.textMuted, t],
     );
+    const governanceLatest = useMemo(
+        () => normalizeContextGovernanceDigest(contextGovernance || null),
+        [contextGovernance],
+    );
+    const governanceHistoryItems = useMemo(() => {
+        const normalized = normalizeContextGovernanceHistory(contextGovernanceHistory || []);
+        const trimmed = normalized.slice(-4).reverse();
+        if (!governanceLatest) {
+            return trimmed;
+        }
+        return trimmed.filter((item) => item.id !== governanceLatest.id);
+    }, [contextGovernanceHistory, governanceLatest]);
+    const renderGovernanceCard = useCallback((item: ReturnType<typeof normalizeContextGovernanceDigest>, tone: "latest" | "history") => {
+        if (!item) {
+            return null;
+        }
+        return (
+            <View
+                style={[
+                    styles.governanceCard,
+                    {
+                        backgroundColor: tone === "latest"
+                            ? (themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)")
+                            : colors.surfaceStrong,
+                        borderColor: tone === "latest" ? "rgba(245,158,11,0.28)" : colors.border,
+                    },
+                ]}
+            >
+                <View style={styles.governanceMetaRow}>
+                    <View style={[styles.governancePill, { backgroundColor: colors.surface }]}>
+                        <Text style={[styles.governancePillText, { color: colors.text }]}>
+                            {tone === "latest" ? t("最近治理", "Latest governance") : t("治理记录", "Governance record")}
+                        </Text>
+                    </View>
+                    {item.runtimeKind ? (
+                        <View style={[styles.governancePill, { backgroundColor: colors.surface }]}>
+                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>{item.runtimeKind}</Text>
+                        </View>
+                    ) : null}
+                    {item.targetRole ? (
+                        <View style={[styles.governancePill, { backgroundColor: colors.surface }]}>
+                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>{item.targetRole}</Text>
+                        </View>
+                    ) : null}
+                </View>
+
+                <View style={styles.governanceChips}>
+                    {item.resolvedScope ? (
+                        <View style={[styles.governanceChip, { backgroundColor: colors.surface }]}>
+                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>
+                                {t("Scope", "Scope")}: {item.resolvedScope}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {typeof item.blockCount === "number" ? (
+                        <View style={[styles.governanceChip, { backgroundColor: colors.surface }]}>
+                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>
+                                {t("Blocks", "Blocks")}: {item.blockCount}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {item.durableFlushReason ? (
+                        <View style={[styles.governanceChip, { backgroundColor: colors.surface }]}>
+                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>
+                                durable: {item.durableFlushReason}
+                            </Text>
+                        </View>
+                    ) : null}
+                </View>
+
+                {item.blockTypes.length > 0 ? (
+                    <View style={styles.governanceTags}>
+                        {item.blockTypes.slice(0, 6).map((blockType) => (
+                            <View
+                                key={`${item.id}:${blockType}`}
+                                style={[styles.governanceTag, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                            >
+                                <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>{blockType}</Text>
+                            </View>
+                        ))}
+                    </View>
+                ) : null}
+
+                <View style={styles.governanceBody}>
+                    {item.eventTs ? (
+                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
+                            {new Date(item.eventTs).toLocaleString()}
+                        </Text>
+                    ) : null}
+                    {item.triggerReason ? (
+                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
+                            {t("触发原因", "Trigger")}: {item.triggerReason}
+                        </Text>
+                    ) : null}
+                    {item.scopeChain.length > 0 ? (
+                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
+                            Scope: {item.scopeChain.join(" -> ")}
+                        </Text>
+                    ) : null}
+                    {item.compactionApplied || item.estimatedSavedTokens ? (
+                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
+                            {item.compactionApplied ? t("已压缩", "Compacted") : t("未压缩", "Not compacted")}
+                            {item.estimatedSavedTokens ? ` · ${t("节省", "Saved")} ${item.estimatedSavedTokens} tokens` : ""}
+                        </Text>
+                    ) : null}
+                    {item.blockSummaryLines.length > 0 ? (
+                        <View style={styles.governanceSummaries}>
+                            {item.blockSummaryLines.slice(0, 2).map((line) => (
+                                <View
+                                    key={`${item.id}:${line}`}
+                                    style={[styles.governanceSummaryCard, { backgroundColor: colors.surface }]}
+                                >
+                                    <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>{line}</Text>
+                                </View>
+                            ))}
+                        </View>
+                    ) : null}
+                </View>
+            </View>
+        );
+    }, [colors.border, colors.surface, colors.surfaceStrong, colors.text, colors.textMuted, t, themeMode]);
+    const renderGovernanceHeader = useMemo(() => {
+        if (!governanceLatest && governanceHistoryItems.length === 0) {
+            return null;
+        }
+        return (
+            <View style={styles.governanceSection}>
+                {renderGovernanceCard(governanceLatest, "latest")}
+                {governanceHistoryItems.map((item) => renderGovernanceCard(item, "history"))}
+            </View>
+        );
+    }, [governanceHistoryItems, governanceLatest, renderGovernanceCard]);
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -302,6 +443,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             ]}
                             ItemSeparatorComponent={() => <View style={styles.feedGap} />}
                             overScrollMode="never"
+                            ListHeaderComponent={renderGovernanceHeader}
                             onLayout={() => {
                                 if (shouldForceScrollTopRef.current) {
                                     resetScrollTop();
@@ -442,6 +584,72 @@ const styles = StyleSheet.create({
         paddingHorizontal: 18,
         paddingTop: 0,
         paddingBottom: 18,
+    },
+    governanceSection: {
+        gap: 12,
+        paddingBottom: 12,
+    },
+    governanceCard: {
+        borderWidth: 1,
+        borderRadius: 22,
+        padding: 14,
+        gap: 10,
+    },
+    governanceMetaRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap",
+    },
+    governancePill: {
+        borderRadius: radii.pill,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+    },
+    governancePillText: {
+        fontSize: 10,
+        fontWeight: "800",
+    },
+    governanceSmallText: {
+        fontSize: 10,
+        lineHeight: 14,
+    },
+    governanceChips: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+    },
+    governanceChip: {
+        borderRadius: radii.pill,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+    },
+    governanceTags: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 6,
+    },
+    governanceTag: {
+        borderWidth: 1,
+        borderRadius: radii.pill,
+        paddingHorizontal: 9,
+        paddingVertical: 4,
+    },
+    governanceBody: {
+        gap: 6,
+    },
+    governanceBodyText: {
+        fontSize: 12,
+        lineHeight: 18,
+    },
+    governanceSummaries: {
+        gap: 8,
+        marginTop: 2,
+    },
+    governanceSummaryCard: {
+        borderRadius: 16,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
     },
     contentEmpty: {
         paddingTop: 12,

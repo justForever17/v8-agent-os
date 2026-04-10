@@ -228,6 +228,7 @@ async def chat_websocket(websocket: WebSocket):
                             "after_seq": after_seq,
                             "source": snapshot_payload.get("source"),
                             "contextGovernance": snapshot_payload.get("contextGovernance"),
+                            "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
                         },
                         session_id=session_id,
                     )

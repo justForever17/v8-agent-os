@@ -16,9 +16,87 @@ from runtimes.memory.models import (
 from runtimes.memory.project_registry import ProjectRegistryService, project_registry_service
 
 
+_SCOPE_REUSE_ANCHORS = (
+    "project_id",
+    "workspace_id",
+    "workspace_path",
+    "workflow_id",
+    "channel_type",
+    "channel_remote_id",
+    "thread_id",
+    "scope_hint",
+)
+
+
 def _normalize_scope(scope: Optional[str]) -> Optional[str]:
     value = (scope or "").strip()
     return value or None
+
+
+def _normalize_anchor_value(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _requested_scope_anchors(
+    *,
+    project_id: Optional[str],
+    workspace_id: Optional[str],
+    workspace_path: Optional[str],
+    workflow_id: Optional[str],
+    channel_type: Optional[str],
+    channel_remote_id: Optional[str],
+    thread_id: Optional[str],
+    scope_hint: Optional[str],
+) -> Dict[str, Optional[str]]:
+    return {
+        "project_id": _normalize_anchor_value(project_id),
+        "workspace_id": _normalize_anchor_value(workspace_id),
+        "workspace_path": _normalize_anchor_value(workspace_path),
+        "workflow_id": _normalize_anchor_value(workflow_id),
+        "channel_type": _normalize_anchor_value(channel_type),
+        "channel_remote_id": _normalize_anchor_value(channel_remote_id),
+        "thread_id": _normalize_anchor_value(thread_id),
+        "scope_hint": _normalize_anchor_value(scope_hint),
+    }
+
+
+def _binding_scope_anchors(binding: SessionScopeBinding) -> Dict[str, Optional[str]]:
+    return {
+        "project_id": _normalize_anchor_value(binding.project_id),
+        "workspace_id": _normalize_anchor_value(binding.workspace_id),
+        "workspace_path": _normalize_anchor_value(binding.workspace_path),
+        "workflow_id": _normalize_anchor_value(binding.workflow_id),
+        "channel_type": _normalize_anchor_value(binding.channel_type),
+        "channel_remote_id": _normalize_anchor_value(binding.channel_remote_id),
+        "thread_id": _normalize_anchor_value(binding.thread_id),
+        "scope_hint": _normalize_anchor_value(binding.scope_hint),
+    }
+
+
+def _diff_scope_anchors(
+    *,
+    existing_binding: SessionScopeBinding,
+    requested_anchors: Dict[str, Optional[str]],
+) -> tuple[Dict[str, str], Dict[str, Dict[str, Optional[str]]], List[str]]:
+    existing_anchors = _binding_scope_anchors(existing_binding)
+    matched: Dict[str, str] = {}
+    changed: Dict[str, Dict[str, Optional[str]]] = {}
+    compared: List[str] = []
+    for key in _SCOPE_REUSE_ANCHORS:
+        requested_value = requested_anchors.get(key)
+        if requested_value is None:
+            continue
+        compared.append(key)
+        existing_value = existing_anchors.get(key)
+        if existing_value == requested_value:
+            matched[key] = requested_value
+        else:
+            changed[key] = {
+                "previous": existing_value,
+                "requested": requested_value,
+            }
+    return matched, changed, compared
 
 
 def _scope_for_project(project_id: Optional[str]) -> Optional[str]:
@@ -127,44 +205,97 @@ class ScopeResolutionService:
         if not requested_scope and workspace_id and normalized_scope_mode == "explicit":
             requested_scope = _scope_for_workspace(workspace_id)
 
-        existing = None if force_reresolve else self.binding_service.get_binding(session_id)
-        if (
-            existing
-            and existing.status == "active"
-            and normalized_scope_mode != "explicit"
-        ):
-            detected_app_scope = detect_scope(user_query) if user_query else None
-            scope_chain = build_scope_chain(
-                resolved_scope=existing.resolved_scope,
-                detected_app_scope=detected_app_scope,
-                channel_type=existing.channel_type,
-                channel_remote_id=existing.channel_remote_id,
-                workspace_id=existing.workspace_id,
-                project_id=existing.project_id,
-                workflow_id=existing.workflow_id,
+        requested_anchors = _requested_scope_anchors(
+            project_id=project_id,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            workflow_id=workflow_id,
+            channel_type=channel_type,
+            channel_remote_id=channel_remote_id,
+            thread_id=thread_id,
+            scope_hint=scope_hint,
+        )
+
+        existing = self.binding_service.get_binding(session_id)
+        if existing and existing.status == "active" and normalized_scope_mode != "explicit":
+            matched_anchors, changed_anchors, compared_anchors = _diff_scope_anchors(
+                existing_binding=existing,
+                requested_anchors=requested_anchors,
             )
-            self._record_resolution_event(
-                session_id=session_id,
-                run_id=run_id,
-                requested_scope=requested_scope,
-                resolved_scope=existing.resolved_scope,
-                source="existing_binding",
-                confidence=existing.scope_confidence,
-                evidence={"existing_binding": existing.model_dump(exclude_none=True)},
+            can_reuse_existing_binding = not changed_anchors
+            reuse_evidence = {
+                "existing_binding": existing.model_dump(exclude_none=True),
+                "scope_anchor_comparison": {
+                    "compared": compared_anchors,
+                    "matched": matched_anchors,
+                    "changed": changed_anchors,
+                },
+                "reuse_reason": (
+                    "no_explicit_anchor_changes"
+                    if can_reuse_existing_binding
+                    else "explicit_scope_anchor_changed"
+                ),
+            }
+            if force_reresolve:
+                can_reuse_existing_binding = False
+                reuse_evidence["reuse_reason"] = "force_reresolve_requested"
+            if can_reuse_existing_binding:
+                detected_app_scope = detect_scope(user_query) if user_query else None
+                scope_chain = build_scope_chain(
+                    resolved_scope=existing.resolved_scope,
+                    detected_app_scope=detected_app_scope,
+                    channel_type=existing.channel_type,
+                    channel_remote_id=existing.channel_remote_id,
+                    workspace_id=existing.workspace_id,
+                    project_id=existing.project_id,
+                    workflow_id=existing.workflow_id,
+                )
+                reuse_evidence["scope_chain"] = scope_chain
+                self._record_resolution_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    requested_scope=requested_scope,
+                    resolved_scope=existing.resolved_scope,
+                    source="existing_binding",
+                    confidence=existing.scope_confidence,
+                    evidence=reuse_evidence,
+                )
+                return ScopeResolutionResult(
+                    binding=existing,
+                    requested_scope=requested_scope,
+                    scope_chain=scope_chain,
+                    evidence=reuse_evidence,
+                    reused_existing_binding=True,
+                )
+
+        previous_scope = existing.resolved_scope if existing and existing.status == "active" else None
+        rebind_reason = None
+        if force_reresolve:
+            rebind_reason = "force_reresolve_requested"
+        elif existing and existing.status == "active":
+            _, changed_anchors, compared_anchors = _diff_scope_anchors(
+                existing_binding=existing,
+                requested_anchors=requested_anchors,
             )
-            return ScopeResolutionResult(
-                binding=existing,
-                requested_scope=requested_scope,
-                scope_chain=scope_chain,
-                evidence={"existing_binding": existing.model_dump(exclude_none=True)},
-                reused_existing_binding=True,
-            )
+            if changed_anchors:
+                rebind_reason = "explicit_scope_anchor_changed"
+        else:
+            compared_anchors = []
+            changed_anchors = {}
 
         detected_app_scope = detect_scope(user_query) if user_query else "global"
         evidence: Dict[str, Any] = {
             "requested_scope": requested_scope,
             "detected_app_scope": detected_app_scope,
+            "requested_anchors": {key: value for key, value in requested_anchors.items() if value is not None},
         }
+        if existing and existing.status == "active":
+            evidence["previous_scope"] = previous_scope
+            evidence["rebind_reason"] = rebind_reason or "new_scope_resolution"
+            evidence["scope_anchor_comparison"] = {
+                "compared": compared_anchors,
+                "changed": changed_anchors,
+            }
 
         resolved_project: Optional[ProjectDescriptor] = None
         resolved_scope = "global"
@@ -272,6 +403,8 @@ class ScopeResolutionService:
             workflow_id=saved.workflow_id,
         )
         evidence["scope_chain"] = scope_chain
+        if previous_scope:
+            evidence["next_scope"] = saved.resolved_scope
         self._record_resolution_event(
             session_id=session_id,
             run_id=run_id,

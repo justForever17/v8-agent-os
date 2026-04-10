@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, Loader2, RefreshCw } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
@@ -35,7 +35,10 @@ type Snapshot = {
     runtimeConfig?: RuntimeConfig;
     startupState?: "cold" | "refreshing" | "ready" | "error";
     snapshotFreshness?: "cached" | "live";
+    refreshInFlight?: boolean;
     lastRefreshAt?: string | null;
+    lastLiveRefreshAt?: string | null;
+    lastDeepRefreshAt?: string | null;
     lastRefreshError?: string | null;
     controlSurface?: { dashboardUrl?: string | null; configUrl?: string | null; docsUrl?: string | null };
     summary?: { pluginCount?: number; activeCount?: number; channelPluginCount?: number };
@@ -46,6 +49,68 @@ type Snapshot = {
         bridgeReady?: boolean;
         bridgePluginId?: string | null;
         managedChannels?: string[] | null;
+        installProvenance?: string | null;
+        installTrusted?: boolean;
+        managedChannelsSource?: string | null;
+        configSource?: string | null;
+        refreshMode?: string | null;
+        resolvedStateDir?: string | null;
+        gatewayBaseUrl?: string | null;
+        v8InboundUrl?: string | null;
+        bridgeStatusSource?: string | null;
+        bridgeStatusObservedAt?: string | null;
+        bridgeStatusMs?: number | null;
+        bridgeStatusError?: string | null;
+        bridgeStatusStale?: boolean;
+        handoffConfigured?: boolean;
+        claimEnabled?: boolean;
+        lastClaimAt?: string | null;
+        lastClaimAttemptAt?: string | null;
+        lastClaimOutcome?: string | null;
+        lastClaimDeclineReason?: string | null;
+        lastClaimChannel?: string | null;
+        lastClaimConversation?: string | null;
+        lastClaimMessageId?: string | null;
+        lastClaimAccountId?: string | null;
+        lastClaimPayloadShape?: Record<string, unknown> | null;
+        expectedBridgeClaimMissed?: boolean;
+        pluginsAllowConfigured?: boolean | null;
+        pluginsAllow?: string[] | null;
+        pluginsAllowExpected?: string[] | null;
+        pluginProvenanceWarnings?: Array<{
+            kind?: string | null;
+            level?: string | null;
+            title?: string | null;
+            description?: string | null;
+            pluginId?: string | null;
+            pluginIds?: string[] | null;
+            source?: string | null;
+            fields?: string[] | null;
+        }> | null;
+        fieldContractWarnings?: Array<{
+            kind?: string | null;
+            level?: string | null;
+            title?: string | null;
+            description?: string | null;
+            fields?: string[] | null;
+        }> | null;
+        bridgeDoctorSummary?: {
+            status?: string | null;
+            criticalCount?: number | null;
+            warningCount?: number | null;
+            okCount?: number | null;
+            title?: string | null;
+            description?: string | null;
+            checkedAt?: string | null;
+        } | null;
+        bridgeDoctorChecks?: Array<{
+            key?: string | null;
+            status?: string | null;
+            title?: string | null;
+            description?: string | null;
+            details?: string | null;
+            data?: Record<string, unknown> | null;
+        }> | null;
         lastInboundHandoffAt?: string | null;
         lifecycleAuthority?: string | null;
         cliSource?: string | null;
@@ -77,8 +142,17 @@ type Snapshot = {
         healthState?: string | null;
         supportTier?: string | null;
         familyAdapterReady?: boolean;
+        onboardingCompleted?: boolean;
         unavailableReasons?: string[] | null;
         transportCapabilities?: { chatTypes?: string[] | null; groupSupported?: boolean; onboardingType?: string | null } | null;
+        channelSurface?: {
+            channelIds?: string[] | null;
+            registeredAccounts?: string[] | null;
+            configured?: boolean;
+            liveInboundProven?: boolean;
+            replyDelivered?: boolean;
+            evidence?: string[] | null;
+        } | null;
     }>;
 };
 
@@ -94,8 +168,8 @@ type SysModel = {
 };
 
 type ExtensionsConfigData = {
-    rerankPolicy?: { enabled?: boolean };
-    modelBindings?: { rerankerModel?: string; fallbackRerankerModel?: string };
+    prefilterPolicy?: { enabled?: boolean; mode?: string };
+    modelBindings?: { prefilterModel?: string };
 };
 
 type BridgeToolEntry = {
@@ -113,6 +187,9 @@ type BridgeToolSelection = {
     modelId?: string | null;
     role?: string | null;
     reason?: string | null;
+    prefilterTimedOut?: boolean | null;
+    prefilterCacheHit?: boolean | null;
+    prefilterDurationMs?: number | null;
     poolSize?: number;
     inventorySize?: number;
     callableSize?: number;
@@ -123,6 +200,70 @@ type BridgeToolCatalog = {
     selection?: BridgeToolSelection | null;
     exposure?: BridgeToolEntry[];
     inventory?: BridgeToolEntry[];
+    toolInventoryHealth?: string | null;
+    toolInventorySource?: string | null;
+    toolInventoryFreshness?: string | null;
+    toolInventoryTimingsMs?: Record<string, number> | null;
+    operatorReadAvailable?: boolean | null;
+    cacheHit?: boolean | null;
+    backgroundRefresh?: boolean | null;
+    inventoryError?: string | null;
+    inventoryStale?: boolean | null;
+    prefilterTimedOut?: boolean | null;
+    prefilterCacheHit?: boolean | null;
+    toolInventoryErrors?: {
+        stateCatalogError?: string | null;
+        cliCatalogError?: string | null;
+        sourceScanCatalogError?: string | null;
+        gatewayCatalogError?: string | null;
+    } | null;
+};
+
+type BridgeDoctorReport = {
+    summary?: {
+        status?: string | null;
+        criticalCount?: number | null;
+        warningCount?: number | null;
+        okCount?: number | null;
+        title?: string | null;
+        description?: string | null;
+        checkedAt?: string | null;
+    } | null;
+    checks?: Array<{
+        key?: string | null;
+        status?: string | null;
+        title?: string | null;
+        description?: string | null;
+        details?: string | null;
+        data?: Record<string, unknown> | null;
+    }> | null;
+    repairPlan?: Array<{
+        key?: string | null;
+        title?: string | null;
+        description?: string | null;
+        commandHint?: string | null;
+    }> | null;
+    repairApplied?: Array<{
+        key?: string | null;
+        title?: string | null;
+        description?: string | null;
+        error?: string | null;
+    }> | null;
+    restartRequired?: boolean | null;
+    postRepairVerification?: {
+        summary?: {
+            status?: string | null;
+            title?: string | null;
+            description?: string | null;
+        } | null;
+        checks?: Array<{
+            key?: string | null;
+            status?: string | null;
+            title?: string | null;
+            description?: string | null;
+            details?: string | null;
+        }> | null;
+    } | null;
 };
 
 const DEFAULT_CONFIG: RuntimeConfig = {
@@ -130,7 +271,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
     scanOnStartup: true,
     hostMode: "managed_local",
     allowedFamilies: ["channel", "plugin"],
-    managedLocal: { rootDir: "~/.openclaw", toolingRoot: "", launcherPath: "", autoStart: true },
+    managedLocal: { rootDir: "~/.openclaw", toolingRoot: "", launcherPath: "", autoStart: false },
     externalHost: { baseUrl: "", gatewayBaseUrl: "", authToken: "" },
 };
 
@@ -228,6 +369,54 @@ function launcherSourceLabel(value?: string | null, missing?: boolean): Localize
             : base;
 }
 
+function bridgeProvenanceLabel(value?: string | null): LocalizedText | string {
+    const map: Record<string, LocalizedText> = {
+        install_record: lt("正式 install 记录", "Install record"),
+        load_path: lt("load-path provenance", "Load-path provenance"),
+        global_auto_discovery: lt("全局自动发现（未追踪）", "Global auto-discovery (untracked)"),
+        missing: lt("未安装 / 未链接", "Missing (not installed or linked)"),
+        unknown: lt("未识别", "Unknown"),
+    };
+    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+}
+
+function configSourceLabel(value?: string | null): LocalizedText | string {
+    const map: Record<string, LocalizedText> = {
+        plugin_entry: lt("插件私有配置", "Plugin entry config"),
+        env: lt("环境变量注入", "Environment override"),
+        defaults: lt("默认值", "Defaults"),
+    };
+    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+}
+
+function toolInventorySourceLabel(value?: string | null): LocalizedText | string {
+    const map: Record<string, LocalizedText> = {
+        gateway_rpc: lt("Gateway RPC 实时目录", "Gateway RPC live catalog"),
+        durable_cache: lt("持久化缓存目录", "Durable cached inventory"),
+        plugin_source_scan: lt("源码扫描目录", "Plugin source scan"),
+        state_manifest: lt("静态 manifest", "Static manifest"),
+        openclaw_log_registered_tools: lt("OpenClaw 日志恢复目录", "OpenClaw log recovered inventory"),
+    };
+    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+}
+
+function toolInventoryHealthLabel(value?: string | null): LocalizedText | string {
+    const map: Record<string, LocalizedText> = {
+        healthy: lt("完整", "Healthy"),
+        degraded: lt("退化", "Degraded"),
+    };
+    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+}
+
+function doctorStatusLabel(value?: string | null): LocalizedText | string {
+    const map: Record<string, LocalizedText> = {
+        ok: lt("通过", "OK"),
+        warning: lt("警告", "Warning"),
+        critical: lt("阻断", "Critical"),
+    };
+    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+}
+
 export function PluginHostWorkbench() {
     const { toast } = useToast();
     const t = useT();
@@ -235,41 +424,95 @@ export function PluginHostWorkbench() {
     const [config, setConfig] = useState<RuntimeConfig>(DEFAULT_CONFIG);
     const [meta, setMeta] = useState<Pick<ConfigRegistryEnvelope, "source" | "savePath" | "reloadRequired"> | null>(null);
     const [extensionsMeta, setExtensionsMeta] = useState<Pick<ConfigRegistryEnvelope, "source" | "savePath" | "reloadRequired"> | null>(null);
-    const [extensionsConfig, setExtensionsConfig] = useState<ExtensionsConfigData>({ rerankPolicy: { enabled: false }, modelBindings: { rerankerModel: "", fallbackRerankerModel: "" } });
-    const [rerankModels, setRerankModels] = useState<SysModel[]>([]);
+    const [extensionsConfig, setExtensionsConfig] = useState<ExtensionsConfigData>({ prefilterPolicy: { enabled: false, mode: "llm_tree" }, modelBindings: { prefilterModel: "" } });
+    const [prefilterModels, setPrefilterModels] = useState<SysModel[]>([]);
     const [toolCatalog, setToolCatalog] = useState<BridgeToolCatalog | null>(null);
-    const [toolQuery, setToolQuery] = useState("mind status rollback");
+    const [toolQuery, setToolQuery] = useState("");
+    const [previewedToolQuery, setPreviewedToolQuery] = useState("");
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
+    const [doctorBusy, setDoctorBusy] = useState<"check" | "repair" | null>(null);
     const [toolConfigBusy, setToolConfigBusy] = useState(false);
     const [toolCatalogBusy, setToolCatalogBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [toolCatalogError, setToolCatalogError] = useState<string | null>(null);
+    const hostRefreshInFlightRef = useRef(false);
+    const lastHotRefreshAtRef = useRef(0);
 
-    async function loadToolCatalog(query: string, refresh = false) {
+    const loadToolCatalog = useCallback(async (query: string, refresh = false) => {
         setToolCatalogError(null);
         try {
             const nextCatalog = await readJson<{
                 selection?: BridgeToolSelection | null;
                 exposure?: BridgeToolEntry[];
                 inventory?: BridgeToolEntry[];
+                toolInventoryHealth?: string | null;
+                toolInventorySource?: string | null;
+                toolInventoryFreshness?: string | null;
+                toolInventoryTimingsMs?: Record<string, number> | null;
+                operatorReadAvailable?: boolean | null;
+                cacheHit?: boolean | null;
+                backgroundRefresh?: boolean | null;
+                inventoryError?: string | null;
+                inventoryStale?: boolean | null;
+                prefilterTimedOut?: boolean | null;
+                prefilterCacheHit?: boolean | null;
+                toolInventoryErrors?: {
+                    stateCatalogError?: string | null;
+                    cliCatalogError?: string | null;
+                    sourceScanCatalogError?: string | null;
+                    gatewayCatalogError?: string | null;
+                } | null;
             }>(`/api/plugin-host/bridge/tools?query=${encodeURIComponent(query)}&limit=8${refresh ? "&refresh=true" : ""}`);
             setToolCatalog({
                 selection: nextCatalog.selection || null,
                 exposure: Array.isArray(nextCatalog.exposure) ? nextCatalog.exposure : [],
                 inventory: Array.isArray(nextCatalog.inventory) ? nextCatalog.inventory : [],
+                toolInventoryHealth: nextCatalog.toolInventoryHealth || null,
+                toolInventorySource: nextCatalog.toolInventorySource || null,
+                toolInventoryFreshness: nextCatalog.toolInventoryFreshness || null,
+                toolInventoryTimingsMs: nextCatalog.toolInventoryTimingsMs || null,
+                operatorReadAvailable: typeof nextCatalog.operatorReadAvailable === "boolean" ? nextCatalog.operatorReadAvailable : null,
+                cacheHit: typeof nextCatalog.cacheHit === "boolean" ? nextCatalog.cacheHit : null,
+                backgroundRefresh: typeof nextCatalog.backgroundRefresh === "boolean" ? nextCatalog.backgroundRefresh : null,
+                inventoryError: typeof nextCatalog.inventoryError === "string" ? nextCatalog.inventoryError : null,
+                inventoryStale: typeof nextCatalog.inventoryStale === "boolean" ? nextCatalog.inventoryStale : null,
+                prefilterTimedOut: typeof nextCatalog.prefilterTimedOut === "boolean" ? nextCatalog.prefilterTimedOut : null,
+                prefilterCacheHit: typeof nextCatalog.prefilterCacheHit === "boolean" ? nextCatalog.prefilterCacheHit : null,
+                toolInventoryErrors: nextCatalog.toolInventoryErrors || null,
             });
+            return true;
         } catch (catalogError) {
             setToolCatalog(null);
             setToolCatalogError(messageFrom(catalogError, t(lt("读取工具目录失败。", "Failed to load bridge tools."))));
+            return false;
         }
-    }
+    }, [t]);
 
-    async function load(quiet = false) {
+    const refreshHostSnapshot = useCallback(async (refresh = false) => {
+        if (hostRefreshInFlightRef.current) {
+            return snapshot;
+        }
+        hostRefreshInFlightRef.current = true;
+        try {
+            const nextSnapshot = await readJson<Snapshot>(`/api/plugin-host${refresh ? "?refresh=true" : ""}`);
+            if (refresh) {
+                lastHotRefreshAtRef.current = Date.now();
+            }
+            setSnapshot(nextSnapshot);
+            setError(null);
+            return nextSnapshot;
+        } finally {
+            hostRefreshInFlightRef.current = false;
+        }
+    }, [snapshot]);
+
+    const load = useCallback(async (quiet = false) => {
         if (!quiet) setLoading(true);
         setError(null);
         try {
             const nextSnapshot = await readJson<Snapshot>("/api/plugin-host");
+            setSnapshot(nextSnapshot);
             const [domain, extensionDomain, modelList] = await Promise.all([
                 fetchConfigDomain<DomainData>("plugin-host").catch(() => null),
                 fetchConfigDomain<ExtensionsConfigData>("extensions").catch(() => null),
@@ -282,8 +525,8 @@ export function PluginHostWorkbench() {
             setMeta(domain ? { source: domain.source, savePath: domain.savePath, reloadRequired: domain.reloadRequired } : null);
             setExtensionsConfig(
                 extensionDomain?.data || {
-                    rerankPolicy: { enabled: false },
-                    modelBindings: { rerankerModel: "", fallbackRerankerModel: "" },
+                    prefilterPolicy: { enabled: false, mode: "llm_tree" },
+                    modelBindings: { prefilterModel: "" },
                 },
             );
             setExtensionsMeta(
@@ -291,23 +534,56 @@ export function PluginHostWorkbench() {
                     ? { source: extensionDomain.source, savePath: extensionDomain.savePath, reloadRequired: extensionDomain.reloadRequired }
                     : null,
             );
-            setRerankModels(
+            setPrefilterModels(
                 Array.isArray(modelList)
-                    ? modelList.filter((model: SysModel) => ["RERANK", "RERANKER"].includes(String(model?.type || "").toUpperCase()))
+                    ? modelList.filter((model: SysModel) => !["EMBEDDING", "RERANK", "RERANKER"].includes(String(model?.type || "").toUpperCase()))
                     : [],
             );
-            await loadToolCatalog(toolQuery, quiet);
         } catch (loadError) {
             setError(messageFrom(loadError, t(lt("读取 PluginHostRuntime 状态失败。", "Failed to load PluginHostRuntime state."))));
         } finally {
             setLoading(false);
             setBusy(false);
         }
-    }
+    }, [t]);
 
     useEffect(() => {
         void load();
-    }, []);
+    }, [load]);
+
+    useEffect(() => {
+        if (loading) {
+            return;
+        }
+        let cancelled = false;
+        async function tick() {
+            if (cancelled || typeof document !== "undefined" && document.visibilityState !== "visible") {
+                return;
+            }
+            try {
+                if (hostRefreshInFlightRef.current) {
+                    return;
+                }
+                const now = Date.now();
+                const hostIsStale = Boolean(snapshot?.hostSurface?.bridgeStatusStale);
+                const shouldHotRefresh = hostIsStale || now - lastHotRefreshAtRef.current >= 30000;
+                await refreshHostSnapshot(shouldHotRefresh);
+            } catch {
+                // 轮询失败不打断当前页面，仍保留手动刷新入口。
+            }
+        }
+        void tick();
+        const timer = window.setInterval(() => {
+            if (busy || doctorBusy !== null || toolConfigBusy || toolCatalogBusy || hostRefreshInFlightRef.current) {
+                return;
+            }
+            void tick();
+        }, 15000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [busy, doctorBusy, loading, refreshHostSnapshot, snapshot?.hostSurface?.bridgeStatusStale, toolCatalogBusy, toolConfigBusy]);
 
     async function save() {
         setBusy(true);
@@ -329,8 +605,11 @@ export function PluginHostWorkbench() {
         try {
             const next = await saveConfigDomain<ExtensionsConfigData>("extensions", {
                 data: {
-                    rerankPolicy: { enabled: Boolean(extensionsConfig.rerankPolicy?.enabled) },
-                    modelBindings: { rerankerModel: String(extensionsConfig.modelBindings?.rerankerModel || "").trim() },
+                    prefilterPolicy: {
+                        enabled: Boolean(extensionsConfig.prefilterPolicy?.enabled),
+                        mode: "llm_tree",
+                    },
+                    modelBindings: { prefilterModel: String(extensionsConfig.modelBindings?.prefilterModel || "").trim() },
                 },
             });
             setExtensionsConfig(next.data || extensionsConfig);
@@ -339,7 +618,7 @@ export function PluginHostWorkbench() {
                 title: t(lt("工具筛选已保存", "Tool selection saved")),
                 description: t(lt("PluginHostRuntime 的工具候选会继续写回 extensions 的 canonical source。", "PluginHostRuntime keeps writing tool selection back to the extensions canonical source.")),
             });
-            await loadToolCatalog(toolQuery, true);
+            await loadToolCatalog(previewedToolQuery, true);
         } catch (saveError) {
             toast({
                 title: t(lt("保存失败", "Save failed")),
@@ -353,7 +632,11 @@ export function PluginHostWorkbench() {
 
     async function refresh() {
         setBusy(true);
-        await load(true);
+        try {
+            await refreshHostSnapshot(true);
+        } finally {
+            setBusy(false);
+        }
     }
 
     async function rescan() {
@@ -368,25 +651,94 @@ export function PluginHostWorkbench() {
         }
     }
 
-    async function refreshToolSelection() {
+    async function runDoctor(mode: "check" | "repair") {
+        setDoctorBusy(mode);
+        try {
+            const response = await readJson<{
+                status?: string;
+                doctor?: BridgeDoctorReport | null;
+                pluginHost?: Snapshot | null;
+            }>(mode === "repair" ? "/api/plugin-host/doctor/repair" : "/api/plugin-host/doctor?refresh=true", {
+                method: mode === "repair" ? "POST" : "GET",
+            });
+            if (response.pluginHost) {
+                setSnapshot(response.pluginHost);
+            } else {
+                await load(true);
+            }
+            const doctor = response.doctor || null;
+            if (mode === "repair") {
+                const verification = doctor?.postRepairVerification?.summary;
+                toast({
+                    title: t(lt("修复已执行", "Repair applied")),
+                    description: verification?.description
+                        || doctor?.summary?.description
+                        || t(lt("已执行 plugin_host doctor/repair，请继续查看下方复检结果。", "plugin_host doctor/repair has been applied. Review the post-repair verification below.")),
+                    variant: String(verification?.status || doctor?.summary?.status || "").trim().toLowerCase() === "critical" ? "destructive" : "default",
+                });
+            } else {
+                toast({
+                    title: t(lt("检查完成", "Doctor completed")),
+                    description: doctor?.summary?.description || t(lt("已刷新 bridge doctor 结果。", "Bridge doctor results refreshed.")),
+                });
+            }
+        } catch (doctorError) {
+            toast({
+                title: t(mode === "repair" ? lt("修复失败", "Repair failed") : lt("检查失败", "Doctor failed")),
+                description: messageFrom(doctorError, t(mode === "repair" ? lt("plugin_host doctor/repair 执行失败。", "plugin_host doctor/repair failed.") : lt("plugin_host doctor 执行失败。", "plugin_host doctor failed."))),
+                variant: "destructive",
+            });
+        } finally {
+            setDoctorBusy(null);
+        }
+    }
+
+    async function refreshToolInventory() {
         setToolCatalogBusy(true);
-        await loadToolCatalog(toolQuery, true);
-        setToolCatalogBusy(false);
+        try {
+            setPreviewedToolQuery("");
+            await loadToolCatalog("", true);
+        } finally {
+            setToolCatalogBusy(false);
+        }
+    }
+
+    async function previewToolSelection() {
+        const query = toolQuery.trim();
+        if (!query) {
+            toast({
+                title: t(lt("请输入模拟查询", "Enter a preview query")),
+                description: t(lt("筛选预览只用于诊断。请输入一条模拟用户需求后再预览候选。", "Selection preview is diagnostic only. Enter a simulated user request before previewing candidates.")),
+            });
+            return;
+        }
+        setToolCatalogBusy(true);
+        try {
+            const ok = await loadToolCatalog(query, true);
+            if (ok) {
+                setPreviewedToolQuery(query);
+            }
+        } finally {
+            setToolCatalogBusy(false);
+        }
     }
 
     const host = snapshot?.hostSurface;
+    const doctorSummary = host?.bridgeDoctorSummary || null;
+    const doctorChecks = host?.bridgeDoctorChecks || [];
     const control = snapshot?.controlSurface;
     const proof = host?.recentInboundProof;
+    const bridgeProvenance = String(host?.installProvenance || "unknown").trim().toLowerCase();
     const runtimeConfig = snapshot?.runtimeConfig || config;
     const startupState = String(snapshot?.startupState || "cold").trim().toLowerCase();
     const snapshotFreshness = String(snapshot?.snapshotFreshness || "cached").trim().toLowerCase();
-    const rerankEnabled = Boolean(extensionsConfig.rerankPolicy?.enabled);
-    const rerankerModel = String(extensionsConfig.modelBindings?.rerankerModel || "").trim();
-    const fallbackRerankerModel = String(extensionsConfig.modelBindings?.fallbackRerankerModel || "").trim();
+    const prefilterEnabled = Boolean(extensionsConfig.prefilterPolicy?.enabled);
+    const prefilterModel = String(extensionsConfig.modelBindings?.prefilterModel || "").trim();
     const toolSelection = toolCatalog?.selection || null;
+    const previewExposure = previewedToolQuery ? (toolCatalog?.exposure || []) : [];
     const selectionMode = String(toolSelection?.mode || "lexical").trim().toLowerCase();
     const selectionModeLabel = useMemo(() => {
-        if (selectionMode === "rerank") return lt("Rerank 精排", "Rerank");
+        if (selectionMode === "llm_tree") return lt("LLM 工具树预筛", "LLM tree prefilter");
         if (selectionMode === "fallback") return lt("回退到 lexical", "Fallback");
         return lt("Lexical 预筛选", "Lexical");
     }, [selectionMode]);
@@ -399,6 +751,14 @@ export function PluginHostWorkbench() {
                 badges={[lt("薄桥接页", "Thin bridge"), lt("官方安装版优先", "Official install first")]}
                 actions={
                     <>
+                        <Button variant="outline" onClick={() => void runDoctor("check")} disabled={loading || busy || doctorBusy !== null}>
+                            {doctorBusy === "check" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            {t(lt("检查", "Doctor"))}
+                        </Button>
+                        <Button variant="outline" onClick={() => void runDoctor("repair")} disabled={loading || busy || doctorBusy !== null}>
+                            {doctorBusy === "repair" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            {t(lt("检查并修复", "Doctor & repair"))}
+                        </Button>
                         <Button variant="outline" onClick={refresh} disabled={loading || busy}>
                             {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                             {t(lt("刷新状态", "Refresh state"))}
@@ -429,13 +789,25 @@ export function PluginHostWorkbench() {
                 <StatusNotice
                     tone="warning"
                     title={lt("PluginHostRuntime 后台刷新失败", "PluginHostRuntime refresh failed")}
-                    description={snapshot?.lastRefreshError || t(lt("最近一次后台刷新失败，当前继续展示缓存快照。", "The latest background refresh failed. The UI is still showing a cached snapshot."))}
+                description={snapshot?.lastRefreshError || t(lt("最近一次后台刷新失败，当前继续展示缓存快照。", "The latest background refresh failed. The UI is still showing a cached snapshot."))}
+            />
+        ) : null}
+
+            {snapshot?.refreshInFlight || snapshot?.lastLiveRefreshAt || snapshot?.lastDeepRefreshAt ? (
+                <StatusNotice
+                    tone={snapshot?.refreshInFlight ? "info" : "success"}
+                    title={snapshot?.refreshInFlight ? lt("PluginHostRuntime 正在后台快刷", "PluginHostRuntime is doing a live refresh") : lt("当前展示的是最新宿主快照", "Showing the latest host snapshot")}
+                    description={[
+                        snapshot?.refreshInFlight ? t(lt("页面轮询现在只刷新宿主快照，不再顺带触发重型插件目录探测。", "Polling now refreshes only the host snapshot and no longer drags deep inventory scans along.")) : "",
+                        snapshot?.lastLiveRefreshAt ? t(lt(`最近快刷：${snapshot.lastLiveRefreshAt}`, `Last live refresh: ${snapshot.lastLiveRefreshAt}`)) : "",
+                        snapshot?.lastDeepRefreshAt ? t(lt(`最近深刷：${snapshot.lastDeepRefreshAt}`, `Last deep refresh: ${snapshot.lastDeepRefreshAt}`)) : "",
+                    ].filter(Boolean).join(" · ")}
                 />
             ) : null}
 
             <DomainSummaryStrip
                 items={[
-                    { label: t(lt("刷新状态", "Refresh")), value: t(startupState === "ready" ? lt("已就绪", "Ready") : startupState === "refreshing" ? lt("后台刷新中", "Refreshing") : startupState === "error" ? lt("刷新失败", "Failed") : lt("冷启动", "Cold start")), description: t(snapshotFreshness === "live" ? lt("当前展示 live 快照。", "Showing a live snapshot.") : lt("当前展示缓存或最小快照。", "Showing a cached or minimal snapshot.")) },
+                    { label: t(lt("刷新状态", "Refresh")), value: t(startupState === "ready" ? lt("已就绪", "Ready") : startupState === "refreshing" ? lt("后台刷新中", "Refreshing") : startupState === "error" ? lt("刷新失败", "Failed") : lt("冷启动", "Cold start")), description: [t(snapshotFreshness === "live" ? lt("当前展示 live 快照。", "Showing a live snapshot.") : lt("当前展示缓存或最小快照。", "Showing a cached or minimal snapshot.")), snapshot?.refreshInFlight ? t(lt("后台快刷进行中。", "Live refresh in flight.")) : "", snapshot?.lastLiveRefreshAt ? t(lt(`最近快刷：${snapshot.lastLiveRefreshAt}`, `Last live refresh: ${snapshot.lastLiveRefreshAt}`)) : ""].filter(Boolean).join(" ") },
                     { label: t(lt("宿主模式", "Host mode")), value: t(runtimeConfig.hostMode === "external" ? lt("外部 OpenClaw host", "External host") : lt("连接本地 OpenClaw", "Local OpenClaw")), description: t(runtimeConfig.hostMode === "external" ? lt("V8 不再维护本地状态目录。", "V8 no longer manages a local state root.") : lt("默认示例目录是 ~/.openclaw。", "The default sample root is ~/.openclaw.")) },
                     { label: "Gateway", value: t(gatewayLabel(host?.gatewayHealth?.runtime?.status)), description: host?.gatewayHealth?.runtime?.detail || t(lt("当前 OpenClaw 数据面状态。", "Current OpenClaw data-plane status.")) },
                     { label: "RPC", value: t(host?.gatewayHealth?.rpc?.ok ? lt("已连通", "Connected") : lt("未就绪", "Not ready")), description: host?.gatewayHealth?.rpc?.error || t(lt("控制面与数据面是否可用。", "Whether the control plane and data plane are available.")) },
@@ -443,11 +815,12 @@ export function PluginHostWorkbench() {
                 ]}
             />
 
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-                    <Card className="rounded-2xl border-slate-200 shadow-sm">
+            <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)]">
+                <div className="grid content-start gap-6">
+                    <Card className="self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t(lt("宿主连接设置", "Host connection"))}</CardTitle>
-                            <CardDescription>{t(lt("Windows 官方安装示例：<code>iwr -useb https://openclaw.ai/install.ps1 | iex</code>。安装完成后，先手动把 OpenClaw 跑起来，再让 V8 连接它。", "Windows install example: `iwr -useb https://openclaw.ai/install.ps1 | iex`. Start OpenClaw first, then let V8 connect to it."))}</CardDescription>
+                            <CardDescription>{t(lt("Windows 官方安装示例：<code>iwr -useb https://openclaw.ai/install.ps1 | iex</code>。普通运行热路径不会自动拉起 OpenClaw；请先手动把它跑起来。只有 doctor / repair 会按需代你重启 gateway。", "Windows install example: `iwr -useb https://openclaw.ai/install.ps1 | iex`. Normal runtime paths do not auto-start OpenClaw; start it manually first. Only doctor / repair may restart the gateway for you."))}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
@@ -524,185 +897,63 @@ export function PluginHostWorkbench() {
                             {t(lt("保存连接设置", "Save connection"))}
                         </Button>
                     </CardContent>
-                </Card>
+                    </Card>
 
-                <div className="grid gap-6">
-                    <Card className="rounded-2xl border-slate-200 shadow-sm">
+                    <Card className="self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
-                            <CardTitle>{t(lt("工具筛选", "Tool selection"))}</CardTitle>
-                            <CardDescription>{t(lt("PluginHostRuntime 的工具目录先做 lexical 候选池，再优先使用 extensions_reranker，最后才回退到全局 reranker 或 lexical。这里改的是 extensions 的 canonical source，不会创建第二份配置。", "PluginHostRuntime builds a lexical candidate pool first, then prefers extensions_reranker, and only falls back to the global reranker or lexical. This still writes to the extensions canonical source."))}</CardDescription>
+                            <CardTitle>{t(lt("精简插件列表", "Plugin list"))}</CardTitle>
+                            <CardDescription>{t(lt("这里只保留 V8 关心的运行时事实：插件是不是 active、会话类型是什么、support tier 是什么，以及真实入站有没有切到 V8。", "This list only keeps the runtime facts V8 actually needs: plugin activity, chat types, support tier, and whether live inbound has switched to V8."))}</CardDescription>
                         </CardHeader>
-                        <CardContent className="space-y-5">
-                            {extensionsMeta ? <SourceMetaRow source={extensionsMeta.source} savePath={extensionsMeta.savePath} reloadRequired={extensionsMeta.reloadRequired} /> : null}
-                            <div className="grid gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-                                <div className="space-y-4">
-                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                        <div className="flex items-center justify-between gap-4">
-                                            <div className="space-y-1">
-                                                <div className="text-sm font-medium text-slate-900">{t(lt("启用工具精排", "Enable rerank"))}</div>
-                                                <div className="text-xs leading-5 text-slate-500">{t(lt("关闭后只保留 lexical 候选池与 allowed_tools 过滤。", "When off, only the lexical pool and allowed_tools filtering remain."))}</div>
-                                            </div>
-                                            <Switch
-                                                checked={rerankEnabled}
-                                                onCheckedChange={(checked) => setExtensionsConfig((current) => ({
-                                                    ...current,
-                                                    rerankPolicy: { ...(current.rerankPolicy || {}), enabled: checked },
-                                                }))}
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label htmlFor="plugin-host-reranker">{t(lt("专用 reranker 模型", "Dedicated reranker"))}</Label>
-                                        <Select
-                                            value={rerankerModel || "__empty__"}
-                                            onValueChange={(value: string) => setExtensionsConfig((current) => ({
-                                                ...current,
-                                                modelBindings: {
-                                                    ...(current.modelBindings || {}),
-                                                    rerankerModel: value === "__empty__" ? "" : value,
-                                                },
-                                            }))}
-                                        >
-                                            <SelectTrigger id="plugin-host-reranker" className="w-full">
-                                                <SelectValue placeholder={t(lt("未指定，回退全局 reranker", "Unset, use global reranker"))} />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="__empty__">{t(lt("未指定，回退全局 reranker", "Unset, use global reranker"))}</SelectItem>
-                                                {rerankModels.map((model) => (
-                                                    <SelectItem key={modelValue(model)} value={modelValue(model)}>
-                                                        {modelLabel(model)}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                        <p className="text-xs leading-5 text-slate-500">{t(lt(`当前全局回退模型：${fallbackRerankerModel || "未指定"}。`, `Current global fallback model: ${fallbackRerankerModel || "Unset"}.`))}</p>
-                                    </div>
-
-                                    <div className="flex flex-wrap gap-3">
-                                        <Button onClick={saveToolSelection} disabled={toolConfigBusy}>
-                                            {toolConfigBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                            {t(lt("保存工具筛选", "Save tool selection"))}
-                                        </Button>
-                                        <Button variant="outline" onClick={refreshToolSelection} disabled={toolCatalogBusy}>
-                                            {toolCatalogBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                                            {t(lt("刷新筛选真相", "Refresh selection"))}
-                                        </Button>
-                                    </div>
-                                </div>
-
-                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <span className="font-medium text-slate-900">{t(lt("当前目录策略", "Current strategy"))}</span>
-                                        <Badge variant={selectionMode === "rerank" ? "default" : selectionMode === "fallback" ? "secondary" : "outline"}>{t(selectionModeLabel)}</Badge>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-3">
-                                        <span>{t(lt("Role", "Role"))}</span>
-                                        <Badge variant="outline">{toolSelection?.role || "extensions_reranker"}</Badge>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-3">
-                                        <span>{t(lt("模型", "Model"))}</span>
-                                        <Badge variant="outline" className="max-w-[220px] truncate">{toolSelection?.modelId || rerankerModel || fallbackRerankerModel || t(lt("未指定", "Unset"))}</Badge>
-                                    </div>
-                                    <div className="grid grid-cols-3 gap-3 text-xs">
-                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                            <div className="text-slate-500">{t(lt("候选池", "Pool"))}</div>
-                                            <div className="mt-1 font-semibold text-slate-900">{toolSelection?.poolSize ?? 0}</div>
-                                        </div>
-                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                            <div className="text-slate-500">{t(lt("可调用", "Callable"))}</div>
-                                            <div className="mt-1 font-semibold text-slate-900">{toolSelection?.callableSize ?? 0}</div>
-                                        </div>
-                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                            <div className="text-slate-500">{t(lt("目录总数", "Inventory"))}</div>
-                                            <div className="mt-1 font-semibold text-slate-900">{toolSelection?.inventorySize ?? 0}</div>
-                                        </div>
-                                    </div>
-                                    {toolSelection?.timingsMs ? (
-                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
-                                            bridge {toolSelection.timingsMs.bridgeState ?? 0}ms · inventory {toolSelection.timingsMs.gatewayInventory ?? 0}ms · lexical {toolSelection.timingsMs.lexical ?? 0}ms
-                                            {typeof toolSelection.timingsMs.rerank === "number" ? ` · rerank ${toolSelection.timingsMs.rerank}ms` : ""}
-                                        </div>
-                                    ) : null}
-                                    {toolSelection?.reason ? (
-                                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">
-                                            {toolSelection.reason}
-                                        </div>
-                                    ) : null}
-                                </div>
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label htmlFor="plugin-host-tool-query">{t(lt("筛选预览查询", "Selection preview query"))}</Label>
-                                <div className="flex gap-3">
-                                    <Input
-                                        id="plugin-host-tool-query"
-                                        value={toolQuery}
-                                        onChange={(event) => setToolQuery(event.target.value)}
-                                        placeholder={t(lt("例如：mind status rollback", "For example: mind status rollback"))}
-                                    />
-                                    <Button variant="outline" onClick={refreshToolSelection} disabled={toolCatalogBusy}>
-                                        {t(lt("预览", "Preview"))}
-                                    </Button>
-                                </div>
-                            </div>
-
-                            {toolCatalogError ? (
-                                <StatusNotice tone="warning" title={lt("工具目录读取失败", "Failed to load tool catalog")} description={toolCatalogError} />
-                            ) : null}
-
-                            <div className="space-y-3">
-                                <div className="text-sm font-medium text-slate-900">{t(lt("当前暴露给 Supervisor 的候选", "Current exposure to Supervisor"))}</div>
-                                {(toolCatalog?.exposure || []).length ? (
-                                    <div className="space-y-3">
-                                        {(toolCatalog?.exposure || []).map((tool) => (
-                                            <div key={tool.canonicalName} className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <CardContent className="max-h-[460px] space-y-4 overflow-y-auto pr-1">
+                            {(snapshot?.plugins || []).length ? (
+                                (snapshot?.plugins || []).map((plugin) => (
+                                    <div key={plugin.pluginId} className="rounded-2xl border border-slate-200 bg-white p-4">
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div className="space-y-2">
                                                 <div className="flex flex-wrap items-center gap-2">
-                                                    <div className="text-sm font-medium text-slate-900">{tool.label || tool.canonicalName}</div>
-                                                    <Badge variant="outline">{tool.canonicalName}</Badge>
-                                                    <Badge variant="secondary">{tool.pluginId || "gateway"}</Badge>
+                                                    <div className="text-base font-medium text-slate-900">{plugin.displayName || plugin.pluginId}</div>
+                                                    <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">{plugin.pluginId}</Badge>
+                                                    {plugin.lifecycleState ? <Badge variant="outline">{plugin.lifecycleState}</Badge> : null}
+                                                    {plugin.healthState ? <Badge variant="outline">{plugin.healthState}</Badge> : null}
                                                 </div>
-                                                <div className="mt-2 text-xs leading-5 text-slate-500">{tool.description || t(lt("暂无描述。", "No description."))}</div>
+                                                <div className="grid gap-1 text-xs leading-5 text-slate-600">
+                                                    <div><span className="font-medium text-slate-900">{t(lt("支持层级：", "Support:"))}</span>{t(supportLabel(plugin.supportTier))}</div>
+                                                    <div><span className="font-medium text-slate-900">{t(lt("激活 / 安装：", "Activation / setup:"))}</span>{plugin.activationState || "unknown"} / {plugin.setupState || "unknown"}</div>
+                                                    <div><span className="font-medium text-slate-900">{t(lt("会话类型：", "Chat types:"))}</span>{(plugin.transportCapabilities?.chatTypes || []).join(" / ") || t(lt("未声明", "Unset"))}</div>
+                                                    <div><span className="font-medium text-slate-900">{t(lt("支持群聊：", "Group chat:"))}</span>{plugin.transportCapabilities?.groupSupported ? t(lt("是", "Yes")) : t(lt("否", "No"))}</div>
+                                                    <div><span className="font-medium text-slate-900">{t(lt("首次接入方式：", "First-time onboarding:"))}</span>{plugin.transportCapabilities?.onboardingType || t(lt("未声明", "Unset"))}</div>
+                                                    {plugin.pluginType === "channel" ? (
+                                                        <div><span className="font-medium text-slate-900">{t(lt("接入证据：", "Evidence:"))}</span>{(plugin.channelSurface?.evidence || []).join(" / ") || t(lt("暂未观察到", "Not observed yet"))}</div>
+                                                    ) : null}
+                                                    <div><span className="font-medium text-slate-900">{t(lt("family adapter：", "Family adapter:"))}</span>{plugin.familyAdapterReady ? t(lt("已就绪", "Ready")) : t(lt("未就绪", "Not ready"))}</div>
+                                                </div>
                                             </div>
-                                        ))}
+                                            <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
+                                                {plugin.onboardingCompleted
+                                                    ? t(lt("已完成首次接入", "Initial onboarding complete"))
+                                                    : plugin.supportTier === "transport-hosted" && String(host?.inboundOwnership || "").trim().toLowerCase() === "v8_owned"
+                                                    ? t(lt("V8 已接住真实入站", "V8 owns live inbound"))
+                                                    : plugin.supportTier === "tool-bridged"
+                                                      ? t(lt("V8 可编排该插件工具", "Tools orchestrated by V8"))
+                                                    : t(lt("在 OpenClaw 控制台配置", "Configure in OpenClaw"))}
+                                            </Badge>
+                                        </div>
+                                        {plugin.unavailableReasons?.length ? (
+                                            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+                                                {plugin.unavailableReasons.slice(0, 2).map((reason) => <div key={reason}>{reason}</div>)}
+                                            </div>
+                                        ) : null}
                                     </div>
-                                ) : (
-                                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
-                                        {t(lt("当前还没有暴露候选。可以先刷新筛选真相，或确认 bridge tools catalog 已经就绪。", "No exposed candidates yet. Refresh the selection preview first, or confirm the bridge tools catalog is ready."))}
-                                    </div>
-                                )}
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    <Card className="rounded-2xl border-slate-200 shadow-sm">
-                        <CardHeader>
-                            <CardTitle>{t(lt("宿主健康状态", "Host health"))}</CardTitle>
-                            <CardDescription>{t(lt("V8 只保留它自己关心的事实：gateway / RPC、CLI 解析、handoff readiness 和最近真实入站证明。", "V8 only keeps the facts it needs: gateway / RPC, CLI resolution, handoff readiness, and recent live inbound proof."))}</CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-3 text-sm text-slate-700">
-                            <div><span className="font-medium text-slate-900">{t(lt("CLI 来源：", "CLI source:"))}</span>{t(cliSourceLabel(host?.cliSource))}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("tooling 模式：", "Tooling mode:"))}</span>{t(toolingModeLabel(host?.toolingMode))}</div>
-                            <div className="break-all"><span className="font-medium text-slate-900">{t(lt("tooling 入口：", "Tooling entry:"))}</span>{host?.toolingEntry || t(lt("未解析", "Unresolved"))}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("launcher：", "Launcher:"))}</span>{t(launcherSourceLabel(host?.launcherSource, host?.launcherMissing))}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("生命周期权责：", "Lifecycle authority:"))}</span>{host?.lifecycleAuthority || "unknown"}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("桥接状态：", "Bridge:"))}</span>{host?.bridgeReady ? `ready (${host?.bridgePluginId || "unknown"})` : "unready"}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("managed channels：", "Managed channels:"))}</span>{(host?.managedChannels || []).join(" / ") || t(lt("未声明", "Unset"))}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("handoff：", "Handoff:"))}</span>{host?.handoffReady ? "ready" : "unready"}{host?.handoffDrift ? t(lt("（最近有漂移）", " (recent drift)")) : ""}</div>
-                            <div><span className="font-medium text-slate-900">{t(lt("最近 handoff：", "Last handoff:"))}</span>{host?.lastInboundHandoffAt || t(lt("暂未记录", "No record yet"))}</div>
-                            {proof ? (
-                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-5">
-                                    <div><span className="font-medium text-slate-900">{t(lt("阶段：", "Stage:"))}</span>{proof.stage || t(lt("未记录", "Unset"))}</div>
-                                    <div><span className="font-medium text-slate-900">{t(lt("最近入站：", "Last inbound:"))}</span>{proof.inboundObservedAt || t(lt("暂未观察到", "Not observed yet"))}</div>
-                                    <div><span className="font-medium text-slate-900">run：</span>{proof.runId || t(lt("暂未生成", "Not created yet"))}</div>
-                                    <div><span className="font-medium text-slate-900">push：</span>{proof.pushRunId || t(lt("暂未生成", "Not created yet"))}{proof.pushStatus ? ` (${proof.pushStatus})` : ""}</div>
-                                    {proof.reason ? <div className="mt-2 text-slate-500">{proof.reason}</div> : null}
+                                ))
+                            ) : (
+                                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-8 text-sm text-slate-500">
+                                    {t(lt("当前还没有扫描到插件。请先在 OpenClaw 控制台里安装插件，或确认 `managedLocal.rootDir` 指向的是正在使用的 OpenClaw 状态目录。", "No plugins were scanned yet. Install them in the OpenClaw console first, or confirm `managedLocal.rootDir` points to the live OpenClaw state root."))}
                                 </div>
-                            ) : null}
+                            )}
                         </CardContent>
                     </Card>
 
-                    <Card className="rounded-2xl border-slate-200 shadow-sm">
+                    <Card className="self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t(lt("OpenClaw 控制台", "OpenClaw console"))}</CardTitle>
                             <CardDescription>{t(lt("如果需要安装插件、填写 Discord / Weixin / Feishu 的接入参数，或者继续 wizard / pairing，请直接回到 OpenClaw 控制台。", "Return to the OpenClaw console when you need to install plugins, configure Discord / Weixin / Feishu, or continue wizard / pairing flows."))}</CardDescription>
@@ -745,56 +996,393 @@ export function PluginHostWorkbench() {
                         </CardContent>
                     </Card>
                 </div>
+
+                <div className="grid content-start gap-6">
+                    <Card className="order-2 self-start rounded-2xl border-slate-200 shadow-sm">
+                        <CardHeader>
+                            <CardTitle>{t(lt("工具目录与筛选预览", "Tool inventory and selection preview"))}</CardTitle>
+                            <CardDescription>{t(lt("上半部分是 OpenClaw/plugin_host 工具目录健康；下半部分只是诊断预览。真实任务候选会在收到用户消息后，由 extensions runtime 按当前上下文动态生成。", "The first section shows OpenClaw/plugin_host inventory health; the second section is only a diagnostic preview. Real task candidates are generated dynamically by the extensions runtime after a user message arrives."))}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="max-h-[860px] space-y-5 overflow-y-auto pr-1">
+                            {extensionsMeta ? <SourceMetaRow source={extensionsMeta.source} savePath={extensionsMeta.savePath} reloadRequired={extensionsMeta.reloadRequired} /> : null}
+                            <div className="grid gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                                <div className="space-y-4">
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="space-y-1">
+                                                <div className="text-sm font-medium text-slate-900">{t(lt("启用工具树预筛", "Enable tree prefilter"))}</div>
+                                                <div className="text-xs leading-5 text-slate-500">{t(lt("关闭后只保留 lexical 候选池与 allowed_tools 过滤。", "When off, only the lexical pool and allowed_tools filtering remain."))}</div>
+                                            </div>
+                                            <Switch
+                                                checked={prefilterEnabled}
+                                                onCheckedChange={(checked) => setExtensionsConfig((current) => ({
+                                                    ...current,
+                                                    prefilterPolicy: { ...(current.prefilterPolicy || {}), enabled: checked, mode: "llm_tree" },
+                                                }))}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="plugin-host-prefilter">{t(lt("专用预筛模型", "Dedicated prefilter model"))}</Label>
+                                        <Select
+                                            value={prefilterModel || "__empty__"}
+                                            onValueChange={(value: string) => setExtensionsConfig((current) => ({
+                                                ...current,
+                                                modelBindings: {
+                                                    ...(current.modelBindings || {}),
+                                                    prefilterModel: value === "__empty__" ? "" : value,
+                                                },
+                                            }))}
+                                        >
+                                            <SelectTrigger id="plugin-host-prefilter" className="w-full">
+                                                <SelectValue placeholder={t(lt("未指定，回退 lexical", "Unset, fall back to lexical"))} />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="__empty__">{t(lt("未指定，回退 lexical", "Unset, fall back to lexical"))}</SelectItem>
+                                                {prefilterModels.map((model) => (
+                                                    <SelectItem key={modelValue(model)} value={modelValue(model)}>
+                                                        {modelLabel(model)}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs leading-5 text-slate-500">{t(lt("建议绑定廉价通用 LLM，例如 deepseek-chat / deepseek-v3。未指定时当前直接回退 lexical。", "Bind a low-cost general LLM such as deepseek-chat / deepseek-v3. If unset, the runtime falls back to lexical directly."))}</p>
+                                    </div>
+
+                                    <div className="flex flex-wrap gap-3">
+                                        <Button onClick={saveToolSelection} disabled={toolConfigBusy}>
+                                            {toolConfigBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                            {t(lt("保存工具筛选", "Save tool selection"))}
+                                        </Button>
+                                        <Button variant="outline" onClick={refreshToolInventory} disabled={toolCatalogBusy}>
+                                            {toolCatalogBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                                            {t(lt("刷新目录健康", "Refresh inventory"))}
+                                        </Button>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="font-medium text-slate-900">{t(lt("当前目录策略", "Current strategy"))}</span>
+                                        <Badge variant={selectionMode === "llm_tree" ? "default" : selectionMode === "fallback" ? "secondary" : "outline"}>{t(selectionModeLabel)}</Badge>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span>{t(lt("Role", "Role"))}</span>
+                                        <Badge variant="outline">{toolSelection?.role || "extensions_prefilter"}</Badge>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span>{t(lt("模型", "Model"))}</span>
+                                        <Badge variant="outline" className="max-w-[220px] truncate">{toolSelection?.modelId || prefilterModel || t(lt("未指定", "Unset"))}</Badge>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-3 text-xs">
+                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                            <div className="text-slate-500">{t(lt("候选池", "Pool"))}</div>
+                                            <div className="mt-1 font-semibold text-slate-900">{toolSelection?.poolSize ?? 0}</div>
+                                        </div>
+                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                            <div className="text-slate-500">{t(lt("可调用", "Callable"))}</div>
+                                            <div className="mt-1 font-semibold text-slate-900">{toolSelection?.callableSize ?? 0}</div>
+                                        </div>
+                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                            <div className="text-slate-500">{t(lt("目录总数", "Inventory"))}</div>
+                                            <div className="mt-1 font-semibold text-slate-900">{toolSelection?.inventorySize ?? 0}</div>
+                                        </div>
+                                    </div>
+                                    {toolSelection?.timingsMs ? (
+                                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
+                                            bridge state {toolSelection.timingsMs.bridgeStateMs ?? toolSelection.timingsMs.bridgeState ?? 0}ms · engine cache {toolSelection.timingsMs.engineInventoryCacheMs ?? 0}ms · bridge tools {toolSelection.timingsMs.bridgeToolsRequestMs ?? toolSelection.timingsMs.gatewayInventory ?? 0}ms · lexical {toolSelection.timingsMs.lexicalMs ?? toolSelection.timingsMs.lexical ?? 0}ms · selection {toolSelection.timingsMs.selectionMs ?? 0}ms · total {toolSelection.timingsMs.totalMs ?? 0}ms
+                                            {typeof toolSelection.timingsMs.prefilterMs === "number"
+                                                ? ` · prefilter ${toolSelection.timingsMs.prefilterMs}ms`
+                                                : typeof toolSelection.timingsMs.prefilter === "number"
+                                                    ? ` · prefilter ${toolSelection.timingsMs.prefilter}ms`
+                                                    : typeof toolSelection.timingsMs.rerank === "number"
+                                                        ? ` · prefilter ${toolSelection.timingsMs.rerank}ms`
+                                                    : ""}
+                                        </div>
+                                    ) : null}
+                                    {toolSelection?.reason ? (
+                                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">
+                                            {toolSelection.reason}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="plugin-host-tool-query">{t(lt("筛选预览查询（诊断）", "Selection preview query (diagnostic)"))}</Label>
+                                <p className="text-xs leading-5 text-slate-500">
+                                    {t(lt("这里不会改变当前会话，也不会写入 supervisor。它只用一条模拟需求测试 lexical seed、LLM 工具树预筛和 family expansion 是否工作。", "This does not change the active session or write to the supervisor. It only tests lexical seeds, LLM tree prefiltering, and family expansion with a simulated request."))}
+                                </p>
+                                <div className="flex gap-3">
+                                    <Input
+                                        id="plugin-host-tool-query"
+                                        value={toolQuery}
+                                        onChange={(event) => setToolQuery(event.target.value)}
+                                        placeholder={t(lt("输入一条模拟用户需求，例如：查询飞书会话", "Enter a simulated user request, e.g. list Lark sessions"))}
+                                    />
+                                    <Button variant="outline" onClick={previewToolSelection} disabled={toolCatalogBusy || !toolQuery.trim()}>
+                                        {toolCatalogBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                        {t(lt("预览", "Preview"))}
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {toolCatalogError ? (
+                                <StatusNotice tone="warning" title={lt("工具目录读取失败", "Failed to load tool catalog")} description={toolCatalogError} />
+                            ) : null}
+
+                            {toolCatalog ? (
+                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="font-medium text-slate-900">{t(lt("工具目录真相", "Tool inventory truth"))}</span>
+                                        <Badge variant={toolCatalog.toolInventoryHealth === "healthy" ? "default" : "secondary"}>
+                                            {t(toolInventoryHealthLabel(toolCatalog.toolInventoryHealth))}
+                                        </Badge>
+                                        <Badge variant="outline">
+                                            {t(toolInventorySourceLabel(toolCatalog.toolInventorySource))}
+                                        </Badge>
+                                        {toolCatalog.toolInventoryFreshness ? (
+                                            <Badge variant="outline">{toolCatalog.toolInventoryFreshness}</Badge>
+                                        ) : null}
+                                        {toolCatalog.cacheHit === true ? (
+                                            <Badge variant="outline">{t(lt("热缓存命中", "Hot cache hit"))}</Badge>
+                                        ) : null}
+                                        {toolCatalog.backgroundRefresh ? (
+                                            <Badge variant="secondary">{t(lt("后台刷新中", "Background refresh"))}</Badge>
+                                        ) : null}
+                                        {toolCatalog.inventoryStale ? (
+                                            <Badge variant="secondary">{t(lt("目录使用旧缓存", "Serving stale inventory"))}</Badge>
+                                        ) : null}
+                                    </div>
+                                    <div className="grid max-h-48 gap-2 overflow-y-auto pr-1 text-xs text-slate-500">
+                                        <div>{t(lt("目录来源会直接决定动态插件工具能不能被 V8 看见。manifest 只能保底，动态工具必须依赖 gateway RPC 或 durable cache。", "The inventory source decides whether V8 can see dynamic plugin tools. Static manifests are only a fallback; dynamic tools require gateway RPC or the durable cache."))}</div>
+                                        <div>
+                                            <span className="font-medium text-slate-900">{t(lt("operator.read：", "operator.read:"))}</span>
+                                            {toolCatalog.operatorReadAvailable === true
+                                                ? t(lt("已可用", "Available"))
+                                                : toolCatalog.operatorReadAvailable === false
+                                                    ? t(lt("缺少 scope", "Scope missing"))
+                                                    : t(lt("未判定", "Unknown"))}
+                                        </div>
+                                        {toolCatalog.toolInventoryErrors?.stateCatalogError ? (
+                                            <div><span className="font-medium text-slate-900">state manifest：</span>{toolCatalog.toolInventoryErrors.stateCatalogError}</div>
+                                        ) : null}
+                                        {toolCatalog.toolInventoryErrors?.cliCatalogError ? (
+                                            <div><span className="font-medium text-slate-900">CLI：</span>{toolCatalog.toolInventoryErrors.cliCatalogError}</div>
+                                        ) : null}
+                                        {toolCatalog.toolInventoryErrors?.sourceScanCatalogError ? (
+                                            <div><span className="font-medium text-slate-900">source scan：</span>{toolCatalog.toolInventoryErrors.sourceScanCatalogError}</div>
+                                        ) : null}
+                                        {toolCatalog.toolInventoryErrors?.gatewayCatalogError ? (
+                                            <div><span className="font-medium text-slate-900">gateway RPC：</span>{toolCatalog.toolInventoryErrors.gatewayCatalogError}</div>
+                                        ) : null}
+                                        {toolCatalog.inventoryError ? (
+                                            <div><span className="font-medium text-slate-900">{t(lt("inventory 回退：", "Inventory fallback:"))}</span>{toolCatalog.inventoryError}</div>
+                                        ) : null}
+                                        {toolCatalog.toolInventoryTimingsMs ? (
+                                            <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-[11px] text-slate-500">
+                                                {`gateway RPC ${toolCatalog.toolInventoryTimingsMs.gatewayRpcMs ?? 0}ms · durable cache ${toolCatalog.toolInventoryTimingsMs.durableCacheMs ?? 0}ms · source scan ${toolCatalog.toolInventoryTimingsMs.sourceScanMs ?? 0}ms · state manifest ${toolCatalog.toolInventoryTimingsMs.stateManifestMs ?? 0}ms · total ${toolCatalog.toolInventoryTimingsMs.totalMs ?? 0}ms`}
+                                            </div>
+                                        ) : null}
+                                        {toolCatalog.selection?.timingsMs ? (
+                                            <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-[11px] text-slate-500">
+                                                {`engine bridge-state ${toolCatalog.selection.timingsMs.bridgeStateMs ?? 0}ms · inventory ${toolCatalog.selection.timingsMs.engineInventoryCacheMs ?? 0}ms · selection ${toolCatalog.selection.timingsMs.selectionMs ?? 0}ms · prefilter ${toolCatalog.selection.timingsMs.prefilterMs ?? 0}ms`}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            <div className="space-y-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <div className="text-sm font-medium text-slate-900">{t(lt("此查询下的预览候选", "Preview candidates for this query"))}</div>
+                                    {previewedToolQuery ? <Badge variant="outline" className="max-w-[360px] truncate">{previewedToolQuery}</Badge> : null}
+                                    {toolCatalog?.prefilterTimedOut ? <Badge variant="secondary">{t(lt("预筛超时，已回退 lexical", "Prefilter timed out, fell back to lexical"))}</Badge> : null}
+                                    {toolCatalog?.prefilterCacheHit ? <Badge variant="outline">{t(lt("预筛结果命中缓存", "Prefilter cache hit"))}</Badge> : null}
+                                </div>
+                                {previewExposure.length ? (
+                                    <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
+                                        {previewExposure.map((tool) => (
+                                            <div key={tool.canonicalName} className="rounded-2xl border border-slate-200 bg-white p-4">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="text-sm font-medium text-slate-900">{tool.label || tool.canonicalName}</div>
+                                                    <Badge variant="outline">{tool.canonicalName}</Badge>
+                                                    <Badge variant="secondary">{tool.pluginId || "gateway"}</Badge>
+                                                </div>
+                                                <div className="mt-2 text-xs leading-5 text-slate-500">{tool.description || t(lt("暂无描述。", "No description."))}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                        {previewedToolQuery
+                                            ? t(lt("这条模拟查询没有筛出候选。请检查目录健康、operator.read scope 或 durable cache。", "This simulated query did not expose candidates. Check inventory health, operator.read scope, or the durable cache."))
+                                            : t(lt("尚未运行诊断预览。输入一条模拟用户需求并点击“预览”，才能看到这条查询会暴露的候选。", "No diagnostic preview has run yet. Enter a simulated user request and click Preview to see candidates for that query."))}
+                                    </div>
+                                )}
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs leading-5 text-slate-500">
+                                    {t(lt("运行时真相：真实任务不会读取这里的预览结果。supervisor 收到人类消息后，extensions runtime 会基于当轮消息、上下文、lexical seed、LLM 工具树预筛和 family expansion 重新计算候选。", "Runtime truth: real tasks do not read this preview. After a human message arrives, the extensions runtime recomputes candidates from that turn's message, context, lexical seeds, LLM tree prefiltering, and family expansion."))}
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    <Card className="order-1 self-start rounded-2xl border-slate-200 shadow-sm">
+                        <CardHeader>
+                            <CardTitle>{t(lt("宿主健康状态", "Host health"))}</CardTitle>
+                            <CardDescription>{t(lt("V8 只保留它自己关心的事实：gateway / RPC、CLI 解析、handoff readiness 和最近真实入站证明。", "V8 only keeps the facts it needs: gateway / RPC, CLI resolution, handoff readiness, and recent live inbound proof."))}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="max-h-[760px] space-y-3 overflow-y-auto pr-1 text-sm text-slate-700">
+                            {doctorSummary ? (
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="font-medium text-slate-900">{doctorSummary.title || t(lt("bridge doctor 摘要", "Bridge doctor summary"))}</span>
+                                        <Badge variant={String(doctorSummary.status || "").trim().toLowerCase() === "critical" ? "destructive" : String(doctorSummary.status || "").trim().toLowerCase() === "warning" ? "secondary" : "default"}>
+                                            {t(doctorStatusLabel(doctorSummary.status))}
+                                        </Badge>
+                                        {typeof doctorSummary.criticalCount === "number" ? <Badge variant="outline">{t(lt(`阻断 ${doctorSummary.criticalCount}`, `Critical ${doctorSummary.criticalCount}`))}</Badge> : null}
+                                        {typeof doctorSummary.warningCount === "number" ? <Badge variant="outline">{t(lt(`警告 ${doctorSummary.warningCount}`, `Warnings ${doctorSummary.warningCount}`))}</Badge> : null}
+                                        {typeof doctorSummary.okCount === "number" ? <Badge variant="outline">{t(lt(`通过 ${doctorSummary.okCount}`, `OK ${doctorSummary.okCount}`))}</Badge> : null}
+                                    </div>
+                                    {doctorSummary.description ? (
+                                        <div className="mt-2 text-xs leading-5 text-slate-500">{doctorSummary.description}</div>
+                                    ) : null}
+                                    {doctorSummary.checkedAt ? (
+                                        <div className="mt-2 text-[11px] text-slate-400">{t(lt("最近检查：", "Last doctor run:"))}{doctorSummary.checkedAt}</div>
+                                    ) : null}
+                                </div>
+                            ) : null}
+                            {doctorChecks.length ? (
+                                <details className="rounded-2xl border border-slate-200 bg-white p-4">
+                                    <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                                        {t(lt(`Doctor 检查 ${doctorChecks.length} 项`, `Doctor checks (${doctorChecks.length})`))}
+                                    </summary>
+                                    <div className="mt-3 max-h-80 space-y-3 overflow-y-auto pr-1">
+                                        {doctorChecks.map((check, index) => (
+                                            <div key={`${check.key || "doctor-check"}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="font-medium text-slate-900">{check.title || check.key || t(lt("未命名检查", "Unnamed check"))}</div>
+                                                    <Badge variant={String(check.status || "").trim().toLowerCase() === "critical" ? "destructive" : String(check.status || "").trim().toLowerCase() === "warning" ? "secondary" : "default"}>
+                                                        {t(doctorStatusLabel(check.status))}
+                                                    </Badge>
+                                                    {check.key ? <Badge variant="outline">{check.key}</Badge> : null}
+                                                </div>
+                                                {check.description ? <div className="mt-2 text-xs leading-5 text-slate-500">{check.description}</div> : null}
+                                                {check.details ? <div className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded-xl bg-white px-3 py-2 text-xs leading-5 text-slate-600">{check.details}</div> : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            ) : null}
+                            <div><span className="font-medium text-slate-900">{t(lt("CLI 来源：", "CLI source:"))}</span>{t(cliSourceLabel(host?.cliSource))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("tooling 模式：", "Tooling mode:"))}</span>{t(toolingModeLabel(host?.toolingMode))}</div>
+                            <div className="break-all"><span className="font-medium text-slate-900">{t(lt("tooling 入口：", "Tooling entry:"))}</span>{host?.toolingEntry || t(lt("未解析", "Unresolved"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("launcher：", "Launcher:"))}</span>{t(launcherSourceLabel(host?.launcherSource, host?.launcherMissing))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("生命周期权责：", "Lifecycle authority:"))}</span>{host?.lifecycleAuthority || "unknown"}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("桥接状态：", "Bridge:"))}</span>{host?.bridgeStatusStale ? t(lt("stale / 未新鲜确认", "stale / not freshly confirmed")) : host?.bridgeReady ? `ready (${host?.bridgePluginId || "unknown"})` : "unready"}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("managed channels：", "Managed channels:"))}</span>{(host?.managedChannels || []).join(" / ") || t(lt("未声明", "Unset"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("provenance：", "Provenance:"))}</span>{t(bridgeProvenanceLabel(host?.installProvenance))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("刷新面：", "Refresh mode:"))}</span>{host?.refreshMode || "hot"}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("bridge 状态来源：", "Bridge status source:"))}</span>{host?.bridgeStatusSource || t(lt("未声明", "Unset"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("bridge 状态耗时：", "Bridge status latency:"))}</span>{typeof host?.bridgeStatusMs === "number" ? `${host.bridgeStatusMs}ms` : t(lt("未记录", "Not recorded"))}</div>
+                            {host?.bridgeStatusObservedAt ? (
+                                <div><span className="font-medium text-slate-900">{t(lt("bridge 最近观测：", "Bridge last observed:"))}</span>{host.bridgeStatusObservedAt}</div>
+                            ) : null}
+                            {host?.bridgeStatusStale ? (
+                                <div><span className="font-medium text-slate-900">{t(lt("bridge 状态：", "Bridge status:"))}</span>{t(lt("旧缓存 / 未确认", "Stale / not freshly confirmed"))}</div>
+                            ) : null}
+                            {host?.bridgeStatusError ? (
+                                <div><span className="font-medium text-slate-900">{t(lt("bridge 状态错误：", "Bridge status error:"))}</span>{host.bridgeStatusError}</div>
+                            ) : null}
+                            <div className="break-all"><span className="font-medium text-slate-900">{t(lt("状态根：", "State dir:"))}</span>{host?.resolvedStateDir || t(lt("未解析", "Unresolved"))}</div>
+                            <div className="break-all"><span className="font-medium text-slate-900">{t(lt("gateway 地址：", "Gateway URL:"))}</span>{host?.gatewayBaseUrl || t(lt("未解析", "Unresolved"))}</div>
+                            <div className="break-all"><span className="font-medium text-slate-900">{t(lt("V8 inbound：", "V8 inbound:"))}</span>{host?.v8InboundUrl || t(lt("未解析", "Unresolved"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("plugins.allow：", "plugins.allow:"))}</span>{host?.pluginsAllowConfigured ? (host?.pluginsAllow || []).join(" / ") || t(lt("已配置但为空", "Configured but empty")) : t(lt("当前为空", "Currently empty"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("渠道来源：", "Managed channels source:"))}</span>{host?.managedChannelsSource || t(lt("未声明", "Unset"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("配置来源：", "Config source:"))}</span>{t(configSourceLabel(host?.configSource))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("handoff 配置：", "Handoff configured:"))}</span>{host?.handoffConfigured ? t(lt("已注入", "Injected")) : t(lt("缺失", "Missing"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("claim 开关：", "Claim enabled:"))}</span>{host?.claimEnabled ? t(lt("已启用", "Enabled")) : t(lt("未启用", "Disabled"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("最近 claim：", "Last claim:"))}</span>{host?.lastClaimAt || t(lt("暂未记录", "No record yet"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("最近 claim 尝试：", "Last claim attempt:"))}</span>{host?.lastClaimAttemptAt || t(lt("暂未记录", "No record yet"))}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("最近 claim 结果：", "Last claim outcome:"))}</span>{host?.lastClaimOutcome || t(lt("暂未记录", "No record yet"))}</div>
+                            {host?.lastClaimDeclineReason ? (
+                                <div><span className="font-medium text-slate-900">{t(lt("最近未接管原因：", "Last decline reason:"))}</span>{host.lastClaimDeclineReason}</div>
+                            ) : null}
+                            {host?.lastClaimChannel ? (
+                                <div><span className="font-medium text-slate-900">{t(lt("最近 claim 渠道：", "Last claim channel:"))}</span>{host.lastClaimChannel}</div>
+                            ) : null}
+                            {host?.lastClaimConversation ? (
+                                <div className="break-all"><span className="font-medium text-slate-900">{t(lt("最近 claim 会话：", "Last claim conversation:"))}</span>{host.lastClaimConversation}</div>
+                            ) : null}
+                            {host?.lastClaimMessageId ? (
+                                <div className="break-all"><span className="font-medium text-slate-900">{t(lt("最近 claim 消息：", "Last claim message:"))}</span>{host.lastClaimMessageId}</div>
+                            ) : null}
+                            {host?.lastClaimPayloadShape ? (
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-5 text-slate-600">
+                                    <div className="font-medium text-slate-900">{t(lt("最近 claim 字段合同", "Last claim payload contract"))}</div>
+                                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(host.lastClaimPayloadShape, null, 2)}</pre>
+                                </div>
+                            ) : null}
+                            {(host?.fieldContractWarnings || []).map((warning, index) => (
+                                <StatusNotice
+                                    key={`field-contract-warning-${index}`}
+                                    tone="warning"
+                                    title={warning.title || lt("入站字段合同存在缺口", "Inbound field contract is incomplete")}
+                                    description={`${warning.description || ""}${(warning.fields || []).length ? `\n${t(lt("缺失字段：", "Missing fields:"))}${(warning.fields || []).join(", ")}` : ""}`.trim()}
+                                />
+                            ))}
+                            {host?.expectedBridgeClaimMissed ? (
+                                <StatusNotice
+                                    tone="warning"
+                                    title={lt("Bridge 已 ready，但最近没有成功 claim 当前渠道消息", "Bridge is ready, but recent channel claims are missing")}
+                                    description={lt("当前消息很可能回落到了 OpenClaw 原生 runner。请优先检查 bridge status 中的 claim attempt / outcome / decline reason，再核对当前渠道是否真的命中 managedChannels。", "Messages may be falling back to the native OpenClaw runner. Inspect the bridge claim attempt / outcome / decline reason first, then verify the active channel still matches managedChannels.")}
+                                />
+                            ) : null}
+                            {(host?.pluginProvenanceWarnings || []).map((warning, index) => (
+                                <StatusNotice
+                                    key={`plugin-provenance-warning-${index}`}
+                                    tone="warning"
+                                    title={warning.title || lt("插件 trust / provenance 仍未稳定", "Plugin trust / provenance is still unstable")}
+                                    description={`${warning.description || ""}${warning.pluginId ? `\nplugin: ${warning.pluginId}` : ""}${(warning.pluginIds || []).length ? `\nplugins: ${(warning.pluginIds || []).join(", ")}` : ""}`.trim()}
+                                />
+                            ))}
+                            <div><span className="font-medium text-slate-900">{t(lt("handoff：", "Handoff:"))}</span>{host?.handoffReady ? "ready" : "unready"}{host?.handoffDrift ? t(lt("（最近有漂移）", " (recent drift)")) : ""}</div>
+                            <div><span className="font-medium text-slate-900">{t(lt("最近 handoff：", "Last handoff:"))}</span>{host?.lastInboundHandoffAt || t(lt("暂未记录", "No record yet"))}</div>
+                            {bridgeProvenance === "global_auto_discovery" ? (
+                                <StatusNotice
+                                    tone="warning"
+                                    title={lt("当前 bridge 仍是未追踪的全局自动发现扩展", "Bridge is still loaded as untracked global code")}
+                                    description={lt("建议重新执行 `openclaw plugins install @v8-agent-os/openclaw-v8-bridge`，或在开发机上使用 `openclaw plugins install --link <repo>`，把 bridge 纳入 OpenClaw 4.8 的 canonical provenance。", "Reinstall the bridge with `openclaw plugins install @v8-agent-os/openclaw-v8-bridge`, or use `openclaw plugins install --link <repo>` in development so OpenClaw 4.8 can track canonical provenance.")}
+                                />
+                            ) : bridgeProvenance === "missing" ? (
+                                <StatusNotice
+                                    tone="warning"
+                                    title={lt("当前未检测到 openclaw-v8-bridge 已安装到 OpenClaw 4.8 canonical 插件链", "openclaw-v8-bridge is missing from the OpenClaw 4.8 canonical plugin chain")}
+                                    description={lt("检测到 bridge 仓存在但宿主未 install/link 时，消息会回落到 OpenClaw 原生 runner。请执行 `openclaw plugins install @v8-agent-os/openclaw-v8-bridge`，或在开发机上使用 `openclaw plugins install --link <repo>`。", "When the bridge repo exists but the host has not installed/linked it, channel traffic falls back to the native OpenClaw runner. Run `openclaw plugins install @v8-agent-os/openclaw-v8-bridge`, or use `openclaw plugins install --link <repo>` in development.")}
+                                />
+                            ) : host?.handoffConfigured === false || host?.lastClaimDeclineReason === "handoff_token_missing" ? (
+                                <StatusNotice
+                                    tone="warning"
+                                    title={lt("Bridge 已安装，但当前 handoff token 尚未就绪", "Bridge is installed, but the handoff token is not ready")}
+                                    description={lt("OpenClaw 4.8 下如果 bridge 没拿到 handoff token，消息会回落到 OpenClaw 原生 runner。V8 现在会自动把 token 写入 bridge 私有配置；如果这里仍显示缺失，请先刷新宿主状态并确认 gateway 已重新读取最新配置。", "When the bridge has no handoff token under OpenClaw 4.8, messages fall back to the native runner. V8 now auto-injects the token into the bridge plugin config; if it still shows missing, refresh host status and confirm the gateway has reloaded the latest config.")}
+                                />
+                            ) : null}
+                            {proof ? (
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-5">
+                                    <div><span className="font-medium text-slate-900">{t(lt("阶段：", "Stage:"))}</span>{proof.stage || t(lt("未记录", "Unset"))}</div>
+                                    <div><span className="font-medium text-slate-900">{t(lt("最近入站：", "Last inbound:"))}</span>{proof.inboundObservedAt || t(lt("暂未观察到", "Not observed yet"))}</div>
+                                    <div><span className="font-medium text-slate-900">run：</span>{proof.runId || t(lt("暂未生成", "Not created yet"))}</div>
+                                    <div><span className="font-medium text-slate-900">push：</span>{proof.pushRunId || t(lt("暂未生成", "Not created yet"))}{proof.pushStatus ? ` (${proof.pushStatus})` : ""}</div>
+                                    {proof.reason ? <div className="mt-2 text-slate-500">{proof.reason}</div> : null}
+                                </div>
+                            ) : null}
+                        </CardContent>
+                    </Card>
+
+                </div>
             </div>
 
-            <Card className="rounded-2xl border-slate-200 shadow-sm">
-                <CardHeader>
-                    <CardTitle>{t(lt("精简插件列表", "Plugin list"))}</CardTitle>
-                    <CardDescription>{t(lt("这里只保留 V8 关心的运行时事实：插件是不是 active、会话类型是什么、support tier 是什么，以及真实入站有没有切到 V8。", "This list only keeps the runtime facts V8 actually needs: plugin activity, chat types, support tier, and whether live inbound has switched to V8."))}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    {(snapshot?.plugins || []).length ? (
-                        (snapshot?.plugins || []).map((plugin) => (
-                            <div key={plugin.pluginId} className="rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div className="space-y-2">
-                                        <div className="flex flex-wrap items-center gap-2">
-                                            <div className="text-base font-medium text-slate-900">{plugin.displayName || plugin.pluginId}</div>
-                                            <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">{plugin.pluginId}</Badge>
-                                            {plugin.lifecycleState ? <Badge variant="outline">{plugin.lifecycleState}</Badge> : null}
-                                            {plugin.healthState ? <Badge variant="outline">{plugin.healthState}</Badge> : null}
-                                        </div>
-                                        <div className="grid gap-1 text-xs leading-5 text-slate-600">
-                                            <div><span className="font-medium text-slate-900">{t(lt("支持层级：", "Support:"))}</span>{t(supportLabel(plugin.supportTier))}</div>
-                                            <div><span className="font-medium text-slate-900">{t(lt("激活 / 安装：", "Activation / setup:"))}</span>{plugin.activationState || "unknown"} / {plugin.setupState || "unknown"}</div>
-                                            <div><span className="font-medium text-slate-900">{t(lt("会话类型：", "Chat types:"))}</span>{(plugin.transportCapabilities?.chatTypes || []).join(" / ") || t(lt("未声明", "Unset"))}</div>
-                                            <div><span className="font-medium text-slate-900">{t(lt("支持群聊：", "Group chat:"))}</span>{plugin.transportCapabilities?.groupSupported ? t(lt("是", "Yes")) : t(lt("否", "No"))}</div>
-                                            <div><span className="font-medium text-slate-900">{t(lt("接入类型：", "Onboarding:"))}</span>{plugin.transportCapabilities?.onboardingType || t(lt("未声明", "Unset"))}</div>
-                                            <div><span className="font-medium text-slate-900">{t(lt("family adapter：", "Family adapter:"))}</span>{plugin.familyAdapterReady ? t(lt("已就绪", "Ready")) : t(lt("未就绪", "Not ready"))}</div>
-                                        </div>
-                                    </div>
-                                    <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
-                                        {plugin.supportTier === "transport-hosted" && String(host?.inboundOwnership || "").trim().toLowerCase() === "v8_owned"
-                                            ? t(lt("V8 已接住真实入站", "V8 owns live inbound"))
-                                            : plugin.supportTier === "tool-bridged"
-                                              ? t(lt("V8 可编排该插件工具", "Tools orchestrated by V8"))
-                                            : t(lt("在 OpenClaw 控制台配置", "Configure in OpenClaw"))}
-                                    </Badge>
-                                </div>
-                                {plugin.unavailableReasons?.length ? (
-                                    <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
-                                        {plugin.unavailableReasons.slice(0, 2).map((reason) => <div key={reason}>{reason}</div>)}
-                                    </div>
-                                ) : null}
-                            </div>
-                        ))
-                    ) : (
-                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-8 text-sm text-slate-500">
-                            {t(lt("当前还没有扫描到插件。请先在 OpenClaw 控制台里安装插件，或确认 `managedLocal.rootDir` 指向的是正在使用的 OpenClaw 状态目录。", "No plugins were scanned yet. Install them in the OpenClaw console first, or confirm `managedLocal.rootDir` points to the live OpenClaw state root."))}
-                        </div>
-                    )}
-                </CardContent>
-            </Card>
         </AdminPageShell>
     );
 }

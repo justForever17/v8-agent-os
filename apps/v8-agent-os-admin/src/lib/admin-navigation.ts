@@ -4,6 +4,7 @@ import {
     Bot,
     Brain,
     Building2,
+    FolderTree,
     Gauge,
     Globe2,
     LayoutDashboard,
@@ -91,6 +92,12 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: lt("Hooks、Cron 与自动化触发。", "Hooks, cron, and automation triggers."),
             },
             {
+                title: lt("EXTENSIONS", "EXTENSIONS"),
+                href: "/admin/extensions",
+                icon: Blocks,
+                description: lt("Skills、MCP 与扩展生态。", "Skills, MCP, and extension ecosystem."),
+            },
+            {
                 title: lt("PLUGIN HOST RUNTIME", "PLUGIN HOST RUNTIME"),
                 href: "/admin/plugin-host",
                 icon: Blocks,
@@ -125,10 +132,10 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
         title: lt("CAPABILITIES", "CAPABILITIES"),
         items: [
             {
-                title: lt("EXTENSIONS", "EXTENSIONS"),
-                href: "/admin/extensions",
-                icon: Blocks,
-                description: lt("Skills、MCP 与扩展生态。", "Skills, MCP, and extension ecosystem."),
+                title: lt("CONTEXT", "CONTEXT"),
+                href: "/admin/context",
+                icon: FolderTree,
+                description: lt("上下文治理、引用与 RAG 注入策略。", "Context governance, references, and RAG injection policy."),
             },
             {
                 title: lt("AUDIO", "AUDIO"),

@@ -2,7 +2,12 @@
 
 import React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import type { AdminProcessRef } from "@v8/session-realtime";
+import {
+    type AdminProcessRef,
+    type ContextGovernanceView,
+    normalizeContextGovernanceDigest,
+    normalizeContextGovernanceHistory,
+} from "@v8/session-realtime";
 import { cn } from "@/lib/utils";
 import {
     RuntimeId,
@@ -23,6 +28,8 @@ interface RuntimeTimelinePanelProps {
     overallStatus?: string;
     currentStepTitle?: string | null;
     pendingApproval?: boolean;
+    contextGovernance?: ContextGovernanceView | null;
+    contextGovernanceHistory?: ContextGovernanceView[];
     onSelectRuntime: (runtimeId: RuntimeId) => void;
 }
 
@@ -200,6 +207,137 @@ function ActivityFeedItem({
     );
 }
 
+function ContextGovernanceSection({
+    contextGovernance,
+    contextGovernanceHistory,
+}: {
+    contextGovernance?: ContextGovernanceView | null;
+    contextGovernanceHistory?: ContextGovernanceView[];
+}) {
+    const latest = React.useMemo(
+        () => normalizeContextGovernanceDigest(contextGovernance || null),
+        [contextGovernance],
+    );
+    const historyItems = React.useMemo(() => {
+        const normalized = normalizeContextGovernanceHistory(contextGovernanceHistory || []);
+        const trimmed = normalized.slice(-4).reverse();
+        if (!latest) {
+            return trimmed;
+        }
+        return trimmed.filter((item) => item.id !== latest.id);
+    }, [contextGovernanceHistory, latest]);
+
+    if (!latest && historyItems.length === 0) {
+        return null;
+    }
+
+    const renderGovernanceCard = (
+        item: ReturnType<typeof normalizeContextGovernanceDigest>,
+        variant: "latest" | "history",
+    ) => {
+        if (!item) {
+            return null;
+        }
+        const hasCompactionNote = item.compactionApplied || Boolean(item.compactionMethod) || item.estimatedSavedTokens;
+        return (
+            <div
+                key={`${variant}:${item.id}`}
+                className={cn(
+                    "rounded-[20px] border p-3.5 shadow-[0_12px_32px_rgba(15,23,42,0.05)]",
+                    variant === "latest"
+                        ? "border-amber-200/80 bg-amber-50/90 dark:border-amber-500/20 dark:bg-amber-500/6"
+                        : "border-stone-200/80 bg-white/85 dark:border-white/10 dark:bg-white/[0.03]",
+                )}
+            >
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-white/80 px-2.5 py-0.5 text-[10px] font-semibold text-stone-700 shadow-sm dark:bg-white/10 dark:text-stone-100">
+                        {variant === "latest" ? "最近治理" : "治理记录"}
+                    </span>
+                    {item.runtimeKind && (
+                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-muted-foreground dark:bg-white/5">
+                            {item.runtimeKind}
+                        </span>
+                    )}
+                    {item.targetRole && (
+                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-muted-foreground dark:bg-white/5">
+                            {item.targetRole}
+                        </span>
+                    )}
+                    {item.eventTs && (
+                        <span className="ml-auto text-[10px] text-muted-foreground">
+                            {new Date(item.eventTs).toLocaleString()}
+                        </span>
+                    )}
+                </div>
+
+                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                    {item.resolvedScope && (
+                        <span className="rounded-full bg-stone-100 px-2.5 py-1 dark:bg-white/5">
+                            Scope: {item.resolvedScope}
+                        </span>
+                    )}
+                    {typeof item.blockCount === "number" && (
+                        <span className="rounded-full bg-stone-100 px-2.5 py-1 dark:bg-white/5">
+                            Blocks: {item.blockCount}
+                        </span>
+                    )}
+                    {hasCompactionNote && (
+                        <span className="rounded-full bg-stone-100 px-2.5 py-1 dark:bg-white/5">
+                            {item.compactionApplied ? "已压缩" : "未压缩"}
+                            {item.estimatedSavedTokens ? ` · 节省 ${item.estimatedSavedTokens} tokens` : ""}
+                        </span>
+                    )}
+                    {item.durableFlushReason && (
+                        <span className="rounded-full bg-stone-100 px-2.5 py-1 dark:bg-white/5">
+                            durable: {item.durableFlushReason}
+                        </span>
+                    )}
+                </div>
+
+                {item.blockTypes.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                        {item.blockTypes.slice(0, 6).map((type) => (
+                            <span
+                                key={`${item.id}:${type}`}
+                                className="rounded-full border border-stone-200/80 bg-white/80 px-2 py-0.5 text-[10px] text-stone-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-stone-300"
+                            >
+                                {type}
+                            </span>
+                        ))}
+                    </div>
+                )}
+
+                {(item.scopeChain.length > 0 || item.triggerReason || item.blockSummaryLines.length > 0) && (
+                    <div className="mt-2.5 space-y-1.5 text-[12px] leading-5 text-muted-foreground">
+                        {item.triggerReason && <div>触发原因：{item.triggerReason}</div>}
+                        {item.scopeChain.length > 0 && <div>Scope 链：{item.scopeChain.join(" -> ")}</div>}
+                        {item.blockSummaryLines.length > 0 && (
+                            <ul className="space-y-1">
+                                {item.blockSummaryLines.slice(0, 2).map((line) => (
+                                    <li key={`${item.id}:${line}`} className="rounded-2xl bg-stone-100/80 px-3 py-2 dark:bg-white/[0.04]">
+                                        {line}
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    return (
+        <div className="space-y-3">
+            {renderGovernanceCard(latest, "latest")}
+            {historyItems.length > 0 && (
+                <div className="space-y-2">
+                    {historyItems.map((item) => renderGovernanceCard(item, "history"))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 export function RuntimeTimelinePanel({
     isOpen,
     onClose,
@@ -209,6 +347,8 @@ export function RuntimeTimelinePanel({
     overallStatus,
     currentStepTitle,
     pendingApproval,
+    contextGovernance,
+    contextGovernanceHistory,
     onSelectRuntime,
 }: RuntimeTimelinePanelProps) {
     const runtimeId = selectedRuntimeId || model.activeRuntimeId || model.items[0]?.id || null;
@@ -293,8 +433,13 @@ export function RuntimeTimelinePanel({
                             </div>
 
                             <div className="custom-scrollbar flex-1 overflow-y-auto px-4 py-2.5 sm:px-[18px]">
+                                <ContextGovernanceSection
+                                    contextGovernance={contextGovernance}
+                                    contextGovernanceHistory={contextGovernanceHistory}
+                                />
+
                                 {activities.length > 0 && (
-                                    <div className="hidden md:block">
+                                    <div className={cn("hidden md:block", (contextGovernance || (contextGovernanceHistory || []).length > 0) ? "mt-4" : "")}>
                                         <BroadcastRail activities={activities.slice(0, 8)} />
                                     </div>
                                 )}

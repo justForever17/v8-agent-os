@@ -22,7 +22,7 @@ export interface RuntimeArtifact {
     canonicalPath?: string;
     projectId?: string;
     workspaceId?: string;
-    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact";
+    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact" | "channel_delivery_stage";
     storageClass?: string;
     surfaceVisible?: boolean;
     externalUrl?: string;

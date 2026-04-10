@@ -5,24 +5,19 @@ import uuid
 from typing import Any, Dict
 
 import requests
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:  # pragma: no cover - optional dependency in dev env
-    ChatGoogleGenerativeAI = None
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
 from core.local_visual_support import probe_local_multimodal_capability
 from core.database import db
-from core.gemini_cli_oauth import probe_gemini_cli_connection
 from core.llm_factory import (
     build_rerank_endpoint_candidates,
     llm_factory,
     normalize_rerank_api_flavor,
     parse_rerank_response_payload,
 )
+from core.multimodal_payload_adapter import build_multimodal_content
 from core.model_control_plane import model_control_plane
 from core.provider_compatibility import normalize_provider_error
 
@@ -52,6 +47,15 @@ def _extract_text_preview(response: Any) -> str:
 
 
 class ModelConnectionTester:
+    _TEST_IMAGE_DATA_URL = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGP43+BAEmIY1TCq"
+        "YfhqAABiM78Q2qxszwAAAABJRU5ErkJggg=="
+    )
+
+    class _StructuredProbe(BaseModel):
+        status: str = Field(description="must be ok")
+
     def _resolve_local_backend_preset(self, meta: Dict[str, Any]) -> str:
         provider_record = dict(meta.get("provider_record") or {})
         preset = str(provider_record.get("local_backend_preset") or meta.get("local_backend_preset") or "").strip().lower()
@@ -157,53 +161,14 @@ class ModelConnectionTester:
         }
 
     def _test_chat_model(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
-        api_standard = str(meta.get("api_standard") or "openai").lower()
         started = time.perf_counter()
-
-        if api_standard in {"google", "gemini"} and str(meta.get("oauth_flavor") or "") == "gemini_cli":
-            token = str(meta.get("oauth_access_token") or meta.get("api_key") or "")
-            result = probe_gemini_cli_connection(
-                access_token=token,
-                base_url=str(meta.get("base_url") or ""),
-                project_id=str(meta.get("project_id") or ""),
-            )
-            if not result.get("ok"):
-                raise RuntimeError(str(result.get("message") or "Gemini CLI OAuth 连接失败"))
-            return {
-                "latencyMs": result.get("latencyMs", 0.0),
-                "message": str(result.get("message") or "Gemini CLI OAuth 可用"),
-                "requestKind": str(result.get("requestKind") or "gemini_cli_oauth"),
-                "resolvedEndpoint": str(meta.get("base_url") or ""),
-                "projectId": str(result.get("projectId") or ""),
-                "runtimeMetadata": dict(result.get("metadata") or {}),
-            }
-
-        if api_standard == "anthropic":
-            client = ChatAnthropic(
-                model=model_id,
-                api_key=meta.get("api_key") or "sk-dummy",
-                base_url=meta.get("base_url") or None,
-                max_tokens=int(meta.get("global_max_tokens") or 16),
-                temperature=0,
-            )
-        elif api_standard in {"google", "gemini"}:
-            if ChatGoogleGenerativeAI is None:
-                raise RuntimeError("langchain-google-genai 未安装，无法测试 Gemini 连接。")
-            client = ChatGoogleGenerativeAI(
-                model=model_id,
-                google_api_key=meta.get("api_key") or "",
-                max_output_tokens=int(meta.get("global_max_tokens") or 16),
-                temperature=0,
-            )
-        else:
-            client = ChatOpenAI(
-                model=model_id,
-                api_key=meta.get("api_key") or "sk-dummy",
-                base_url=meta.get("base_url") or None,
-                max_tokens=int(meta.get("global_max_tokens") or 16),
-                temperature=0,
-            )
-
+        client = llm_factory.create_chat_model(
+            model_id,
+            temperature=0,
+            max_tokens=int(meta.get("global_max_tokens") or 16),
+            streaming=False,
+            _role="connection_test",
+        )
         response = client.invoke([HumanMessage(content="Reply with exact string: OK")])
         latency_ms = (time.perf_counter() - started) * 1000
         preview = _extract_text_preview(response) or "连接成功"
@@ -212,6 +177,183 @@ class ModelConnectionTester:
             "message": preview,
             "requestKind": "chat_completion",
             "resolvedEndpoint": str(meta.get("base_url") or ""),
+            "runtimeMetadata": dict(getattr(response, "response_metadata", {}) or {}),
+        }
+
+    def _test_streaming_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        started = time.perf_counter()
+        client = llm_factory.create_chat_model(
+            model_id,
+            temperature=0,
+            max_tokens=16,
+            streaming=True,
+            _role="connection_test_stream",
+        )
+        chunks: list[str] = []
+        for index, chunk in enumerate(client.stream([HumanMessage(content="Reply with exact string: OK")])):
+            content = getattr(chunk, "content", "")
+            if isinstance(content, str) and content:
+                chunks.append(content)
+            if index >= 4:
+                break
+        latency_ms = (time.perf_counter() - started) * 1000
+        return {
+            "latencyMs": round(latency_ms, 2),
+            "message": ("".join(chunks).strip() or "stream ok")[:120],
+            "requestKind": "streaming",
+            "resolvedEndpoint": str(meta.get("base_url") or ""),
+        }
+
+    def _test_tool_calling_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        def echo_status(status: str) -> str:
+            return status
+
+        started = time.perf_counter()
+        client = llm_factory.create_chat_model(
+            model_id,
+            temperature=0,
+            max_tokens=96,
+            streaming=False,
+            _role="connection_test_tools",
+        ).bind_tools(
+            [StructuredTool.from_function(echo_status, name="echo_status", description="Echo the provided status string.")],
+            tool_choice="required",
+        )
+        response = client.invoke(
+            [
+                HumanMessage(
+                    content=(
+                        "你必须调用名为 echo_status 的工具，"
+                        '把参数设置为 {"status":"ok"}，'
+                        "不要直接回答自然语言。"
+                    )
+                )
+            ]
+        )
+        tool_calls = list(getattr(response, "tool_calls", None) or [])
+        if not tool_calls:
+            raise RuntimeError("模型未返回工具调用。")
+        response_metadata = dict(getattr(response, "response_metadata", {}) or {})
+        latency_ms = (time.perf_counter() - started) * 1000
+        return {
+            "latencyMs": round(latency_ms, 2),
+            "message": f"tool call ok · {tool_calls[0].get('name') or 'unknown'}",
+            "requestKind": "tool_calling",
+            "resolvedEndpoint": str(meta.get("base_url") or ""),
+            "toolCallingMode": str(response_metadata.get("v8_tool_calling_mode") or "native"),
+            "toolCallCount": len(tool_calls),
+        }
+
+    def _test_structured_output_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        started = time.perf_counter()
+        client = llm_factory.create_chat_model(
+            model_id,
+            temperature=0,
+            max_tokens=96,
+            streaming=False,
+            _role="connection_test_structured",
+        ).with_structured_output(self._StructuredProbe)
+        result = client.invoke(
+            [
+                HumanMessage(
+                    content='Return a JSON object with one field exactly equal to {"status":"ok"}.'
+                )
+            ]
+        )
+        parsed_status = getattr(result, "status", None) if isinstance(result, self._StructuredProbe) else None
+        if not parsed_status and isinstance(result, dict):
+            parsed_status = result.get("status")
+        if str(parsed_status or "").strip().lower() != "ok":
+            raise RuntimeError("结构化输出未返回预期的 status=ok。")
+        latency_ms = (time.perf_counter() - started) * 1000
+        return {
+            "latencyMs": round(latency_ms, 2),
+            "message": "structured output ok",
+            "requestKind": "structured_output",
+            "resolvedEndpoint": str(meta.get("base_url") or ""),
+        }
+
+    def _test_multimodal_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        started = time.perf_counter()
+        client = llm_factory.create_chat_model(
+            model_id,
+            temperature=0,
+            max_tokens=128,
+            streaming=False,
+            _role="connection_test_multimodal",
+        )
+        content = build_multimodal_content(
+            prompt="Describe this image in one short word.",
+            media_url=self._TEST_IMAGE_DATA_URL,
+            mime_type="image/png",
+            api_standard=str(meta.get("api_standard") or "openai"),
+            transport_mode="inline_base64_image",
+        )
+        response = client.invoke([HumanMessage(content=content)])
+        preview = _extract_text_preview(response)
+        if not preview:
+            raise RuntimeError("多模态调用返回为空内容，未产出可验证正文。")
+        latency_ms = (time.perf_counter() - started) * 1000
+        return {
+            "latencyMs": round(latency_ms, 2),
+            "message": preview,
+            "requestKind": "multimodal",
+            "resolvedEndpoint": str(meta.get("base_url") or ""),
+        }
+
+    def _protocol_skip(self, *, name: str, meta: Dict[str, Any]) -> Dict[str, Any] | None:
+        api_standard = str(meta.get("api_standard") or "openai").strip().lower()
+        base_url = str(meta.get("base_url") or "").strip().lower().rstrip("/")
+        if name == "multimodal" and api_standard == "anthropic" and base_url.startswith("https://api.deepseek.com/anthropic"):
+            return {
+                "status": "not_supported_by_protocol",
+                "reason": "anthropic_compat_image_input_unsupported",
+            }
+        return None
+
+    def _run_capability_checks(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        matrix = dict(meta.get("effective_capability_matrix") or {})
+        checks: Dict[str, Any] = {}
+        failures: list[str] = []
+
+        def _capture(name: str, enabled: bool, probe) -> None:
+            protocol_skip = self._protocol_skip(name=name, meta=meta)
+            if protocol_skip is not None:
+                checks[name] = protocol_skip
+                return
+            if not enabled:
+                checks[name] = {"status": "skipped"}
+                return
+            try:
+                checks[name] = {"status": "passed", **probe()}
+            except Exception as exc:
+                checks[name] = {"status": "failed", "error": str(exc)}
+                failures.append(f"{name}: {exc}")
+
+        _capture("streaming", bool(matrix.get("supports_streaming")), lambda: self._test_streaming_capability(model_id=model_id, meta=meta))
+        _capture(
+            "toolCalling",
+            bool(matrix.get("supports_native_tools") or matrix.get("supports_prompt_emulated_tools")),
+            lambda: self._test_tool_calling_capability(model_id=model_id, meta=meta),
+        )
+        _capture(
+            "structuredOutput",
+            bool(matrix.get("supports_native_structured_output") or matrix.get("supports_prompt_fallback_structured_output")),
+            lambda: self._test_structured_output_capability(model_id=model_id, meta=meta),
+        )
+        _capture("multimodal", bool(matrix.get("supports_multimodal")), lambda: self._test_multimodal_capability(model_id=model_id, meta=meta))
+
+        if failures:
+            raise RuntimeError("; ".join(failures))
+        return checks
+
+    def _skipped_runtime_capability_checks(self, reason: str) -> Dict[str, Any]:
+        skipped = {"status": "skipped", "reason": reason}
+        return {
+            "streaming": dict(skipped),
+            "toolCalling": dict(skipped),
+            "structuredOutput": dict(skipped),
+            "multimodal": dict(skipped),
         }
 
     def _test_embedding_model(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -284,9 +426,17 @@ class ModelConnectionTester:
         provider_name = str(meta.get("provider_name") or provider_id)
         capability_class = str(meta.get("capability_class") or "")
         model_type = str((meta.get("model_record") or {}).get("type") or "TEXT").upper()
+        effective_capability_matrix = dict(meta.get("effective_capability_matrix") or {})
+        runtime_ready = bool(meta.get("runtime_ready", True))
+        runtime_unsupported_reason = str(meta.get("runtime_unsupported_reason") or "")
         capability_probe = self._probe_local_capability(model_id=model_id, meta=meta)
         provider_preset = self._resolve_local_backend_preset(meta) if str((meta.get("provider_record") or {}).get("type") or "").upper() == "LOCAL" else ""
+        provider_adapter = str(meta.get("provider_adapter") or "")
+        tool_calling_mode = "native" if bool(effective_capability_matrix.get("supports_native_tools")) else "prompt_emulated" if bool(effective_capability_matrix.get("supports_prompt_emulated_tools")) else "unsupported"
+        structured_output_mode = "native" if bool(effective_capability_matrix.get("supports_native_structured_output")) else "prompt_fallback" if bool(effective_capability_matrix.get("supports_prompt_fallback_structured_output")) else "unsupported"
+        stream_mode = "native" if bool(effective_capability_matrix.get("supports_streaming")) else "unsupported"
         started = time.perf_counter()
+        capability_checks: Dict[str, Any] = {}
 
         try:
             if meta.get("oauth_error"):
@@ -297,6 +447,18 @@ class ModelConnectionTester:
                 result = self._test_reranker_model(model_id=model_id, meta=meta)
             else:
                 result = self._test_chat_model(model_id=model_id, meta=meta)
+                if runtime_ready:
+                    capability_checks = self._run_capability_checks(model_id=model_id, meta=meta)
+                else:
+                    capability_checks = self._skipped_runtime_capability_checks(runtime_unsupported_reason or "runtime_not_ready")
+
+            observed_tool_mode = str(((capability_checks.get("toolCalling") or {}).get("toolCallingMode") or "")).strip()
+            observed_structured_mode = str(((capability_checks.get("structuredOutput") or {}).get("structuredOutputMode") or "")).strip()
+            if observed_tool_mode:
+                tool_calling_mode = observed_tool_mode
+            if observed_structured_mode:
+                structured_output_mode = observed_structured_mode
+            degrade_applied = tool_calling_mode != "native" or structured_output_mode != "native"
 
             self._record_health(
                 provider_id=provider_id,
@@ -313,6 +475,15 @@ class ModelConnectionTester:
                     "resolvedEndpoint": result.get("resolvedEndpoint") or (capability_probe or {}).get("resolvedEndpoint"),
                     "runtimeMetadata": result.get("runtimeMetadata"),
                     "projectId": result.get("projectId"),
+                    "effectiveCapabilityMatrix": effective_capability_matrix,
+                    "capabilityChecks": capability_checks,
+                    "providerAdapter": provider_adapter,
+                    "toolCallingMode": tool_calling_mode,
+                    "structuredOutputMode": structured_output_mode,
+                    "streamMode": stream_mode,
+                    "degradeApplied": degrade_applied,
+                    "runtimeReady": runtime_ready,
+                    "runtimeUnsupportedReason": runtime_unsupported_reason,
                 },
             )
             return {
@@ -321,9 +492,18 @@ class ModelConnectionTester:
                 "providerId": provider_id,
                 "providerName": provider_name,
                 "capabilityClass": capability_class,
+                "effectiveCapabilityMatrix": effective_capability_matrix,
+                "capabilityChecks": capability_checks,
+                "providerAdapter": provider_adapter,
+                "toolCallingMode": tool_calling_mode,
+                "structuredOutputMode": structured_output_mode,
+                "streamMode": stream_mode,
+                "degradeApplied": degrade_applied,
                 "providerPreset": provider_preset,
                 "resolvedEndpoint": result.get("resolvedEndpoint") or (capability_probe or {}).get("resolvedEndpoint"),
                 "capabilityProbe": capability_probe,
+                "runtimeReady": runtime_ready,
+                "runtimeUnsupportedReason": runtime_unsupported_reason,
                 **result,
             }
         except Exception as exc:
@@ -343,6 +523,15 @@ class ModelConnectionTester:
                     "source": "manual_connection_test",
                     "capabilityProbe": capability_probe,
                     "providerPreset": provider_preset,
+                    "effectiveCapabilityMatrix": effective_capability_matrix,
+                    "capabilityChecks": capability_checks,
+                    "providerAdapter": provider_adapter,
+                    "toolCallingMode": tool_calling_mode,
+                    "structuredOutputMode": structured_output_mode,
+                    "streamMode": stream_mode,
+                    "degradeApplied": False,
+                    "runtimeReady": runtime_ready,
+                    "runtimeUnsupportedReason": runtime_unsupported_reason,
                 },
             )
             return {
@@ -351,10 +540,19 @@ class ModelConnectionTester:
                 "providerId": provider_id,
                 "providerName": provider_name,
                 "capabilityClass": capability_class,
+                "effectiveCapabilityMatrix": effective_capability_matrix,
+                "capabilityChecks": capability_checks,
+                "providerAdapter": provider_adapter,
+                "toolCallingMode": tool_calling_mode,
+                "structuredOutputMode": structured_output_mode,
+                "streamMode": stream_mode,
+                "degradeApplied": False,
                 "latencyMs": latency_ms,
                 "providerPreset": provider_preset,
                 "resolvedEndpoint": (capability_probe or {}).get("resolvedEndpoint") or str(meta.get("base_url") or ""),
                 "capabilityProbe": capability_probe,
+                "runtimeReady": runtime_ready,
+                "runtimeUnsupportedReason": runtime_unsupported_reason,
                 "error": normalized,
             }
 

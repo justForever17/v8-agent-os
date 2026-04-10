@@ -118,6 +118,7 @@ import type {
 import {
     createInitialSessionRealtimeMessageState,
     type AdminProcessRef,
+    type ContextGovernanceView,
     type ContextReferenceItem,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
@@ -1039,7 +1040,7 @@ function mergeAuthoritativeSnapshotMessages(
 function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
     const root = asRecord(payload);
     const snapshot = asRecord(root.snapshot);
-    const messageCandidates = [root.messages, snapshot.messages];
+    const messageCandidates = [root.timeline, root.messages, snapshot.timeline, snapshot.messages];
     for (const candidate of messageCandidates) {
         if (Array.isArray(candidate)) {
             return candidate.filter((item): item is ChatMessage => Boolean(item) && typeof item === "object");
@@ -1250,7 +1251,10 @@ export default function ChatScreen() {
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [artifacts, setArtifacts] = useState<ArtifactDetail[]>([]);
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
+    const lastProcessSurfaceAtRef = useRef(0);
     const [contextReferences, setContextReferences] = useState<ContextReferenceItem[]>([]);
+    const [contextGovernance, setContextGovernance] = useState<ContextGovernanceView | null>(null);
+    const [contextGovernanceHistory, setContextGovernanceHistory] = useState<ContextGovernanceView[]>([]);
     const [musicTracks, setMusicTracks] = useState<MusicTrack[]>([]);
     const [commands, setCommands] = useState<CommandPresetSummary[]>([]);
     const [skills, setSkills] = useState<SkillReferenceSummary[]>([]);
@@ -1375,6 +1379,24 @@ export default function ChatScreen() {
         }
     }, []);
 
+    const applySessionProcessSurface = useCallback((incoming: AdminProcessRef[], options?: { forceClear?: boolean }) => {
+        const normalizedIncoming = incoming || [];
+        setProcesses((current) => {
+            if (normalizedIncoming.length > 0) {
+                lastProcessSurfaceAtRef.current = Date.now();
+                return normalizedIncoming;
+            }
+            if (options?.forceClear) {
+                lastProcessSurfaceAtRef.current = 0;
+                return [];
+            }
+            if (current.length === 0) {
+                return current;
+            }
+            return (Date.now() - lastProcessSurfaceAtRef.current) <= 3000 ? current : [];
+        });
+    }, []);
+
     const clearActiveConversationViewState = useCallback(() => {
         resetConversationStreamState();
         messagesRef.current = [];
@@ -1384,8 +1406,10 @@ export default function ChatScreen() {
         setTodos([]);
         todosRef.current = [];
         setArtifacts([]);
-        setProcesses([]);
+        applySessionProcessSurface([], { forceClear: true });
         setContextReferences([]);
+        setContextGovernance(null);
+        setContextGovernanceHistory([]);
         setRuntime({ status: "idle", latestSeq: 0 });
         runtimeRef.current = { status: "idle", latestSeq: 0 };
         activeRunIdRef.current = "";
@@ -1397,7 +1421,7 @@ export default function ChatScreen() {
         waitingApprovalRefreshAtRef.current = 0;
         setGovernanceApprovalOpen(false);
         setDismissedGovernanceApprovalId("");
-    }, [resetConversationStreamState]);
+    }, [applySessionProcessSurface, resetConversationStreamState]);
 
     const appendRuntimeTimeline = useCallback((entry: PhoneRuntimeTimelineEntry | null) => {
         if (!entry) {
@@ -2029,6 +2053,10 @@ export default function ChatScreen() {
         if (!view) {
             return;
         }
+        const viewWithGovernance = view as typeof view & {
+            contextGovernance?: ContextGovernanceView | null;
+            contextGovernanceHistory?: ContextGovernanceView[];
+        };
         const record = asRecord(payload);
         const nextApprovals = view.approvals as PendingApproval[];
         const hasAskUserPending = nextApprovals.some((item) => isAskUserInteractionApproval(item));
@@ -2073,6 +2101,15 @@ export default function ChatScreen() {
         setTodos(nextTodos as SessionTodoItem[]);
         todosRef.current = nextTodos as SessionTodoItem[];
         setContextReferences(view.contextReferences || []);
+        setContextGovernance((current) => viewWithGovernance.contextGovernance || current);
+        setContextGovernanceHistory((current) =>
+            Array.isArray(viewWithGovernance.contextGovernanceHistory) && viewWithGovernance.contextGovernanceHistory.length > 0
+                ? viewWithGovernance.contextGovernanceHistory
+                : current,
+        );
+        if (Array.isArray(view.processes) && view.processes.length > 0) {
+            applySessionProcessSurface(view.processes);
+        }
         setRuntimeTimeline(normalizePhoneRuntimeTimeline(nextRuntimeEvents));
         const nextRuntime: RuntimeSummary = {
             status: String(
@@ -2135,7 +2172,7 @@ export default function ChatScreen() {
                 createIfMissing: false,
             });
         }
-    }, [patchAssistantTaskShell]);
+    }, [applySessionProcessSurface, patchAssistantTaskShell]);
 
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const snapshotMessages = extractSnapshotMessages(payload);
@@ -2909,7 +2946,7 @@ export default function ChatScreen() {
             ) {
                 return false;
             }
-            const snapshotMessages = normalizeMessagesForState(detail.messages || []);
+            const snapshotMessages = normalizeMessagesForState(detail.timeline || detail.messages || []);
             const preserveOptimisticLocalState = Boolean(
                 messageConversationIdRef.current === conversationId
                 && (
@@ -2934,7 +2971,9 @@ export default function ChatScreen() {
             setMessages(normalized);
             syncArtifactsFromMessages(normalized);
             applyConversationProjection(detail);
-            setProcesses(processSurface.processes || []);
+            if (Array.isArray(processSurface.processes) && processSurface.processes.length > 0) {
+                applySessionProcessSurface(processSurface.processes);
+            }
             lastAppliedSnapshotSeqRef.current = buildSnapshotSequence(detail);
             lastAppliedSnapshotFingerprintRef.current = buildMessagesFingerprint(normalized);
             lastRealtimeSnapshotAtRef.current = Date.now();
@@ -2959,7 +2998,7 @@ export default function ChatScreen() {
                 setConversationBusy(false);
             }
         }
-    }, [applyConversationProjection, authorizedFetch, resetConversationStreamState, syncArtifactsFromMessages]);
+    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState, syncArtifactsFromMessages]);
 
     const ensureConversation = useCallback(async () => {
         if (activeConversationId) {
@@ -2992,30 +3031,31 @@ export default function ChatScreen() {
 
     useEffect(() => {
         if (!activeConversationId) {
-            setProcesses([]);
+            applySessionProcessSurface([], { forceClear: true });
             return;
         }
 
+        applySessionProcessSurface([], { forceClear: true });
         void getSessionProcesses(authorizedFetch, activeConversationId)
             .then((payload) => {
-                setProcesses(payload.processes || []);
+                applySessionProcessSurface(payload.processes || []);
             })
             .catch((error) => {
                 console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
-                setProcesses([]);
+                applySessionProcessSurface([]);
             });
 
         const timer = setInterval(() => {
             void getSessionProcesses(authorizedFetch, activeConversationId)
                 .then((payload) => {
                     if (activeConversationIdRef.current === activeConversationId) {
-                        setProcesses(payload.processes || []);
+                        applySessionProcessSurface(payload.processes || []);
                     }
                 })
                 .catch((error) => {
                     if (activeConversationIdRef.current === activeConversationId) {
                         console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
-                        setProcesses([]);
+                        applySessionProcessSurface([]);
                     }
                 });
         }, 1800);
@@ -3023,7 +3063,7 @@ export default function ChatScreen() {
         return () => {
             clearInterval(timer);
         };
-    }, [activeConversationId, authorizedFetch]);
+    }, [activeConversationId, applySessionProcessSurface, authorizedFetch]);
 
     useEffect(() => {
         if (status !== "authenticated") {
@@ -3156,6 +3196,9 @@ export default function ChatScreen() {
         setHistoryOpen(false);
         setInput("");
         setUploadedFiles([]);
+        setSelectedCommand(null);
+        setSelectedSkills([]);
+        setTaskPlanningMode(false);
         if (canonicalSessionId === activeConversationIdRef.current) {
             return;
         }
@@ -3417,6 +3460,11 @@ export default function ChatScreen() {
         || projection.runControlState.status === "waiting_approval",
     );
 
+    const hudProcesses = useMemo(
+        () => (projection.processes.length > 0 ? projection.processes : processes),
+        [processes, projection.processes],
+    );
+
     useEffect(() => {
         activeRunIdRef.current = String(projection.runControlState.runId || "").trim();
     }, [projection.runControlState.runId]);
@@ -3430,7 +3478,7 @@ export default function ChatScreen() {
             || projection.runControlState.canInterrupt
             || projection.runControlState.status === "running",
         );
-        if (hasRuntimeNeed && processes.length > 0 && projection.processes.length === 0) {
+        if (hasRuntimeNeed && processes.length > 0 && hudProcesses.length === 0) {
             console.warn("[phone/chat] process surface dropped after hydration/filtering", {
                 activeConversationId,
                 polledProcesses: processes.length,
@@ -3438,7 +3486,7 @@ export default function ChatScreen() {
                 runId: projection.runControlState.runId || null,
             });
         }
-    }, [activeConversationId, processes.length, projection.processes.length, projection.runControlState.canInterrupt, projection.runControlState.runId, projection.runControlState.status]);
+    }, [activeConversationId, hudProcesses.length, processes.length, projection.processes.length, projection.runControlState.canInterrupt, projection.runControlState.runId, projection.runControlState.status]);
 
     useEffect(() => {
         if (projection.selectedRuntimeId !== selectedRuntimeId) {
@@ -3607,6 +3655,7 @@ export default function ChatScreen() {
         const pendingCommand = selectedCommand;
         const pendingSkills = [...selectedSkills];
         const pendingFiles = [...uploadedFiles];
+        let submissionAccepted = false;
         setSending(true);
         try {
             const ensuredConversation = await ensureConversation();
@@ -3623,10 +3672,10 @@ export default function ChatScreen() {
             }
 
             const userMessage = buildUserMessage(text, {
-                command: selectedCommand,
-                skills: selectedSkills,
+                command: pendingCommand,
+                skills: pendingSkills,
                 taskPlanningMode,
-                files: uploadedFiles,
+                files: pendingFiles,
             });
             const assistantPlaceholder = buildAssistantPlaceholder();
             if (taskPlanningMode) {
@@ -3686,15 +3735,19 @@ export default function ChatScreen() {
                 {
                     messages: historyMessages,
                     conversationId: ensuredConversation.id,
-                    commandPresetName: selectedCommand?.name || null,
-                    skillReferences: selectedSkills,
-                    fileUrls: uploadedFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
+                    commandPresetName: pendingCommand?.name || null,
+                    skillReferences: pendingSkills,
+                    fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     taskPlanningMode,
                 },
             );
             if (submitResult.accepted === false) {
                 throw new Error(t("消息提交失败", "Unable to submit message"));
             }
+            submissionAccepted = true;
+            setSelectedCommand(null);
+            setSelectedSkills([]);
+            setUploadedFiles([]);
 
             const submittedRunId = String(
                 submitResult.runId
@@ -3729,9 +3782,11 @@ export default function ChatScreen() {
             }
 
         } catch (error) {
-            setSelectedCommand(pendingCommand);
-            setSelectedSkills(pendingSkills);
-            setUploadedFiles(pendingFiles);
+            if (!submissionAccepted) {
+                setSelectedCommand(pendingCommand);
+                setSelectedSkills(pendingSkills);
+                setUploadedFiles(pendingFiles);
+            }
             Alert.alert(t("发送失败", "Send failed"), error instanceof Error ? error.message : t("无法发送消息", "Unable to send message"));
         } finally {
             setSending(false);
@@ -3775,7 +3830,7 @@ export default function ChatScreen() {
             const status = String(item.status || "").trim().toLowerCase();
             return status === "done" || status === "skipped";
         });
-    const projectionHasActiveProcess = projection.processes.some((process) => {
+    const projectionHasActiveProcess = hudProcesses.some((process) => {
         const status = String(process.status || "").trim().toLowerCase();
         return status !== "stopped"
             && status !== "terminated"
@@ -3850,9 +3905,9 @@ export default function ChatScreen() {
                     },
                 ]}
             >
-                {projection.processes.length > 0 ? (
+                {hudProcesses.length > 0 ? (
                     <View style={styles.processesOverlayDock} pointerEvents="box-none">
-                        <ProcessesHUD processes={projection.processes} />
+                        <ProcessesHUD processes={hudProcesses} />
                     </View>
                 ) : null}
                 {todosVisible ? (
@@ -4066,7 +4121,7 @@ export default function ChatScreen() {
                             userImageUri={profileImageUri || ""}
                             userDisplayName={user?.name || user?.login || user?.email || ""}
                             artifacts={projection.artifacts}
-                            processes={projection.processes}
+                            processes={hudProcesses}
                             contextReferences={projection.contextReferences}
                             pendingApproval={projection.pendingApproval}
                             pendingApprovalCount={projection.pendingApprovalCount}
@@ -4099,9 +4154,11 @@ export default function ChatScreen() {
                     selectedRuntimeId={projection.selectedRuntimeId}
                     selectedRuntimeDockItem={projection.selectedRuntimeDockItem}
                     activities={projection.selectedRuntimeActivities}
-                    processes={projection.processes}
+                    processes={hudProcesses}
                     currentRunLabel={projection.currentRunLabel}
                     currentStepTitle={projection.currentStepTitle}
+                    contextGovernance={contextGovernance}
+                    contextGovernanceHistory={contextGovernanceHistory}
                     onClose={() => setRuntimePanelOpen(false)}
                     onSelectRuntime={setSelectedRuntimeId}
                 />

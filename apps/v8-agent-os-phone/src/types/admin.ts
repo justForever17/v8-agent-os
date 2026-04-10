@@ -6,6 +6,14 @@ import type {
     SessionHistoryControls,
 } from "@v8/session-realtime";
 
+export type {
+    AdminProcessRef,
+    AdminResourceRef,
+    AuthoritativeSessionHistoryRecord,
+    ContextReferenceItem,
+    SessionHistoryControls,
+} from "@v8/session-realtime";
+
 export type PhoneUser = {
     id: string;
     email: string;
@@ -108,7 +116,7 @@ export type ChatArtifact = {
     canonicalPath?: string;
     projectId?: string;
     workspaceId?: string;
-    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact";
+    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact" | "channel_delivery_stage";
     storageClass?: string;
     surfaceVisible?: boolean;
     mimeType?: string;
@@ -196,7 +204,7 @@ export type ArtifactDetail = {
     canonicalPath?: string;
     projectId?: string;
     workspaceId?: string;
-    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact";
+    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact" | "channel_delivery_stage";
     storageClass?: string;
     surfaceVisible?: boolean;
     externalUrl?: string;
@@ -232,6 +240,12 @@ export type ChatMessage = {
     nodes?: PhoneUiTimelineNode[];
     images?: string[];
     artifacts?: ChatArtifact[];
+    toolInvocations?: Array<{
+        toolCallId: string;
+        toolName: string;
+        args: Record<string, unknown>;
+        result?: unknown;
+    }>;
     metadata?: {
         commandPreset?: { name?: string };
         skillReferences?: SkillReferenceSummary[];
@@ -299,6 +313,8 @@ export type ConversationDetail = {
     workflow?: Record<string, unknown> | null;
     workflowProjection?: Record<string, unknown> | null;
     runtimeTimeline?: Record<string, unknown>[];
+    contextGovernance?: Record<string, unknown> | null;
+    contextGovernanceHistory?: Record<string, unknown>[];
     contextReferences?: ContextReferenceItem[];
     artifacts?: ArtifactDetail[];
     projection?: RealtimeSessionSnapshot & Record<string, unknown>;

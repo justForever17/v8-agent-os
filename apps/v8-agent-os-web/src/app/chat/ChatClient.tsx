@@ -13,7 +13,6 @@ import {
 import { normalizeRealtimeEvent } from "@/lib/realtime";
 import {
     RuntimeId,
-    RuntimeTimelineEntry,
     buildRuntimeStageModel,
     buildRuntimeTimelineEntryFromEvent,
     mergeRuntimeTimeline,
@@ -43,7 +42,6 @@ import {
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
-    type SessionApprovalView,
 } from "@v8/session-realtime";
 
 const AskUserModal = dynamic(
@@ -94,13 +92,10 @@ interface RunRecordView {
     metadata?: Record<string, unknown>;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" ? value as Record<string, unknown> : {};
-}
-
-function asNullableString(value: unknown): string | null {
-    return typeof value === "string" && value.trim() ? value.trim() : null;
-}
+type SessionProjectionView = AuthoritativeSessionView & {
+    contextGovernance?: Record<string, unknown> | null;
+    contextGovernanceHistory?: Record<string, unknown>[];
+};
 
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     if (!raw || typeof raw !== "object") {
@@ -328,8 +323,9 @@ export default function ChatClient() {
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [runActionLoading, setRunActionLoading] = useState(false);
-    const [sessionProjection, setSessionProjection] = useState<AuthoritativeSessionView | null>(null);
+    const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
+    const lastSessionProcessSurfaceAtRef = useRef(0);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
     const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -524,7 +520,16 @@ export default function ChatClient() {
         },
         [activeConversationId, currentRun?.id, messages, projectionRunId, sessionProcessSurface, sessionProjection?.processes],
     );
+    const hudProcesses = useMemo(
+        () => dedupeProcesses([
+            ...projectionProcesses,
+            ...dedupeProcesses(sessionProcessSurface || []),
+        ]),
+        [projectionProcesses, sessionProcessSurface],
+    );
     const projectionContextReferences = sessionProjection?.contextReferences || [];
+    const projectionContextGovernance = sessionProjection?.contextGovernance || null;
+    const projectionContextGovernanceHistory = sessionProjection?.contextGovernanceHistory || [];
     const projectionRuntimeTimeline = useMemo(
         () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
         [sessionProjection?.runtimeTimeline],
@@ -534,7 +539,7 @@ export default function ChatClient() {
             const status = String(item.status || "").trim().toLowerCase();
             return status === "done" || status === "skipped";
         });
-    const projectionHasActiveProcess = projectionProcesses.some((process) => {
+    const projectionHasActiveProcess = hudProcesses.some((process) => {
         const status = String(process.status || "").trim().toLowerCase();
         return status !== "stopped"
             && status !== "terminated"
@@ -778,6 +783,24 @@ export default function ChatClient() {
         return normalized;
     }, [setMessages]);
 
+    const applySessionProcessSurface = useCallback((incoming: AdminProcessRef[], options?: { forceClear?: boolean }) => {
+        const normalizedIncoming = dedupeProcesses(incoming || []);
+        setSessionProcessSurface((current) => {
+            if (normalizedIncoming.length > 0) {
+                lastSessionProcessSurfaceAtRef.current = Date.now();
+                return normalizedIncoming;
+            }
+            if (options?.forceClear) {
+                lastSessionProcessSurfaceAtRef.current = 0;
+                return [];
+            }
+            if (current.length === 0) {
+                return current;
+            }
+            return (Date.now() - lastSessionProcessSurfaceAtRef.current) <= 3000 ? current : [];
+        });
+    }, []);
+
     const loadConversationHistory = useCallback(async (conversationId: string) => {
         const detailRes = await fetch(`/api/client/conversations/${conversationId}`, { cache: "no-store" });
         if (!detailRes.ok) {
@@ -793,7 +816,7 @@ export default function ChatClient() {
         const projectionPayload = (detailPayload?.projection && typeof detailPayload.projection === "object")
             ? detailPayload.projection
             : detailPayload;
-        const projection = deriveAuthoritativeSessionView(projectionPayload).view;
+        const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
         setSessionProjection(projection);
         if (projection?.approvals?.length) {
             const askUserApproval = projection.approvals.find((item) => isAskUserInteractionApproval(item)) || null;
@@ -802,8 +825,10 @@ export default function ChatClient() {
             }
         }
 
-        const authoritativeMessages = Array.isArray(detailPayload?.messages)
-            ? detailPayload.messages
+        const authoritativeMessages = Array.isArray((detailPayload as { timeline?: unknown[] } | null | undefined)?.timeline)
+            ? (detailPayload as { timeline: unknown[] }).timeline
+            : Array.isArray(detailPayload?.messages)
+                ? detailPayload.messages
             : Array.isArray(projectionPayload?.snapshot?.messages)
                 ? projectionPayload.snapshot.messages
                 : Array.isArray(projectionPayload?.messages)
@@ -820,8 +845,11 @@ export default function ChatClient() {
         );
         messagesRef.current = normalizeMessagesForState(normalized);
         setMessages(normalizeMessagesForState(normalized));
-        setSessionProcessSurface(Array.isArray(detailPayload?.processes) ? detailPayload.processes : []);
-    }, [applyAskUserPendingApproval, applyProjectedSnapshot, router, setMessages]);
+        const detailProcesses = Array.isArray(detailPayload?.processes) ? detailPayload.processes : [];
+        if (detailProcesses.length > 0) {
+            applySessionProcessSurface(detailProcesses);
+        }
+    }, [applyAskUserPendingApproval, applySessionProcessSurface, router, setMessages]);
 
     const loadProjects = useCallback(async () => {
         setProjectsLoading(true);
@@ -891,23 +919,24 @@ export default function ChatClient() {
         try {
             const res = await fetch(`/api/client/sessions/${encodeURIComponent(conversationId)}/processes`, { cache: "no-store" });
             if (!res.ok) {
-                setSessionProcessSurface([]);
+                applySessionProcessSurface([]);
                 return;
             }
             const data = await res.json().catch(() => ({}));
-            setSessionProcessSurface(Array.isArray(data?.processes) ? data.processes : []);
+            applySessionProcessSurface(Array.isArray(data?.processes) ? data.processes : []);
         } catch (error) {
             console.warn("[ChatClient] Failed to load session processes:", error);
-            setSessionProcessSurface([]);
+            applySessionProcessSurface([]);
         }
-    }, []);
+    }, [applySessionProcessSurface]);
 
     useEffect(() => {
         if (!activeConversationId) {
-            setSessionProcessSurface([]);
+            applySessionProcessSurface([], { forceClear: true });
             return;
         }
 
+        applySessionProcessSurface([], { forceClear: true });
         void loadSessionProcesses(activeConversationId);
         const timer = window.setInterval(() => {
             void loadSessionProcesses(activeConversationId);
@@ -916,7 +945,7 @@ export default function ChatClient() {
         return () => {
             window.clearInterval(timer);
         };
-    }, [activeConversationId, loadSessionProcesses]);
+    }, [activeConversationId, applySessionProcessSurface, loadSessionProcesses]);
 
     const buildScopePayload = useCallback((conversationId?: string | null) => ({
         conversationId: conversationId || activeConversationIdRef.current || undefined,
@@ -1383,7 +1412,26 @@ export default function ChatClient() {
                 const data = JSON.parse(event.data);
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
                 const localStreamActive = isLocalStreamActive(activeConversationId);
-                setSessionProjection((current) => deriveAuthoritativeSessionView(snapshotPayload).view || current);
+                const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
+                setSessionProjection((current) => {
+                    if (!nextView) {
+                        return current;
+                    }
+                    if (!current) {
+                        return nextView;
+                    }
+                    return {
+                        ...nextView,
+                        contextGovernance: nextView.contextGovernance || current.contextGovernance,
+                        contextGovernanceHistory:
+                            Array.isArray(nextView.contextGovernanceHistory) && nextView.contextGovernanceHistory.length > 0
+                                ? nextView.contextGovernanceHistory
+                                : current.contextGovernanceHistory,
+                    };
+                });
+                if (Array.isArray(nextView?.processes) && nextView.processes.length > 0) {
+                    applySessionProcessSurface(nextView.processes);
+                }
                 if (!localStreamActive && Array.isArray(snapshotPayload?.snapshot?.messages)) {
                     applyProjectedSnapshot(
                         snapshotPayload.snapshot.messages,
@@ -1422,7 +1470,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyRemoteRuntimeEvent, isLocalStreamActive, loadConversationHistory]);
+    }, [activeConversationId, applyProjectedSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -1433,7 +1481,7 @@ export default function ChatClient() {
             || sessionProjection?.runtimeStatus === "running"
             || sessionProjection?.controls?.canInterrupt,
         );
-        if (hasRuntimeNeed && sessionProcessSurface.length > 0 && projectionProcesses.length === 0) {
+        if (hasRuntimeNeed && sessionProcessSurface.length > 0 && hudProcesses.length === 0) {
             console.warn("[ChatClient] process surface dropped after hydration/filtering", {
                 activeConversationId,
                 currentRunId: currentRun?.id || projectionRunId || null,
@@ -1441,7 +1489,7 @@ export default function ChatClient() {
                 projectionProcessSurface: (sessionProjection?.processes || []).length,
             });
         }
-    }, [activeConversationId, currentRun?.id, projectionProcesses.length, projectionRunId, sessionProcessSurface.length, sessionProjection?.controls?.canInterrupt, sessionProjection?.processes, sessionProjection?.runtimeStatus]);
+    }, [activeConversationId, currentRun?.id, hudProcesses.length, projectionRunId, sessionProcessSurface.length, sessionProjection?.controls?.canInterrupt, sessionProjection?.processes, sessionProjection?.runtimeStatus]);
 
     // Auth Check UI
     if (status === "loading") {
@@ -1605,7 +1653,7 @@ export default function ChatClient() {
                         <ChatWindow
                             key={activeConversationId || "new"}
                             messages={messages}
-                            processes={projectionProcesses}
+                            processes={hudProcesses}
                             contextReferences={projectionContextReferences}
                             isLoading={isLoading}
                             userAvatar={session?.user?.image}
@@ -1632,7 +1680,7 @@ export default function ChatClient() {
                             className="empty:hidden flex max-h-[22vh] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain sm:max-h-[28vh]"
                             style={hudStackStyle}
                         >
-                            <ProcessesHUD processes={projectionProcesses} />
+                            <ProcessesHUD processes={hudProcesses} />
                             <TodosHUD
                                 items={projectionTodos}
                                 isStale={projectionTodoStale}
@@ -1690,10 +1738,12 @@ export default function ChatClient() {
                 onClose={() => setIsTimelineOpen(false)}
                 model={runtimeStageModel}
                 selectedRuntimeId={selectedRuntimeId}
-                processes={projectionProcesses}
+                processes={hudProcesses}
                 overallStatus={effectiveStatus}
                 currentStepTitle={sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null}
                 pendingApproval={effectivePendingApproval}
+                contextGovernance={projectionContextGovernance}
+                contextGovernanceHistory={projectionContextGovernanceHistory}
                 onSelectRuntime={setSelectedRuntimeId}
             />
         </div>

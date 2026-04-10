@@ -42,6 +42,7 @@ class RuntimeCommandRouter:
             summary=payload.get("summary"),
             source=payload.get("source"),
             context_governance=payload.get("contextGovernance"),
+            context_governance_history=list(payload.get("contextGovernanceHistory") or []),
             lane=payload.get("lane"),
             liveness=payload.get("liveness"),
             recovery_class=payload.get("recoveryClass"),

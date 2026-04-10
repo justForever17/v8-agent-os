@@ -500,6 +500,7 @@ class ChatRuntime:
 
     def _scope_event_payload(self, result: Any) -> dict:
         binding = result.binding
+        evidence = dict(getattr(result, "evidence", {}) or {})
         return {
             "session_id": binding.session_id,
             "conversation_id": binding.conversation_id,
@@ -515,6 +516,10 @@ class ChatRuntime:
             "scope_chain": result.scope_chain,
             "requested_scope": result.requested_scope,
             "reused_existing_binding": result.reused_existing_binding,
+            "rebind_reason": str(evidence.get("rebind_reason") or "").strip() or None,
+            "previous_scope": str(evidence.get("previous_scope") or "").strip() or None,
+            "next_scope": str(evidence.get("next_scope") or "").strip() or None,
+            "scope_anchor_comparison": evidence.get("scope_anchor_comparison") if isinstance(evidence.get("scope_anchor_comparison"), dict) else None,
         }
 
     def _resolve_engine_config(self, request: ChatRequest) -> None:
@@ -651,6 +656,7 @@ class ChatRuntime:
             project_id=prepared.request.project_id,
             workspace_id=prepared.request.workspace_id,
             workspace_path=prepared.request.workspace_path,
+            thread_id=prepared.request.thread_id,
             scope_hint=prepared.request.scope_hint,
             scope_mode=prepared.request.scope_mode,
             run_id=run_handle.run_id,
@@ -739,7 +745,11 @@ class ChatRuntime:
             "transport": chat_run.transport,
             "project_id": chat_run.scope_result.binding.project_id,
             "workspace_id": chat_run.scope_result.binding.workspace_id,
+            "workspace_path": chat_run.scope_result.binding.workspace_path,
+            "workflow_id": chat_run.scope_result.binding.workflow_id,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
+            "scope_source": chat_run.scope_result.binding.scope_source,
+            "scope_chain": list(chat_run.scope_result.scope_chain or []),
         }
         if chat_run.prepared.command_preset_name:
             metadata["commandPreset"] = {

@@ -112,7 +112,7 @@ def build_automation_context_blocks(
                 "type": "recent_messages",
                 "title": "近期运行摘要",
                 "content": "\n".join(f"- {item}" for item in recent_summaries),
-                "metadata": {"item_count": len(recent_summaries)},
+                "metadata": {"item_count": len(recent_summaries), "runtime_plane": "automation"},
             }
         )
     if job_memory:
@@ -121,6 +121,7 @@ def build_automation_context_blocks(
                 "type": "automation_memory",
                 "title": "自动化连续性记忆",
                 "content": job_memory,
+                "metadata": {"runtime_plane": "automation"},
             }
         )
     return blocks
@@ -181,13 +182,52 @@ def build_channel_context_blocks(older_messages: Sequence[Dict[str, Any]], max_i
             "metadata": {
                 "compressed_messages": len(older_messages),
                 "max_summary_items": max_items,
+                "runtime_plane": "channel",
             },
         }
     ]
 
 
 def build_plugin_host_context_blocks(older_messages: Sequence[Dict[str, Any]], max_items: int = 8) -> List[Dict[str, Any]]:
-    return build_channel_context_blocks(older_messages, max_items=max_items)
+    blocks = build_channel_context_blocks(older_messages, max_items=max_items)
+    for block in blocks:
+        block["title"] = "PluginHost 历史摘要"
+        metadata = dict(block.get("metadata") or {})
+        metadata["runtime_plane"] = "plugin_host"
+        block["metadata"] = metadata
+    return blocks
+
+
+def _context_additional_kwargs(
+    *,
+    session_id: str,
+    metadata: Dict[str, Any],
+    context_blocks: Sequence[Dict[str, Any]],
+    include_blocks: bool,
+) -> Dict[str, Any]:
+    additional_kwargs: Dict[str, Any] = {
+        "session_id": session_id,
+        "channel_message": metadata,
+    }
+    for key in (
+        "project_id",
+        "workspace_id",
+        "workspace_path",
+        "workflow_id",
+        "channel_type",
+        "channel_remote_id",
+        "resolved_scope",
+        "scope_source",
+    ):
+        value = metadata.get(key)
+        if value is not None:
+            additional_kwargs[key] = value
+    scope_chain = metadata.get("scope_chain")
+    if isinstance(scope_chain, list):
+        additional_kwargs["scope_chain"] = [str(item).strip() for item in scope_chain if str(item).strip()]
+    if include_blocks and context_blocks:
+        additional_kwargs["context_adapter_blocks"] = list(context_blocks)
+    return additional_kwargs
 
 
 def build_channel_context_messages(
@@ -203,9 +243,12 @@ def build_channel_context_messages(
         metadata = item.get("metadata") or {}
         if item.get("role") == "user":
             display_content = _format_user_message(item, chat_type=chat_type)
-            additional_kwargs = {"session_id": session_id, "channel_message": metadata}
-            if index == 0 and context_blocks:
-                additional_kwargs["context_adapter_blocks"] = list(context_blocks)
+            additional_kwargs = _context_additional_kwargs(
+                session_id=session_id,
+                metadata=metadata,
+                context_blocks=context_blocks,
+                include_blocks=index == 0,
+            )
             sender_name = item.get("agent_name")
             if sender_name:
                 lc_messages.append(
@@ -218,9 +261,12 @@ def build_channel_context_messages(
             else:
                 lc_messages.append(HumanMessage(content=display_content, additional_kwargs=additional_kwargs))
         elif item.get("role") == "assistant":
-            additional_kwargs = {"session_id": session_id, "channel_message": metadata}
-            if index == 0 and context_blocks:
-                additional_kwargs["context_adapter_blocks"] = list(context_blocks)
+            additional_kwargs = _context_additional_kwargs(
+                session_id=session_id,
+                metadata=metadata,
+                context_blocks=context_blocks,
+                include_blocks=index == 0,
+            )
             lc_messages.append(
                 AIMessage(
                     content=item.get("content") or "",

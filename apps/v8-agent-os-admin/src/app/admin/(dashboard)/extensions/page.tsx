@@ -123,8 +123,8 @@ type SysModel = {
 };
 
 type ExtensionsConfigData = {
-    rerankPolicy?: { enabled?: boolean };
-    modelBindings?: { rerankerModel?: string; fallbackRerankerModel?: string };
+    prefilterPolicy?: { enabled?: boolean; mode?: string };
+    modelBindings?: { prefilterModel?: string };
 };
 
 type StructuredValidationPayload = {
@@ -327,8 +327,8 @@ export default function ExtensionsPage() {
         void loadData();
     }, [loadData]);
 
-    const rerankModels = useMemo(
-        () => models.filter((model) => ["RERANK", "RERANKER"].includes((model.type || "").toUpperCase())),
+    const prefilterModels = useMemo(
+        () => models.filter((model) => !["EMBEDDING", "RERANK", "RERANKER"].includes((model.type || "").toUpperCase())),
         [models]
     );
 
@@ -349,7 +349,7 @@ export default function ExtensionsPage() {
             data: {
                 ...configEnvelope.data,
                 ...patch,
-                rerankPolicy: { ...(configEnvelope.data?.rerankPolicy || {}), ...(patch.rerankPolicy || {}) },
+                prefilterPolicy: { ...(configEnvelope.data?.prefilterPolicy || {}), ...(patch.prefilterPolicy || {}) },
                 modelBindings: { ...(configEnvelope.data?.modelBindings || {}), ...(patch.modelBindings || {}) },
             },
         });
@@ -361,14 +361,17 @@ export default function ExtensionsPage() {
         try {
             const next = await saveConfigDomain<ExtensionsConfigData>("extensions", {
                 data: {
-                    rerankPolicy: { enabled: Boolean(configEnvelope.data?.rerankPolicy?.enabled) },
-                    modelBindings: { rerankerModel: String(configEnvelope.data?.modelBindings?.rerankerModel || "").trim() },
+                    prefilterPolicy: {
+                        enabled: Boolean(configEnvelope.data?.prefilterPolicy?.enabled),
+                        mode: "llm_tree",
+                    },
+                    modelBindings: { prefilterModel: String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim() },
                 },
             });
             setConfigEnvelope(next);
             setSaved(true);
             window.setTimeout(() => setSaved(false), 1800);
-            toast({ title: t(lt("扩展候选重排已保存", "Extensions candidate reranking saved")) });
+            toast({ title: t(lt("扩展候选预筛已保存", "Extensions candidate prefilter saved")) });
         } catch (error) {
             toast({
                 title: t(lt("保存失败", "Save failed")),
@@ -501,9 +504,8 @@ export default function ExtensionsPage() {
         );
     }
 
-    const rerankEnabled = Boolean(configEnvelope.data?.rerankPolicy?.enabled);
-    const rerankerModel = String(configEnvelope.data?.modelBindings?.rerankerModel || "").trim();
-    const fallbackRerankerModel = String(configEnvelope.data?.modelBindings?.fallbackRerankerModel || "").trim();
+    const prefilterEnabled = Boolean(configEnvelope.data?.prefilterPolicy?.enabled);
+    const prefilterModel = String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim();
     const runtimeStartupState = String(health.runtime?.startupState || catalog.startupState || "cold").trim().toLowerCase();
     const snapshotFreshness = String(health.runtime?.snapshotFreshness || catalog.snapshotFreshness || "cold").trim().toLowerCase();
     const silkAvailable = Boolean(health.silk?.available ?? health.runtime?.silk?.available);
@@ -515,10 +517,10 @@ export default function ExtensionsPage() {
         <AdminPageShell>
             <AdminPageHeader
                 title={lt("扩展生态", "Extensions")}
-                description={lt("管理 Skills、MCP 服务和候选排序。", "Manage skills, MCP services, and candidate routing order.")}
+                description={lt("管理 Skills、MCP 服务和候选预筛。", "Manage skills, MCP services, and candidate prefiltering.")}
                 actions={
                     <div className="flex items-center gap-3">
-                        <InlineSaveState saving={saving} saved={saved} label={t(lt("候选重排", "Candidate reranking"))} />
+                        <InlineSaveState saving={saving} saved={saved} label={t(lt("候选预筛", "Candidate prefilter"))} />
                         <Button onClick={() => void handleSaveConfig()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {t(lt("保存", "Save"))}
@@ -561,31 +563,31 @@ export default function ExtensionsPage() {
             />
 
             <ConfigCard
-                title={lt("候选重排", "Candidate reranking")}
-                description={lt("控制 Skills 与 MCP 候选排序。", "Control the ordering of Skills and MCP candidates.")}
+                title={lt("候选预筛", "Candidate prefilter")}
+                description={lt("控制 Skills、MCP 与 PluginHost 工具树的 LLM 预筛。", "Control LLM prefiltering for Skills, MCP, and PluginHost tool trees.")}
             >
                 <div className="grid gap-6 xl:grid-cols-[1.2fr,1fr]">
                     <div className="space-y-5">
                         <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                                 <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t(lt("启用扩展候选重排", "Enable extensions candidate reranking"))}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t(lt("只对词面召回池做精排，rerank 出错时会自动退回 lexical。", "Only rerank the lexical candidate pool. If reranking fails, the system falls back to lexical ordering automatically."))}</div>
+                                <div className="text-sm font-medium text-slate-900">{t(lt("启用扩展候选预筛", "Enable extensions candidate prefilter"))}</div>
+                                <div className="text-xs leading-5 text-slate-500">{t(lt("先做 lexical 家族召回，再用廉价 LLM 做工具树预筛；模型失败时自动退回 lexical。", "Build a lexical family pool first, then use a low-cost LLM to prefilter tool trees. Fall back to lexical automatically if the model fails."))}</div>
                             </div>
-                            <Switch checked={rerankEnabled} onCheckedChange={(checked) => updateConfig({ rerankPolicy: { enabled: checked } })} />
+                            <Switch checked={prefilterEnabled} onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "llm_tree" } })} />
                         </div>
 
                         <div className="space-y-2">
-                            <Label>{t(lt("扩展候选重排模型", "Extensions reranker model"))}</Label>
+                            <Label>{t(lt("扩展候选预筛模型", "Extensions prefilter model"))}</Label>
                             <Select
-                                value={rerankerModel || "__empty__"}
-                                onValueChange={(value) => updateConfig({ modelBindings: { rerankerModel: value === "__empty__" ? "" : value } })}
+                                value={prefilterModel || "__empty__"}
+                                onValueChange={(value) => updateConfig({ modelBindings: { prefilterModel: value === "__empty__" ? "" : value } })}
                             >
                                 <SelectTrigger className="w-full">
-                                    <SelectValue placeholder={t(lt("未指定，回退全局重排模型", "Unset, fall back to the global reranker"))} />
+                                    <SelectValue placeholder={t(lt("未指定，回退 lexical", "Unset, fall back to lexical"))} />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="__empty__">{t(lt("未指定，回退全局重排模型", "Unset, fall back to the global reranker"))}</SelectItem>
-                                    {rerankModels.map((model) => (
+                                    <SelectItem value="__empty__">{t(lt("未指定，回退 lexical", "Unset, fall back to lexical"))}</SelectItem>
+                                    {prefilterModels.map((model) => (
                                         <SelectItem key={modelValue(model)} value={modelValue(model)}>
                                             {modelLabel(model)}
                                         </SelectItem>
@@ -593,17 +595,17 @@ export default function ExtensionsPage() {
                                 </SelectContent>
                             </Select>
                             <p className="text-xs leading-5 text-slate-500">
-                                {t(lt("推荐绑定本地 vLLM Rerank 服务。当前全局回退模型：", "Binding a local vLLM rerank service is recommended. Current global fallback model:"))}{fallbackRerankerModel || t(lt("未指定", "Unset"))}。
+                                {t(lt("建议绑定廉价通用 LLM，例如 deepseek-chat / deepseek-v3。未指定时当前直接回退 lexical。", "Bind a low-cost general LLM such as deepseek-chat / deepseek-v3. If unset, the runtime falls back to lexical directly."))}
                             </p>
                         </div>
                     </div>
 
                     <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm text-slate-600">
-                        <div className="flex items-center justify-between gap-3"><span>{t(lt("当前策略", "Current policy"))}</span><Badge variant={rerankEnabled ? "default" : "secondary"}>{rerankEnabled ? t(lt("已启用", "Enabled")) : t(lt("已关闭", "Disabled"))}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{t(lt("专用模型绑定", "Dedicated binding"))}</span><Badge variant="outline">{rerankerModel || t(lt("未指定", "Unset"))}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{t(lt("全局回退", "Global fallback"))}</span><Badge variant="outline">{fallbackRerankerModel || t(lt("未指定", "Unset"))}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{t(lt("当前策略", "Current policy"))}</span><Badge variant={prefilterEnabled ? "default" : "secondary"}>{prefilterEnabled ? t(lt("已启用", "Enabled")) : t(lt("已关闭", "Disabled"))}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{t(lt("专用模型绑定", "Dedicated binding"))}</span><Badge variant="outline">{prefilterModel || t(lt("未指定", "Unset"))}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{t(lt("失败回退", "Failure fallback"))}</span><Badge variant="outline">{t(lt("Lexical", "Lexical"))}</Badge></div>
                         <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs leading-6 text-slate-500">
-                            {t(lt("提示：这里只有“排序权”，不会把 rerank 结果写进聊天正文，也不会替代 Skills 安装或 MCP 配置本身。", "Note: this only controls ranking. It does not write rerank output into chat content, and it does not replace skill installation or MCP configuration itself."))}
+                            {t(lt("提示：这里只有“候选预筛权”，不会把结果写进聊天正文，也不会替代 Skills 安装或 MCP 配置本身。", "Note: this only controls candidate prefiltering. It does not write output into chat content, and it does not replace skill installation or MCP configuration itself."))}
                         </div>
                     </div>
                 </div>

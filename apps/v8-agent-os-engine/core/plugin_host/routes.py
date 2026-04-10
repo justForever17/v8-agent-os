@@ -14,14 +14,30 @@ def _snapshot():
 
 
 @router.get("")
-async def get_plugin_host_snapshot():
-    return _snapshot()
+async def get_plugin_host_snapshot(refresh: bool = Query(default=False)):
+    return plugin_host_service.refresh_public_snapshot(refresh_registry=False) if refresh else _snapshot()
 
 
 @router.post("/rescan")
 async def rescan_plugin_host():
     snapshot = plugin_host_service.rescan()
     return {"status": "success", "pluginHost": snapshot}
+
+
+@router.get("/doctor")
+async def plugin_host_doctor(refresh: bool = Query(default=False)):
+    return {"status": "success", "doctor": plugin_host_service.bridge_doctor(refresh=refresh), "pluginHost": _snapshot()}
+
+
+@router.post("/doctor/repair")
+async def plugin_host_doctor_repair():
+    result = await plugin_host_service.bridge_doctor_repair()
+    plugin_host_snapshot = result.get("pluginHost")
+    return {
+        "status": "success",
+        "doctor": {key: value for key, value in result.items() if key != "pluginHost"},
+        "pluginHost": plugin_host_snapshot or _snapshot(),
+    }
 
 
 @router.post("/install")
@@ -189,11 +205,16 @@ async def handoff_plugin_host_inbound(request: Request, payload: dict = Body(def
     try:
         return await plugin_host_service.handle_inbound_handoff(
             client_host=str(getattr(request.client, "host", "") or "").strip(),
+            headers={
+                "authorization": request.headers.get("authorization"),
+                "x-v8-agent-os-plugin-host-handoff-token": request.headers.get("x-v8-agent-os-plugin-host-handoff-token"),
+                "x-v8-agent-os-plugin-host-handoff": request.headers.get("x-v8-agent-os-plugin-host-handoff"),
+            },
             payload=dict(payload or {}),
         )
     except RuntimeError as exc:
         detail = str(exc).strip() or exc.__class__.__name__
-        status_code = 403 if "仅允许本机" in detail else 400
+        status_code = 403 if ("仅允许本机" in detail or "handoff token" in detail) else 400
         raise HTTPException(status_code=status_code, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc).strip() or exc.__class__.__name__) from exc

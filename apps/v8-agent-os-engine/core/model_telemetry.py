@@ -93,6 +93,36 @@ def extract_token_usage(response: Any) -> Dict[str, int]:
     return usage
 
 
+def extract_runtime_diagnostics(response: Any) -> Dict[str, Any]:
+    diagnostics: Dict[str, Any] = {}
+    generations = getattr(response, "generations", None) or []
+    for generation_group in generations:
+        if not isinstance(generation_group, list):
+            continue
+        for generation in generation_group:
+            message = getattr(generation, "message", None)
+            response_metadata = dict(getattr(message, "response_metadata", {}) or {})
+            if not response_metadata:
+                continue
+            if response_metadata.get("v8_provider_adapter"):
+                diagnostics["providerAdapter"] = response_metadata.get("v8_provider_adapter")
+            if response_metadata.get("v8_provider_adapter_label"):
+                diagnostics["providerAdapterLabel"] = response_metadata.get("v8_provider_adapter_label")
+            if response_metadata.get("v8_effective_capability_matrix"):
+                diagnostics["effectiveCapabilityMatrix"] = response_metadata.get("v8_effective_capability_matrix")
+            if response_metadata.get("v8_tool_calling_mode"):
+                diagnostics["toolCallingMode"] = response_metadata.get("v8_tool_calling_mode")
+            if response_metadata.get("v8_structured_output_mode"):
+                diagnostics["structuredOutputMode"] = response_metadata.get("v8_structured_output_mode")
+            if response_metadata.get("v8_stream_mode"):
+                diagnostics["streamMode"] = response_metadata.get("v8_stream_mode")
+            tool_calls = getattr(message, "tool_calls", None)
+            if tool_calls:
+                diagnostics["toolCallCount"] = len(tool_calls)
+            return diagnostics
+    return diagnostics
+
+
 def _estimate_cost(tokens: int, unit_price: Any) -> float:
     price = _safe_float(unit_price)
     if price <= 0 or tokens <= 0:
@@ -135,6 +165,11 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         cost_per_input: Any = None,
         cost_per_output: Any = None,
         is_streaming: bool = False,
+        provider_adapter: str = "",
+        effective_capability_matrix: Optional[Dict[str, Any]] = None,
+        tool_calling_mode: str = "",
+        structured_output_mode: str = "",
+        stream_mode: str = "",
     ):
         self.model_id = model_id
         self.provider_id = provider_id
@@ -145,6 +180,11 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         self.cost_per_input = cost_per_input
         self.cost_per_output = cost_per_output
         self.is_streaming = is_streaming
+        self.provider_adapter = provider_adapter
+        self.effective_capability_matrix = dict(effective_capability_matrix or {})
+        self.tool_calling_mode = tool_calling_mode
+        self.structured_output_mode = structured_output_mode
+        self.stream_mode = stream_mode
         self._starts: Dict[str, _InvocationStart] = {}
 
     @property
@@ -181,6 +221,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         start = self._starts.pop(str(run_id), None)
         ctx = start.context if start else get_runtime_context()
         usage = extract_token_usage(response)
+        runtime_diagnostics = extract_runtime_diagnostics(response)
         latency_ms = (time.perf_counter() - start.started_at) * 1000 if start else 0.0
         cost_input = _estimate_cost(usage["input_tokens"], self.cost_per_input)
         cost_output = _estimate_cost(usage["output_tokens"], self.cost_per_output)
@@ -199,6 +240,13 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             metadata={
                 "message_batches": start.message_batches if start else 0,
                 "llm_output_keys": sorted((getattr(response, "llm_output", {}) or {}).keys()),
+                "providerAdapter": runtime_diagnostics.get("providerAdapter") or self.provider_adapter,
+                "providerAdapterLabel": runtime_diagnostics.get("providerAdapterLabel") or self.provider_adapter,
+                "effectiveCapabilityMatrix": runtime_diagnostics.get("effectiveCapabilityMatrix") or self.effective_capability_matrix,
+                "toolCallingMode": runtime_diagnostics.get("toolCallingMode") or self.tool_calling_mode,
+                "structuredOutputMode": runtime_diagnostics.get("structuredOutputMode") or self.structured_output_mode,
+                "streamMode": runtime_diagnostics.get("streamMode") or self.stream_mode,
+                "toolCallCount": runtime_diagnostics.get("toolCallCount", 0),
             },
         )
 
@@ -228,6 +276,11 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             metadata={
                 "exception_type": error.__class__.__name__,
                 "message_batches": start.message_batches if start else 0,
+                "providerAdapter": self.provider_adapter,
+                "effectiveCapabilityMatrix": self.effective_capability_matrix,
+                "toolCallingMode": self.tool_calling_mode,
+                "structuredOutputMode": self.structured_output_mode,
+                "streamMode": self.stream_mode,
             },
         )
 
@@ -317,7 +370,23 @@ class ModelTelemetryCallback(BaseCallbackHandler):
 
 
 class ModelTelemetryService:
-    def build_chat_callback(self, *, model_id: str, provider_id: str, provider_name: str, role: str = "", capability_class: str = "", cost_per_input: Any = None, cost_per_output: Any = None, is_streaming: bool = False) -> ModelTelemetryCallback:
+    def build_chat_callback(
+        self,
+        *,
+        model_id: str,
+        provider_id: str,
+        provider_name: str,
+        role: str = "",
+        capability_class: str = "",
+        cost_per_input: Any = None,
+        cost_per_output: Any = None,
+        is_streaming: bool = False,
+        provider_adapter: str = "",
+        effective_capability_matrix: Optional[Dict[str, Any]] = None,
+        tool_calling_mode: str = "",
+        structured_output_mode: str = "",
+        stream_mode: str = "",
+    ) -> ModelTelemetryCallback:
         return ModelTelemetryCallback(
             model_id=model_id,
             provider_id=provider_id,
@@ -328,6 +397,11 @@ class ModelTelemetryService:
             cost_per_input=cost_per_input,
             cost_per_output=cost_per_output,
             is_streaming=is_streaming,
+            provider_adapter=provider_adapter,
+            effective_capability_matrix=effective_capability_matrix,
+            tool_calling_mode=tool_calling_mode,
+            structured_output_mode=structured_output_mode,
+            stream_mode=stream_mode,
         )
 
     def record_aux_model_invocation(

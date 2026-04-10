@@ -14,6 +14,16 @@ except ImportError:  # pragma: no cover - optional dependency in dev env
 # We will bring those standard wrapper classes here since this is the global factory.
 
 from core.storage import storage
+from core.llm_chat_adapter import V8ChatModelAdapter
+from core.gemini_cli_runtime import GeminiCliRuntimeModel
+from core.model_capability_matrix import build_effective_capability_matrix, normalize_capability_metadata
+from core.llm_exceptions import V8LLMCapabilityMismatchError, raise_as_v8_llm_error
+from core.provider_runtime_profiles import (
+    is_anthropic_compat_provider,
+    is_gemini_cli_provider,
+    resolve_provider_adapter,
+    runtime_readiness_for_provider,
+)
 from core.model_budget_service import model_budget_service
 from core.model_control_plane import model_control_plane
 from core.model_telemetry import model_telemetry_service
@@ -295,6 +305,21 @@ class LLMFactory:
     """
     
     @staticmethod
+    def _is_gemini_cli_provider(*, api_standard: str, provider_config: Dict[str, Any], oauth_flavor: str = "") -> bool:
+        return is_gemini_cli_provider(
+            api_standard=api_standard,
+            provider_config=provider_config,
+            oauth_flavor=oauth_flavor,
+        )
+
+    @staticmethod
+    def _is_anthropic_compat_provider(*, api_standard: str, base_url: str) -> bool:
+        return is_anthropic_compat_provider(
+            api_standard=api_standard,
+            base_url=base_url,
+        )
+
+    @staticmethod
     def _resolve_api_key(raw_key: str) -> str:
         """Resolves OAuth file references in local paths"""
         if not raw_key:
@@ -302,8 +327,8 @@ class LLMFactory:
         resolved = resolve_oauth_reference(raw_key)
         return str(resolved.get("credential") or "")
 
-    @staticmethod
-    def _resolve_model_metadata(target_model_name: str) -> Dict[str, Any]:
+    @classmethod
+    def _resolve_model_metadata(cls, target_model_name: str) -> Dict[str, Any]:
         """
         Scans models.json to strictly retrieve:
         - base_url
@@ -317,6 +342,8 @@ class LLMFactory:
             p_name = str(record.get("provider_id") or "")
             p_conf = dict(record.get("provider") or {})
             meta = dict(record.get("model") or {})
+            api_standard = str(p_conf.get("api_standard", "openai") or "openai")
+            capability_class = str(meta.get("capabilityClass") or "")
 
             oauth_resolution = resolve_provider_oauth_credential(
                 provider_id=p_name,
@@ -325,7 +352,53 @@ class LLMFactory:
             t_api_key = str(oauth_resolution.get("credential") or "")
             t_base_url = p_conf.get("base_url", "")
             oauth_error = str(oauth_resolution.get("error") or "")
+            oauth_flavor = str(oauth_resolution.get("oauthFlavor") or "")
+            is_gemini_cli = cls._is_gemini_cli_provider(
+                api_standard=api_standard,
+                provider_config=p_conf,
+                oauth_flavor=oauth_flavor,
+            )
+            is_anthropic_compat = cls._is_anthropic_compat_provider(
+                api_standard=api_standard,
+                base_url=t_base_url,
+            )
+            capabilities = dict(meta.get("capabilities") or {})
+            if is_gemini_cli:
+                capabilities.update(
+                    {
+                        "supportsNativeTools": False,
+                        "supportsPromptEmulatedTools": True,
+                        "supportsNativeStructuredOutput": False,
+                        "supportsPromptFallbackStructuredOutput": True,
+                    }
+                )
+            if is_anthropic_compat:
+                capabilities.update(
+                    {
+                        "vision": False,
+                        "supportsMultimodal": False,
+                    }
+                )
+            runtime_ready, runtime_unsupported_reason = runtime_readiness_for_provider(
+                provider_id=p_name,
+                api_standard=api_standard,
+                provider_config=p_conf,
+                oauth_flavor=oauth_flavor,
+                credential=t_api_key,
+                oauth_path=str(oauth_resolution.get("oauthPath") or ""),
+            )
+            effective_matrix = build_effective_capability_matrix(
+                capability_class=capability_class,
+                capabilities=capabilities,
+                api_standard=api_standard,
+                runtime_ready=runtime_ready,
+            )
 
+            provider_adapter, provider_adapter_label = resolve_provider_adapter(
+                api_standard=api_standard,
+                provider_config=p_conf,
+                oauth_flavor=oauth_flavor,
+            )
             if not t_api_key and p_name.lower() == "qwen-oauth":
                 from core.credential_sniffer import QwenCredentialSniffer
                 local_token = QwenCredentialSniffer.get_qwen_token()
@@ -352,26 +425,46 @@ class LLMFactory:
                 "model_name": target_model_name,
                 "provider_id": p_name,
                 "provider_name": p_name,
+                "provider_record": p_conf,
+                "model_record": meta,
                 "base_url": t_base_url,
                 "api_key": t_api_key,
-                "api_standard": p_conf.get("api_standard", "openai"),
+                "api_standard": api_standard,
+                "api_version": p_conf.get("api_version") or p_conf.get("apiVersion") or "",
+                "organization_id": p_conf.get("organization_id") or p_conf.get("organizationId") or "",
+                "extra_headers": p_conf.get("extra_headers") or p_conf.get("extraHeaders") or {},
+                "proxy": p_conf.get("proxy") or p_conf.get("openai_proxy") or p_conf.get("anthropic_proxy") or "",
+                "ssl": p_conf.get("ssl") or {},
+                "timeouts": p_conf.get("timeouts") or {},
                 "local_backend_preset": p_conf.get("local_backend_preset") or p_conf.get("localBackendPreset") or "",
                 "oauth_path": oauth_resolution.get("oauthPath") or "",
                 "oauth_ref": oauth_resolution.get("oauthRef") or "",
                 "credential_mode": oauth_resolution.get("credentialMode") or "",
                 "oauth_error": oauth_error,
-                "oauth_flavor": oauth_resolution.get("oauthFlavor") or "",
+                "oauth_flavor": oauth_flavor,
                 "oauth_access_token": oauth_resolution.get("accessToken") or "",
                 "account_id": oauth_resolution.get("accountId") or "",
                 "project_id": oauth_resolution.get("projectId") or "",
+                "runtime_ready": runtime_ready,
+                "runtime_unsupported_reason": runtime_unsupported_reason,
+                "provider_adapter": provider_adapter,
+                "provider_adapter_label": provider_adapter_label,
                 "global_temperature": meta.get("temperature", 0.0),
                 "global_max_tokens": meta.get("maxTokens"),
                 "global_context_window": meta.get("contextWindow"),
                 "rerank_api_flavor": normalize_rerank_api_flavor(meta.get("rerank_api_flavor") or meta.get("rerankApiFlavor")),
-                "capabilities": meta.get("capabilities", {}),
-                "capability_class": meta.get("capabilityClass"),
+                "capabilities": capabilities,
+                "capability_class": capability_class,
                 "cost_per_input": meta.get("costPerInput"),
                 "cost_per_output": meta.get("costPerOutput"),
+                "tokenizer_family": meta.get("tokenizerFamily") or meta.get("tokenizer_family") or "",
+                "effective_capability_matrix": effective_matrix,
+                **normalize_capability_metadata(
+                    capabilities,
+                    capability_class=capability_class,
+                    api_standard=api_standard,
+                    runtime_ready=runtime_ready,
+                ),
                 "governance": record.get("governance", {}),
             }
         
@@ -379,11 +472,29 @@ class LLMFactory:
         return {"is_found": False, "model_name": target_model_name}
 
     @staticmethod
-    def _build_chat_kwargs(model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        final_kwargs = dict(model=model_id)
+    def _extract_timeout(meta: Dict[str, Any], **kwargs) -> Any:
+        explicit = kwargs.get("timeout")
+        if explicit is not None:
+            return explicit
+        timeouts = dict(meta.get("timeouts") or {})
+        return timeouts.get("request") or timeouts.get("read") or None
+
+    @classmethod
+    def _build_openai_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        final_kwargs: Dict[str, Any] = dict(model=model_id)
 
         if meta.get("base_url"):
             final_kwargs["base_url"] = meta["base_url"]
+        if meta.get("organization_id"):
+            final_kwargs["organization"] = meta["organization_id"]
+        if meta.get("proxy"):
+            final_kwargs["openai_proxy"] = meta["proxy"]
+        if meta.get("extra_headers"):
+            final_kwargs["default_headers"] = meta["extra_headers"]
+
+        timeout = cls._extract_timeout(meta, **kwargs)
+        if timeout is not None:
+            final_kwargs["timeout"] = timeout
 
         final_kwargs["api_key"] = meta.get("api_key") or "sk-dummy"
 
@@ -392,23 +503,70 @@ class LLMFactory:
         else:
             final_kwargs["temperature"] = meta.get("global_temperature", 0.0)
 
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
         if "max_tokens" in kwargs:
-            final_kwargs["max_tokens"] = kwargs["max_tokens"]
+            final_kwargs["max_tokens"] = int(kwargs["max_tokens"])
         elif meta.get("global_max_tokens"):
             final_kwargs["max_tokens"] = int(meta["global_max_tokens"])
 
+        if model_kwargs:
+            final_kwargs["model_kwargs"] = model_kwargs
+
         for key, value in kwargs.items():
-            if key not in {"temperature", "max_tokens", "base_url", "api_key", "model"}:
+            if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "model_kwargs", "timeout"}:
                 final_kwargs[key] = value
 
         return final_kwargs
 
-    @staticmethod
-    def _build_gemini_kwargs(model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    @classmethod
+    def _build_anthropic_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        final_kwargs: Dict[str, Any] = {
+            "model_name": model_id,
+            "api_key": meta.get("api_key") or "sk-dummy",
+        }
+
+        if meta.get("base_url"):
+            final_kwargs["base_url"] = meta["base_url"]
+        if meta.get("proxy"):
+            final_kwargs["anthropic_proxy"] = meta["proxy"]
+        if meta.get("extra_headers"):
+            final_kwargs["default_headers"] = meta["extra_headers"]
+
+        timeout = cls._extract_timeout(meta, **kwargs)
+        if timeout is not None:
+            final_kwargs["timeout"] = timeout
+
+        if "temperature" in kwargs:
+            final_kwargs["temperature"] = kwargs["temperature"]
+        else:
+            final_kwargs["temperature"] = meta.get("global_temperature", 0.0)
+
+        max_tokens = kwargs.get("max_tokens") or meta.get("global_max_tokens")
+        if max_tokens:
+            final_kwargs["max_tokens_to_sample"] = int(max_tokens)
+
+        if kwargs.get("stop"):
+            final_kwargs["stop"] = kwargs["stop"]
+
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        if model_kwargs:
+            final_kwargs["model_kwargs"] = model_kwargs
+
+        for key, value in kwargs.items():
+            if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "model_kwargs", "stop", "timeout"}:
+                final_kwargs[key] = value
+
+        return final_kwargs
+
+    @classmethod
+    def _build_gemini_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         final_kwargs = {
             "model": model_id,
             "google_api_key": meta.get("api_key") or "",
         }
+        timeout = cls._extract_timeout(meta, **kwargs)
+        if timeout is not None:
+            final_kwargs["timeout"] = timeout
         if "temperature" in kwargs:
             final_kwargs["temperature"] = kwargs["temperature"]
         elif meta.get("global_temperature") is not None:
@@ -419,13 +577,31 @@ class LLMFactory:
             final_kwargs["max_output_tokens"] = int(max_tokens)
 
         for key, value in kwargs.items():
-            if key not in {"temperature", "max_tokens", "base_url", "api_key", "model"}:
+            if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "timeout"}:
                 final_kwargs[key] = value
         return final_kwargs
 
     @staticmethod
     def _attach_telemetry(kwargs: Dict[str, Any], meta: Dict[str, Any], *, model_id: str, role: str = "") -> Dict[str, Any]:
         callbacks = list(kwargs.get("callbacks") or [])
+        provider_adapter = str(meta.get("provider_adapter") or "").strip() or (
+            "gemini"
+            if str(meta.get("api_standard") or "openai").lower() in {"google", "gemini"}
+            else "anthropic"
+            if str(meta.get("api_standard") or "openai").lower() == "anthropic"
+            else "openai-compatible"
+        )
+        effective_capability_matrix = dict(meta.get("effective_capability_matrix") or {})
+        tool_calling_mode = "native" if bool(
+            effective_capability_matrix.get("supports_native_tools") or meta.get("supports_native_tools", meta.get("supportsTools", True))
+        ) else "prompt_emulated"
+        structured_output_mode = "native" if bool(
+            effective_capability_matrix.get("supports_native_structured_output")
+            or meta.get("supports_native_structured_output", meta.get("supportsStructuredOutput", True))
+        ) else "prompt_fallback"
+        stream_mode = "native" if bool(
+            effective_capability_matrix.get("supports_streaming", True)
+        ) else "unsupported"
         callbacks.append(
             model_telemetry_service.build_chat_callback(
                 model_id=model_id,
@@ -436,6 +612,11 @@ class LLMFactory:
                 cost_per_input=meta.get("cost_per_input"),
                 cost_per_output=meta.get("cost_per_output"),
                 is_streaming=bool(kwargs.get("streaming")),
+                provider_adapter=provider_adapter,
+                effective_capability_matrix=effective_capability_matrix,
+                tool_calling_mode=tool_calling_mode,
+                structured_output_mode=structured_output_mode,
+                stream_mode=stream_mode,
             )
         )
         kwargs["callbacks"] = callbacks
@@ -457,29 +638,64 @@ class LLMFactory:
         if not meta.get("is_found"):
             # If the user passed a model completely unregistered, we attempt to initialize it 
             # as OpenAI barebones just in case base_url/api_key are in standard env vars
-            return ChatOpenAI(model=model_id, **kwargs)
+            provider_kwargs = cls._attach_telemetry({"model": model_id, **kwargs}, {"provider_id": "openai", "provider_name": "openai"}, model_id=model_id, role=role)
+            return V8ChatModelAdapter(
+                model_id=model_id,
+                provider_standard="openai",
+                role=role,
+                meta={"provider_id": "openai", "provider_name": "openai", "api_standard": "openai"},
+                model_kwargs=provider_kwargs,
+                builder=lambda: ChatOpenAI(**provider_kwargs),
+            )
 
         if meta.get("oauth_error"):
             raise RuntimeError(str(meta["oauth_error"]))
+        if not bool(meta.get("runtime_ready", True)):
+            raise V8LLMCapabilityMismatchError(
+                code="capability_mismatch",
+                message="当前 provider 尚未进入统一 LangChain 运行时或缺少本地 runtime 依赖。",
+                provider=str(meta.get("provider_name") or meta.get("provider_id") or "unknown"),
+                model=model_id,
+                retryable=False,
+                user_action="请补齐本地 runtime 依赖，或切换到当前已 runtime-ready 的 provider。",
+                details={"runtimeUnsupportedReason": str(meta.get("runtime_unsupported_reason") or "")},
+            )
 
         api_standard = str(meta.get("api_standard", "openai")).lower()
         try:
             if api_standard == "anthropic":
-                return ChatAnthropic(**cls._attach_telemetry(cls._build_chat_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role))
-            if api_standard in {"google", "gemini"}:
-                if ChatGoogleGenerativeAI is None:
-                    raise ImportError("langchain-google-genai is not installed")
-                return ChatGoogleGenerativeAI(**cls._attach_telemetry(cls._build_gemini_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role))
-            return ChatOpenAI(**cls._attach_telemetry(cls._build_chat_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role))
-        except Exception as exc:
-            normalized = normalize_provider_error(
-                exc,
-                provider=meta.get("provider_name"),
-                model=model_id,
+                provider_kwargs = cls._attach_telemetry(cls._build_anthropic_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                builder = lambda: ChatAnthropic(**provider_kwargs)
+            elif api_standard in {"google", "gemini"}:
+                if cls._is_gemini_cli_provider(
+                    api_standard=api_standard,
+                    provider_config=dict(meta.get("provider_record") or {}),
+                    oauth_flavor=str(meta.get("oauth_flavor") or ""),
+                ):
+                    provider_kwargs = cls._attach_telemetry(cls._build_gemini_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                    builder = lambda: GeminiCliRuntimeModel(
+                        model_id=model_id,
+                        meta=meta,
+                        model_kwargs=provider_kwargs,
+                    )
+                else:
+                    if ChatGoogleGenerativeAI is None:
+                        raise ImportError("langchain-google-genai is not installed")
+                    provider_kwargs = cls._attach_telemetry(cls._build_gemini_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                    builder = lambda: ChatGoogleGenerativeAI(**provider_kwargs)
+            else:
+                provider_kwargs = cls._attach_telemetry(cls._build_openai_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                builder = lambda: ChatOpenAI(**provider_kwargs)
+            return V8ChatModelAdapter(
+                model_id=model_id,
+                provider_standard=api_standard,
+                role=role,
+                meta=meta,
+                model_kwargs=provider_kwargs,
+                builder=builder,
             )
-            raise RuntimeError(
-                f"{normalized['code']}: {normalized['message']} ({normalized['userAction']})"
-            ) from exc
+        except Exception as exc:
+            raise_as_v8_llm_error(exc, provider=meta.get("provider_name"), model=model_id, details={"mode": "factory_init"})
             
     @classmethod
     def create_embedding_model(cls, model_id: str, **kwargs) -> BaseEmbedding:

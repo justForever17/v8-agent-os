@@ -83,7 +83,14 @@ export function Topbar() {
             const response = await fetch("/api/runtime-install", { cache: "no-store" });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
+                const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
+                console.warn("Failed to load runtime install state:", message);
+                toast({
+                    title: t(lt("安装态读取失败", "Install state unavailable")),
+                    description: t(lt("当前无法读取安装态信息。", "Unable to load the installation state right now.")),
+                    variant: "destructive",
+                });
+                return;
             }
             setInstallState(payload as RuntimeInstallState);
         } catch (error) {
@@ -117,7 +124,13 @@ export function Topbar() {
             const response = await fetch("/api/admin-inbox", { cache: "no-store" });
             const payload = await response.json().catch(() => ({ items: [] }));
             if (!response.ok) {
-                throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
+                const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
+                console.warn("Failed to load admin inbox:", message);
+                setInboxError(t(lt("当前无法读取消息摘要。", "Unable to load inbox right now.")));
+                if (!silent) {
+                    setInboxItems([]);
+                }
+                return;
             }
             setInboxItems(Array.isArray(payload.items) ? payload.items : []);
             setInboxError(null);

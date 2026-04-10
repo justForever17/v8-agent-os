@@ -8,28 +8,36 @@ from typing import Any
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-from core.v8_agent_os_paths import runtime_private_root
+from core.v8_agent_os_paths import openclaw_outbound_media_root, runtime_private_root, workspace_download_root
 
 
-def _plugin_host_workspace_root() -> Path:
+def _plugin_host_runtime_root() -> Path:
     root = runtime_private_root("plugin_host") / "media-assets"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _tts_root() -> Path:
-    root = _plugin_host_workspace_root() / "tts"
+    root = _plugin_host_runtime_root() / "tts"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def _slot_root(direction: str) -> Path:
-    root = _plugin_host_workspace_root() / direction / "last"
+def _inbound_slot_root(workspace_root: str | Path) -> Path:
+    root = workspace_download_root(workspace_root) / "plugin_host" / "inbound"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _outbound_slot_root() -> Path:
+    root = openclaw_outbound_media_root("v8-agent-os", "plugin_host", "last")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _clear_slot(root: Path) -> None:
+    if not root.exists():
+        return
     for child in root.iterdir():
         if child.is_dir():
             shutil.rmtree(child, ignore_errors=True)
@@ -107,7 +115,16 @@ def _normalize_asset_source(
     }
 
 
-def _copy_asset_to_target(*, direction: str, target_dir: Path, asset_source: dict[str, Any], index: int) -> dict[str, Any]:
+def _copy_asset_to_target(
+    *,
+    direction: str,
+    target_dir: Path,
+    asset_source: dict[str, Any],
+    index: int,
+    path_plane: str,
+    storage_class: str,
+    canonical_root: Path | None = None,
+) -> dict[str, Any]:
     source_path_value = str(asset_source.get("sourcePath") or "").strip()
     source_url_value = str(asset_source.get("sourceUrl") or "").strip()
     preferred_name = str(asset_source.get("preferredName") or "").strip() or None
@@ -137,13 +154,28 @@ def _copy_asset_to_target(*, direction: str, target_dir: Path, asset_source: dic
         target = _unique_target(file_name)
         shutil.copy2(origin, target)
         mime_type = _guess_mime_type(target)
+        canonical_path = str(target)
+        workspace_relative_path = None
+        workspace_root_value = None
+        if canonical_root is not None:
+            try:
+                workspace_relative_path = str(target.relative_to(canonical_root))
+                workspace_root_value = str(canonical_root)
+            except Exception:
+                workspace_relative_path = None
+                workspace_root_value = None
         return {
             "assetKind": explicit_kind or _guess_asset_kind(mime_type=mime_type, path=target),
             "workspacePath": str(target),
+            "canonicalPath": canonical_path,
+            "workspaceRoot": workspace_root_value,
+            "workspaceRelativePath": workspace_relative_path,
             "originalFileName": origin.name or file_name,
             "mimeType": mime_type,
             "direction": direction,
             "deliveryMode": delivery_mode,
+            "pathPlane": path_plane,
+            "storageClass": storage_class,
             "sourcePath": str(origin),
             "sourceUrl": None,
         }
@@ -155,13 +187,28 @@ def _copy_asset_to_target(*, direction: str, target_dir: Path, asset_source: dic
     with urllib_request.urlopen(source_url_value, timeout=20) as response:
         target.write_bytes(response.read())
         mime_type = str(response.headers.get_content_type() or "").strip() or _guess_mime_type(target)
+    canonical_path = str(target)
+    workspace_relative_path = None
+    workspace_root_value = None
+    if canonical_root is not None:
+        try:
+            workspace_relative_path = str(target.relative_to(canonical_root))
+            workspace_root_value = str(canonical_root)
+        except Exception:
+            workspace_relative_path = None
+            workspace_root_value = None
     return {
         "assetKind": explicit_kind or _guess_asset_kind(mime_type=mime_type, path=target),
         "workspacePath": str(target),
+        "canonicalPath": canonical_path,
+        "workspaceRoot": workspace_root_value,
+        "workspaceRelativePath": workspace_relative_path,
         "originalFileName": file_name,
         "mimeType": mime_type,
         "direction": direction,
         "deliveryMode": delivery_mode,
+        "pathPlane": path_plane,
+        "storageClass": storage_class,
         "sourcePath": None,
         "sourceUrl": source_url_value,
     }
@@ -173,26 +220,60 @@ def materialize_last_assets(
     sources: list[dict[str, Any]],
     message_slot: str | None = None,
     replace_root: bool = True,
+    workspace_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
     normalized_direction = "inbound" if str(direction).strip().lower() == "inbound" else "outbound"
     normalized_sources = [dict(item) for item in sources if isinstance(item, dict) and (item.get("sourcePath") or item.get("sourceUrl"))]
     if not normalized_sources:
         return None
-    root = _slot_root(normalized_direction)
-    if replace_root:
-        _clear_slot(root)
+    canonical_root: Path | None = None
+    if normalized_direction == "inbound":
+        if not str(workspace_root or "").strip():
+            raise ValueError("materialize_last_assets(inbound) 缺少 workspace_root。")
+        canonical_root = Path(str(workspace_root)).expanduser()
+        root = _inbound_slot_root(canonical_root)
+        path_plane = "workspace_download"
+        storage_class = "workspace_download"
+    else:
+        root = _outbound_slot_root()
+        path_plane = "channel_delivery_stage"
+        storage_class = "ephemeral"
     slot = _safe_filename(message_slot, f"message_{uuid.uuid4().hex[:12]}")
     target_dir = root / slot
+    if replace_root:
+        _clear_slot(target_dir)
     assets = [
-        _copy_asset_to_target(direction=normalized_direction, target_dir=target_dir, asset_source=asset_source, index=index)
+        _copy_asset_to_target(
+            direction=normalized_direction,
+            target_dir=target_dir,
+            asset_source=asset_source,
+            index=index,
+            path_plane=path_plane,
+            storage_class=storage_class,
+            canonical_root=canonical_root,
+        )
         for index, asset_source in enumerate(normalized_sources)
     ]
+    workspace_relative_path = None
+    workspace_root_value = None
+    if canonical_root is not None:
+        try:
+            workspace_relative_path = str(target_dir.relative_to(canonical_root))
+            workspace_root_value = str(canonical_root)
+        except Exception:
+            workspace_relative_path = None
+            workspace_root_value = None
     return {
         "messageSlot": slot,
         "workspaceDirectory": str(target_dir),
+        "canonicalPath": str(target_dir),
+        "workspaceRoot": workspace_root_value,
+        "workspaceRelativePath": workspace_relative_path,
         "assetCount": len(assets),
         "direction": normalized_direction,
         "deliveryMode": str(normalized_sources[0].get("deliveryMode") or "attachment"),
+        "pathPlane": path_plane,
+        "storageClass": storage_class,
         "assets": assets,
     }
 
@@ -205,6 +286,7 @@ def materialize_last_asset(
     preferred_name: str | None = None,
     delivery_mode: str = "attachment",
     asset_kind: str | None = None,
+    workspace_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
     source = _normalize_asset_source(
         source_path=source_path,
@@ -213,7 +295,7 @@ def materialize_last_asset(
         asset_kind=asset_kind,
         delivery_mode=delivery_mode,
     )
-    manifest = materialize_last_assets(direction=direction, sources=[source] if source else [])
+    manifest = materialize_last_assets(direction=direction, sources=[source] if source else [], workspace_root=workspace_root)
     if not manifest:
         return None
     first_asset = dict((manifest.get("assets") or [None])[0] or {})

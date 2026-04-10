@@ -40,6 +40,7 @@ type CreateConversationInput = {
     projectId?: string;
     workspaceId?: string;
     workspacePath?: string;
+    threadId?: string;
     scopeHint?: string;
     scopeMode?: string;
 };
@@ -207,6 +208,7 @@ export async function updateSessionScope(
         projectId?: string;
         workspaceId?: string;
         workspacePath?: string;
+        threadId?: string;
         scopeHint?: string;
         scopeSource?: string;
         scopeConfidence?: number;
@@ -233,6 +235,7 @@ export async function reresolveSessionScope(
         projectId?: string;
         workspaceId?: string;
         workspacePath?: string;
+        threadId?: string;
         scopeHint?: string;
         scopeMode?: string;
     },
@@ -295,6 +298,9 @@ export async function createConversation(
         }
         if (typeof input.workspacePath === "string" && input.workspacePath.trim()) {
             requestBody.workspacePath = input.workspacePath.trim();
+        }
+        if (typeof input.threadId === "string" && input.threadId.trim()) {
+            requestBody.threadId = input.threadId.trim();
         }
         if (typeof input.scopeHint === "string" && input.scopeHint.trim()) {
             requestBody.scopeHint = input.scopeHint.trim();

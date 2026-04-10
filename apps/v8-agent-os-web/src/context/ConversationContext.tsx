@@ -17,6 +17,7 @@ export interface CreateConversationPayload {
     projectId?: string;
     workspaceId?: string;
     workspacePath?: string;
+    threadId?: string;
     scopeHint?: string;
     scopeMode?: string;
 }
@@ -75,7 +76,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
 
     const createConversation = useCallback(async (payload?: CreateConversationPayload) => {
         try {
-            const res = await fetch(`/api/conversations`, {
+                const res = await fetch(`/api/conversations`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

@@ -49,7 +49,7 @@ def _resolved_workspace_prompt_path() -> str:
     return workspace_resolution_service.get_main_workspace_path()
 
 
-def _build_memory_recall_block(items: list[dict]) -> tuple[str, list[dict]]:
+def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dict]]:
     facts: list[dict] = []
     lines: list[str] = []
     for item in items:
@@ -68,9 +68,19 @@ def _build_memory_recall_block(items: list[dict]) -> tuple[str, list[dict]]:
         )
         lines.append(f"- {clipped}")
     if not lines:
-        return "", []
-    body = "\n".join(lines)
-    return f"\n\n[MEMORY RECALL]\n{body}\n[/MEMORY RECALL]", facts
+        return None, []
+    return (
+        {
+            "type": "memory_recall",
+            "title": "记忆召回",
+            "content": "\n".join(lines),
+            "metadata": {
+                "runtime_plane": "memory",
+                "fact_count": len(facts),
+            },
+        },
+        facts,
+    )
 
 
 def resolve_supervisor_request_context(messages, scope_resolution_service):
@@ -407,20 +417,24 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
         for i in range(len(updated_messages) - 1, -1, -1):
             if isinstance(updated_messages[i], HumanMessage):
                 old_msg = updated_messages[i]
-                new_content = old_msg.content
-                if isinstance(new_content, str):
-                    new_content += rag_block
-                elif isinstance(new_content, list):
-                    new_content = new_content.copy()
-                    new_content.append({"type": "text", "text": rag_block})
                 next_kwargs = dict(old_msg.additional_kwargs or {})
+                context_blocks = next_kwargs.get("context_adapter_blocks")
+                if isinstance(context_blocks, list):
+                    next_blocks = list(context_blocks)
+                elif isinstance(context_blocks, dict):
+                    next_blocks = [context_blocks]
+                else:
+                    next_blocks = []
+                next_blocks.append(rag_block)
+                next_kwargs["context_adapter_blocks"] = next_blocks
                 next_kwargs["memory_rag"] = {
                     "query": user_query,
                     "facts": fact_bundle,
                     "scope_chain": scope_chain,
                 }
                 updated_messages[i] = HumanMessage(
-                    content=new_content,
+                    content=old_msg.content,
+                    name=getattr(old_msg, "name", None),
                     additional_kwargs=next_kwargs,
                     id=old_msg.id,
                 )

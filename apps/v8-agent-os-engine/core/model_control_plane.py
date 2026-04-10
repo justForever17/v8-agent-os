@@ -3,7 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
+from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
+from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.storage import storage
 
@@ -23,6 +25,7 @@ DEFAULT_ROLE_MAP = {
     "vision": "",
     "embedding": "",
     "reranker": "",
+    "extensions_prefilter": "",
     "extensions_reranker": "",
     "channel": "",
     "automation": "",
@@ -122,6 +125,12 @@ ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "group": "extension",
         "capabilityClasses": ["reranker"],
     },
+    "extensions_prefilter": {
+        "label": "扩展候选预筛",
+        "description": "用廉价通用模型对 Skills、MCP 与 PluginHost 工具树做家族级预筛。",
+        "group": "extension",
+        "capabilityClasses": ["chat_general", "chat_tool_calling", "chat_reasoning"],
+    },
     "channel": {
         "label": "渠道处理",
         "description": "飞书与其他外部渠道消息处理。",
@@ -216,11 +225,11 @@ MODULE_DEFINITIONS: List[Dict[str, Any]] = [
         "pageLabel": "记忆管理",
     },
     {
-        "key": "extensions_rerank",
-        "label": "扩展候选重排",
-        "description": "对 Skills 与 MCP 候选池进行二阶段精排。",
+        "key": "extensions_prefilter",
+        "label": "扩展候选预筛",
+        "description": "对 Skills、MCP 与 PluginHost 候选树做 LLM 预筛。",
         "group": "extension",
-        "roles": ["extensions_reranker"],
+        "roles": ["extensions_prefilter"],
         "pagePath": "/admin/extensions",
         "pageLabel": "扩展生态",
     },
@@ -363,6 +372,14 @@ def _infer_capability_class(model_type: str, capabilities: Dict[str, bool]) -> s
 
 
 class ModelControlPlane:
+    def _runtime_ready_for_provider(self, provider_meta: Dict[str, Any]) -> bool:
+        runtime_ready, _reason = runtime_readiness_for_provider(
+            provider_id=str(provider_meta.get("name") or provider_meta.get("provider_id") or ""),
+            api_standard=provider_meta.get("api_standard") or provider_meta.get("apiStandard") or "openai",
+            provider_config=provider_meta,
+        )
+        return runtime_ready
+
     def _normalize_capabilities(self, model_id: str, model_meta: Dict[str, Any]) -> Dict[str, bool]:
         model_type = str(model_meta.get("type") or "TEXT").upper()
         raw_caps = dict(model_meta.get("capabilities") or {})
@@ -373,7 +390,8 @@ class ModelControlPlane:
         embedding = model_type == "EMBEDDING"
         rerank = model_type in {"RERANK", "RERANKER"}
 
-        return {
+        base_url = str(model_meta.get("base_url") or model_meta.get("baseUrl") or "").strip().lower()
+        normalized = {
             "chat": bool(raw_caps.get("chat", chat_like)),
             "reasoning": bool(raw_caps.get("reasoning", _infer_reasoning(model_id, display_name))),
             "toolCalling": bool(raw_caps.get("toolCalling", chat_like)),
@@ -383,6 +401,28 @@ class ModelControlPlane:
             "rerank": bool(raw_caps.get("rerank", rerank)),
             "computerUse": bool(raw_caps.get("computerUse", False)),
         }
+        capability_class = str(model_meta.get("capabilityClass") or _infer_capability_class(model_type, normalized))
+        api_standard = str(model_meta.get("api_standard") or model_meta.get("apiStandard") or "openai")
+        runtime_ready = bool(model_meta.get("runtimeReady", True))
+        oauth_preset = str(model_meta.get("oauth_preset") or model_meta.get("oauthPreset") or "").strip().lower()
+        if api_standard in {"google", "gemini"} and oauth_preset == "geminicli":
+            normalized["toolCalling"] = True
+            normalized["supportsNativeTools"] = False
+            normalized["supportsPromptEmulatedTools"] = True
+            normalized["supportsNativeStructuredOutput"] = False
+            normalized["supportsPromptFallbackStructuredOutput"] = True
+        if api_standard == "anthropic" and base_url.startswith("https://api.deepseek.com/anthropic"):
+            normalized["vision"] = False
+            normalized["supportsMultimodal"] = False
+        normalized.update(
+            normalize_capability_metadata(
+                normalized,
+                capability_class=capability_class,
+                api_standard=api_standard,
+                runtime_ready=runtime_ready,
+            )
+        )
+        return normalized
 
     def _normalize_roles(self, roles_in: Dict[str, Any]) -> Dict[str, str]:
         roles = {**DEFAULT_ROLE_MAP}
@@ -413,13 +453,24 @@ class ModelControlPlane:
         for provider_id, provider_data in providers_in.items():
             meta = dict(provider_data.get("provider") or {})
             models = dict(provider_data.get("models") or {})
+            provider_api_standard = str(meta.get("api_standard") or meta.get("apiStandard") or "openai")
+            provider_runtime_ready = self._runtime_ready_for_provider(meta)
             normalized_models: Dict[str, Any] = {}
             for model_id, model_meta_raw in models.items():
                 model_meta = dict(model_meta_raw or {})
+                model_meta["runtimeReady"] = provider_runtime_ready
                 capabilities = self._normalize_capabilities(model_id, model_meta)
                 capability_class = str(
                     model_meta.get("capabilityClass")
                     or _infer_capability_class(str(model_meta.get("type") or "TEXT"), capabilities)
+                )
+                capabilities.update(
+                    normalize_capability_metadata(
+                        capabilities,
+                        capability_class=capability_class,
+                        api_standard=provider_api_standard,
+                        runtime_ready=provider_runtime_ready,
+                    )
                 )
                 normalized_models[model_id] = {
                     **model_meta,
@@ -431,6 +482,7 @@ class ModelControlPlane:
                     "priority": 50 if _safe_int(model_meta.get("priority")) is None else _safe_int(model_meta.get("priority")),
                     "stabilityTier": str(model_meta.get("stabilityTier") or "stable"),
                     "isEnabled": bool(model_meta.get("isEnabled", True)),
+                    "runtimeReady": provider_runtime_ready,
                     "capabilities": capabilities,
                     "capabilityClass": capability_class,
                 }

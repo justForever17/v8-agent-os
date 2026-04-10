@@ -44,7 +44,8 @@ export type AdminResourceKind =
 export type PathPlane =
   | "runtime_private"
   | "workspace_download"
-  | "workspace_artifact";
+  | "workspace_artifact"
+  | "channel_delivery_stage";
 
 export type AdminResourceRef = {
   kind: AdminResourceKind;
@@ -188,6 +189,7 @@ export type AuthoritativeSessionSnapshot = {
   processes?: AdminProcessRef[];
   contextReferences?: ContextReferenceItem[];
   contextGovernance?: Record<string, unknown> | null;
+  contextGovernanceHistory?: Record<string, unknown>[];
   todos?: ActiveRunScopedTodos | null;
   workflowProjection?: Record<string, unknown> | null;
   projection?: Record<string, unknown> | null;

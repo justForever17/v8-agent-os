@@ -64,6 +64,7 @@ class ChatRequest(BaseModel):
     project_id: Optional[str] = Field(default=None, alias="projectId")
     workspace_id: Optional[str] = Field(default=None, alias="workspaceId")
     workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
+    thread_id: Optional[str] = Field(default=None, alias="threadId")
     scope_hint: Optional[str] = Field(default=None, alias="scopeHint")
     scope_mode: Optional[str] = Field(default="mixed", alias="scopeMode")
     resume_run_id: Optional[str] = Field(default=None, alias="resumeRunId")
@@ -142,6 +143,7 @@ class ScopeResolvePayload(BaseModel):
     workflow_id: Optional[str] = Field(default=None, alias="workflowId")
     channel_type: Optional[str] = Field(default=None, alias="channelType")
     channel_remote_id: Optional[str] = Field(default=None, alias="channelRemoteId")
+    thread_id: Optional[str] = Field(default=None, alias="threadId")
     scope_hint: Optional[str] = Field(default=None, alias="scopeHint")
     scope_mode: Optional[str] = Field(default="mixed", alias="scopeMode")
 

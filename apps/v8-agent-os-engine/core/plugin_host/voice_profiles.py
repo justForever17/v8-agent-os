@@ -48,20 +48,19 @@ _CANONICAL_DELIVERY_REQUIREMENTS: dict[str, dict[str, Any]] = {
         "notes": "QQ voice shares the same Tencent Silk V3 wire contract as Weixin voice bubbles.",
     },
     "feishu": {
-        "profileId": "feishu_native_voice",
+        "profileId": "feishu_voice_message",
         "mode": "native_voice",
         "container": "ogg",
         "codec": "opus",
         "extension": ".ogg",
         "mimeType": "audio/ogg; codecs=opus",
         "asVoice": True,
-        "requiresPlaytime": True,
         "requirementsKnown": "partial",
-        "verificationSource": "upstream_plugin",
+        "verificationSource": "official_doc",
         "encodePresetId": "ogg_opus_voice_default",
         "fallbackMode": "audio_attachment",
         "fallbackProfileId": "slack_audio_attachment",
-        "notes": "OpenClaw Feishu upstream maps ogg/opus to msg_type=audio and requires duration(ms) during upload.",
+        "notes": "Feishu voice delivery is restored once runtime-generated media is staged into OpenClaw 4.8 allowed outbound roots.",
     },
     "whatsapp": {
         "profileId": "whatsapp_voice_note",
@@ -186,6 +185,7 @@ _VOICE_PROFILE_ALIASES: dict[str, str] = {
 }
 
 _DEFAULT_PROFILE_ID = "slack"
+_TEXT_ONLY_MODES = {"", "none", "disabled", "text_only", "unsupported"}
 
 
 def resolve_voice_delivery_profile(channel_type: str | None) -> dict[str, Any]:
@@ -214,3 +214,9 @@ def resolve_voice_encode_preset(profile: dict[str, Any] | None) -> dict[str, Any
 
 def voice_profile_requires_external_encoder(profile: dict[str, Any] | None) -> bool:
     return bool((profile or {}).get("requiresExternalEncoder"))
+
+
+def voice_profile_allows_audio_delivery(profile: dict[str, Any] | None) -> bool:
+    payload = dict(profile or {})
+    mode = str(payload.get("mode") or "").strip().lower()
+    return mode not in _TEXT_ONLY_MODES

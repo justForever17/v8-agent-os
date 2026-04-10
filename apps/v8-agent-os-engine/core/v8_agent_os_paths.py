@@ -56,6 +56,14 @@ def workspace_download_root(workspace_root: str | Path) -> Path:
     return Path(workspace_root).expanduser() / "downloaded_media"
 
 
+def openclaw_outbound_media_root(*segments: str) -> Path:
+    root = OPENCLAW_DEFAULT_STATE_ROOT / "media" / "outbound"
+    for segment in segments:
+        normalized = _safe_path_segment(segment, fallback="segment")
+        root = root / normalized
+    return root
+
+
 def workspace_artifacts_root(workspace_root: str | Path) -> Path:
     return Path(workspace_root).expanduser() / WORKSPACE_ARTIFACT_NAMESPACE / "artifacts"
 

@@ -9,10 +9,12 @@ import traceback
 import uuid
 from contextlib import aclosing
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from agents.runners.supervisor_runner import supervisor_runner
 from api.models import EngineConfig
+from core.artifact_store import artifact_store
 from core.chat_output_extractor import extract_text_and_reasoning
 from core.database import db
 from core.engine_config_resolver import resolve_engine_config_for_role
@@ -28,6 +30,7 @@ from core.plugin_host.silk_codec import (
     validate_and_normalize_tencent_silk,
 )
 from core.plugin_host.voice_profiles import (
+    voice_profile_allows_audio_delivery,
     resolve_voice_delivery_profile,
     resolve_voice_encode_preset,
     voice_profile_requires_external_encoder,
@@ -189,11 +192,21 @@ class PluginHostRuntime:
             fallback_model="deepseek-chat",
         )["engine_config"]
 
-    def resolve_session_id(self, source: str, remote_id: str, chat_type: str) -> str:
+    def resolve_session_id(
+        self,
+        source: str,
+        remote_id: str,
+        chat_type: str,
+        *,
+        account_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> str:
         normalized_source = re.sub(r"[^a-z0-9._-]+", "_", (source or "plugin").strip().lower())
         normalized_chat_type = "group" if str(chat_type).lower() == "group" else "p2p"
         normalized_remote_id = re.sub(r"[^A-Za-z0-9._:-]+", "_", (remote_id or "unknown").strip())
-        return f"plugin_host:{normalized_source}:{normalized_chat_type}:{normalized_remote_id}"
+        normalized_account_id = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(account_id or "").strip()) or "_"
+        normalized_thread_id = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(thread_id or "").strip()) or "_"
+        return f"plugin_host:{normalized_source}:{normalized_chat_type}:{normalized_account_id}:{normalized_remote_id}:{normalized_thread_id}"
 
     def _build_channel_session_metadata(
         self,
@@ -227,6 +240,9 @@ class PluginHostRuntime:
             normalized["channel_domain"] = channel_domain
         if account_id:
             normalized["account_id"] = account_id
+        account_scope = str(raw.get("account_scope") or raw.get("accountScope") or "").strip()
+        if account_scope:
+            normalized["account_scope"] = account_scope
         if default_account:
             normalized["default_account"] = default_account
         if handoff_source:
@@ -235,6 +251,33 @@ class PluginHostRuntime:
             normalized["transport_managed_by"] = transport_managed_by
         if bridge_plugin_id:
             normalized["bridge_plugin_id"] = bridge_plugin_id
+        thread_id = str(raw.get("thread_id") or raw.get("threadId") or "").strip()
+        if thread_id:
+            normalized["thread_id"] = thread_id
+        event_kind = str(raw.get("event_kind") or raw.get("eventKind") or "").strip()
+        if event_kind:
+            normalized["event_kind"] = event_kind
+        event_subtype = str(raw.get("event_subtype") or raw.get("eventSubtype") or "").strip()
+        if event_subtype:
+            normalized["event_subtype"] = event_subtype
+        mentions = [dict(item) for item in list(raw.get("mentions") or []) if isinstance(item, dict)]
+        if mentions:
+            normalized["mentions"] = mentions
+        attachments = [dict(item) for item in list(raw.get("attachments") or []) if isinstance(item, dict)]
+        if attachments:
+            normalized["attachments"] = attachments
+        raw_action_payload = raw.get("action_payload")
+        if raw_action_payload is None:
+            raw_action_payload = raw.get("actionPayload")
+        action_payload = dict(raw_action_payload) if isinstance(raw_action_payload, dict) else {}
+        if action_payload:
+            normalized["action_payload"] = action_payload
+        channel_envelope = dict(raw.get("channel_envelope") or raw.get("channelEnvelope") or {})
+        if channel_envelope:
+            normalized["channel_envelope"] = channel_envelope
+        raw_payload_ref = dict(raw.get("raw_payload_ref") or raw.get("rawPayloadRef") or {})
+        if raw_payload_ref:
+            normalized["raw_payload_ref"] = raw_payload_ref
         return normalized
 
     def _persist_runtime_event(
@@ -262,6 +305,64 @@ class PluginHostRuntime:
 
     def _refresh_projection_snapshot(self, session_id: str, run_id: Optional[str] = None):
         snapshot_service.refresh_chat_projection(session_id, run_id=run_id)
+
+    def _record_channel_media_artifacts(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        message_id: str,
+        channel_type: str,
+        asset_payload: Dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(asset_payload, dict):
+            return
+        manifest_assets = [
+            dict(item)
+            for item in list(asset_payload.get("assets") or [])
+            if isinstance(item, dict)
+        ]
+        assets = manifest_assets or ([dict(asset_payload)] if asset_payload else [])
+        for index, asset in enumerate(assets):
+            file_path = str(asset.get("workspacePath") or asset.get("sourcePath") or "").strip()
+            if not file_path:
+                continue
+            candidate = Path(file_path).expanduser()
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            path_plane = str(asset.get("pathPlane") or asset.get("path_plane") or "").strip() or "runtime_private"
+            canonical_path = str(asset.get("canonicalPath") or asset.get("canonical_path") or file_path).strip() or file_path
+            storage_class = str(asset.get("storageClass") or asset.get("storage_class") or "").strip() or (
+                "ephemeral" if path_plane == "channel_delivery_stage" else "workspace_download"
+            )
+            title = str(asset.get("originalFileName") or candidate.name or f"attachment_{index + 1}").strip() or f"attachment_{index + 1}"
+            subtitle = str(asset.get("displaySubtitle") or canonical_path).strip() or canonical_path
+            workspace_path = file_path
+            metadata = {
+                "displayLabel": title,
+                "displaySubtitle": subtitle,
+                "canonicalPath": canonical_path,
+                "pathPlane": path_plane,
+                "storageClass": storage_class,
+                "surfaceVisible": True,
+                "channelType": channel_type,
+            }
+            workspace_root = str(asset.get("workspaceRoot") or asset.get("workspace_root") or "").strip()
+            workspace_relative_path = str(asset.get("workspaceRelativePath") or asset.get("workspace_relative_path") or "").strip()
+            if workspace_root:
+                metadata["workspaceRoot"] = workspace_root
+            if workspace_relative_path:
+                metadata["workspaceRelativePath"] = workspace_relative_path
+            artifact_store.record_local_file(
+                file_path=candidate,
+                session_id=session_id,
+                run_id=run_id,
+                message_id=message_id,
+                workspace_path=workspace_path,
+                metadata=metadata,
+                source_component="plugin_host_runtime",
+                node="plugin_host_runtime",
+            )
 
     def _run_status_is_settled(self, run_handle) -> bool:
         status = str(getattr(getattr(run_handle, "descriptor", None), "status", "") or "").strip().lower()
@@ -322,7 +423,14 @@ class PluginHostRuntime:
         assistant_message_id: str | None = None,
         persist_message: bool = True,
     ) -> str:
-        session_id = self.resolve_session_id(source, remote_id, chat_type)
+        inbound_metadata = dict(inbound_metadata or {})
+        session_id = self.resolve_session_id(
+            source,
+            remote_id,
+            chat_type,
+            account_id=str(inbound_metadata.get("account_id") or inbound_metadata.get("accountId") or "").strip() or None,
+            thread_id=str(inbound_metadata.get("thread_id") or inbound_metadata.get("threadId") or "").strip() or None,
+        )
         existing_session = db.get_session(session_id)
         session_metadata = self._build_channel_session_metadata(
             source=source,
@@ -437,7 +545,14 @@ class PluginHostRuntime:
         visible_content: str | None = None,
         media_delivery: Dict[str, Any] | None = None,
     ) -> str:
-        session_id = self.resolve_session_id(source, remote_id, chat_type)
+        inbound_metadata = dict(inbound_metadata or {})
+        session_id = self.resolve_session_id(
+            source,
+            remote_id,
+            chat_type,
+            account_id=str(inbound_metadata.get("account_id") or inbound_metadata.get("accountId") or "").strip() or None,
+            thread_id=str(inbound_metadata.get("thread_id") or inbound_metadata.get("threadId") or "").strip() or None,
+        )
         existing_session = db.get_session(session_id)
         session_metadata = self._build_channel_session_metadata(
             source=source,
@@ -557,7 +672,13 @@ class PluginHostRuntime:
         if not text_content:
             return "", None, ""
 
-        session_id = self.resolve_session_id(source, remote_id, chat_type)
+        session_id = self.resolve_session_id(
+            source,
+            remote_id,
+            chat_type,
+            account_id=str((message.metadata or {}).get("account_id") or (message.metadata or {}).get("accountId") or "").strip() or None,
+            thread_id=str((message.metadata or {}).get("thread_id") or (message.metadata or {}).get("threadId") or "").strip() or None,
+        )
         run_id = f"plugin_host_{uuid.uuid4().hex}"
         session_metadata = self._build_channel_session_metadata(
             source=source,
@@ -768,6 +889,7 @@ class PluginHostRuntime:
         )
         run_handle.transition("running", reason="plugin_host_message_received", node="plugin_host_runtime")
         if not scope_result.reused_existing_binding:
+            scope_evidence = dict(scope_result.evidence or {})
             self._persist_runtime_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -779,6 +901,10 @@ class PluginHostRuntime:
                     "resolved_scope": scope_result.binding.resolved_scope,
                     "scope_source": scope_result.binding.scope_source,
                     "scope_chain": scope_result.scope_chain,
+                    "rebind_reason": str(scope_evidence.get("rebind_reason") or "").strip() or None,
+                    "previous_scope": str(scope_evidence.get("previous_scope") or "").strip() or None,
+                    "next_scope": str(scope_evidence.get("next_scope") or "").strip() or None,
+                    "scope_anchor_comparison": scope_evidence.get("scope_anchor_comparison") if isinstance(scope_evidence.get("scope_anchor_comparison"), dict) else None,
                 },
                 node="scope_resolution",
                 agent_id=None,
@@ -801,7 +927,11 @@ class PluginHostRuntime:
         message_metadata.setdefault("run_id", run_id)
         message_metadata.setdefault("project_id", scope_result.binding.project_id)
         message_metadata.setdefault("workspace_id", scope_result.binding.workspace_id)
+        message_metadata.setdefault("workspace_path", scope_result.binding.workspace_path)
+        message_metadata.setdefault("workflow_id", scope_result.binding.workflow_id)
         message_metadata.setdefault("resolved_scope", scope_result.binding.resolved_scope)
+        message_metadata.setdefault("scope_source", scope_result.binding.scope_source)
+        message_metadata.setdefault("scope_chain", list(scope_result.scope_chain or []))
         db.add_message(
             msg_id=user_message_id,
             session_id=session_id,
@@ -809,6 +939,13 @@ class PluginHostRuntime:
             content=text_content,
             metadata=message_metadata,
             agent_name=message.sender_name,
+        )
+        self._record_channel_media_artifacts(
+            session_id=session_id,
+            run_id=run_id,
+            message_id=user_message_id,
+            channel_type=source,
+            asset_payload=message_metadata.get("message_assets") if isinstance(message_metadata.get("message_assets"), dict) else message_metadata.get("media_asset"),
         )
         self._persist_runtime_event(
             session_id=session_id,
@@ -1321,8 +1458,10 @@ class PluginHostRuntime:
             )
             audio_settings = {"stt_enabled": True, "tts_mode": "auto"}
             tts_mode = audio_settings.get("tts_mode", "auto")
+            voice_delivery_profile = resolve_voice_delivery_profile(source)
+            audio_delivery_enabled = voice_profile_allows_audio_delivery(voice_delivery_profile)
             trigger_tts = bool(voice_text) or (tts_mode == "always") or (tts_mode == "auto" and audio_trigger)
-            if trigger_tts:
+            if trigger_tts and audio_delivery_enabled:
                 tts_result = await self._generate_tts(final_response, channel_type=source)
                 tts_file_path = str((tts_result or {}).get("filePath") or "").strip() or None
                 audio_codec = str((tts_result or {}).get("audioCodec") or "none").strip() or "none"
@@ -1395,7 +1534,7 @@ class PluginHostRuntime:
                         media_delivery = {
                             "kind": voice_mode,
                             "source": "tts",
-                            "filePath": tts_file_path,
+                            "filePath": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("workspacePath") or tts_file_path or "").strip() or None,
                             "deliveryMode": voice_mode,
                             "audioCodec": audio_codec,
                             "fallbackReason": fallback_reason,
@@ -1408,7 +1547,11 @@ class PluginHostRuntime:
                             "sampleRate": sample_rate,
                             "bitsPerSample": bits_per_sample,
                             "encodeType": encode_type,
-                            **dict((audio_delivery_receipt or {}).get("mediaAsset") or {}),
+                            "workspacePath": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("workspacePath") or "").strip() or None,
+                            "canonicalPath": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("canonicalPath") or "").strip() or None,
+                            "pathPlane": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("pathPlane") or "").strip() or None,
+                            "storageClass": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("storageClass") or "").strip() or None,
+                            "originalFileName": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("originalFileName") or "").strip() or None,
                         }
                         self._persist_runtime_event(
                             session_id=session_id,
@@ -1416,7 +1559,7 @@ class PluginHostRuntime:
                             topic="plugin_host.audio.delivery",
                             payload={
                                 "deliveryMode": voice_mode,
-                                "filePath": tts_file_path,
+                                "filePath": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("workspacePath") or tts_file_path or "").strip() or None,
                                 "visibleText": visible_text or None,
                                 "audioCodec": audio_codec,
                                 "fallbackReason": fallback_reason,
@@ -1466,6 +1609,24 @@ class PluginHostRuntime:
                         node="plugin_host_runtime",
                         agent_id="supervisor",
                     )
+            elif trigger_tts and not audio_delivery_enabled:
+                degraded_voice = True
+                voice_profile_id = str(voice_delivery_profile.get("profileId") or "").strip() or None
+                voice_mode = str(voice_delivery_profile.get("mode") or "text_only").strip() or "text_only"
+                fallback_reason = "audio_delivery_disabled"
+                self._persist_runtime_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    topic="plugin_host.tts.degraded",
+                    payload={
+                        "reason": "audio_delivery_disabled",
+                        "deliveryMode": voice_mode,
+                        "profileId": voice_profile_id,
+                        "channelType": source,
+                    },
+                    node="plugin_host_runtime",
+                    agent_id="supervisor",
+                )
             elif voice_markup_present:
                 degraded_voice = True
                 self._persist_runtime_event(
@@ -1512,7 +1673,7 @@ class PluginHostRuntime:
                     "reply_to_id": inbound_meta.get("message_id"),
                     "raw_final_response": raw_final_response,
                     "visible_text": final_visible_text,
-                    "tts_file_path": tts_file_path,
+                    "tts_file_path": str((audio_delivery_receipt or {}).get("mediaAsset", {}).get("workspacePath") or tts_file_path or "").strip() or None,
                     "audio_codec": audio_codec,
                     "audio_fallback_reason": fallback_reason,
                     "voice_profile_id": voice_profile_id if trigger_tts else None,
@@ -1532,6 +1693,14 @@ class PluginHostRuntime:
                 agent_avatar=profile["avatar"],
                 agent_role_label=profile["roleLabel"],
             )
+            if audio_delivery_receipt:
+                self._record_channel_media_artifacts(
+                    session_id=session_id,
+                    run_id=run_id,
+                    message_id=assistant_message_id,
+                    channel_type=source,
+                    asset_payload=dict((audio_delivery_receipt or {}).get("mediaAsset") or {}),
+                )
             self._persist_runtime_event(
                 session_id=session_id,
                 run_id=run_id,

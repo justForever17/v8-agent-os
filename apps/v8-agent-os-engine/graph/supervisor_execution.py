@@ -84,6 +84,8 @@ def prepare_supervisor_messages(
     sanitize_message_chain,
     context_orchestrator,
     resolved_model_id: str | None,
+    resolved_scope: str | None,
+    scope_chain,
     remaining_steps: int,
 ):
     runtime_kind = str(get_runtime_context().get("runtime_kind") or "chat")
@@ -95,6 +97,8 @@ def prepare_supervisor_messages(
         runtime_kind=runtime_kind,
         target_role="supervisor",
         resolved_model_id=resolved_model_id,
+        resolved_scope=resolved_scope,
+        scope_chain=scope_chain,
         leading_system_content=system_content,
         keep_recent_override=5,
     )

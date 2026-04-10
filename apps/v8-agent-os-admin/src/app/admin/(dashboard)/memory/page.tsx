@@ -32,7 +32,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -51,7 +51,6 @@ const VALID_TABS = new Set(["preferences", "projects", "knowledge", "artifacts",
 export default function MemoryDashboardPage() {
     const { toast } = useToast();
     const t = useT();
-    const { locale } = useLocale();
     const router = useRouter();
     const searchParams = useSearchParams();
     const requestedTab = searchParams.get("tab") || "preferences";
@@ -88,7 +87,7 @@ export default function MemoryDashboardPage() {
         } finally {
             setLoading(false);
         }
-    }, [toast]);
+    }, [t, toast]);
 
     const loadKnowledge = useCallback(async () => {
         try {
@@ -106,7 +105,7 @@ export default function MemoryDashboardPage() {
                 variant: "destructive",
             });
         }
-    }, [toast]);
+    }, [t, toast]);
 
     useEffect(() => {
         void loadDashboard();
@@ -543,7 +542,7 @@ export default function MemoryDashboardPage() {
                     {activeTab === "agent" ? <MemoryAgentChat /> : null}
                 </TabsContent>
 
-                <TabsContent value="audit" className="space-y-4">
+                <TabsContent value="audit" className="min-h-0 space-y-4">
                     {activeTab === "audit" ? <AuditLogsPanel /> : null}
                 </TabsContent>
 

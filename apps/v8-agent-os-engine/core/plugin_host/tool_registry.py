@@ -90,8 +90,11 @@ class PluginHostToolRegistry:
             catalog = plugin_host_service.list_bridge_tools(limit=48)
         except Exception:
             return tools
-        for tool_def in list(catalog.get("inventory") or catalog.get("tools") or []):
+        tool_entries = list(catalog.get("exposure") or catalog.get("inventory") or catalog.get("tools") or [])
+        for tool_def in tool_entries:
             if not isinstance(tool_def, dict):
+                continue
+            if tool_def.get("allowed") is False:
                 continue
             canonical_name = str(tool_def.get("canonicalName") or tool_def.get("name") or "").strip()
             if not canonical_name:

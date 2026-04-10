@@ -18,6 +18,7 @@ _ALLOWED_BLOCK_TYPES = {
     "channel_memory",
     "automation_memory",
     "recent_messages",
+    "memory_recall",
 }
 
 _GOAL_KEYWORDS = (
@@ -106,6 +107,8 @@ class ContextOrchestrator:
         runtime_kind: str,
         target_role: str,
         resolved_model_id: str | None = None,
+        resolved_scope: str | None = None,
+        scope_chain: Sequence[str] | None = None,
         leading_system_content: str | None = None,
         keep_recent_override: int | None = None,
         extra_blocks: Sequence[Dict[str, Any] | ContextBlock] | None = None,
@@ -178,6 +181,14 @@ class ContextOrchestrator:
         rendered_messages.extend(non_system_messages)
 
         estimated_final_tokens = self._estimate_messages_tokens(rendered_messages)
+        explicit_scope = str(resolved_scope or "").strip()
+        explicit_scope_chain = [str(item).strip() for item in (scope_chain or []) if str(item).strip()]
+        if explicit_scope and explicit_scope not in explicit_scope_chain:
+            explicit_scope_chain.append(explicit_scope)
+        if explicit_scope or explicit_scope_chain:
+            resolved_scope, scope_chain = explicit_scope, explicit_scope_chain
+        else:
+            resolved_scope, scope_chain = self._extract_scope_context(cleaned_messages)
         audit = {
             "context_policy_version": policy.get("schema_version", 1),
             "runtime_kind": runtime_kind,
@@ -191,8 +202,11 @@ class ContextOrchestrator:
             "compaction_method": method,
             "block_types": [block.type for block in blocks],
             "block_count": len(blocks),
+            "block_summaries": [self._build_block_summary(block) for block in blocks],
             "estimated_saved_tokens": max(0, estimated_input_tokens - estimated_final_tokens),
             "durable_flush": durable_flush or {"ok": True, "skipped": True, "reason": "compaction_not_needed"},
+            "resolved_scope": resolved_scope,
+            "scope_chain": scope_chain,
         }
         if blocks:
             print(f"[ContextOrchestrator] {json.dumps(audit, ensure_ascii=False)}")
@@ -447,6 +461,51 @@ class ContextOrchestrator:
                 }
             },
         )
+
+    def _extract_scope_context(self, messages: Sequence[BaseMessage]) -> tuple[str, List[str]]:
+        resolved_scope = ""
+        scope_chain: List[str] = []
+        for message in reversed(messages):
+            kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+            candidate_scope = str(kwargs.get("resolved_scope") or "").strip()
+            if candidate_scope and not resolved_scope:
+                resolved_scope = candidate_scope
+            candidate_chain = kwargs.get("scope_chain")
+            if isinstance(candidate_chain, list) and not scope_chain:
+                scope_chain = [str(item).strip() for item in candidate_chain if str(item).strip()]
+            if resolved_scope and scope_chain:
+                break
+        if resolved_scope and resolved_scope not in scope_chain:
+            scope_chain.append(resolved_scope)
+        return resolved_scope, scope_chain
+
+    def _build_block_summary(self, block: ContextBlock) -> Dict[str, Any]:
+        metadata = dict(block.metadata or {})
+        summary: Dict[str, Any] = {
+            "type": block.type,
+            "title": block.title,
+            "runtime_plane": str(metadata.get("runtime_plane") or "").strip(),
+            "estimated_tokens": self._estimate_text_tokens(block.content),
+            "content_preview": self._clip_text(block.content, 160),
+        }
+        sanitized_metadata: Dict[str, Any] = {}
+        for key in (
+            "runtime_plane",
+            "compressed_messages",
+            "candidate_messages",
+            "max_summary_items",
+            "item_count",
+            "fact_count",
+            "summary_method",
+            "source",
+        ):
+            value = metadata.get(key)
+            if value is None:
+                continue
+            sanitized_metadata[key] = value
+        if sanitized_metadata:
+            summary["metadata"] = sanitized_metadata
+        return summary
 
     def _build_summary_cache_key(
         self,

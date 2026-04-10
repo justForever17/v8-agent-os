@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
             project_id: body?.project_id ?? body?.projectId ?? data?.projectId,
             workspace_id: body?.workspace_id ?? body?.workspaceId ?? data?.workspaceId,
             workspace_path: body?.workspace_path ?? body?.workspacePath ?? data?.workspacePath,
+            thread_id: body?.thread_id ?? body?.threadId ?? data?.threadId,
             scope_hint: body?.scope_hint ?? body?.scopeHint ?? data?.scopeHint,
             scope_mode: body?.scope_mode ?? body?.scopeMode ?? data?.scopeMode ?? "mixed",
         };

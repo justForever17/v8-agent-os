@@ -110,6 +110,8 @@ def execute_supervisor_turn(
             sanitize_message_chain=sanitize_message_chain,
             context_orchestrator=context_orchestrator,
             resolved_model_id=sup_model_name,
+            resolved_scope=current_scope,
+            scope_chain=scope_chain,
             remaining_steps=state.get("remaining_steps", 100),
         )
         extensions_runtime_service.emit_supervisor_diagnostics(

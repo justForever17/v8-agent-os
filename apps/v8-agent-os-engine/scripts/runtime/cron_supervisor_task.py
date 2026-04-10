@@ -269,6 +269,7 @@ def run(action_payload: dict = None, payload: dict = None, **kwargs):
             )
 
         if not scope_result.reused_existing_binding:
+            scope_evidence = dict(scope_result.evidence or {})
             _persist_runtime_event(
                 "scope.binding.updated" if existing_binding else "scope.binding.created",
                 {
@@ -278,6 +279,10 @@ def run(action_payload: dict = None, payload: dict = None, **kwargs):
                     "resolved_scope": scope_result.binding.resolved_scope,
                     "scope_source": scope_result.binding.scope_source,
                     "scope_chain": scope_result.scope_chain,
+                    "rebind_reason": str(scope_evidence.get("rebind_reason") or "").strip() or None,
+                    "previous_scope": str(scope_evidence.get("previous_scope") or "").strip() or None,
+                    "next_scope": str(scope_evidence.get("next_scope") or "").strip() or None,
+                    "scope_anchor_comparison": scope_evidence.get("scope_anchor_comparison") if isinstance(scope_evidence.get("scope_anchor_comparison"), dict) else None,
                 },
                 node="scope_resolution",
                 agent_id=None,

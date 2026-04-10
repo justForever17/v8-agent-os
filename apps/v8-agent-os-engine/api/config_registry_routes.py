@@ -220,42 +220,47 @@ def _save_memory_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_extensions_domain() -> dict[str, Any]:
     config = storage.get_extensions_config() or {}
-    bindings = _roles_snapshot("extensions_reranker", "reranker")
+    bindings = _roles_snapshot("extensions_prefilter", "extensions_reranker")
     return {
         "domain": "extensions",
         "title": "扩展生态",
-        "summary": "控制 Skills 与 MCP 候选是否进入二阶段重排，并绑定扩展专用重排模型。",
+        "summary": "控制 Skills、MCP 与 PluginHost 候选树是否进入 LLM 预筛，并绑定扩展专用预筛模型。",
         "data": {
-            "rerankPolicy": {
-                "enabled": bool(((config.get("rerankPolicy") or {}).get("enabled"))),
+            "prefilterPolicy": {
+                "enabled": bool(((config.get("prefilterPolicy") or {}).get("enabled"))),
+                "mode": str(((config.get("prefilterPolicy") or {}).get("mode")) or "llm_tree").strip() or "llm_tree",
             },
             "modelBindings": {
-                "rerankerModel": bindings["extensions_reranker"],
-                "fallbackRerankerModel": bindings["reranker"],
+                "prefilterModel": bindings["extensions_prefilter"] or bindings["extensions_reranker"],
             },
         },
         "source": f"{_config_source('extensions')} + {_config_source('models')}",
         "savePath": [f"{CONFIG_JSON_PATH}#extensions", f"{CONFIG_JSON_PATH}#models"],
         "reloadRequired": False,
         "warnings": [],
-        "advancedFields": ["rerankPolicy", "modelBindings"],
+        "advancedFields": ["prefilterPolicy", "modelBindings"],
     }
 
 
 def _save_extensions_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
-    rerank_policy = dict(data.get("rerankPolicy") or {})
+    prefilter_policy = dict(data.get("prefilterPolicy") or {})
     model_bindings = dict(data.get("modelBindings") or {})
-    storage.save_extensions_config({"rerankPolicy": {"enabled": bool(rerank_policy.get("enabled", False))}})
-    _update_role_bindings({"extensions_reranker": model_bindings.get("rerankerModel")})
+    storage.save_extensions_config({
+        "prefilterPolicy": {
+            "enabled": bool(prefilter_policy.get("enabled", False)),
+            "mode": str(prefilter_policy.get("mode") or "llm_tree").strip() or "llm_tree",
+        },
+    })
+    _update_role_bindings({"extensions_prefilter": model_bindings.get("prefilterModel")})
     return _build_extensions_domain()
 
 
 def _build_context_domain() -> dict[str, Any]:
     return {
         "domain": "context",
-        "title": "上下文管理",
-        "summary": "调整会话长度、摘要策略和上下文压缩行为。",
+        "title": "上下文预算与治理",
+        "summary": "调整 token 预算、历史压缩、运行时适配窗口与摘要模型绑定。",
         "data": {
             "policy": storage.get_context_config() or {},
             "modelBindings": {

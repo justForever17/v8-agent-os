@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from core.database import db
 from core.llm_factory import llm_factory
+from core.llm_tree_prefilter import select_family_keys_with_llm
 from core.model_control_plane import model_control_plane
 from core.plugin_host.tool_exposure import expand_tool_family_seeds
 from core.plugin_host.silk_codec import silk_toolchain_status
@@ -235,6 +236,11 @@ def _plugin_host_tool_raw_name(tool_ref: Any) -> str:
 def _plugin_host_tool_identity(tool_ref: Any) -> str:
     metadata = getattr(tool_ref, "metadata", None) or {}
     return str(metadata.get("canonicalName") or _tool_name(tool_ref)).strip()
+
+
+def _mcp_tool_server_name(tool_ref: Any) -> str:
+    metadata = getattr(tool_ref, "metadata", None) or {}
+    return str(metadata.get("server_name") or "unknown").strip() or "unknown"
 
 
 def _should_enable_cross_runtime_escape(query_tokens: list[str]) -> bool:
@@ -608,9 +614,9 @@ class ExtensionsRuntimeService:
     def get_startup_status(self) -> dict[str, Any]:
         return self._build_runtime_state()
 
-    def _resolve_rerank_policy(self) -> dict[str, Any]:
+    def _resolve_prefilter_policy(self) -> dict[str, Any]:
         config = storage.get_extensions_config() or {}
-        policy = dict(config.get("rerankPolicy") or {})
+        policy = dict(config.get("prefilterPolicy") or config.get("rerankPolicy") or {})
         enabled = bool(policy.get("enabled", False))
         if not enabled:
             return {
@@ -622,7 +628,7 @@ class ExtensionsRuntimeService:
                 "reason": "disabled",
             }
 
-        for role in ("extensions_reranker", "reranker"):
+        for role in ("extensions_prefilter", "extensions_reranker"):
             try:
                 resolved = model_control_plane.resolve_model_for_role(role)
             except Exception as exc:
@@ -639,7 +645,7 @@ class ExtensionsRuntimeService:
                 return {
                     "enabled": True,
                     "available": True,
-                    "mode": "rerank",
+                    "mode": "llm_tree",
                     "modelId": model_id,
                     "role": role,
                     "reason": "",
@@ -650,35 +656,9 @@ class ExtensionsRuntimeService:
             "available": False,
             "mode": "fallback",
             "modelId": "",
-            "role": "extensions_reranker",
-            "reason": "未绑定扩展候选重排模型，且没有可回退的全局重排模型。",
+            "role": "extensions_prefilter",
+            "reason": "未绑定可用的扩展候选预筛模型。",
         }
-
-    def _rerank_items(
-        self,
-        *,
-        user_query: str,
-        items: list[Any],
-        build_document: Any,
-        reranker: Any,
-        top_k: int,
-    ) -> list[Any]:
-        if len(items) <= 1:
-            return list(items)
-        documents = [str(build_document(item) or "").strip() for item in items]
-        results = reranker.rerank(user_query, documents, top_k=len(documents))
-        ordered_indexes: list[int] = []
-        seen_indexes: set[int] = set()
-        for row in list(results or []):
-            try:
-                index = int(row.get("index"))
-            except Exception:
-                continue
-            if 0 <= index < len(items) and index not in seen_indexes:
-                ordered_indexes.append(index)
-                seen_indexes.add(index)
-        ordered_indexes.extend(index for index in range(len(items)) if index not in seen_indexes)
-        return [items[index] for index in ordered_indexes[: max(top_k, 1)]]
 
     def build_catalog(self) -> dict[str, Any]:
         payload = dict(self._cached_catalog or self._build_catalog_live())
@@ -707,12 +687,11 @@ class ExtensionsRuntimeService:
         effective_skill_limit = min(max(skill_limit + (2 if cross_runtime_escape else 0), skill_limit), 10)
         effective_mcp_limit = min(max(mcp_limit + (2 if cross_runtime_escape else 0), mcp_limit), 12)
         effective_plugin_host_limit = min(max(plugin_host_limit + (4 if cross_runtime_escape else 0), plugin_host_limit), 12)
-        rerank_policy = self._resolve_rerank_policy()
-        rerank_mode = str(rerank_policy.get("mode") or "lexical")
-        rerank_model_id = str(rerank_policy.get("modelId") or "").strip()
-        rerank_role = str(rerank_policy.get("role") or "").strip()
-        rerank_reason = str(rerank_policy.get("reason") or "").strip()
-        reranker = None
+        prefilter_policy = self._resolve_prefilter_policy()
+        prefilter_mode = str(prefilter_policy.get("mode") or "lexical")
+        prefilter_model_id = str(prefilter_policy.get("modelId") or "").strip()
+        prefilter_role = str(prefilter_policy.get("role") or "").strip()
+        prefilter_reason = str(prefilter_policy.get("reason") or "").strip()
 
         skill_entries = list(SkillLoader.get_all_skills(force_refresh=False).values())
         ranked_skills = sorted(
@@ -781,49 +760,113 @@ class ExtensionsRuntimeService:
             plugin_host_pool = [
                 row[2] for row in ranked_plugin_host[: min(plugin_host_pool_limit, len(ranked_plugin_host))]
             ]
-        selected_plugin_host_tools = list(plugin_host_pool[:effective_plugin_host_limit])
+        selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
+        skill_family_map = {
+            str(item.get("path") or item.get("name") or item.get("folder") or "").strip(): item
+            for item in skill_pool
+            if str(item.get("path") or item.get("name") or item.get("folder") or "").strip()
+        }
+        mcp_family_map: dict[str, list[Any]] = {}
+        for tool in mcp_pool:
+            mcp_family_map.setdefault(_mcp_tool_server_name(tool), []).append(tool)
+        plugin_host_seed_map: dict[str, Any] = {}
+        for tool in plugin_host_pool:
+            family_key = f"{_plugin_host_tool_plugin_id(tool)}::{_plugin_host_tool_raw_name(tool)}"
+            plugin_host_seed_map.setdefault(family_key, tool)
 
-        should_rerank = len(skill_pool) > 1 or len(mcp_pool) > 1 or len(plugin_host_pool) > 1
-        if rerank_policy.get("enabled") and rerank_policy.get("available") and rerank_model_id and not should_rerank:
-            rerank_mode = "lexical"
-            rerank_reason = "候选数量不足，无需额外重排。"
-        if rerank_policy.get("enabled") and rerank_policy.get("available") and rerank_model_id and should_rerank:
+        skill_state: dict[str, Any] = {}
+        mcp_state: dict[str, Any] = {}
+        plugin_host_state: dict[str, Any] = {}
+        should_prefilter = len(skill_family_map) > 1 or len(mcp_family_map) > 1 or len(plugin_host_seed_map) > 1
+        if prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id and not should_prefilter:
+            prefilter_mode = "lexical"
+            prefilter_reason = "候选家族数量不足，无需额外预筛。"
+        if prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id and should_prefilter:
             try:
-                reranker = llm_factory.create_reranker_model(
-                    rerank_model_id,
-                    role=rerank_role or "extensions_reranker",
-                    capability_class="reranker",
-                )
-                selected_skills = self._rerank_items(
+                skill_keys, skill_state = select_family_keys_with_llm(
+                    role=prefilter_role or "extensions_prefilter",
                     user_query=user_query,
-                    items=skill_pool,
-                    build_document=_build_skill_rerank_document,
-                    reranker=reranker,
-                    top_k=effective_skill_limit,
+                    family_label="skills",
+                    families=[
+                        {
+                            "key": key,
+                            "title": str(item.get("name") or item.get("folder") or "").strip() or key,
+                            "description": str(item.get("description") or "").strip(),
+                            "memberCount": 1,
+                            "examples": [str(item.get("name") or item.get("folder") or "").strip() or key],
+                        }
+                        for key, item in skill_family_map.items()
+                    ],
+                    max_families=effective_skill_limit,
+                    timeout_seconds=1.0,
                 )
-                selected_mcp_tools = self._rerank_items(
+                if skill_keys:
+                    selected_skills = [skill_family_map[key] for key in skill_keys if key in skill_family_map][:effective_skill_limit]
+
+                mcp_keys, mcp_state = select_family_keys_with_llm(
+                    role=prefilter_role or "extensions_prefilter",
                     user_query=user_query,
-                    items=mcp_pool,
-                    build_document=_build_mcp_rerank_document,
-                    reranker=reranker,
-                    top_k=effective_mcp_limit,
+                    family_label="mcp",
+                    families=[
+                        {
+                            "key": server_name,
+                            "title": server_name,
+                            "description": "MCP 服务工具族",
+                            "memberCount": len(items),
+                            "examples": [_tool_name(tool) for tool in items[:4]],
+                        }
+                        for server_name, items in mcp_family_map.items()
+                    ],
+                    max_families=max(1, min(effective_mcp_limit, len(mcp_family_map))),
+                    timeout_seconds=1.0,
                 )
-                selected_plugin_host_tools = self._rerank_items(
+                if mcp_keys:
+                    mcp_bound_limit = min(max(effective_mcp_limit * 3, _MCP_RERANK_POOL_FLOOR), max(len(mcp_tools), effective_mcp_limit))
+                    selected_mcp_tools = []
+                    for key in mcp_keys:
+                        selected_mcp_tools.extend(mcp_family_map.get(key, []))
+                    selected_mcp_tools = list(dict.fromkeys(selected_mcp_tools))[:mcp_bound_limit]
+
+                plugin_host_keys, plugin_host_state = select_family_keys_with_llm(
+                    role=prefilter_role or "extensions_prefilter",
                     user_query=user_query,
-                    items=plugin_host_pool,
-                    build_document=_build_plugin_host_rerank_document,
-                    reranker=reranker,
-                    top_k=effective_plugin_host_limit,
+                    family_label="plugin_host",
+                    families=[
+                        {
+                            "key": family_key,
+                            "title": str((getattr(tool, "metadata", None) or {}).get("canonicalName") or _tool_name(tool)).strip() or family_key,
+                            "description": _tool_description(tool),
+                            "memberCount": 1,
+                            "examples": [_tool_name(tool)],
+                        }
+                        for family_key, tool in plugin_host_seed_map.items()
+                    ],
+                    max_families=effective_plugin_host_limit,
+                    timeout_seconds=1.0,
                 )
-                rerank_mode = "rerank"
+                if plugin_host_keys:
+                    selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
+
+                prefilter_mode = "llm_tree"
+                prefilter_reason = (
+                    skill_state.get("reason")
+                    or mcp_state.get("reason")
+                    or plugin_host_state.get("reason")
+                    or ""
+                )
+                if any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state)):
+                    prefilter_mode = "fallback"
+                    prefilter_reason = "timeout"
+                    selected_skills = list(skill_pool[:effective_skill_limit])
+                    selected_mcp_tools = list(mcp_pool[:effective_mcp_limit])
+                    selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
             except Exception as exc:
-                rerank_mode = "fallback"
-                rerank_reason = str(exc)
+                prefilter_mode = "fallback"
+                prefilter_reason = str(exc)
                 selected_skills = list(skill_pool[:effective_skill_limit])
                 selected_mcp_tools = list(mcp_pool[:effective_mcp_limit])
-                selected_plugin_host_tools = list(plugin_host_pool[:effective_plugin_host_limit])
+                selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
 
-        selected_plugin_host_seeds = list(selected_plugin_host_tools)
         plugin_host_bound_limit = min(
             max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR),
             _PLUGIN_HOST_BOUND_CAP,
@@ -877,11 +920,11 @@ class ExtensionsRuntimeService:
         ]
         if cross_runtime_escape:
             lines.append("- Cross-runtime escape：已启用。检测到阻塞/切换类任务语义，本轮适度放宽跨 runtime 候选。")
-        if rerank_mode == "rerank":
-            lines.append(f"- 候选重排：已启用（模型：{rerank_model_id}）")
-        elif rerank_policy.get("enabled"):
-            details = rerank_reason or "当前未绑定可用的扩展候选重排模型。"
-            lines.append(f"- 候选重排：本轮已回退 lexical（{_truncate(details, 120)}）")
+        if prefilter_mode == "llm_tree":
+            lines.append(f"- 候选预筛：已启用 LLM 工具树预筛（模型：{prefilter_model_id}）")
+        elif prefilter_policy.get("enabled"):
+            details = prefilter_reason or "当前未绑定可用的扩展候选预筛模型。"
+            lines.append(f"- 候选预筛：本轮已回退 lexical（{_truncate(details, 120)}）")
         if selected_skill_names:
             lines.append("- 当前命中的 Skills 目录入口：")
             for entry in selected_skill_entries[:effective_skill_limit]:
@@ -920,10 +963,12 @@ class ExtensionsRuntimeService:
             selected_skill_names=selected_skill_names,
             exposed_mcp_tool_names=exposed_mcp_tool_names,
             candidate_summary={
-                "mode": rerank_mode,
-                "modelId": rerank_model_id,
-                "role": rerank_role,
-                "reason": rerank_reason or None,
+                "mode": prefilter_mode,
+                "modelId": prefilter_model_id,
+                "role": prefilter_role,
+                "reason": prefilter_reason or None,
+                "prefilterTimedOut": bool(any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state))),
+                "prefilterCacheHit": bool(any(bool(state.get("cacheHit")) for state in (skill_state, mcp_state, plugin_host_state))),
                 "skills": selected_skill_names,
                 "skillEntries": selected_skill_entries,
                 "mcpTools": exposed_mcp_tool_names,

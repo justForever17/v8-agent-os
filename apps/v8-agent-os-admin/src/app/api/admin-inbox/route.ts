@@ -42,6 +42,15 @@ type PluginHostSnapshot = {
         handoffReady?: boolean;
         handoffDrift?: boolean;
         bridgePluginId?: string | null;
+        pluginsAllowConfigured?: boolean | null;
+        pluginProvenanceWarnings?: Array<{
+            kind?: string | null;
+            level?: string | null;
+            title?: string | null;
+            description?: string | null;
+            pluginId?: string | null;
+            pluginIds?: string[] | null;
+        }> | null;
         recentInboundProof?: {
             stage?: string | null;
             reason?: string | null;
@@ -67,6 +76,38 @@ function containsAuthIssue(values: Array<string | null | undefined>) {
     return values.some((value) => AUTH_PATTERN.test(String(value || "")));
 }
 
+async function proxyEngineJsonSafe<T>(path: string) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    try {
+        const { response, data } = await proxyEngineJson(path, { signal: controller.signal });
+        if (!response.ok) {
+            console.warn("[Admin Inbox] Engine endpoint returned non-ok status", {
+                path,
+                status: response.status,
+            });
+        }
+        return {
+            ok: response.ok,
+            data: (data || {}) as T,
+            error: response.ok ? null : `engine_status_${response.status}`,
+        };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("[Admin Inbox] Engine endpoint request failed", {
+            path,
+            error: message,
+        });
+        return {
+            ok: false,
+            data: {} as T,
+            error: message,
+        };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 export async function GET(req: NextRequest) {
     const unauthorized = await requireAdminIdentity(req);
     if (unauthorized) {
@@ -76,12 +117,16 @@ export async function GET(req: NextRequest) {
     try {
         const locale = resolveInitialLocale(req.cookies.get(LOCALE_COOKIE_NAME)?.value, req.headers.get("accept-language"));
         const text = (zh: string, en: string) => pickLocalizedText(locale, lt(zh, en));
-        const [{ data: approvals }, { data: runs }, { data: health }, { data: pluginHost }] = await Promise.all([
-            proxyEngineJson("/approvals?status=pending"),
-            proxyEngineJson("/runs?limit=12"),
-            proxyEngineJson("/health"),
-            proxyEngineJson("/plugin-host"),
+        const [approvalsResult, runsResult, healthResult, pluginHostResult] = await Promise.all([
+            proxyEngineJsonSafe<{ approvals?: unknown[] }>("/approvals?status=pending"),
+            proxyEngineJsonSafe<{ runs?: Array<{ status?: string }> }>("/runs?limit=12"),
+            proxyEngineJsonSafe<OperationsSummary["health"]>("/health"),
+            proxyEngineJsonSafe<PluginHostSnapshot>("/plugin-host"),
         ]);
+        const approvals = approvalsResult.data;
+        const runs = runsResult.data;
+        const health = healthResult.data;
+        const pluginHost = pluginHostResult.data;
 
         const approvalItems = Array.isArray((approvals as { approvals?: unknown[] })?.approvals)
             ? ((approvals as { approvals?: unknown[] }).approvals || [])
@@ -172,6 +217,22 @@ export async function GET(req: NextRequest) {
             });
         }
 
+        const pluginTrustWarnings = Array.isArray(pluginSnapshot.hostSurface?.pluginProvenanceWarnings)
+            ? pluginSnapshot.hostSurface?.pluginProvenanceWarnings || []
+            : [];
+        if (pluginSnapshot.hostSurface?.pluginsAllowConfigured === false || pluginTrustWarnings.length > 0) {
+            pushItem(items, {
+                id: "plugin-host-trust-warning",
+                title: text("Plugin Host trust 漂浮", "Plugin Host trust drift"),
+                summary: pluginSnapshot.hostSurface?.pluginsAllowConfigured === false
+                    ? text("OpenClaw plugins.allow 当前为空，bridge 与渠道插件仍处于漂浮态", "OpenClaw plugins.allow is empty, so bridge and channel plugins are still drifting.")
+                    : text(`检测到 ${pluginTrustWarnings.length} 条 bridge / channel provenance 风险`, `${pluginTrustWarnings.length} bridge / channel provenance warnings detected.`),
+                severity: "warning",
+                href: "/admin/plugin-host",
+                source: "plugin-host",
+            });
+        }
+
         const authSignals = [
             ...degradedServers.map((item) => item.lastError),
             ...streamableIssues.map((item) => item.lastError),
@@ -203,10 +264,33 @@ export async function GET(req: NextRequest) {
             });
         }
 
+        const endpointErrors = [
+            approvalsResult.error,
+            runsResult.error,
+            healthResult.error,
+            pluginHostResult.error,
+        ].filter(Boolean);
+        if (!items.length && endpointErrors.length > 0) {
+            pushItem(items, {
+                id: "admin-inbox-degraded",
+                title: text("消息摘要暂时降级", "Inbox temporarily degraded"),
+                summary: text(
+                    "部分运行态摘要暂时不可用，界面会继续自动重试。",
+                    "Some runtime summaries are temporarily unavailable. The UI will keep retrying.",
+                ),
+                severity: "info",
+                href: "/admin/operations-center",
+                source: "admin",
+            });
+        }
+
         const severityOrder = { error: 0, warning: 1, info: 2 };
         items.sort((left, right) => severityOrder[left.severity] - severityOrder[right.severity]);
 
-        return NextResponse.json({ items });
+        return NextResponse.json({
+            items,
+            degraded: endpointErrors.length > 0,
+        });
     } catch (error) {
         console.error("[Admin Inbox] Failed to build inbox:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

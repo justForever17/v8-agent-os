@@ -128,6 +128,7 @@ export type SessionRealtimeProjection = {
   processes: AdminProcessRef[];
   contextReferences: ContextReferenceItem[];
   contextGovernance: Record<string, unknown> | null;
+  contextGovernanceHistory: Array<Record<string, unknown>>;
 };
 
 export type ApplyAuthoritativeSessionSnapshotResult = {
@@ -224,6 +225,16 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
       || workflowProjection.contextGovernance
       || workflowProjection.context_governance,
     ),
+    contextGovernanceHistory: asRecordArray(
+      root.contextGovernanceHistory,
+      root.context_governance_history,
+      effectiveProjection.contextGovernanceHistory,
+      effectiveProjection.context_governance_history,
+      nestedSnapshot.contextGovernanceHistory,
+      nestedSnapshot.context_governance_history,
+      workflowProjection.contextGovernanceHistory,
+      workflowProjection.context_governance_history,
+    ),
     todos,
     workflowProjection: Object.keys(workflowProjection).length > 0 ? workflowProjection : null,
     projection: Object.keys(effectiveProjection).length > 0 ? effectiveProjection : null,
@@ -294,6 +305,7 @@ export function buildSessionRealtimeProjection(store: SessionRealtimeStore): Ses
     processes: selectActiveProcesses(store),
     contextReferences: selectContextReferences(store),
     contextGovernance: selectAuthoritativeContextGovernance(store) as Record<string, unknown> | null,
+    contextGovernanceHistory: selectAuthoritativeContextGovernanceHistory(store) as Array<Record<string, unknown>>,
   };
 }
 
@@ -304,6 +316,7 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
   const todos = Array.isArray(snapshot.todos?.items) ? snapshot.todos.items : [];
   const runtimeTimeline = Array.isArray(snapshot.runtimeTimeline) ? snapshot.runtimeTimeline : [];
   const contextGovernance = asRecord(snapshot.contextGovernance);
+  const contextGovernanceHistory = asRecordArray(snapshot.contextGovernanceHistory);
   const summary = asRecord(snapshot.summary);
   const currentRun = asRecord(snapshot.currentRun);
 
@@ -355,6 +368,7 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
     todoFingerprint,
     runtimeFingerprint,
     JSON.stringify(contextGovernance),
+    JSON.stringify(contextGovernanceHistory),
     String(snapshot.runtimeStatus || currentRun.status || "").trim(),
     String(summary.workflowStatus || "").trim(),
     String(summary.currentStepTitle || "").trim(),
@@ -518,6 +532,10 @@ export function selectContextReferences(state: SessionRealtimeStore) {
 
 export function selectAuthoritativeContextGovernance(state: SessionRealtimeStore) {
   return state.snapshot?.contextGovernance || null;
+}
+
+export function selectAuthoritativeContextGovernanceHistory(state: SessionRealtimeStore) {
+  return Array.isArray(state.snapshot?.contextGovernanceHistory) ? state.snapshot?.contextGovernanceHistory || [] : [];
 }
 
 export function selectProcessByToolCallId(state: SessionRealtimeStore, toolCallId: string | null | undefined) {

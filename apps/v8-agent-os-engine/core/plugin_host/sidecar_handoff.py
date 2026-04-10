@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
 SUPPORTED_WEIXIN_PLUGIN_ID = "openclaw-weixin"
 SUPPORTED_WEIXIN_PACKAGE = "@tencent-weixin/openclaw-weixin"
-SUPPORTED_WEIXIN_VERSION = "2.0.1"
-PATCH_SENTINEL = "__V8_AGENT_OS_PLUGIN_HOST_HANDOFF_PATCH_V3__"
+PATCH_SENTINEL = "__V8_AGENT_OS_PLUGIN_HOST_HANDOFF_PATCH_V4__"
 LEGACY_PATCH_SENTINELS = (
     "__V8_AGENT_OS_PLUGIN_HOST_HANDOFF_PATCH__",
     "__V8_AGENT_OS_PLUGIN_HOST_HANDOFF_PATCH_V2__",
+    "__V8_AGENT_OS_PLUGIN_HOST_HANDOFF_PATCH_V3__",
 )
 PATCH_MARKER = f"/* {PATCH_SENTINEL} */"
 
@@ -25,6 +26,10 @@ HANDOFF_MODULE_MARKER = f"/* {HANDOFF_MODULE_SENTINEL} */"
 MONITOR_BACKUP_FILE_NAME = "monitor.v8-agent-os-orig.ts"
 MONITOR_PATCH_SENTINEL = "__V8_AGENT_OS_PLUGIN_HOST_MONITOR_PATCH_V1__"
 MONITOR_PATCH_MARKER = f"/* {MONITOR_PATCH_SENTINEL} */"
+ACCOUNTS_RELATIVE_PATH = Path("src") / "auth" / "accounts.ts"
+ACCOUNTS_BACKUP_FILE_NAME = "accounts.v8-agent-os-orig.ts"
+ACCOUNTS_PATCH_SENTINEL = "__V8_AGENT_OS_PLUGIN_HOST_CONFIG_PRESERVE_PATCH_V1__"
+ACCOUNTS_PATCH_MARKER = f"/* {ACCOUNTS_PATCH_SENTINEL} */"
 GATEWAY_CMD_RELATIVE_PATH = Path("gateway.cmd")
 GATEWAY_BACKUP_FILE_NAME = "gateway.v8-agent-os-orig.cmd"
 GATEWAY_PATCH_SENTINEL = "__V8_AGENT_OS_PLUGIN_HOST_GATEWAY_PATCH_V1__"
@@ -39,6 +44,28 @@ ROUTE_ANCHOR = """  const route = deps.channelRuntime.routing.resolveAgentRoute(
 """
 MONITOR_IMPORT_ANCHOR = 'import { processOneMessage } from "../messaging/process-message.js";'
 HANDOFF_MONITOR_IMPORT = 'import { processOneMessage } from "../messaging/process-message.v8-agent-os-handoff.js";'
+ACCOUNTS_RELOAD_ANCHOR = """export async function triggerWeixinChannelReload(): Promise<void> {
+  try {
+    const { loadConfig, writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    const cfg = loadConfig();
+    const channels = (cfg.channels ?? {}) as Record<string, unknown>;
+    const existing = (channels["openclaw-weixin"] as Record<string, unknown> | undefined) ?? {};
+    const updated: OpenClawConfig = {
+      ...cfg,
+      channels: {
+        ...channels,
+        "openclaw-weixin": {
+          ...existing,
+          channelConfigUpdatedAt: new Date().toISOString(),
+        },
+      },
+    };
+    await writeConfigFile(updated);
+    logger.info("triggerWeixinChannelReload: wrote channel config to openclaw.json");
+  } catch (err) {
+    logger.warn(`triggerWeixinChannelReload: failed to update config: ${String(err)}`);
+  }
+}"""
 
 
 def _handoff_module_content(process_message_content: str) -> str:
@@ -50,11 +77,87 @@ def _handoff_module_content(process_message_content: str) -> str:
         1,
     )
 
+
+def _patched_accounts_reload_block() -> str:
+    return f"""export async function triggerWeixinChannelReload(): Promise<void> {{
+  try {{
+    const configPath = resolveOpenClawConfigPath();
+    let current: (OpenClawConfig & Record<string, unknown>) | null = null;
+    if (fs.existsSync(configPath)) {{
+      try {{
+        const raw = fs.readFileSync(configPath, "utf-8");
+        const parsed = raw.trim() ? JSON.parse(raw) : {{}};
+        if (parsed && typeof parsed === "object") {{
+          current = parsed as OpenClawConfig & Record<string, unknown>;
+        }}
+      }} catch {{
+        current = null;
+      }}
+    }}
+    if (!current) {{
+      const {{ loadConfig }} = await import("openclaw/plugin-sdk/config-runtime");
+      current = (loadConfig() as OpenClawConfig & Record<string, unknown>) ?? {{}};
+    }}
+    const channels = (current.channels ?? {{}}) as Record<string, unknown>;
+    const existing = (channels["openclaw-weixin"] as Record<string, unknown> | undefined) ?? {{}};
+    const updated: OpenClawConfig & Record<string, unknown> = {{
+      ...current,
+      channels: {{
+        ...channels,
+        "openclaw-weixin": {{
+          ...existing,
+          channelConfigUpdatedAt: new Date().toISOString(),
+        }},
+      }},
+    }};
+    fs.writeFileSync(configPath, JSON.stringify(updated, null, 2), "utf-8");
+    logger.info("triggerWeixinChannelReload: wrote channel config to openclaw.json");
+  }} catch (err) {{
+    logger.warn(`triggerWeixinChannelReload: failed to update config: ${{String(err)}}`);
+  }}
+}}
+{ACCOUNTS_PATCH_MARKER}"""
+
 def _helper_block(engine_base_url: str) -> str:
     inbound_url = f"{engine_base_url.rstrip('/')}/v1/plugin-host/inbound"
     inbound_url_literal = json.dumps(inbound_url, ensure_ascii=False)
     return f"""const V8_HANDOFF_HEADER = "openclaw-weixin";
 const V8_HANDOFF_DEFAULT_URL = {inbound_url_literal};
+
+async function resolveV8HandoffConfig(): Promise<{{ handoffUrl: string; handoffToken: string }}> {{
+  const envUrl = (process.env.V8_AGENT_OS_PLUGIN_HOST_INBOUND_URL?.trim() || "").trim();
+  const envToken = (process.env.V8_AGENT_OS_PLUGIN_HOST_HANDOFF_TOKEN?.trim() || "").trim();
+  if (envUrl && envToken) {{
+    return {{
+      handoffUrl: envUrl,
+      handoffToken: envToken,
+    }};
+  }}
+  try {{
+    const fsMod = await import("node:fs");
+    const {{ resolveStateDir }} = await import("../storage/state-dir.js");
+    const configPath = path.join(resolveStateDir(), "openclaw.json");
+    if (fsMod.existsSync(configPath)) {{
+      const raw = fsMod.readFileSync(configPath, "utf-8");
+      const parsed = raw.trim() ? JSON.parse(raw) : {{}};
+      const bridgeConfig = parsed && typeof parsed === "object"
+        ? ((parsed.plugins?.entries?.["openclaw-v8-bridge"]?.config ?? {{}}) as Record<string, unknown>)
+        : {{}};
+      const configUrl = typeof bridgeConfig.v8InboundUrl === "string" ? bridgeConfig.v8InboundUrl.trim() : "";
+      const configToken = typeof bridgeConfig.handoffToken === "string" ? bridgeConfig.handoffToken.trim() : "";
+      return {{
+        handoffUrl: envUrl || configUrl || V8_HANDOFF_DEFAULT_URL,
+        handoffToken: envToken || configToken,
+      }};
+    }}
+  }} catch {{
+    // ignore and fall back to env/defaults
+  }}
+  return {{
+    handoffUrl: envUrl || V8_HANDOFF_DEFAULT_URL,
+    handoffToken: envToken,
+  }};
+}}
 
 async function handoffInboundToV8(args: {{
   full: WeixinMessage;
@@ -63,11 +166,10 @@ async function handoffInboundToV8(args: {{
   commandAuthorized: boolean;
   textBody: string;
 }}): Promise<{{ sessionId?: string; response?: string }}> {{
-  const handoffUrl = (process.env.V8_AGENT_OS_PLUGIN_HOST_INBOUND_URL?.trim() || V8_HANDOFF_DEFAULT_URL).trim();
+  const {{ handoffUrl, handoffToken }} = await resolveV8HandoffConfig();
   if (!handoffUrl) {{
     throw new Error("V8 PluginHostRuntime inbound handoff URL is not configured.");
   }}
-  const handoffToken = process.env.V8_AGENT_OS_PLUGIN_HOST_HANDOFF_TOKEN?.trim();
   const payload = {{
     channelType: "openclaw-weixin",
     chatType: "p2p",
@@ -173,13 +275,14 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _resolve_paths(plugin_dir: Path) -> tuple[Path, Path, Path, Path]:
+def _resolve_paths(plugin_dir: Path) -> tuple[Path, Path, Path, Path, Path]:
     plugin_dir = Path(plugin_dir)
     return (
         plugin_dir / PACKAGE_JSON_RELATIVE_PATH,
         plugin_dir / PROCESS_MESSAGE_RELATIVE_PATH,
         plugin_dir / HANDOFF_MODULE_RELATIVE_PATH,
         plugin_dir / MONITOR_RELATIVE_PATH,
+        plugin_dir / ACCOUNTS_RELATIVE_PATH,
     )
 
 
@@ -189,7 +292,7 @@ def _resolve_gateway_paths(openclaw_root: Path) -> tuple[Path, Path]:
 
 
 def inspect_weixin_handoff_patch(plugin_dir: Path) -> dict[str, Any]:
-    package_json_path, process_message_path, handoff_module_path, monitor_path = _resolve_paths(plugin_dir)
+    package_json_path, process_message_path, handoff_module_path, monitor_path, accounts_path = _resolve_paths(plugin_dir)
     package_manifest = _read_json(package_json_path)
     version = str(package_manifest.get("version") or "").strip()
     package_name = str(package_manifest.get("name") or "").strip()
@@ -208,7 +311,8 @@ def inspect_weixin_handoff_patch(plugin_dir: Path) -> dict[str, Any]:
     content = process_message_path.read_text(encoding="utf-8")
     handoff_module_ready = handoff_module_path.exists() and HANDOFF_MODULE_MARKER in handoff_module_path.read_text(encoding="utf-8")
     monitor_ready = monitor_path.exists() and HANDOFF_MONITOR_IMPORT in monitor_path.read_text(encoding="utf-8")
-    supported = package_name == SUPPORTED_WEIXIN_PACKAGE and version == SUPPORTED_WEIXIN_VERSION
+    config_preserve_ready = accounts_path.exists() and ACCOUNTS_PATCH_MARKER in accounts_path.read_text(encoding="utf-8")
+    supported = package_name == SUPPORTED_WEIXIN_PACKAGE
     patched = PATCH_MARKER in content
     legacy_patched = (PATCH_SENTINEL in content and not patched) or any(sentinel in content for sentinel in LEGACY_PATCH_SENTINELS)
     if not supported:
@@ -219,21 +323,23 @@ def inspect_weixin_handoff_patch(plugin_dir: Path) -> dict[str, Any]:
             "handoffReady": False,
             "inboundOwnership": "delegated",
             "supported": False,
-            "reason": f"当前仅支持 {SUPPORTED_WEIXIN_PACKAGE}@{SUPPORTED_WEIXIN_VERSION} 的受管 handoff，当前版本为 {package_name or 'unknown'}@{version or 'unknown'}。",
+            "reason": f"当前仅支持 {SUPPORTED_WEIXIN_PACKAGE} 的受管 handoff，当前版本为 {package_name or 'unknown'}@{version or 'unknown'}。",
         }
     if patched:
         return {
             "pluginId": SUPPORTED_WEIXIN_PLUGIN_ID,
             "packageName": package_name,
             "version": version,
-            "handoffReady": handoff_module_ready and monitor_ready,
+            "handoffReady": handoff_module_ready and monitor_ready and config_preserve_ready,
             "inboundOwnership": "v8_owned",
             "supported": True,
-            "reason": None if handoff_module_ready and monitor_ready else "当前 handoff patch 已存在，但 monitor import 或独立 handoff 模块仍未进入强制接管态。",
+            "reason": None if handoff_module_ready and monitor_ready and config_preserve_ready else "当前 handoff patch 已存在，但 monitor import、独立 handoff 模块或配置保真补丁仍未全部进入强制接管态。",
             "modulePath": str(handoff_module_path),
             "monitorPath": str(monitor_path),
             "monitorPatched": monitor_ready,
             "handoffModuleReady": handoff_module_ready,
+            "accountsPath": str(accounts_path),
+            "configPreserveReady": config_preserve_ready,
         }
     if legacy_patched:
         return {
@@ -257,6 +363,8 @@ def inspect_weixin_handoff_patch(plugin_dir: Path) -> dict[str, Any]:
         "monitorPath": str(monitor_path),
         "monitorPatched": False,
         "handoffModuleReady": False,
+        "accountsPath": str(accounts_path),
+        "configPreserveReady": config_preserve_ready,
     }
 
 
@@ -273,25 +381,28 @@ def inspect_gateway_launcher_patch(openclaw_root: Path, *, engine_base_url: str)
     expected_url = f'{engine_base_url.rstrip("/")}/v1/plugin-host/inbound'
     sentinel_ok = GATEWAY_PATCH_SENTINEL in content
     url_ok = f'set "V8_AGENT_OS_PLUGIN_HOST_INBOUND_URL={expected_url}"' in content
-    if sentinel_ok and url_ok:
+    allow_unconfigured = "--allow-unconfigured" in content
+    if sentinel_ok and url_ok and allow_unconfigured:
         return {
             "handoffReady": True,
             "supported": True,
             "reason": None,
             "gatewayCmdPath": str(gateway_cmd_path),
             "inboundUrl": expected_url,
+            "allowUnconfigured": True,
         }
     return {
         "handoffReady": False,
         "supported": True,
-        "reason": "当前 gateway 启动脚本尚未注入 V8 inbound handoff 环境变量。",
+        "reason": "当前 gateway 启动脚本尚未完整注入 V8 inbound handoff 环境变量或 --allow-unconfigured 兜底参数。",
         "gatewayCmdPath": str(gateway_cmd_path),
         "inboundUrl": expected_url,
+        "allowUnconfigured": allow_unconfigured,
     }
 
 
 def ensure_weixin_handoff_patch(plugin_dir: Path, *, engine_base_url: str) -> dict[str, Any]:
-    package_json_path, process_message_path, handoff_module_path, monitor_path = _resolve_paths(plugin_dir)
+    package_json_path, process_message_path, handoff_module_path, monitor_path, accounts_path = _resolve_paths(plugin_dir)
     status = inspect_weixin_handoff_patch(plugin_dir)
     if status.get("handoffReady"):
         status["patched"] = False
@@ -323,6 +434,16 @@ def ensure_weixin_handoff_patch(plugin_dir: Path, *, engine_base_url: str) -> di
     patched_monitor = monitor_content.replace(MONITOR_IMPORT_ANCHOR, f"{MONITOR_PATCH_MARKER}\n{HANDOFF_MONITOR_IMPORT}", 1)
     monitor_path.write_text(patched_monitor, encoding="utf-8")
 
+    accounts_backup_path = accounts_path.with_name(ACCOUNTS_BACKUP_FILE_NAME)
+    accounts_source_path = accounts_backup_path if accounts_backup_path.exists() else accounts_path
+    accounts_content = accounts_source_path.read_text(encoding="utf-8")
+    if ACCOUNTS_RELOAD_ANCHOR not in accounts_content:
+        raise RuntimeError("openclaw-weixin accounts 当前源码结构与配置保真模板不匹配，拒绝静默 patch。")
+    if not accounts_backup_path.exists():
+        accounts_backup_path.write_text(accounts_content, encoding="utf-8")
+    patched_accounts = accounts_content.replace(ACCOUNTS_RELOAD_ANCHOR, _patched_accounts_reload_block(), 1)
+    accounts_path.write_text(patched_accounts, encoding="utf-8")
+
     refreshed = inspect_weixin_handoff_patch(plugin_dir)
     refreshed["patched"] = True
     refreshed["backupPath"] = str(backup_path)
@@ -331,6 +452,8 @@ def ensure_weixin_handoff_patch(plugin_dir: Path, *, engine_base_url: str) -> di
     refreshed["processMessagePath"] = str(process_message_path)
     refreshed["handoffModulePath"] = str(handoff_module_path)
     refreshed["monitorPath"] = str(monitor_path)
+    refreshed["accountsPath"] = str(accounts_path)
+    refreshed["accountsBackupPath"] = str(accounts_backup_path)
     return refreshed
 
 
@@ -352,9 +475,6 @@ def ensure_gateway_launcher_patch(
 
     source_path = backup_path if backup_path.exists() else gateway_cmd_path
     content = source_path.read_text(encoding="utf-8")
-    state_dir_anchor = 'set "OPENCLAW_STATE_DIR='
-    if state_dir_anchor not in content:
-        raise RuntimeError("gateway.cmd 当前结构与受管 handoff 模板不匹配，拒绝静默 patch。")
 
     if not backup_path.exists():
         backup_path.write_text(content, encoding="utf-8")
@@ -366,8 +486,45 @@ def ensure_gateway_launcher_patch(
     ]
     if handoff_token:
         injected_lines.append(f'set "V8_AGENT_OS_PLUGIN_HOST_HANDOFF_TOKEN={handoff_token}"')
-    replacement = '\n'.join(injected_lines) + "\n" + state_dir_anchor
-    updated = content.replace(state_dir_anchor, replacement, 1)
+    injected_block = '\n'.join(injected_lines)
+    state_dir_anchor = 'set "OPENCLAW_STATE_DIR='
+    if state_dir_anchor in content:
+        replacement = injected_block + "\n" + state_dir_anchor
+        updated = content.replace(state_dir_anchor, replacement, 1)
+    else:
+        lines = content.splitlines()
+        launch_index = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if '"D:\\Program Files\\node.exe"' in line
+                or "dist\\index.js gateway" in line
+                or re.search(r'\bgateway\b.*--port\b', line, re.IGNORECASE)
+            ),
+            -1,
+        )
+        if launch_index < 0:
+            raise RuntimeError("gateway.cmd 当前结构与受管 handoff 模板不匹配，拒绝静默 patch。")
+        lines.insert(launch_index, injected_block)
+        updated = "\n".join(lines)
+        if content.endswith("\n") or content.endswith("\r\n"):
+            updated += "\n"
+    lines = updated.splitlines()
+    launch_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if ("dist\\index.js" in line or "openclaw.mjs" in line) and re.search(r"\bgateway\b", line, re.IGNORECASE)
+        ),
+        -1,
+    )
+    if launch_index < 0:
+        raise RuntimeError("gateway.cmd 启动行未找到，拒绝静默注入 --allow-unconfigured。")
+    if "--allow-unconfigured" not in lines[launch_index]:
+        lines[launch_index] = lines[launch_index].rstrip() + " --allow-unconfigured"
+    updated = "\n".join(lines)
+    if content.endswith("\n") or content.endswith("\r\n"):
+        updated += "\n"
     gateway_cmd_path.write_text(updated, encoding="utf-8")
 
     refreshed = inspect_gateway_launcher_patch(openclaw_root, engine_base_url=engine_base_url)

@@ -178,6 +178,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "vision": "",
             "embedding": "",
             "reranker": "",
+            "extensions_prefilter": "",
             "extensions_reranker": "",
             "channel": "",
             "automation": "",
@@ -228,8 +229,9 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "fts_enabled": True,
     },
     "extensions": {
-        "rerankPolicy": {
+        "prefilterPolicy": {
             "enabled": False,
+            "mode": "llm_tree",
         },
     },
     "supervisor": {
@@ -308,7 +310,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "rootDir": str(OPENCLAW_DEFAULT_STATE_ROOT),
             "toolingRoot": "",
             "launcherPath": "",
-            "autoStart": True,
+            "autoStart": False,
         },
         "externalHost": {
             "baseUrl": "",
@@ -1482,11 +1484,46 @@ class StorageManager:
     # --- Extensions Config Accessors ---
     def get_extensions_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("extensions") or {}
-        return self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["extensions"], data if isinstance(data, dict) else {})
+        normalized = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["extensions"], data if isinstance(data, dict) else {})
+        legacy_policy = dict(normalized.get("rerankPolicy") or {})
+        prefilter_policy = dict(normalized.get("prefilterPolicy") or {})
+        if legacy_policy and not prefilter_policy:
+            prefilter_policy = {
+                "enabled": bool(legacy_policy.get("enabled", False)),
+                "mode": "llm_tree",
+            }
+        elif legacy_policy:
+            prefilter_policy.setdefault("enabled", bool(legacy_policy.get("enabled", False)))
+            prefilter_policy.setdefault("mode", "llm_tree")
+        normalized["prefilterPolicy"] = {
+            "enabled": bool(prefilter_policy.get("enabled", False)),
+            "mode": str(prefilter_policy.get("mode") or "llm_tree").strip() or "llm_tree",
+        }
+        normalized.pop("rerankPolicy", None)
+        return normalized
 
     def save_extensions_config(self, data: Dict[str, Any]):
         payload = self._read_config_payload()
-        payload["extensions"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["extensions"], dict(data or {}))
+        normalized = dict(data or {})
+        legacy_policy = dict(normalized.pop("rerankPolicy", {}) or {})
+        prefilter_policy = dict(normalized.pop("prefilterPolicy", {}) or {})
+        if legacy_policy and not prefilter_policy:
+            prefilter_policy = {
+                "enabled": bool(legacy_policy.get("enabled", False)),
+                "mode": "llm_tree",
+            }
+        next_extensions = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["extensions"],
+            {
+                **normalized,
+                "prefilterPolicy": {
+                    "enabled": bool(prefilter_policy.get("enabled", False)),
+                    "mode": str(prefilter_policy.get("mode") or "llm_tree").strip() or "llm_tree",
+                },
+            },
+        )
+        next_extensions.pop("rerankPolicy", None)
+        payload["extensions"] = next_extensions
         self._write_config_payload(payload)
         
     # --- Supervisor Config Accessors ---
@@ -1712,7 +1749,7 @@ class StorageManager:
             "rootDir": str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT),
             "toolingRoot": "" if tooling_root is None else str(tooling_root).strip(),
             "launcherPath": "" if launcher_path is None else str(launcher_path).strip(),
-            "autoStart": bool(managed_local.get("autoStart", True)),
+            "autoStart": bool(managed_local.get("autoStart", False)),
         }
         external_host = dict(normalized.get("externalHost") or {})
         normalized["externalHost"] = {
@@ -1740,7 +1777,7 @@ class StorageManager:
             "rootDir": str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT),
             "toolingRoot": "" if tooling_root is None else str(tooling_root).strip(),
             "launcherPath": "" if launcher_path is None else str(launcher_path).strip(),
-            "autoStart": bool(managed_local.get("autoStart", True)),
+            "autoStart": bool(managed_local.get("autoStart", False)),
         }
         external_host = dict(merged.get("externalHost") or {})
         merged["externalHost"] = {

@@ -157,7 +157,7 @@ export default function AuditLogsPanel() {
     };
 
     return (
-        <Card className="flex h-[760px] min-h-0 flex-col">
+        <Card className="flex h-[min(76vh,760px)] min-h-0 flex-col overflow-hidden">
             <CardHeader className="flex flex-row items-center justify-between pb-4">
                 <div>
                     <CardTitle className="text-lg flex items-center gap-2">
@@ -185,7 +185,7 @@ export default function AuditLogsPanel() {
                     </Button>
                 </div>
             </CardHeader>
-            <CardContent className="flex-1 min-h-0">
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="flex gap-4 mb-4">
                     <div className="w-[180px]">
                         <Select value={sourceType} onValueChange={setSourceType}>
@@ -215,7 +215,7 @@ export default function AuditLogsPanel() {
                     </div>
                 </div>
 
-                <div className="min-h-0 overflow-auto rounded-md border">
+                <div className="min-h-0 flex-1 overflow-auto rounded-md border">
                     <Table className="table-fixed">
                         <TableHeader className="sticky top-0 z-10 bg-background">
                             <TableRow>

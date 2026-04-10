@@ -158,6 +158,41 @@ function normalizeContextReference(raw: unknown) {
     };
 }
 
+function normalizeMessagePartForRealtimeSurface(raw: unknown) {
+    const record = asRecord(raw);
+    if (!Object.keys(record).length) {
+        return raw;
+    }
+
+    const data = asRecord(record.data);
+    const nextPart: JsonRecord = {
+        ...record,
+        content: normalizeSurfaceContent(record.content),
+        message: normalizeSurfaceContent(record.message),
+        summary: normalizeSurfaceContent(record.summary),
+    };
+
+    if (typeof record.result === "string") {
+        nextPart.result = normalizeSurfaceContent(record.result);
+    }
+
+    if (Object.keys(data).length) {
+        nextPart.data = {
+            ...data,
+            content: normalizeSurfaceContent(data.content),
+            message: normalizeSurfaceContent(data.message),
+            summary: normalizeSurfaceContent(data.summary),
+            url: normalizeSurfaceUrl(data.url),
+            src: normalizeSurfaceUrl(data.src),
+            image: normalizeSurfaceUrl(data.image),
+            previewUrl: normalizeSurfaceUrl(data.previewUrl),
+            externalUrl: normalizeSurfaceUrl(data.externalUrl),
+        };
+    }
+
+    return nextPart;
+}
+
 export function normalizeArtifactForRealtimeSurface(raw: unknown) {
     const record = asRecord(raw);
     if (!Object.keys(record).length) {
@@ -184,6 +219,9 @@ export function normalizeMessageForRealtimeSurface(raw: unknown) {
     const nodes = Array.isArray(record.nodes)
         ? record.nodes.map((node) => normalizeNodeForRealtimeSurface(node))
         : record.nodes;
+    const parts = Array.isArray(record.parts)
+        ? record.parts.map((part) => normalizeMessagePartForRealtimeSurface(part))
+        : record.parts;
 
     const artifacts = Array.isArray(record.artifacts)
         ? record.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact))
@@ -197,6 +235,7 @@ export function normalizeMessageForRealtimeSurface(raw: unknown) {
         ...record,
         content: normalizeSurfaceContent(record.content),
         nodes,
+        parts,
         artifacts,
         images,
     };

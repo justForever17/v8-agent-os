@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
-from core.context_governance import extract_latest_context_governance
+from core.context_governance import (
+    extract_context_governance_history,
+    extract_latest_context_governance,
+)
 from core.runtime_projection import build_projection_summary
 from erc.session_realtime_contract import build_context_references, build_processes_snapshot
 
@@ -312,4 +315,5 @@ def build_session_history_detail(
         "artifacts": list((snapshot or {}).get("artifacts") or []),
         "contextReferences": build_context_references(snapshot or {}),
         "contextGovernance": extract_latest_context_governance(runtime_events),
+        "contextGovernanceHistory": extract_context_governance_history(runtime_events),
     }

@@ -51,12 +51,17 @@ export async function GET(
             : Array.isArray(snapshotData.messages)
                 ? snapshotData.messages
                 : [];
+        const historyTimeline = Array.isArray(historyRecord.timeline)
+            ? historyRecord.timeline.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
+            : [];
         const historyMessages = Array.isArray(historyRecord.messages)
             ? historyRecord.messages.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
-            : Array.isArray(historyRecord.timeline)
-                ? historyRecord.timeline.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
-                : [];
-        const detailMessages = historyMessages.length > 0 ? historyMessages : snapshotMessages;
+            : [];
+        const detailMessages = historyTimeline.length > 0
+            ? historyTimeline
+            : historyMessages.length > 0
+                ? historyMessages
+                : snapshotMessages;
         const historyProcesses = Array.isArray(historyRecord.processes)
             ? historyRecord.processes
                 .map((process: unknown) => normalizeProcessForRealtimeSurface(process))
@@ -67,7 +72,7 @@ export async function GET(
         return NextResponse.json(applyCanonicalSourceGroup({
             id,
             messages: detailMessages,
-            timeline: historyMessages,
+            timeline: historyTimeline.length > 0 ? historyTimeline : historyMessages,
             ledger: Array.isArray(historyRecord.ledger) ? historyRecord.ledger : [],
             latestSeq: snapshotData.latestSeq || 0,
             source: snapshotData.source || "runtime_snapshot",
@@ -84,6 +89,14 @@ export async function GET(
             runtimeTimeline: Array.isArray(historyRecord.runtimeTimeline) ? historyRecord.runtimeTimeline : snapshotData.runtimeTimeline || [],
             contextReferences: Array.isArray(historyRecord.contextReferences) ? historyRecord.contextReferences : snapshotData.contextReferences || [],
             artifacts: Array.isArray(historyRecord.artifacts) ? historyRecord.artifacts : snapshotData.artifacts || [],
+            contextGovernance: Object.keys(asRecord(historyRecord.contextGovernance)).length > 0
+                ? historyRecord.contextGovernance
+                : snapshotData.contextGovernance || null,
+            contextGovernanceHistory: Array.isArray(historyRecord.contextGovernanceHistory)
+                ? historyRecord.contextGovernanceHistory
+                : Array.isArray(snapshotData.contextGovernanceHistory)
+                    ? snapshotData.contextGovernanceHistory
+                    : [],
             projection: snapshotData,
         }));
     } catch (error) {

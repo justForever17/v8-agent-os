@@ -44,6 +44,10 @@ interface ContextPolicy {
         max_summary_output_tokens?: number;
     };
     runtime_adapters?: {
+        plugin_host?: {
+            window_size?: number;
+            max_summary_items?: number;
+        };
         channel?: {
             window_size?: number;
             max_summary_items?: number;
@@ -79,7 +83,7 @@ const DEFAULT_POLICY: ContextPolicy = {
         max_summary_output_tokens: 800,
     },
     runtime_adapters: {
-        channel: {
+        plugin_host: {
             window_size: 15,
             max_summary_items: 8,
         },
@@ -110,7 +114,7 @@ const PRESET_OPTIONS = [
             max_summary_output_tokens: 500,
         },
         runtime_adapters: {
-            channel: { window_size: 12, max_summary_items: 6 },
+            plugin_host: { window_size: 12, max_summary_items: 6 },
             automation: { recent_run_limit: 2, job_memory_limit: 4 },
         },
     },
@@ -129,7 +133,7 @@ const PRESET_OPTIONS = [
             max_summary_output_tokens: 800,
         },
         runtime_adapters: {
-            channel: { window_size: 15, max_summary_items: 8 },
+            plugin_host: { window_size: 15, max_summary_items: 8 },
             automation: { recent_run_limit: 3, job_memory_limit: 6 },
         },
     },
@@ -148,7 +152,7 @@ const PRESET_OPTIONS = [
             max_summary_output_tokens: 1200,
         },
         runtime_adapters: {
-            channel: { window_size: 20, max_summary_items: 10 },
+            plugin_host: { window_size: 20, max_summary_items: 10 },
             automation: { recent_run_limit: 4, job_memory_limit: 8 },
         },
     },
@@ -157,6 +161,8 @@ const PRESET_OPTIONS = [
 type PresetKey = (typeof PRESET_OPTIONS)[number]["key"];
 
 function normalizePolicy(policy?: ContextPolicy): ContextPolicy {
+    const legacyChannel = policy?.runtime_adapters?.channel || {};
+    const pluginHost = policy?.runtime_adapters?.plugin_host || legacyChannel;
     return {
         ...DEFAULT_POLICY,
         ...(policy || {}),
@@ -167,13 +173,28 @@ function normalizePolicy(policy?: ContextPolicy): ContextPolicy {
         runtime_adapters: {
             ...DEFAULT_POLICY.runtime_adapters,
             ...(policy?.runtime_adapters || {}),
-            channel: {
-                ...DEFAULT_POLICY.runtime_adapters?.channel,
-                ...(policy?.runtime_adapters?.channel || {}),
+            plugin_host: {
+                ...DEFAULT_POLICY.runtime_adapters?.plugin_host,
+                ...pluginHost,
             },
             automation: {
                 ...DEFAULT_POLICY.runtime_adapters?.automation,
                 ...(policy?.runtime_adapters?.automation || {}),
+            },
+        },
+    };
+}
+
+function canonicalizePolicyForSave(policy: ContextPolicy): ContextPolicy {
+    const normalized = normalizePolicy(policy);
+    return {
+        ...normalized,
+        runtime_adapters: {
+            plugin_host: {
+                ...(normalized.runtime_adapters?.plugin_host || {}),
+            },
+            automation: {
+                ...(normalized.runtime_adapters?.automation || {}),
             },
         },
     };
@@ -184,7 +205,7 @@ function matchesPreset(policy: ContextPolicy, presetKey: PresetKey) {
     if (!preset) return false;
 
     const compression = policy.compression || {};
-    const channel = policy.runtime_adapters?.channel || {};
+    const pluginHost = policy.runtime_adapters?.plugin_host || {};
     const automation = policy.runtime_adapters?.automation || {};
 
     return (
@@ -196,8 +217,8 @@ function matchesPreset(policy: ContextPolicy, presetKey: PresetKey) {
         Number(compression.max_summary_input_tokens ?? 0) === preset.compression.max_summary_input_tokens &&
         Number(compression.max_summary_input_messages ?? 0) === preset.compression.max_summary_input_messages &&
         Number(compression.max_summary_output_tokens ?? 0) === preset.compression.max_summary_output_tokens &&
-        Number(channel.window_size ?? 0) === preset.runtime_adapters.channel.window_size &&
-        Number(channel.max_summary_items ?? 0) === preset.runtime_adapters.channel.max_summary_items &&
+        Number(pluginHost.window_size ?? 0) === preset.runtime_adapters.plugin_host.window_size &&
+        Number(pluginHost.max_summary_items ?? 0) === preset.runtime_adapters.plugin_host.max_summary_items &&
         Number(automation.recent_run_limit ?? 0) === preset.runtime_adapters.automation.recent_run_limit &&
         Number(automation.job_memory_limit ?? 0) === preset.runtime_adapters.automation.job_memory_limit
     );
@@ -218,9 +239,9 @@ function applyPreset(policy: ContextPolicy, presetKey: PresetKey): ContextPolicy
         },
         runtime_adapters: {
             ...(policy.runtime_adapters || {}),
-            channel: {
-                ...(policy.runtime_adapters?.channel || {}),
-                ...preset.runtime_adapters.channel,
+            plugin_host: {
+                ...(policy.runtime_adapters?.plugin_host || {}),
+                ...preset.runtime_adapters.plugin_host,
             },
             automation: {
                 ...(policy.runtime_adapters?.automation || {}),
@@ -303,14 +324,14 @@ export default function ContextConfigPage() {
         );
     };
 
-    const updateChannelAdapter = (patch: Partial<NonNullable<NonNullable<ContextPolicy["runtime_adapters"]>["channel"]>>) => {
+    const updatePluginHostAdapter = (patch: Partial<NonNullable<NonNullable<ContextPolicy["runtime_adapters"]>["plugin_host"]>>) => {
         setPolicyForm((prev) =>
             normalizePolicy({
                 ...prev,
                 runtime_adapters: {
                     ...(prev.runtime_adapters || {}),
-                    channel: {
-                        ...(prev.runtime_adapters?.channel || {}),
+                    plugin_host: {
+                        ...(prev.runtime_adapters?.plugin_host || {}),
                         ...patch,
                     },
                 },
@@ -342,7 +363,7 @@ export default function ContextConfigPage() {
         try {
             const next = await saveConfigDomain<ContextDomainData>("context", {
                 data: {
-                    policy: policyForm,
+                    policy: canonicalizePolicyForSave(policyForm),
                     modelBindings: bindingsForm,
                 },
             });
@@ -370,11 +391,11 @@ export default function ContextConfigPage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title={lt("上下文管理", "Context")}
-                description={lt("配置上下文预算、摘要策略和适配规则。", "Tune context budgets, summary strategy, and runtime adaptation rules.")}
+                title={lt("上下文预算与治理", "Context governance")}
+                description={lt("配置 token 预算、历史压缩、运行时适配窗口与摘要模型绑定。", "Tune token budgets, history compaction, runtime adapter windows, and summary model bindings.")}
                 actions={
                     <div className="flex items-center gap-3">
-                        <InlineSaveState saving={saving} saved={saved} label={lt("上下文配置", "Context config")} />
+                        <InlineSaveState saving={saving} saved={saved} label={lt("上下文治理配置", "Context governance config")} />
                         <Button onClick={() => void handleSave()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {t(lt("保存", "Save"))}
@@ -387,8 +408,8 @@ export default function ContextConfigPage() {
                 items={[
                     { label: t(lt("当前档位", "Preset")), value: t(presetLabel(currentPreset)), description: t(lt("不匹配标准档位时会显示为自定义。", "Shows Custom when no preset matches.")) },
                     { label: t(lt("摘要方式", "Summary mode")), value: t(describeSummaryStrategy(policyForm, bindingsForm)), description: t(lt("预算溢出时优先规则提炼，必要时再启用摘要模型。", "Use rules first and only switch to the summary model when pressure is high.")) },
-                    { label: lt("最近保留", "Recent keep"), value: t(lt(`${policyForm.compression?.keep_recent_messages ?? 6} 条消息`, `${policyForm.compression?.keep_recent_messages ?? 6} messages`)), description: lt("压缩发生时，这部分最近历史会原样保留。", "These recent messages stay untouched during compression.") },
                     { label: t(lt("最近保留", "Recent keep")), value: t(lt(`${policyForm.compression?.keep_recent_messages ?? 6} 条消息`, `${policyForm.compression?.keep_recent_messages ?? 6} messages`)), description: t(lt("压缩发生时，这部分最近历史会原样保留。", "These recent messages stay untouched during compression.")) },
+                    { label: t(lt("治理范围", "Governance scope")), value: t(lt("预算 / 压缩 / 适配窗口", "Budgets / compaction / adapter windows")), description: t(lt("Scope、项目绑定和渠道归属仍由运行时主链判定。", "Scope, project binding, and channel ownership are still resolved by the runtime pipeline.")) },
                     { label: t(lt("配置来源", "Config source")), value: t(lt("统一配置 + 模型绑定", "Shared config + model binding")), description: t(lt("策略写入上下文配置，摘要模型仍来自角色模型绑定。", "Policy lives in context config. The summary model still comes from model bindings.")) },
                 ]}
             />
@@ -600,7 +621,7 @@ export default function ContextConfigPage() {
                 </div>
 
                 <div className="mt-6 grid gap-6 xl:grid-cols-2">
-                    <ConfigCard title={lt("Channel 适配", "Channel adaptation")} description={lt("设置渠道消息窗口。", "Tune the message window for channel runtimes.")}>
+                    <ConfigCard title={lt("PluginHost 适配", "PluginHost adaptation")} description={lt("设置 PluginHost / 渠道运行时的上下文窗口。", "Tune the context window for PluginHost and channel-backed runtimes.")}>
                         <div className="grid gap-5 md:grid-cols-2">
                             <div className="space-y-1.5">
                                 <Label>{t(lt("上下文窗口消息数", "Context window size"))}</Label>
@@ -608,8 +629,8 @@ export default function ContextConfigPage() {
                                     type="number"
                                     min={3}
                                     max={100}
-                                    value={policyForm.runtime_adapters?.channel?.window_size ?? 15}
-                                    onChange={(event) => updateChannelAdapter({ window_size: Number(event.target.value) })}
+                                    value={policyForm.runtime_adapters?.plugin_host?.window_size ?? 15}
+                                    onChange={(event) => updatePluginHostAdapter({ window_size: Number(event.target.value) })}
                                 />
                             </div>
                             <div className="space-y-1.5">
@@ -618,8 +639,8 @@ export default function ContextConfigPage() {
                                     type="number"
                                     min={1}
                                     max={50}
-                                    value={policyForm.runtime_adapters?.channel?.max_summary_items ?? 8}
-                                    onChange={(event) => updateChannelAdapter({ max_summary_items: Number(event.target.value) })}
+                                    value={policyForm.runtime_adapters?.plugin_host?.max_summary_items ?? 8}
+                                    onChange={(event) => updatePluginHostAdapter({ max_summary_items: Number(event.target.value) })}
                                 />
                             </div>
                         </div>

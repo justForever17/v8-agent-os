@@ -4,8 +4,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Sequence
 
+from core.model_capability_matrix import (
+    build_effective_capability_matrix,
+    evaluate_capability_matrix,
+    infer_runtime_capability_requirements,
+)
 from core.model_control_plane import model_control_plane
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.model_budget_service import model_budget_service
 from core.provider_compatibility import normalize_provider_error
 from core.provider_health_service import provider_health_service
@@ -23,9 +29,21 @@ class FailoverCandidate:
     capability_class: str
     reason: str
     priority: int
+    effective_capability_match: bool = True
+    degrade_applied: bool = False
+    degrade_reason: str = ""
+    effective_capability_matrix: Dict[str, Any] | None = None
 
 
 class ModelFailoverService:
+    def _runtime_ready_for_provider(self, provider_meta: Dict[str, Any]) -> bool:
+        runtime_ready, _reason = runtime_readiness_for_provider(
+            provider_id=str(provider_meta.get("name") or provider_meta.get("provider_id") or ""),
+            api_standard=provider_meta.get("api_standard") or provider_meta.get("apiStandard") or "openai",
+            provider_config=provider_meta,
+        )
+        return runtime_ready
+
     def _sticky_enabled(self, config: Dict[str, Any]) -> bool:
         governance = dict((config or {}).get("governance") or {})
         return bool(governance.get("stickyRunModel", True))
@@ -110,6 +128,7 @@ class ModelFailoverService:
         config: Dict[str, Any],
         preferred_model_id: str,
         role: str,
+        capability_requirements: Dict[str, Any] | None = None,
     ) -> List[FailoverCandidate]:
         governance = dict((config or {}).get("governance") or {})
         max_provider_switches = int(governance.get("maxProviderSwitches") or 0)
@@ -139,6 +158,22 @@ class ModelFailoverService:
                 continue
             if strict_match and capability_class and model.get("capabilityClass") != capability_class:
                 continue
+            model_record = model_control_plane.get_model_record(str(model["modelId"]), config)
+            model_meta = dict((model_record or {}).get("model") or {})
+            model_capabilities = dict(model_meta.get("capabilities") or {})
+            provider_meta = dict((model_record or {}).get("provider") or {})
+            runtime_ready = self._runtime_ready_for_provider(provider_meta)
+            if not runtime_ready:
+                continue
+            effective_capability_matrix = build_effective_capability_matrix(
+                capability_class=str(model.get("capabilityClass") or model_meta.get("capabilityClass") or ""),
+                capabilities=model_capabilities,
+                api_standard=str(provider_meta.get("api_standard") or "openai"),
+                runtime_ready=runtime_ready,
+            )
+            capability_gate = evaluate_capability_matrix(effective_capability_matrix, capability_requirements)
+            if not capability_gate["effectiveCapabilityMatch"]:
+                continue
             if model["modelId"] == preferred_model_id:
                 candidates.insert(
                     0,
@@ -149,6 +184,10 @@ class ModelFailoverService:
                         capability_class=model.get("capabilityClass") or "",
                         reason="preferred",
                         priority=int(model.get("priority") or 50),
+                        effective_capability_match=True,
+                        degrade_applied=bool(capability_gate.get("degradeApplied")),
+                        degrade_reason=str(capability_gate.get("degradeReason") or ""),
+                        effective_capability_matrix=effective_capability_matrix,
                     ),
                 )
                 continue
@@ -173,6 +212,10 @@ class ModelFailoverService:
                     capability_class=model.get("capabilityClass") or "",
                     reason="same_provider" if same_provider else "cross_provider",
                     priority=int(model.get("priority") or 50),
+                    effective_capability_match=True,
+                    degrade_applied=bool(capability_gate.get("degradeApplied")),
+                    degrade_reason=str(capability_gate.get("degradeReason") or ""),
+                    effective_capability_matrix=effective_capability_matrix,
                 )
             )
 
@@ -223,10 +266,35 @@ class ModelFailoverService:
         attempts: List[Dict[str, Any]] = []
         governance = dict((config or {}).get("governance") or {})
         max_local_retries = max(int(governance.get("maxLocalRetries") or 0), 0)
+        preferred_matrix = {}
+        if hasattr(base_llm_instance, "effective_capability_matrix"):
+            try:
+                preferred_matrix = dict(base_llm_instance.effective_capability_matrix() or {})
+            except Exception:
+                preferred_matrix = {}
+        if not preferred_matrix:
+            preferred_record = model_control_plane.get_model_record(effective_preferred_model_id, config)
+            preferred_model_meta = dict((preferred_record or {}).get("model") or {})
+            preferred_provider_meta = dict((preferred_record or {}).get("provider") or {})
+            preferred_runtime_ready = self._runtime_ready_for_provider(preferred_provider_meta)
+            preferred_matrix = build_effective_capability_matrix(
+                capability_class=str(preferred_model_meta.get("capabilityClass") or capability_class),
+                capabilities=preferred_model_meta.get("capabilities") or {},
+                api_standard=str(preferred_provider_meta.get("api_standard") or "openai"),
+                runtime_ready=preferred_runtime_ready,
+            )
+        capability_requirements = infer_runtime_capability_requirements(
+            role=role,
+            messages=messages,
+            tools=tools,
+            preferred_matrix=preferred_matrix,
+            require_structured_output=False,
+        )
         candidates = self.build_candidate_plan(
             config=config,
             preferred_model_id=effective_preferred_model_id,
             role=role,
+            capability_requirements=capability_requirements,
         )
         if not candidates:
             raise ModelGovernanceInterventionRequired(
@@ -237,6 +305,7 @@ class ModelFailoverService:
                     "role": role,
                     "preferredModelId": preferred_model_id,
                     "effectivePreferredModelId": effective_preferred_model_id,
+                    "effectiveCapabilityRequirements": capability_requirements,
                 },
             )
 
@@ -270,6 +339,10 @@ class ModelFailoverService:
                         "providerId": candidate.provider_id,
                         "reason": candidate.reason,
                         "retryIndex": retry_index,
+                        "effectiveCapabilityMatch": candidate.effective_capability_match,
+                        "degradeApplied": candidate.degrade_applied,
+                        "degradeReason": candidate.degrade_reason,
+                        "effectiveCapabilityMatrix": candidate.effective_capability_matrix or {},
                         "code": normalized["code"],
                         "message": normalized["message"],
                         "retryable": normalized["retryable"],
@@ -295,6 +368,7 @@ class ModelFailoverService:
                 "preferredModelId": preferred_model_id,
                 "effectivePreferredModelId": effective_preferred_model_id,
                 "capabilityClass": capability_class,
+                "effectiveCapabilityRequirements": capability_requirements,
                 "attempts": attempts,
             },
         )

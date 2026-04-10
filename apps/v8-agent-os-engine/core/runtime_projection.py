@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from core.context_governance import normalize_context_audit
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.storage import storage
 
@@ -840,21 +841,34 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 actor_label="Safety Guardian",
             )
         elif topic == "context.prepared":
-            compaction = payload.get("compaction") if isinstance(payload.get("compaction"), dict) else {}
-            saved_tokens = compaction.get("savedTokens")
-            window_state = str(payload.get("windowState") or payload.get("state") or "").strip()
-            summary = "上下文治理已更新"
+            governance_payload = normalize_context_audit(payload if isinstance(payload, dict) else {})
+            runtime_id = str(governance_payload.get("runtime_kind") or "chat").strip() or "chat"
+            saved_tokens = governance_payload.get("estimated_saved_tokens")
+            block_count = int(governance_payload.get("block_count") or 0)
+            resolved_scope = str(governance_payload.get("resolved_scope") or "").strip()
+            summary_parts: list[str] = []
             if saved_tokens is not None:
-                summary = f"上下文治理已更新，节省 {saved_tokens} tokens"
-            elif window_state:
-                summary = f"上下文治理已更新：{window_state}"
+                summary_parts.append(f"节省 {saved_tokens} tokens")
+            if block_count > 0:
+                summary_parts.append(f"注入 {block_count} 个 context block")
+            if resolved_scope:
+                summary_parts.append(f"scope={resolved_scope}")
+            summary = "上下文治理已更新"
+            if summary_parts:
+                summary = "上下文治理已更新：" + "，".join(summary_parts)
             entry = _runtime_timeline_entry(
                 event,
-                runtime_id="chat",
+                runtime_id=runtime_id,
                 kind="governance",
                 summary=summary,
                 status="prepared",
                 actor_label="上下文治理",
+                metadata={
+                    **governance_payload,
+                    "eventTs": str(event.get("event_ts") or event.get("ts") or "").strip(),
+                    "runId": str(event.get("run_id") or "").strip(),
+                    "eventSource": dict(event.get("source") or {}),
+                },
             )
         elif topic == "run.liveness.blocked":
             entry = _runtime_timeline_entry(

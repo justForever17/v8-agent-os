@@ -5,6 +5,19 @@ const ADMIN_AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
 const DEFAULT_ADMIN_AVATAR_PATTERN = /(?:\/Avatar\/default-supervisor\.svg|\/brand-mark\.png)(?:$|[?#])/i;
 export const DEFAULT_AGENT_AVATAR = "/brand-mark.png";
 
+type ProjectedMessagePart = {
+    type?: unknown;
+    content?: unknown;
+    time?: unknown;
+    toolCallId?: unknown;
+    toolName?: unknown;
+    args?: unknown;
+    result?: unknown;
+    agentName?: unknown;
+    agentAvatar?: unknown;
+    agentRoleLabel?: unknown;
+};
+
 function hashMessageContent(value: string) {
     let hash = 0;
     for (let index = 0; index < value.length; index += 1) {
@@ -151,6 +164,91 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
     };
 }
 
+function normalizeProjectedPartsToNodes(message: ChatMessage) {
+    const rawMessage = message as ChatMessage & { parts?: unknown };
+    const parts = Array.isArray(rawMessage.parts) ? (rawMessage.parts as ProjectedMessagePart[]) : [];
+    if (!parts.length) {
+        return Array.isArray(message.nodes) ? message.nodes.map((node) => ({ ...node })) : [];
+    }
+
+    const timestamp = Number(message.timestamp || Date.now());
+    const messageAgentName = message.agentName;
+    const messageAgentAvatar = resolveAgentAvatar(message.agentAvatar) || (message.role === "assistant" ? DEFAULT_AGENT_AVATAR : undefined);
+    const messageAgentRoleLabel = message.agentRoleLabel;
+
+    return parts.flatMap<PhoneUiTimelineNode>((part, index) => {
+        const partType = String(part.type || "").trim();
+        const nodeId = `${String(message.id || "projected").trim() || "projected"}-${index}`;
+        const nodeAgentName = typeof part.agentName === "string" && part.agentName.trim() ? part.agentName.trim() : messageAgentName;
+        const nodeAgentAvatar = resolveAgentAvatar(part.agentAvatar) || messageAgentAvatar;
+        const nodeAgentRoleLabel = typeof part.agentRoleLabel === "string" && part.agentRoleLabel.trim()
+            ? part.agentRoleLabel.trim()
+            : messageAgentRoleLabel;
+        const shared = {
+            timestamp,
+            agentName: nodeAgentName,
+            agentAvatar: nodeAgentAvatar,
+            agentRoleLabel: nodeAgentRoleLabel,
+        };
+
+        if (partType === "reasoning") {
+            return [{
+                id: nodeId,
+                kind: "execution",
+                executionType: "reasoning",
+                content: typeof part.content === "string" ? part.content : "",
+                time: typeof part.time === "number" ? part.time : 0,
+                ...shared,
+            } as PhoneUiTimelineNode];
+        }
+
+        if (partType === "tool_call") {
+            return [{
+                id: nodeId,
+                kind: "execution",
+                executionType: "tool_call",
+                toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
+                toolName: typeof part.toolName === "string" ? part.toolName : undefined,
+                args: part.args,
+                ...shared,
+            } as PhoneUiTimelineNode];
+        }
+
+        if (partType === "tool_result") {
+            return [{
+                id: nodeId,
+                kind: "execution",
+                executionType: "tool_result",
+                toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
+                toolName: typeof part.toolName === "string" ? part.toolName : undefined,
+                result: part.result,
+                ...shared,
+            } as PhoneUiTimelineNode];
+        }
+
+        if (partType === "agent_start") {
+            return [{
+                id: nodeId,
+                kind: "execution",
+                executionType: "agent_start",
+                ...shared,
+            } as PhoneUiTimelineNode];
+        }
+
+        if (partType === "text") {
+            return [{
+                id: nodeId,
+                kind: "narrative",
+                role: message.role === "assistant" || message.role === "system" || message.role === "user" ? message.role : "assistant",
+                content: typeof part.content === "string" ? part.content : "",
+                ...shared,
+            } as PhoneUiTimelineNode];
+        }
+
+        return [];
+    });
+}
+
 function buildRenderKey(message: ChatMessage) {
     const id = String(message.id || "").trim();
     const runId = String(message.runId || message.metadata?.runId || "").trim();
@@ -176,7 +274,7 @@ export function normalizeMessagesForState(messages: ChatMessage[]) {
             agentAvatar: resolveAgentAvatar(message.agentAvatar) || (message.role === "assistant" ? DEFAULT_AGENT_AVATAR : undefined),
             agentRoleLabel: message.role === "assistant" ? (message.agentRoleLabel || "主理人") : message.agentRoleLabel,
             agentType: message.role === "assistant" ? (message.agentType || "supervisor") : message.agentType,
-            nodes: Array.isArray(message.nodes) ? message.nodes.map((node) => ({ ...node })) : [],
+            nodes: normalizeProjectedPartsToNodes(message),
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
             metadata: message.metadata ? { ...message.metadata } : undefined,

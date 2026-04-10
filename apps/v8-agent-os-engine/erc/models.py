@@ -98,6 +98,7 @@ class RuntimeSnapshotPayload:
     summary: Optional[Dict[str, Any]] = None
     source: Optional[str] = None
     context_governance: Optional[Dict[str, Any]] = None
+    context_governance_history: List[Dict[str, Any]] = field(default_factory=list)
     lane: Optional[Dict[str, Any]] = None
     liveness: Optional[Dict[str, Any]] = None
     recovery_class: Optional[Dict[str, Any]] = None
@@ -119,6 +120,7 @@ class RuntimeSnapshotPayload:
             "summary": self.summary,
             "source": self.source,
             "contextGovernance": self.context_governance,
+            "contextGovernanceHistory": list(self.context_governance_history),
             "lane": self.lane,
             "liveness": self.liveness,
             "recoveryClass": self.recovery_class,

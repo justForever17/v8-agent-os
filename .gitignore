@@ -41,6 +41,16 @@ test-results/
 **/build/
 **/.turbo/
 
+# Expo / mobile build artifacts
+apps/v8-agent-os-phone/.expo/
+apps/v8-agent-os-phone/web-build/
+apps/v8-agent-os-phone/dist-web/
+apps/v8-agent-os-phone/dist-android/
+apps/v8-agent-os-phone/android/
+apps/v8-agent-os-phone/ios/
+apps/v8-agent-os-phone/*.tsbuildinfo
+apps/v8-agent-os-phone-tmp/
+
 # Local environment files
 **/.env
 **/.env.local

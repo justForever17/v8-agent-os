@@ -109,9 +109,10 @@ async def update_context_config(config: dict = Body(...)):
 async def get_memory_config():
     try:
         config = storage.get_memory_config() or {}
+        metadata = storage.get_memory_config_metadata()
         config.setdefault("recall_strategy", "balanced")
         config.setdefault("recall_top_k", 3)
-        config.setdefault("retrieval_threshold", 0.0)
+        config.setdefault("retrieval_threshold", metadata["recommendedRetrievalThreshold"])
         config.setdefault("passive_injection_enabled", True)
         config.setdefault("max_recent_days", 2)
         config.setdefault("max_context_tokens", 2000)
@@ -125,6 +126,9 @@ async def get_memory_config():
         config["extraction_model"] = _get_role_binding("extraction")
         config["embedding_model"] = _get_role_binding("embedding")
         config["reranker_model"] = _get_role_binding("reranker")
+        config["recommended_retrieval_threshold"] = metadata["recommendedRetrievalThreshold"]
+        config["retrieval_threshold_source"] = metadata["retrievalThresholdSource"]
+        config["retrieval_threshold_is_default"] = metadata["retrievalThresholdIsDefault"]
         return config
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -254,6 +258,21 @@ async def memory_fts_search(q: str, scope: str = None):
         results = memory_runtime.search_full_text(query=q, scope=scope, limit=20)
         valid_results = [item for item in results if str(item.get("scope") or "global").strip() in {"global", "app:chat", "app:coding", "app:writing"} or str(item.get("scope") or "").startswith(("project:", "workspace:", "workflow:", "channel:"))]
         return {"query": q, "results": valid_results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/recall-preview")
+async def memory_recall_preview(q: str, scope: str = None):
+    try:
+        preview = memory_runtime.preview_unified_recall(query=q, scope=scope, limit=8)
+        metadata = storage.get_memory_config_metadata()
+        return {
+            **preview,
+            "threshold_source": metadata["retrievalThresholdSource"],
+            "recommended_retrieval_threshold": metadata["recommendedRetrievalThreshold"],
+            "retrieval_threshold_is_default": metadata["retrievalThresholdIsDefault"],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

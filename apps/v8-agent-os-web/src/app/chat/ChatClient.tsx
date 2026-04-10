@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import {
     createInitialSessionRealtimeMessageState,
     type AdminProcessRef,
+    deriveMemoryRuntimeInsightFromGovernance,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
     isAskUserInteractionApproval,
@@ -534,6 +535,13 @@ export default function ChatClient() {
         () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
         [sessionProjection?.runtimeTimeline],
     );
+    const projectionMemoryInsight = useMemo(
+        () => deriveMemoryRuntimeInsightFromGovernance(
+            projectionContextGovernance,
+            projectionContextGovernanceHistory,
+        ),
+        [projectionContextGovernance, projectionContextGovernanceHistory],
+    );
     const projectionTodosAllCompleted = projectionTodos.length > 0
         && projectionTodos.every((item) => {
             const status = String(item.status || "").trim().toLowerCase();
@@ -557,7 +565,8 @@ export default function ChatClient() {
         recoverable: Boolean(sessionProjection?.recoverable?.recoverable),
         currentStepTitle: sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null,
         runtimeTimeline: projectionRuntimeTimeline,
-    }), [effectivePendingApproval, effectiveStatus, messages, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
+        memoryInsight: projectionMemoryInsight,
+    }), [effectivePendingApproval, effectiveStatus, messages, projectionMemoryInsight, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
     const historyPreview = useMemo(
         () => deriveHistoryPreview(messages, sessionProjection?.summary),
         [messages, sessionProjection?.summary],

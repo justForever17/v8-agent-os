@@ -344,29 +344,40 @@ class ScopeResolutionService:
                     scope_confidence = 0.95
                     evidence["channel_bound"] = channel_project.model_dump(exclude_none=True)
                 else:
-                    workspace_project = self.project_registry.find_project_for_workspace(
-                        workspace_id=workspace_id,
-                        workspace_path=workspace_path,
-                    )
-                    if workspace_project:
-                        resolved_project = workspace_project
-                        project_id = project_id or workspace_project.project_id
-                        workspace_id = workspace_id or workspace_project.workspace_id
-                        workspace_path = workspace_path or workspace_project.workspace_path
-                        resolved_scope = workspace_project.default_scope or _scope_for_project(project_id) or "global"
-                        scope_source = "workspace_inferred"
-                        scope_confidence = 0.9
-                        evidence["workspace_inferred"] = workspace_project.model_dump(exclude_none=True)
+                    channel_scope = _scope_for_channel(channel_type, channel_remote_id)
+                    if channel_scope:
+                        resolved_scope = channel_scope
+                        scope_source = "channel_session_default"
+                        scope_confidence = 0.82
+                        evidence["channel_session_default"] = {
+                            "channel_type": channel_type,
+                            "channel_remote_id": channel_remote_id,
+                            "resolved_scope": channel_scope,
+                        }
                     else:
-                        heuristic_scope = detect_scope(
-                            user_query,
-                            project_name=project_id,
-                        ) if user_query else "global"
-                        resolved_scope = heuristic_scope or "global"
-                        if resolved_scope != "global":
-                            scope_source = "heuristic_detected"
-                            scope_confidence = 0.65
-                        evidence["heuristic"] = {"scope": heuristic_scope}
+                        workspace_project = self.project_registry.find_project_for_workspace(
+                            workspace_id=workspace_id,
+                            workspace_path=workspace_path,
+                        )
+                        if workspace_project:
+                            resolved_project = workspace_project
+                            project_id = project_id or workspace_project.project_id
+                            workspace_id = workspace_id or workspace_project.workspace_id
+                            workspace_path = workspace_path or workspace_project.workspace_path
+                            resolved_scope = workspace_project.default_scope or _scope_for_project(project_id) or "global"
+                            scope_source = "workspace_inferred"
+                            scope_confidence = 0.9
+                            evidence["workspace_inferred"] = workspace_project.model_dump(exclude_none=True)
+                        else:
+                            heuristic_scope = detect_scope(
+                                user_query,
+                                project_name=project_id,
+                            ) if user_query else "global"
+                            resolved_scope = heuristic_scope or "global"
+                            if resolved_scope != "global":
+                                scope_source = "heuristic_detected"
+                                scope_confidence = 0.65
+                            evidence["heuristic"] = {"scope": heuristic_scope}
 
         if not project_id and resolved_project:
             project_id = resolved_project.project_id

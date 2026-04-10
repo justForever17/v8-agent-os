@@ -34,6 +34,39 @@ interface MemoryConfig {
     extraction_enabled?: boolean;
     graph_enabled?: boolean;
     fts_enabled?: boolean;
+    recommended_retrieval_threshold?: number;
+    retrieval_threshold_source?: string;
+    retrieval_threshold_is_default?: boolean;
+}
+
+interface RecallPreviewItem {
+    id: string;
+    fact: string;
+    source?: string;
+    scope?: string;
+    category?: string;
+    raw_relevance_score?: number;
+    final_relevance_score?: number;
+    accepted?: boolean;
+    reject_reason?: string;
+}
+
+interface RecallPreviewResponse {
+    query?: string;
+    threshold_snapshot?: number;
+    effective_acceptance_threshold?: number;
+    threshold_source?: string;
+    recommended_retrieval_threshold?: number;
+    retrieval_threshold_is_default?: boolean;
+    diagnostics?: {
+        graph_allowed?: boolean;
+        graph_reject_reason?: string;
+        graph_entities?: string[];
+        recall_strategy?: string;
+        accepted_count?: number;
+        rejected_count?: number;
+    };
+    items?: RecallPreviewItem[];
 }
 
 export default function MemoryConfigPanel() {
@@ -43,6 +76,10 @@ export default function MemoryConfigPanel() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [recallQuery, setRecallQuery] = useState("");
+    const [recallPreviewLoading, setRecallPreviewLoading] = useState(false);
+    const [recallPreviewError, setRecallPreviewError] = useState<string | null>(null);
+    const [recallPreview, setRecallPreview] = useState<RecallPreviewResponse | null>(null);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -62,6 +99,31 @@ export default function MemoryConfigPanel() {
     }, []);
 
     useEffect(() => { loadData(); }, [loadData]);
+
+    const handleRecallPreview = useCallback(async () => {
+        const normalizedQuery = recallQuery.trim();
+        if (!normalizedQuery) {
+            setRecallPreview(null);
+            setRecallPreviewError("请先输入一条要诊断的查询。");
+            return;
+        }
+        setRecallPreviewLoading(true);
+        setRecallPreviewError(null);
+        try {
+            const params = new URLSearchParams({ q: normalizedQuery });
+            const response = await fetch(`/api/memory/recall-preview?${params.toString()}`);
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
+            }
+            setRecallPreview(payload);
+        } catch (error) {
+            setRecallPreview(null);
+            setRecallPreviewError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setRecallPreviewLoading(false);
+        }
+    }, [recallQuery]);
 
     const handleSave = async () => {
         setSaving(true);
@@ -226,6 +288,11 @@ export default function MemoryConfigPanel() {
                             className="w-full"
                         />
                         <p className="text-xs text-muted-foreground">{t("用于过滤低相关度 recall 结果。值越高，注入内容越克制。")}</p>
+                        <p className="text-xs text-muted-foreground">
+                            {config.retrieval_threshold_source === "user"
+                                ? t("当前值来自你的手动配置。")
+                                : t(`当前值来自 engine 推荐默认值 ${(config.recommended_retrieval_threshold ?? 0.2).toFixed(2)}；只有缺省时才会自动写入。`)}
+                        </p>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -269,6 +336,60 @@ export default function MemoryConfigPanel() {
                                 onCheckedChange={(checked) => setConfig(prev => ({ ...prev, extraction_enabled: checked }))}
                             />
                         </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-lg border p-4">
+                        <div className="space-y-1">
+                            <Label>{t("Recall 预览 / 诊断")}</Label>
+                            <p className="text-xs text-muted-foreground">
+                                {t("这里调用真实 unified recall，而不是 FTS-only 搜索，可直接看到阈值过滤、graph 扩展和最终入选结果。")}
+                            </p>
+                        </div>
+                        <div className="flex gap-2">
+                            <Input
+                                value={recallQuery}
+                                onChange={(e) => setRecallQuery(e.target.value)}
+                                placeholder={t("输入一条要诊断的查询，例如：为什么记忆和RAG会命中不相关内容")}
+                            />
+                            <Button onClick={handleRecallPreview} disabled={recallPreviewLoading}>
+                                {recallPreviewLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t("预览")}
+                            </Button>
+                        </div>
+                        {recallPreviewError ? (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                                {recallPreviewError}
+                            </div>
+                        ) : null}
+                        {recallPreview ? (
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground md:grid-cols-2">
+                                    <div>{t("阈值快照")}: {(recallPreview.threshold_snapshot ?? 0).toFixed(2)}</div>
+                                    <div>{t("实际过滤地板")}: {(recallPreview.effective_acceptance_threshold ?? 0).toFixed(2)}</div>
+                                    <div>{t("阈值来源")}: {recallPreview.threshold_source === "user" ? t("用户手动配置") : t("engine 推荐默认值")}</div>
+                                    <div>{t("策略")}: {recallPreview.diagnostics?.recall_strategy || "balanced"}</div>
+                                    <div>{t("Graph 扩展")}: {recallPreview.diagnostics?.graph_allowed ? t("已启用") : (recallPreview.diagnostics?.graph_reject_reason || t("未启用"))}</div>
+                                </div>
+                                <div className="max-h-72 space-y-2 overflow-auto rounded-md border p-3">
+                                    {(recallPreview.items || []).length ? (
+                                        recallPreview.items?.map((item) => (
+                                            <div key={item.id} className="rounded-md border p-3 text-sm">
+                                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                    <span>{item.source || "unknown"}</span>
+                                                    <span>{item.scope || "global"}</span>
+                                                    <span>{item.category || "general"}</span>
+                                                    <span>{t("raw")} {(item.raw_relevance_score ?? 0).toFixed(4)}</span>
+                                                    <span>{t("final")} {(item.final_relevance_score ?? 0).toFixed(4)}</span>
+                                                    <span>{item.accepted ? t("已入选") : t(`已拒绝${item.reject_reason ? ` (${item.reject_reason})` : ""}`)}</span>
+                                                </div>
+                                                <p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.fact}</p>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div className="text-xs text-muted-foreground">{t("当前查询没有通过阈值的 recall 结果。")}</div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : null}
                     </div>
                 </CardContent>
             </Card>

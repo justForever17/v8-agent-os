@@ -189,6 +189,7 @@ class ContextOrchestrator:
             resolved_scope, scope_chain = explicit_scope, explicit_scope_chain
         else:
             resolved_scope, scope_chain = self._extract_scope_context(cleaned_messages)
+        recall_audit = self._extract_recall_audit(cleaned_messages)
         audit = {
             "context_policy_version": policy.get("schema_version", 1),
             "runtime_kind": runtime_kind,
@@ -207,6 +208,7 @@ class ContextOrchestrator:
             "durable_flush": durable_flush or {"ok": True, "skipped": True, "reason": "compaction_not_needed"},
             "resolved_scope": resolved_scope,
             "scope_chain": scope_chain,
+            "recall_audit": recall_audit,
         }
         if blocks:
             print(f"[ContextOrchestrator] {json.dumps(audit, ensure_ascii=False)}")
@@ -479,6 +481,23 @@ class ContextOrchestrator:
             scope_chain.append(resolved_scope)
         return resolved_scope, scope_chain
 
+    def _extract_recall_audit(self, messages: Sequence[BaseMessage]) -> Dict[str, Any]:
+        for message in reversed(messages):
+            kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+            diagnostics = kwargs.get("memory_rag_diagnostics")
+            if not isinstance(diagnostics, dict):
+                continue
+            return {
+                "query": str(diagnostics.get("query") or "").strip(),
+                "threshold": diagnostics.get("threshold"),
+                "configured_threshold": diagnostics.get("configured_threshold"),
+                "top_scores": list(diagnostics.get("top_scores") or []),
+                "injection_allowed": bool(diagnostics.get("injection_allowed", False)),
+                "reject_reason": str(diagnostics.get("reject_reason") or "").strip(),
+                "has_recall_cue": bool(diagnostics.get("has_recall_cue", False)),
+            }
+        return {}
+
     def _build_block_summary(self, block: ContextBlock) -> Dict[str, Any]:
         metadata = dict(block.metadata or {})
         summary: Dict[str, Any] = {
@@ -498,6 +517,8 @@ class ContextOrchestrator:
             "fact_count",
             "summary_method",
             "source",
+            "top_scores",
+            "threshold",
         ):
             value = metadata.get(key)
             if value is None:

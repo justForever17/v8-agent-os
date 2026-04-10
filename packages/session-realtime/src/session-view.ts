@@ -37,6 +37,14 @@ function asStringArray(value: unknown): string[] {
     : [];
 }
 
+function asNumberArray(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => asNumber(item))
+        .filter((item): item is number => item !== null)
+    : [];
+}
+
 export type SessionCurrentRunView = Record<string, unknown> & {
   id?: string | null;
   runId?: string | null;
@@ -155,6 +163,35 @@ export type ContextGovernanceDigest = {
   durableFlushReason: string | null;
   contextWindowTokens: number | null;
   modelId: string | null;
+  recallAudit: ContextGovernanceRecallAuditDigest | null;
+};
+
+export type ContextGovernanceRecallAuditDigest = {
+  query: string | null;
+  threshold: number | null;
+  configuredThreshold: number | null;
+  topScores: number[];
+  topScore: number | null;
+  injectionAllowed: boolean;
+  rejectReason: string | null;
+  hasRecallCue: boolean;
+};
+
+export type MemoryRuntimeInsight = {
+  id: string;
+  runtimeId: "memory";
+  summary: string;
+  timestamp: number;
+  statusHint: "recent";
+  source: "chat_context_governance";
+  injectionAllowed: boolean;
+  topScore: number | null;
+  rejectReason: string | null;
+  hasRecallCue: boolean;
+  query: string | null;
+  threshold: number | null;
+  configuredThreshold: number | null;
+  topScores: number[];
 };
 
 export type AuthoritativeSessionView = {
@@ -281,6 +318,32 @@ export function normalizeContextGovernanceDigest(
     asNullableRecord(record.durable_flush)
     || asNullableRecord(record.durableFlush)
     || null;
+  const recallAuditRecord =
+    asNullableRecord(record.recall_audit)
+    || asNullableRecord(record.recallAudit);
+  const recallAudit = recallAuditRecord
+    ? (() => {
+        const topScores = asNumberArray(recallAuditRecord.top_scores || recallAuditRecord.topScores);
+        return {
+          query: asString(recallAuditRecord.query),
+          threshold: asNumber(recallAuditRecord.threshold),
+          configuredThreshold:
+            asNumber(recallAuditRecord.configured_threshold)
+            ?? asNumber(recallAuditRecord.configuredThreshold),
+          topScores,
+          topScore: topScores[0] ?? null,
+          injectionAllowed:
+            asBoolean(recallAuditRecord.injection_allowed)
+            || asBoolean(recallAuditRecord.injectionAllowed),
+          rejectReason:
+            asString(recallAuditRecord.reject_reason)
+            || asString(recallAuditRecord.rejectReason),
+          hasRecallCue:
+            asBoolean(recallAuditRecord.has_recall_cue)
+            || asBoolean(recallAuditRecord.hasRecallCue),
+        } satisfies ContextGovernanceRecallAuditDigest;
+      })()
+    : null;
 
   return {
     id:
@@ -307,6 +370,7 @@ export function normalizeContextGovernanceDigest(
       || null,
     contextWindowTokens: asNumber(record.context_window_tokens || record.contextWindowTokens),
     modelId: asString(record.resolved_model_id) || asString(record.resolvedModelId),
+    recallAudit,
   };
 }
 
@@ -318,4 +382,97 @@ export function normalizeContextGovernanceHistory(
         .map((item, index) => normalizeContextGovernanceDigest(item, index))
         .filter((item): item is ContextGovernanceDigest => Boolean(item))
     : [];
+}
+
+function parseGovernanceTimestamp(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasRecallAuditSignal(value: ContextGovernanceRecallAuditDigest | null): boolean {
+  if (!value) {
+    return false;
+  }
+  return Boolean(
+    value.query
+    || value.topScores.length > 0
+    || value.injectionAllowed
+    || value.rejectReason
+    || value.hasRecallCue,
+  );
+}
+
+function formatRecallRejectReason(reason: string | null): string | null {
+  const normalized = asString(reason);
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith("rag_injection_failed:")) {
+    return "Recall 注入失败";
+  }
+  const RECALL_REJECT_REASON_LABELS: Record<string, string> = {
+    passive_injection_disabled_or_empty_query: "被动注入关闭或查询为空",
+    insufficient_conversational_continuity: "当前对话上下文不足",
+    query_too_short_without_recall_cue: "问题太短且没有 recall cue",
+    scope_too_sparse_without_recall_cue: "scope 太稀疏且没有 recall cue",
+    no_recall_results: "没有召回结果",
+    top_score_below_passive_gate: "Top1 低于注入阈值",
+    score_distribution_too_sparse: "候选分布过稀",
+    recall_block_empty: "召回块为空",
+  };
+  return RECALL_REJECT_REASON_LABELS[normalized] || normalized;
+}
+
+export function deriveMemoryRuntimeInsightFromGovernance(
+  current: Record<string, unknown> | ContextGovernanceView | null | undefined,
+  history: Array<Record<string, unknown> | ContextGovernanceView> | null | undefined = [],
+): MemoryRuntimeInsight | null {
+  const candidates = [
+    normalizeContextGovernanceDigest(current, 0),
+    ...normalizeContextGovernanceHistory(history),
+  ].filter((item): item is ContextGovernanceDigest => Boolean(item));
+  const recallCandidate = candidates
+    .filter((item) => hasRecallAuditSignal(item.recallAudit))
+    .sort((left, right) => {
+      const leftTs = parseGovernanceTimestamp(left.eventTs) || 0;
+      const rightTs = parseGovernanceTimestamp(right.eventTs) || 0;
+      return rightTs - leftTs;
+    })[0];
+  if (!recallCandidate?.recallAudit) {
+    return null;
+  }
+
+  const recallAudit = recallCandidate.recallAudit;
+  const topScore = recallAudit.topScore;
+  const topScoreLabel = topScore !== null ? `Top1 ${topScore.toFixed(2)}` : null;
+  const rejectLabel = formatRecallRejectReason(recallAudit.rejectReason);
+  const summary = recallAudit.injectionAllowed
+    ? topScoreLabel
+      ? `被动 RAG 已注入 · ${topScoreLabel}`
+      : "被动 RAG 已注入"
+    : rejectLabel
+      ? `Recall 已拒绝 · ${rejectLabel}`
+      : topScoreLabel
+        ? `Recall 已拒绝 · ${topScoreLabel}`
+        : "Recall 已拒绝";
+
+  return {
+    id: `memory-insight:${recallCandidate.id}`,
+    runtimeId: "memory",
+    summary,
+    timestamp: parseGovernanceTimestamp(recallCandidate.eventTs) || Date.now(),
+    statusHint: "recent",
+    source: "chat_context_governance",
+    injectionAllowed: recallAudit.injectionAllowed,
+    topScore,
+    rejectReason: rejectLabel,
+    hasRecallCue: recallAudit.hasRecallCue,
+    query: recallAudit.query,
+    threshold: recallAudit.threshold,
+    configuredThreshold: recallAudit.configuredThreshold,
+    topScores: [...recallAudit.topScores],
+  };
 }

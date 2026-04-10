@@ -543,13 +543,12 @@ class MemoryStore:
         results = [r for r in results if self._is_valid_scope(str(r.get("scope") or "global"))]
         return results[:limit]
 
-    def unified_recall(self, query: str, limit: int = 5, scope: Optional[str] = None, scopes: Optional[List[str]] = None) -> List[Dict]:
-        """
-        统一的混合检索 (Hybrid Retrieval):
-        结合 FTS5 (全文), ChromaDB (向量语义), 并附加知识图谱的一跳扩展。
-        最后通过 Reranker 重排并去重返回 Top N。
-        """
-        from core.storage import storage
+    def _load_recall_runtime_config(
+        self,
+        *,
+        limit: int,
+    ) -> Dict[str, Any]:
+        from core.storage import MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED, storage
 
         memory_config = storage.get_memory_config() or {}
         recall_strategy = str(memory_config.get("recall_strategy") or "balanced").strip().lower()
@@ -563,195 +562,370 @@ class MemoryStore:
         effective_limit = max(1, configured_top_k if limit == 5 else int(limit or configured_top_k))
 
         try:
-            retrieval_threshold = float(memory_config.get("retrieval_threshold") or 0.0)
-        except (TypeError, ValueError):
-            retrieval_threshold = 0.0
+            retrieval_threshold = float(memory_config.get("retrieval_threshold"))
+        except (TypeError, ValueError, KeyError):
+            retrieval_threshold = MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED
         retrieval_threshold = max(0.0, min(retrieval_threshold, 1.0))
 
-        use_vector = recall_strategy in {"balanced", "semantic"}
-        use_fts = bool(memory_config.get("fts_enabled", True)) and recall_strategy in {"balanced", "keyword"}
-        use_graph = bool(memory_config.get("graph_enabled", True))
+        return {
+            "memory_config": memory_config,
+            "recall_strategy": recall_strategy,
+            "effective_limit": effective_limit,
+            "retrieval_threshold": retrieval_threshold,
+            "use_vector": recall_strategy in {"balanced", "semantic"},
+            "use_fts": bool(memory_config.get("fts_enabled", True)) and recall_strategy in {"balanced", "keyword"},
+            "use_graph": bool(memory_config.get("graph_enabled", True)),
+        }
 
-        combined_results = {} # id -> dict
+    def _normalize_recall_score(self, value: Any) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            score = 0.0
+        return max(0.0, min(score, 1.0))
+
+    def _normalize_fts_relevance(self, raw_rank: Any, *, position: int, total: int) -> float:
+        try:
+            rank_value = abs(float(raw_rank))
+        except (TypeError, ValueError):
+            rank_value = 9999.0
+        rank_score = 1.0 / (1.0 + rank_value)
+        positional_score = max(0.0, 1.0 - (position / max(total, 1)))
+        return max(0.0, min((rank_score * 0.7) + (positional_score * 0.3), 1.0))
+
+    def _merge_recall_candidate(self, pool: Dict[str, Dict[str, Any]], candidate: Dict[str, Any]) -> None:
+        candidate_id = str(candidate.get("id") or "").strip()
+        if not candidate_id:
+            return
+        normalized_candidate = {
+            "id": candidate_id,
+            "fact": str(candidate.get("fact") or "").strip(),
+            "category": str(candidate.get("category") or "general").strip() or "general",
+            "scope": str(candidate.get("scope") or "global").strip() or "global",
+            "source": str(candidate.get("source") or "unknown").strip() or "unknown",
+            "raw_relevance_score": self._normalize_recall_score(candidate.get("raw_relevance_score")),
+            "final_relevance_score": self._normalize_recall_score(candidate.get("final_relevance_score")),
+            "accepted": bool(candidate.get("accepted", False)),
+            "reject_reason": str(candidate.get("reject_reason") or "").strip(),
+        }
+        existing = pool.get(candidate_id)
+        if existing is None:
+            pool[candidate_id] = normalized_candidate
+            return
+        merged_sources = {
+            item.strip()
+            for item in f"{existing.get('source', '')}+{normalized_candidate['source']}".split("+")
+            if item.strip()
+        }
+        existing["source"] = "+".join(sorted(merged_sources))
+        existing["raw_relevance_score"] = max(
+            self._normalize_recall_score(existing.get("raw_relevance_score")),
+            normalized_candidate["raw_relevance_score"],
+        )
+        if not str(existing.get("fact") or "").strip() and normalized_candidate["fact"]:
+            existing["fact"] = normalized_candidate["fact"]
+        if not str(existing.get("category") or "").strip():
+            existing["category"] = normalized_candidate["category"]
+        if not str(existing.get("scope") or "").strip():
+            existing["scope"] = normalized_candidate["scope"]
+
+    def _extract_graph_seed_entities(self, query: str, seed_items: List[Dict[str, Any]]) -> List[str]:
+        stop_words = {
+            "为什么", "怎么", "如何", "什么", "这个", "那个", "这些", "那些", "需要", "以及",
+            "记忆", "内容", "问题", "系统", "当前", "最近", "事情", "说明", "结果", "因为",
+            "that", "this", "with", "from", "will", "would", "should", "about", "have", "into",
+            "memory", "context", "issue", "problem", "result", "query", "history",
+        }
+        fragments = [str(query or "").strip()]
+        fragments.extend(str(item.get("fact") or "").strip()[:240] for item in seed_items[:3])
+        entities: List[str] = []
+        for fragment in fragments:
+            if not fragment:
+                continue
+            for token in re.findall(r"\b[a-zA-Z][a-zA-Z0-9._-]{2,}\b", fragment):
+                normalized = token.lower().strip()
+                if normalized in stop_words or normalized in entities:
+                    continue
+                entities.append(normalized)
+            for token in re.findall(r"[\u4e00-\u9fa5]{2,8}", fragment):
+                normalized = token.strip()
+                if normalized in stop_words or normalized in entities:
+                    continue
+                entities.append(normalized)
+        return entities[:6]
+
+    def _execute_unified_recall(
+        self,
+        *,
+        query: str,
+        limit: int = 5,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        from core.knowledge_db import knowledge_db
+
+        config = self._load_recall_runtime_config(limit=limit)
+        effective_limit = int(config["effective_limit"])
+        retrieval_threshold = float(config["retrieval_threshold"])
+        minimum_quality_floor = 0.05
+        effective_acceptance_threshold = max(retrieval_threshold, minimum_quality_floor)
+        recall_strategy = str(config["recall_strategy"])
+        use_vector = bool(config["use_vector"])
+        use_fts = bool(config["use_fts"])
+        use_graph = bool(config["use_graph"])
+
         allowed_scopes = set(self._normalize_scope_chain(scope=scope or "global", scope_chain=scopes))
         if "global" not in allowed_scopes:
             allowed_scopes.add("global")
-        
-        # 1. Vector Search
+
+        seed_candidates: Dict[str, Dict[str, Any]] = {}
+        diagnostics: Dict[str, Any] = {
+            "query": query,
+            "scope": scope,
+            "scopes": list(scopes or []),
+            "allowed_scopes": list(allowed_scopes),
+            "recall_strategy": recall_strategy,
+            "threshold_snapshot": retrieval_threshold,
+            "effective_acceptance_threshold": effective_acceptance_threshold,
+            "seed_candidate_count": 0,
+            "graph_candidate_count": 0,
+            "graph_allowed": False,
+            "graph_reject_reason": "",
+            "graph_entities": [],
+            "rerank_error": "",
+        }
+
         if use_vector:
             try:
                 from core.vector_store import get_vector_store
-                from core.knowledge_db import knowledge_db
 
                 vs = get_vector_store()
-                # We fetch more internally to have a good pool for reranking
-                v_results = vs.similarity_search_with_rerank(query, top_k=effective_limit * 2, fetch_k=20)
-                for r in v_results:
-                    fact_id = r["id"]
-                    parent_id = r.get("metadata", {}).get("parent_id")
-                    final_fact = r["text"]
+                vector_results = vs.similarity_search_with_rerank(
+                    query,
+                    top_k=max(effective_limit * 2, 6),
+                    fetch_k=max(effective_limit * 4, 20),
+                )
+                for result in vector_results:
+                    fact_id = result["id"]
+                    parent_id = result.get("metadata", {}).get("parent_id")
+                    final_fact = result["text"]
                     final_id = fact_id
-                    
-                    # Phase 25.2: Parent-Child Fetch (Get broad context from DB)
                     if parent_id:
                         with knowledge_db._conn() as conn:
-                            parent_row = conn.execute("SELECT fact FROM knowledge WHERE id = ?", (parent_id,)).fetchone()
+                            parent_row = conn.execute(
+                                "SELECT fact FROM knowledge WHERE id = ?",
+                                (parent_id,),
+                            ).fetchone()
                             if parent_row:
                                 final_fact = parent_row[0]
                                 final_id = parent_id
-                    
-                    item_scope = r.get("metadata", {}).get("scope", "global")
+                    item_scope = str(result.get("metadata", {}).get("scope", "global") or "global")
                     if item_scope not in allowed_scopes:
                         continue
-                    combined_results[final_id] = {
-                        "id": final_id,
-                        "fact": final_fact,
-                        "category": r.get("metadata", {}).get("category", "general"),
-                        "scope": item_scope,
-                        "source": "vector"
-                    }
-            except Exception as e:
-                logger.warning(f"[MemoryStore] Vector search error in unified_recall: {e}")
-            
-        # 2. FTS5 Search
-        if use_fts:
-            try:
-                from core.knowledge_db import knowledge_db
-
-                f_results = knowledge_db.fts_search(query, limit=effective_limit * 4)
-                for r in f_results:
-                    fact_id = r.get("id")
-                    final_fact = r.get("fact", "")
-                    final_id = fact_id
-                    if r.get("scope", "global") not in allowed_scopes:
-                        continue
-                    
-                    # FTS also returns children; we elevate to parent
-                    with knowledge_db._conn() as conn:
-                        p_id_row = conn.execute("SELECT parent_id FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
-                        if p_id_row and p_id_row[0]:
-                            parent_row = conn.execute("SELECT fact FROM knowledge WHERE id = ?", (p_id_row[0],)).fetchone()
-                            if parent_row:
-                                final_fact = parent_row[0]
-                                final_id = p_id_row[0]
-                    
-                    if final_id and final_id not in combined_results:
-                        combined_results[final_id] = {
+                    self._merge_recall_candidate(
+                        seed_candidates,
+                        {
                             "id": final_id,
                             "fact": final_fact,
-                            "category": r.get("category", "general"),
-                            "scope": r.get("scope", "global"),
-                            "source": "fts5"
-                        }
-            except Exception as e:
-                logger.warning(f"[MemoryStore] FTS5 search error in unified_recall: {e}")
-            
-        # 3. Graph Expansion (Phase 25.1: LLM/Regex Entity Extraction + Multi-hop)
-        if use_graph:
-            try:
-                from core.memory_router import MemoryRouter
-                from core.knowledge_db import knowledge_db
-                import re
-                
-                # Fast Regex Fallback: extract alphabetic words or Chinese words (length > 1) to act as loose entities
-                words = set([w.lower() for w in re.findall(r'\b[a-zA-Z]{2,}\b', query)])
-                zh_words = set(re.findall(r'[\u4e00-\u9fa5]{2,}', query))
-                
-                # Filter out very common stop words if needed, but loose regex means we accept most
-                potential_entities = list(words.union(zh_words))
-                
-                # Attempt LLM extraction for precision
-                try:
-                    router = MemoryRouter()
-                    llm = router.get_extractor_llm()
-                    prompt = (
-                        "Extract 1 to 3 core subject entities from the following query to assist knowledge graph retrieval. "
-                        "Output ONLY a comma-separated list of entities, no markdown, no quotes (e.g. Next.js, database, Python). If no obvious entities, output 'NONE'.\n\n"
-                        f"Query: {query}"
+                            "category": result.get("metadata", {}).get("category", "general"),
+                            "scope": item_scope,
+                            "source": "vector",
+                            "raw_relevance_score": result.get("relevance_score", 0.0),
+                        },
                     )
-                    from langchain_core.messages import SystemMessage
-                    response = llm.invoke([SystemMessage(content=prompt)], config={"callbacks": []})
-                    content = response.content.strip().replace("'", "").replace('"', '')
-                    if "none" not in content.lower() and "</think>" not in content.lower():
-                        llm_entities = [e.strip().lower() for e in content.split(',') if e.strip()]
-                        if llm_entities:
-                            potential_entities = llm_entities # Override loose regex with precise LLM output
-                    elif "</think>" in content.lower():
-                         # Handle deepseek reasoner output
-                         actual_content = content.split("</think>")[-1].strip()
-                         if "none" not in actual_content.lower():
-                             llm_entities = [e.strip().lower() for e in actual_content.split(',') if e.strip()]
-                             if llm_entities:
-                                 potential_entities = llm_entities
-                except Exception as e_llm:
-                    logger.debug(f"[MemoryStore] Fast LLM entity extraction failed or timed out, using fallback regex: {e_llm}")
+            except Exception as exc:
+                logger.warning(f"[MemoryStore] Vector search error in unified_recall: {exc}")
 
-                graph_facts = []
-                extracted_relations = set()
-                
-                for entity in potential_entities:
-                    # Perform 2-hop graph query
+        if use_fts:
+            try:
+                fts_results = knowledge_db.fts_search(query, limit=max(effective_limit * 4, 8))
+                total_fts = len(fts_results)
+                for index, result in enumerate(fts_results):
+                    fact_id = result.get("id")
+                    final_fact = result.get("fact", "")
+                    final_id = fact_id
+                    item_scope = str(result.get("scope", "global") or "global")
+                    if item_scope not in allowed_scopes:
+                        continue
+                    with knowledge_db._conn() as conn:
+                        parent_row = conn.execute(
+                            "SELECT parent_id FROM knowledge WHERE id = ?",
+                            (fact_id,),
+                        ).fetchone()
+                        if parent_row and parent_row[0]:
+                            elevated = conn.execute(
+                                "SELECT fact FROM knowledge WHERE id = ?",
+                                (parent_row[0],),
+                            ).fetchone()
+                            if elevated:
+                                final_fact = elevated[0]
+                                final_id = parent_row[0]
+                    self._merge_recall_candidate(
+                        seed_candidates,
+                        {
+                            "id": final_id,
+                            "fact": final_fact,
+                            "category": result.get("category", "general"),
+                            "scope": item_scope,
+                            "source": "fts5",
+                            "raw_relevance_score": self._normalize_fts_relevance(
+                                result.get("relevance"),
+                                position=index,
+                                total=total_fts,
+                            ),
+                        },
+                    )
+            except Exception as exc:
+                logger.warning(f"[MemoryStore] FTS5 search error in unified_recall: {exc}")
+
+        seed_items = sorted(
+            seed_candidates.values(),
+            key=lambda item: (
+                self._normalize_recall_score(item.get("raw_relevance_score")),
+                str(item.get("source") or ""),
+            ),
+            reverse=True,
+        )
+        diagnostics["seed_candidate_count"] = len(seed_items)
+
+        combined_candidates: Dict[str, Dict[str, Any]] = dict(seed_candidates)
+        graph_seed_floor = max(effective_acceptance_threshold, 0.20)
+        graph_seed_items = [
+            item for item in seed_items
+            if self._normalize_recall_score(item.get("raw_relevance_score")) >= graph_seed_floor
+        ]
+
+        if use_graph and graph_seed_items:
+            try:
+                graph_entities = self._extract_graph_seed_entities(query, graph_seed_items)
+                diagnostics["graph_entities"] = graph_entities
+                extracted_relations: set[str] = set()
+                base_graph_score = max(
+                    self._normalize_recall_score(graph_seed_items[0].get("raw_relevance_score")),
+                    graph_seed_floor,
+                ) * 0.9
+                for entity in graph_entities:
                     relations = knowledge_db.multi_hop_query(entity, hops=2)
-                    for rel in relations:
-                        rel_str = f"{rel['subject']} {rel['predicate']} {rel['object']}"
-                        if rel_str not in extracted_relations:
-                            extracted_relations.add(rel_str)
-                            graph_facts.append(f"[Graph Context] {rel_str}")
-                
-                if graph_facts:
-                    logger.info(f"[MemoryStore] Graph Expansion: extracted entities {potential_entities}, fetched {len(graph_facts)} relations.")
-                    # Inject graph relations into the reranking pool as virtual documents
-                    for i, gf in enumerate(graph_facts):
-                        virtual_id = f"graph_fact_{i}"
-                        combined_results[virtual_id] = {
-                            "id": virtual_id,
-                            "fact": gf,
-                            "category": "graph_context",
-                            "scope": "global",
-                            "source": "graph"
-                        }
-                    
-            except Exception as e:
-                logger.warning(f"[MemoryStore] Graph expansion pipeline failed in unified_recall: {e}")
+                    for relation in relations:
+                        relation_text = f"{relation['subject']} {relation['predicate']} {relation['object']}"
+                        if relation_text in extracted_relations:
+                            continue
+                        extracted_relations.add(relation_text)
+                        virtual_id = f"graph:{uuid.uuid5(uuid.NAMESPACE_OID, relation_text).hex[:12]}"
+                        self._merge_recall_candidate(
+                            combined_candidates,
+                            {
+                                "id": virtual_id,
+                                "fact": f"[Graph Context] {relation_text}",
+                                "category": "graph_context",
+                                "scope": "global",
+                                "source": "graph",
+                                "raw_relevance_score": base_graph_score,
+                            },
+                        )
+                diagnostics["graph_candidate_count"] = sum(
+                    1 for item in combined_candidates.values()
+                    if str(item.get("source") or "").find("graph") >= 0
+                )
+                diagnostics["graph_allowed"] = diagnostics["graph_candidate_count"] > 0
+                if not diagnostics["graph_allowed"]:
+                    diagnostics["graph_reject_reason"] = "no_graph_relations_from_seed_entities"
+            except Exception as exc:
+                diagnostics["graph_reject_reason"] = f"graph_pipeline_failed:{exc}"
+                logger.warning(f"[MemoryStore] Graph expansion pipeline failed in unified_recall: {exc}")
+        elif use_graph:
+            diagnostics["graph_reject_reason"] = "no_high_quality_seed_results"
+        else:
+            diagnostics["graph_reject_reason"] = "graph_disabled"
 
-        if not combined_results:
-            return []
-            
-        docs_to_rerank = []
-        ids_order = []
-        for fact_id, data in combined_results.items():
-            docs_to_rerank.append(data["fact"])
+        if not combined_candidates:
+            return {
+                "items": [],
+                "accepted_items": [],
+                "threshold_snapshot": retrieval_threshold,
+                "diagnostics": diagnostics,
+            }
+
+        ids_order: List[str] = []
+        docs_to_rerank: List[str] = []
+        for fact_id, item in combined_candidates.items():
             ids_order.append(fact_id)
-            
-        # 4. Global Reranking
+            docs_to_rerank.append(str(item.get("fact") or ""))
+
+        reranked_scores: Dict[str, float] = {}
         try:
             from core.memory_router import MemoryRouter
-            router = MemoryRouter()
-            reranker = router.get_reranker_model()
-            
-            # Re-rank the combined pool
-            ranked = reranker.rerank(query, docs_to_rerank, top_k=effective_limit)
-            
-            final_results = []
-            for r in ranked:
-                idx = r["index"]
-                fact_id = ids_order[idx]
-                item = combined_results[fact_id]
-                item["relevance_score"] = r.get("relevance_score", 0.0)
-                final_results.append(item)
 
-            if retrieval_threshold > 0:
-                final_results = [
-                    item for item in final_results
-                    if float(item.get("relevance_score") or 0.0) >= retrieval_threshold
-                ]
+            reranker = MemoryRouter().get_reranker_model()
+            ranked = reranker.rerank(query, docs_to_rerank, top_k=len(docs_to_rerank))
+            for row in ranked:
+                idx = int(row.get("index") or 0)
+                if idx < 0 or idx >= len(ids_order):
+                    continue
+                reranked_scores[ids_order[idx]] = self._normalize_recall_score(row.get("relevance_score", 0.0))
+        except Exception as exc:
+            diagnostics["rerank_error"] = str(exc)
+            logger.warning(f"[MemoryStore] Unified recall reranking failed, falling back to raw scores: {exc}")
 
-            return final_results[:effective_limit]
-            
-        except Exception as e:
-            logger.warning(f"[MemoryStore] Unified recall reranking failed, returning fallback: {e}")
-            # Fallback to taking items directly
-            return list(combined_results.values())[:effective_limit]
+        all_items: List[Dict[str, Any]] = []
+        for fact_id, item in combined_candidates.items():
+            raw_score = self._normalize_recall_score(item.get("raw_relevance_score"))
+            final_score = reranked_scores.get(fact_id, raw_score)
+            accepted = final_score >= effective_acceptance_threshold
+            all_items.append(
+                {
+                    **item,
+                    "raw_relevance_score": raw_score,
+                    "final_relevance_score": final_score,
+                    "relevance_score": final_score,
+                    "accepted": accepted,
+                    "reject_reason": "" if accepted else "below_threshold",
+                }
+            )
+
+        all_items.sort(
+            key=lambda item: (
+                self._normalize_recall_score(item.get("final_relevance_score")),
+                self._normalize_recall_score(item.get("raw_relevance_score")),
+            ),
+            reverse=True,
+        )
+
+        all_accepted_items = [item for item in all_items if item.get("accepted")]
+        accepted_items = all_accepted_items[:effective_limit]
+        diagnostics["accepted_count"] = len(all_accepted_items)
+        diagnostics["rejected_count"] = max(0, len(all_items) - len(all_accepted_items))
+
+        return {
+            "items": all_items[: max(effective_limit * 4, 12)],
+            "accepted_items": accepted_items,
+            "threshold_snapshot": retrieval_threshold,
+            "effective_acceptance_threshold": effective_acceptance_threshold,
+            "diagnostics": diagnostics,
+        }
+
+    def preview_unified_recall(
+        self,
+        query: str,
+        limit: int = 5,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        preview = self._execute_unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
+        return {
+            "query": query,
+            "scope": scope,
+            "scopes": scopes or [],
+            "threshold_snapshot": preview.get("threshold_snapshot"),
+            "effective_acceptance_threshold": preview.get("effective_acceptance_threshold"),
+            "diagnostics": preview.get("diagnostics") or {},
+            "items": preview.get("items") or [],
+            "accepted_items": preview.get("accepted_items") or [],
+        }
+
+    def unified_recall(self, query: str, limit: int = 5, scope: Optional[str] = None, scopes: Optional[List[str]] = None) -> List[Dict]:
+        preview = self._execute_unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
+        return list(preview.get("accepted_items") or [])
             
     # ==========================================
     # Layer 3: 时序日志 (daily/)

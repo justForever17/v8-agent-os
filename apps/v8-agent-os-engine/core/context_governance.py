@@ -21,6 +21,7 @@ CONTEXT_AUDIT_FIELDS = (
     "resolved_scope",
     "scope_chain",
     "durable_flush",
+    "recall_audit",
 )
 
 
@@ -88,6 +89,33 @@ def _normalize_durable_flush(value: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_recall_audit(value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    top_scores: list[float] = []
+    for item in payload.get("top_scores") or []:
+        try:
+            top_scores.append(float(item or 0.0))
+        except (TypeError, ValueError):
+            continue
+    try:
+        threshold = float(payload.get("threshold") or 0.0)
+    except (TypeError, ValueError):
+        threshold = 0.0
+    try:
+        configured_threshold = float(payload.get("configured_threshold") or 0.0)
+    except (TypeError, ValueError):
+        configured_threshold = 0.0
+    return {
+        "query": _normalize_string(payload.get("query")),
+        "threshold": threshold,
+        "configured_threshold": configured_threshold,
+        "top_scores": top_scores,
+        "injection_allowed": bool(payload.get("injection_allowed", False)),
+        "reject_reason": _normalize_string(payload.get("reject_reason")),
+        "has_recall_cue": bool(payload.get("has_recall_cue", False)),
+    }
+
+
 def normalize_context_audit(audit: Dict[str, Any] | None) -> Dict[str, Any]:
     payload = dict(audit or {})
     normalized: Dict[str, Any] = {}
@@ -99,6 +127,8 @@ def normalize_context_audit(audit: Dict[str, Any] | None) -> Dict[str, Any]:
             normalized[key] = _normalize_block_summaries(value)
         elif key == "durable_flush":
             normalized[key] = _normalize_durable_flush(value)
+        elif key == "recall_audit":
+            normalized[key] = _normalize_recall_audit(value)
         elif key in {"context_policy_version", "context_window_tokens", "original_message_count", "estimated_input_tokens", "block_count", "estimated_saved_tokens"}:
             normalized[key] = _coerce_int(value, 0)
         elif key == "compaction_applied":

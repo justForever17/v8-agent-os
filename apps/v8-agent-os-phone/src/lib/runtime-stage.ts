@@ -10,6 +10,7 @@ import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
     coerceAdminResourceRef,
+    type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
@@ -50,6 +51,7 @@ export type PhoneRuntimeStageActivity = {
     messageId: string;
     node: PhoneUiTimelineNode;
     kind: "progress" | "tool" | "governance" | "artifact" | "handoff";
+    synthetic?: boolean;
 };
 
 export type PhoneRuntimeStageModel = {
@@ -411,6 +413,7 @@ export function buildPhoneRuntimeStageModel(
         pendingApproval?: boolean;
         currentStepTitle?: string | null;
         runtimeTimeline?: PhoneRuntimeTimelineEntry[] | null;
+        memoryInsight?: MemoryRuntimeInsight | null;
         locale?: LocaleCode;
     },
 ): PhoneRuntimeStageModel {
@@ -456,9 +459,52 @@ export function buildPhoneRuntimeStageModel(
         });
     }
 
+    if (options?.memoryInsight) {
+        const topScoresLabel = options.memoryInsight.topScores.length > 0
+            ? `Top Scores: ${options.memoryInsight.topScores.slice(0, 3).map((score) => score.toFixed(2)).join(", ")}`
+            : null;
+        const detailParts = [
+            options.memoryInsight.query ? `Query: ${options.memoryInsight.query}` : null,
+            options.memoryInsight.rejectReason ? `Reject: ${options.memoryInsight.rejectReason}` : null,
+            topScoresLabel,
+        ].filter((item): item is string => Boolean(item));
+        activities.push({
+            id: options.memoryInsight.id,
+            runtimeId: "memory",
+            timestamp: options.memoryInsight.timestamp,
+            summary: options.memoryInsight.summary,
+            topic: "memory.recall.insight",
+            actorLabel: "记忆召回",
+            messageId: options.memoryInsight.id,
+            node: {
+                id: `timeline-node-${options.memoryInsight.id}`,
+                kind: "execution",
+                executionType: "runtime_progress",
+                topic: "memory.recall.insight",
+                label: options.memoryInsight.summary,
+                content: detailParts.join("\n"),
+                data: {
+                    runtimeId: "memory",
+                    source: options.memoryInsight.source,
+                    injectionAllowed: options.memoryInsight.injectionAllowed,
+                    topScore: options.memoryInsight.topScore,
+                    topScores: options.memoryInsight.topScores,
+                    rejectReason: options.memoryInsight.rejectReason,
+                    query: options.memoryInsight.query,
+                },
+                timestamp: options.memoryInsight.timestamp,
+                agentName: "记忆召回",
+                agentRoleLabel: "记忆召回",
+            },
+            kind: "progress",
+            synthetic: true,
+        });
+    }
+
     activities.sort((left, right) => right.timestamp - left.timestamp);
-    const rawActiveRuntimeId = normalizePhoneRuntimeId(options?.ownerRuntime) ?? activities[0]?.runtimeId ?? null;
-    const firstVisibleRuntimeWithActivity = activities.find((activity) => VISIBLE_PHONE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
+    const realActivities = activities.filter((activity) => !activity.synthetic);
+    const rawActiveRuntimeId = normalizePhoneRuntimeId(options?.ownerRuntime) ?? realActivities[0]?.runtimeId ?? null;
+    const firstVisibleRuntimeWithActivity = realActivities.find((activity) => VISIBLE_PHONE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
     const activeRuntimeId = rawActiveRuntimeId && VISIBLE_PHONE_RUNTIME_ORDER.includes(rawActiveRuntimeId)
         ? rawActiveRuntimeId
         : firstVisibleRuntimeWithActivity || "chat";

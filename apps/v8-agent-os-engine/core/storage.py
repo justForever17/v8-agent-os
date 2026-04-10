@@ -103,6 +103,8 @@ LEGACY_ADMIN_ORIGINS = {
     "http://localhost:5001",
 }
 
+MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED = 0.20
+
 
 def _replace_if_exact(value: Any, replacements: Dict[str, str]) -> str:
     normalized = str(value or "").strip().rstrip("/")
@@ -216,7 +218,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "extraction_temperature": 0.1,
         "recall_strategy": "balanced",
         "recall_top_k": 3,
-        "retrieval_threshold": 0.0,
+        "retrieval_threshold": MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED,
         "passive_injection_enabled": True,
         "max_recent_days": 2,
         "max_context_tokens": 2000,
@@ -1477,6 +1479,33 @@ class StorageManager:
     def get_memory_config(self) -> Dict[str, Any]:
         self._ensure_legacy_model_bindings_migrated()
         return self.read_json("memory_config.json")
+
+    def get_memory_config_metadata(self) -> Dict[str, Any]:
+        raw_config = self._read_raw_config_payload()
+        raw_memory = raw_config.get("memory") if isinstance(raw_config, dict) else {}
+        threshold_is_user_defined = isinstance(raw_memory, dict) and "retrieval_threshold" in raw_memory
+        return {
+            "recommendedRetrievalThreshold": MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED,
+            "retrievalThresholdSource": "user" if threshold_is_user_defined else "engine_default",
+            "retrievalThresholdIsDefault": not threshold_is_user_defined,
+        }
+
+    def ensure_memory_runtime_defaults(self) -> Dict[str, Any]:
+        self._ensure_config_json_exists()
+        raw_config = self._read_raw_config_payload()
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        raw_memory = raw_config.get("memory")
+        if not isinstance(raw_memory, dict):
+            raw_memory = {}
+
+        applied: Dict[str, Any] = {}
+        if "retrieval_threshold" not in raw_memory:
+            raw_memory["retrieval_threshold"] = MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED
+            raw_config["memory"] = raw_memory
+            self._write_config_payload(raw_config)
+            applied["retrieval_threshold"] = MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED
+        return applied
         
     def save_memory_config(self, data: Dict[str, Any]):
         self.write_json("memory_config.json", data)

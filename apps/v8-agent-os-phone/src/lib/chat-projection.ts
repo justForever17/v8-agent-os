@@ -1,7 +1,13 @@
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import type { ArtifactDetail, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
-import { isAskUserInteractionApproval, type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
+import {
+    deriveMemoryRuntimeInsightFromGovernance,
+    isAskUserInteractionApproval,
+    type AdminProcessRef,
+    type ContextGovernanceView,
+    type ContextReferenceItem,
+} from "@v8/session-realtime";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageActivity, PhoneRuntimeStageCard, PhoneRuntimeTimelineEntry } from "@/src/lib/runtime-stage";
 import { buildPhoneRuntimeStageModel } from "@/src/lib/runtime-stage";
@@ -346,6 +352,8 @@ export function buildPhoneChatProjection({
     artifacts,
     processes,
     contextReferences,
+    contextGovernance,
+    contextGovernanceHistory,
     runtime,
     runtimeTimeline,
     selectedRuntimeId,
@@ -360,6 +368,8 @@ export function buildPhoneChatProjection({
     artifacts: ArtifactDetail[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
+    contextGovernance?: ContextGovernanceView | null;
+    contextGovernanceHistory?: ContextGovernanceView[];
     runtime: RuntimeSummary;
     runtimeTimeline: PhoneRuntimeTimelineEntry[];
     selectedRuntimeId: PhoneRuntimeId;
@@ -384,16 +394,25 @@ export function buildPhoneChatProjection({
         messageIds: activeMessageIds,
     }));
     const historyPreview = deriveHistoryPreview(messages, activeConversation);
+    const memoryInsight = deriveMemoryRuntimeInsightFromGovernance(
+        contextGovernance || null,
+        contextGovernanceHistory || [],
+    );
     const runtimeStageModel = buildPhoneRuntimeStageModel(messages, {
         ownerRuntime: activeConversation?.ownerRuntime || null,
         status: runtime.status,
         pendingApproval: approvals.filter((item) => !isAskUserInteractionApproval(item)).length > 0,
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         runtimeTimeline,
+        memoryInsight,
         locale,
     });
 
-    const runtimeIdsWithActivities = new Set(runtimeStageModel.activities.map((entry) => entry.runtimeId));
+    const runtimeIdsWithActivities = new Set(
+        runtimeStageModel.activities
+            .filter((entry) => !entry.synthetic)
+            .map((entry) => entry.runtimeId),
+    );
     const preferredRuntimeId = runtimeStageModel.items.find((item) => runtimeIdsWithActivities.has(item.id))?.id
         || runtimeStageModel.activeRuntimeId
         || runtimeStageModel.items[0]?.id

@@ -63,6 +63,8 @@ def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dic
                 "scope": item.get("scope"),
                 "category": item.get("category"),
                 "source": item.get("source"),
+                "raw_relevance_score": item.get("raw_relevance_score"),
+                "final_relevance_score": item.get("final_relevance_score"),
                 "fact": clipped,
             }
         )
@@ -77,10 +79,56 @@ def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dic
             "metadata": {
                 "runtime_plane": "memory",
                 "fact_count": len(facts),
+                "top_scores": [
+                    float(item.get("final_relevance_score") or 0.0)
+                    for item in items
+                    if float(item.get("final_relevance_score") or 0.0) > 0
+                ],
             },
         },
         facts,
     )
+
+
+def _annotate_last_human_message(
+    messages,
+    *,
+    diagnostics: dict,
+    rag_block: dict | None = None,
+    fact_bundle: list[dict] | None = None,
+):
+    updated_messages = list(messages)
+    for i in range(len(updated_messages) - 1, -1, -1):
+        if not isinstance(updated_messages[i], HumanMessage):
+            continue
+        old_msg = updated_messages[i]
+        next_kwargs = dict(old_msg.additional_kwargs or {})
+        next_kwargs["memory_rag_diagnostics"] = diagnostics
+        if rag_block and fact_bundle:
+            context_blocks = next_kwargs.get("context_adapter_blocks")
+            if isinstance(context_blocks, list):
+                next_blocks = list(context_blocks)
+            elif isinstance(context_blocks, dict):
+                next_blocks = [context_blocks]
+            else:
+                next_blocks = []
+            next_blocks.append(rag_block)
+            next_kwargs["context_adapter_blocks"] = next_blocks
+            next_kwargs["memory_rag"] = {
+                "query": diagnostics.get("query"),
+                "facts": fact_bundle,
+                "scope_chain": diagnostics.get("scope_chain") or [],
+                "threshold": diagnostics.get("threshold"),
+                "top_scores": diagnostics.get("top_scores") or [],
+            }
+        updated_messages[i] = HumanMessage(
+            content=old_msg.content,
+            name=getattr(old_msg, "name", None),
+            additional_kwargs=next_kwargs,
+            id=old_msg.id,
+        )
+        break
+    return updated_messages
 
 
 def resolve_supervisor_request_context(messages, scope_resolution_service):
@@ -391,14 +439,35 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
     human_turns = sum(1 for message in messages if isinstance(message, HumanMessage))
     normalized_query = str(user_query or "").strip().lower()
     has_recall_cue = any(token in normalized_query for token in _PASSIVE_RAG_HINT_TOKENS)
+    try:
+        retrieval_threshold = float(memory_config.get("retrieval_threshold"))
+    except (TypeError, ValueError, KeyError):
+        retrieval_threshold = 0.20
+    retrieval_threshold = max(0.0, min(retrieval_threshold, 1.0))
+    passive_gate = max(retrieval_threshold, 0.35)
+    diagnostics = {
+        "query": user_query,
+        "scope_chain": list(scope_chain or []),
+        "threshold": passive_gate,
+        "configured_threshold": retrieval_threshold,
+        "top_scores": [],
+        "injection_allowed": False,
+        "reject_reason": "",
+        "has_recall_cue": has_recall_cue,
+        "human_turns": human_turns,
+    }
     if not user_query or not passive_injection_enabled:
-        return messages
+        diagnostics["reject_reason"] = "passive_injection_disabled_or_empty_query"
+        return _annotate_last_human_message(messages, diagnostics=diagnostics)
     if human_turns <= 1 and not has_recall_cue:
-        return messages
+        diagnostics["reject_reason"] = "insufficient_conversational_continuity"
+        return _annotate_last_human_message(messages, diagnostics=diagnostics)
     if len(normalized_query) < 24 and not has_recall_cue:
-        return messages
+        diagnostics["reject_reason"] = "query_too_short_without_recall_cue"
+        return _annotate_last_human_message(messages, diagnostics=diagnostics)
     if len(scope_chain or []) <= 1 and len(normalized_query.split()) < 4 and not has_recall_cue:
-        return messages
+        diagnostics["reject_reason"] = "scope_too_sparse_without_recall_cue"
+        return _annotate_last_human_message(messages, diagnostics=diagnostics)
 
     try:
         rag_results = memory_runtime.unified_recall(
@@ -407,39 +476,35 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
             scopes=scope_chain,
         )
         if not rag_results:
-            return messages
+            diagnostics["reject_reason"] = "no_recall_results"
+            return _annotate_last_human_message(messages, diagnostics=diagnostics)
+
+        top_scores = [float(item.get("final_relevance_score") or item.get("relevance_score") or 0.0) for item in rag_results]
+        diagnostics["top_scores"] = top_scores
+        top1 = top_scores[0] if top_scores else 0.0
+        second_score = top_scores[1] if len(top_scores) > 1 else 0.0
+        if top1 < passive_gate:
+            diagnostics["reject_reason"] = "top_score_below_passive_gate"
+            return _annotate_last_human_message(messages, diagnostics=diagnostics)
+        if not has_recall_cue and len(top_scores) > 1 and second_score < max(retrieval_threshold, 0.15):
+            diagnostics["reject_reason"] = "score_distribution_too_sparse"
+            return _annotate_last_human_message(messages, diagnostics=diagnostics)
 
         rag_block, fact_bundle = _build_memory_recall_block(rag_results[:passive_top_k])
         if not rag_block or not fact_bundle:
-            return messages
+            diagnostics["reject_reason"] = "recall_block_empty"
+            return _annotate_last_human_message(messages, diagnostics=diagnostics)
+        rag_block.setdefault("metadata", {})
+        rag_block["metadata"]["threshold"] = passive_gate
 
-        updated_messages = list(messages)
-        for i in range(len(updated_messages) - 1, -1, -1):
-            if isinstance(updated_messages[i], HumanMessage):
-                old_msg = updated_messages[i]
-                next_kwargs = dict(old_msg.additional_kwargs or {})
-                context_blocks = next_kwargs.get("context_adapter_blocks")
-                if isinstance(context_blocks, list):
-                    next_blocks = list(context_blocks)
-                elif isinstance(context_blocks, dict):
-                    next_blocks = [context_blocks]
-                else:
-                    next_blocks = []
-                next_blocks.append(rag_block)
-                next_kwargs["context_adapter_blocks"] = next_blocks
-                next_kwargs["memory_rag"] = {
-                    "query": user_query,
-                    "facts": fact_bundle,
-                    "scope_chain": scope_chain,
-                }
-                updated_messages[i] = HumanMessage(
-                    content=old_msg.content,
-                    name=getattr(old_msg, "name", None),
-                    additional_kwargs=next_kwargs,
-                    id=old_msg.id,
-                )
-                break
-        return updated_messages
+        diagnostics["injection_allowed"] = True
+        return _annotate_last_human_message(
+            messages,
+            diagnostics=diagnostics,
+            rag_block=rag_block,
+            fact_bundle=fact_bundle,
+        )
     except Exception as e:
         logger.warning("Interceptor RAG failed: %s", e)
-        return messages
+        diagnostics["reject_reason"] = f"rag_injection_failed:{e}"
+        return _annotate_last_human_message(messages, diagnostics=diagnostics)

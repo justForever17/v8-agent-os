@@ -43,6 +43,28 @@ from runtimes.memory.scope_resolution import (
 
 logger = logging.getLogger(__name__)
 
+_NOISY_KNOWLEDGE_HINTS = (
+    "oauth",
+    "callback",
+    "扫码",
+    "二维码",
+    "登录链接",
+    "安装成功",
+    "安装失败",
+    "安装结果",
+    "连通性测试",
+    "验证通过",
+    "验证失败",
+    "voice",
+    "tts",
+    "reply_",
+    ".ogg",
+    ".mp3",
+    ".wav",
+    "角色扮演",
+    "测试对话",
+)
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -443,8 +465,22 @@ def _should_store_preference(pref: PreferenceExtraction, policy: Dict[str, Any])
 def _should_store_knowledge(fact: KnowledgeExtraction, policy: Dict[str, Any]) -> bool:
     if _normalize_target_store(fact.target_store, default="knowledge") != "knowledge":
         return False
-    if _normalize_durability(fact.durability, default="operational") == "transient":
+    durability = _normalize_durability(fact.durability, default="operational")
+    if durability == "transient":
         return False
+    normalized_scope = str(fact.scope or "").strip().lower()
+    fact_text = str(fact.fact or "").strip().lower()
+    category_text = str(fact.category or "").strip().lower()
+    if any(token in f"{fact_text} {category_text}" for token in _NOISY_KNOWLEDGE_HINTS):
+        return False
+    if ":\\" in fact_text or "/users/" in fact_text or "\\users\\" in fact_text or "~/" in fact_text:
+        return False
+    if normalized_scope == "global":
+        return (
+            durability == "stable"
+            and int(fact.importance or 0) >= 75
+            and float(fact.confidence or 0.0) >= 0.85
+        )
     return (
         int(fact.importance or 0) >= int(policy["knowledge_importance_threshold"])
         and float(fact.confidence or 0.0) >= float(policy["knowledge_confidence_threshold"])
@@ -468,9 +504,10 @@ def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]):
             logger.warning(f"[MemoryAgent] Preference skipped due to invalid scope: {exc}")
     return stored
 
-def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Dict[str, Any]):
+def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Dict[str, Any]) -> tuple[int, List[KnowledgeExtraction]]:
     """[专业工具] 将知识存入分区 JSON + ChromaDB，处理覆盖与新增"""
     stored = 0
+    stored_items: List[KnowledgeExtraction] = []
     for fact in result.knowledge:
         if not _should_store_knowledge(fact, policy):
             continue
@@ -485,6 +522,7 @@ def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Di
                 )
                 if success:
                     stored += 1
+                    stored_items.append(fact)
                     logger.info(f"[MemoryAgent] Overwrote Knowledge: {fact.overwrite_id} -> {fact.fact}")
                 else:
                     logger.warning(f"[MemoryAgent] Overwrite ID {fact.overwrite_id} not found, adding as new.")
@@ -492,6 +530,7 @@ def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Di
                         fact=fact.fact, category=fact.category, scope=fact.scope, source_session=session_id
                     )
                     stored += 1
+                    stored_items.append(fact)
             except ValueError as exc:
                 logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
         else:
@@ -501,9 +540,10 @@ def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Di
                     fact=fact.fact, category=fact.category, scope=fact.scope, source_session=session_id
                 )
                 stored += 1
+                stored_items.append(fact)
             except ValueError as exc:
                 logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
-    return stored
+    return stored, stored_items
 
 def _append_session_log(result: MemoryExtractionResult, scope: str, session_id: str):
     """[专业工具] 记录到时序日志，同时自动维护 YAML 头以实现渐进式加载支持摘要和 Tag"""
@@ -562,11 +602,13 @@ def _align_extraction_scopes(result: MemoryExtractionResult, resolved_scope: str
     for fact in result.knowledge:
         fact.scope = _coerce_scope(fact.scope)
 
-def _build_knowledge_graph(result: MemoryExtractionResult):
+def _build_knowledge_graph(result: MemoryExtractionResult, *, stored_knowledge_items: Optional[List[KnowledgeExtraction]] = None):
     """
     [专业工具] 从提取结果中提取图谱实体与关系。
     通过 SQLite INSERT OR IGNORE 自动去重。
     """
+    if not stored_knowledge_items:
+        return
     relations_added = 0
     
     # 插入 Entities
@@ -971,7 +1013,7 @@ def analyze_session_memory(
             "count": stored_preferences,
         },
     )
-    stored_knowledge = _store_knowledge(result, session_id, policy)
+    stored_knowledge, stored_knowledge_items = _store_knowledge(result, session_id, policy)
     _emit_memory_event(
         run_handle,
         "memory.knowledge.upserted",
@@ -981,7 +1023,7 @@ def analyze_session_memory(
             "count": stored_knowledge,
         },
     )
-    _build_knowledge_graph(result)
+    _build_knowledge_graph(result, stored_knowledge_items=stored_knowledge_items)
     _emit_memory_event(
         run_handle,
         "memory.graph.updated",

@@ -370,6 +370,16 @@ class MemoryRuntime:
     ) -> List[Dict[str, Any]]:
         return recall_service.unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
 
+    def preview_unified_recall(
+        self,
+        *,
+        query: str,
+        limit: int = 5,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        return recall_service.preview_unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
+
     def health_check(self) -> Dict[str, Any]:
         return memory_health_service.check()
 

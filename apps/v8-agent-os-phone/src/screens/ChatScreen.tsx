@@ -3434,13 +3434,15 @@ export default function ChatScreen() {
             artifacts,
             processes,
             contextReferences,
+            contextGovernance,
+            contextGovernanceHistory,
             runtime,
             runtimeTimeline,
             selectedRuntimeId,
             t,
             locale,
         }),
-        [activeConversationId, approvals, artifacts, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
+        [activeConversationId, approvals, artifacts, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;

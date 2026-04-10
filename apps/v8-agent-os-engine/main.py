@@ -282,6 +282,9 @@ async def _reconcile_session_lanes():
 async def lifespan(app: FastAPI):
     # Startup logic: Load all SKILL.md files into the registry
     print("[Engine] Bootstrapping V8 Agent OS Engine...")
+    applied_memory_defaults = storage.ensure_memory_runtime_defaults()
+    if applied_memory_defaults:
+        print("[Engine] Applied memory runtime defaults:", applied_memory_defaults)
     service_flags = _service_flags()
     runtime_health = inspect_engine_runtime()
     print(

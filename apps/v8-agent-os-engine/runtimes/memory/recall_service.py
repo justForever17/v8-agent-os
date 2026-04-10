@@ -23,5 +23,20 @@ class RecallService:
             scopes=scopes,
         )
 
+    def preview_unified_recall(
+        self,
+        *,
+        query: str,
+        limit: int = 5,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> Dict:
+        return memory_store.preview_unified_recall(
+            query=query,
+            limit=limit,
+            scope=scope,
+            scopes=scopes,
+        )
+
 
 recall_service = RecallService()

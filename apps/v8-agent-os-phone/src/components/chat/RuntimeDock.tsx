@@ -1,7 +1,7 @@
-import { memo, type ReactNode, useEffect, useRef } from "react";
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { Blocks, Bot, Cpu, Database, Globe, RadioTower, TerminalSquare, Workflow } from "lucide-react-native";
+import { Blocks, Bot, Cpu, Database, Globe, RadioTower, Shield, TerminalSquare, Workflow } from "lucide-react-native";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageCard } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -12,6 +12,7 @@ const RUNTIME_ICON_MAP: Record<PhoneRuntimeId, LucideIcon> = {
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
+    context_governance: Shield,
     network_supervisor: Globe,
     plugin_host_tool: RadioTower,
     plugin_host_channel: RadioTower,
@@ -68,12 +69,14 @@ function RuntimeDockItem({
     dark,
     colors,
     onSelectRuntime,
+    onLayout,
 }: {
     item: PhoneRuntimeStageCard;
     selected: boolean;
     dark: boolean;
     colors: ReturnType<typeof useUiPrefs>["colors"];
     onSelectRuntime: (runtimeId: PhoneRuntimeId) => void;
+    onLayout: (event: LayoutChangeEvent) => void;
 }) {
     const Icon = getRuntimeDockIcon(item.id);
     const tone = toneColors(item.status, colors, dark);
@@ -132,6 +135,7 @@ function RuntimeDockItem({
         <Pressable
             key={item.id}
             onPress={() => onSelectRuntime(item.id)}
+            onLayout={onLayout}
             style={({ pressed }) => [
                 styles.item,
                 selected ? styles.itemSelected : null,
@@ -167,7 +171,7 @@ function RuntimeDockItem({
                 inputRange: [-4, 4],
                 outputRange: ["-4deg", "4deg"],
             }) : "0deg" }] }}>
-                <Icon size={12} color={tone.icon} strokeWidth={2} />
+                <Icon size={16} color={tone.icon} strokeWidth={2} />
             </Animated.View>
             <View style={[styles.dot, { backgroundColor: tone.dot, borderColor: dark ? "rgba(24,24,27,0.92)" : "#FFFFFF" }]} />
             {item.eventCount > 0 ? (
@@ -195,19 +199,30 @@ export const RuntimeDock = memo(function RuntimeDock({
     const { colors, themeMode } = useUiPrefs();
     const dark = themeMode === "dark";
     const scrollRef = useRef<ScrollView | null>(null);
+    const itemLayoutsRef = useRef<Record<string, { x: number; width: number }>>({});
+    const [containerWidth, setContainerWidth] = useState(0);
+
+    const handleItemLayout = useCallback((runtimeId: PhoneRuntimeId, event: LayoutChangeEvent) => {
+        const { x, width } = event.nativeEvent.layout;
+        itemLayoutsRef.current[runtimeId] = { x, width };
+    }, []);
 
     useEffect(() => {
         const selectedIndex = items.findIndex((item) => item.id === selectedRuntimeId);
         if (selectedIndex < 0) {
             return;
         }
-        const estimatedItemWidth = 31;
-        const leadingAccessoryOffset = leadingAccessory ? 78 : 0;
-        const estimatedOffset = Math.max(0, leadingAccessoryOffset + (selectedIndex * estimatedItemWidth) - 48);
+        const selectedItem = items[selectedIndex];
+        const measuredLayout = selectedItem ? itemLayoutsRef.current[selectedItem.id] : undefined;
+        const estimatedItemWidth = 34;
+        const estimatedOffset = Math.max(0, (selectedIndex * estimatedItemWidth) - 18);
+        const nextOffset = measuredLayout && containerWidth > 0
+            ? Math.max(0, measuredLayout.x - ((containerWidth - measuredLayout.width) / 2))
+            : estimatedOffset;
         requestAnimationFrame(() => {
-            scrollRef.current?.scrollTo({ x: estimatedOffset, animated: true });
+            scrollRef.current?.scrollTo({ x: nextOffset, animated: true });
         });
-    }, [items, leadingAccessory, selectedRuntimeId]);
+    }, [containerWidth, items, selectedRuntimeId]);
 
     return (
         <View
@@ -218,15 +233,23 @@ export const RuntimeDock = memo(function RuntimeDock({
                     borderColor: panelOpen ? "rgba(245,158,11,0.36)" : `${colors.border}CC`,
                 },
             ]}
+            onLayout={(event) => {
+                const nextWidth = Math.round(event.nativeEvent.layout.width);
+                if (nextWidth !== containerWidth) {
+                    setContainerWidth(nextWidth);
+                }
+            }}
         >
             <ScrollView
                 ref={scrollRef}
                 style={styles.scroll}
                 horizontal
+                scrollEnabled
+                nestedScrollEnabled
                 showsHorizontalScrollIndicator={false}
                 overScrollMode="never"
                 directionalLockEnabled
-                keyboardShouldPersistTaps="handled"
+                keyboardShouldPersistTaps="always"
                 contentContainerStyle={styles.scrollContent}
             >
                 {leadingAccessory ? <View style={styles.leadingAccessory}>{leadingAccessory}</View> : null}
@@ -240,6 +263,7 @@ export const RuntimeDock = memo(function RuntimeDock({
                             dark={dark}
                             colors={colors}
                             onSelectRuntime={onSelectRuntime}
+                            onLayout={(event) => handleItemLayout(item.id, event)}
                         />
                     );
                 })}
@@ -254,9 +278,10 @@ const styles = StyleSheet.create({
         borderRadius: radii.pill,
         paddingHorizontal: 3,
         paddingVertical: 3,
-        flex: 1,
+        width: "100%",
+        alignSelf: "center",
         minWidth: 0,
-        flexShrink: 1,
+        minHeight: 38,
         shadowColor: "#0F172A",
         shadowOpacity: 0.08,
         shadowRadius: 20,
@@ -266,11 +291,12 @@ const styles = StyleSheet.create({
     scrollContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 3,
-        paddingRight: 2,
+        gap: 4,
+        paddingLeft: 1,
+        paddingRight: 3,
     },
     scroll: {
-        flexGrow: 0,
+        width: "100%",
         minWidth: 0,
     },
     leadingAccessory: {
@@ -298,19 +324,19 @@ const styles = StyleSheet.create({
     },
     dot: {
         position: "absolute",
-        top: -0.5,
-        right: -0.5,
-        width: 6,
-        height: 6,
+        top: -2,
+        right: -2,
+        width: 5,
+        height: 5,
         borderRadius: 999,
         borderWidth: 1,
     },
     badge: {
         position: "absolute",
-        right: -3,
-        bottom: -3,
-        minWidth: 13,
-        height: 13,
+        right: -2,
+        bottom: -2,
+        minWidth: 14,
+        height: 14,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
@@ -321,6 +347,6 @@ const styles = StyleSheet.create({
         color: "#FFFFFF",
         fontSize: 8,
         fontWeight: "800",
-        lineHeight: 9,
+        lineHeight: 10,
     },
 });

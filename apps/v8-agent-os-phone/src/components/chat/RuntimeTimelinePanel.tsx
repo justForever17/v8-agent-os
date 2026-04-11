@@ -22,12 +22,7 @@ import {
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
-import {
-    type AdminProcessRef,
-    type ContextGovernanceView,
-    normalizeContextGovernanceDigest,
-    normalizeContextGovernanceHistory,
-} from "@v8/session-realtime";
+import { type AdminProcessRef } from "@v8/session-realtime";
 
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
     switch (kind) {
@@ -116,8 +111,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     processes,
     currentRunLabel,
     currentStepTitle,
-    contextGovernance,
-    contextGovernanceHistory,
     onClose,
     onSelectRuntime,
 }: {
@@ -129,8 +122,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     processes: AdminProcessRef[];
     currentRunLabel: string;
     currentStepTitle?: string | null;
-    contextGovernance?: ContextGovernanceView | null;
-    contextGovernanceHistory?: ContextGovernanceView[];
     onClose: () => void;
     onSelectRuntime: (runtimeId: PhoneRuntimeId) => void;
 }) {
@@ -151,7 +142,34 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         ? ["rgba(24,24,27,0.985)", "rgba(15,15,18,0.975)"]
         : ["rgba(255,255,255,0.98)", "rgba(247,244,238,0.97)"];
     const overlayColor = themeMode === "dark" ? "rgba(0,0,0,0.58)" : "rgba(15,23,42,0.38)";
-    const visibleActivities = useMemo(() => activities.slice(0, 24), [activities]);
+    const visibleActivities = useMemo(() => {
+        if (!effectiveSelectedRuntimeId) {
+            return [];
+        }
+        return activities
+            .filter((activity) => {
+                if (activity.runtimeId !== effectiveSelectedRuntimeId) {
+                    return false;
+                }
+                if (effectiveSelectedRuntimeId === "context_governance") {
+                    return true;
+                }
+                const nodeTopic = "topic" in activity.node ? activity.node.topic : undefined;
+                const topic = String(activity.topic || nodeTopic || "").trim().toLowerCase();
+                const isGovernanceNode = activity.node.kind === "governance";
+                const governanceType = isGovernanceNode
+                    ? String((activity.node as Extract<typeof activity.node, { kind: "governance" }>).governanceType || "").trim().toLowerCase()
+                    : "";
+                if (topic.startsWith("context.") || topic === "context_governance_changed") {
+                    return false;
+                }
+                if (governanceType === "context_governance") {
+                    return false;
+                }
+                return true;
+            })
+            .slice(0, 24);
+    }, [activities, effectiveSelectedRuntimeId]);
     const runtimeListKey = useMemo(
         () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}:${visibleActivities.map((activity) => activity.id).join("|")}`,
         [effectiveSelectedRuntimeId, visible, visibleActivities],
@@ -210,144 +228,14 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         () => (
             <View style={[styles.emptyState, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
                 <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
-                    {t("当前还没有可展示的运行记录。", "There are no runtime entries to display yet.")}
+                    {effectiveSelectedRuntimeId === "context_governance"
+                        ? t("当前会话还没有上下文治理记录。", "There are no context governance entries for this session yet.")
+                        : t("当前还没有可展示的运行记录。", "There are no runtime entries to display yet.")}
                 </Text>
             </View>
         ),
-        [colors.border, colors.surfaceStrong, colors.textMuted, t],
+        [colors.border, colors.surfaceStrong, colors.textMuted, effectiveSelectedRuntimeId, t],
     );
-    const governanceLatest = useMemo(
-        () => normalizeContextGovernanceDigest(contextGovernance || null),
-        [contextGovernance],
-    );
-    const governanceHistoryItems = useMemo(() => {
-        const normalized = normalizeContextGovernanceHistory(contextGovernanceHistory || []);
-        const trimmed = normalized.slice(-4).reverse();
-        if (!governanceLatest) {
-            return trimmed;
-        }
-        return trimmed.filter((item) => item.id !== governanceLatest.id);
-    }, [contextGovernanceHistory, governanceLatest]);
-    const renderGovernanceCard = useCallback((item: ReturnType<typeof normalizeContextGovernanceDigest>, tone: "latest" | "history") => {
-        if (!item) {
-            return null;
-        }
-        return (
-            <View
-                style={[
-                    styles.governanceCard,
-                    {
-                        backgroundColor: tone === "latest"
-                            ? (themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)")
-                            : colors.surfaceStrong,
-                        borderColor: tone === "latest" ? "rgba(245,158,11,0.28)" : colors.border,
-                    },
-                ]}
-            >
-                <View style={styles.governanceMetaRow}>
-                    <View style={[styles.governancePill, { backgroundColor: colors.surface }]}>
-                        <Text style={[styles.governancePillText, { color: colors.text }]}>
-                            {tone === "latest" ? t("最近治理", "Latest governance") : t("治理记录", "Governance record")}
-                        </Text>
-                    </View>
-                    {item.runtimeKind ? (
-                        <View style={[styles.governancePill, { backgroundColor: colors.surface }]}>
-                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>{item.runtimeKind}</Text>
-                        </View>
-                    ) : null}
-                    {item.targetRole ? (
-                        <View style={[styles.governancePill, { backgroundColor: colors.surface }]}>
-                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>{item.targetRole}</Text>
-                        </View>
-                    ) : null}
-                </View>
-
-                <View style={styles.governanceChips}>
-                    {item.resolvedScope ? (
-                        <View style={[styles.governanceChip, { backgroundColor: colors.surface }]}>
-                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>
-                                {t("Scope", "Scope")}: {item.resolvedScope}
-                            </Text>
-                        </View>
-                    ) : null}
-                    {typeof item.blockCount === "number" ? (
-                        <View style={[styles.governanceChip, { backgroundColor: colors.surface }]}>
-                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>
-                                {t("Blocks", "Blocks")}: {item.blockCount}
-                            </Text>
-                        </View>
-                    ) : null}
-                    {item.durableFlushReason ? (
-                        <View style={[styles.governanceChip, { backgroundColor: colors.surface }]}>
-                            <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>
-                                durable: {item.durableFlushReason}
-                            </Text>
-                        </View>
-                    ) : null}
-                </View>
-
-                {item.blockTypes.length > 0 ? (
-                    <View style={styles.governanceTags}>
-                        {item.blockTypes.slice(0, 6).map((blockType) => (
-                            <View
-                                key={`${item.id}:${blockType}`}
-                                style={[styles.governanceTag, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                            >
-                                <Text style={[styles.governanceSmallText, { color: colors.textMuted }]}>{blockType}</Text>
-                            </View>
-                        ))}
-                    </View>
-                ) : null}
-
-                <View style={styles.governanceBody}>
-                    {item.eventTs ? (
-                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
-                            {new Date(item.eventTs).toLocaleString()}
-                        </Text>
-                    ) : null}
-                    {item.triggerReason ? (
-                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
-                            {t("触发原因", "Trigger")}: {item.triggerReason}
-                        </Text>
-                    ) : null}
-                    {item.scopeChain.length > 0 ? (
-                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
-                            Scope: {item.scopeChain.join(" -> ")}
-                        </Text>
-                    ) : null}
-                    {item.compactionApplied || item.estimatedSavedTokens ? (
-                        <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>
-                            {item.compactionApplied ? t("已压缩", "Compacted") : t("未压缩", "Not compacted")}
-                            {item.estimatedSavedTokens ? ` · ${t("节省", "Saved")} ${item.estimatedSavedTokens} tokens` : ""}
-                        </Text>
-                    ) : null}
-                    {item.blockSummaryLines.length > 0 ? (
-                        <View style={styles.governanceSummaries}>
-                            {item.blockSummaryLines.slice(0, 2).map((line) => (
-                                <View
-                                    key={`${item.id}:${line}`}
-                                    style={[styles.governanceSummaryCard, { backgroundColor: colors.surface }]}
-                                >
-                                    <Text style={[styles.governanceBodyText, { color: colors.textMuted }]}>{line}</Text>
-                                </View>
-                            ))}
-                        </View>
-                    ) : null}
-                </View>
-            </View>
-        );
-    }, [colors.border, colors.surface, colors.surfaceStrong, colors.text, colors.textMuted, t, themeMode]);
-    const renderGovernanceHeader = useMemo(() => {
-        if (!governanceLatest && governanceHistoryItems.length === 0) {
-            return null;
-        }
-        return (
-            <View style={styles.governanceSection}>
-                {renderGovernanceCard(governanceLatest, "latest")}
-                {governanceHistoryItems.map((item) => renderGovernanceCard(item, "history"))}
-            </View>
-        );
-    }, [governanceHistoryItems, governanceLatest, renderGovernanceCard]);
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -443,7 +331,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             ]}
                             ItemSeparatorComponent={() => <View style={styles.feedGap} />}
                             overScrollMode="never"
-                            ListHeaderComponent={renderGovernanceHeader}
                             onLayout={() => {
                                 if (shouldForceScrollTopRef.current) {
                                     resetScrollTop();

@@ -1,9 +1,11 @@
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
-import type { ArtifactDetail, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
+import type { ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     deriveMemoryRuntimeInsightFromGovernance,
     isAskUserInteractionApproval,
+    normalizeContextGovernanceDigest,
+    normalizeContextGovernanceHistory,
     type AdminProcessRef,
     type ContextGovernanceView,
     type ContextReferenceItem,
@@ -66,8 +68,6 @@ export type PhoneChatProjection = {
     askUserPendingApproval: PendingApproval | null;
     pendingApprovalCount: number;
     todoCount: number;
-    artifactCount: number;
-    artifacts: ArtifactDetail[];
     todos: SessionTodoItem[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
@@ -349,7 +349,6 @@ export function buildPhoneChatProjection({
     messages,
     approvals,
     todos,
-    artifacts,
     processes,
     contextReferences,
     contextGovernance,
@@ -365,7 +364,6 @@ export function buildPhoneChatProjection({
     messages: ChatMessage[];
     approvals: PendingApproval[];
     todos: SessionTodoItem[];
-    artifacts: ArtifactDetail[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
     contextGovernance?: ContextGovernanceView | null;
@@ -398,6 +396,8 @@ export function buildPhoneChatProjection({
         contextGovernance || null,
         contextGovernanceHistory || [],
     );
+    const governanceDigest = normalizeContextGovernanceDigest(contextGovernance || null);
+    const governanceHistory = normalizeContextGovernanceHistory(contextGovernanceHistory || []);
     const runtimeStageModel = buildPhoneRuntimeStageModel(messages, {
         ownerRuntime: activeConversation?.ownerRuntime || null,
         status: runtime.status,
@@ -405,6 +405,8 @@ export function buildPhoneChatProjection({
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         runtimeTimeline,
         memoryInsight,
+        governanceDigest,
+        governanceHistory,
         locale,
     });
 
@@ -449,8 +451,6 @@ export function buildPhoneChatProjection({
         askUserPendingApproval,
         pendingApprovalCount: governanceApprovals.length,
         todoCount: todos.length,
-        artifactCount: artifacts.length,
-        artifacts,
         todos,
         processes: scopedProcesses,
         contextReferences,

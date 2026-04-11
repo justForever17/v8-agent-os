@@ -174,6 +174,30 @@ function buildWebMessageRichness(message: Message | null | undefined) {
     );
 }
 
+function hasStructuredAssistantPayload(message: Message | null | undefined) {
+    return Boolean(
+        message
+        && message.role === "assistant"
+        && (
+            (Array.isArray(message.nodes) && message.nodes.length > 0)
+            || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
+            || (Array.isArray(message.images) && message.images.length > 0)
+        ),
+    );
+}
+
+function hasRenderableWebMessagePayload(message: Message | null | undefined) {
+    return Boolean(
+        message
+        && (
+            String(message.content || "").trim()
+            || (Array.isArray(message.nodes) && message.nodes.length > 0)
+            || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
+            || (Array.isArray(message.images) && message.images.length > 0)
+        ),
+    );
+}
+
 function mergeWebMessagePayload(base: Message, incoming: Message): Message {
     const merged: Message = {
         ...base,
@@ -191,9 +215,6 @@ function mergeWebMessagePayload(base: Message, incoming: Message): Message {
     }
     if ((base.images?.length || 0) > (incoming.images?.length || 0)) {
         merged.images = base.images;
-    }
-    if (buildWebMessageRichness(base) > buildWebMessageRichness(incoming) && !String(incoming.content || "").trim()) {
-        merged.content = base.content;
     }
     if (!merged.agentName && base.agentName) merged.agentName = base.agentName;
     if (!merged.agentAvatar && base.agentAvatar) merged.agentAvatar = base.agentAvatar;
@@ -222,12 +243,27 @@ function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: u
             const matchingCurrent = buildWebMessageComparisonKeys(snapshotMessage)
                 .map((key) => currentByKey.get(key))
                 .find(Boolean);
-            if (!matchingCurrent) {
-                return snapshotMessage;
-            }
+        if (!matchingCurrent) {
+            return snapshotMessage;
+        }
+        const snapshotAuthoritativeAssistant = snapshotMessage.role === "assistant"
+            && hasRenderableWebMessagePayload(snapshotMessage)
+            && hasStructuredAssistantPayload(snapshotMessage);
+        if (!snapshotAuthoritativeAssistant) {
             return mergeWebMessagePayload(matchingCurrent, snapshotMessage);
-        }),
-    );
+        }
+        return {
+            ...snapshotMessage,
+            metadata: {
+                ...(matchingCurrent.metadata || {}),
+                ...(snapshotMessage.metadata || {}),
+            },
+            images: (snapshotMessage.images?.length || 0) > 0 ? snapshotMessage.images : matchingCurrent.images,
+            artifacts: (snapshotMessage.artifacts?.length || 0) > 0 ? snapshotMessage.artifacts : matchingCurrent.artifacts,
+            toolInvocations: (snapshotMessage.toolInvocations?.length || 0) > 0 ? snapshotMessage.toolInvocations : matchingCurrent.toolInvocations,
+        };
+    }),
+  );
 }
 
 function dedupeProcesses(processes: AdminProcessRef[]) {
@@ -836,14 +872,10 @@ export default function ChatClient() {
 
         const authoritativeMessages = Array.isArray((detailPayload as { timeline?: unknown[] } | null | undefined)?.timeline)
             ? (detailPayload as { timeline: unknown[] }).timeline
-            : Array.isArray(detailPayload?.messages)
-                ? detailPayload.messages
-            : Array.isArray(projectionPayload?.snapshot?.messages)
-                ? projectionPayload.snapshot.messages
-                : Array.isArray(projectionPayload?.messages)
-                    ? projectionPayload.messages
-                : [];
-        const hasTimelineNodes = authoritativeMessages.some((message: Record<string, unknown>) => Array.isArray(message?.nodes));
+            : [];
+        const hasTimelineNodes = authoritativeMessages.some((message) =>
+            Boolean(message && typeof message === "object" && Array.isArray((message as { nodes?: unknown[] }).nodes)),
+        );
         const normalized = hasTimelineNodes
             ? normalizeMessagesForState(authoritativeMessages as Message[])
             : normalizeProjectedMessages(authoritativeMessages);

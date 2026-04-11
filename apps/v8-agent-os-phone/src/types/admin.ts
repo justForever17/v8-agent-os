@@ -215,6 +215,7 @@ export type ArtifactDetail = {
 };
 
 export type UploadedWorkspaceFile = {
+    localId?: string;
     id?: string;
     name?: string;
     url?: string;

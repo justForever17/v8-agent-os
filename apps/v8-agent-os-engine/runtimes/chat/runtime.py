@@ -170,6 +170,12 @@ class ChatStreamState:
     reasoning_buffer: list[str] = field(default_factory=list)
     tool_calls_buffer: list[dict[str, Any]] = field(default_factory=list)
     streamed_model_run_ids: set[str] = field(default_factory=set)
+    text_snapshots_by_run: dict[str, str] = field(default_factory=dict)
+    reasoning_snapshots_by_run: dict[str, str] = field(default_factory=dict)
+    last_text_delta: str = ""
+    last_text_delta_run_id: str = ""
+    last_reasoning_delta: str = ""
+    last_reasoning_delta_run_id: str = ""
     watchdog: GraphStreamWatchdogState = field(default_factory=GraphStreamWatchdogState)
     interrupted_signal: dict[str, Any] | None = None
     valid_agent_node_names: list[str] = field(default_factory=list)
@@ -459,6 +465,8 @@ class ChatRuntime:
                         [
                             "[TASK PLANNING MODE]",
                             "请把本轮请求视为任务执行请求，优先给出结构化计划、执行步骤、风险与依赖。",
+                            "如果任务具备多步骤、依赖关系、执行过程或需要追踪进度，请优先创建并维护 todos。",
+                            "如果你判断本轮不需要 todos，也请按单步任务处理，而不是假装进入任务规划流程。",
                             "[/TASK PLANNING MODE]",
                         ]
                     )
@@ -1067,6 +1075,98 @@ class ChatRuntime:
             emitted_events.append(text_event)
         return emitted_events
 
+    @staticmethod
+    def _longest_overlap_suffix_prefix(previous: str, current: str) -> int:
+        max_overlap = min(len(previous), len(current))
+        for size in range(max_overlap, 0, -1):
+            if previous[-size:] == current[:size]:
+                return size
+        return 0
+
+    def _consume_stream_suffix(
+        self,
+        snapshots: dict[str, str],
+        model_run_id: str,
+        raw_value: str,
+    ) -> str:
+        normalized_run_id = (model_run_id or "").strip() or "__default__"
+        current_value = raw_value or ""
+        if not current_value:
+            return ""
+
+        previous_value = snapshots.get(normalized_run_id, "")
+        if not previous_value:
+            snapshots[normalized_run_id] = current_value
+            return current_value
+
+        if current_value == previous_value:
+            return ""
+
+        if current_value.startswith(previous_value):
+            suffix = current_value[len(previous_value):]
+            snapshots[normalized_run_id] = current_value
+            return suffix
+
+        if previous_value.endswith(current_value) or current_value in previous_value:
+            return ""
+
+        overlap = self._longest_overlap_suffix_prefix(previous_value, current_value)
+        if overlap > 0:
+            suffix = current_value[overlap:]
+            snapshots[normalized_run_id] = previous_value + suffix
+            return suffix
+
+        snapshots[normalized_run_id] = previous_value + current_value
+        return current_value
+
+    @staticmethod
+    def _normalized_stream_run_id(model_run_id: str) -> str:
+        return (model_run_id or "").strip() or "__default__"
+
+    def _suppress_neighbor_duplicate_delta(
+        self,
+        stream_state: ChatStreamState,
+        *,
+        delta: str,
+        model_run_id: str,
+        kind: str,
+    ) -> str:
+        normalized_delta = delta or ""
+        if not normalized_delta:
+            return ""
+
+        normalized_run_id = self._normalized_stream_run_id(model_run_id)
+        if kind == "reasoning":
+            last_delta = stream_state.last_reasoning_delta
+            last_run_id = stream_state.last_reasoning_delta_run_id
+        else:
+            last_delta = stream_state.last_text_delta
+            last_run_id = stream_state.last_text_delta_run_id
+
+        if last_delta and normalized_delta == last_delta:
+            return ""
+
+        if last_delta and normalized_run_id != last_run_id:
+            if normalized_delta.startswith(last_delta):
+                normalized_delta = normalized_delta[len(last_delta):]
+            elif last_delta.startswith(normalized_delta) or normalized_delta in last_delta:
+                return ""
+            else:
+                overlap = self._longest_overlap_suffix_prefix(last_delta, normalized_delta)
+                if overlap > 0:
+                    normalized_delta = normalized_delta[overlap:]
+
+        if not normalized_delta:
+            return ""
+
+        if kind == "reasoning":
+            stream_state.last_reasoning_delta = delta or ""
+            stream_state.last_reasoning_delta_run_id = normalized_run_id
+        else:
+            stream_state.last_text_delta = delta or ""
+            stream_state.last_text_delta_run_id = normalized_run_id
+        return normalized_delta
+
     def _maybe_agent_start_event(self, chat_run: ChatRunContext, stream_state: ChatStreamState, metadata: dict[str, Any]) -> dict[str, Any] | None:
         node_name = metadata.get("langgraph_node", "")
         if not node_name or node_name not in stream_state.valid_agent_node_names or node_name == stream_state.current_agent:
@@ -1131,16 +1231,33 @@ class ChatRuntime:
         if kind == "on_chat_model_stream":
             chunk = data.get("chunk")
             if chunk:
-                text_delta, reasoning_delta = extract_text_and_reasoning(chunk)
-                if not text_delta and isinstance(chunk, str):
-                    text_delta = chunk
+                model_run_id = (event.get("run_id") or "").strip()
+                raw_text, raw_reasoning = extract_text_and_reasoning(chunk)
+                if not raw_text and isinstance(chunk, str):
+                    raw_text = chunk
+                text_delta = self._consume_stream_suffix(stream_state.text_snapshots_by_run, model_run_id, raw_text)
+                reasoning_delta = self._consume_stream_suffix(stream_state.reasoning_snapshots_by_run, model_run_id, raw_reasoning)
+                if text_delta or reasoning_delta:
+                    stream_state.streamed_model_run_ids.add(model_run_id)
                 if text_delta:
-                    stream_state.streamed_model_run_ids.add(event.get("run_id", ""))
                     text_delta = stream_state.text_filter.process(text_delta)
+                    text_delta = self._suppress_neighbor_duplicate_delta(
+                        stream_state,
+                        delta=text_delta,
+                        model_run_id=model_run_id,
+                        kind="text",
+                    )
                 if text_delta:
                     stream_state.watchdog.note_text_progress()
                     stream_state.output_buffer.append(text_delta)
                     emitted_events.extend(await self._emit_text_delta(chat_run, stream_state, text_delta))
+                if reasoning_delta:
+                    reasoning_delta = self._suppress_neighbor_duplicate_delta(
+                        stream_state,
+                        delta=reasoning_delta,
+                        model_run_id=model_run_id,
+                        kind="reasoning",
+                    )
                 if reasoning_delta:
                     stream_state.streamed_model_run_ids.add(event.get("run_id", ""))
                     stream_state.watchdog.note_text_progress()
@@ -1158,13 +1275,20 @@ class ChatRuntime:
             return emitted_events
 
         if kind == "on_chat_model_end":
-            model_run_id = event.get("run_id", "")
-            if model_run_id in stream_state.streamed_model_run_ids:
-                return emitted_events
+            model_run_id = (event.get("run_id") or "").strip()
             final_output = data.get("output")
-            text_delta, reasoning_delta = extract_text_and_reasoning(final_output)
-            if not text_delta and isinstance(final_output, str):
-                text_delta = final_output
+            raw_text, raw_reasoning = extract_text_and_reasoning(final_output)
+            if not raw_text and isinstance(final_output, str):
+                raw_text = final_output
+            text_delta = self._consume_stream_suffix(stream_state.text_snapshots_by_run, model_run_id, raw_text)
+            reasoning_delta = self._consume_stream_suffix(stream_state.reasoning_snapshots_by_run, model_run_id, raw_reasoning)
+            if reasoning_delta:
+                reasoning_delta = self._suppress_neighbor_duplicate_delta(
+                    stream_state,
+                    delta=reasoning_delta,
+                    model_run_id=model_run_id,
+                    kind="reasoning",
+                )
             if reasoning_delta:
                 stream_state.watchdog.note_text_progress()
                 stream_state.reasoning_buffer.append(reasoning_delta)
@@ -1180,6 +1304,12 @@ class ChatRuntime:
                 emitted_events.append(reasoning_event)
             if text_delta:
                 text_delta = stream_state.text_filter.process(text_delta)
+                text_delta = self._suppress_neighbor_duplicate_delta(
+                    stream_state,
+                    delta=text_delta,
+                    model_run_id=model_run_id,
+                    kind="text",
+                )
                 if text_delta:
                     stream_state.watchdog.note_text_progress()
                     stream_state.output_buffer.append(text_delta)
@@ -1206,7 +1336,7 @@ class ChatRuntime:
             output_str = str(output.content) if hasattr(output, "content") else str(output)
             tool_result_event = {
                 "type": "tool_result",
-                "tool": {"toolCallId": tool_call_id, "result": output_str},
+                "tool": {"toolCallId": tool_call_id, "toolName": name, "result": output_str},
                 "timestamp": 0,
             }
             stream_state.watchdog.note_tool_end(tool_call_id)
@@ -1267,6 +1397,40 @@ class ChatRuntime:
             message_id=message_id,
         )
         workflow_ledger_service.clear_chat_projection(chat_run.active_run_id)
+
+    def emit_task_planning_mode_decision(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
+        if not chat_run.prepared.task_planning_mode:
+            return
+        todo_tool_calls = [
+            call for call in list(stream_state.tool_calls_buffer or [])
+            if str((call or {}).get("name") or "").strip().lower() in {"write_todos", "update_todo"}
+        ]
+        used_todos = len(todo_tool_calls) > 0
+        reason = "todos_used" if used_todos else "single_step_or_not_needed"
+        summary = (
+            "任务规划偏好已命中 Todo 链"
+            if used_todos
+            else "任务规划偏好已开启，但本轮按单步任务完成"
+        )
+        message = (
+            "本轮任务已创建或更新 todos，并按任务规划方式推进。"
+            if used_todos
+            else "本轮没有进入 todos 链，通常表示模型判断当前任务更适合一次性完成或无需持续跟踪。"
+        )
+        chat_run.emit_runtime_event(
+            "chat.task_planning_mode.decided",
+            {
+                "enabled": True,
+                "usedTodos": used_todos,
+                "reason": reason,
+                "summary": summary,
+                "message": message,
+                "todoToolCount": len(todo_tool_calls),
+                "runId": chat_run.active_run_id,
+            },
+            agent_id=None,
+            node="task_planning",
+        )
 
     def finalize_interrupted_run(self, chat_run: ChatRunContext, interrupted_signal: dict[str, Any]) -> list[dict[str, Any]]:
         if interrupted_signal.get("command") == "approval_requested":
@@ -1648,6 +1812,7 @@ class ChatRuntime:
             for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                 yield flushed_event
             self.persist_final_assistant_message(chat_run, stream_state)
+            self.emit_task_planning_mode_decision(chat_run, stream_state)
             yield self.finalize_success_run(chat_run)
         except Exception as exc:
             for failed_event in self.finalize_failed_run(chat_run, exc):

@@ -160,28 +160,3 @@ export function buildApprovalFromEvent(event: PhoneRealtimeEvent): PendingApprov
         approval_kind: isAskUserInteractionApproval(candidate) ? (candidate.approval_kind || "ask_user") : candidate.approval_kind,
     };
 }
-
-export function collectArtifactsFromMessages(messages: ChatMessage[]) {
-    const merged = new Map<string, ChatArtifact>();
-    for (const message of messages) {
-        for (const artifact of message.artifacts || []) {
-            const key = String(
-                artifact.id
-                || artifact.artifactId
-                || artifact.workspacePath
-                || artifact.sourcePath
-                || artifact.previewUrl
-                || artifact.externalUrl
-                || `${artifact.kind || "artifact"}:${artifact.title || ""}`,
-            ).trim();
-            if (!key) {
-                continue;
-            }
-            merged.set(key, {
-                ...(merged.get(key) || {}),
-                ...artifact,
-            });
-        }
-    }
-    return Array.from(merged.values());
-}

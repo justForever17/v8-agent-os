@@ -50,7 +50,7 @@ import {
     PHONE_STREAM_LIFECYCLE_OPTIONS,
     type PhoneRealtimeUiEvent,
 } from "@/src/lib/chat-stream-state";
-import { buildApprovalFromEvent, collectArtifactsFromMessages, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
+import { buildApprovalFromEvent, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
 import {
     buildPhoneRuntimeTimelineEntryFromEvent,
     getPhoneRuntimeDescriptor,
@@ -97,7 +97,6 @@ import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type {
-    ArtifactDetail,
     ChatArtifact,
     ChatMessage,
     CommandPresetSummary,
@@ -123,6 +122,7 @@ import {
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
     isAskUserInteractionApproval,
+    mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
     shouldAuthoritativelyRefreshOnRuntimeEvent,
     syncSessionRealtimeMessageState,
@@ -230,6 +230,44 @@ function buildUserMessage(
     };
 }
 
+function buildUploadedFileStableKey(file: UploadedWorkspaceFile) {
+    return String(
+        file.localId
+        || file.id
+        || file.url
+        || file.publicUrl
+        || file.workspacePath
+        || file.path
+        || `${file.name || "file"}:${file.createdAt || ""}`,
+    ).trim();
+}
+
+function mergeUploadedWorkspaceFiles(
+    current: UploadedWorkspaceFile[],
+    incoming: UploadedWorkspaceFile[],
+) {
+    const merged = new Map<string, UploadedWorkspaceFile>();
+    [...current, ...incoming].forEach((file) => {
+        const key = buildUploadedFileStableKey(file);
+        if (!key) {
+            return;
+        }
+        merged.set(key, {
+            ...merged.get(key),
+            ...file,
+        });
+    });
+    return Array.from(merged.values());
+}
+
+function removeUploadedWorkspaceFile(
+    current: UploadedWorkspaceFile[],
+    target: UploadedWorkspaceFile,
+) {
+    const targetKey = buildUploadedFileStableKey(target);
+    return current.filter((item) => buildUploadedFileStableKey(item) !== targetKey);
+}
+
 function buildAssistantPlaceholder(runId?: string): ChatMessage {
     return buildAssistantMessage({
         agentName: "智能主管",
@@ -267,18 +305,7 @@ function mergeArtifacts(base: ChatArtifact[] = [], incoming: ChatArtifact[] = []
 }
 
 function mergeTimelineNodes(base: PhoneUiTimelineNode[] = [], incoming: PhoneUiTimelineNode[] = []) {
-    const merged = new Map<string, PhoneUiTimelineNode>();
-    for (const node of [...base, ...incoming]) {
-        const key = String(node.id || "").trim();
-        if (!key) {
-            continue;
-        }
-        merged.set(key, {
-            ...(merged.get(key) || {}),
-            ...node,
-        } as PhoneUiTimelineNode);
-    }
-    return Array.from(merged.values());
+    return mergeTimelineNodesByIdentity(base, incoming) as PhoneUiTimelineNode[];
 }
 
 function applyTextChunk(current: ChatMessage[], chunk: string, runId?: string) {
@@ -325,56 +352,6 @@ function applyArtifactEvent(current: ChatMessage[], artifact: ChatArtifact | nul
         timestamp: Date.now(),
     };
     return normalizeMessagesForState(next);
-}
-
-function toArtifactDetail(artifact: ChatArtifact): ArtifactDetail {
-    return {
-        id: String(
-            artifact.id
-            || artifact.artifactId
-            || artifact.workspacePath
-            || artifact.sourcePath
-            || artifact.previewUrl
-            || artifact.externalUrl
-            || `${artifact.kind || "artifact"}-${artifact.title || "item"}`,
-        ),
-        artifactId: artifact.artifactId,
-        title: artifact.title,
-        kind: artifact.kind,
-        previewUrl: artifact.previewUrl,
-        externalUrl: artifact.externalUrl,
-        sourcePath: artifact.sourcePath,
-        workspacePath: artifact.workspacePath,
-        workspaceRoot: artifact.workspaceRoot,
-        workspaceRelativePath: artifact.workspaceRelativePath,
-        canonicalPath: artifact.canonicalPath,
-        projectId: artifact.projectId,
-        workspaceId: artifact.workspaceId,
-        storageClass: artifact.storageClass,
-        surfaceVisible: artifact.surfaceVisible,
-        mimeType: artifact.mimeType,
-        resourceRef: artifact.resourceRef || null,
-    };
-}
-
-function mergeArtifactDetails(base: ArtifactDetail[], incoming: ArtifactDetail[]) {
-    const merged = new Map<string, ArtifactDetail>();
-    for (const artifact of [...base, ...incoming]) {
-        const key = String(
-            artifact.id
-            || artifact.artifactId
-            || artifact.workspacePath
-            || artifact.sourcePath
-            || artifact.previewUrl
-            || artifact.externalUrl,
-        ).trim();
-        if (!key) continue;
-        merged.set(key, {
-            ...(merged.get(key) || {}),
-            ...artifact,
-        });
-    }
-    return Array.from(merged.values());
 }
 
 function summarizeRuntime(snapshot: RealtimeSessionSnapshot | null): RuntimeSummary {
@@ -552,7 +529,7 @@ function shouldPreserveLocalAssistantMessage(message: ChatMessage | null | undef
     return Boolean(
         isOptimisticLocalMessage(message)
         || isActiveAssistantStreamPhase(message.uiStreamPhase)
-        || hasStructuredAssistantPayload(message),
+        || message.uiEphemeral,
     );
 }
 
@@ -877,12 +854,29 @@ function mergeStructuredSnapshotMessages(
             return snapshotMessage;
         }
 
-        const mergedMessage = normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage;
         const localHasStructuredState = hasStructuredAssistantPayload(matchingLocal);
         const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
-        const preferLocalPayload = buildMessageRichness(matchingLocal) > buildMessageRichness(snapshotMessage);
-
-        if (matchingLocal.role === "assistant" && (localHasStructuredState || preferLocalPayload)) {
+        const snapshotRenderable = hasRenderableMessagePayload(snapshotMessage);
+        const snapshotAuthoritativeAssistant = snapshotMessage.role === "assistant" && snapshotRenderable && snapshotHasStructuredState;
+        const mergedMessage = snapshotAuthoritativeAssistant
+            ? (normalizeMessagesForState([snapshotMessage])[0] || snapshotMessage)
+            : (normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage);
+        if (snapshotAuthoritativeAssistant && matchingLocal.role === "assistant") {
+            mergedMessage.metadata = {
+                ...(matchingLocal.metadata || {}),
+                ...(mergedMessage.metadata || {}),
+            };
+            if ((!mergedMessage.images || mergedMessage.images.length === 0) && matchingLocal.images?.length) {
+                mergedMessage.images = mergeMessageImages(matchingLocal.images || [], snapshotMessage.images || []);
+            }
+            if ((!mergedMessage.artifacts || mergedMessage.artifacts.length === 0) && matchingLocal.artifacts?.length) {
+                mergedMessage.artifacts = mergeArtifacts(matchingLocal.artifacts || [], snapshotMessage.artifacts || []);
+            }
+            if ((!mergedMessage.toolInvocations || mergedMessage.toolInvocations.length === 0) && matchingLocal.toolInvocations?.length) {
+                mergedMessage.toolInvocations = matchingLocal.toolInvocations;
+            }
+        }
+        if (matchingLocal.role === "assistant" && localHasStructuredState && !snapshotHasStructuredState) {
             mergedMessage.nodes = (matchingLocal.nodes?.length || 0) >= (snapshotMessage.nodes?.length || 0)
                 ? matchingLocal.nodes
                 : snapshotMessage.nodes;
@@ -890,14 +884,7 @@ function mergeStructuredSnapshotMessages(
                 ? matchingLocal.artifacts
                 : snapshotMessage.artifacts;
             mergedMessage.images = mergeMessageImages(matchingLocal.images || [], snapshotMessage.images || []);
-            mergedMessage.metadata = {
-                ...(matchingLocal.metadata || {}),
-                ...(snapshotMessage.metadata || {}),
-            };
-            if (preferLocalPayload && !hasRenderableMessagePayload(snapshotMessage)) {
-                mergedMessage.content = matchingLocal.content;
-            }
-            if (!snapshotHasStructuredState && localHasStructuredState && matchingLocal.toolInvocations?.length) {
+            if (matchingLocal.toolInvocations?.length) {
                 mergedMessage.toolInvocations = matchingLocal.toolInvocations;
             }
         }
@@ -953,16 +940,37 @@ function mergeAuthoritativeSnapshotMessages(
             usedPreservableLocals.add(matchingLocalId);
         }
 
-        const mergedMessage = normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage;
         const localStreamActive = matchingLocal.role === "assistant" && isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase);
         const snapshotRenderable = hasRenderableMessagePayload(snapshotMessage);
         const localRenderable = hasRenderableMessagePayload(matchingLocal);
-        const preferLocalPayload = localRenderable && buildMessageRichness(matchingLocal) > buildMessageRichness(snapshotMessage);
         const localTaskProgress = readAssistantTaskProgress(matchingLocal);
         const snapshotTaskProgress = readAssistantTaskProgress(snapshotMessage);
         const localHasStructuredState = hasStructuredAssistantPayload(matchingLocal);
         const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
+        const snapshotAuthoritativeAssistant = snapshotMessage.role === "assistant" && snapshotRenderable && snapshotHasStructuredState;
+        const mergedMessage = snapshotAuthoritativeAssistant
+            ? (normalizeMessagesForState([snapshotMessage])[0] || snapshotMessage)
+            : (normalizeMessagesForState([snapshotMessage, matchingLocal])[0] || snapshotMessage);
         const localTaskProgressRicher = countDefinedAssistantTaskProgressFields(localTaskProgress) > countDefinedAssistantTaskProgressFields(snapshotTaskProgress);
+        const shouldMergeLocalStructuredState = localHasStructuredState
+            && localStreamActive
+            && (!snapshotRenderable || !snapshotHasStructuredState);
+
+        if (snapshotAuthoritativeAssistant) {
+            mergedMessage.metadata = {
+                ...(matchingLocal.metadata || {}),
+                ...(mergedMessage.metadata || {}),
+            };
+            if ((!mergedMessage.images || mergedMessage.images.length === 0) && matchingLocal.images?.length) {
+                mergedMessage.images = mergeMessageImages(matchingLocal.images || [], snapshotMessage.images || []);
+            }
+            if ((!mergedMessage.artifacts || mergedMessage.artifacts.length === 0) && matchingLocal.artifacts?.length) {
+                mergedMessage.artifacts = mergeArtifacts(matchingLocal.artifacts || [], snapshotMessage.artifacts || []);
+            }
+            if ((!mergedMessage.toolInvocations || mergedMessage.toolInvocations.length === 0) && matchingLocal.toolInvocations?.length) {
+                mergedMessage.toolInvocations = matchingLocal.toolInvocations;
+            }
+        }
 
         if (matchingLocal.role === "assistant" && matchingLocal.uiEphemeral) {
             mergedMessage.uiEphemeral = !snapshotRenderable || localStreamActive;
@@ -983,32 +991,24 @@ function mergeAuthoritativeSnapshotMessages(
             }
         }
 
-        if (matchingLocal.role === "assistant" && (localStreamActive || preferLocalPayload || localHasStructuredState)) {
-            if (!snapshotRenderable || preferLocalPayload) {
+        if (matchingLocal.role === "assistant" && (localStreamActive || shouldMergeLocalStructuredState)) {
+            if (localStreamActive && !snapshotRenderable) {
                 if (String(matchingLocal.content || "").trim().length > String(mergedMessage.content || "").trim().length) {
                     mergedMessage.content = matchingLocal.content;
                 }
             }
-            if (localHasStructuredState && (!snapshotHasStructuredState || localStreamActive)) {
+            if (shouldMergeLocalStructuredState) {
                 mergedMessage.nodes = mergeTimelineNodes(mergedMessage.nodes || [], matchingLocal.nodes || []);
                 mergedMessage.images = mergeMessageImages(mergedMessage.images || [], matchingLocal.images || []);
                 mergedMessage.artifacts = mergeArtifacts(mergedMessage.artifacts || [], matchingLocal.artifacts || []);
-            } else if (localHasStructuredState) {
-                if ((matchingLocal.nodes || []).length > (mergedMessage.nodes || []).length) {
-                    mergedMessage.nodes = mergeTimelineNodes(mergedMessage.nodes || [], matchingLocal.nodes || []);
-                }
-                if ((matchingLocal.images || []).length > (mergedMessage.images || []).length) {
-                    mergedMessage.images = mergeMessageImages(mergedMessage.images || [], matchingLocal.images || []);
-                }
-                if ((matchingLocal.artifacts || []).length > (mergedMessage.artifacts || []).length) {
-                    mergedMessage.artifacts = mergeArtifacts(mergedMessage.artifacts || [], matchingLocal.artifacts || []);
+                if ((!mergedMessage.toolInvocations || mergedMessage.toolInvocations.length === 0) && matchingLocal.toolInvocations?.length) {
+                    mergedMessage.toolInvocations = matchingLocal.toolInvocations;
                 }
             }
-            if (matchingLocal.metadata) {
+            if (countDefinedAssistantTaskProgressFields(localTaskProgress) > 0) {
                 mergedMessage.metadata = {
                     ...(mergedMessage.metadata || {}),
-                    ...matchingLocal.metadata,
-                    assistantTaskProgress: (mergedMessage.metadata || {}).assistantTaskProgress,
+                    assistantTaskProgress: localTaskProgress,
                 };
             }
             if ((!snapshotRenderable || localStreamActive || !snapshotHasStructuredState) && matchingLocal.uiEphemeral) {
@@ -1040,7 +1040,7 @@ function mergeAuthoritativeSnapshotMessages(
 function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
     const root = asRecord(payload);
     const snapshot = asRecord(root.snapshot);
-    const messageCandidates = [root.timeline, root.messages, snapshot.timeline, snapshot.messages];
+    const messageCandidates = [root.timeline, snapshot.timeline, root.messages, snapshot.messages];
     for (const candidate of messageCandidates) {
         if (Array.isArray(candidate)) {
             return candidate.filter((item): item is ChatMessage => Boolean(item) && typeof item === "object");
@@ -1249,7 +1249,6 @@ export default function ChatScreen() {
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
-    const [artifacts, setArtifacts] = useState<ArtifactDetail[]>([]);
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
     const lastProcessSurfaceAtRef = useRef(0);
     const [contextReferences, setContextReferences] = useState<ContextReferenceItem[]>([]);
@@ -1362,11 +1361,6 @@ export default function ChatScreen() {
         sendingRef.current = sending;
     }, [sending]);
 
-    const syncArtifactsFromMessages = useCallback((nextMessages: ChatMessage[]) => {
-        const derived = collectArtifactsFromMessages(nextMessages).map(toArtifactDetail);
-        setArtifacts(mergeArtifactDetails([], derived));
-    }, []);
-
     const resetConversationStreamState = useCallback(() => {
         realtimeMessageStateRef.current = createInitialSessionRealtimeMessageState<ChatMessage>(
             [],
@@ -1405,7 +1399,6 @@ export default function ChatScreen() {
         setApprovals([]);
         setTodos([]);
         todosRef.current = [];
-        setArtifacts([]);
         applySessionProcessSurface([], { forceClear: true });
         setContextReferences([]);
         setContextGovernance(null);
@@ -1452,11 +1445,10 @@ export default function ChatScreen() {
             return;
         }
         lastMessageFingerprintRef.current = fingerprint;
-        syncArtifactsFromMessages(nextState.messages);
         messagesRef.current = nextState.messages;
         messageConversationIdRef.current = String(activeConversationIdRef.current || "").trim() || messageConversationIdRef.current;
         setMessages(nextState.messages);
-    }, [syncArtifactsFromMessages]);
+    }, []);
 
     const queueRuntimeMessageEvent = useCallback((event: PhoneRealtimeUiEvent, immediate = false) => {
         queueSessionRealtimeRuntimeEvent(realtimeMessageStateRef.current, event);
@@ -2228,7 +2220,6 @@ export default function ChatScreen() {
                     normalized,
                     PHONE_STREAM_LIFECYCLE_OPTIONS,
                 );
-                syncArtifactsFromMessages(normalized);
                 messagesRef.current = normalized;
                 messageConversationIdRef.current = targetConversationId || null;
                 return normalized;
@@ -2240,7 +2231,7 @@ export default function ChatScreen() {
             lastRealtimeSnapshotAtRef.current = Date.now();
         }
         applyConversationProjection(payload);
-    }, [applyConversationProjection, syncArtifactsFromMessages]);
+    }, [applyConversationProjection]);
 
     const scheduleRealtimeSnapshotRefresh = useCallback((conversationId?: string | null, options?: { force?: boolean }) => {
         const targetConversationId = String(conversationId || activeConversationIdRef.current || "").trim();
@@ -2531,7 +2522,8 @@ export default function ChatScreen() {
 
         if (normalized.type === "tool_start" || normalized.type === "tool_result") {
             const toolLabel = String(
-                normalized.data?.toolName
+                normalized.tool?.toolName
+                || normalized.data?.toolName
                 || normalized.data?.tool_name
                 || normalized.data?.label
                 || normalized.content
@@ -2571,6 +2563,72 @@ export default function ChatScreen() {
             if (shouldFallbackRefresh) {
                 scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             }
+            return;
+        }
+
+        if (normalized.topic === "chat.task_planning_mode.enabled") {
+            appendRuntimeTimeline(
+                buildRuntimeTimelineEntry(
+                    "chat",
+                    normalized.topic,
+                    tRef.current("已启用任务规划偏好", "Task planning preference enabled"),
+                    {
+                        id: normalized.event_id || `task-planning-enabled:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "progress",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        status: "running",
+                    },
+                ),
+            );
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "task_planning",
+                label: tRef.current("任务规划偏好已开启", "Task planning preference enabled"),
+                subtitle: tRef.current("多步骤任务会更倾向拆解并维护 Todo。", "Multi-step tasks will more readily use Todo planning."),
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
+            return;
+        }
+
+        if (normalized.topic === "chat.task_planning_mode.decided") {
+            const usedTodos = Boolean(normalized.data?.usedTodos);
+            const summary = String(
+                normalized.content
+                || normalized.data?.summary
+                || (usedTodos
+                    ? tRef.current("任务规划偏好已命中 Todo 链", "Task planning preference entered the Todo lane")
+                    : tRef.current("任务规划偏好已开启，但本轮按单步任务完成", "Task planning was enabled, but this run completed as a single-step task")),
+            ).trim();
+            const subtitle = String(
+                normalized.data?.message
+                || (usedTodos
+                    ? tRef.current("本轮已创建或更新 Todo，并按任务计划推进。", "This run created or updated Todo items and progressed through a task plan.")
+                    : tRef.current("本轮没有进入 Todo 链，通常表示模型判断无需持续跟踪。", "This run did not enter the Todo lane, which usually means the model judged continuous tracking unnecessary.")),
+            ).trim();
+            appendRuntimeTimeline(
+                buildRuntimeTimelineEntry(
+                    "chat",
+                    normalized.topic,
+                    `${summary}${subtitle ? ` · ${subtitle}` : ""}`,
+                    {
+                        id: normalized.event_id || `task-planning-decision:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "progress",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        status: "completed",
+                    },
+                ),
+            );
+            patchAssistantTaskShell(todosRef.current, {
+                phase: usedTodos ? "tooling" : "settling",
+                label: summary,
+                subtitle,
+                runId: normalized.run_id,
+                createIfMissing: true,
+            });
             return;
         }
 
@@ -2946,7 +3004,10 @@ export default function ChatScreen() {
             ) {
                 return false;
             }
-            const snapshotMessages = normalizeMessagesForState(detail.timeline || detail.messages || []);
+            const timelineMessages = Array.isArray(detail.timeline)
+                ? detail.timeline
+                : [];
+            const snapshotMessages = normalizeMessagesForState(timelineMessages);
             const preserveOptimisticLocalState = Boolean(
                 messageConversationIdRef.current === conversationId
                 && (
@@ -2969,7 +3030,6 @@ export default function ChatScreen() {
             messagesRef.current = normalized;
             messageConversationIdRef.current = conversationId;
             setMessages(normalized);
-            syncArtifactsFromMessages(normalized);
             applyConversationProjection(detail);
             if (Array.isArray(processSurface.processes) && processSurface.processes.length > 0) {
                 applySessionProcessSurface(processSurface.processes);
@@ -2998,7 +3058,7 @@ export default function ChatScreen() {
                 setConversationBusy(false);
             }
         }
-    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState, syncArtifactsFromMessages]);
+    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState]);
 
     const ensureConversation = useCallback(async () => {
         if (activeConversationId) {
@@ -3296,13 +3356,20 @@ export default function ChatScreen() {
                 return;
             }
 
-            const uploaded = await Promise.all(result.assets.map(async (asset) => uploadAttachment(authorizedFetch, {
-                uri: asset.uri,
-                name: asset.name,
-                type: asset.mimeType || "application/octet-stream",
-            })));
+            const uploaded: UploadedWorkspaceFile[] = [];
+            for (const [index, asset] of result.assets.entries()) {
+                const nextFile = await uploadAttachment(authorizedFetch, {
+                    uri: asset.uri,
+                    name: asset.name,
+                    type: asset.mimeType || "application/octet-stream",
+                });
+                uploaded.push({
+                    ...nextFile,
+                    localId: nextFile.localId || `upload:${Date.now()}:${index}:${asset.name || "file"}`,
+                });
+            }
 
-            setUploadedFiles((current) => [...current, ...uploaded]);
+            setUploadedFiles((current) => mergeUploadedWorkspaceFiles(current, uploaded));
         } catch (error) {
             Alert.alert(t("上传失败", "Upload failed"), error instanceof Error ? error.message : t("无法上传附件", "Unable to upload the attachment"));
         } finally {
@@ -3431,7 +3498,6 @@ export default function ChatScreen() {
             messages,
             approvals,
             todos,
-            artifacts,
             processes,
             contextReferences,
             contextGovernance,
@@ -3442,7 +3508,7 @@ export default function ChatScreen() {
             t,
             locale,
         }),
-        [activeConversationId, approvals, artifacts, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
+        [activeConversationId, approvals, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
@@ -3850,6 +3916,12 @@ export default function ChatScreen() {
         || selectedSkills.length > 0
         || uploadedFiles.length > 0,
     );
+    const hasOverlayLayer = Boolean(
+        pickerOverlayVisible
+        || hudProcesses.length > 0
+        || todosVisible
+        || hasAccessoryTray,
+    );
     const accessoryBottomOffset = bottomLayerHeight > 0 ? bottomLayerHeight + 8 : 144;
     const hudBottomOffset = accessoryBottomOffset + (hasAccessoryTray ? 50 : 0) + 10;
     const pickerBottomOffset = accessoryBottomOffset + (hasAccessoryTray ? 12 : 0);
@@ -3864,31 +3936,14 @@ export default function ChatScreen() {
         setInput("");
     };
 
-    const bottomDockContent = (
-        <View
-            pointerEvents="box-none"
-            style={[
-                styles.composerDock,
-                isLandscape && styles.composerDockLandscape,
-                {
-                    paddingBottom: composerBottomInset,
-                    paddingLeft: composerHorizontalInset,
-                    paddingRight: composerHorizontalInset,
-                },
-            ]}
-            onLayout={(event) => {
-                const nextHeight = Math.round(event.nativeEvent.layout.height);
-                if (nextHeight > 0 && nextHeight !== bottomLayerHeight) {
-                    setBottomLayerHeight(nextHeight);
-                }
-            }}
-        >
+    const overlayDockContent = hasOverlayLayer ? (
+        <View pointerEvents="box-none" style={styles.keyboardOverlayHost}>
             {pickerOverlayVisible ? (
                 <ComposerPickerOverlay
                     visible={pickerOverlayVisible}
                     mode={pickerOverlayMode}
-                    left={0}
-                    right={0}
+                    left={composerHorizontalInset}
+                    right={composerHorizontalInset}
                     bottom={pickerBottomOffset}
                     position="absolute"
                     commands={filteredCommands}
@@ -3932,6 +3987,7 @@ export default function ChatScreen() {
                     <ScrollView
                         horizontal
                         showsHorizontalScrollIndicator={false}
+                        keyboardShouldPersistTaps="always"
                         contentContainerStyle={styles.composerAccessoryTrayContent}
                     >
                         {selectedCommand ? (
@@ -3975,7 +4031,7 @@ export default function ChatScreen() {
                         ))}
                         {uploadedFiles.map((file) => (
                             <Pressable
-                                key={`${file.url || file.publicUrl || file.name || "file"}:${file.createdAt || ""}`}
+                                key={buildUploadedFileStableKey(file)}
                                 style={[
                                     styles.accessoryChip,
                                     {
@@ -3983,7 +4039,7 @@ export default function ChatScreen() {
                                         borderColor: palette.border,
                                     },
                                 ]}
-                                onPress={() => setUploadedFiles((current) => current.filter((item) => item !== file))}
+                                onPress={() => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
                             >
                                 <MaterialCommunityIcons name="paperclip" size={13} color={palette.textMuted} />
                                 <Text style={[styles.accessoryChipText, { color: palette.text, maxWidth: 168 }]} numberOfLines={1}>
@@ -3995,7 +4051,28 @@ export default function ChatScreen() {
                     </ScrollView>
                 </View>
             ) : null}
+        </View>
+    ) : null;
 
+    const composerDockContent = (
+        <View
+            pointerEvents="box-none"
+            style={[
+                styles.composerDock,
+                isLandscape && styles.composerDockLandscape,
+                {
+                    paddingBottom: composerBottomInset,
+                    paddingLeft: composerHorizontalInset,
+                    paddingRight: composerHorizontalInset,
+                },
+            ]}
+            onLayout={(event) => {
+                const nextHeight = Math.round(event.nativeEvent.layout.height);
+                if (nextHeight > 0 && nextHeight !== bottomLayerHeight) {
+                    setBottomLayerHeight(nextHeight);
+                }
+            }}
+        >
             <Composer
                 value={input}
                 onChange={setInput}
@@ -4013,7 +4090,7 @@ export default function ChatScreen() {
                 taskPlanningMode={taskPlanningMode}
                 onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
                 uploadedFiles={uploadedFiles}
-                onRemoveUploadedFile={(file) => setUploadedFiles((current) => current.filter((item) => item !== file))}
+                onRemoveUploadedFile={(file) => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
                 onPickAttachment={() => void handlePickAttachment()}
                 onToggleRecording={() => void handleToggleRecording()}
                 attachmentBusy={attachmentBusy}
@@ -4040,47 +4117,81 @@ export default function ChatScreen() {
 
                 <View style={styles.chatShell}>
                     <View style={[styles.chatStage, isLandscape && styles.chatStageLandscape]}>
-                        <Pressable
-                            style={[
-                                styles.historyFab,
-                                isLandscape && styles.historyFabLandscape,
-                                { backgroundColor: palette.surfaceStrong, borderColor: palette.border },
-                            ]}
-                            onPress={() => setHistoryOpen(true)}
-                        >
-                            <MaterialCommunityIcons name="view-headline" size={20} color={palette.text} />
-                        </Pressable>
+                        <View style={styles.chatWindowWrap}>
+                            <ChatWindow
+                                adminBaseUrl={adminBaseUrl}
+                                messages={projection.projectedMessages}
+                                scrollLocked={pickerOverlayVisible}
+                                refreshing={conversationBusy}
+                                onRefresh={() => {
+                                    if (activeConversationId) {
+                                        void loadConversation(activeConversationId, { force: true });
+                                    }
+                                }}
+                                onDeleteMessage={handleDeleteMessage}
+                                speakingKey={speakingId}
+                                onSpeakVoice={handleSpeakVoice}
+                                userImageUri={profileImageUri || ""}
+                                userDisplayName={user?.name || user?.login || user?.email || ""}
+                                processes={hudProcesses}
+                                contextReferences={projection.contextReferences}
+                                pendingApproval={projection.pendingApproval}
+                                pendingApprovalCount={projection.pendingApprovalCount}
+                                approvalBusy={sending}
+                                onResolveApproval={handleApprovalResolve}
+                                onOpenApprovalPanel={openApprovalPanel}
+                                isLandscape={isLandscape}
+                                bottomInset={chatBottomInset}
+                                emptyState={greetingEmptyState}
+                            />
 
-                        <View style={[styles.controlRail, isLandscape && styles.controlRailLandscape]}>
-                            <View style={styles.controlRailTopRow}>
-                                <Pressable
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t("项目上下文", "Project context")}
-                                    style={[
-                                        styles.scopeTrigger,
-                                        {
-                                            backgroundColor: scopeSheetOpen ? palette.primarySoft : palette.surfaceStrong,
-                                            borderColor: scopeSheetOpen ? `${palette.primary}33` : palette.border,
-                                        },
-                                    ]}
-                                    onPress={() => setScopeSheetOpen(true)}
-                                >
-                                    <View style={styles.scopeTriggerIconWrap}>
-                                        {scopeLoading ? (
-                                            <ActivityIndicator size="small" color={scopeSheetOpen ? palette.primary : palette.textMuted} />
-                                        ) : (
-                                            <MaterialCommunityIcons
-                                                name="file-tree-outline"
-                                                size={13}
-                                                color={scopeSheetOpen ? palette.primary : palette.textMuted}
-                                            />
-                                        )}
-                                    </View>
-                                </Pressable>
+                            <View pointerEvents="box-none" style={[styles.chatStageHeader, isLandscape && styles.chatStageHeaderLandscape]}>
+                                <View style={[styles.chatStageTopRow, isLandscape && styles.chatStageTopRowLandscape]}>
+                                    <Pressable
+                                        style={[
+                                            styles.historyFab,
+                                            { backgroundColor: palette.surfaceStrong, borderColor: palette.border },
+                                        ]}
+                                        onPress={() => setHistoryOpen(true)}
+                                    >
+                                        <MaterialCommunityIcons name="view-headline" size={20} color={palette.text} />
+                                    </Pressable>
 
-                                <View style={styles.runtimeDockWrap}>
-                                    <RuntimeDock
-                                        leadingAccessory={(
+                                    <View
+                                        style={[
+                                            styles.controlRailPrimary,
+                                            {
+                                                backgroundColor: palette.surfaceStrong,
+                                                borderColor: palette.border,
+                                            },
+                                        ]}
+                                    >
+                                        <Pressable
+                                            accessibilityRole="button"
+                                            accessibilityLabel={t("项目上下文", "Project context")}
+                                            style={[
+                                                styles.scopeTrigger,
+                                                {
+                                                    backgroundColor: scopeSheetOpen ? palette.primarySoft : palette.surfaceStrong,
+                                                    borderColor: scopeSheetOpen ? `${palette.primary}33` : palette.border,
+                                                },
+                                            ]}
+                                            onPress={() => setScopeSheetOpen(true)}
+                                        >
+                                            <View style={styles.scopeTriggerIconWrap}>
+                                                {scopeLoading ? (
+                                                    <ActivityIndicator size="small" color={scopeSheetOpen ? palette.primary : palette.textMuted} />
+                                                ) : (
+                                                    <MaterialCommunityIcons
+                                                        name="file-tree-outline"
+                                                        size={16}
+                                                        color={scopeSheetOpen ? palette.primary : palette.textMuted}
+                                                    />
+                                                )}
+                                            </View>
+                                        </Pressable>
+
+                                        <View style={styles.runControlWrap}>
                                             <RunControlBar
                                                 runId={projection.runControlState.runId}
                                                 status={projection.runControlState.status}
@@ -4094,59 +4205,37 @@ export default function ChatScreen() {
                                                 onRetry={() => void handleRunCommand("retry")}
                                                 onInterrupt={() => void handleRunCommand("interrupt")}
                                             />
-                                        )}
-                                        items={projection.runtimeStageModel.items}
-                                        selectedRuntimeId={projection.selectedRuntimeId}
-                                        panelOpen={runtimePanelOpen}
-                                        onSelectRuntime={(runtimeId) => {
-                                            setSelectedRuntimeId(runtimeId);
-                                            setRuntimePanelOpen(true);
-                                        }}
-                                    />
+                                        </View>
+
+                                        <View style={styles.runtimeDockInline}>
+                                            <RuntimeDock
+                                                items={projection.runtimeStageModel.items}
+                                                selectedRuntimeId={projection.selectedRuntimeId}
+                                                panelOpen={runtimePanelOpen}
+                                                onSelectRuntime={(runtimeId) => {
+                                                    setSelectedRuntimeId(runtimeId);
+                                                    setRuntimePanelOpen(true);
+                                                }}
+                                            />
+                                        </View>
+                                    </View>
                                 </View>
                             </View>
                         </View>
-
-                        <ChatWindow
-                            adminBaseUrl={adminBaseUrl}
-                            messages={projection.projectedMessages}
-                            scrollLocked={pickerOverlayVisible}
-                            refreshing={conversationBusy}
-                            onRefresh={() => {
-                                if (activeConversationId) {
-                                    void loadConversation(activeConversationId, { force: true });
-                                }
-                            }}
-                            onDeleteMessage={handleDeleteMessage}
-                            speakingKey={speakingId}
-                            onSpeakVoice={handleSpeakVoice}
-                            userImageUri={profileImageUri || ""}
-                            userDisplayName={user?.name || user?.login || user?.email || ""}
-                            artifacts={projection.artifacts}
-                            processes={hudProcesses}
-                            contextReferences={projection.contextReferences}
-                            pendingApproval={projection.pendingApproval}
-                            pendingApprovalCount={projection.pendingApprovalCount}
-                            approvalBusy={sending}
-                            onResolveApproval={handleApprovalResolve}
-                            onOpenApprovalPanel={openApprovalPanel}
-                            isLandscape={isLandscape}
-                            bottomInset={chatBottomInset}
-                            emptyState={greetingEmptyState}
-                        />
                     </View>
-                    {Platform.OS === "web" ? (
-                        <View style={styles.keyboardDockHost} pointerEvents="box-none">
-                            {bottomDockContent}
-                        </View>
-                    ) : (
+                    {overlayDockContent}
+                    {Platform.OS === "ios" ? (
                         <KeyboardStickyView
-                            style={styles.keyboardDockHost}
                             pointerEvents="box-none"
+                            style={styles.keyboardDockHost}
                             offset={{ closed: 0, opened: 0 }}
                         >
-                            {bottomDockContent}
+                            {composerDockContent}
                         </KeyboardStickyView>
+                    ) : (
+                        <View pointerEvents="box-none" style={styles.keyboardDockHost}>
+                            {composerDockContent}
+                        </View>
                     )}
                 </View>
 
@@ -4155,12 +4244,10 @@ export default function ChatScreen() {
                     items={projection.runtimeStageModel.items}
                     selectedRuntimeId={projection.selectedRuntimeId}
                     selectedRuntimeDockItem={projection.selectedRuntimeDockItem}
-                    activities={projection.selectedRuntimeActivities}
+                    activities={projection.runtimeStageModel.activities}
                     processes={hudProcesses}
                     currentRunLabel={projection.currentRunLabel}
                     currentStepTitle={projection.currentStepTitle}
-                    contextGovernance={contextGovernance}
-                    contextGovernanceHistory={contextGovernanceHistory}
                     onClose={() => setRuntimePanelOpen(false)}
                     onSelectRuntime={setSelectedRuntimeId}
                 />
@@ -4369,7 +4456,10 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
     gradient: { flex: 1 },
     safeArea: { flex: 1 },
-    chatShell: { flex: 1 },
+    chatShell: {
+        flex: 1,
+        position: "relative",
+    },
     chatStage: {
         flex: 1,
         position: "relative",
@@ -4379,11 +4469,29 @@ const styles = StyleSheet.create({
         width: "100%",
         maxWidth: 980,
     },
-    historyFab: {
+    chatStageHeader: {
         position: "absolute",
         top: 10,
         left: 12,
-        zIndex: 30,
+        right: 12,
+        zIndex: 18,
+        gap: 8,
+    },
+    chatStageHeaderLandscape: {
+        top: 12,
+        left: 18,
+        right: 18,
+    },
+    chatStageTopRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        minWidth: 0,
+    },
+    chatStageTopRowLandscape: {
+        alignItems: "center",
+    },
+    historyFab: {
         width: 40,
         height: 40,
         borderRadius: 20,
@@ -4397,46 +4505,27 @@ const styles = StyleSheet.create({
         shadowRadius: 10,
         shadowOffset: { width: 0, height: 4 },
         elevation: 2,
+        flexShrink: 0,
     },
-    historyFabLandscape: {
-        top: 12,
-        left: 18,
+    runControlWrap: {
+        flexShrink: 0,
+        justifyContent: "center",
     },
-    controlRail: {
-        position: "absolute",
-        top: 8,
-        left: 58,
-        right: 12,
-        zIndex: 20,
-        gap: 6,
-    },
-    controlRailLandscape: {
-        top: 12,
-        left: 72,
-        right: 18,
-    },
-    controlRailTopRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "flex-start",
-        gap: 6,
-        minWidth: 0,
-    },
-    runtimeDockWrap: {
+    chatWindowWrap: {
         flex: 1,
-        minWidth: 0,
-        flexShrink: 1,
+        minHeight: 0,
+        position: "relative",
     },
     controlRailPrimary: {
-        minHeight: 36,
+        minHeight: 40,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        flexShrink: 1,
+        flex: 1,
         minWidth: 0,
         borderRadius: radii.pill,
         paddingHorizontal: 4,
-        paddingVertical: 3,
+        paddingVertical: 4,
         borderWidth: 1,
         shadowColor: "#0F172A",
         shadowOpacity: 0.03,
@@ -4444,17 +4533,22 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 6 },
         elevation: 2,
     },
+    runtimeDockInline: {
+        flex: 1,
+        minWidth: 0,
+        justifyContent: "center",
+    },
     scopeTrigger: {
-        width: 34,
-        height: 34,
+        width: 40,
+        height: 40,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: radii.pill,
+        borderRadius: 20,
         borderWidth: 1,
     },
     scopeTriggerIconWrap: {
-        width: 16,
-        height: 16,
+        width: 18,
+        height: 18,
         alignItems: "center",
         justifyContent: "center",
     },
@@ -4503,13 +4597,17 @@ const styles = StyleSheet.create({
         letterSpacing: -0.8,
         textAlign: "center",
     },
+    keyboardOverlayHost: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 24,
+    },
     keyboardDockHost: {
         width: "100%",
-        zIndex: 30,
+        zIndex: 28,
+        alignSelf: "stretch",
     },
     composerDock: {
         width: "100%",
-        zIndex: 30,
         overflow: "visible",
     },
     composerDockLandscape: {
@@ -4532,7 +4630,7 @@ const styles = StyleSheet.create({
         position: "absolute",
         left: 0,
         right: 0,
-        zIndex: 33,
+        zIndex: 25,
     },
     composerAccessoryTrayContent: {
         flexDirection: "row",

@@ -13,7 +13,7 @@ import {
     type SessionRuntimeId,
 } from "@v8/session-realtime";
 
-export type RuntimeId = SessionRuntimeId;
+export type RuntimeId = SessionRuntimeId | "context_governance";
 export type RuntimeCardStatus = "active" | "attention" | "recent" | "idle";
 
 export interface RuntimeDescriptor {
@@ -65,10 +65,20 @@ const RUNTIME_DESCRIPTORS: Record<RuntimeId, RuntimeDescriptor> = Object.fromEnt
     }),
 ) as Record<RuntimeId, RuntimeDescriptor>;
 
-const RUNTIME_ORDER: RuntimeId[] = [...SESSION_RUNTIME_ORDER];
-const VISIBLE_RUNTIME_ORDER: RuntimeId[] = [...VISIBLE_SESSION_RUNTIME_ORDER];
+RUNTIME_DESCRIPTORS.context_governance = {
+    id: "context_governance",
+    label: "上下文治理",
+    shortLabel: "治理",
+    description: "查看上下文预算、压缩与召回注入。",
+};
+
+const RUNTIME_ORDER: RuntimeId[] = [...SESSION_RUNTIME_ORDER, "context_governance"];
+const VISIBLE_RUNTIME_ORDER: RuntimeId[] = [...VISIBLE_SESSION_RUNTIME_ORDER, "context_governance"];
 
 export function normalizeRuntimeId(raw?: string | null): RuntimeId | null {
+    if (String(raw || "").trim().toLowerCase() === "context_governance") {
+        return "context_governance";
+    }
     return normalizeSharedRuntimeId(raw);
 }
 
@@ -113,6 +123,9 @@ export function inferRuntimeIdFromNode(node: UiTimelineNode): RuntimeId | null {
 
     if (node.kind === "governance") {
         const governanceNode = node as UiGovernanceNode;
+        if (governanceNode.governanceType === "context_governance") {
+            return "context_governance";
+        }
         return firstRuntimeMatch([
             governanceNode.topic,
             governanceNode.reason,
@@ -132,7 +145,7 @@ function summarizeExecutionNode(node: UiExecutionNode): string | null {
         return node.toolName ? `调用 ${node.toolName}` : "工具调用";
     }
     if (node.executionType === "tool_result") {
-        return node.toolCallId ? `工具结果 ${node.toolCallId}` : "工具结果";
+        return node.toolName ? `${node.toolName} 已完成` : (node.toolCallId ? `工具结果 ${node.toolCallId}` : "工具结果");
     }
     if (node.executionType === "agent_start") {
         return node.agentName ? `${node.agentName} 已接入` : "协作单元已接入";
@@ -204,6 +217,14 @@ function getNodeTimestamp(message: Message, node: UiTimelineNode): number {
 function coerceTimelineString(value: unknown) {
     const normalized = String(value || "").trim();
     return normalized || undefined;
+}
+
+function remapTimelineEntryRuntimeId(entry: RuntimeTimelineEntry): RuntimeId {
+    const topic = String(entry.topic || "").trim().toLowerCase();
+    if (topic.startsWith("context.") || topic === "context_governance_changed") {
+        return "context_governance";
+    }
+    return entry.runtimeId;
 }
 
 export function normalizeRuntimeTimeline(input: unknown[]): RuntimeTimelineEntry[] {
@@ -313,8 +334,14 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         || metadata?.reason
         || metadata?.label,
     );
+    const isToolResult = entry.kind === "tool" && (
+        String(entry.topic || "").trim().toLowerCase() === "tool.finished"
+        || metadata?.result !== undefined
+        || metadata?.response !== undefined
+        || metadata?.result_preview !== undefined
+    );
     const executionType = entry.kind === "tool"
-        ? "tool_call"
+        ? (isToolResult ? "tool_result" : "tool_call")
         : entry.kind === "handoff"
             ? "agent_start"
             : "runtime_progress";
@@ -326,10 +353,10 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         topic: entry.topic,
         label: entry.summary,
         content,
-        toolName: executionType === "tool_call" ? coerceTimelineString(metadata?.toolName || metadata?.tool_name) : undefined,
-        toolCallId: executionType === "tool_call" ? coerceTimelineString(metadata?.toolCallId || metadata?.tool_call_id || metadata?.approval_id) : undefined,
+        toolName: entry.kind === "tool" ? coerceTimelineString(metadata?.toolName || metadata?.tool_name) : undefined,
+        toolCallId: entry.kind === "tool" ? coerceTimelineString(metadata?.toolCallId || metadata?.tool_call_id || metadata?.approval_id) : undefined,
         args: executionType === "tool_call" ? metadata?.args ?? metadata?.request : undefined,
-        result: executionType !== "tool_call" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
+        result: executionType === "tool_result" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
         data: entry.metadata,
         timestamp: entry.timestamp,
         agentName: entry.actorLabel,
@@ -400,9 +427,10 @@ export function buildRuntimeStageModel(
             continue;
         }
         seenTimelineKeys.add(key);
+        const remappedRuntimeId = remapTimelineEntryRuntimeId(entry);
         activities.push({
             id: entry.id,
-            runtimeId: entry.runtimeId,
+            runtimeId: remappedRuntimeId,
             timestamp: entry.timestamp,
             summary: entry.summary,
             topic: entry.topic,

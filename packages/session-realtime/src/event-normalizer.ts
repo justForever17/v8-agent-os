@@ -621,6 +621,36 @@ function normalizeDisplayStatus(value: unknown) {
   return normalized.toLowerCase() === "unknown" ? undefined : normalized;
 }
 
+function extractToolPayload(payload: JsonRecord) {
+  const nestedTool = asRecord(payload.tool);
+  const toolCallId = pickFirstString(
+    payload.toolCallId,
+    payload.tool_call_id,
+    nestedTool.toolCallId,
+    nestedTool.tool_call_id,
+  );
+  const toolName = pickFirstString(
+    payload.toolName,
+    payload.tool_name,
+    payload.name,
+    nestedTool.toolName,
+    nestedTool.tool_name,
+  );
+  const args = payload.args ?? payload.request ?? nestedTool.args ?? nestedTool.request;
+  const result = payload.result ?? payload.response ?? payload.result_preview ?? nestedTool.result ?? nestedTool.response ?? nestedTool.result_preview;
+
+  if (!toolCallId && !toolName && args === undefined && result === undefined) {
+    return undefined;
+  }
+
+  return {
+    toolCallId: toolCallId || undefined,
+    toolName: toolName || undefined,
+    args,
+    result,
+  };
+}
+
 function buildTypedEventFromMatrixEntry(
   topic: string,
   payload: JsonRecord,
@@ -651,6 +681,7 @@ function buildTypedEventFromMatrixEntry(
     visibility,
     targets,
     actorLabel,
+    tool: extractToolPayload(payload),
     data: {
       ...payload,
       topic,
@@ -768,6 +799,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       ...direct,
       type: normalizedType,
       runtimeId: normalizedRuntimeId || undefined,
+      tool: direct.tool || extractToolPayload(directPayload),
       source: source || direct.source,
       scope: direct.scope || (typeof direct.topic === "string" ? resolveScope(direct.topic, direct as unknown as JsonRecord) : "active_run"),
       visibility: direct.visibility || typedVisibility || (typeof direct.topic === "string" ? resolveVisibility(direct.topic, direct as unknown as JsonRecord) : "visible"),
@@ -800,6 +832,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       ...(payload as unknown as NormalizedSessionRuntimeEvent),
       type: normalizedType,
       runtimeId: baseRuntimeId || undefined,
+      tool: extractToolPayload(payload),
       scope: resolveScope(topic, payload),
       visibility: typedVisibility || (topic ? resolveVisibility(topic, payload) : "visible"),
       targets: typedTargets || (topic ? resolveTargets(topic, payload) : ["runtime_card"]),
@@ -906,7 +939,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
     return applySurfaceVisibilityOverrides(withEnvelopeFields({
       type: "custom_event",
       name: "context_governance_changed",
-      runtimeId: runtimeId || "chat",
+      runtimeId: "chat",
       scope,
       visibility,
       targets,
@@ -915,7 +948,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
         ...payload,
         topic,
         label: buildProgressLabel(topic, payload, options.locale),
-        runtimeId: runtimeId || "chat",
+        runtimeId: "chat",
         actorLabel,
       },
       source,

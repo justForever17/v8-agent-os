@@ -224,6 +224,12 @@ export type NormalizedSessionRuntimeEvent = {
   actorLabel?: string;
   content?: string;
   error?: string;
+  tool?: {
+    toolCallId?: string;
+    toolName?: string;
+    args?: unknown;
+    result?: unknown;
+  };
   data?: Record<string, unknown>;
   artifact?: Record<string, unknown>;
   source?: SessionRuntimeEventSource;

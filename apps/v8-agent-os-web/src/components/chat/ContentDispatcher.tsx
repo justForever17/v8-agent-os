@@ -59,6 +59,25 @@ function compactToolResult(toolName: string, value: unknown) {
     };
 }
 
+function isProcessStillRunning(process: AdminProcessRef | undefined) {
+    if (!process) {
+        return false;
+    }
+    const status = String(process.status || '').trim().toLowerCase();
+    if (process.completedAt) {
+        return false;
+    }
+    return [
+        'queued',
+        'pending',
+        'starting',
+        'running',
+        'streaming',
+        'waiting_input',
+        'waiting_approval',
+    ].includes(status);
+}
+
 function looksLikeTodoMutationText(value: unknown) {
     const normalized = String(value || '').trim();
     if (!normalized) {
@@ -117,7 +136,7 @@ interface ToolRendererProps {
 function CommandSessionToolRenderer({ toolInvocation, process }: ToolRendererProps) {
     return (
         <motion.div layout className="flex flex-col">
-            <ToolCard toolInvocation={toolInvocation} hideResult={!!process} />
+            <ToolCard toolInvocation={toolInvocation} hideResult={isProcessStillRunning(process)} />
         </motion.div>
     );
 }
@@ -168,8 +187,8 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                 if (isTodoLikeExecutionNode(node)) {
                     return null;
                 }
-                const toolName = node.toolName || 'Unknown Tool';
                 const resultExecNode = resultNode as UiExecutionNode | undefined;
+                const toolName = node.toolName || resultExecNode?.toolName || '工具调用';
                 const isFinished = node.executionType === 'tool_result' || !!resultNode || !!node.result || !isExecuting;
                 const result = resultExecNode?.result || node.result;
                 

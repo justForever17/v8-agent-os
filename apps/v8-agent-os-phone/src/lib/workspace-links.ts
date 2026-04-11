@@ -1,13 +1,25 @@
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
+import { getWorkspaceFileUrl } from "@/src/lib/phone-api";
+import { resolveAdminResourceUrl, type AdminResourceRef } from "@v8/session-realtime";
 
-const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/([^\s)]+)/gi;
-const LOOPBACK_WORKSPACE_API_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/api\/workspace\/files\/([^\s)]+)/gi;
-const LOOPBACK_ARTIFACT_CONTENT_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/(?:v1|api(?:\/client)?)\/artifacts\/([^/\s)]+)\/content(?:\?[^\s)]*)?/gi;
-const ABSOLUTE_WORKSPACE_PATH_PATTERN = /(^|[\s(])\/workspace\/([^\s)]+)/gi;
-const ABSOLUTE_WORKSPACE_API_PATH_PATTERN = /(^|[\s(])\/api\/workspace\/files\/([^\s)]+)/gi;
-const ABSOLUTE_ARTIFACT_CONTENT_PATH_PATTERN = /(^|[\s(])\/(?:v1|api(?:\/client)?)\/artifacts\/([^/\s)]+)\/content(?:\?[^\s)]*)?/gi;
-const WINDOWS_WORKSPACE_PATH_PATTERN = /([A-Za-z]:\\[^\s<>"]*?\\workspace\\[^\s<>"]+)/g;
+const LOOPBACK_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?(?:\/|$)/i;
+const LOOPBACK_WORKSPACE_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/(.+)$/i;
+const LOOPBACK_WORKSPACE_API_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/api\/workspace\/files\/(.+)$/i;
+const ABSOLUTE_ADMIN_WORKSPACE_API_URL_PATTERN = /^https?:\/\/.+\/api\/client\/workspace\/files\/(.+)$/i;
+const RELATIVE_WORKSPACE_PATH_PATTERN = /^\/?workspace\/(.+)$/i;
+const RELATIVE_WORKSPACE_API_PATH_PATTERN = /^\/?api\/workspace\/files\/(.+)$/i;
+const RELATIVE_ADMIN_WORKSPACE_PATH_PATTERN = /^\/?api\/client\/workspace\/files\/(.+)$/i;
+const RELATIVE_DOWNLOADED_MEDIA_PATH_PATTERN = /^\/?(downloaded_media\/.+)$/i;
+const RELATIVE_ARTIFACT_CONTENT_PATH_PATTERN = /^\/?(?:v1|api(?:\/client)?)\/artifacts\/[^/]+\/content(?:[?#].*)?$/i;
+const ABSOLUTE_ARTIFACT_CONTENT_URL_PATTERN = /^https?:\/\/.+\/(?:v1|api(?:\/client)?)\/artifacts\/[^/]+\/content(?:[?#].*)?$/i;
+
+function ensureLeadingSlash(value: string) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return "";
+    }
+    return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
 
 function safeDecodePath(value: string) {
     return String(value || "")
@@ -45,101 +57,186 @@ export function deriveWorkspaceSubpathFromWindowsPath(rawValue: string) {
     return subpath || null;
 }
 
+function resolveWorkspaceCandidateSubpath(value: unknown) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const windowsSubpath = deriveWorkspaceSubpathFromWindowsPath(raw);
+    if (windowsSubpath) {
+        return windowsSubpath;
+    }
+    if (/^[a-z]+:\/\//i.test(raw) || /^[a-z]:\\/i.test(raw)) {
+        return "";
+    }
+    return normalizeWorkspaceSubpath(raw);
+}
+
+export function resolveWorkspaceSubpathFromMediaCandidate(value?: string | null) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+
+    const absoluteAdminWorkspaceApiMatch = raw.match(ABSOLUTE_ADMIN_WORKSPACE_API_URL_PATTERN);
+    if (absoluteAdminWorkspaceApiMatch?.[1]) {
+        return normalizeWorkspaceSubpath(absoluteAdminWorkspaceApiMatch[1]);
+    }
+
+    const loopbackWorkspaceMatch = raw.match(LOOPBACK_WORKSPACE_URL_PATTERN);
+    if (loopbackWorkspaceMatch?.[1]) {
+        return normalizeWorkspaceSubpath(loopbackWorkspaceMatch[1]);
+    }
+
+    const loopbackWorkspaceApiMatch = raw.match(LOOPBACK_WORKSPACE_API_URL_PATTERN);
+    if (loopbackWorkspaceApiMatch?.[1]) {
+        return normalizeWorkspaceSubpath(loopbackWorkspaceApiMatch[1]);
+    }
+
+    const relativeWorkspaceMatch = raw.match(RELATIVE_WORKSPACE_PATH_PATTERN);
+    if (relativeWorkspaceMatch?.[1]) {
+        return normalizeWorkspaceSubpath(relativeWorkspaceMatch[1]);
+    }
+
+    const relativeWorkspaceApiMatch = raw.match(RELATIVE_WORKSPACE_API_PATH_PATTERN);
+    if (relativeWorkspaceApiMatch?.[1]) {
+        return normalizeWorkspaceSubpath(relativeWorkspaceApiMatch[1]);
+    }
+
+    const relativeAdminWorkspaceMatch = raw.match(RELATIVE_ADMIN_WORKSPACE_PATH_PATTERN);
+    if (relativeAdminWorkspaceMatch?.[1]) {
+        return normalizeWorkspaceSubpath(relativeAdminWorkspaceMatch[1]);
+    }
+
+    const relativeDownloadedMediaMatch = raw.match(RELATIVE_DOWNLOADED_MEDIA_PATH_PATTERN);
+    if (relativeDownloadedMediaMatch?.[1]) {
+        return normalizeWorkspaceSubpath(relativeDownloadedMediaMatch[1]);
+    }
+
+    const windowsSubpath = deriveWorkspaceSubpathFromWindowsPath(raw);
+    if (windowsSubpath) {
+        return windowsSubpath;
+    }
+
+    return "";
+}
+
+function isArtifactContentPath(value: string) {
+    return RELATIVE_ARTIFACT_CONTENT_PATH_PATTERN.test(String(value || "").trim());
+}
+
+function isArtifactContentUrl(value: string) {
+    return ABSOLUTE_ARTIFACT_CONTENT_URL_PATTERN.test(String(value || "").trim());
+}
+
 export function normalizeRenderableWorkspaceUrl(adminBaseUrl: string, value?: string | null) {
     const raw = String(value || "").trim();
     if (!raw) {
         return "";
     }
 
-    const loopbackMatch = raw.match(/^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/(.+)$/i);
-    if (loopbackMatch?.[1]) {
-        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(loopbackMatch[1]));
-    }
-
-    const loopbackApiMatch = raw.match(/^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/api\/workspace\/files\/(.+)$/i);
-    if (loopbackApiMatch?.[1]) {
-        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(loopbackApiMatch[1]));
-    }
-
-    const loopbackArtifactMatch = raw.match(/^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/(?:v1|api(?:\/client)?)\/artifacts\/([^/]+)\/content(?:\?.*)?$/i);
-    if (loopbackArtifactMatch?.[1]) {
-        return getArtifactContentUrl(adminBaseUrl, loopbackArtifactMatch[1]);
-    }
-
-    if (raw.startsWith("/workspace/")) {
-        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(raw));
-    }
-
-    if (raw.startsWith("/api/workspace/files/")) {
-        if (/[?&]v8(?:sig|exp)=/i.test(raw)) {
-            return resolveAdminAssetUrl(adminBaseUrl, raw);
-        }
-        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(raw));
-    }
-
-    if (raw.startsWith("/api/client/workspace/files/") || raw.startsWith("api/client/workspace/files/")) {
-        return resolveAdminAssetUrl(adminBaseUrl, raw.startsWith("/") ? raw : `/${raw}`);
-    }
-
-    if (
-        (raw.startsWith("/api/client/artifacts/") || raw.startsWith("api/client/artifacts/"))
-        && /[?&]v8(?:sig|exp)=/i.test(raw)
-    ) {
-        return resolveAdminAssetUrl(adminBaseUrl, raw.startsWith("/") ? raw : `/${raw}`);
-    }
-
-    const artifactContentMatch = raw.match(/^\/(?:v1|api(?:\/client)?)\/artifacts\/([^/]+)\/content(?:\?.*)?$/i);
-    if (artifactContentMatch?.[1]) {
-        return getArtifactContentUrl(adminBaseUrl, artifactContentMatch[1]);
-    }
-
-    const windowsSubpath = deriveWorkspaceSubpathFromWindowsPath(raw);
-    if (windowsSubpath) {
-        return getWorkspaceFileUrl(adminBaseUrl, windowsSubpath);
+    const workspaceSubpath = resolveWorkspaceSubpathFromMediaCandidate(raw);
+    if (workspaceSubpath) {
+        return getWorkspaceFileUrl(adminBaseUrl, workspaceSubpath);
     }
 
     return resolveAdminAssetUrl(adminBaseUrl, raw);
 }
 
-export function normalizeRenderableWorkspaceLinks(adminBaseUrl: string, content: string) {
-    let normalized = String(content || "");
-
-    normalized = normalized.replace(LOOPBACK_WORKSPACE_URL_PATTERN, (_match, subpath: string) => {
-        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath));
-    });
-
-    normalized = normalized.replace(LOOPBACK_WORKSPACE_API_URL_PATTERN, (_match, subpath: string) => {
-        return getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath));
-    });
-
-    normalized = normalized.replace(LOOPBACK_ARTIFACT_CONTENT_URL_PATTERN, (_match, artifactId: string) => {
-        return getArtifactContentUrl(adminBaseUrl, String(artifactId || "").trim());
-    });
-
-    normalized = normalized.replace(ABSOLUTE_WORKSPACE_PATH_PATTERN, (_match, prefix: string, subpath: string) => {
-        return `${prefix}${getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath))}`;
-    });
-
-    normalized = normalized.replace(ABSOLUTE_WORKSPACE_API_PATH_PATTERN, (_match, prefix: string, subpath: string) => {
-        return `${prefix}${getWorkspaceFileUrl(adminBaseUrl, normalizeWorkspaceSubpath(subpath))}`;
-    });
-
-    normalized = normalized.replace(ABSOLUTE_ARTIFACT_CONTENT_PATH_PATTERN, (_match, prefix: string, artifactId: string) => {
-        return `${prefix}${getArtifactContentUrl(adminBaseUrl, String(artifactId || "").trim())}`;
-    });
-
-    return normalized;
+function pushUniqueCandidate(target: string[], value?: string | null) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return;
+    }
+    if (!target.includes(normalized)) {
+        target.push(normalized);
+    }
 }
 
-export function mapWindowsWorkspacePathToRenderableLink(adminBaseUrl: string, content: string) {
-    const mapping = new Map<string, string>();
-    for (const match of String(content || "").matchAll(WINDOWS_WORKSPACE_PATH_PATTERN)) {
-        const rawPath = String(match[1] || "").trim();
-        const subpath = deriveWorkspaceSubpathFromWindowsPath(rawPath);
-        if (!rawPath || !subpath || mapping.has(rawPath)) {
+export function resolveRenderableMediaCandidates(
+    adminBaseUrl: string,
+    options:
+        | string
+        | {
+            value?: string | null;
+            resourceRef?: AdminResourceRef | null;
+            previewUrl?: string | null;
+            externalUrl?: string | null;
+            workspacePath?: string | null;
+            sourcePath?: string | null;
+        },
+) {
+    const normalizedOptions = typeof options === "string" ? { value: options } : (options || {});
+    const candidates: string[] = [];
+
+    const resourceUrl = resolveAdminResourceUrl("phone", adminBaseUrl, normalizedOptions.resourceRef || null);
+    pushUniqueCandidate(candidates, normalizeRenderableWorkspaceUrl(adminBaseUrl, resourceUrl));
+
+    const directCandidates = [
+        normalizedOptions.previewUrl,
+        normalizedOptions.externalUrl,
+        normalizedOptions.value,
+    ];
+    for (const candidate of directCandidates) {
+        const rawCandidate = String(candidate || "").trim();
+        if (!rawCandidate) {
             continue;
         }
-        mapping.set(rawPath, getWorkspaceFileUrl(adminBaseUrl, subpath));
+        if (isArtifactContentPath(rawCandidate)) {
+            continue;
+        }
+        const normalizedCandidate = normalizeRenderableWorkspaceUrl(adminBaseUrl, rawCandidate);
+        if (!normalizedCandidate) {
+            continue;
+        }
+        if (isArtifactContentUrl(normalizedCandidate) && !/[?&](?:v8sig|sig|token)=/i.test(normalizedCandidate)) {
+            continue;
+        }
+        pushUniqueCandidate(candidates, normalizedCandidate);
     }
-    return mapping;
+
+    const workspaceCandidates = [
+        normalizedOptions.workspacePath,
+        normalizedOptions.sourcePath,
+    ];
+    for (const candidate of workspaceCandidates) {
+        const subpath = resolveWorkspaceCandidateSubpath(candidate);
+        if (subpath) {
+            pushUniqueCandidate(candidates, getWorkspaceFileUrl(adminBaseUrl, subpath));
+        }
+    }
+
+    return candidates;
+}
+
+export function resolveRenderableMediaUrl(
+    adminBaseUrl: string,
+    options:
+        | string
+        | {
+            value?: string | null;
+            resourceRef?: AdminResourceRef | null;
+            previewUrl?: string | null;
+            externalUrl?: string | null;
+            workspacePath?: string | null;
+            sourcePath?: string | null;
+        },
+) {
+    return resolveRenderableMediaCandidates(adminBaseUrl, options)[0] || "";
+}
+
+export function isLoopbackUrl(value?: string | null) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return false;
+    }
+    return LOOPBACK_URL_PATTERN.test(normalized);
+}
+
+export function isPhonePreviewBlockedByLoopback(
+    adminBaseUrl: string,
+    value?: string | null,
+) {
+    const normalizedUrl = normalizeRenderableWorkspaceUrl(adminBaseUrl, value);
+    return Boolean(normalizedUrl) && isLoopbackUrl(normalizedUrl) && isLoopbackUrl(adminBaseUrl);
 }

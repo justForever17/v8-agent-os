@@ -1,4 +1,5 @@
 import type { ChatArtifact, ChatMessage, PendingApproval, PhoneUiTimelineNode } from "@/src/types/admin";
+import { mergeTimelineNodesByIdentity } from "@v8/session-realtime";
 
 const LOOPBACK_AVATAR_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\//i;
 const ADMIN_AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
@@ -109,28 +110,11 @@ function mergeArtifacts(base: ChatArtifact[] = [], incoming: ChatArtifact[] = []
 }
 
 function mergeTimelineNodes(base: PhoneUiTimelineNode[] = [], incoming: PhoneUiTimelineNode[] = []) {
-    const merged: PhoneUiTimelineNode[] = [];
-    const indexById = new Map<string, number>();
+    return mergeTimelineNodesByIdentity(base, incoming) as PhoneUiTimelineNode[];
+}
 
-    for (const node of [...base, ...incoming]) {
-        const nodeId = String(node.id || "").trim();
-        if (!nodeId) {
-            merged.push({ ...node });
-            continue;
-        }
-        const existingIndex = indexById.get(nodeId);
-        if (existingIndex === undefined) {
-            indexById.set(nodeId, merged.length);
-            merged.push({ ...node });
-            continue;
-        }
-        merged[existingIndex] = {
-            ...merged[existingIndex],
-            ...node,
-        } as PhoneUiTimelineNode;
-    }
-
-    return merged;
+function normalizeMessageNodes(nodes: PhoneUiTimelineNode[] = []) {
+    return mergeTimelineNodes([], nodes);
 }
 
 function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): ChatMessage {
@@ -168,7 +152,7 @@ function normalizeProjectedPartsToNodes(message: ChatMessage) {
     const rawMessage = message as ChatMessage & { parts?: unknown };
     const parts = Array.isArray(rawMessage.parts) ? (rawMessage.parts as ProjectedMessagePart[]) : [];
     if (!parts.length) {
-        return Array.isArray(message.nodes) ? message.nodes.map((node) => ({ ...node })) : [];
+        return Array.isArray(message.nodes) ? normalizeMessageNodes(message.nodes.map((node) => ({ ...node }))) : [];
     }
 
     const timestamp = Number(message.timestamp || Date.now());
@@ -176,7 +160,7 @@ function normalizeProjectedPartsToNodes(message: ChatMessage) {
     const messageAgentAvatar = resolveAgentAvatar(message.agentAvatar) || (message.role === "assistant" ? DEFAULT_AGENT_AVATAR : undefined);
     const messageAgentRoleLabel = message.agentRoleLabel;
 
-    return parts.flatMap<PhoneUiTimelineNode>((part, index) => {
+    const projectedNodes = parts.flatMap<PhoneUiTimelineNode>((part, index) => {
         const partType = String(part.type || "").trim();
         const nodeId = `${String(message.id || "projected").trim() || "projected"}-${index}`;
         const nodeAgentName = typeof part.agentName === "string" && part.agentName.trim() ? part.agentName.trim() : messageAgentName;
@@ -247,6 +231,8 @@ function normalizeProjectedPartsToNodes(message: ChatMessage) {
 
         return [];
     });
+
+    return normalizeMessageNodes(projectedNodes);
 }
 
 function buildRenderKey(message: ChatMessage) {

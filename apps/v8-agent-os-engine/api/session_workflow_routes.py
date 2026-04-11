@@ -78,6 +78,29 @@ def _merge_authoritative_timeline_messages(
     snapshot_messages: list[dict] | None,
 ) -> list[dict]:
     """Prefer durable/runtime-backed timeline, but keep snapshot-only residues if they are not yet persisted."""
+    def _merge_unique_list(base_list: object, incoming_list: object) -> list:
+        merged: list = []
+        seen: set[str] = set()
+        for collection in (base_list, incoming_list):
+            if not isinstance(collection, list):
+                continue
+            for item in collection:
+                fingerprint = str(item)
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+                merged.append(item)
+        return merged
+
+    def _normalize_text(value: object) -> str:
+        return " ".join(str(value or "").strip().lower().split())
+
+    def _coerce_int(value: object) -> int:
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
+
     def _message_identity_keys(message: dict | None) -> list[str]:
         if not isinstance(message, dict):
             return []
@@ -91,6 +114,26 @@ def _merge_authoritative_timeline_messages(
             keys.append(f"assistant-run:{run_id}")
         if role == "tool" and run_id:
             keys.append(f"tool-run:{run_id}")
+        timestamp = _coerce_int(message.get("timestamp"))
+        time_bucket = timestamp // 60000 if timestamp > 0 else 0
+        if role:
+            content_signature = _normalize_text(message.get("content"))
+            if content_signature and time_bucket > 0:
+                keys.append(f"{role}-content:{time_bucket}:{content_signature}")
+            reasoning_signature = _normalize_text(message.get("reasoningContent"))
+            if reasoning_signature and time_bucket > 0:
+                keys.append(f"{role}-reasoning:{time_bucket}:{reasoning_signature}")
+            tool_invocations = message.get("toolInvocations")
+            if isinstance(tool_invocations, list):
+                for invocation in tool_invocations:
+                    if not isinstance(invocation, dict):
+                        continue
+                    tool_call_id = str(invocation.get("toolCallId") or "").strip()
+                    tool_name = str(invocation.get("toolName") or "").strip().lower()
+                    if tool_call_id:
+                        keys.append(f"{role}-tool-call:{tool_call_id}")
+                    elif tool_name and time_bucket > 0:
+                        keys.append(f"{role}-tool-name:{time_bucket}:{tool_name}")
         return keys
 
     def _message_richness(message: dict | None) -> int:
@@ -109,11 +152,12 @@ def _merge_authoritative_timeline_messages(
         for key, value in incoming.items():
             if value is None:
                 continue
-            if key in {"parts", "nodes", "artifacts", "images"} and isinstance(value, list):
+            if key in {"artifacts", "images"} and isinstance(value, list):
+                merged[key] = _merge_unique_list(merged.get(key), value)
+                continue
+            if key in {"parts", "nodes", "toolInvocations"} and isinstance(value, list):
                 base_list = merged.get(key) if isinstance(merged.get(key), list) else []
-                if len(value) >= len(base_list):
-                    merged[key] = value
-                elif not base_list:
+                if not base_list:
                     merged[key] = value
                 continue
             if key == "metadata" and isinstance(value, dict):
@@ -122,15 +166,10 @@ def _merge_authoritative_timeline_messages(
                     **value,
                 }
                 continue
-            if key == "content":
-                current_content = str(merged.get("content") or "").strip()
+            if key in {"content", "reasoningContent"}:
+                current_content = str(merged.get(key) or "").strip()
                 next_content = str(value or "").strip()
-                if next_content or not current_content:
-                    merged[key] = value
-                continue
-            if key == "toolInvocations" and isinstance(value, list):
-                current_invocations = merged.get("toolInvocations") if isinstance(merged.get("toolInvocations"), list) else []
-                if len(value) >= len(current_invocations):
+                if next_content and not current_content:
                     merged[key] = value
                 continue
             merged[key] = value
@@ -181,6 +220,7 @@ def _format_db_session_messages(rows: list[dict]) -> list[dict]:
     formatted = []
     for row in rows:
         created_at = row.get("created_at")
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         try:
             timestamp = int(datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).timestamp() * 1000) if created_at else 0
         except Exception:
@@ -189,6 +229,7 @@ def _format_db_session_messages(rows: list[dict]) -> list[dict]:
         msg_obj = {
             "id": row["id"],
             "role": row["role"],
+            "runId": str(metadata.get("run_id") or metadata.get("runId") or "").strip() or None,
             "content": row["content"],
             "reasoningContent": row.get("reasoning_content"),
             "createdAt": row["created_at"],
@@ -198,7 +239,7 @@ def _format_db_session_messages(rows: list[dict]) -> list[dict]:
             "agentRoleLabel": row.get("agent_role_label"),
             "agentId": row.get("agent_id"),
             "images": row.get("images") or [],
-            "metadata": row.get("metadata") or {},
+            "metadata": metadata,
             "nodes": nodes,
         }
         if row.get("reasoning_content"):

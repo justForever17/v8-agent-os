@@ -25,6 +25,10 @@ function extensionFromContentType(contentType: string) {
     if (normalized.includes("audio/mpeg")) return "mp3";
     if (normalized.includes("audio/mp4") || normalized.includes("audio/m4a")) return "m4a";
     if (normalized.includes("audio/wav")) return "wav";
+    if (normalized.includes("video/mp4")) return "mp4";
+    if (normalized.includes("video/webm")) return "webm";
+    if (normalized.includes("video/quicktime")) return "mov";
+    if (normalized.includes("video/x-matroska")) return "mkv";
     if (normalized.includes("image/png")) return "png";
     if (normalized.includes("image/jpeg")) return "jpg";
     if (normalized.includes("image/webp")) return "webp";

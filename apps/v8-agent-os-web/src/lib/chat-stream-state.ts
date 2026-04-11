@@ -2,6 +2,7 @@ import { Message, UiTimelineNode, UiNarrativeNode, UiExecutionNode, UiGovernance
 import { RuntimeArtifact, normalizeRuntimeArtifact, normalizeRuntimeArtifacts } from '@/lib/artifacts';
 import { createClientId } from '@/lib/id';
 import {
+    mergeTimelineNodesByIdentity,
     applyRealtimeEventToMessages as applySharedRealtimeEventToMessages,
     buildAssistantMessage as buildSharedAssistantMessage,
     deriveRealtimeStreamState as deriveSharedRealtimeStreamState,
@@ -122,7 +123,7 @@ export function cloneMessages(messages: Message[]): Message[] {
     return messages.map((message) => ({
         ...message,
         nodes: Array.isArray(message.nodes)
-            ? message.nodes.map((node) => ({ ...node }))
+            ? normalizeMessageNodes(message.nodes.map((node) => ({ ...node })))
             : [],
         images: Array.isArray(message.images) ? [...message.images] : [],
         artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
@@ -159,6 +160,9 @@ function buildMessageIdentityKeys(message: Message): string[] {
 
     const normalizedContent = String(message.content || '').trim().replace(/\s+/g, ' ');
     const semanticRunId = String(message.runId || message.metadata?.runId || '').trim();
+    if (semanticRunId && message.role === 'assistant') {
+        keys.push(`run:${message.role}:${semanticRunId}`);
+    }
     if (semanticRunId && message.role !== 'user') {
         keys.push(`semantic:${message.role}:${semanticRunId}:${hashMessageContent(normalizedContent)}`);
     }
@@ -203,26 +207,11 @@ function mergeArtifacts(
 }
 
 function mergeTimelineNodes(base: UiTimelineNode[] = [], incoming: UiTimelineNode[] = []): UiTimelineNode[] {
-    const merged: UiTimelineNode[] = [];
-    const indexById = new Map<string, number>();
-    for (const node of [...base, ...incoming]) {
-        const nodeId = String(node.id || '').trim();
-        if (!nodeId) {
-            merged.push({ ...node });
-            continue;
-        }
-        const existingIndex = indexById.get(nodeId);
-        if (existingIndex === undefined) {
-            indexById.set(nodeId, merged.length);
-            merged.push({ ...node });
-            continue;
-        }
-        merged[existingIndex] = {
-            ...merged[existingIndex],
-            ...node,
-        } as UiTimelineNode;
-    }
-    return merged;
+    return mergeTimelineNodesByIdentity(base, incoming) as UiTimelineNode[];
+}
+
+function normalizeMessageNodes(nodes: UiTimelineNode[] = []): UiTimelineNode[] {
+    return mergeTimelineNodes([], nodes);
 }
 
 function mergeMessageRecords(existing: Message, incoming: Message): Message {
@@ -269,7 +258,7 @@ export function normalizeMessagesForState(messages: Message[]): Message[] {
         const candidate: Message = {
             ...message,
             agentAvatar: resolveAgentAvatar(message.agentAvatar),
-            nodes: Array.isArray(message.nodes) ? message.nodes.map((node) => ({ ...node })) : [],
+            nodes: Array.isArray(message.nodes) ? normalizeMessageNodes(message.nodes.map((node) => ({ ...node }))) : [],
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
             metadata: message.metadata ? { ...message.metadata } : undefined,
@@ -310,7 +299,7 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
             agentRoleLabel: typeof msg.agentRoleLabel === 'string' ? msg.agentRoleLabel : undefined,
         };
         const parts = Array.isArray(msg.parts) ? (msg.parts as ProjectedMessagePart[]) : [];
-        const nodes: UiTimelineNode[] = parts.flatMap<UiTimelineNode>((part, index) => {
+        const projectedNodes: UiTimelineNode[] = parts.flatMap<UiTimelineNode>((part, index) => {
             const nodeAgentProfile = {
                 agentName: typeof part.agentName === 'string' ? part.agentName : messageAgentProfile.agentName,
                 agentAvatar: resolveAgentAvatar(part.agentAvatar) || messageAgentProfile.agentAvatar,
@@ -349,6 +338,7 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
                     kind: 'execution',
                     executionType: 'tool_result',
                     toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : undefined,
+                    toolName: typeof part.toolName === 'string' ? part.toolName : undefined,
                     result: part.result,
                     timestamp,
                     ...nodeAgentProfile,
@@ -384,7 +374,7 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
             role,
             runId: typeof msg.runId === 'string' ? msg.runId : undefined,
             content: typeof msg.content === 'string' ? msg.content : '',
-            nodes,
+            nodes: normalizeMessageNodes(projectedNodes),
             timestamp,
             agentName: messageAgentProfile.agentName,
             agentAvatar: messageAgentProfile.agentAvatar,

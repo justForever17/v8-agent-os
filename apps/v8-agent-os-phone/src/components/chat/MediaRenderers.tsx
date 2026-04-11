@@ -1,10 +1,11 @@
-import { memo, useMemo, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { memo, useState } from "react";
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { Linking } from "react-native";
 import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
+import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
@@ -12,13 +13,27 @@ export const MediaPlayer = memo(function MediaPlayer({
     src,
     type,
     title,
+    candidates,
 }: {
     src: string;
     type: "video" | "audio";
     title?: string;
+    candidates?: string[];
 }) {
     const { colors, t } = useUiPrefs();
     const displayTitle = title || src.split("/").pop()?.split("?")[0] || t("媒体文件", "Media file");
+    const {
+        candidateSources,
+        resolvedSrc,
+        previewBlocked,
+        loading,
+        error,
+        advanceCandidate,
+    } = usePreparedPhoneMediaSource({ src, candidates, title: displayTitle });
+    const [open, setOpen] = useState(false);
+    const items: MediaItem[] = type === "video" && resolvedSrc
+        ? [{ type: "video", src: resolvedSrc, name: displayTitle, candidates: candidateSources }]
+        : [];
 
     if (type === "audio") {
         return (
@@ -32,38 +47,125 @@ export const MediaPlayer = memo(function MediaPlayer({
                         {t("点击打开音频", "Tap to open audio")}
                     </Text>
                 </View>
-                <Pressable onPress={() => void Linking.openURL(src)} style={styles.openButton}>
+                <Pressable onPress={() => void Linking.openURL(resolvedSrc || src)} style={styles.openButton}>
                     <MaterialCommunityIcons name="open-in-new" size={16} color={colors.textSoft} />
                 </Pressable>
             </View>
         );
     }
 
-    return (
-        <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
-            <WebView
-                source={{ html: buildMediaHtml(src) }}
-                style={styles.video}
-                allowsInlineMediaPlayback
-                mediaPlaybackRequiresUserAction={false}
-            />
-            <View style={[styles.videoFooter, { borderTopColor: colors.border }]}>
-                <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
+    if (loading) {
+        return (
+            <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                <View style={styles.loadingWrap}>
+                    <ActivityIndicator size="small" color={colors.primary} />
+                    <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
+                    <Text style={[styles.blockedText, { color: colors.textMuted }]}>
+                        {t("正在准备媒体内容…", "Preparing media content...")}
+                    </Text>
+                </View>
             </View>
-        </View>
+        );
+    }
+
+    if (previewBlocked) {
+        return (
+            <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                <View style={styles.blockedWrap}>
+                    <MaterialCommunityIcons name="video-off-outline" size={28} color={colors.warning} />
+                    <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
+                    <Text style={[styles.blockedText, { color: colors.textMuted }]}>
+                        {t("当前视频预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。", "The preview URL still points to localhost, which is unreachable from the phone. Use a reachable Admin URL and try again.")}
+                    </Text>
+                </View>
+            </View>
+        );
+    }
+
+    if (!resolvedSrc) {
+        return (
+            <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                <View style={styles.blockedWrap}>
+                    <MaterialCommunityIcons name="video-off-outline" size={28} color={colors.warning} />
+                    <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
+                    <Text style={[styles.blockedText, { color: colors.textMuted }]}>
+                        {error || t("当前媒体内容暂不可达。", "The media content is currently unavailable.")}
+                    </Text>
+                </View>
+            </View>
+        );
+    }
+
+    return (
+        <>
+            <Pressable onPress={() => setOpen(true)}>
+                <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                    <WebView
+                        source={{ html: buildMediaHtml(resolvedSrc) }}
+                        style={styles.video}
+                        allowsInlineMediaPlayback
+                        mediaPlaybackRequiresUserAction={false}
+                        allowFileAccess
+                        allowFileAccessFromFileURLs
+                        allowUniversalAccessFromFileURLs
+                        onError={advanceCandidate}
+                        onHttpError={advanceCandidate}
+                    />
+                    <View style={[styles.videoFooter, { borderTopColor: colors.border }]}>
+                        <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
+                    </View>
+                </View>
+            </Pressable>
+            <MediaViewerLightbox items={items} isOpen={open} onClose={() => setOpen(false)} />
+        </>
     );
 });
 
 export const ImagePreview = memo(function ImagePreview({
     src,
     alt,
+    candidates,
 }: {
     src: string;
     alt?: string;
+    candidates?: string[];
 }) {
-    const { colors } = useUiPrefs();
+    const { colors, t } = useUiPrefs();
     const [open, setOpen] = useState(false);
-    const items = useMemo<MediaItem[]>(() => [{ type: "image", src, name: alt }], [alt, src]);
+    const { candidateSources, resolvedSrc, loading, error, advanceCandidate } = usePreparedPhoneMediaSource({
+        src,
+        candidates,
+        title: alt,
+    });
+    const items: MediaItem[] = resolvedSrc
+        ? [{ type: "image", src: resolvedSrc, name: alt, candidates: candidateSources }]
+        : [];
+
+    if (loading) {
+        return (
+            <View style={[styles.imageWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                <View style={styles.loadingWrap}>
+                    <ActivityIndicator size="small" color={colors.primary} />
+                    <Text style={[styles.audioSubtitle, { color: colors.textMuted }]}>
+                        {t("正在准备图片内容…", "Preparing image content...")}
+                    </Text>
+                </View>
+            </View>
+        );
+    }
+
+    if (!resolvedSrc) {
+        return (
+            <View style={[styles.imageWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                <View style={styles.loadingWrap}>
+                    <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.warning} />
+                    <Text style={[styles.audioSubtitle, { color: colors.textMuted }]}>
+                        {error || t("当前图片内容暂不可达。", "The image content is currently unavailable.")}
+                    </Text>
+                </View>
+            </View>
+        );
+    }
 
     return (
         <>
@@ -71,7 +173,7 @@ export const ImagePreview = memo(function ImagePreview({
                 onPress={() => setOpen(true)}
                 style={[styles.imageWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
             >
-                <Image source={{ uri: src }} style={styles.imagePreview} resizeMode="cover" />
+                <Image source={{ uri: resolvedSrc }} style={styles.imagePreview} resizeMode="cover" onError={advanceCandidate} />
                 <View style={styles.imageOverlay}>
                     <MaterialCommunityIcons name="magnify-plus-outline" size={22} color="#FFFFFF" />
                 </View>
@@ -93,7 +195,10 @@ function buildMediaHtml(src: string) {
     </style>
   </head>
   <body>
-    <video src="${src}" controls playsinline preload="metadata"></video>
+    <video id="player" controls playsinline preload="metadata"></video>
+    <script>
+      document.getElementById("player").src = ${JSON.stringify(src)};
+    </script>
   </body>
 </html>`;
 }
@@ -148,6 +253,27 @@ const styles = StyleSheet.create({
         borderTopWidth: 1,
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
+    },
+    blockedWrap: {
+        minHeight: 200,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: spacing.sm,
+        paddingHorizontal: spacing.lg,
+        paddingVertical: spacing.lg,
+    },
+    blockedText: {
+        fontSize: 12,
+        lineHeight: 18,
+        textAlign: "center",
+    },
+    loadingWrap: {
+        minHeight: 160,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: spacing.sm,
+        paddingHorizontal: spacing.lg,
+        paddingVertical: spacing.lg,
     },
     imageWrap: {
         position: "relative",

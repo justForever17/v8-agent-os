@@ -1,7 +1,6 @@
 export type PhoneContentBlockType =
     | "thinking"
     | "tool"
-    | "artifact"
     | "voice"
     | "image"
     | "video"
@@ -29,6 +28,64 @@ function normalizeMediaTagAttributes(raw: string) {
         .replace(/\\'/g, "'")
         .replace(/&quot;/gi, "\"")
         .replace(/&#39;/gi, "'");
+}
+
+const INLINE_MEDIA_PATH_REGEX = /`((?:downloaded_media\/[^\s`]+|[a-z]:\\[^\s`]+)\.(?:jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|aac)(?:\?[^\s`]+)?)`|((?:downloaded_media\/[^\s"'<>]+|[a-z]:\\[^\s"'<>]+)\.(?:jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|aac)(?:\?[^\s"'<>]+)?)/gi;
+
+function inferInlineMediaPathType(raw: string): "image" | "video" | "audio" | null {
+    const value = String(raw || "").trim();
+    if (!value) {
+        return null;
+    }
+    if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i.test(value)) {
+        return "image";
+    }
+    if (/\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i.test(value)) {
+        return "video";
+    }
+    if (/\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i.test(value)) {
+        return "audio";
+    }
+    return null;
+}
+
+function pushInlineMediaPathBlocks(blocks: PhoneContentBlock[], content: string, blockIndex: { current: number }) {
+    const text = String(content || "");
+    if (!text) {
+        return;
+    }
+
+    INLINE_MEDIA_PATH_REGEX.lastIndex = 0;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = INLINE_MEDIA_PATH_REGEX.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+            pushPlainTextBlock(blocks, text.slice(lastIndex, match.index), blockIndex);
+        }
+
+        const rawPath = String(match[1] || match[2] || "").trim();
+        const mediaType = inferInlineMediaPathType(rawPath);
+        if (rawPath && mediaType) {
+            blocks.push({
+                id: `${mediaType}-${blockIndex.current++}`,
+                type: mediaType,
+                content: rawPath,
+                data: {
+                    src: rawPath,
+                    title: rawPath.split(/[\\/]/).filter(Boolean).pop() || rawPath,
+                },
+            });
+        } else {
+            pushPlainTextBlock(blocks, match[0], blockIndex);
+        }
+
+        lastIndex = INLINE_MEDIA_PATH_REGEX.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+        pushPlainTextBlock(blocks, text.slice(lastIndex), blockIndex);
+    }
 }
 
 function pushPlainTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex: { current: number }) {
@@ -88,7 +145,7 @@ function pushRenderableTextBlocks(blocks: PhoneContentBlock[], content: string, 
 
     while ((match = mediaTagRegex.exec(text)) !== null) {
         if (match.index > lastIndex) {
-            pushPlainTextBlock(blocks, text.slice(lastIndex, match.index), blockIndex);
+            pushInlineMediaPathBlocks(blocks, text.slice(lastIndex, match.index), blockIndex);
         }
 
         const media = parseInlineMediaTag(match[0]);
@@ -110,7 +167,7 @@ function pushRenderableTextBlocks(blocks: PhoneContentBlock[], content: string, 
     }
 
     if (lastIndex < text.length) {
-        pushPlainTextBlock(blocks, text.slice(lastIndex), blockIndex);
+        pushInlineMediaPathBlocks(blocks, text.slice(lastIndex), blockIndex);
     }
 }
 
@@ -156,15 +213,6 @@ function pushTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex:
             pushRenderableTextBlocks(blocks, rest, blockIndex);
         }
     }
-}
-
-function buildArtifactData(attrs: string) {
-    const titleMatch = attrs.match(/title="([^"]+)"/i);
-    const typeMatch = attrs.match(/type="([^"]+)"/i);
-    return {
-        title: titleMatch ? titleMatch[1] : undefined,
-        type: typeMatch ? typeMatch[1] : undefined,
-    };
 }
 
 export function parsePhoneContentBlocks(content: string, isStreaming = false, startId = 0): PhoneContentBlock[] {
@@ -214,12 +262,10 @@ export function parsePhoneContentBlocks(content: string, isStreaming = false, st
                 data: { toolCallId: match[4] },
             });
         } else if (match[5]) {
-            blocks.push({
-                id: `artifact-${blockIndex.current++}`,
-                type: "artifact",
-                content: String(match[6] || "").trim(),
-                data: buildArtifactData(String(match[5] || "")),
-            });
+            const artifactContent = String(match[6] || "").trim();
+            if (artifactContent) {
+                pushTextBlock(blocks, artifactContent, blockIndex);
+            }
         } else if (match[7]) {
             blocks.push({
                 id: `voice-${blockIndex.current++}`,

@@ -215,16 +215,15 @@ export const Composer = memo(function Composer({
                         },
                     ]}
                 >
-                <View
-                    pointerEvents="box-none"
-                    style={[
-                        styles.editorCard,
-                        {
-                            backgroundColor: editorBackground,
+                    <View
+                        style={[
+                            styles.editorCard,
+                            {
+                                backgroundColor: editorBackground,
                                 borderColor: isFocused ? `${colors.primary}2F` : "transparent",
                             },
                         ]}
-                >
+                    >
                         <TextInput
                             ref={inputRef}
                             value={value}
@@ -259,6 +258,8 @@ export const Composer = memo(function Composer({
                     <View style={styles.bottomControls}>
                         <View style={styles.leftControls}>
                             <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={taskPlanningMode ? "关闭任务规划偏好" : "开启任务规划偏好"}
                                 style={[
                                     styles.taskModeButton,
                                     {

@@ -11,7 +11,6 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { isAskUserInteractionApproval, type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
 
-import { ArtifactsPanel } from "@/src/components/chat/ArtifactsPanel";
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
 import { MessageBubble } from "@/src/components/chat/MessageBubble";
@@ -19,7 +18,7 @@ import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility"
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ArtifactDetail, ChatArtifact, ChatMessage, PendingApproval } from "@/src/types/admin";
+import type { ChatMessage, PendingApproval } from "@/src/types/admin";
 
 type ChatWindowProps = {
     adminBaseUrl: string;
@@ -32,7 +31,6 @@ type ChatWindowProps = {
     onSpeakVoice?: (text: string, messageKey: string) => void;
     userImageUri?: string;
     userDisplayName?: string;
-    artifacts: ArtifactDetail[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
     pendingApproval?: PendingApproval | null;
@@ -49,53 +47,6 @@ type ChatWindowProps = {
     } | null;
 };
 
-function toArtifactDetail(artifact: ChatArtifact): ArtifactDetail {
-    return {
-        id: String(
-            artifact.id
-            || artifact.artifactId
-            || artifact.canonicalPath
-            || artifact.workspaceRelativePath
-            || artifact.workspacePath
-            || artifact.sourcePath
-            || artifact.previewUrl
-            || artifact.externalUrl
-            || `${artifact.kind || "artifact"}-${artifact.title || "item"}`,
-        ).trim(),
-        artifactId: artifact.artifactId,
-        title: artifact.title,
-        kind: artifact.kind,
-        previewUrl: artifact.previewUrl,
-        externalUrl: artifact.externalUrl,
-        sourcePath: artifact.sourcePath,
-        workspacePath: artifact.workspacePath,
-        workspaceRoot: artifact.workspaceRoot,
-        workspaceRelativePath: artifact.workspaceRelativePath,
-        canonicalPath: artifact.canonicalPath,
-        projectId: artifact.projectId,
-        workspaceId: artifact.workspaceId,
-        storageClass: artifact.storageClass,
-        surfaceVisible: artifact.surfaceVisible,
-        mimeType: artifact.mimeType,
-        resourceRef: artifact.resourceRef || null,
-    };
-}
-
-function matchesArtifact(detail: ArtifactDetail, target: ChatArtifact) {
-    const targetId = String(target.id || target.artifactId || "").trim();
-    if (targetId && (detail.id === targetId || detail.artifactId === targetId)) {
-        return true;
-    }
-    return (
-        Boolean(target.previewUrl && detail.previewUrl === target.previewUrl)
-        || Boolean(target.externalUrl && detail.externalUrl === target.externalUrl)
-        || Boolean(target.canonicalPath && detail.canonicalPath === target.canonicalPath)
-        || Boolean(target.workspaceRelativePath && detail.workspaceRelativePath === target.workspaceRelativePath)
-        || Boolean(target.workspacePath && detail.workspacePath === target.workspacePath)
-        || Boolean(target.sourcePath && detail.sourcePath === target.sourcePath)
-    );
-}
-
 function isAskUserApproval(approval: PendingApproval | null | undefined) {
     return isAskUserInteractionApproval(approval);
 }
@@ -108,9 +59,6 @@ function hasRenderableMessage(message: ChatMessage) {
         return true;
     }
     if (Array.isArray(message.images) && message.images.length > 0) {
-        return true;
-    }
-    if (Array.isArray(message.artifacts) && message.artifacts.length > 0) {
         return true;
     }
     if (hasRenderablePhoneTimelineNodes(message.nodes)) {
@@ -130,7 +78,6 @@ export const ChatWindow = memo(function ChatWindow({
     onSpeakVoice,
     userImageUri,
     userDisplayName,
-    artifacts,
     processes,
     contextReferences,
     pendingApproval,
@@ -145,18 +92,7 @@ export const ChatWindow = memo(function ChatWindow({
     const { colors, t } = useUiPrefs();
     const scrollRef = useRef<ScrollView | null>(null);
     const [isAtBottom, setIsAtBottom] = useState(true);
-    const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
-    const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
-    const [ephemeralArtifacts, setEphemeralArtifacts] = useState<ArtifactDetail[]>([]);
     const [askUserOpen, setAskUserOpen] = useState(Boolean(pendingApproval && isAskUserApproval(pendingApproval)));
-
-    const allArtifacts = useMemo(() => {
-        const merged = new Map<string, ArtifactDetail>();
-        for (const artifact of [...artifacts, ...ephemeralArtifacts]) {
-            merged.set(artifact.id, artifact);
-        }
-        return Array.from(merged.values());
-    }, [artifacts, ephemeralArtifacts]);
     const visibleMessages = useMemo(
         () => messages.filter(hasRenderableMessage),
         [messages],
@@ -191,21 +127,6 @@ export const ChatWindow = memo(function ChatWindow({
     useEffect(() => {
         setAskUserOpen(Boolean(pendingApproval && isAskUserApproval(pendingApproval)));
     }, [pendingApproval]);
-
-    const handleOpenArtifact = (artifact: ChatArtifact) => {
-        const existing = allArtifacts.find((item) => matchesArtifact(item, artifact));
-        const detail = existing || toArtifactDetail(artifact);
-        if (!existing) {
-            setEphemeralArtifacts((current) => {
-                if (current.some((item) => item.id === detail.id)) {
-                    return current;
-                }
-                return [...current, detail];
-            });
-        }
-        setActiveArtifactId(detail.id);
-        setArtifactPanelOpen(true);
-    };
 
     return (
         <View style={styles.root}>
@@ -262,7 +183,6 @@ export const ChatWindow = memo(function ChatWindow({
                                 onDelete={onDeleteMessage}
                                 onSpeakVoice={onSpeakVoice}
                                 speakingKey={speakingKey}
-                                onOpenArtifact={handleOpenArtifact}
                                 userImageUri={userImageUri}
                                 userDisplayName={userDisplayName}
                                 processes={processes}
@@ -324,14 +244,6 @@ export const ChatWindow = memo(function ChatWindow({
                     </Pressable>
                 ) : null}
             </View>
-
-            <ArtifactsPanel
-                visible={artifactPanelOpen}
-                artifacts={allArtifacts}
-                activeArtifactId={activeArtifactId}
-                onSelectArtifact={setActiveArtifactId}
-                onClose={() => setArtifactPanelOpen(false)}
-            />
 
             {pendingApproval && isAskUserApproval(pendingApproval) ? (
                 <AskUserModal

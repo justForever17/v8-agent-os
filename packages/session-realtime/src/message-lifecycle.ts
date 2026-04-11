@@ -442,6 +442,42 @@ function appendNarrativeContent(
   message.content = `${String(message.content || "")}${normalizedContent}`;
 }
 
+function longestOverlapSuffixPrefix(current: string, incoming: string) {
+  const maxOverlap = Math.min(current.length, incoming.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (current.slice(-size) === incoming.slice(0, size)) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+function computeStreamingSuffix(current: string, incoming: string) {
+  const nextChunk = String(incoming || "");
+  if (!nextChunk) {
+    return "";
+  }
+  const existing = String(current || "");
+  if (!existing) {
+    return nextChunk;
+  }
+  if (nextChunk === existing) {
+    return "";
+  }
+  if (nextChunk.startsWith(existing)) {
+    return nextChunk.slice(existing.length);
+  }
+  if (existing.startsWith(nextChunk)) {
+    return "";
+  }
+  const nestedIndex = nextChunk.indexOf(existing);
+  if (nestedIndex >= 0) {
+    return nextChunk.slice(nestedIndex + existing.length);
+  }
+  const overlap = longestOverlapSuffixPrefix(existing, nextChunk);
+  return overlap > 0 ? nextChunk.slice(overlap) : nextChunk;
+}
+
 export function isActiveAssistantStreamPhase(phase?: SessionStreamPhase | null) {
   return (
     phase === "placeholder"
@@ -586,7 +622,11 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const content = String(event.content || "");
     const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
     if (lastNode && lastNode.kind === "narrative" && lastNode.role === "assistant" && lastNode.agentName === nextActiveAgentProfile.agentName) {
-      lastNode.content = `${String(lastNode.content || "")}${content}`;
+      const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
+      if (suffix) {
+        lastNode.content = `${String(lastNode.content || "")}${suffix}`;
+        current.content = `${String(current.content || "")}${suffix}`;
+      }
     } else {
       appendNode(current, {
         id: nextId("node", options?.createId),
@@ -596,15 +636,18 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
       });
+      current.content = `${String(current.content || "")}${content}`;
     }
-    current.content = `${String(current.content || "")}${content}`;
   } else if (event.type === "reasoning_chunk") {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
     const content = String(event.content || "");
     const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
     if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "reasoning" && !lastNode.time) {
-      lastNode.content = `${String(lastNode.content || "")}${content}`;
+      const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
+      if (suffix) {
+        lastNode.content = `${String(lastNode.content || "")}${suffix}`;
+      }
     } else {
       appendNode(current, {
         id: nextId("node", options?.createId),
@@ -671,6 +714,9 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
 
     if (existingToolCall) {
       existingToolCall.result = event.tool?.result ?? eventData.result;
+      existingToolCall.toolName = existingToolCall.toolName
+        || event.tool?.toolName
+        || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
       existingToolCall.timestamp = Date.now();
     } else {
       appendNode(current, {

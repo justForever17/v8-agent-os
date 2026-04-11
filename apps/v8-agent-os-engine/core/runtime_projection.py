@@ -309,6 +309,49 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
     current_assistant: Optional[Dict[str, Any]] = None
     current_assistant_run_id: Optional[str] = None
     active_agent_profile: Dict[str, Any] = _default_supervisor_profile()
+    last_text_delta_by_run: dict[str, str] = {}
+    last_reasoning_delta_by_run: dict[str, str] = {}
+    last_text_delta_global: str = ""
+    last_text_delta_global_run_id: str = ""
+    last_reasoning_delta_global: str = ""
+    last_reasoning_delta_global_run_id: str = ""
+
+    def _longest_overlap_suffix_prefix(current: str, incoming: str) -> int:
+        limit = min(len(current), len(incoming))
+        for size in range(limit, 0, -1):
+            if current[-size:] == incoming[:size]:
+                return size
+        return 0
+
+    def _suppress_neighbor_duplicate_delta(
+        delta: str,
+        *,
+        run_id_key: str,
+        last_by_run: dict[str, str],
+        last_global: str,
+        last_global_run_id: str,
+    ) -> tuple[str, str, str]:
+        normalized_delta = str(delta or "")
+        if not normalized_delta:
+            return "", last_global, last_global_run_id
+        if run_id_key and last_by_run.get(run_id_key) == normalized_delta:
+            return "", last_global, last_global_run_id
+        if last_global and normalized_delta == last_global:
+            return "", last_global, last_global_run_id
+        if last_global and run_id_key and run_id_key != last_global_run_id:
+            if normalized_delta.startswith(last_global):
+                normalized_delta = normalized_delta[len(last_global):]
+            elif last_global.startswith(normalized_delta) or normalized_delta in last_global:
+                return "", last_global, last_global_run_id
+            else:
+                overlap = _longest_overlap_suffix_prefix(last_global, normalized_delta)
+                if overlap > 0:
+                    normalized_delta = normalized_delta[overlap:]
+        if not normalized_delta:
+            return "", last_global, last_global_run_id
+        if run_id_key:
+            last_by_run[run_id_key] = str(delta or "")
+        return normalized_delta, str(delta or ""), run_id_key or last_global_run_id
 
     def ensure_assistant(event: Dict[str, Any]) -> Dict[str, Any]:
         nonlocal current_assistant, current_assistant_run_id
@@ -399,6 +442,16 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             delta = payload.get("content") or payload.get("delta") or ""
             if not delta:
                 continue
+            run_id_key = str(event.get("run_id") or current_assistant_run_id or "").strip()
+            delta, last_text_delta_global, last_text_delta_global_run_id = _suppress_neighbor_duplicate_delta(
+                str(delta),
+                run_id_key=run_id_key,
+                last_by_run=last_text_delta_by_run,
+                last_global=last_text_delta_global,
+                last_global_run_id=last_text_delta_global_run_id,
+            )
+            if not delta:
+                continue
             last_part = assistant["parts"][-1] if assistant["parts"] else None
             if (
                 last_part
@@ -424,6 +477,16 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
         if topic == "run.reasoning.delta":
             assistant = ensure_assistant(event)
             delta = payload.get("content") or payload.get("delta") or ""
+            if not delta:
+                continue
+            run_id_key = str(event.get("run_id") or current_assistant_run_id or "").strip()
+            delta, last_reasoning_delta_global, last_reasoning_delta_global_run_id = _suppress_neighbor_duplicate_delta(
+                str(delta),
+                run_id_key=run_id_key,
+                last_by_run=last_reasoning_delta_by_run,
+                last_global=last_reasoning_delta_global,
+                last_global_run_id=last_reasoning_delta_global_run_id,
+            )
             if not delta:
                 continue
             last_part = assistant["parts"][-1] if assistant["parts"] else None
@@ -469,6 +532,7 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                 {
                     "type": "tool_result",
                     "toolCallId": tool.get("toolCallId") or tool.get("tool_call_id"),
+                    "toolName": tool.get("toolName") or tool.get("tool_name"),
                     "result": tool.get("result") or tool.get("result_preview"),
                     **active_agent_profile,
                 }

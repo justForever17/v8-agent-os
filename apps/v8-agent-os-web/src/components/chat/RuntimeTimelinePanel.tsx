@@ -17,7 +17,7 @@ import {
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
 import { ContentDispatcher } from "./ContentDispatcher";
-import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, Globe, RadioTower, TerminalSquare, Workflow, X } from "lucide-react";
+import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, Globe, RadioTower, Shield, TerminalSquare, Workflow, X } from "lucide-react";
 
 interface RuntimeTimelinePanelProps {
     isOpen: boolean;
@@ -38,6 +38,7 @@ const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>>
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
+    context_governance: Shield,
     network_supervisor: Globe,
     plugin_host_tool: RadioTower,
     plugin_host_channel: RadioTower,

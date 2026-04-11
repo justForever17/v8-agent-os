@@ -10,6 +10,7 @@ import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
     coerceAdminResourceRef,
+    type ContextGovernanceDigest,
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     normalizeAuthoritativeRuntimeTimeline,
@@ -22,11 +23,13 @@ import {
 } from "@v8/session-realtime";
 
 export type PhoneRuntimeId =
-    SessionRuntimeId;
+    SessionRuntimeId | "context_governance";
 
 export type PhoneRuntimeCardStatus = "idle" | "recent" | "active" | "attention";
 
-export type PhoneRuntimeTimelineEntry = AuthoritativeRuntimeTimelineEntry;
+export type PhoneRuntimeTimelineEntry = Omit<AuthoritativeRuntimeTimelineEntry, "runtimeId"> & {
+    runtimeId: PhoneRuntimeId;
+};
 
 export type PhoneRuntimeStageCard = {
     id: PhoneRuntimeId;
@@ -89,11 +92,35 @@ for (const runtimeId of SESSION_RUNTIME_ORDER) {
     };
 }
 
+RUNTIME_DESCRIPTORS.context_governance = {
+    id: "context_governance",
+    label: { zh: "上下文治理", en: "Context governance" },
+    shortLabel: { zh: "治理", en: "Govern" },
+    description: { zh: "查看上下文预算、压缩与召回注入。", en: "Inspect context budget, compaction, and recall injection." },
+};
+
 export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
-    ...SESSION_RUNTIME_ORDER,
+    "chat",
+    "extensions",
+    "automation",
+    "memory",
+    "context_governance",
+    "computer_use",
+    "network_supervisor",
+    "plugin_host_tool",
+    "plugin_host_channel",
+    "rpa",
+    "desktop_live",
 ];
 
-export const VISIBLE_PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [...VISIBLE_SESSION_RUNTIME_ORDER];
+export const VISIBLE_PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
+    "chat",
+    "extensions",
+    "automation",
+    "memory",
+    "context_governance",
+    ...VISIBLE_SESSION_RUNTIME_ORDER.filter((runtimeId) => !["chat", "extensions", "automation", "memory"].includes(runtimeId)),
+];
 
 function firstRuntimeMatch(values: Array<string | null | undefined>): PhoneRuntimeId | null {
     for (const value of values) {
@@ -138,6 +165,9 @@ export function inferPhoneRuntimeIdFromNode(node: PhoneUiTimelineNode): PhoneRun
 
     if (node.kind === "governance") {
         const governanceNode = node as PhoneUiGovernanceNode;
+        if (governanceNode.governanceType === "context_governance") {
+            return "context_governance";
+        }
         return firstRuntimeMatch([
             governanceNode.topic,
             governanceNode.reason,
@@ -157,7 +187,7 @@ function summarizeExecutionNode(node: PhoneUiExecutionNode): string | null {
         return node.toolName ? `调用 ${node.toolName}` : "工具调用";
     }
     if (node.executionType === "tool_result") {
-        return node.toolCallId ? `工具结果 ${node.toolCallId}` : "工具结果";
+        return node.toolName ? `${node.toolName} 已完成` : (node.toolCallId ? `工具结果 ${node.toolCallId}` : "工具结果");
     }
     if (node.executionType === "agent_start") {
         return node.agentName ? `${node.agentName} 已接入` : "协作单元已接入";
@@ -190,10 +220,6 @@ function summarizeGovernanceNode(node: PhoneUiGovernanceNode): string | null {
     return node.reason || node.status || node.topic || "运行控制已更新";
 }
 
-function summarizeArtifactNode(node: PhoneUiArtifactNode): string | null {
-    return node.artifact.displayLabel || node.artifact.title || node.artifact.id || "新的产物";
-}
-
 function summarizeTimelineNode(node: PhoneUiTimelineNode): { summary: string; kind: PhoneRuntimeStageActivity["kind"] } | null {
     if (node.kind === "execution") {
         const summary = summarizeExecutionNode(node);
@@ -215,9 +241,7 @@ function summarizeTimelineNode(node: PhoneUiTimelineNode): { summary: string; ki
     }
 
     if (node.kind === "artifact") {
-        const summary = summarizeArtifactNode(node);
-        if (!summary) return null;
-        return { summary, kind: "artifact" };
+        return null;
     }
 
     return null;
@@ -233,6 +257,14 @@ function getNodeTimestamp(message: ChatMessage, node: PhoneUiTimelineNode): numb
 function coerceTimelineString(value: unknown) {
     const normalized = String(value || "").trim();
     return normalized || undefined;
+}
+
+function remapTimelineEntryRuntimeId(entry: PhoneRuntimeTimelineEntry): PhoneRuntimeId {
+    const topic = String(entry.topic || "").trim().toLowerCase();
+    if (topic.startsWith("context.") || topic === "context_governance_changed") {
+        return "context_governance";
+    }
+    return entry.runtimeId;
 }
 
 function buildTimelineArtifactNode(entry: PhoneRuntimeTimelineEntry): PhoneUiArtifactNode {
@@ -323,8 +355,14 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
         || metadata?.reason
         || metadata?.label,
     );
+    const isToolResult = entry.kind === "tool" && (
+        String(entry.topic || "").trim().toLowerCase() === "tool.finished"
+        || metadata?.result !== undefined
+        || metadata?.response !== undefined
+        || metadata?.result_preview !== undefined
+    );
     const executionType = entry.kind === "tool"
-        ? "tool_call"
+        ? (isToolResult ? "tool_result" : "tool_call")
         : entry.kind === "handoff"
             ? "agent_start"
             : "runtime_progress";
@@ -336,10 +374,10 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
         topic: entry.topic,
         label: entry.summary,
         content,
-        toolName: executionType === "tool_call" ? coerceTimelineString(metadata?.toolName || metadata?.tool_name) : undefined,
-        toolCallId: executionType === "tool_call" ? coerceTimelineString(metadata?.toolCallId || metadata?.tool_call_id || metadata?.approval_id) : undefined,
+        toolName: entry.kind === "tool" ? coerceTimelineString(metadata?.toolName || metadata?.tool_name) : undefined,
+        toolCallId: entry.kind === "tool" ? coerceTimelineString(metadata?.toolCallId || metadata?.tool_call_id || metadata?.approval_id) : undefined,
         args: executionType === "tool_call" ? metadata?.args ?? metadata?.request : undefined,
-        result: executionType !== "tool_call" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
+        result: executionType === "tool_result" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
         data: entry.metadata,
         timestamp: entry.timestamp,
         agentName: entry.actorLabel,
@@ -363,6 +401,13 @@ export function formatPhoneRelativeRuntimeTime(
 }
 
 export function normalizePhoneRuntimeId(raw?: string | null): PhoneRuntimeId | null {
+    const normalized = String(raw || "").trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (normalized === "context_governance") {
+        return "context_governance";
+    }
     return normalizeSharedRuntimeId(raw);
 }
 
@@ -414,6 +459,8 @@ export function buildPhoneRuntimeStageModel(
         currentStepTitle?: string | null;
         runtimeTimeline?: PhoneRuntimeTimelineEntry[] | null;
         memoryInsight?: MemoryRuntimeInsight | null;
+        governanceDigest?: ContextGovernanceDigest | null;
+        governanceHistory?: ContextGovernanceDigest[] | null;
         locale?: LocaleCode;
     },
 ): PhoneRuntimeStageModel {
@@ -441,14 +488,18 @@ export function buildPhoneRuntimeStageModel(
 
     const seenTimelineKeys = new Set<string>();
     for (const entry of options?.runtimeTimeline || []) {
+        if (entry.kind === "artifact") {
+            continue;
+        }
         const key = `${entry.id}:${entry.seq || 0}`;
         if (seenTimelineKeys.has(key)) {
             continue;
         }
         seenTimelineKeys.add(key);
+        const remappedRuntimeId = remapTimelineEntryRuntimeId(entry);
         activities.push({
             id: entry.id,
-            runtimeId: entry.runtimeId,
+            runtimeId: remappedRuntimeId,
             timestamp: entry.timestamp,
             summary: entry.summary,
             topic: entry.topic,
@@ -497,6 +548,50 @@ export function buildPhoneRuntimeStageModel(
                 agentRoleLabel: "记忆召回",
             },
             kind: "progress",
+            synthetic: true,
+        });
+    }
+
+    const governanceDigests = [
+        options?.governanceDigest || null,
+        ...(options?.governanceHistory || []),
+    ].filter((item): item is ContextGovernanceDigest => Boolean(item));
+    const seenGovernanceIds = new Set<string>();
+    for (const item of governanceDigests) {
+        if (!item.id || seenGovernanceIds.has(item.id)) {
+            continue;
+        }
+        seenGovernanceIds.add(item.id);
+        const summary = item.triggerReason
+            ? `上下文治理 · ${item.triggerReason}`
+            : "上下文治理已更新";
+        const detailParts = [
+            item.resolvedScope ? `Scope: ${item.resolvedScope}` : null,
+            item.blockCount !== null ? `Blocks: ${item.blockCount}` : null,
+            item.durableFlushReason ? `durable: ${item.durableFlushReason}` : null,
+            item.compactionApplied ? "Compaction: applied" : null,
+            item.recallAudit?.rejectReason ? `Recall: ${item.recallAudit.rejectReason}` : null,
+        ].filter((value): value is string => Boolean(value));
+        activities.push({
+            id: `governance:${item.id}`,
+            runtimeId: "context_governance",
+            timestamp: item.eventTs ? Date.parse(item.eventTs) || Date.now() : Date.now(),
+            summary,
+            topic: "context.prepared",
+            actorLabel: "上下文治理",
+            messageId: `governance:${item.id}`,
+            node: {
+                id: `timeline-node-governance:${item.id}`,
+                kind: "governance",
+                governanceType: "context_governance",
+                topic: "context.prepared",
+                reason: detailParts.join("\n") || summary,
+                status: item.compactionApplied ? "compacted" : "updated",
+                timestamp: item.eventTs ? Date.parse(item.eventTs) || Date.now() : Date.now(),
+                agentName: "上下文治理",
+                agentRoleLabel: "上下文治理",
+            },
+            kind: "governance",
             synthetic: true,
         });
     }

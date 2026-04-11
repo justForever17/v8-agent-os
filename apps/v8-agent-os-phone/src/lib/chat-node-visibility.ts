@@ -6,7 +6,15 @@ const HIDDEN_RUNTIME_PROGRESS_TOPICS = new Set([
 ]);
 
 export function isHiddenPhoneTimelineNode(node: PhoneUiTimelineNode | null | undefined) {
-    if (!node || node.kind !== "execution") {
+    if (!node) {
+        return false;
+    }
+
+    if (node.kind === "artifact") {
+        return true;
+    }
+
+    if (node.kind !== "execution") {
         return false;
     }
 
@@ -31,7 +39,27 @@ export function getRenderablePhoneTimelineNodes(nodes: PhoneUiTimelineNode[] | n
     if (!Array.isArray(nodes) || nodes.length === 0) {
         return [];
     }
-    return nodes.filter((node) => !isHiddenPhoneTimelineNode(node));
+    const visible = nodes.filter((node) => !isHiddenPhoneTimelineNode(node));
+    const toolCallIds = new Set(
+        visible
+            .filter((node): node is PhoneUiExecutionNode & { toolCallId: string } =>
+                node.kind === "execution"
+                && node.executionType === "tool_call"
+                && typeof node.toolCallId === "string"
+                && node.toolCallId.trim().length > 0,
+            )
+            .map((node) => node.toolCallId.trim()),
+    );
+    return visible.filter((node) => {
+        if (
+            node.kind !== "execution"
+            || node.executionType !== "tool_result"
+            || typeof node.toolCallId !== "string"
+        ) {
+            return true;
+        }
+        return !toolCallIds.has(node.toolCallId.trim());
+    });
 }
 
 export function hasRenderablePhoneTimelineNodes(nodes: PhoneUiTimelineNode[] | null | undefined) {

@@ -9,3 +9,4 @@ export * from "./cdc.js";
 export * from "./session-view.js";
 export * from "./runtime-timeline.js";
 export * from "./history.js";
+export * from "./timeline-node-identity.js";

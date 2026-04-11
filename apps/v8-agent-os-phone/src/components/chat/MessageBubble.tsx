@@ -3,7 +3,7 @@ import { Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions 
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
+import { type AdminProcessRef } from "@v8/session-realtime";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -13,51 +13,30 @@ import Animated, {
     withTiming,
 } from "react-native-reanimated";
 
-import { getArtifactContentUrl, getWorkspaceFileUrl } from "@/src/lib/phone-api";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { getRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import { formatClock } from "@/src/lib/time";
-import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
+import { resolveRenderableMediaUrl } from "@/src/lib/workspace-links";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ChatArtifact, ChatMessage, SkillReferenceSummary } from "@/src/types/admin";
+import type { ChatMessage, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillReferenceSummary } from "@/src/types/admin";
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
+import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 
-function artifactUrl(adminBaseUrl: string, artifact: ChatArtifact) {
-    const resolved = resolveAdminResourceUrl("phone", adminBaseUrl, artifact.resourceRef || null);
-    if (resolved) {
-        return resolved;
-    }
-    if (artifact.id || artifact.artifactId) {
-        return getArtifactContentUrl(adminBaseUrl, artifact.id || artifact.artifactId || "");
-    }
-    const workspacePath = String(
-        artifact.workspacePath
-        || artifact.workspaceRelativePath
-        || artifact.canonicalPath
-        || "",
-    ).trim();
-    if (workspacePath && !/^[a-z]+:\/\//i.test(workspacePath) && !/^[a-z]:\\/i.test(workspacePath)) {
-        const normalizedWorkspacePath = workspacePath
-            .replace(/^\/workspace\//, "")
-            .replace(/^workspace\//, "");
-        return getWorkspaceFileUrl(adminBaseUrl, normalizedWorkspacePath);
-    }
-    const candidate = artifact.previewUrl || artifact.externalUrl || "";
-    return normalizeRenderableWorkspaceUrl(adminBaseUrl, candidate);
+function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode {
+    return node.kind === "execution";
+}
+
+function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode & { toolCallId: string } {
+    return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
 }
 
 function imageUrl(adminBaseUrl: string, value: string) {
-    const trimmed = String(value || "").trim();
-    if (!trimmed) return "";
-    if (trimmed.startsWith("/workspace/")) {
-        return getWorkspaceFileUrl(adminBaseUrl, trimmed.replace(/^\/workspace\//, ""));
-    }
-    return normalizeRenderableWorkspaceUrl(adminBaseUrl, trimmed);
+    return resolveRenderableMediaUrl(adminBaseUrl, value);
 }
 
 function AssistantWorkIndicator({
@@ -201,7 +180,6 @@ export const MessageBubble = memo(function MessageBubble({
     streamPhase,
     onDelete,
     onSpeakVoice,
-    onOpenArtifact,
     speakingKey = "",
     userImageUri,
     userDisplayName,
@@ -214,7 +192,6 @@ export const MessageBubble = memo(function MessageBubble({
     streamPhase?: ChatMessage["uiStreamPhase"];
     onDelete?: (message: ChatMessage) => void;
     onSpeakVoice?: (text: string, messageKey: string) => void;
-    onOpenArtifact?: (artifact: ChatArtifact) => void;
     speakingKey?: string;
     userImageUri?: string;
     userDisplayName?: string;
@@ -298,6 +275,15 @@ export const MessageBubble = memo(function MessageBubble({
         () => getRenderablePhoneTimelineNodes(message.nodes),
         [message.nodes],
     );
+    const resultNodesByToolCallId = useMemo(() => {
+        const mapping = new Map<string, PhoneUiExecutionNode>();
+        for (const node of message.nodes || []) {
+            if (hasToolCallId(node) && node.executionType === "tool_result") {
+                mapping.set(node.toolCallId.trim(), node);
+            }
+        }
+        return mapping;
+    }, [message.nodes]);
     const hasStructuredNodes = renderableNodes.length > 0;
     const fallbackBlocks = useMemo(
         () => (hasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
@@ -333,11 +319,6 @@ export const MessageBubble = memo(function MessageBubble({
         });
         return descriptors;
     }, [fallbackBlocks, hasStructuredNodes, messageIdentity, renderableNodes]);
-    const hasArtifactNode = Boolean(renderableNodes.some((node) => node.kind === "artifact"));
-    const supplementalArtifacts = useMemo(
-        () => (Array.isArray(message.artifacts) && !hasArtifactNode ? message.artifacts : []),
-        [hasArtifactNode, message.artifacts],
-    );
     const hasRenderableText = useMemo(() => {
         if (hasStructuredNodes) {
             return renderableNodes.some((node) => {
@@ -349,7 +330,7 @@ export const MessageBubble = memo(function MessageBubble({
         }
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
-    const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText && supplementalArtifacts.length === 0;
+    const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText;
     const horizontalBubbleLimit = Math.max(180, width - (isLandscape ? 232 : 134));
     const sharedTextBubbleWidth = Math.max(
         176,
@@ -392,16 +373,6 @@ export const MessageBubble = memo(function MessageBubble({
                         ? t("执行异常", "Stream error")
                         : "");
     const showAssistantPhasePill = Boolean(assistantPhaseLabel) && !assistantActive;
-
-    const openArtifact = async (artifact: ChatArtifact) => {
-        if (onOpenArtifact) {
-            onOpenArtifact(artifact);
-            return;
-        }
-        const url = artifactUrl(adminBaseUrl, artifact);
-        if (!url) return;
-        await Linking.openURL(url);
-    };
 
     const handleCopy = async () => {
         if (!copyValue) {
@@ -590,17 +561,28 @@ export const MessageBubble = memo(function MessageBubble({
                         <View style={[styles.assistantInner, voiceOnly && styles.assistantInnerVoiceOnly]}>
                             {hasStructuredNodes ? (
                                 renderableNodes.map((node, index) => (
-                                    <ContentDispatcher
+                                    <NodeRenderBoundary
                                         key={node.id || `${messageIdentity}:node:${index}`}
-                                        node={node}
-                                        messageIdentity={`${messageIdentity}:node:${index}`}
-                                        isExecuting={assistantActive}
-                                        isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
-                                        speakingKey={speakingKey}
-                                        onSpeakVoice={onSpeakVoice}
-                                        onOpenArtifact={openArtifact}
-                                        processes={processes}
-                                    />
+                                        title={t("节点渲染失败", "Node render failed")}
+                                        description={t("这条子节点已降级显示，不影响整条正式回复。", "This node has been downgraded so the rest of the reply remains visible.")}
+                                        borderColor={palette.border}
+                                        backgroundColor={palette.surface}
+                                        titleColor={palette.text}
+                                        textColor={palette.textMuted}
+                                    >
+                                        <ContentDispatcher
+                                            node={node}
+                                            messageIdentity={`${messageIdentity}:node:${index}`}
+                                            isExecuting={assistantActive}
+                                            isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
+                                            speakingKey={speakingKey}
+                                            onSpeakVoice={onSpeakVoice}
+                                            processes={processes}
+                                            resultNode={hasToolCallId(node) && node.executionType === "tool_call"
+                                                ? resultNodesByToolCallId.get(node.toolCallId.trim())
+                                                : undefined}
+                                        />
+                                    </NodeRenderBoundary>
                                 ))
                             ) : fallbackBlocks.length > 0 ? (
                                 fallbackBlocks.map((block, index) => {
@@ -608,14 +590,22 @@ export const MessageBubble = memo(function MessageBubble({
                                         ? buildVoicePlaybackKey(messageIdentity, String(index), block.content)
                                         : "";
                                     return (
-                                        <MessageBlockItem
+                                        <NodeRenderBoundary
                                             key={block.id}
-                                            block={block}
-                                            isStreaming={assistantActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
-                                            speaking={Boolean(voiceKey) && speakingKey === voiceKey}
-                                            onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
-                                            onOpenArtifact={openArtifact}
-                                        />
+                                            title={t("内容渲染失败", "Content render failed")}
+                                            description={t("这段内容已降级显示，不影响整条正式回复。", "This content block has been downgraded so the rest of the reply remains visible.")}
+                                            borderColor={palette.border}
+                                            backgroundColor={palette.surface}
+                                            titleColor={palette.text}
+                                            textColor={palette.textMuted}
+                                        >
+                                            <MessageBlockItem
+                                                block={block}
+                                                isStreaming={assistantActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
+                                                speaking={Boolean(voiceKey) && speakingKey === voiceKey}
+                                                onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
+                                            />
+                                        </NodeRenderBoundary>
                                     );
                                 })
                             ) : (
@@ -629,28 +619,6 @@ export const MessageBubble = memo(function MessageBubble({
                                 />
                             )}
 
-                            {supplementalArtifacts.length > 0 ? (
-                                <View style={styles.artifactList}>
-                                    {supplementalArtifacts.map((artifact, index) => (
-                                        <Pressable
-                                            key={`${artifact.id || artifact.artifactId || artifact.canonicalPath || artifact.workspaceRelativePath || artifact.title || "artifact"}:${index}`}
-                                            onPress={() => openArtifact(artifact)}
-                                            style={[styles.artifactCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
-                                        >
-                                            <MaterialCommunityIcons name="file-star-outline" size={16} color={palette.primaryDeep} />
-                                            <View style={styles.artifactBody}>
-                                                <Text style={[styles.artifactTitle, { color: palette.text }]} numberOfLines={1}>
-                                                    {artifact.displayLabel || artifact.title || artifact.kind || t("产物", "Artifact")}
-                                                </Text>
-                                                <Text style={[styles.artifactSubtitle, { color: palette.textMuted }]} numberOfLines={1}>
-                                                {artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifact.kind || t("点击打开", "Tap to open")}
-                                                </Text>
-                                            </View>
-                                            <MaterialCommunityIcons name="open-in-new" size={15} color={palette.textSoft} />
-                                        </Pressable>
-                                    ))}
-                                </View>
-                            ) : null}
                         </View>
                     </View>
                 </View>
@@ -971,32 +939,6 @@ const styles = StyleSheet.create({
         width: 86,
         height: 86,
         borderRadius: 14,
-    },
-    artifactList: {
-        gap: 8,
-        minWidth: 0,
-    },
-    artifactCard: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        borderRadius: 16,
-        borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        minWidth: 0,
-    },
-    artifactBody: {
-        flex: 1,
-        gap: 2,
-        minWidth: 0,
-    },
-    artifactTitle: {
-        fontSize: 13,
-        fontWeight: "800",
-    },
-    artifactSubtitle: {
-        fontSize: 11,
     },
     actionRowAssistant: {
         flexDirection: "row",

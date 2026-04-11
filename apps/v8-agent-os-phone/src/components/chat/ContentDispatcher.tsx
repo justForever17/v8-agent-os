@@ -12,7 +12,7 @@ import { isHiddenPhoneTimelineNode } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks, type PhoneContentBlock } from "@/src/lib/content-detector";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { spacing } from "@/src/theme/tokens";
-import type { ChatArtifact, PhoneUiExecutionNode, PhoneUiTimelineNode } from "@/src/types/admin";
+import type { PhoneUiExecutionNode, PhoneUiTimelineNode } from "@/src/types/admin";
 
 const HIDDEN_TOOL_NAMES = new Set(["write_todos", "update_todo", "inspect_and_move_media"]);
 const TRACE_TOOL_NAMES = new Set(["download_media_for_vision"]);
@@ -60,6 +60,27 @@ function compactToolResult(toolName: string, value: unknown) {
     };
 }
 
+function buildCompletedProcessFallback(process?: AdminProcessRef) {
+    if (!process || isProcessStillRunning(process)) {
+        return undefined;
+    }
+    if (process.commandDiagnostics && typeof process.commandDiagnostics === "object" && Object.keys(process.commandDiagnostics).length > 0) {
+        return process.commandDiagnostics;
+    }
+
+    const fallback: Record<string, unknown> = {};
+    if (process.status) {
+        fallback.status = process.status;
+    }
+    if (process.completedAt) {
+        fallback.completedAt = process.completedAt;
+    }
+    if (process.title) {
+        fallback.title = process.title;
+    }
+    return Object.keys(fallback).length > 0 ? fallback : undefined;
+}
+
 function looksLikeTodoMutationText(value: unknown) {
     const normalized = String(value || "").trim();
     if (!normalized) {
@@ -98,32 +119,73 @@ function containsTodoMutationHint(value: unknown, depth = 0): boolean {
     return Object.values(record).some((nested) => containsTodoMutationHint(nested, depth + 1));
 }
 
-function buildToolInvocation(executionNode: PhoneUiExecutionNode, fallbackLabel: string): ToolInvocation {
+function buildToolInvocation(
+    executionNode: PhoneUiExecutionNode,
+    fallbackLabel: string,
+    resultNode?: PhoneUiExecutionNode,
+    processFallbackResult?: unknown,
+): ToolInvocation {
     const toolName = String(
         executionNode.toolName
         || executionNode.data?.toolName
         || executionNode.data?.tool_name
+        || resultNode?.toolName
+        || resultNode?.data?.toolName
+        || resultNode?.data?.tool_name
         || executionNode.label
         || fallbackLabel,
     ).trim() || fallbackLabel;
 
-    const result = executionNode.result
+    const result = resultNode?.result
+        ?? resultNode?.data?.result
+        ?? resultNode?.data?.response
+        ?? resultNode?.data?.result_preview
+        ?? executionNode.result
         ?? executionNode.data?.result
         ?? executionNode.data?.response
-        ?? executionNode.data?.result_preview;
+        ?? executionNode.data?.result_preview
+        ?? processFallbackResult;
 
     return {
         toolCallId: String(
             executionNode.toolCallId
+            || resultNode?.toolCallId
             || executionNode.data?.toolCallId
             || executionNode.data?.tool_call_id
+            || resultNode?.data?.toolCallId
+            || resultNode?.data?.tool_call_id
             || `${executionNode.id}:${toolName}`,
         ).trim(),
         toolName,
-        args: executionNode.args ?? executionNode.data?.args ?? executionNode.data?.request ?? {},
+        args: executionNode.args
+            ?? executionNode.data?.args
+            ?? executionNode.data?.request
+            ?? resultNode?.args
+            ?? resultNode?.data?.args
+            ?? resultNode?.data?.request
+            ?? {},
         state: executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call",
         result: compactToolResult(toolName, result),
     };
+}
+
+function isProcessStillRunning(process: AdminProcessRef | undefined) {
+    if (!process) {
+        return false;
+    }
+    const status = String(process.status || "").trim().toLowerCase();
+    if (process.completedAt) {
+        return false;
+    }
+    return [
+        "queued",
+        "pending",
+        "starting",
+        "running",
+        "streaming",
+        "waiting_input",
+        "waiting_approval",
+    ].includes(status);
 }
 
 function isTodoLikeExecutionNode(executionNode: PhoneUiExecutionNode) {
@@ -153,8 +215,8 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     isStreaming = false,
     speakingKey,
     onSpeakVoice,
-    onOpenArtifact,
     processes = [],
+    resultNode,
 }: {
     node: PhoneUiTimelineNode;
     messageIdentity?: string;
@@ -162,8 +224,8 @@ export const ContentDispatcher = memo(function ContentDispatcher({
     isStreaming?: boolean;
     speakingKey?: string;
     onSpeakVoice?: (text: string, messageKey: string) => void;
-    onOpenArtifact?: (artifact: ChatArtifact) => void;
     processes?: AdminProcessRef[];
+    resultNode?: PhoneUiExecutionNode;
 }) {
     const { colors, t } = useUiPrefs();
     if (isHiddenPhoneTimelineNode(node)) {
@@ -178,15 +240,25 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         if (isTodoLikeExecutionNode(executionNode)) {
             return null;
         }
-        const toolInvocation = buildToolInvocation(executionNode, t("工具调用", "Tool call"));
+        const mergedResultNode = executionNode.executionType === "tool_call" ? resultNode : undefined;
+        const effectiveToolCallId = String(executionNode.toolCallId || mergedResultNode?.toolCallId || "").trim();
+        const matchedProcess = effectiveToolCallId
+            ? processes.find((process) => process.toolCallId === effectiveToolCallId)
+            : undefined;
+        const toolInvocation = buildToolInvocation(
+            executionNode,
+            t("工具调用", "Tool call"),
+            mergedResultNode,
+            buildCompletedProcessFallback(matchedProcess),
+        );
         if (HIDDEN_TOOL_NAMES.has(toolInvocation.toolName)) {
             return null;
         }
-        const matchedProcess = toolInvocation.toolCallId
-            ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)
-            : undefined;
+        const hasResult = toolInvocation.state === "result"
+            || executionNode.executionType === "tool_result"
+            || mergedResultNode?.executionType === "tool_result";
 
-        if (matchedProcess) {
+        if (!hasResult && isProcessStillRunning(matchedProcess)) {
             return <ToolCard toolInvocation={toolInvocation} hideResult />;
         }
 
@@ -218,7 +290,6 @@ export const ContentDispatcher = memo(function ContentDispatcher({
                             isStreaming={isStreaming}
                             speaking={Boolean(voiceKey) && speakingKey === voiceKey}
                             onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
-                            onOpenArtifact={onOpenArtifact}
                         />
                     );
                 })}
@@ -274,7 +345,6 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         <MessageBlockItem
             node={node}
             isStreaming={isStreaming}
-            onOpenArtifact={onOpenArtifact}
         />
     );
 });

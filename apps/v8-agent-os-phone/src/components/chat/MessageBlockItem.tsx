@@ -3,7 +3,6 @@ import { Linking, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { ApprovalCard } from "@/src/components/chat/ApprovalCard";
-import { ArtifactCard } from "@/src/components/chat/ArtifactCard";
 import { AskUserCard } from "@/src/components/chat/AskUserCard";
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { MarkdownRenderer } from "@/src/components/chat/MarkdownRenderer";
@@ -18,8 +17,8 @@ import { VoiceCard } from "@/src/components/chat/VoiceCard";
 import { Badge } from "@/src/components/ui/badge";
 import { Card, CardContent } from "@/src/components/ui/card";
 import type { PhoneContentBlock } from "@/src/lib/content-detector";
-import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
-import type { ChatArtifact, PhoneUiTimelineNode } from "@/src/types/admin";
+import { resolveRenderableMediaCandidates, resolveRenderableMediaUrl } from "@/src/lib/workspace-links";
+import type { PhoneUiTimelineNode } from "@/src/types/admin";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -36,20 +35,39 @@ function stringifyPayload(value: unknown) {
     }
 }
 
+function UnresolvedResourceCard({
+    title,
+    subtitle,
+}: {
+    title: string;
+    subtitle: string;
+}) {
+    const { colors } = useUiPrefs();
+    return (
+        <View style={[styles.unresolvedCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+            <View style={[styles.unresolvedIcon, { backgroundColor: colors.surface }]}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={18} color={colors.warning} />
+            </View>
+            <View style={styles.unresolvedBody}>
+                <Text style={[styles.unresolvedTitle, { color: colors.text }]} numberOfLines={1}>{title}</Text>
+                <Text style={[styles.unresolvedSubtitle, { color: colors.textMuted }]}>{subtitle}</Text>
+            </View>
+        </View>
+    );
+}
+
 export const MessageBlockItem = memo(function MessageBlockItem({
     block,
     node,
     isStreaming = false,
     speaking = false,
     onSpeak,
-    onOpenArtifact,
 }: {
     block?: PhoneContentBlock;
     node?: PhoneUiTimelineNode;
     isStreaming?: boolean;
     speaking?: boolean;
     onSpeak?: (text: string) => void;
-    onOpenArtifact?: (artifact: ChatArtifact) => void;
 }) {
     const { adminBaseUrl } = useAppSession();
     const { colors, t } = useUiPrefs();
@@ -86,14 +104,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (node?.kind === "artifact") {
-        return (
-            <ArtifactCard
-                title={node.artifact.displayLabel || node.artifact.title || t("产物", "Artifact")}
-                type="file"
-                subtitle={node.artifact.displaySubtitle || node.artifact.canonicalPath || node.artifact.workspaceRelativePath || node.artifact.kind || ""}
-                onPress={() => onOpenArtifact?.(node.artifact)}
-            />
-        );
+        return null;
     }
 
     if (node?.kind === "execution") {
@@ -131,44 +142,8 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 
     const resolvedStreaming = Boolean(block.isStreaming || isStreaming);
 
-    if (block.type === "artifact") {
-        const artifactTitle = String(block.data?.title || t("生成产物", "Generated artifact"));
-        const artifactType = String(block.data?.type || "file").toLowerCase();
-        const artifactRecord: ChatArtifact = {
-            title: typeof block.data?.title === "string" ? block.data.title : artifactTitle,
-            kind: typeof block.data?.type === "string" ? block.data.type : artifactType,
-            previewUrl: typeof block.data?.url === "string" ? block.data.url : undefined,
-            externalUrl: typeof block.data?.url === "string" ? block.data.url : undefined,
-            workspacePath: typeof block.data?.workspacePath === "string" ? block.data.workspacePath : undefined,
-            sourcePath: typeof block.data?.sourcePath === "string" ? block.data.sourcePath : undefined,
-            workspaceRoot: typeof block.data?.workspaceRoot === "string" ? block.data.workspaceRoot : undefined,
-            workspaceRelativePath: typeof block.data?.workspaceRelativePath === "string" ? block.data.workspaceRelativePath : undefined,
-            canonicalPath: typeof block.data?.canonicalPath === "string" ? block.data.canonicalPath : undefined,
-            projectId: typeof block.data?.projectId === "string" ? block.data.projectId : undefined,
-            workspaceId: typeof block.data?.workspaceId === "string" ? block.data.workspaceId : undefined,
-            storageClass: typeof block.data?.storageClass === "string" ? block.data.storageClass : undefined,
-            surfaceVisible: typeof block.data?.surfaceVisible === "boolean" ? block.data.surfaceVisible : undefined,
-            resourceRef: coerceAdminResourceRef(block.data?.resourceRef || null),
-        };
-        return (
-            <View style={styles.artifactStack}>
-                {block.content ? (
-                    <CodeBlock
-                        language={artifactType}
-                        value={block.content}
-                        isStreaming={resolvedStreaming}
-                    />
-                ) : null}
-                {!resolvedStreaming ? (
-                    <ArtifactCard
-                        title={artifactTitle}
-                        type={artifactType === "html" ? "html" : artifactType === "markdown" ? "markdown" : artifactType === "code" ? "code" : "file"}
-                        subtitle={artifactType}
-                        onPress={block.data ? () => onOpenArtifact?.(artifactRecord) : undefined}
-                    />
-                ) : null}
-            </View>
-        );
+    if ((block as { type?: string }).type === "artifact") {
+        return block.content ? <MarkdownRenderer content={block.content} /> : null;
     }
 
     if (block.type === "voice") {
@@ -183,15 +158,28 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 
     if (block.type === "image" || block.type === "video" || block.type === "audio") {
         const rawSrc = String(block.data?.src || block.content || "").trim();
-        const src = normalizeRenderableWorkspaceUrl(adminBaseUrl, rawSrc);
+        const mediaCandidates = resolveRenderableMediaCandidates(adminBaseUrl, {
+            value: rawSrc,
+            resourceRef: coerceAdminResourceRef(block.data?.resourceRef || null),
+            previewUrl: typeof block.data?.previewUrl === "string" ? block.data.previewUrl : undefined,
+            externalUrl: typeof block.data?.externalUrl === "string" ? block.data.externalUrl : undefined,
+            workspacePath: typeof block.data?.workspacePath === "string" ? block.data.workspacePath : undefined,
+            sourcePath: typeof block.data?.sourcePath === "string" ? block.data.sourcePath : undefined,
+        });
+        const src = mediaCandidates[0] || "";
         const title = typeof block.data?.title === "string" ? block.data.title : undefined;
         if (!src) {
-            return null;
+            return (
+                <UnresolvedResourceCard
+                    title={title || t("媒体资源暂不可预览", "Media preview unavailable")}
+                    subtitle={t("当前资源地址暂不可达，已降级显示该节点。", "The media URL is currently unreachable, so this node has been downgraded instead of disappearing.")}
+                />
+            );
         }
         if (block.type === "image") {
-            return <ImagePreview src={src} alt={title} />;
+            return <ImagePreview src={src} alt={title} candidates={mediaCandidates} />;
         }
-        return <MediaPlayer src={src} type={block.type} title={title} />;
+        return <MediaPlayer src={src} type={block.type} title={title} candidates={mediaCandidates} />;
     }
 
     if (block.type === "mermaid") {
@@ -207,28 +195,43 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (block.type === "file-ppt") {
-        const url = normalizeRenderableWorkspaceUrl(adminBaseUrl, String(block.data?.url || "").trim());
+        const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || "").trim());
         return url ? (
             <PPTCard
                 url={url}
                 filename={typeof block.data?.filename === "string" ? block.data.filename : undefined}
             />
-        ) : null;
+        ) : (
+            <UnresolvedResourceCard
+                title={t("演示文件暂不可打开", "Presentation unavailable")}
+                subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
+            />
+        );
     }
 
     if (block.type === "file-html") {
-        const url = normalizeRenderableWorkspaceUrl(adminBaseUrl, String(block.data?.url || "").trim());
+        const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || "").trim());
         return url ? (
             <HTMLFileCard
                 url={url}
                 filename={typeof block.data?.filename === "string" ? block.data.filename : undefined}
             />
-        ) : null;
+        ) : (
+            <UnresolvedResourceCard
+                title={t("HTML 文件暂不可打开", "HTML file unavailable")}
+                subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
+            />
+        );
     }
 
     if (block.type === "model-3d") {
-        const url = normalizeRenderableWorkspaceUrl(adminBaseUrl, block.content.trim());
-        return url ? <ModelViewer src={url} /> : null;
+        const url = resolveRenderableMediaUrl(adminBaseUrl, block.content.trim());
+        return url ? <ModelViewer src={url} /> : (
+            <UnresolvedResourceCard
+                title={t("3D 模型暂不可预览", "3D preview unavailable")}
+                subtitle={t("当前模型资源地址不可达，已保留其余正式回复内容。", "The model URL is unreachable right now, and the rest of the reply remains visible.")}
+            />
+        );
     }
 
     if (block.type === "thinking") {
@@ -294,9 +297,33 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         gap: 8,
     },
-    artifactStack: {
+    unresolvedCard: {
+        borderRadius: radii.lg,
+        borderWidth: 1,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        flexDirection: "row",
+        alignItems: "center",
         gap: spacing.sm,
-        width: "100%",
-        minWidth: 0,
+    },
+    unresolvedIcon: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    unresolvedBody: {
+        flex: 1,
+        gap: 2,
+    },
+    unresolvedTitle: {
+        fontSize: 13,
+        lineHeight: 18,
+        fontWeight: "700",
+    },
+    unresolvedSubtitle: {
+        fontSize: 11,
+        lineHeight: 16,
     },
 });

@@ -123,7 +123,8 @@ def prepare_supervisor_messages(
                     f"Repeated tools: {tool_list}. "
                     "Do NOT call the same tool again unless you have genuinely new evidence. "
                     "You MUST either: 1) provide a concise progress summary and stop, "
-                    "2) return a recoverable failure with the blocker, or 3) ask for approval / user input if that is the only safe next step."
+                    "2) return a recoverable failure with the blocker, 3) ask for approval / user input if that is the only safe next step, "
+                    "or 4) if the external task is still running/submitted/processing, use wait(seconds, note) for a short sleep before polling again."
                 )
             )
         )

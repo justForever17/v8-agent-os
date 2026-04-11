@@ -6,6 +6,28 @@ import json
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 
+_ASYNC_PROGRESS_MARKERS = (
+    "running",
+    "processing",
+    "submitted",
+    "queued",
+    "pending",
+    "in progress",
+    "still generating",
+    "not ready",
+    "运行中",
+    "处理中",
+    "已提交",
+    "排队",
+    "等待中",
+    "生成中",
+    "仍在生成",
+    "尚未完成",
+    "稍后重试",
+    "轮询",
+)
+
+
 def _stable_json(value) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -66,6 +88,20 @@ def _tool_observation_fingerprint(tool_messages: list[ToolMessage]) -> str | Non
     return hashlib.md5(_stable_json(payload).encode("utf-8")).hexdigest()
 
 
+def _tool_observation_preview(tool_messages: list[ToolMessage]) -> str:
+    previews: list[str] = []
+    for message in tool_messages:
+        previews.append(str(message.content or "")[:600])
+    return "\n".join(previews)
+
+
+def _looks_async_in_progress(observation_preview: str) -> bool:
+    normalized = " ".join(str(observation_preview or "").strip().lower().split())
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _ASYNC_PROGRESS_MARKERS)
+
+
 def _build_tool_cycle(ai_message: AIMessage, tool_messages: list[ToolMessage]) -> dict | None:
     tool_calls = list(getattr(ai_message, "tool_calls", None) or [])
     if not tool_calls:
@@ -91,6 +127,7 @@ def _build_tool_cycle(ai_message: AIMessage, tool_messages: list[ToolMessage]) -
         "tool_names": tool_names or ["unknown"],
         "target_identities": target_identities,
         "observation_fingerprint": _tool_observation_fingerprint(tool_messages),
+        "observation_preview": _tool_observation_preview(tool_messages),
     }
 
 
@@ -165,6 +202,10 @@ def apply_no_progress_breaker(messages, response) -> tuple[AIMessage, dict | Non
     if repeat_count < 3:
         return response, None
 
+    observation_preview = str(last_cycle.get("observation_preview") or "").strip()
+    if _looks_async_in_progress(observation_preview):
+        return response, None
+
     tool_names = list(dict.fromkeys(last_cycle.get("tool_names") or pending_cycle.get("tool_names") or ["unknown"]))
     target_identities = last_cycle.get("target_identities") or pending_cycle.get("target_identities") or []
     blocker_lines = [
@@ -173,7 +214,7 @@ def apply_no_progress_breaker(messages, response) -> tuple[AIMessage, dict | Non
     ]
     if target_identities:
         blocker_lines.append(f"重复目标: {'; '.join(target_identities[:2])}。")
-    blocker_lines.append("当前更合理的下一步应该是总结已知状态、说明阻塞点，或等待新的输入/审批。")
+    blocker_lines.append("当前更合理的下一步应该是总结已知状态、说明阻塞点，或等待新的输入/审批。若外部任务仍在处理中，应改用 wait(seconds, note) 后再轮询。")
     loop_breaker_response = AIMessage(
         content="\n".join(blocker_lines),
         additional_kwargs={

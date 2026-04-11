@@ -34,7 +34,6 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "read_background_output",
     "send_background_input",
     "terminate_background_command",
-    "wait",
     "write_native_file",
 }
 

@@ -30,6 +30,12 @@ class TextChunkAggregator:
     def flush(self) -> str:
         return self._flush()
 
+    def has_buffered_content(self) -> bool:
+        return bool(self._buffer)
+
+    def buffered_length(self) -> int:
+        return len(self._buffer)
+
     @staticmethod
     def _ends_with_boundary(text: str) -> bool:
         return text.endswith(("\n", "\r", "。", "！", "？", ".", "!", "?", "；", ";", "：", ":", "，", ",", "、", " "))

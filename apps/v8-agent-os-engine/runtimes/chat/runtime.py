@@ -17,7 +17,7 @@ from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.models.provider_compatibility import normalize_provider_error
 from core.database import db
 from core.engine_config_resolver import resolve_engine_config_for_role
-from core.graph_stream_watchdog import GraphStreamWatchdogState, next_graph_stream_event
+from core.graph_stream_watchdog import GraphStreamIdleTimeoutError, GraphStreamWatchdogState
 from core.realtime_protocol import protocol_connected_event
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
@@ -176,6 +176,11 @@ class ChatStreamState:
     last_text_delta_run_id: str = ""
     last_reasoning_delta: str = ""
     last_reasoning_delta_run_id: str = ""
+    text_flush_deadline: float | None = None
+    text_raw_chars: int = 0
+    text_emitted_chunks: int = 0
+    text_timer_flushes: int = 0
+    text_final_flush_chars: int = 0
     watchdog: GraphStreamWatchdogState = field(default_factory=GraphStreamWatchdogState)
     interrupted_signal: dict[str, Any] | None = None
     valid_agent_node_names: list[str] = field(default_factory=list)
@@ -191,6 +196,7 @@ class ChatRuntime:
     """
 
     kind = "chat"
+    TEXT_FLUSH_INTERVAL_SECONDS = 0.22
 
     def runtime_descriptor(self) -> dict[str, Any]:
         return {
@@ -1056,6 +1062,43 @@ class ChatRuntime:
             {"type": "done", "status": "blocked", "run_id": chat_run.active_run_id},
         ]
 
+    @staticmethod
+    def _clear_text_flush_deadline(stream_state: ChatStreamState) -> None:
+        stream_state.text_flush_deadline = None
+
+    def _schedule_text_flush_deadline(self, stream_state: ChatStreamState) -> None:
+        if not stream_state.text_aggregator.has_buffered_content():
+            stream_state.text_flush_deadline = None
+            return
+        if stream_state.text_flush_deadline is not None:
+            return
+        stream_state.text_flush_deadline = asyncio.get_running_loop().time() + self.TEXT_FLUSH_INTERVAL_SECONDS
+
+    async def _emit_stable_text_chunk(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        stable_chunk: str,
+    ) -> dict[str, Any] | None:
+        if not stable_chunk:
+            return None
+        text_event = {"type": "text_chunk", "content": stable_chunk, "timestamp": 0}
+        runtime_event = chat_run.emit_runtime_event(
+            "run.text.delta",
+            text_event,
+            agent_id=stream_state.current_agent,
+            node=stream_state.current_agent,
+        )
+        workflow_ledger_service.append_chat_projection(
+            session_id=chat_run.session_id,
+            run_id=chat_run.active_run_id,
+            text_delta=stable_chunk,
+            agent_profile=self._get_agent_profile(stream_state.current_agent),
+            latest_seq=runtime_event.get("seq"),
+        )
+        stream_state.text_emitted_chunks += 1
+        return text_event
+
     async def _emit_text_delta(self, chat_run: ChatRunContext, stream_state: ChatStreamState, delta: str) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
@@ -1063,17 +1106,115 @@ class ChatRuntime:
         for stable_chunk in stream_state.text_aggregator.push(delta):
             if not stable_chunk:
                 continue
-            text_event = {"type": "text_chunk", "content": stable_chunk, "timestamp": 0}
-            runtime_event = chat_run.emit_runtime_event("run.text.delta", text_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
-            workflow_ledger_service.append_chat_projection(
-                session_id=chat_run.session_id,
-                run_id=chat_run.active_run_id,
-                text_delta=stable_chunk,
-                agent_profile=self._get_agent_profile(stream_state.current_agent),
-                latest_seq=runtime_event.get("seq"),
-            )
-            emitted_events.append(text_event)
+            text_event = await self._emit_stable_text_chunk(chat_run, stream_state, stable_chunk)
+            if text_event is not None:
+                emitted_events.append(text_event)
+        if emitted_events or not stream_state.text_aggregator.has_buffered_content():
+            self._clear_text_flush_deadline(stream_state)
+        else:
+            self._schedule_text_flush_deadline(stream_state)
         return emitted_events
+
+    async def _flush_pending_text_aggregator(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        from_timer: bool = False,
+        final: bool = False,
+    ) -> list[dict[str, Any]]:
+        self._clear_text_flush_deadline(stream_state)
+        final_chunk = stream_state.text_aggregator.flush()
+        if not final_chunk:
+            return []
+        stream_state.watchdog.note_text_progress()
+        if from_timer:
+            stream_state.text_timer_flushes += 1
+        if final:
+            stream_state.text_final_flush_chars += len(final_chunk)
+        text_event = await self._emit_stable_text_chunk(chat_run, stream_state, final_chunk)
+        return [text_event] if text_event is not None else []
+
+    def _emit_text_stream_diagnostics(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
+        if (
+            stream_state.text_raw_chars <= 0
+            and stream_state.text_emitted_chunks <= 0
+            and stream_state.text_timer_flushes <= 0
+            and stream_state.text_final_flush_chars <= 0
+        ):
+            return
+        chat_run.emit_runtime_event(
+            "run.text_stream.diagnostics",
+            {
+                "rawTextChars": stream_state.text_raw_chars,
+                "emittedTextChunkCount": stream_state.text_emitted_chunks,
+                "timerFlushCount": stream_state.text_timer_flushes,
+                "finalFlushChars": stream_state.text_final_flush_chars,
+                "flushIntervalMs": int(self.TEXT_FLUSH_INTERVAL_SECONDS * 1000),
+            },
+            agent_id=None,
+            node="stream_chunk_aggregator",
+        )
+
+    async def _wait_for_stream_signal(
+        self,
+        *,
+        stream_iter,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> tuple[str, dict[str, Any] | None]:
+        idle_timeout = stream_state.watchdog.idle_timeout_seconds()
+        phase = stream_state.watchdog.idle_phase()
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        effective_timeout = idle_timeout
+        if stream_state.text_flush_deadline is not None and stream_state.text_aggregator.has_buffered_content():
+            effective_timeout = min(effective_timeout, max(stream_state.text_flush_deadline - now, 0.0))
+        try:
+            event = await asyncio.wait_for(anext(stream_iter), timeout=effective_timeout)
+        except asyncio.TimeoutError as exc:
+            now = loop.time()
+            if (
+                stream_state.text_flush_deadline is not None
+                and stream_state.text_aggregator.has_buffered_content()
+                and now >= stream_state.text_flush_deadline
+            ):
+                return "text_flush", None
+
+            payload = {
+                "idleTimeoutSeconds": idle_timeout,
+                "phase": phase,
+                "activeToolCount": len(stream_state.watchdog.active_tool_call_ids),
+                "lastObservedEvent": stream_state.watchdog.last_observed_event,
+            }
+            chat_run.emit_runtime_event(
+                "run.watchdog.stream_idle_timeout",
+                payload,
+                agent_id=None,
+                node="stream_watchdog",
+            )
+            chat_run.emit_runtime_event(
+                "run.liveness.stalled",
+                {
+                    "heartbeat_kind": "stream_watchdog",
+                    "watchdog_source": "stream_watchdog",
+                    "idle_reason": "stream_idle_timeout",
+                    "stalled": True,
+                    **payload,
+                },
+                agent_id=None,
+                node="stream_watchdog",
+            )
+            raise GraphStreamIdleTimeoutError(
+                run_id=chat_run.active_run_id,
+                session_id=chat_run.session_id,
+                idle_seconds=idle_timeout,
+                phase=phase,
+                last_event=stream_state.watchdog.last_observed_event,
+            ) from exc
+
+        stream_state.watchdog.observe_event(event)
+        return "graph_event", event
 
     @staticmethod
     def _longest_overlap_suffix_prefix(previous: str, current: str) -> int:
@@ -1240,6 +1381,8 @@ class ChatRuntime:
                 if text_delta or reasoning_delta:
                     stream_state.streamed_model_run_ids.add(model_run_id)
                 if text_delta:
+                    stream_state.text_raw_chars += len(text_delta)
+                if text_delta:
                     text_delta = stream_state.text_filter.process(text_delta)
                     text_delta = self._suppress_neighbor_duplicate_delta(
                         stream_state,
@@ -1282,6 +1425,8 @@ class ChatRuntime:
                 raw_text = final_output
             text_delta = self._consume_stream_suffix(stream_state.text_snapshots_by_run, model_run_id, raw_text)
             reasoning_delta = self._consume_stream_suffix(stream_state.reasoning_snapshots_by_run, model_run_id, raw_reasoning)
+            if text_delta:
+                stream_state.text_raw_chars += len(text_delta)
             if reasoning_delta:
                 reasoning_delta = self._suppress_neighbor_duplicate_delta(
                     stream_state,
@@ -1348,23 +1493,14 @@ class ChatRuntime:
 
     async def flush_stream_state(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
+        self._clear_text_flush_deadline(stream_state)
         final_filtered_text = stream_state.text_filter.flush()
         if final_filtered_text:
             stream_state.output_buffer.append(final_filtered_text)
             emitted_events.extend(await self._emit_text_delta(chat_run, stream_state, final_filtered_text))
 
-        final_aggregated_chunk = stream_state.text_aggregator.flush()
-        if final_aggregated_chunk:
-            final_text_event = {"type": "text_chunk", "content": final_aggregated_chunk, "timestamp": 0}
-            runtime_event = chat_run.emit_runtime_event("run.text.delta", final_text_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
-            workflow_ledger_service.append_chat_projection(
-                session_id=chat_run.session_id,
-                run_id=chat_run.active_run_id,
-                text_delta=final_aggregated_chunk,
-                agent_profile=self._get_agent_profile(stream_state.current_agent),
-                latest_seq=runtime_event.get("seq"),
-            )
-            emitted_events.append(final_text_event)
+        emitted_events.extend(await self._flush_pending_text_aggregator(chat_run, stream_state, final=True))
+        self._emit_text_stream_diagnostics(chat_run, stream_state)
         return emitted_events
 
     def persist_final_assistant_message(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
@@ -1731,35 +1867,23 @@ class ChatRuntime:
                         async with aclosing(event_stream):
                             stream_iter = event_stream.__aiter__()
                             while True:
+                                event = None
                                 try:
-                                    event = await next_graph_stream_event(
-                                        stream_iter,
-                                        state=stream_state.watchdog,
-                                        session_id=chat_run.session_id,
-                                        run_id=chat_run.active_run_id,
-                                        on_timeout=lambda payload: (
-                                            chat_run.emit_runtime_event(
-                                                "run.watchdog.stream_idle_timeout",
-                                                payload,
-                                                agent_id=None,
-                                                node="stream_watchdog",
-                                            ),
-                                            chat_run.emit_runtime_event(
-                                                "run.liveness.stalled",
-                                                {
-                                                    "heartbeat_kind": "stream_watchdog",
-                                                    "watchdog_source": "stream_watchdog",
-                                                    "idle_reason": "stream_idle_timeout",
-                                                    "stalled": True,
-                                                    **payload,
-                                                },
-                                                agent_id=None,
-                                                node="stream_watchdog",
-                                            ),
-                                        )[-1],
+                                    signal_kind, event = await self._wait_for_stream_signal(
+                                        stream_iter=stream_iter,
+                                        chat_run=chat_run,
+                                        stream_state=stream_state,
                                     )
                                 except StopAsyncIteration:
                                     break
+                                if signal_kind == "text_flush":
+                                    for emitted_event in await self._flush_pending_text_aggregator(
+                                        chat_run,
+                                        stream_state,
+                                        from_timer=True,
+                                    ):
+                                        yield emitted_event
+                                    continue
                                 try:
                                     control_signal = self.consume_control_signal(chat_run.active_run_id)
                                     if self.should_stop_stream(control_signal):
@@ -1778,7 +1902,8 @@ class ChatRuntime:
                                         interrupted_signal = stream_state.interrupted_signal
                                         break
                                 finally:
-                                    stream_state.watchdog.finish_event(event)
+                                    if event is not None:
+                                        stream_state.watchdog.finish_event(event)
                     break
                 except GraphRecursionError:
                     if continuation_count >= 1:

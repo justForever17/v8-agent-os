@@ -2453,18 +2453,44 @@ def http_request(
         return f"Request failed: {str(e)}"
 
 @tool
-def wait(seconds: int) -> str:
-    """Suspends execution for the given number of seconds.
-    Use this to pause and wait for a background service to start or a state to change.
-    
+def wait(seconds: int, note: str = "") -> str:
+    """短时阻塞等待若干秒，并带着备注继续后续步骤。
+
+    适用于：
+    - 异步任务已提交，短时间后再检查状态
+    - 大型依赖安装、服务启动、文件生成等需要短睡眠的场景
+
+    不适用于：
+    - 无限等待
+    - 长驻后台任务管理
+
     Arguments:
-        seconds (int): Number of seconds to wait.
+        seconds (int): Number of seconds to wait. Must be between 1 and 120.
+        note (str, optional): Short reminder for what to do after waking up.
     """
     try:
-        time.sleep(seconds)
-        return f"Successfully waited for {seconds} seconds."
+        normalized_seconds = int(seconds)
+    except Exception:
+        return "wait 工具参数错误：seconds 必须是 1 到 120 之间的整数。"
+
+    if normalized_seconds < 1 or normalized_seconds > 120:
+        return (
+            "wait 工具参数错误：seconds 仅允许 1 到 120 秒。"
+            "如果需要更久，请拆成多次短等待。"
+        )
+
+    normalized_note = str(note or "").strip()
+    if len(normalized_note) > 120:
+        normalized_note = normalized_note[:120].rstrip()
+
+    try:
+        time.sleep(normalized_seconds)
     except Exception as e:
-        return f"Error waiting: {str(e)}"
+        return f"wait 工具执行失败：{str(e)}"
+
+    if normalized_note:
+        return f"已等待 {normalized_seconds} 秒。备注：{normalized_note}"
+    return f"已等待 {normalized_seconds} 秒。"
 
 @tool
 def list_processes(name_pattern: str = None, port: int = None) -> str:

@@ -104,18 +104,6 @@ def _scope_for_project(project_id: Optional[str]) -> Optional[str]:
     return f"project:{project_id}"
 
 
-def _scope_for_workspace(workspace_id: Optional[str]) -> Optional[str]:
-    if not workspace_id:
-        return None
-    return f"workspace:{workspace_id}"
-
-
-def _scope_for_workflow(workflow_id: Optional[str]) -> Optional[str]:
-    if not workflow_id:
-        return None
-    return f"workflow:{workflow_id}"
-
-
 def _scope_for_channel(channel_type: Optional[str], remote_id: Optional[str]) -> Optional[str]:
     if not channel_type or not remote_id:
         return None
@@ -135,9 +123,7 @@ def build_scope_chain(
     chain: List[str] = ["global"]
     for item in (
         _scope_for_channel(channel_type, channel_remote_id),
-        _scope_for_workspace(workspace_id),
         _scope_for_project(project_id),
-        _scope_for_workflow(workflow_id),
         resolved_scope,
     ):
         if item and item not in chain:
@@ -198,8 +184,6 @@ class ScopeResolutionService:
 
         explicit_requested_scope = _normalize_scope(scope_hint) or _scope_for_project(project_id)
         requested_scope = explicit_requested_scope
-        if not requested_scope and workspace_id and normalized_scope_mode == "explicit":
-            requested_scope = _scope_for_workspace(workspace_id)
 
         requested_anchors = _requested_scope_anchors(
             project_id=project_id,
@@ -460,18 +444,29 @@ class ScopeResolutionService:
             if normalized.startswith("project:"):
                 explicit_project_id = normalized.split(":", 1)[1]
                 return normalized, self.project_registry.get_project(explicit_project_id)
-            if normalized.startswith("workflow:"):
-                return normalized, None
-            if normalized.startswith("workspace:"):
-                return normalized, self.project_registry.find_project_for_workspace(
-                    workspace_id=workspace_id or normalized.split(":", 1)[1],
+            legacy_prefix, _, legacy_identifier = normalized.partition(":")
+            if legacy_prefix == "workflow" and legacy_identifier:
+                workflow_project = self.project_registry.find_project_for_workflow(workflow_id or legacy_identifier)
+                if workflow_project:
+                    return workflow_project.default_scope or _scope_for_project(workflow_project.project_id) or "global", workflow_project
+                return "global", None
+            if legacy_prefix == "workspace" and legacy_identifier:
+                workspace_project = self.project_registry.find_project_for_workspace(
+                    workspace_id=workspace_id or legacy_identifier,
                     workspace_path=workspace_path,
                 )
+                if workspace_project:
+                    return workspace_project.default_scope or _scope_for_project(workspace_project.project_id) or "global", workspace_project
+                return "global", None
+            if normalized.startswith("channel:"):
+                return normalized, None
             return normalized, None
 
         if workflow_id:
             workflow_project = self.project_registry.find_project_for_workflow(workflow_id)
-            return _scope_for_workflow(workflow_id) or "global", workflow_project
+            if workflow_project:
+                return workflow_project.default_scope or _scope_for_project(workflow_project.project_id) or "global", workflow_project
+            return "global", None
 
         if project_id:
             return _scope_for_project(project_id) or "global", self.project_registry.get_project(project_id)
@@ -483,7 +478,7 @@ class ScopeResolutionService:
             )
             if workspace_project:
                 return workspace_project.default_scope or _scope_for_project(workspace_project.project_id) or "global", workspace_project
-            return _scope_for_workspace(workspace_id) or "global", None
+            return "global", None
 
         return "global", None
 

@@ -544,44 +544,8 @@ def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Di
                 logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
     return stored, stored_items
 
-def _append_session_log(result: MemoryExtractionResult, scope: str, session_id: str):
-    """[专业工具] 记录到时序日志，同时自动维护 YAML 头以实现渐进式加载支持摘要和 Tag"""
-    content_lines = []
-    if result.knowledge:
-        content_lines.append("**Extracted Knowledge:**")
-        for f in result.knowledge:
-            op = "[UPDATE]" if f.overwrite_id else "[NEW]"
-            content_lines.append(f"- {op} {f.fact}")
-    if result.preferences:
-        content_lines.append("**Extracted Preferences:**")
-        for p in result.preferences:
-            content_lines.append(f"- [{p.scope}] {p.key}: {p.value}")
-    
-    if not content_lines:
-        content_lines.append("No new long-term items extracted.")
-        
-    full_content = (
-        f"Session `{session_id[:8]}` (scope: {scope})\n"
-        f"**Summary**: {result.summary}\n\n" + "\n".join(content_lines)
-    )
-    
-    # 追加到日志（memory_store.append_daily_log_with_yaml 将负责处理 YAML Merge）
-    if hasattr(memory_runtime, 'append_daily_log_with_yaml'):
-        memory_runtime.append_daily_log_with_yaml(
-            content=full_content,
-            session_summary=result.summary,
-            session_tags=result.tags
-        )
-    else:
-        # 兼容回退
-        memory_runtime.append_daily_log(
-            content=full_content,
-            tags=result.tags
-        )
-
-
 def _align_extraction_scopes(result: MemoryExtractionResult, resolved_scope: str):
-    specific_prefixes = ("project:", "workspace:", "workflow:", "channel:")
+    specific_prefixes = ("project:", "channel:")
 
     def _coerce_scope(value: str) -> str:
         normalized = (value or "").strip()
@@ -657,6 +621,113 @@ def _get_log_source(trigger_source: str) -> str:
     if ts.startswith("cron"):
         return "CRON"
     return "SYSTEM"
+
+
+def _effective_memory_scope(binding: Any | None, resolved_scope: str) -> str:
+    if binding is not None:
+        channel_type = str(getattr(binding, "channel_type", "") or "").strip()
+        channel_remote_id = str(getattr(binding, "channel_remote_id", "") or "").strip()
+        project_id = str(getattr(binding, "project_id", "") or "").strip()
+        if channel_type and channel_remote_id:
+            normalized_remote = channel_remote_id.replace(":", "_").replace("/", "_")
+            return f"channel:{channel_type}:{normalized_remote}"
+        if project_id:
+            return f"project:{project_id}"
+    normalized_scope = str(resolved_scope or "").strip()
+    if normalized_scope.startswith("channel:") or normalized_scope.startswith("project:"):
+        return normalized_scope
+    return "global"
+
+
+def _memory_source_runtime(trigger_source: str) -> str:
+    normalized = str(trigger_source or "").strip().lower()
+    if normalized.startswith("hook") or normalized.startswith("cron"):
+        return "automation"
+    if normalized.startswith("plugin_host"):
+        return "plugin_host"
+    if normalized.startswith("network_supervisor"):
+        return "network_supervisor"
+    if normalized.startswith("computer_use") or normalized.startswith("desktop_live"):
+        return "computer_use"
+    if normalized.startswith("chat"):
+        return "chat"
+    return "chat"
+
+
+def _memory_provenance_class(trigger_source: str) -> str:
+    normalized = str(trigger_source or "").strip().lower()
+    if normalized.startswith("hook") or normalized.startswith("cron"):
+        return "mechanical_automation"
+    if normalized.startswith("computer_use") or normalized.startswith("desktop_live"):
+        return "machine_observation"
+    if normalized.startswith("approval") or normalized.startswith("safety") or normalized.startswith("govern") or normalized.startswith("wake"):
+        return "governance_or_control"
+    return "human_dialogue"
+
+
+def _memory_policy_for_provenance(provenance_class: str) -> str:
+    if provenance_class == "mechanical_automation":
+        return "daily_summary_only"
+    if provenance_class in {"governance_or_control", "machine_observation"}:
+        return "skipped"
+    return "durable"
+
+
+def _append_session_log(
+    result: MemoryExtractionResult,
+    *,
+    effective_memory_scope: str,
+    session_id: str,
+    source_runtime: str,
+    provenance_class: str,
+    memory_policy: str,
+    extracted_long_term_items_count: int,
+):
+    """[专业工具] 记录结构化 provenance 日志，同时维护 YAML frontmatter。"""
+    content_lines = []
+    if result.knowledge:
+        content_lines.append("**Extracted Knowledge:**")
+        for f in result.knowledge:
+            op = "[UPDATE]" if f.overwrite_id else "[NEW]"
+            content_lines.append(f"- {op} {f.fact}")
+    if result.preferences:
+        content_lines.append("**Extracted Preferences:**")
+        for p in result.preferences:
+            content_lines.append(f"- [{p.scope}] {p.key}: {p.value}")
+
+    if memory_policy == "daily_summary_only":
+        content_lines = ["Automation/Hook/Cron provenance retained as daily summary only."]
+    elif memory_policy == "skipped":
+        content_lines = ["Skipped long-term memory write due to provenance policy."]
+    elif not content_lines:
+        content_lines.append("No durable long-term items extracted.")
+
+    full_content = (
+        f"Session `{session_id[:8]}`\n"
+        f"**Summary**: {result.summary}\n\n" + "\n".join(content_lines)
+    )
+
+    entry_metadata = {
+        "session_id": session_id,
+        "effective_memory_scope": effective_memory_scope,
+        "source_runtime": source_runtime,
+        "provenance_class": provenance_class,
+        "memory_policy": memory_policy,
+        "extracted_long_term_items_count": extracted_long_term_items_count,
+    }
+
+    if hasattr(memory_runtime, "append_daily_log_with_yaml"):
+        memory_runtime.append_daily_log_with_yaml(
+            content=full_content,
+            session_summary=result.summary,
+            session_tags=result.tags,
+            entry_metadata=entry_metadata,
+        )
+    else:
+        memory_runtime.append_daily_log(
+            content=full_content,
+            tags=result.tags,
+        )
 
 def analyze_session_memory(
     session_id: str,
@@ -875,16 +946,24 @@ def analyze_session_memory(
         binding = resolved.binding
         scope = binding.resolved_scope
         scope_chain = resolved.scope_chain
+    effective_memory_scope = _effective_memory_scope(binding, scope)
+    source_runtime = _memory_source_runtime(trigger_source)
+    provenance_class = _memory_provenance_class(trigger_source)
+    memory_policy = _memory_policy_for_provenance(provenance_class)
     _emit_memory_event(
         run_handle,
         "memory.scope.resolved",
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "scope_chain": scope_chain,
             "project_id": binding.project_id,
             "workspace_id": binding.workspace_id,
             "parent_run_id": parent_run_id,
+            "source_runtime": source_runtime,
+            "provenance_class": provenance_class,
+            "memory_policy": memory_policy,
         },
     )
 
@@ -898,6 +977,7 @@ def analyze_session_memory(
             "session_id": session_id,
             "quick_summary": quick_summary,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
         },
     )
     
@@ -915,6 +995,7 @@ def analyze_session_memory(
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "query": quick_summary,
             "result_count": len(past_knowledge) if "past_knowledge" in locals() else 0,
         },
@@ -987,6 +1068,7 @@ def analyze_session_memory(
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "summary": result.summary,
             "tags": result.tags,
             "preference_count": len(result.preferences),
@@ -994,57 +1076,87 @@ def analyze_session_memory(
             "entity_count": len(result.entities),
             "relation_count": len(result.relations),
             "extraction_mode": extraction_mode,
+            "source_runtime": source_runtime,
+            "provenance_class": provenance_class,
+            "memory_policy": memory_policy,
         },
     )
        
     # 5. 分别落库
-    stored_preferences = _store_preferences(result, policy)
+    stored_preferences = 0
+    stored_knowledge = 0
+    stored_knowledge_items: List[KnowledgeExtraction] = []
+    if memory_policy == "durable":
+        stored_preferences = _store_preferences(result, policy)
+        stored_knowledge, stored_knowledge_items = _store_knowledge(result, session_id, policy)
+        _build_knowledge_graph(result, stored_knowledge_items=stored_knowledge_items)
     _emit_memory_event(
         run_handle,
         "memory.preferences.updated",
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "count": stored_preferences,
+            "memory_policy": memory_policy,
         },
     )
-    stored_knowledge, stored_knowledge_items = _store_knowledge(result, session_id, policy)
     _emit_memory_event(
         run_handle,
         "memory.knowledge.upserted",
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "count": stored_knowledge,
+            "memory_policy": memory_policy,
         },
     )
-    _build_knowledge_graph(result, stored_knowledge_items=stored_knowledge_items)
     _emit_memory_event(
         run_handle,
         "memory.graph.updated",
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "entity_count": len(result.entities),
             "relation_count": len(result.relations),
+            "memory_policy": memory_policy,
         },
     )
-    _append_session_log(result, scope, session_id)
+    extracted_long_term_items_count = stored_preferences + stored_knowledge
+    _append_session_log(
+        result,
+        effective_memory_scope=effective_memory_scope,
+        session_id=session_id,
+        source_runtime=source_runtime,
+        provenance_class=provenance_class,
+        memory_policy=memory_policy,
+        extracted_long_term_items_count=extracted_long_term_items_count,
+    )
     _emit_memory_event(
         run_handle,
         "memory.daily_log.appended",
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "summary": result.summary,
             "tags": result.tags,
+            "source_runtime": source_runtime,
+            "provenance_class": provenance_class,
+            "memory_policy": memory_policy,
         },
     )
     
     # 增量 FTS5 刷新
     _run_incremental_index()
     no_persisted_memory_reason = ""
-    if stored_preferences + stored_knowledge <= 0:
+    if memory_policy == "daily_summary_only":
+        no_persisted_memory_reason = "daily_summary_only"
+    elif memory_policy == "skipped":
+        no_persisted_memory_reason = "skipped"
+    elif stored_preferences + stored_knowledge <= 0:
         extracted_memory_items = len(result.preferences) + len(result.knowledge)
         no_persisted_memory_reason = "policy_filtered" if extracted_memory_items > 0 else "model_empty"
     current_hash = _message_hash(transcript_entries)
@@ -1063,6 +1175,7 @@ def analyze_session_memory(
         {
             "session_id": session_id,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
             "summary": result.summary,
             "tags": result.tags,
             "preference_count": stored_preferences,
@@ -1074,6 +1187,9 @@ def analyze_session_memory(
             "transcript_source": transcript["source"],
             "latest_seq": transcript["latest_seq"],
             "no_persisted_memory_reason": no_persisted_memory_reason or None,
+            "source_runtime": source_runtime,
+            "provenance_class": provenance_class,
+            "memory_policy": memory_policy,
         },
     )
     
@@ -1094,6 +1210,7 @@ def analyze_session_memory(
             f"source={transcript['source']}, entries={len(transcript_entries)}, "
             f"seq={transcript['latest_seq']}"
             + (f", no_persisted_memory_reason={no_persisted_memory_reason}" if no_persisted_memory_reason else "")
+            + f", effective_memory_scope={effective_memory_scope}, provenance_class={provenance_class}, memory_policy={memory_policy}"
         )
     )
     return {
@@ -1101,6 +1218,7 @@ def analyze_session_memory(
         "task_kind": "session_extraction",
         "session_id": session_id,
         "resolved_scope": scope,
+        "effective_memory_scope": effective_memory_scope,
         "summary": result.summary,
         "tags": result.tags,
         "preference_count": stored_preferences,
@@ -1112,6 +1230,9 @@ def analyze_session_memory(
         "transcript_source": transcript["source"],
         "latest_seq": transcript["latest_seq"],
         "no_persisted_memory_reason": no_persisted_memory_reason or None,
+        "source_runtime": source_runtime,
+        "provenance_class": provenance_class,
+        "memory_policy": memory_policy,
     }
 
 async def generate_periodic_summary(

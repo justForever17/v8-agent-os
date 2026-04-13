@@ -397,9 +397,9 @@ export default function MemoryConfigPanel() {
             <Card>
                 <CardHeader>
                     <CardTitle className="text-base">{t(lt("上下文窗口", "Context window"))}</CardTitle>
-                    <CardDescription>
-                        {t(
-                            lt(
+                <CardDescription>
+                    {t(
+                        lt(
                                 "控制详细日志注入窗口（映射 memory.max_recent_days）；窗口外的前一日记忆会自动降级为 summaries + path。",
                                 "Controls the detailed log injection window (maps to memory.max_recent_days); the prior day outside that window is automatically reduced to summaries + path.",
                             ),
@@ -407,6 +407,14 @@ export default function MemoryConfigPanel() {
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
+                    <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs leading-6 text-muted-foreground">
+                        {t(
+                            lt(
+                                "长期记忆 scope 现只保留 global、project:{id} 与 channel:{type}:{remote_id}。workspace/workflow/app 不再作为长期记忆域；日志与审计会额外记录 effectiveMemoryScope、provenanceClass 和 memoryPolicy。",
+                                "Long-term memory scopes are now limited to global, project:{id}, and channel:{type}:{remote_id}. Workspace/workflow/app no longer count as durable memory scopes; logs and audits also record effectiveMemoryScope, provenanceClass, and memoryPolicy.",
+                            ),
+                        )}
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                             <Label>{t(lt("详细日志天数", "Detailed log days"))}</Label>

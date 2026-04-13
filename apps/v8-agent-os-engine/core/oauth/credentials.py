@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -66,6 +67,16 @@ def _pick_first(payload: Dict[str, Any], *paths: tuple[str, ...]) -> str:
     return ""
 
 
+def _resolve_expiry_ms(payload: Dict[str, Any]) -> int:
+    raw_value = payload.get("expiry_date")
+    if raw_value in (None, ""):
+        return 0
+    try:
+        return int(raw_value)
+    except Exception:
+        return 0
+
+
 def resolve_oauth_reference(
     raw_value: str | None,
     *,
@@ -92,6 +103,7 @@ def resolve_oauth_reference(
         "projectId": "",
         "accountId": "",
         "accessToken": "",
+        "expiryMs": 0,
         "oauthFlavor": "",
         "error": "",
     }
@@ -124,10 +136,12 @@ def resolve_oauth_reference(
     account_id = _pick_first(payload, ("accountId",), ("account_id",), ("tokens", "account_id"))
     api_standard_lower = str(api_standard or "openai").lower()
     provider_lower = str(provider_id or "").lower()
+    expiry_ms = _resolve_expiry_ms(payload)
 
     result["projectId"] = project_id
     result["accountId"] = account_id
     result["accessToken"] = access_token
+    result["expiryMs"] = expiry_ms
 
     if api_standard_lower in {"google", "gemini"}:
         if api_key:
@@ -141,6 +155,9 @@ def resolve_oauth_reference(
         return result
 
     if access_token:
+        if provider_lower in {"qwen", "qwen-oauth"} and expiry_ms and expiry_ms <= int(time.time() * 1000):
+            result["error"] = f"auth_error: Qwen OAuth 凭据已过期，请重新登录平台账号或更新 OAuth 文件：{oauth_path.name}"
+            return result
         result["credential"] = access_token
         if provider_lower in {"qwen", "qwen-oauth"}:
             result["oauthFlavor"] = "qwen"

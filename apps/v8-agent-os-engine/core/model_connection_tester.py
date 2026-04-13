@@ -46,6 +46,24 @@ def _extract_text_preview(response: Any) -> str:
     return str(content).strip()[:120]
 
 
+def _extract_reasoning_signal(response: Any) -> Dict[str, Any]:
+    additional_kwargs = dict(getattr(response, "additional_kwargs", {}) or {})
+    response_metadata = dict(getattr(response, "response_metadata", {}) or {})
+    token_usage = dict(response_metadata.get("token_usage") or {})
+    completion_details = dict(token_usage.get("completion_tokens_details") or {})
+    reasoning_preview = ""
+    for key in ("reasoning_content", "reasoning", "thinking", "thought"):
+        value = additional_kwargs.get(key)
+        if isinstance(value, str) and value.strip():
+            reasoning_preview = value.strip()[:120]
+            break
+    return {
+        "finishReason": str(response_metadata.get("finish_reason") or ""),
+        "reasoningTokens": int(completion_details.get("reasoning_tokens") or 0),
+        "reasoningPreview": reasoning_preview,
+    }
+
+
 class ModelConnectionTester:
     _TEST_IMAGE_DATA_URL = (
         "data:image/png;base64,"
@@ -278,7 +296,7 @@ class ModelConnectionTester:
         client = llm_factory.create_chat_model(
             model_id,
             temperature=0,
-            max_tokens=128,
+            max_tokens=512,
             streaming=False,
             _role="connection_test_multimodal",
         )
@@ -291,14 +309,22 @@ class ModelConnectionTester:
         )
         response = client.invoke([HumanMessage(content=content)])
         preview = _extract_text_preview(response)
+        reasoning_signal = _extract_reasoning_signal(response)
         if not preview:
-            raise RuntimeError("多模态调用返回为空内容，未产出可验证正文。")
+            # Some reasoning-heavy multimodal providers return only reasoning tokens
+            # through the LangChain adapter when the underlying HTTP response is still successful.
+            if reasoning_signal["reasoningTokens"] > 0:
+                preview = reasoning_signal["reasoningPreview"] or "multimodal reasoning-only response"
+            else:
+                raise RuntimeError("多模态调用返回为空内容，未产出可验证正文。")
         latency_ms = (time.perf_counter() - started) * 1000
         return {
             "latencyMs": round(latency_ms, 2),
             "message": preview,
-            "requestKind": "multimodal",
+            "requestKind": "multimodal_reasoning_only" if not _extract_text_preview(response) else "multimodal",
             "resolvedEndpoint": str(meta.get("base_url") or ""),
+            "finishReason": reasoning_signal["finishReason"],
+            "reasoningTokens": reasoning_signal["reasoningTokens"],
         }
 
     def _protocol_skip(self, *, name: str, meta: Dict[str, Any]) -> Dict[str, Any] | None:

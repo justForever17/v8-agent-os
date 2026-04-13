@@ -34,6 +34,13 @@ type CronJob = {
     action_target: string;
     payload?: Record<string, unknown>;
     enabled: boolean;
+    triggerKind?: "nudge" | "wake" | "recovery_wake";
+    targetBinding?: Record<string, unknown>;
+    recoveryAnchor?: Record<string, unknown>;
+    attachPolicy?: "new_session" | "attach_session" | "attach_run" | "resume_run";
+    wakeReason?: string;
+    message?: string;
+    sourceMetadata?: Record<string, unknown>;
 };
 
 type CronData = {
@@ -60,7 +67,23 @@ const EMPTY_JOB: CronJob = {
     action_target: "",
     payload: {},
     enabled: true,
+    triggerKind: "nudge",
+    attachPolicy: "new_session",
 };
+
+function formatJsonField(value: Record<string, unknown> | undefined) {
+    return value && Object.keys(value).length ? JSON.stringify(value, null, 2) : "{}";
+}
+
+function parseJsonField(label: string, value: string) {
+    const raw = String(value || "").trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`${label} 需要是合法 JSON 对象`);
+    }
+    return parsed as Record<string, unknown>;
+}
 
 const WEEKDAY_OPTIONS = [
     { value: "1", label: lt("周一", "Mon") },
@@ -290,6 +313,9 @@ export default function ScheduledTasksPage() {
     const [docContent, setDocContent] = useState("");
     const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft>(buildDefaultScheduleDraft());
     const [scheduleError, setScheduleError] = useState("");
+    const [targetBindingText, setTargetBindingText] = useState("{}");
+    const [recoveryAnchorText, setRecoveryAnchorText] = useState("{}");
+    const [sourceMetadataText, setSourceMetadataText] = useState("{}");
 
     const loadDocumentation = async () => {
         try {
@@ -355,6 +381,9 @@ export default function ScheduledTasksPage() {
         setPayloadText("{}");
         setScheduleDraft(buildDefaultScheduleDraft());
         setScheduleError("");
+        setTargetBindingText("{}");
+        setRecoveryAnchorText("{}");
+        setSourceMetadataText("{}");
         setDialogOpen(true);
     };
 
@@ -364,6 +393,9 @@ export default function ScheduledTasksPage() {
         setPayloadText(JSON.stringify(job.payload || {}, null, 2));
         setScheduleDraft(parseCronExpression(job.cron_expression));
         setScheduleError("");
+        setTargetBindingText(formatJsonField(job.targetBinding));
+        setRecoveryAnchorText(formatJsonField(job.recoveryAnchor));
+        setSourceMetadataText(formatJsonField(job.sourceMetadata));
         setDialogOpen(true);
     };
 
@@ -380,10 +412,16 @@ export default function ScheduledTasksPage() {
 
     const handleSaveDialog = async () => {
         let payload: Record<string, unknown> = {};
+        let targetBinding: Record<string, unknown> = {};
+        let recoveryAnchor: Record<string, unknown> = {};
+        let sourceMetadata: Record<string, unknown> = {};
         try {
             payload = JSON.parse(payloadText || "{}");
+            targetBinding = parseJsonField("targetBinding", targetBindingText);
+            recoveryAnchor = parseJsonField("recoveryAnchor", recoveryAnchorText);
+            sourceMetadata = parseJsonField("sourceMetadata", sourceMetadataText);
         } catch {
-            setScheduleError(t(lt("附加参数需要是合法的 JSON。", "Payload must be valid JSON.")));
+            setScheduleError(t(lt("附加参数与 Wake ingress 字段都需要是合法的 JSON 对象。", "Payload and wake ingress fields must be valid JSON objects.")));
             return;
         }
 
@@ -397,6 +435,11 @@ export default function ScheduledTasksPage() {
             ...draftJob,
             cron_expression: nextCronExpression,
             payload,
+            triggerKind: draftJob.triggerKind || "nudge",
+            attachPolicy: draftJob.attachPolicy || "new_session",
+            targetBinding,
+            recoveryAnchor,
+            sourceMetadata,
         };
         const nextJobs = editingJobId ? jobs.map((job) => (job.id === editingJobId ? nextJob : job)) : [...jobs, nextJob];
         await saveJobs(nextJobs);
@@ -464,6 +507,7 @@ export default function ScheduledTasksPage() {
                                         <div className="flex flex-wrap items-center gap-2">
                                             <div className="text-sm font-medium text-slate-900">{job.name}</div>
                                             <Badge variant="outline">{job.action_type}</Badge>
+                                            <Badge variant="outline">{job.triggerKind || "nudge"}</Badge>
                                             <Badge variant={job.enabled ? "default" : "secondary"}>{job.enabled ? t(lt("已启用", "Enabled")) : t(lt("已停用", "Paused"))}</Badge>
                                         </div>
                                         <div className="flex items-center gap-2 text-xs text-slate-700">
@@ -472,6 +516,11 @@ export default function ScheduledTasksPage() {
                                         </div>
                                         <div className="text-xs text-slate-500">{t(lt("原始计划：", "Cron:"))}{job.cron_expression}</div>
                                         <div className="break-all text-xs text-slate-500">{t(lt("执行目标：", "Target:"))}{job.action_target}</div>
+                                        <div className="text-xs text-slate-500">
+                                            {job.targetBinding || job.recoveryAnchor
+                                                ? t(lt("已配置显式 targetBinding / recoveryAnchor。", "Explicit targetBinding / recoveryAnchor configured."))
+                                                : t(lt("未提供 binding，运行时会自动降级为 nudge。", "No binding provided; runtime will degrade this trigger to nudge."))}
+                                        </div>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
                                         <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
@@ -526,6 +575,41 @@ export default function ScheduledTasksPage() {
                         <div className="space-y-2 md:col-span-2">
                             <Label>{t(lt("执行目标", "Target"))}</Label>
                             <Input value={draftJob.action_target} onChange={(event) => setDraftJob((current) => ({ ...current, action_target: event.target.value }))} />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{t(lt("Wake 类型", "Wake trigger kind"))}</Label>
+                            <Select value={draftJob.triggerKind || "nudge"} onValueChange={(value) => setDraftJob((current) => ({ ...current, triggerKind: value as NonNullable<CronJob["triggerKind"]> }))}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="nudge">nudge</SelectItem>
+                                    <SelectItem value="wake">wake</SelectItem>
+                                    <SelectItem value="recovery_wake">recovery_wake</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{t(lt("附着策略", "Attach policy"))}</Label>
+                            <Select value={draftJob.attachPolicy || "new_session"} onValueChange={(value) => setDraftJob((current) => ({ ...current, attachPolicy: value as NonNullable<CronJob["attachPolicy"]> }))}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="new_session">new_session</SelectItem>
+                                    <SelectItem value="attach_session">attach_session</SelectItem>
+                                    <SelectItem value="attach_run">attach_run</SelectItem>
+                                    <SelectItem value="resume_run">resume_run</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                            <Label>{t(lt("唤醒原因", "Wake reason"))}</Label>
+                            <Input value={draftJob.wakeReason || ""} onChange={(event) => setDraftJob((current) => ({ ...current, wakeReason: event.target.value }))} placeholder={t(lt("例如：scheduled_project_checkin", "e.g. scheduled_project_checkin"))} />
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                            <Label>{t(lt("消息模板", "Message"))}</Label>
+                            <Textarea value={draftJob.message || ""} onChange={(event) => setDraftJob((current) => ({ ...current, message: event.target.value }))} className="min-h-[96px]" placeholder={t(lt("没有 binding / anchor 时，这段文本只会作为 nudge。", "Without binding / anchor this text only becomes a nudge."))} />
                         </div>
                     </div>
 
@@ -661,6 +745,18 @@ export default function ScheduledTasksPage() {
                             <div className="space-y-2">
                                 <Label>{t(lt("附加参数（JSON）", "Payload (JSON)"))}</Label>
                                 <Textarea value={payloadText} onChange={(event) => setPayloadText(event.target.value)} className="min-h-[140px] font-mono text-xs" />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t(lt("targetBinding（JSON）", "targetBinding (JSON)"))}</Label>
+                                <Textarea value={targetBindingText} onChange={(event) => setTargetBindingText(event.target.value)} className="min-h-[120px] font-mono text-xs" />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t(lt("recoveryAnchor（JSON）", "recoveryAnchor (JSON)"))}</Label>
+                                <Textarea value={recoveryAnchorText} onChange={(event) => setRecoveryAnchorText(event.target.value)} className="min-h-[120px] font-mono text-xs" />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t(lt("sourceMetadata（JSON）", "sourceMetadata (JSON)"))}</Label>
+                                <Textarea value={sourceMetadataText} onChange={(event) => setSourceMetadataText(event.target.value)} className="min-h-[120px] font-mono text-xs" />
                             </div>
                         </div>
                     </AdvancedSection>

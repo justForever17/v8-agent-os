@@ -25,10 +25,10 @@ class MemoryRuntime:
         return {
             "kind": self.kind,
             "displayName": "MemoryRuntime",
-            "summary": "负责偏好、知识、日志提取与 RAG 注入，不承担通用对话编排。",
+            "summary": "负责记忆 provenance、长期记忆提取、时序日志与 RAG 注入，不承担通用对话编排。",
             "responsibilities": [
                 "维护分层记忆和知识图谱",
-                "执行记忆提取、聚合与健康检查",
+                "执行带 provenance 的记忆提取、聚合与健康检查",
                 "向 ChatRuntime 提供上下文注入能力",
             ],
             "routingKeywords": ["记忆", "偏好", "知识", "RAG", "摘要", "图谱"],
@@ -182,6 +182,11 @@ class MemoryRuntime:
                 "scopes": scopes,
                 "total": total_prefs,
                 "data": prefs,
+                "canonicalLongTermScopes": [
+                    "global",
+                    "project:{id}",
+                    "channel:{type}:{remote_id}",
+                ],
             },
             "knowledge": {
                 "count": knowledge_count,
@@ -191,6 +196,18 @@ class MemoryRuntime:
             "health": health,
             "projects": {
                 "count": len(project_registry_service.list_projects()),
+            },
+            "provenance": {
+                "classes": [
+                    "human_dialogue",
+                    "assistant_final",
+                    "assistant_reasoning_summary",
+                    "tool_semantic_result",
+                    "governance_or_control",
+                    "mechanical_automation",
+                    "machine_observation",
+                ],
+                "policies": ["durable", "daily_summary_only", "skipped"],
             },
         }
 
@@ -353,11 +370,13 @@ class MemoryRuntime:
         content: str,
         session_summary: str,
         session_tags: List[str],
+        entry_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         injection_service.append_daily_log_with_yaml(
             content=content,
             session_summary=session_summary,
             session_tags=session_tags,
+            entry_metadata=entry_metadata,
         )
 
     def unified_recall(

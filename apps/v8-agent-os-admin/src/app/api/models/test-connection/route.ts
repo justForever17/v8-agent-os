@@ -11,11 +11,15 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-        const payload = await req.json();
+        const incoming = await req.json().catch(() => ({}));
+        const modelId = String(incoming?.modelId || incoming?.model_id || incoming?.id || "").trim();
+        if (!modelId) {
+            return NextResponse.json({ error: "modelId is required" }, { status: 422 });
+        }
         const response = await fetch(ENGINE_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ modelId, model_id: modelId }),
         });
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });

@@ -248,12 +248,10 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "hooks": {"hooks": []},
     "cron": {"jobs": []},
     "automationRuntime": {
-        "supervisorHeartbeat": {
-            "enabled": False,
-            "intervalMinutes": 30,
-            "messageTemplate": "What did you do today? How is the task going? Why are you not continuing right now?",
-            "onlyWhenIdle": True,
-            "suppressWhenActiveRun": True,
+        "wakeIngressPolicies": {
+            "allowNudgeWithoutTarget": True,
+            "defaultAttachPolicy": "new_session",
+            "enabledSourceRuntimes": ["cron", "hook", "plugin_host", "network_supervisor", "chat", "computer_use"],
         },
     },
     "networkSupervisorRuntime": {

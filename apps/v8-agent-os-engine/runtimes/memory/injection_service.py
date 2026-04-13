@@ -40,11 +40,13 @@ class InjectionService:
         content: str,
         session_summary: str,
         session_tags: List[str],
+        entry_metadata: Optional[dict] = None,
     ) -> None:
         memory_store.append_daily_log_with_yaml(
             content=content,
             session_summary=session_summary,
             session_tags=session_tags,
+            entry_metadata=entry_metadata,
         )
 
 

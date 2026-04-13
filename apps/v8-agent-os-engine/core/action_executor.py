@@ -79,6 +79,7 @@ class ActionExecutor:
                 "hook_target": kwargs.get("hook_target"),
                 "parent_session_id": kwargs.get("parent_session_id"),
                 "is_async": bool(is_async),
+                "wake_ingress_envelope": kwargs.get("wake_ingress_envelope") or {},
             },
         )
         payload.update(
@@ -88,6 +89,22 @@ class ActionExecutor:
                 "target": target,
                 "task_name": task_name,
                 "is_async": bool(is_async),
+                "wakeIngressEnvelope": kwargs.get("wake_ingress_envelope") or {},
+                "triggerKind": (
+                    (kwargs.get("wake_ingress_envelope") or {}).get("triggerKind")
+                    if isinstance(kwargs.get("wake_ingress_envelope"), dict)
+                    else None
+                ),
+                "targetBinding": (
+                    (kwargs.get("wake_ingress_envelope") or {}).get("targetBinding")
+                    if isinstance(kwargs.get("wake_ingress_envelope"), dict)
+                    else None
+                ),
+                "recoveryAnchor": (
+                    (kwargs.get("wake_ingress_envelope") or {}).get("recoveryAnchor")
+                    if isinstance(kwargs.get("wake_ingress_envelope"), dict)
+                    else None
+                ),
             }
         )
         return payload
@@ -165,12 +182,6 @@ class ActionExecutor:
         """
         payload = payload or {}
         
-        # Transparently map 'agent' + 'supervisor' back to the specialized async streaming bridge
-        # This allows Admin UI & prompt engineers to use semantic 'agent' types without breaking LangGraph's event loop
-        if action_type == "agent" and target == "supervisor":
-            action_type = "python"
-            target = "scripts.cron_supervisor_task"
-            print(f"[ActionExecutor] Automatically mapping agent supervisor task to cron_supervisor_task.py bridge.")
         kwargs = dict(kwargs)
         kwargs["_declared_async"] = is_async
             

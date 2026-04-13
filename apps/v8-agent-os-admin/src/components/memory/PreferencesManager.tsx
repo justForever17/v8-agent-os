@@ -21,11 +21,14 @@ interface PreferenceRow {
 
 type PreferencesByScope = Record<string, PreferenceRow[]>;
 
+function isAllowedPreferenceScope(scope: string) {
+    return scope === "global" || scope.startsWith("project:") || scope.startsWith("channel:");
+}
+
 function scopeLabel(scope: string) {
     if (scope === "global") return lt("全局偏好", "Global preferences");
-    if (scope.startsWith("app:")) return lt(`${scope.split(":")[1]} 场景偏好`, `${scope.split(":")[1]} app preferences`);
     if (scope.startsWith("project:")) return lt(`项目 ${scope.split(":")[1]} 偏好`, `Project ${scope.split(":")[1]} preferences`);
-    if (scope.startsWith("workspace:")) return lt(`工作区 ${scope.split(":")[1]} 偏好`, `Workspace ${scope.split(":")[1]} preferences`);
+    if (scope.startsWith("channel:")) return lt(`渠道 ${scope.split(":").slice(1).join(":")} 偏好`, `Channel ${scope.split(":").slice(1).join(":")} preferences`);
     return scope;
 }
 
@@ -107,6 +110,14 @@ export function PreferencesManager() {
         if (!scope) {
             return;
         }
+        if (!isAllowedPreferenceScope(scope)) {
+            toast({
+                title: t("scope 无效"),
+                description: t("长期记忆 scope 现在只允许 global、project:{id} 或 channel:{type}:{remote_id}。"),
+                variant: "destructive",
+            });
+            return;
+        }
         setPreferencesByScope((prev) => {
             if (prev[scope]) {
                 return prev;
@@ -114,7 +125,7 @@ export function PreferencesManager() {
             return { ...prev, [scope]: [] };
         });
         setNewScopeName("");
-    }, [newScopeName]);
+    }, [newScopeName, t, toast]);
 
     const saveRow = useCallback(async (scope: string, row: PreferenceRow) => {
         const key = row.key.trim();
@@ -225,7 +236,7 @@ export function PreferencesManager() {
                     <Input
                         value={newScopeName}
                         onChange={(event) => setNewScopeName(event.target.value)}
-                        placeholder={t("新 scope，例如 project:v8-agent-os")}
+                        placeholder={t("新 scope，例如 global、project:v8-agent-os 或 channel:feishu:chat_123")}
                         className="w-64"
                     />
                     <Button variant="outline" onClick={createScopeCard}>

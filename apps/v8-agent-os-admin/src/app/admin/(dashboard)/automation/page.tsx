@@ -5,7 +5,7 @@ import { Cable, Clock3 } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
-import { SupervisorHeartbeatCard } from "@/components/automation/SupervisorHeartbeatCard";
+import { WakeIngressPolicyCard } from "@/components/automation/WakeIngressPolicyCard";
 import { localizeAdminText } from "@/lib/admin-copy";
 import { lt } from "@/lib/locale";
 import { parseLocale } from "@/lib/locale";
@@ -33,7 +33,7 @@ export default async function AutomationOverviewPage() {
         <AdminPageShell>
             <AdminPageHeader
                 title="AUTOMATION RUNTIME"
-                description={lt("管理 Hooks、Cron 与系统心跳唤醒。", "Manage hooks, cron jobs, and supervisor heartbeat automation.")}
+                description={lt("管理 Wake ingress、Hooks 与 Cron 触发器。", "Manage wake ingress, hooks, and cron triggers.")}
             />
             <div className="grid gap-6 lg:grid-cols-2">
                 {ENTRY_CARDS.map((item) => {
@@ -50,7 +50,7 @@ export default async function AutomationOverviewPage() {
                     );
                 })}
                 <div className="lg:col-span-2">
-                    <SupervisorHeartbeatCard />
+                    <WakeIngressPolicyCard />
                 </div>
             </div>
         </AdminPageShell>

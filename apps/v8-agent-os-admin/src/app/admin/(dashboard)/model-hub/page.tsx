@@ -59,6 +59,8 @@ type AIModel = {
     modelId: string;
     type: string;
     contextWindow?: number | null;
+    maxTokens?: number | null;
+    temperature?: number | null;
     rerankApiFlavor?: string;
     isEnabled: boolean;
     provider?: { name: string; icon?: string | null };
@@ -86,15 +88,30 @@ type ModelConnectionStatus = {
     message?: string;
 };
 
+function extractErrorText(value: unknown, fallback: string): string {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) {
+        const joined = value
+            .map((item) => extractErrorText(item, ""))
+            .filter(Boolean)
+            .join(" · ");
+        return joined || fallback;
+    }
+    if (value && typeof value === "object") {
+        const record = value as Record<string, unknown>;
+        return (
+            extractErrorText(record.error, "")
+            || extractErrorText(record.message, "")
+            || extractErrorText(record.detail, "")
+            || fallback
+        );
+    }
+    return fallback;
+}
+
 async function readJsonErrorMessage(response: Response, fallback: string) {
     const data = await response.json().catch(() => null);
-    const detail = typeof data?.detail === "string"
-        ? data.detail
-        : typeof data?.detail?.error === "string"
-            ? data.detail.error
-            : typeof data?.error === "string"
-                ? data.error
-                : "";
+    const detail = extractErrorText(data?.detail, "") || extractErrorText(data?.error, "");
     return detail || fallback;
 }
 
@@ -190,11 +207,20 @@ export default function ModelHubPage() {
             ? `/api/models/${encodeURIComponent(editingModel.id)}?providerId=${encodeURIComponent(editingModel.providerId)}`
             : "/api/models";
         const method = editingModel ? "PUT" : "POST";
-        await fetch(url, {
+        const response = await fetch(url, {
             method,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, t(lt("保存模型失败", "Failed to save model")));
+            toast({
+                variant: "destructive",
+                title: t(lt("保存模型失败", "Failed to save model")),
+                description: errorMessage,
+            });
+            return;
+        }
         setIsModelDialogOpen(false);
         setEditingModel(null);
         await fetchData();
@@ -291,7 +317,9 @@ export default function ModelHubPage() {
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
-                const errorMessage = String(data?.detail?.error || data?.error || t(lt("请检查模型配置", "Check the model configuration")));
+                const errorMessage = extractErrorText(data?.detail, "")
+                    || extractErrorText(data?.error, "")
+                    || t(lt("请检查模型配置", "Check the model configuration"));
                 setConnectionStatusMap((current) => ({
                     ...current,
                     [modelId]: { status: "error", message: errorMessage },
@@ -722,6 +750,39 @@ export default function ModelHubPage() {
                                 </p>
                             </div>
                         ) : null}
+                        <div className="grid gap-4 md:grid-cols-3">
+                            <div className="space-y-2">
+                                <Label htmlFor="model-context-window">{t(lt("上下文窗口", "Context window"))}</Label>
+                                <Input
+                                    id="model-context-window"
+                                    name="contextWindow"
+                                    type="number"
+                                    defaultValue={editingModel?.contextWindow ?? ""}
+                                    placeholder="128000"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="model-max-tokens">{t(lt("最大输出 Token", "Max output tokens"))}</Label>
+                                <Input
+                                    id="model-max-tokens"
+                                    name="maxTokens"
+                                    type="number"
+                                    defaultValue={editingModel?.maxTokens ?? ""}
+                                    placeholder="4096"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="model-temperature">{t(lt("温度", "Temperature"))}</Label>
+                                <Input
+                                    id="model-temperature"
+                                    name="temperature"
+                                    type="number"
+                                    step="0.1"
+                                    defaultValue={editingModel?.temperature ?? 0.0}
+                                    placeholder="0.0"
+                                />
+                            </div>
+                        </div>
                         <Button type="submit" className="w-full">{t(lt("保存模型", "Save model"))}</Button>
                     </form>
                 </DialogContent>

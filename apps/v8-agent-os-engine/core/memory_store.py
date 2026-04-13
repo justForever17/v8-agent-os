@@ -48,7 +48,7 @@ system_author: justForever17
 # === 正则 ===
 SCOPE_PATTERN = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 KV_PATTERN = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$', re.MULTILINE)
-_SPECIFIC_SCOPE_PREFIXES = ("project:", "workspace:", "workflow:", "channel:")
+_SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:")
 
 
 class MemoryStore:
@@ -76,7 +76,7 @@ class MemoryStore:
         
         # 知识分区目录
         areas_dir = MEMORY_ROOT / "knowledge" / "areas"
-        for area in ["general", "projects", "workspaces", "channels", "workflows"]:
+        for area in ["general", "projects", "channels"]:
             (areas_dir / area).mkdir(parents=True, exist_ok=True)
         
         # 日志目录
@@ -260,6 +260,9 @@ class MemoryStore:
             elif scope.startswith("project:"):
                 project_name = scope.split(":", 1)[1]
                 lines.append(f"# 项目 {project_name} 专属偏好")
+            elif scope.startswith("channel:"):
+                channel_name = scope.split(":", 1)[1]
+                lines.append(f"# 渠道 {channel_name} 专属偏好")
             
             for key, value in data[scope].items():
                 if not key.startswith("_"):
@@ -297,15 +300,9 @@ class MemoryStore:
         if scope.startswith("project:"):
             project_name = scope.split(":", 1)[1]
             path = areas_dir / "projects" / project_name / "items.json"
-        elif scope.startswith("workspace:"):
-            workspace_name = scope.split(":", 1)[1]
-            path = areas_dir / "workspaces" / workspace_name / "items.json"
         elif scope.startswith("channel:"):
             channel_name = scope.split(":", 1)[1].replace(":", "__")
             path = areas_dir / "channels" / channel_name / "items.json"
-        elif scope.startswith("workflow:"):
-            workflow_name = scope.split(":", 1)[1]
-            path = areas_dir / "workflows" / workflow_name / "items.json"
         else:
             path = areas_dir / "general" / "items.json"
         
@@ -947,44 +944,95 @@ class MemoryStore:
             f.write(entry)
         
         logger.info(f"[MemoryStore] Appended daily log to {log_path}")
-    
-    def append_daily_log_with_yaml(self, content: str, session_summary: str, session_tags: List[str]):
-        """追加日志并维护含有历史摘要与 tag 的 YAML frontmatter 实现渐进式加载"""
+
+    def _split_frontmatter(self, content: str) -> tuple[Dict[str, Any], str]:
+        header_match = re.match(r'^---\n(.*?)\n---\s*', content, flags=re.DOTALL)
+        if not header_match:
+            return {}, content
+        header = header_match.group(1)
+        body = content[header_match.end():]
+        metadata: Dict[str, Any] = {}
+        current_list_key: Optional[str] = None
+        for raw_line in header.splitlines():
+            line = raw_line.rstrip()
+            if not line:
+                continue
+            list_item = re.match(r'^\s*-\s*"?(.+?)"?\s*$', line)
+            if list_item and current_list_key:
+                metadata.setdefault(current_list_key, [])
+                metadata[current_list_key].append(list_item.group(1).strip())
+                continue
+            key_match = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$', line)
+            if not key_match:
+                continue
+            key = key_match.group(1).strip()
+            value = key_match.group(2).strip()
+            if value == "":
+                metadata[key] = []
+                current_list_key = key
+            else:
+                metadata[key] = value.strip('"')
+                current_list_key = None
+        return metadata, body
+
+    def _render_frontmatter(self, metadata: Dict[str, Any]) -> str:
+        lines = ["---"]
+        for key in ("type", "date"):
+            value = metadata.get(key)
+            if value is not None:
+                lines.append(f'{key}: "{value}"' if key == "date" else f"{key}: {value}")
+        for key in ("tags", "summaries"):
+            values = [str(item).strip() for item in list(metadata.get(key) or []) if str(item).strip()]
+            lines.append(f"{key}:")
+            for item in values:
+                lines.append(f'  - "{item.replace(chr(34), "")}"')
+        lines.append("---\n")
+        return "\n".join(lines)
+
+    def append_daily_log_with_yaml(
+        self,
+        content: str,
+        session_summary: str,
+        session_tags: List[str],
+        entry_metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """追加结构化日志并稳定维护 YAML frontmatter。"""
         now = datetime.now()
         log_path = self._get_daily_log_path(now)
-        
-        # 追加的文本
         time_str = now.strftime("%H:%M")
-        entry = f"\n### {time_str}\n{content}\n"
-        
-        if not log_path.exists() or log_path.stat().st_size == 0:
-            # 创建新文件及初始 YAML 头
-            header = f"---\ntype: daily_log\ndate: \"{now.strftime('%Y-%m-%d')}\"\ntags:\n"
-            for t in session_tags:
-                header += f"  - {t}\n"
-            header += "summaries:\n"
-            header += f"  - \"{session_summary.replace('\"', '')}\"\n"
-            header += "---\n\n"
-            log_path.write_text(header + entry, encoding="utf-8")
+
+        if log_path.exists() and log_path.stat().st_size > 0:
+            existing_meta, existing_body = self._split_frontmatter(log_path.read_text(encoding="utf-8"))
         else:
-            # 仅简单向文件末尾追加，目前为避免破坏复杂的多会话日志，简易实现为仅追加文本。
-            # 严格按照“YAML追加”则应读取解析替换。这里为稳定暂退化为普通追加。
-            # 如果需要完整的 frontmatter 修改，可读取整个文本并在 "---" 内替换。
-            text = log_path.read_text(encoding="utf-8")
-            if text.startswith("---"):
-                # 简单正则表达式替换以插入 summary 和 tags
-                if "summaries:" in text:
-                    text = text.replace("summaries:\n", f"summaries:\n  - \"{session_summary.replace('\"', '')}\"\n", 1)
-                else:
-                    text = text.replace("---\n\n", f"summaries:\n  - \"{session_summary.replace('\"', '')}\"\n---\n\n", 1)
-                for t in session_tags:
-                    if f"  - {t}\n" not in text:
-                        text = text.replace("tags:\n", f"tags:\n  - {t}\n", 1)
-                log_path.write_text(text + entry, encoding="utf-8")
-            else:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(entry)
-                    
+            existing_meta, existing_body = {}, ""
+
+        merged_tags = list(dict.fromkeys([*list(existing_meta.get("tags") or []), *[str(tag).strip() for tag in session_tags if str(tag).strip()]]))
+        merged_summaries = list(
+            dict.fromkeys(
+                [*list(existing_meta.get("summaries") or []), *([session_summary.strip()] if str(session_summary or "").strip() else [])]
+            )
+        )
+        meta = {
+            "type": "daily_log",
+            "date": now.strftime("%Y-%m-%d"),
+            "tags": merged_tags,
+            "summaries": merged_summaries,
+        }
+
+        entry_metadata = dict(entry_metadata or {})
+        structured_lines = [
+            f"session_id: {entry_metadata.get('session_id') or 'unknown'}",
+            f"effective_memory_scope: {entry_metadata.get('effective_memory_scope') or 'global'}",
+            f"source_runtime: {entry_metadata.get('source_runtime') or 'chat'}",
+            f"provenance_class: {entry_metadata.get('provenance_class') or 'human_dialogue'}",
+            f"memory_policy: {entry_metadata.get('memory_policy') or 'durable'}",
+            f"extracted_long_term_items_count: {int(entry_metadata.get('extracted_long_term_items_count') or 0)}",
+            f"summary: {session_summary.strip() if str(session_summary or '').strip() else 'n/a'}",
+            "",
+            content.strip(),
+        ]
+        entry = f"\n### {time_str}\n" + "\n".join(line for line in structured_lines if line is not None).strip() + "\n"
+        log_path.write_text(self._render_frontmatter(meta) + (existing_body.rstrip() + "\n" if existing_body.strip() else "") + entry, encoding="utf-8")
         logger.info(f"[MemoryStore] Appended daily log with YAML updates to {log_path}")
     
     def _read_scoped_daily_entries(self, *, log_path: Path, allowed_scopes: List[str], max_entries_per_day: int = 8) -> List[str]:
@@ -1001,7 +1049,7 @@ class MemoryStore:
             if not snippet.startswith("### "):
                 continue
             if allowed_scopes:
-                if not any(f"(scope: {scope})" in snippet for scope in allowed_scopes):
+                if not any(f"effective_memory_scope: {scope}" in snippet for scope in allowed_scopes):
                     continue
             matched.append(snippet)
         return matched[-max_entries_per_day:]

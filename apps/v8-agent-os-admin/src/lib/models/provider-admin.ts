@@ -56,7 +56,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
         baseUrl: "https://portal.qwen.ai/v1",
         oauthPath: "~/.qwen/oauth_creds.json",
         supportState: "stable",
-        helpText: "正式支持。保存后会按 oauth: 文件引用读取 Qwen access_token。",
+        helpText: "正式支持。保存后会持续引用 ~/.qwen/oauth_creds.json，跟随 Qwen Code 刷新的最新 access_token，不再复制成静态快照。",
     },
     geminiCli: {
         id: "geminiCli",
@@ -76,7 +76,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
         baseUrl: "https://chatgpt.com/backend-api",
         oauthPath: "~/.codex/auth.json",
         supportState: "stable",
-        helpText: "正式支持。保存后会按 oauth: 文件引用读取 Codex access_token。",
+        helpText: "正式支持。保存后会持续引用 ~/.codex/auth.json，跟随 Codex 刷新的最新令牌，不再复制成静态快照。",
     },
 };
 
@@ -136,6 +136,15 @@ function maskPath(filepath: string): string {
         return trimmed;
     }
     return `…/${parts.slice(-2).join("/")}`;
+}
+
+function usesLiveOauthSourcePreset(preset: PlatformLoginPreset): boolean {
+    return preset === "qwenCode" || preset === "codex";
+}
+
+function isCanonicalOauthRuntimePath(filepath: string): boolean {
+    const normalized = sanitizeOauthPath(filepath).replace(/\\/g, "/").toLowerCase();
+    return normalized.includes("/.v8-agent-os/core/oauth/providers/");
 }
 
 export function inferCredentialMode(rawCredential: string, providerType?: string): ProviderCredentialMode {
@@ -240,16 +249,19 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
     const meta = providerData.provider || {};
     const rawCredential = String(meta.api_key || "");
     const credentialMode = (String(meta.credential_mode || "").trim() as ProviderCredentialMode) || inferCredentialMode(rawCredential, meta.type);
-    const oauthPath = rawCredential.startsWith("oauth:") ? sanitizeOauthPath(rawCredential.slice(6)) : "";
+    const rawOauthPath = rawCredential.startsWith("oauth:") ? sanitizeOauthPath(rawCredential.slice(6)) : "";
     const oauthRef = String(meta.oauth_ref || "").trim();
     const platformLoginPreset = inferPlatformLoginPreset({
         providerType: meta.type,
         apiStandard: meta.api_standard,
         baseUrl: meta.base_url,
-        oauthPath,
+        oauthPath: rawOauthPath,
         code: providerId,
         name: meta.name,
     });
+    const oauthPath = usesLiveOauthSourcePreset(platformLoginPreset) && isCanonicalOauthRuntimePath(rawOauthPath)
+        ? PLATFORM_LOGIN_PRESETS[platformLoginPreset].oauthPath
+        : rawOauthPath;
     const localBackendPreset = inferLocalBackendPreset({
         providerType: meta.type,
         baseUrl: meta.base_url,
@@ -269,6 +281,7 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
             type: String(modelMeta.type || "TEXT"),
             contextWindow: typeof modelMeta.contextWindow === "number" ? modelMeta.contextWindow : null,
             maxTokens: typeof modelMeta.maxTokens === "number" ? modelMeta.maxTokens : null,
+            temperature: typeof modelMeta.temperature === "number" ? modelMeta.temperature : null,
             rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
             isEnabled: modelMeta.isEnabled !== false,
         };

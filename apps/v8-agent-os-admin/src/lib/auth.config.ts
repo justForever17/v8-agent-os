@@ -1,6 +1,20 @@
 import type { NextAuthConfig } from "next-auth"
 
+function shouldTrustCurrentHost() {
+    if (process.env.AUTH_TRUST_HOST === "true") {
+        return true;
+    }
+
+    const authUrl = String(process.env.AUTH_URL || process.env.NEXTAUTH_URL || "").trim();
+    if (!authUrl) {
+        return process.env.NODE_ENV !== "production";
+    }
+
+    return /https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(authUrl);
+}
+
 export const authConfig = {
+    trustHost: shouldTrustCurrentHost(),
     pages: {
         signIn: "/admin/login",
         verifyRequest: "/admin/verify",

@@ -21,6 +21,8 @@ interface ModelCardV2Props {
         provider?: { name: string; icon?: string | null } | null;
         isEnabled: boolean;
         contextWindow?: number | null;
+        maxTokens?: number | null;
+        temperature?: number | null;
     };
     controlMeta?: ControlPlaneModel | null;
     isDefault?: boolean;
@@ -118,10 +120,22 @@ export function ModelCardV2({
                             <span className="max-w-[150px] truncate rounded bg-muted px-1 font-mono" title={model.modelId}>{model.modelId}</span>
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                 <span className="max-w-[120px] truncate" title={model.provider?.name}>{model.provider?.name || t("未知供应商")}</span>
-                                {model.contextWindow && (
+                                {typeof model.contextWindow === "number" && (
                                     <>
                                         <span className="shrink-0">·</span>
                                         <span className="shrink-0">{Math.round(model.contextWindow / 1000)}k {t(lt("上下文", "ctx"))}</span>
+                                    </>
+                                )}
+                                {typeof model.maxTokens === "number" && (
+                                    <>
+                                        <span className="shrink-0">·</span>
+                                        <span className="shrink-0">{model.maxTokens} {t(lt("最大输出", "max"))}</span>
+                                    </>
+                                )}
+                                {typeof model.temperature === "number" && (
+                                    <>
+                                        <span className="shrink-0">·</span>
+                                        <span className="shrink-0">temp {model.temperature.toFixed(1)}</span>
                                     </>
                                 )}
                             </div>

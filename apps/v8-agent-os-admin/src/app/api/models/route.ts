@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { buildModelMutationPayload, listEngineModels } from "@/lib/models/model-admin";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -15,42 +16,9 @@ export async function GET(req: NextRequest) {
         const res = await fetch(`${ENGINE_URL}/models`);
         if (!res.ok) throw new Error(`Python API returned ${res.status}`);
         
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const routesData: any = await res.json();
+        const routesData = await res.json();
         const providersDict = routesData.providers || {};
-        
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const modelsList: any[] = [];
-
-        Object.keys(providersDict).forEach(providerKey => {
-            // Apply filter if specified
-            if (providerIdFilter && providerKey !== providerIdFilter) return;
-
-            const providerData = providersDict[providerKey];
-            const modelsDict = providerData.models || {};
-            
-            Object.keys(modelsDict).forEach(modelKey => {
-                const modelMeta = modelsDict[modelKey];
-                modelsList.push({
-                    id: modelKey,
-                    providerId: providerKey,
-                    modelId: modelKey,
-                    name: modelMeta.name || modelKey,
-                    type: modelMeta.type || "LLM",
-                    contextWindow: modelMeta.contextWindow || null,
-                    maxTokens: modelMeta.maxTokens || null,
-                    rerankApiFlavor: modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || "",
-                    temperature: modelMeta.temperature || 0.7,
-                    isEnabled: true,
-                    provider: {
-                        name: providerData.provider?.name || providerKey,
-                        icon: providerData.provider?.icon
-                    }
-                });
-            });
-        });
-
-        return NextResponse.json(modelsList);
+        return NextResponse.json(listEngineModels(providersDict, providerIdFilter));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
@@ -92,14 +60,7 @@ export async function POST(req: NextRequest) {
         if (!modelCode) throw new Error("modelId is required");
 
         // 2. Merge model configurations
-        providerData.models[modelCode] = {
-            name: data.name,
-            type: data.type,
-            contextWindow: data.contextWindow ? parseInt(data.contextWindow) : undefined,
-            maxTokens: data.maxTokens ? parseInt(data.maxTokens) : undefined,
-            temperature: data.temperature ? parseFloat(data.temperature) : undefined,
-            rerank_api_flavor: data.rerankApiFlavor || undefined,
-        };
+        providerData.models[modelCode] = buildModelMutationPayload(data);
         
         // Remap to structure
         routesData.providers[providerCode] = providerData;

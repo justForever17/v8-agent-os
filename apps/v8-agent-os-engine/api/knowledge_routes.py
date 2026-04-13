@@ -261,7 +261,7 @@ async def memory_fts_search(q: str, scope: str = None):
             item
             for item in results
             if str(item.get("scope") or "global").strip() == "global"
-            or str(item.get("scope") or "").startswith(("project:", "workspace:", "workflow:", "channel:"))
+            or str(item.get("scope") or "").startswith(("project:", "channel:"))
         ]
         return {"query": q, "results": valid_results}
     except Exception as e:

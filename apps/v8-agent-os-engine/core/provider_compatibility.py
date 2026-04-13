@@ -69,7 +69,7 @@ def normalize_provider_error(exc: Exception, *, provider: str | None = None, mod
     retryable = False
     user_action = "请检查模型配置或稍后重试。"
 
-    if any(token in lower for token in ("401", "unauthorized", "invalid api key", "authentication", "auth")):
+    if any(token in lower for token in ("401", "unauthorized", "invalid api key", "authentication", "auth", "invalid access token", "token expired", "oauth 凭据已过期", "oauth credential expired")):
         code = "auth_error"
         user_action = "请检查供应商 API Key / OAuth 凭据。"
     elif any(token in lower for token in ("429", "rate limit", "too many requests")):

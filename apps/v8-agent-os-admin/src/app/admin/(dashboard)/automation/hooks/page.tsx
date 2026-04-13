@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Dialog,
@@ -40,6 +41,14 @@ interface HookConfig {
   target: string;
   events: string[];
   enabled: boolean;
+  async?: boolean;
+  triggerKind?: "nudge" | "wake" | "recovery_wake";
+  targetBinding?: Record<string, unknown>;
+  recoveryAnchor?: Record<string, unknown>;
+  attachPolicy?: "new_session" | "attach_session" | "attach_run" | "resume_run";
+  wakeReason?: string;
+  message?: string;
+  sourceMetadata?: Record<string, unknown>;
 }
 
 interface HooksConfigResponse {
@@ -57,6 +66,20 @@ function getHookTypeLabel(type: HookConfig["type"]) {
     default:
       return type;
   }
+}
+
+function formatJsonField(value: Record<string, unknown> | undefined) {
+  return value && Object.keys(value).length ? JSON.stringify(value, null, 2) : "{}";
+}
+
+function parseJsonField(label: string, value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return {};
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} 需要是合法 JSON 对象`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 export default function HooksPage() {
@@ -77,8 +100,13 @@ export default function HooksPage() {
     target: "",
     events: [],
     enabled: true,
+    triggerKind: "nudge",
+    attachPolicy: "new_session",
   });
   const [eventsInput, setEventsInput] = useState("");
+  const [targetBindingText, setTargetBindingText] = useState("{}");
+  const [recoveryAnchorText, setRecoveryAnchorText] = useState("{}");
+  const [sourceMetadataText, setSourceMetadataText] = useState("{}");
 
   const loadDocumentation = async () => {
     try {
@@ -162,8 +190,13 @@ export default function HooksPage() {
       target: "",
       events: [],
       enabled: true,
+      triggerKind: "nudge",
+      attachPolicy: "new_session",
     });
     setEventsInput("");
+    setTargetBindingText("{}");
+    setRecoveryAnchorText("{}");
+    setSourceMetadataText("{}");
     setIsDialogOpen(true);
   };
 
@@ -171,6 +204,9 @@ export default function HooksPage() {
     setEditingHookName(hook.name);
     setFormData({ ...hook });
     setEventsInput(hook.events.join(", "));
+    setTargetBindingText(formatJsonField(hook.targetBinding));
+    setRecoveryAnchorText(formatJsonField(hook.recoveryAnchor));
+    setSourceMetadataText(formatJsonField(hook.sourceMetadata));
     setIsDialogOpen(true);
   };
 
@@ -191,11 +227,30 @@ export default function HooksPage() {
   };
 
   const handleSaveHook = async () => {
+    let targetBinding: Record<string, unknown> | undefined;
+    let recoveryAnchor: Record<string, unknown> | undefined;
+    let sourceMetadata: Record<string, unknown> | undefined;
+    try {
+      targetBinding = parseJsonField("targetBinding", targetBindingText);
+      recoveryAnchor = parseJsonField("recoveryAnchor", recoveryAnchorText);
+      sourceMetadata = parseJsonField("sourceMetadata", sourceMetadataText);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : t(lt("Wake ingress JSON 配置无效。", "Wake ingress JSON is invalid.")));
+      return;
+    }
     const updatedEvents = eventsInput
       .split(",")
       .map((e) => e.trim())
       .filter((e) => e.length > 0);
-    const updatedHook = { ...formData, events: updatedEvents };
+    const updatedHook: HookConfig = {
+      ...formData,
+      events: updatedEvents,
+      triggerKind: formData.triggerKind || "nudge",
+      attachPolicy: formData.attachPolicy || "new_session",
+      targetBinding,
+      recoveryAnchor,
+      sourceMetadata,
+    };
 
     let newHooks: HookConfig[];
     if (editingHookName) {
@@ -311,6 +366,66 @@ export default function HooksPage() {
                 placeholder={t(lt("例如：on_agent_start, after_code_generated", "e.g. on_agent_start, after_code_generated"))}
               />
             </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="triggerKind">{t(lt("Wake 类型", "Wake trigger kind"))}</Label>
+                <select
+                  id="triggerKind"
+                  className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.triggerKind || "nudge"}
+                  onChange={(e) => setFormData({ ...formData, triggerKind: e.target.value as HookConfig["triggerKind"] })}
+                >
+                  <option value="nudge">nudge</option>
+                  <option value="wake">wake</option>
+                  <option value="recovery_wake">recovery_wake</option>
+                </select>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="attachPolicy">{t(lt("附着策略", "Attach policy"))}</Label>
+                <select
+                  id="attachPolicy"
+                  className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.attachPolicy || "new_session"}
+                  onChange={(e) => setFormData({ ...formData, attachPolicy: e.target.value as HookConfig["attachPolicy"] })}
+                >
+                  <option value="new_session">new_session</option>
+                  <option value="attach_session">attach_session</option>
+                  <option value="attach_run">attach_run</option>
+                  <option value="resume_run">resume_run</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="wakeReason">{t(lt("唤醒原因", "Wake reason"))}</Label>
+              <Input
+                id="wakeReason"
+                value={formData.wakeReason || ""}
+                onChange={(e) => setFormData({ ...formData, wakeReason: e.target.value })}
+                placeholder={t(lt("例如：scheduled_project_checkin", "e.g. scheduled_project_checkin"))}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="message">{t(lt("消息模板", "Message"))}</Label>
+              <Textarea
+                id="message"
+                rows={3}
+                value={formData.message || ""}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFormData({ ...formData, message: e.target.value })}
+                placeholder={t(lt("没有 targetBinding / recoveryAnchor 时，这段消息只会作为 nudge 文本。", "Without targetBinding / recoveryAnchor this text only becomes a nudge message."))}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="targetBinding">{t(lt("targetBinding（JSON）", "targetBinding (JSON)"))}</Label>
+              <Textarea id="targetBinding" rows={4} value={targetBindingText} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setTargetBindingText(e.target.value)} className="font-mono text-xs" />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="recoveryAnchor">{t(lt("recoveryAnchor（JSON）", "recoveryAnchor (JSON)"))}</Label>
+              <Textarea id="recoveryAnchor" rows={4} value={recoveryAnchorText} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setRecoveryAnchorText(e.target.value)} className="font-mono text-xs" />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="sourceMetadata">{t(lt("sourceMetadata（JSON）", "sourceMetadata (JSON)"))}</Label>
+              <Textarea id="sourceMetadata" rows={4} value={sourceMetadataText} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setSourceMetadataText(e.target.value)} className="font-mono text-xs" />
+            </div>
             <div className="flex items-center gap-2 mt-2">
               <Switch
                 id="enabled"
@@ -421,10 +536,19 @@ export default function HooksPage() {
                   <span>{t(getHookTypeLabel(hook.type))}</span>
                 </p>
                 <p>
+                  <strong>{t(lt("Wake：", "Wake:"))}</strong>{" "}
+                  <span>{hook.triggerKind || "nudge"}</span>
+                </p>
+                <p>
                   <strong>{t(lt("目标：", "Target:"))}</strong>{" "}
                   <code className="bg-muted px-1 rounded truncate block mt-1">
                     {hook.target}
                   </code>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {hook.targetBinding || hook.recoveryAnchor
+                    ? t(lt("已配置显式 targetBinding / recoveryAnchor。", "Explicit targetBinding / recoveryAnchor configured."))
+                    : t(lt("未提供 binding，运行时会自动降级为 nudge。", "No binding provided; runtime will degrade this trigger to nudge."))}
                 </p>
                 <div>
                   <strong>{t(lt("触发事件：", "Events:"))}</strong>

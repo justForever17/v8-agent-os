@@ -29,6 +29,7 @@ interface AIModel {
     type: string;
     contextWindow: number | null;
     maxTokens: number | null;
+    temperature?: number | null;
     isEnabled: boolean;
 }
 
@@ -55,15 +56,30 @@ type ModelConnectionStatus = {
     message?: string;
 };
 
+function extractErrorText(value: unknown, fallback: string): string {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) {
+        const joined = value
+            .map((item) => extractErrorText(item, ""))
+            .filter(Boolean)
+            .join(" · ");
+        return joined || fallback;
+    }
+    if (value && typeof value === "object") {
+        const record = value as Record<string, unknown>;
+        return (
+            extractErrorText(record.error, "")
+            || extractErrorText(record.message, "")
+            || extractErrorText(record.detail, "")
+            || fallback
+        );
+    }
+    return fallback;
+}
+
 async function readJsonErrorMessage(response: Response, fallback: string) {
     const data = await response.json().catch(() => null);
-    const detail = typeof data?.detail === "string"
-        ? data.detail
-        : typeof data?.detail?.error === "string"
-            ? data.detail.error
-            : typeof data?.error === "string"
-                ? data.error
-                : "";
+    const detail = extractErrorText(data?.detail, "") || extractErrorText(data?.error, "");
     return detail || fallback;
 }
 
@@ -95,6 +111,7 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
     // Model Dialog State
     const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
     const [editingModel, setEditingModel] = useState<AIModel | null>(null);
+    const [modelType, setModelType] = useState("TEXT");
     const { toast } = useToast();
 
     const fetchProvider = useCallback(async () => {
@@ -181,16 +198,24 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
             ? `/api/models/${encodeURIComponent(editingModel.id)}?providerId=${encodeURIComponent(editingModel.providerId)}`
             : "/api/models";
         const method = editingModel ? "PUT" : "POST";
-
-        await fetch(url, {
+        const response = await fetch(url, {
             method,
             body: JSON.stringify(data),
             headers: { "Content-Type": "application/json" }
         });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, t(lt("保存模型失败", "Failed to save model")));
+            toast({
+                variant: "destructive",
+                title: t(lt("保存模型失败", "Failed to save model")),
+                description: errorMessage,
+            });
+            return;
+        }
 
         setIsModelDialogOpen(false);
         setEditingModel(null);
-        fetchProvider(); // Refresh to see new model
+        await fetchProvider();
     };
 
     const handleDeleteModel = async (model: { id: string; providerId?: string }) => {
@@ -254,7 +279,9 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
-                const error = data?.detail?.error || data?.error || data?.detail?.message || t(lt("连接测试失败", "Connection test failed"));
+                const error = extractErrorText(data?.detail, "")
+                    || extractErrorText(data?.error, "")
+                    || t(lt("连接测试失败", "Connection test failed"));
                 setConnectionStatusMap((current) => ({
                     ...current,
                     [modelId]: { status: "error", message: String(error) },
@@ -503,7 +530,7 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
                 <div className="lg:col-span-2 space-y-6">
                     <div className="flex items-center justify-between">
                         <h2 className="text-lg font-semibold">{t(lt("关联模型", "Linked models"))} ({provider.models?.length || 0})</h2>
-                        <Button onClick={() => { setEditingModel(null); setIsModelDialogOpen(true); }}>
+                        <Button onClick={() => { setEditingModel(null); setModelType("TEXT"); setIsModelDialogOpen(true); }}>
                             <Plus className="w-4 h-4 mr-2" />
                             {t(lt("添加模型", "Add model"))}
                         </Button>
@@ -520,7 +547,7 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
                                 connectionStatus={connectionStatusMap[model.modelId] || null}
                                 onTestConnection={handleTestConnection}
                                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                onEdit={(m: any) => { setEditingModel(m); setIsModelDialogOpen(true); }}
+                                onEdit={(m: any) => { setEditingModel(m); setModelType(m.type || "TEXT"); setIsModelDialogOpen(true); }}
                                 onDelete={handleDeleteModel}
                             />
                         ))}
@@ -552,7 +579,8 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="model-type">{t(lt("类型", "Type"))}</Label>
-                            <Select name="type" defaultValue={editingModel?.type || "TEXT"}>
+                            <input type="hidden" name="type" value={modelType} />
+                            <Select value={modelType} onValueChange={setModelType}>
                                 <SelectTrigger>
                                     <SelectValue />
                                 </SelectTrigger>
@@ -573,6 +601,10 @@ export default function ProviderConfigPage({ params }: { params: Promise<{ id: s
                                 <Label htmlFor="maxTokens">{t(lt("最大 Token", "Max tokens"))}</Label>
                                 <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="4096" />
                             </div>
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="temperature">{t(lt("温度", "Temperature"))}</Label>
+                            <Input id="temperature" name="temperature" type="number" step="0.1" defaultValue={editingModel?.temperature ?? 0.0} placeholder="0.0" />
                         </div>
                         <Button type="submit" className="w-full">{t(lt("保存模型", "Save model"))}</Button>
                     </form>

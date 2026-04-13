@@ -1,6 +1,7 @@
 import { access, copyFile, mkdir } from "fs/promises";
 import os from "os";
 import path from "path";
+import { PLATFORM_LOGIN_PRESETS, type PlatformLoginPreset } from "@/lib/models/provider-admin";
 
 const INVISIBLE_OAUTH_PATH_MARKERS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 
@@ -29,10 +30,20 @@ function canonicalOauthRoot(): string {
     return path.join(os.homedir(), ".v8-agent-os", "core", "oauth", "providers");
 }
 
+function shouldPreserveLiveOauthSource(platformLoginPreset?: string): boolean {
+    return platformLoginPreset === "qwenCode" || platformLoginPreset === "codex";
+}
+
+function isCanonicalOauthRuntimePath(filepath: string): boolean {
+    const resolved = path.resolve(expandHome(filepath));
+    const canonicalRoot = path.resolve(canonicalOauthRoot());
+    return resolved === canonicalRoot || resolved.startsWith(`${canonicalRoot}${path.sep}`);
+}
+
 export async function canonicalizeOauthCredentialReference(params: {
     providerId: string;
     rawReference: string;
-    platformLoginPreset?: string;
+    platformLoginPreset?: PlatformLoginPreset;
 }): Promise<{
     storedCredential: string;
     canonicalPath: string;
@@ -50,8 +61,24 @@ export async function canonicalizeOauthCredentialReference(params: {
     }
 
     const sourceValue = normalized.startsWith("oauth:") ? normalized.slice(6) : normalized;
-    const sourcePath = path.resolve(expandHome(sourceValue));
+    const preserveLiveSource = shouldPreserveLiveOauthSource(params.platformLoginPreset);
+    const preferredLiveSource = preserveLiveSource && params.platformLoginPreset
+        ? PLATFORM_LOGIN_PRESETS[params.platformLoginPreset].oauthPath
+        : "";
+    const effectiveSourceValue = preserveLiveSource && isCanonicalOauthRuntimePath(sourceValue) && preferredLiveSource
+        ? preferredLiveSource
+        : sourceValue;
+    const sourcePath = path.resolve(expandHome(effectiveSourceValue));
     await access(sourcePath);
+
+    if (preserveLiveSource) {
+        return {
+            storedCredential: `oauth:${sourcePath}`,
+            canonicalPath: "",
+            sourcePath,
+            oauthRef: "",
+        };
+    }
 
     const providerDir = path.join(canonicalOauthRoot(), slugifyProviderId(params.providerId));
     await mkdir(providerDir, { recursive: true });

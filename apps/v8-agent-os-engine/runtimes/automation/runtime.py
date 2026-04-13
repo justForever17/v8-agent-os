@@ -20,6 +20,11 @@ from core.runtime_contexts import (
     coerce_json_dict,
 )
 from core.storage import storage
+from runtimes.automation.wake_ingress import (
+    apply_wake_envelope_to_kwargs,
+    derive_wake_session_id,
+    normalize_wake_ingress_envelope,
+)
 
 
 def _slug(value: str, *, fallback: str = "automation") -> str:
@@ -40,40 +45,96 @@ def _jsonable(value: Any) -> Any:
 class AutomationRuntime:
     kind = "automation"
 
+    def _wake_ingress_policy(self) -> dict[str, Any]:
+        config = storage.get_automation_runtime_config() or {}
+        policies = dict(config.get("wakeIngressPolicies") or {})
+        enabled_source_runtimes = [
+            str(item).strip()
+            for item in list(policies.get("enabledSourceRuntimes") or [])
+            if str(item).strip()
+        ]
+        return {
+            "allow_nudge_without_target": policies.get("allowNudgeWithoutTarget", True) is not False,
+            "default_attach_policy": str(policies.get("defaultAttachPolicy") or "new_session").strip() or "new_session",
+            "enabled_source_runtimes": enabled_source_runtimes,
+        }
+
+    def _ingress_source_name(self, trigger_source: str | None) -> str:
+        normalized = str(trigger_source or "").strip().lower()
+        if normalized == "cron" or normalized.startswith("cron:"):
+            return "cron"
+        if normalized.startswith("hook"):
+            return "hook"
+        if normalized.startswith("plugin_host"):
+            return "plugin_host"
+        if normalized.startswith("network_supervisor"):
+            return "network_supervisor"
+        if normalized.startswith("chat"):
+            return "chat"
+        if normalized.startswith("computer_use") or normalized.startswith("desktop_live"):
+            return "computer_use"
+        return "automation"
+
     def runtime_descriptor(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
             "displayName": "AutomationRuntime",
-            "summary": "负责 Hook/Cron 自动化任务封装与调度上下文，不直接承担复杂业务编排。",
+            "summary": "负责非人类触发入口的 Govern ingress、上下文绑定与自动化任务分发。",
             "responsibilities": [
-                "标准化 Hook/Cron 输入",
-                "生成自动化会话上下文",
-                "把自动化任务交给核心运行链执行",
+                "标准化 Hook/Cron/Channel/Wake 输入",
+                "生成 WakeIngressEnvelope 与自动化会话上下文",
+                "把自动化任务交给核心运行链执行，并负责 attach/resume/new-session 决策",
             ],
-            "routingKeywords": ["cron", "hook", "自动化", "定时任务", "系统触发"],
-            "acceptedInputs": ["action envelope", "cron metadata", "hook payload"],
-            "producedOutputs": ["automation session", "dispatch payload"],
-            "ownedSteps": ["automation.prepare", "automation.dispatch"],
+            "routingKeywords": ["cron", "hook", "自动化", "定时任务", "系统触发", "wake", "recovery"],
+            "acceptedInputs": ["action envelope", "wake ingress envelope", "cron metadata", "hook payload"],
+            "producedOutputs": ["automation session", "dispatch payload", "wake ingress projection"],
+            "ownedSteps": ["automation.prepare", "automation.dispatch", "automation.recovery"],
             "supportsPause": True,
-            "supportsResume": False,
+            "supportsResume": True,
             "supportsApproval": True,
             "supportsRepair": False,
             "visibility": "internal",
             "promptHints": [
-                "Hook/Cron 触发的任务先走 AutomationRuntime 整理上下文，不要直接让 Supervisor 处理原始事件噪音。",
+                "所有非人类触发入口先走 AutomationRuntime 归一成 WakeIngressEnvelope，不要让 Supervisor 直接处理原始事件噪音。",
             ],
             "capabilities": [
                 {
                     "key": "automation.dispatch",
-                    "label": "自动化任务分发",
-                    "summary": "承接 Hook/Cron 事件并整理成标准执行请求。",
-                    "accepts": ["event payload", "cron schedule context"],
-                    "outputs": ["normalized automation request"],
-                    "examples": ["定时唤醒任务", "生命周期钩子触发任务"],
+                    "label": "自动化触发与唤醒分发",
+                    "summary": "承接 Hook/Cron/非人类入口事件，并整理成标准 WakeIngress 执行请求。",
+                    "accepts": ["event payload", "wake ingress envelope", "cron schedule context"],
+                    "outputs": ["normalized automation request", "wake ingress payload"],
+                    "examples": ["生命周期钩子触发任务", "恢复唤醒附着 run", "渠道消息唤醒"],
                     "risk_level": "medium",
                 }
             ],
         }
+
+    def normalize_wake_ingress(
+        self,
+        *,
+        action_type: str,
+        target: str,
+        payload: Dict[str, Any],
+        trigger_source: str | None,
+        kwargs: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        task_name = kwargs.get("task_name") or f"{action_type}:{target}"
+        policy = self._wake_ingress_policy()
+        ingress_source = self._ingress_source_name(trigger_source)
+        envelope = normalize_wake_ingress_envelope(
+            source_runtime=ingress_source,
+            trigger_source=trigger_source,
+            payload=payload,
+            kwargs=kwargs,
+            default_message=task_name,
+            default_attach_policy=policy["default_attach_policy"],
+            allow_nudge_without_target=bool(policy["allow_nudge_without_target"]),
+            source_runtime_enabled=not policy["enabled_source_runtimes"] or ingress_source in set(policy["enabled_source_runtimes"]),
+        )
+        envelope.setdefault("sourceMetadata", {})
+        envelope["sourceMetadata"].setdefault("ingressSource", ingress_source)
+        return envelope, apply_wake_envelope_to_kwargs(kwargs, envelope)
 
     def resolve_session_id(
         self,
@@ -86,6 +147,11 @@ class AutomationRuntime:
         explicit = kwargs.get("session_id")
         if explicit:
             return str(explicit)
+
+        envelope = kwargs.get("wake_ingress_envelope")
+        derived_wake_session = derive_wake_session_id(envelope) if isinstance(envelope, dict) else None
+        if derived_wake_session:
+            return derived_wake_session
 
         if trigger_source == "cron":
             cron_job_id = kwargs.get("cron_job_id") or _slug(kwargs.get("task_name") or target)
@@ -139,6 +205,7 @@ class AutomationRuntime:
             "action_type": action_type,
             "action_target": target,
             "payload": _jsonable(payload or {}),
+            "wake_ingress_envelope": _jsonable(kwargs.get("wake_ingress_envelope") or {}),
             "is_async": bool(is_async),
             "trigger_source": trigger_source,
             "task_name": kwargs.get("task_name") or f"{action_type}:{target}",
@@ -251,6 +318,7 @@ class AutomationRuntime:
                         "resolved_scope": kwargs.get("resolved_scope"),
                         "scope_source": kwargs.get("scope_source"),
                         "scope_chain": list(kwargs.get("scope_chain") or []),
+                        "wake_ingress_envelope": kwargs.get("wake_ingress_envelope") or {},
                         "recent_run_summaries": recent_summaries,
                         "job_memory": job_memory,
                         "context_adapter_blocks": context_blocks,
@@ -367,8 +435,17 @@ class AutomationRuntime:
         is_async: bool,
         kwargs: Dict[str, Any],
     ):
+        envelope, normalized_kwargs = self.normalize_wake_ingress(
+            action_type=action_type,
+            target=target,
+            payload=payload,
+            trigger_source=trigger_source,
+            kwargs=kwargs,
+        )
+        kwargs.clear()
+        kwargs.update(normalized_kwargs)
         run_handle = None
-        existing_run_id = kwargs.get("run_id")
+        existing_run_id = normalized_kwargs.get("run_id")
         if existing_run_id:
             run_handle = self.attach_run(str(existing_run_id))
         if run_handle is None:
@@ -378,7 +455,7 @@ class AutomationRuntime:
                 payload=payload,
                 trigger_source=trigger_source,
                 is_async=is_async,
-                kwargs=kwargs,
+                kwargs=normalized_kwargs,
                 run_id=existing_run_id,
             )
             run_handle.emit(
@@ -389,6 +466,7 @@ class AutomationRuntime:
                     "trigger_source": trigger_source,
                     "action_type": action_type,
                     "action_target": target,
+                    "trigger_kind": envelope.get("triggerKind"),
                 },
             )
         return run_handle

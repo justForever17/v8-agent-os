@@ -382,7 +382,7 @@ def _save_cron_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
     storage.save_cron_config(data)
     try:
-        from core.automation.cron import cron_manager
+        from core.cron_manager import cron_manager
 
         cron_manager.sync_jobs_to_scheduler()
     except Exception:
@@ -392,19 +392,19 @@ def _save_cron_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_automation_runtime_domain() -> dict[str, Any]:
     config = storage.get_automation_runtime_config()
-    heartbeat = dict(config.get("supervisorHeartbeat") or {})
+    wake_policies = dict(config.get("wakeIngressPolicies") or {})
     return {
         "domain": "automation-runtime",
         "title": "AUTOMATION RUNTIME",
-        "summary": "控制自动化保留系统任务，例如 Supervisor 心跳唤醒。",
+        "summary": "控制非人类触发入口的 Wake ingress 策略，不再提供独立 heartbeat 功能面。",
         "data": config,
         "source": _config_source("automationRuntime"),
         "savePath": _config_save_path("automationRuntime"),
         "reloadRequired": True,
         "warnings": [
-            "Supervisor heartbeat 属于系统保留自动化任务，不会作为普通用户 Cron Job 单独暴露。",
-        ] if heartbeat.get("enabled") else [],
-        "advancedFields": ["supervisorHeartbeat"],
+            "没有显式 targetBinding 或 recoveryAnchor 的 hooks/cron 只会被当作 nudge，不会获得隐式 wake 权限。",
+        ] if wake_policies else [],
+        "advancedFields": ["wakeIngressPolicies"],
     }
 
 
@@ -412,7 +412,7 @@ def _save_automation_runtime_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
     storage.save_automation_runtime_config(data)
     try:
-        from core.automation.cron import cron_manager
+        from core.cron_manager import cron_manager
 
         cron_manager.sync_jobs_to_scheduler()
     except Exception:

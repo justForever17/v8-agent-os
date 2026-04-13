@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { buildModelMutationPayload } from "@/lib/models/model-admin";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -15,6 +16,7 @@ export async function PUT(
         const { id } = await params;
         const data = await req.json();
         const providerId = req.nextUrl.searchParams.get("providerId")?.trim() || "";
+        const desiredProviderId = String(data?.providerId || "").trim() || providerId;
 
         const resGet = await fetch(`${ENGINE_URL}/models`);
         if (!resGet.ok) throw new Error(`Python API returned ${resGet.status} on GET`);
@@ -39,18 +41,20 @@ export async function PUT(
             return NextResponse.json({ error: "Model not found" }, { status: 404 });
         }
 
-        // Merge properties
-        routesData.providers[targetProviderId].models[id] = {
-            ...routesData.providers[targetProviderId].models[id],
-            name: data.name,
-            type: data.type,
-            contextWindow: data.contextWindow ? parseInt(data.contextWindow) : undefined,
-            maxTokens: data.maxTokens ? parseInt(data.maxTokens) : undefined,
-            temperature: data.temperature !== undefined ? parseFloat(data.temperature) : undefined,
-            costPerInput: data.costPerInput ? parseFloat(data.costPerInput) : undefined,
-            costPerOutput: data.costPerOutput ? parseFloat(data.costPerOutput) : undefined,
-            rerank_api_flavor: data.rerankApiFlavor || undefined,
+        if (!desiredProviderId) {
+            return NextResponse.json({ error: "providerId is required" }, { status: 400 });
+        }
+
+        if (!routesData.providers[desiredProviderId]) {
+            return NextResponse.json({ error: "Target provider not found" }, { status: 404 });
+        }
+
+        const existingModel = {
+            ...(routesData.providers[targetProviderId].models[id] || {}),
+            ...buildModelMutationPayload(data),
         };
+        delete routesData.providers[targetProviderId].models[id];
+        routesData.providers[desiredProviderId].models[id] = existingModel;
 
         const resPost = await fetch(`${ENGINE_URL}/models`, {
             method: "POST",
@@ -62,8 +66,8 @@ export async function PUT(
 
         return NextResponse.json({
              id,
-             providerId: targetProviderId,
-             ...routesData.providers[targetProviderId].models[id]
+             providerId: desiredProviderId,
+             ...routesData.providers[desiredProviderId].models[id]
         });
 
     } catch (error: unknown) {

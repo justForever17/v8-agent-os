@@ -13,7 +13,6 @@ from core.plugin_host.tool_registry import plugin_host_tool_registry
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.storage import storage
 from erc.capability_registry import capability_registry
-from mcp_client import mcp_manager
 
 from .agent_factories import build_specialist_agent_components
 from .parallel_support import build_delegate_parallel_tool
@@ -70,7 +69,7 @@ def build_supervisor_runtime_bundle(
         else llm_factory.create_chat_model(default_agent_model_id, streaming=True, **caller_kwargs)
     )
 
-    all_mcp_tools = mcp_manager.get_tools()
+    all_mcp_tools = extensions_runtime_service.get_mcp_tools()
     plugin_host_tools = plugin_host_tool_registry.build_supervisor_tools()
     loaded_agents = storage.get_all_agents()
     filtered_native_tools = capability_registry.filter_direct_tools(NATIVE_TOOLS)
@@ -158,6 +157,9 @@ def build_supervisor_node(
             sanitize_response_tool_calls=sanitize_response_tool_calls,
         )
         hooks_manager.execute_hook("on_supervisor_end")
-        return route_supervisor_response(response)
+        return route_supervisor_response(
+            response,
+            existing_route_context=dict(state.get("current_route_context") or {}),
+        )
 
     return supervisor_node

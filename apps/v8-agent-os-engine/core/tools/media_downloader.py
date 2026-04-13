@@ -122,6 +122,12 @@ def _extract_first_url(value: str) -> str:
 
 
 def _enforce_safety_decision(decision, *, tool_call_id: str, question: str) -> tuple[bool, str | None]:
+    safety_guardian.log_decision_event(
+        action="media_download_safety",
+        decision=decision,
+        subject=question,
+        metadata={"toolCallId": tool_call_id},
+    )
     if decision.is_allow():
         return True, None
 

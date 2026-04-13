@@ -7,7 +7,7 @@ import shlex
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -19,8 +19,13 @@ from erc.event_bus import event_bus
 from erc.models import RuntimeSource
 
 
+MACHINE_POSTURE_DEDICATED = "dedicated_runtime_host"
+MACHINE_POSTURE_DEVELOPER = "developer_mixed_host"
+VALID_MACHINE_POSTURES = {MACHINE_POSTURE_DEDICATED, MACHINE_POSTURE_DEVELOPER}
+
 DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
     "enabled": True,
+    "machinePosture": MACHINE_POSTURE_DEDICATED,
     "commandRules": [
         {
             "id": "command_block",
@@ -90,29 +95,85 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
     },
     "runtimeRules": {
         "chat": {
+            "auditTriggerSources": [],
             "reviewTriggerSources": [],
             "blockedTriggerSources": [],
+            "auditScopePatterns": [],
             "reviewScopePatterns": [],
             "blockedScopePatterns": [],
         },
         "automation": {
+            "auditTriggerSources": [],
             "reviewTriggerSources": [],
             "blockedTriggerSources": [],
+            "auditScopePatterns": [],
             "reviewScopePatterns": [],
             "blockedScopePatterns": [],
         },
         "plugin_host": {
+            "auditTriggerSources": [],
             "reviewTriggerSources": [],
             "blockedTriggerSources": [],
+            "auditScopePatterns": [],
             "reviewScopePatterns": [],
             "blockedScopePatterns": [],
         },
         "computer_use": {
+            "auditTriggerSources": [],
             "reviewTriggerSources": [],
             "blockedTriggerSources": [],
+            "auditScopePatterns": [],
             "reviewScopePatterns": [],
             "blockedScopePatterns": [],
         },
+        "rpa": {
+            "auditTriggerSources": [],
+            "reviewTriggerSources": [],
+            "blockedTriggerSources": [],
+            "auditScopePatterns": [],
+            "reviewScopePatterns": [],
+            "blockedScopePatterns": [],
+        },
+    },
+    "skillRules": {
+        "declarationVerdict": "audit",
+        "localSecretReadVerdict": "review",
+        "browserProfileAccessVerdict": {
+            MACHINE_POSTURE_DEDICATED: "review",
+            MACHINE_POSTURE_DEVELOPER: "block",
+        },
+        "downloadExecuteVerdict": "block",
+        "persistenceVerdict": "block",
+        "destructiveVerdict": "block",
+        "binaryPayloadVerdict": "review",
+        "llmReviewEnabledFor": ["review"],
+    },
+    "networkMutationRules": {
+        "defaultExternalMutationVerdict": {
+            MACHINE_POSTURE_DEDICATED: "audit",
+            MACHINE_POSTURE_DEVELOPER: "review",
+        },
+        "sensitivePayloadVerdict": "review",
+        "credentialExfiltrationVerdict": "block",
+    },
+    "computerUseRules": {
+        "defaultMutationVerdict": {
+            MACHINE_POSTURE_DEDICATED: "audit",
+            MACHINE_POSTURE_DEVELOPER: "review",
+        },
+        "destructiveKeywordVerdict": "block",
+        "hotkeyLifecycleVerdict": "review",
+    },
+    "systemIntegrityRules": {
+        "packageInstallVerdict": {
+            MACHINE_POSTURE_DEDICATED: "audit",
+            MACHINE_POSTURE_DEVELOPER: "review",
+        },
+        "destructiveCommandVerdict": "block",
+    },
+    "v8IntegrityRules": {
+        "protectedConfigWriteVerdict": "review",
+        "protectedRuntimeProcessVerdict": "block",
     },
     "channelGroupGuard": {
         "enabled": False,
@@ -250,6 +311,15 @@ _SKILL_SCAN_RULES: tuple[dict[str, Any], ...] = (
                 ".kube",
                 "id_rsa",
                 "known_hosts",
+                "login data",
+                "cookies.sqlite",
+                "web data",
+                "places.sqlite",
+                "user data",
+                "chrome/user data",
+                "edge/user data",
+                "firefox/profiles",
+                "default/profile",
                 "os.environ",
                 "$env:",
                 "access_key",
@@ -324,22 +394,73 @@ _SKILL_SCAN_RULES: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "id": "secret_material_access",
-        "label": "敏感材料读取",
-        "severity": "medium",
-        "score": 12,
-        "reason": "发现凭证、环境变量或敏感配置读取特征。",
+        "id": "secret_declaration",
+        "label": "声明式密钥/环境变量依赖",
+        "severity": "low",
+        "score": 4,
+        "reason": "发现 skill 需要 API Key、Token 或环境变量配置。",
         "any_tokens": (
-            ".ssh",
-            ".aws",
-            ".kube",
-            "id_rsa",
-            "os.environ",
+            "api_key",
+            "access_key",
+            "secret_key",
+            "authorization",
+            "bearer ",
+            "token",
+            "os.getenv(",
+            "process.env.",
             "$env:",
             ".env",
-            "token",
-            "api_key",
-            "authorization",
+        ),
+    },
+    {
+        "id": "local_secret_read",
+        "label": "本地敏感材料读取",
+        "severity": "medium",
+        "score": 16,
+        "reason": "发现对本地凭证、环境变量或敏感配置的主动读取。",
+        "all_groups": (
+            (
+                ".ssh",
+                ".aws",
+                ".kube",
+                "id_rsa",
+                "known_hosts",
+                "os.environ",
+                "$env:",
+                ".env",
+                "api_key",
+                "authorization",
+            ),
+            (
+                "open(",
+                "read_text(",
+                "read_bytes(",
+                "get-content",
+                "cat ",
+                "copy-item",
+                "json.load(",
+                "yaml.safe_load(",
+            ),
+        ),
+    },
+    {
+        "id": "browser_profile_access",
+        "label": "浏览器资料访问",
+        "severity": "medium",
+        "score": 24,
+        "reason": "发现读取浏览器 Cookie、登录资料或 Profile 数据的特征。",
+        "any_tokens": (
+            "login data",
+            "cookies.sqlite",
+            "cookies",
+            "web data",
+            "history",
+            "places.sqlite",
+            "user data",
+            "chrome/user data",
+            "edge/user data",
+            "firefox/profiles",
+            "default/profile",
         ),
     },
 )
@@ -347,14 +468,19 @@ _SKILL_SCAN_RULES: tuple[dict[str, Any], ...] = (
 
 @dataclass(slots=True)
 class SafetyDecision:
-    verdict: str = "allow"
+    verdict: Literal["allow", "audit", "review", "block"] = "allow"
     reason: str = ""
     risk_code: str = "safe"
     details: Dict[str, Any] = field(default_factory=dict)
     allow_override: bool = True
+    governance_target: str = "general"
+    posture: str = MACHINE_POSTURE_DEDICATED
 
     def is_allow(self) -> bool:
-        return self.verdict == "allow"
+        return self.verdict in {"allow", "audit"}
+
+    def is_audit(self) -> bool:
+        return self.verdict == "audit"
 
     def is_review(self) -> bool:
         return self.verdict == "review"
@@ -368,6 +494,8 @@ class SafetyDecision:
             "reason": self.reason,
             "risk_code": self.risk_code,
             "allow_override": self.allow_override,
+            "governanceTarget": self.governance_target,
+            "posture": self.posture,
             "details": self.details,
         }
 
@@ -413,11 +541,104 @@ class SafetyGuardian:
         _walk(value)
         return " ".join(parts).lower()
 
+    def _normalize_verdict(self, value: Any, *, fallback: str, allowed: set[str]) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in allowed:
+            return normalized
+        return str(fallback).strip().lower()
+
+    def _normalize_posture_map(self, value: Any, *, fallback: Dict[str, str], allowed: set[str]) -> Dict[str, str]:
+        raw = dict(value or {}) if isinstance(value, dict) else {}
+        return {
+            MACHINE_POSTURE_DEDICATED: self._normalize_verdict(
+                raw.get(MACHINE_POSTURE_DEDICATED),
+                fallback=fallback[MACHINE_POSTURE_DEDICATED],
+                allowed=allowed,
+            ),
+            MACHINE_POSTURE_DEVELOPER: self._normalize_verdict(
+                raw.get(MACHINE_POSTURE_DEVELOPER),
+                fallback=fallback[MACHINE_POSTURE_DEVELOPER],
+                allowed=allowed,
+            ),
+        }
+
+    def _current_posture(self, config: Dict[str, Any] | None = None) -> str:
+        active = str((config or self._config()).get("machinePosture") or MACHINE_POSTURE_DEDICATED).strip().lower()
+        if active not in VALID_MACHINE_POSTURES:
+            return MACHINE_POSTURE_DEDICATED
+        return active
+
+    def _posture_verdict(self, mapping: Dict[str, str], *, posture: str, fallback: str) -> str:
+        return self._normalize_verdict(mapping.get(posture), fallback=fallback, allowed={"allow", "audit", "review", "block"})
+
+    def _decision(
+        self,
+        *,
+        verdict: str,
+        reason: str,
+        risk_code: str,
+        governance_target: str,
+        posture: str,
+        details: Dict[str, Any] | None = None,
+        allow_override: bool | None = None,
+    ) -> SafetyDecision:
+        normalized_verdict = self._normalize_verdict(verdict, fallback="allow", allowed={"allow", "audit", "review", "block"})
+        return SafetyDecision(
+            verdict=normalized_verdict,  # type: ignore[arg-type]
+            reason=reason,
+            risk_code=risk_code,
+            details=dict(details or {}),
+            allow_override=(normalized_verdict != "block") if allow_override is None else allow_override,
+            governance_target=governance_target,
+            posture=posture,
+        )
+
+    def log_decision_event(
+        self,
+        *,
+        action: str,
+        decision: SafetyDecision,
+        subject: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        if decision.verdict == "allow":
+            return
+        try:
+            from core.audit_logger import audit_logger
+
+            status = {
+                "audit": "INFO",
+                "review": "WARNING",
+                "block": "ERROR",
+            }.get(decision.verdict, "INFO")
+            payload = {
+                "subject": str(subject or "").strip() or None,
+                "verdict": decision.verdict,
+                "reason": decision.reason,
+                "riskCode": decision.risk_code,
+                "governanceTarget": decision.governance_target,
+                "posture": decision.posture,
+                "details": decision.details,
+                "metadata": dict(metadata or {}),
+            }
+            audit_logger.log(
+                source_type="SAFETY",
+                action=action,
+                status=status,
+                details=json.dumps(payload, ensure_ascii=False),
+            )
+        except Exception:
+            return
+
     def normalize_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         raw = deepcopy(config if config is not None else storage.get_safety_guardian_config() or {})
         merged = deepcopy(DEFAULT_SAFETY_GUARDIAN_CONFIG)
 
         merged["enabled"] = bool(raw.get("enabled", merged["enabled"]))
+        machine_posture = str(raw.get("machinePosture") or merged["machinePosture"]).strip().lower()
+        if machine_posture not in VALID_MACHINE_POSTURES:
+            machine_posture = MACHINE_POSTURE_DEDICATED
+        merged["machinePosture"] = machine_posture
 
         legacy_blocked_commands = [str(item).strip() for item in raw.get("blockedCommandPatterns", []) if str(item).strip()]
         legacy_review_commands = [str(item).strip() for item in raw.get("reviewCommandPatterns", []) if str(item).strip()]
@@ -485,14 +706,129 @@ class SafetyGuardian:
         for runtime_kind, default_rules in DEFAULT_SAFETY_GUARDIAN_CONFIG["runtimeRules"].items():
             configured_rules = dict(runtime_rules.get(runtime_kind) or {})
             merged["runtimeRules"][runtime_kind] = {
+                "auditTriggerSources": [str(item).strip().lower() for item in configured_rules.get("auditTriggerSources", []) if str(item).strip()],
                 "reviewTriggerSources": [str(item).strip().lower() for item in configured_rules.get("reviewTriggerSources", []) if str(item).strip()],
                 "blockedTriggerSources": [str(item).strip().lower() for item in configured_rules.get("blockedTriggerSources", []) if str(item).strip()],
+                "auditScopePatterns": [str(item).strip().lower() for item in configured_rules.get("auditScopePatterns", []) if str(item).strip()],
                 "reviewScopePatterns": [str(item).strip().lower() for item in configured_rules.get("reviewScopePatterns", []) if str(item).strip()],
                 "blockedScopePatterns": [str(item).strip().lower() for item in configured_rules.get("blockedScopePatterns", []) if str(item).strip()],
             }
             for key, fallback_value in default_rules.items():
                 if not merged["runtimeRules"][runtime_kind][key]:
                     merged["runtimeRules"][runtime_kind][key] = list(fallback_value)
+
+        skill_rules = dict(raw.get("skillRules") or {})
+        merged["skillRules"] = {
+            "declarationVerdict": self._normalize_verdict(
+                skill_rules.get("declarationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["declarationVerdict"],
+                allowed={"allow", "audit", "review"},
+            ),
+            "localSecretReadVerdict": self._normalize_verdict(
+                skill_rules.get("localSecretReadVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["localSecretReadVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "browserProfileAccessVerdict": self._normalize_posture_map(
+                skill_rules.get("browserProfileAccessVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["browserProfileAccessVerdict"],
+                allowed={"review", "block"},
+            ),
+            "downloadExecuteVerdict": self._normalize_verdict(
+                skill_rules.get("downloadExecuteVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["downloadExecuteVerdict"],
+                allowed={"review", "block"},
+            ),
+            "persistenceVerdict": self._normalize_verdict(
+                skill_rules.get("persistenceVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["persistenceVerdict"],
+                allowed={"review", "block"},
+            ),
+            "destructiveVerdict": self._normalize_verdict(
+                skill_rules.get("destructiveVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["destructiveVerdict"],
+                allowed={"review", "block"},
+            ),
+            "binaryPayloadVerdict": self._normalize_verdict(
+                skill_rules.get("binaryPayloadVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["binaryPayloadVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "llmReviewEnabledFor": [
+                item
+                for item in (
+                    self._normalize_verdict(candidate, fallback="", allowed={"review", "block"})
+                    for candidate in list(skill_rules.get("llmReviewEnabledFor") or [])
+                )
+                if item
+            ] or list(DEFAULT_SAFETY_GUARDIAN_CONFIG["skillRules"]["llmReviewEnabledFor"]),
+        }
+
+        network_mutation_rules = dict(raw.get("networkMutationRules") or {})
+        merged["networkMutationRules"] = {
+            "defaultExternalMutationVerdict": self._normalize_posture_map(
+                network_mutation_rules.get("defaultExternalMutationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["networkMutationRules"]["defaultExternalMutationVerdict"],
+                allowed={"audit", "review"},
+            ),
+            "sensitivePayloadVerdict": self._normalize_verdict(
+                network_mutation_rules.get("sensitivePayloadVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["networkMutationRules"]["sensitivePayloadVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "credentialExfiltrationVerdict": self._normalize_verdict(
+                network_mutation_rules.get("credentialExfiltrationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["networkMutationRules"]["credentialExfiltrationVerdict"],
+                allowed={"review", "block"},
+            ),
+        }
+
+        computer_use_rules = dict(raw.get("computerUseRules") or {})
+        merged["computerUseRules"] = {
+            "defaultMutationVerdict": self._normalize_posture_map(
+                computer_use_rules.get("defaultMutationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["computerUseRules"]["defaultMutationVerdict"],
+                allowed={"audit", "review"},
+            ),
+            "destructiveKeywordVerdict": self._normalize_verdict(
+                computer_use_rules.get("destructiveKeywordVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["computerUseRules"]["destructiveKeywordVerdict"],
+                allowed={"review", "block"},
+            ),
+            "hotkeyLifecycleVerdict": self._normalize_verdict(
+                computer_use_rules.get("hotkeyLifecycleVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["computerUseRules"]["hotkeyLifecycleVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+        }
+
+        system_integrity_rules = dict(raw.get("systemIntegrityRules") or {})
+        merged["systemIntegrityRules"] = {
+            "packageInstallVerdict": self._normalize_posture_map(
+                system_integrity_rules.get("packageInstallVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["systemIntegrityRules"]["packageInstallVerdict"],
+                allowed={"audit", "review"},
+            ),
+            "destructiveCommandVerdict": self._normalize_verdict(
+                system_integrity_rules.get("destructiveCommandVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["systemIntegrityRules"]["destructiveCommandVerdict"],
+                allowed={"review", "block"},
+            ),
+        }
+
+        v8_integrity_rules = dict(raw.get("v8IntegrityRules") or {})
+        merged["v8IntegrityRules"] = {
+            "protectedConfigWriteVerdict": self._normalize_verdict(
+                v8_integrity_rules.get("protectedConfigWriteVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["v8IntegrityRules"]["protectedConfigWriteVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "protectedRuntimeProcessVerdict": self._normalize_verdict(
+                v8_integrity_rules.get("protectedRuntimeProcessVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
+                allowed={"review", "block"},
+            ),
+        }
 
         channel_group_guard = dict(raw.get("channelGroupGuard") or {})
         merged["channelGroupGuard"] = {
@@ -542,15 +878,18 @@ class SafetyGuardian:
         user_id: str | None = None,
     ) -> SafetyDecision:
         config = self._config()
+        posture = self._current_posture(config)
         runtime_rule = dict((config.get("runtimeRules") or {}).get(runtime_kind, {}) or {})
         normalized_trigger = (trigger_source or "").strip().lower()
         normalized_scope = (resolved_scope or "").strip().lower()
 
         if self._matches_patterns(normalized_trigger, runtime_rule.get("blockedTriggerSources", [])):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason=f"{runtime_kind} 运行时命中了阻断触发源规则：{trigger_source}",
                 risk_code="runtime_blocked_trigger",
+                governance_target="operator_posture",
+                posture=posture,
                 details={
                     "runtime_kind": runtime_kind,
                     "trigger_source": trigger_source,
@@ -563,10 +902,12 @@ class SafetyGuardian:
             )
 
         if normalized_scope and self._matches_patterns(normalized_scope, runtime_rule.get("blockedScopePatterns", [])):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason=f"{runtime_kind} 运行时命中了阻断 scope 规则：{resolved_scope}",
                 risk_code="runtime_blocked_scope",
+                governance_target="operator_posture",
+                posture=posture,
                 details={
                     "runtime_kind": runtime_kind,
                     "trigger_source": trigger_source,
@@ -578,11 +919,47 @@ class SafetyGuardian:
                 allow_override=False,
             )
 
+        if self._matches_patterns(normalized_trigger, runtime_rule.get("auditTriggerSources", [])):
+            return self._decision(
+                verdict="audit",
+                reason=f"{runtime_kind} 运行时命中了审计触发源规则：{trigger_source}",
+                risk_code="runtime_audit_trigger",
+                governance_target="operator_posture",
+                posture=posture,
+                details={
+                    "runtime_kind": runtime_kind,
+                    "trigger_source": trigger_source,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "resolved_scope": resolved_scope,
+                    "user_id": user_id,
+                },
+            )
+
         if self._matches_patterns(normalized_trigger, runtime_rule.get("reviewTriggerSources", [])):
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason=f"{runtime_kind} 运行时命中了复核触发源规则：{trigger_source}",
                 risk_code="runtime_review_trigger",
+                governance_target="operator_posture",
+                posture=posture,
+                details={
+                    "runtime_kind": runtime_kind,
+                    "trigger_source": trigger_source,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "resolved_scope": resolved_scope,
+                    "user_id": user_id,
+                },
+            )
+
+        if normalized_scope and self._matches_patterns(normalized_scope, runtime_rule.get("auditScopePatterns", [])):
+            return self._decision(
+                verdict="audit",
+                reason=f"{runtime_kind} 运行时命中了审计 scope 规则：{resolved_scope}",
+                risk_code="runtime_audit_scope",
+                governance_target="operator_posture",
+                posture=posture,
                 details={
                     "runtime_kind": runtime_kind,
                     "trigger_source": trigger_source,
@@ -594,10 +971,12 @@ class SafetyGuardian:
             )
 
         if normalized_scope and self._matches_patterns(normalized_scope, runtime_rule.get("reviewScopePatterns", [])):
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason=f"{runtime_kind} 运行时命中了复核 scope 规则：{resolved_scope}",
                 risk_code="runtime_review_scope",
+                governance_target="operator_posture",
+                posture=posture,
                 details={
                     "runtime_kind": runtime_kind,
                     "trigger_source": trigger_source,
@@ -608,10 +987,12 @@ class SafetyGuardian:
                 },
             )
 
-        return SafetyDecision(
+        return self._decision(
             verdict="allow",
             reason="runtime_preflight_passed",
             risk_code="runtime_preflight",
+            governance_target="operator_posture",
+            posture=posture,
             details={
                 "runtime_kind": runtime_kind,
                 "trigger_source": trigger_source,
@@ -653,6 +1034,7 @@ class SafetyGuardian:
 
     def assess_system_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
         config = self._config()
+        posture = self._current_posture(config)
         if not config["enabled"]:
             return SafetyDecision()
 
@@ -664,36 +1046,66 @@ class SafetyGuardian:
             for pattern in rule["patterns"]:
                 if self._matches_command_pattern(command, pattern):
                     verdict = "block" if rule["verdict"] == "block" else "review"
-                    return SafetyDecision(
+                    governance_target = "system_integrity" if verdict == "block" else "external_mutation"
+                    if verdict == "review" and self._is_package_install_command(command):
+                        verdict = self._posture_verdict(
+                            config["systemIntegrityRules"]["packageInstallVerdict"],
+                            posture=posture,
+                            fallback="review",
+                        )
+                    return self._decision(
                         verdict=verdict,
                         reason=f"命令命中了{rule['label']}：{pattern}",
                         risk_code="blocked_command_pattern" if verdict == "block" else "review_command_pattern",
+                        governance_target=governance_target,
+                        posture=posture,
                         details={"command": command, "pattern": pattern, "rule": rule, "runtime_context": runtime_context or {}},
                         allow_override=verdict != "block",
                     )
 
         if self._touches_protected_path_in_command(command):
-            return SafetyDecision(
-                verdict="block",
+            return self._decision(
+                verdict=config["systemIntegrityRules"]["destructiveCommandVerdict"],
                 reason="命令试图删除、覆盖或移动 v8chat 核心目录/受保护路径。",
                 risk_code="protected_path_command",
+                governance_target="v8_integrity",
+                posture=posture,
                 details={"command": command, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
         if self._targets_protected_process(command):
-            return SafetyDecision(
-                verdict="block",
+            return self._decision(
+                verdict=config["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
                 reason="命令疑似试图结束 v8chat 主程序或关键守护进程。",
                 risk_code="protected_process_command",
+                governance_target="v8_integrity",
+                posture=posture,
                 details={"command": command, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
-        return SafetyDecision(
+        if self._is_package_install_command(command):
+            verdict = self._posture_verdict(
+                config["systemIntegrityRules"]["packageInstallVerdict"],
+                posture=posture,
+                fallback="audit",
+            )
+            return self._decision(
+                verdict=verdict,
+                reason="当前命令会安装或变更本机依赖环境，已按机器姿态记录治理结果。",
+                risk_code="package_install_command",
+                governance_target="system_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context or {}},
+            )
+
+        return self._decision(
             verdict="allow",
             reason="command_allowed",
             risk_code="command_allowed",
+            governance_target="system_integrity",
+            posture=posture,
             details={"command": command, "runtime_context": runtime_context or {}},
         )
 
@@ -702,6 +1114,7 @@ class SafetyGuardian:
 
     def assess_file_write(self, path: str, *, append: bool, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
         config = self._config()
+        posture = self._current_posture(config)
         if not config["enabled"]:
             return SafetyDecision()
 
@@ -710,75 +1123,93 @@ class SafetyGuardian:
             return SafetyDecision()
 
         if self._matches_path_patterns(normalized, config["fileRules"]["blockedPathPatterns"]):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason="目标路径命中了 Safety Guardian 的阻断文件规则。",
                 risk_code="blocked_file_pattern",
+                governance_target="system_integrity",
+                posture=posture,
                 details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
         if normalized.suffix.lower() in set(config["fileRules"]["protectedFileExtensions"]) and self._is_under_protected_path(normalized):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason="禁止直接写入受保护目录下的核心状态/数据库文件。",
                 risk_code="protected_database_write",
+                governance_target="v8_integrity",
+                posture=posture,
                 details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
         if self._is_under_protected_path(normalized) or self._matches_path_patterns(normalized, config["fileRules"]["reviewPathPatterns"]):
-            return SafetyDecision(
-                verdict="review",
+            return self._decision(
+                verdict=config["v8IntegrityRules"]["protectedConfigWriteVerdict"],
                 reason="当前写入目标位于 v8chat 核心配置/状态目录，需要人工确认。",
                 risk_code="protected_config_write",
+                governance_target="v8_integrity",
+                posture=posture,
                 details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
             )
 
         if self._is_sensitive_system_path(normalized):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason="当前写入目标位于系统敏感路径，已被 Safety Guardian 阻止。",
                 risk_code="sensitive_system_write",
+                governance_target="system_integrity",
+                posture=posture,
                 details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
-        return SafetyDecision(
+        return self._decision(
             verdict="allow",
             reason="file_write_allowed",
             risk_code="file_write_allowed",
+            governance_target="system_integrity",
+            posture=posture,
             details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
         )
 
     def assess_process_action(self, pid: int, action: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+        config = self._config()
+        posture = self._current_posture(config)
         try:
             process = psutil.Process(pid)
             description = " ".join(process.cmdline() or []) or process.name()
         except Exception:
             description = f"pid:{pid}"
 
-        if self._matches_process_patterns(description, self._config()["processRules"]["protectedPatterns"]):
-            return SafetyDecision(
+        if self._matches_process_patterns(description, config["processRules"]["protectedPatterns"]):
+            return self._decision(
                 verdict="block",
                 reason="目标进程疑似属于 v8chat 主程序或关键服务，禁止直接终止。",
                 risk_code="protected_process_action",
+                governance_target="v8_integrity",
+                posture=posture,
                 details={"pid": pid, "action": action, "process": description, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
-        if self._matches_process_patterns(description, self._config()["processRules"]["reviewPatterns"]):
-            return SafetyDecision(
+        if self._matches_process_patterns(description, config["processRules"]["reviewPatterns"]):
+            return self._decision(
                 verdict="review",
                 reason="目标进程命中了复核规则，需要人工确认。",
                 risk_code="review_process_action",
+                governance_target="system_integrity",
+                posture=posture,
                 details={"pid": pid, "action": action, "process": description, "runtime_context": runtime_context or {}},
             )
 
-        return SafetyDecision(
+        return self._decision(
             verdict="review",
             reason="终止本地进程属于高风险行为，需要人工确认。",
             risk_code="process_action_review",
+            governance_target="system_integrity",
+            posture=posture,
             details={"pid": pid, "action": action, "process": description, "runtime_context": runtime_context or {}},
         )
 
@@ -791,77 +1222,136 @@ class SafetyGuardian:
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> SafetyDecision:
         config = self._config()
+        posture = self._current_posture(config)
         method_upper = (method or "GET").upper()
         parsed = urlparse(url or "")
         host = (parsed.hostname or "").lower()
+        body_preview = (body or "")[:300]
 
         if not parsed.scheme or not host:
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason="网络请求目标不完整，无法确认安全性，需要人工确认。",
                 risk_code="ambiguous_http_target",
-                details={"method": method_upper, "url": url, "runtime_context": runtime_context or {}},
+                governance_target="external_mutation",
+                posture=posture,
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
             )
 
         if host in config["networkRules"]["localHosts"]:
-            return SafetyDecision(
+            return self._decision(
                 verdict="allow",
                 reason="loopback_http_allowed",
                 risk_code="loopback_http_allowed",
-                details={"method": method_upper, "url": url, "runtime_context": runtime_context or {}},
+                governance_target="external_mutation",
+                posture=posture,
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
             )
 
         if self._matches_host(host, config["networkRules"]["blockedHosts"]):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason="目标域名命中了 Safety Guardian 的阻断网络规则。",
                 risk_code="blocked_host",
-                details={"method": method_upper, "url": url, "runtime_context": runtime_context or {}},
+                governance_target="external_mutation",
+                posture=posture,
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
         if self._matches_host(host, config["networkRules"]["reviewHosts"]):
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason="目标域名命中了 Safety Guardian 的复核网络规则。",
                 risk_code="review_host",
-                details={"method": method_upper, "url": url, "runtime_context": runtime_context or {}},
+                governance_target="external_mutation",
+                posture=posture,
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+            )
+
+        if self._http_request_looks_like_credential_exfiltration(url=url, body=body, runtime_context=runtime_context):
+            return self._decision(
+                verdict=config["networkMutationRules"]["credentialExfiltrationVerdict"],
+                reason="检测到疑似浏览器数据、凭证或本地敏感材料外传请求，已提升到高风险治理。",
+                risk_code="credential_exfiltration_http",
+                governance_target="private_data_exfiltration",
+                posture=posture,
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                allow_override=False,
             )
 
         if method_upper in set(config["networkRules"]["reviewMethods"]):
-            return SafetyDecision(
-                verdict="review",
-                reason="对外部域名发起变更型网络请求，需要人工确认。",
-                risk_code="external_mutating_http",
-                details={"method": method_upper, "url": url, "body_preview": (body or "")[:300], "runtime_context": runtime_context or {}},
+            if self._http_request_looks_sensitive(url=url, body=body, runtime_context=runtime_context):
+                verdict = config["networkMutationRules"]["sensitivePayloadVerdict"]
+                risk_code = "sensitive_external_mutation_http"
+                reason = "对外部域名发起的变更型网络请求携带了敏感 payload，需要人工确认。"
+                governance_target = "private_data_exfiltration"
+            else:
+                verdict = self._posture_verdict(
+                    config["networkMutationRules"]["defaultExternalMutationVerdict"],
+                    posture=posture,
+                    fallback="audit",
+                )
+                risk_code = "external_mutating_http"
+                reason = "对外部域名发起了变更型网络请求，已按机器姿态记录治理结果。"
+                governance_target = "external_mutation"
+            return self._decision(
+                verdict=verdict,
+                reason=reason,
+                risk_code=risk_code,
+                governance_target=governance_target,
+                posture=posture,
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
             )
 
-        return SafetyDecision(
+        return self._decision(
             verdict="allow",
             reason="http_allowed",
             risk_code="http_allowed",
-            details={"method": method_upper, "url": url, "runtime_context": runtime_context or {}},
+            governance_target="external_mutation",
+            posture=posture,
+            details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
         )
 
     def assess_cron_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+        posture = self._current_posture()
         if (action or "").lower() in {"add", "remove"}:
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason="修改系统定时任务会影响长期自动化行为，需要人工确认。",
                 risk_code="cron_mutation_review",
+                governance_target="external_mutation",
+                posture=posture,
                 details={"action": action, "runtime_context": runtime_context or {}},
             )
-        return SafetyDecision(verdict="allow", reason="cron_query_allowed", risk_code="cron_query_allowed", details={"action": action})
+        return self._decision(
+            verdict="allow",
+            reason="cron_query_allowed",
+            risk_code="cron_query_allowed",
+            governance_target="external_mutation",
+            posture=posture,
+            details={"action": action, "runtime_context": runtime_context or {}},
+        )
 
     def assess_hook_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+        posture = self._current_posture()
         if (action or "").lower() == "add":
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason="新增系统 Hook 会改变引擎生命周期行为，需要人工确认。",
                 risk_code="hook_mutation_review",
+                governance_target="v8_integrity",
+                posture=posture,
                 details={"action": action, "runtime_context": runtime_context or {}},
             )
-        return SafetyDecision(verdict="allow", reason="hook_query_allowed", risk_code="hook_query_allowed", details={"action": action})
+        return self._decision(
+            verdict="allow",
+            reason="hook_query_allowed",
+            risk_code="hook_query_allowed",
+            governance_target="v8_integrity",
+            posture=posture,
+            details={"action": action, "runtime_context": runtime_context or {}},
+        )
 
     def assess_automation_action(
         self,
@@ -872,6 +1362,7 @@ class SafetyGuardian:
         trigger_source: str | None = None,
     ) -> SafetyDecision:
         config = self._config()
+        posture = self._current_posture(config)
         runtime_context = {
             "runtime_kind": "automation",
             "trigger_source": trigger_source,
@@ -881,48 +1372,58 @@ class SafetyGuardian:
         target_lower = (target or "").lower()
 
         if action_type_lower in set(config["automationRules"]["blockedActionTypes"]):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason=f"自动化动作类型 {action_type} 位于阻断清单中。",
                 risk_code="blocked_automation_action_type",
+                governance_target="external_mutation",
+                posture=posture,
                 details={"action_type": action_type, "target": target, "runtime_context": runtime_context},
                 allow_override=False,
             )
 
         if self._matches_patterns(target_lower, config["automationRules"]["blockedTargetPatterns"]):
-            return SafetyDecision(
+            return self._decision(
                 verdict="block",
                 reason="自动化目标命中了阻断规则。",
                 risk_code="blocked_automation_target",
+                governance_target="external_mutation",
+                posture=posture,
                 details={"action_type": action_type, "target": target, "runtime_context": runtime_context},
                 allow_override=False,
             )
 
         if self._matches_patterns(target_lower, config["automationRules"]["reviewTargetPatterns"]):
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason="自动化目标命中了复核规则。",
                 risk_code="review_automation_target",
+                governance_target="external_mutation",
+                posture=posture,
                 details={"action_type": action_type, "target": target, "runtime_context": runtime_context},
             )
 
         if action_type_lower in set(config["automationRules"]["reviewActionTypes"]):
             if action_type_lower == "command":
                 return self.assess_system_command(target, runtime_context=runtime_context)
-            return SafetyDecision(
+            return self._decision(
                 verdict="review",
                 reason=f"自动化动作类型 {action_type} 命中了复核策略。",
                 risk_code="review_automation_action_type",
+                governance_target="external_mutation",
+                posture=posture,
                 details={"action_type": action_type, "target": target, "runtime_context": runtime_context},
             )
 
         if action_type_lower == "command":
             return self.assess_system_command(target, runtime_context=runtime_context)
 
-        return SafetyDecision(
+        return self._decision(
             verdict="allow",
             reason="automation_target_allowed",
             risk_code="automation_target_allowed",
+            governance_target="external_mutation",
+            posture=posture,
             details={"action_type": action_type, "target": target, "runtime_context": runtime_context},
         )
 
@@ -934,6 +1435,7 @@ class SafetyGuardian:
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> SafetyDecision:
         config = self._config()
+        posture = self._current_posture(config)
         if not config["enabled"]:
             return SafetyDecision()
 
@@ -942,30 +1444,14 @@ class SafetyGuardian:
         target_values = self._flatten_text_values(target or {})
 
         blocked_keywords = ["付款", "支付", "转账", "删除账号", "恢复出厂", "格式化磁盘"]
-        review_keywords = [
-            "删除",
-            "提交",
-            "发送",
-            "发布",
-            "确认",
-            "安装",
-            "卸载",
-            "覆盖",
-            "apply",
-            "submit",
-            "send",
-            "delete",
-            "publish",
-            "confirm",
-            "install",
-            "uninstall",
-        ]
 
         if any(keyword.lower() in target_values for keyword in blocked_keywords):
-            return SafetyDecision(
-                verdict="block",
+            return self._decision(
+                verdict=config["computerUseRules"]["destructiveKeywordVerdict"],
                 reason="computer use 目标疑似涉及高危系统/资金操作，已被阻止。",
                 risk_code="computer_use_blocked_action",
+                governance_target="system_integrity",
+                posture=posture,
                 details={"action_type": action_type, "target": target or {}, "runtime_context": runtime_context},
                 allow_override=False,
             )
@@ -973,27 +1459,36 @@ class SafetyGuardian:
         if action_type_lower == "hotkey":
             sequence = str((target or {}).get("sequence") or target_values).lower()
             if any(token in sequence for token in ["%{f4}", "^+{esc}", "^{esc}", "#{l}", "#{r}"]):
-                return SafetyDecision(
-                    verdict="review",
+                return self._decision(
+                    verdict=config["computerUseRules"]["hotkeyLifecycleVerdict"],
                     reason="该热键可能影响系统或窗口生命周期，需要人工确认。",
                     risk_code="computer_use_hotkey_review",
+                    governance_target="system_integrity",
+                    posture=posture,
                     details={"action_type": action_type, "target": target or {}, "runtime_context": runtime_context},
                 )
 
-        if action_type_lower in {"click", "double_click", "type_text", "hotkey"} and any(
-            keyword.lower() in target_values for keyword in review_keywords
-        ):
-            return SafetyDecision(
-                verdict="review",
-                reason="computer use 动作命中了高风险文案关键词，需要人工确认。",
-                risk_code="computer_use_review_action",
+        if action_type_lower in {"click", "double_click", "type_text", "hotkey", "scroll", "hover"}:
+            verdict = self._posture_verdict(
+                config["computerUseRules"]["defaultMutationVerdict"],
+                posture=posture,
+                fallback="audit",
+            )
+            return self._decision(
+                verdict=verdict,
+                reason="computer use 动作已按当前机器姿态记录治理结果。",
+                risk_code="computer_use_mutation",
+                governance_target="external_mutation",
+                posture=posture,
                 details={"action_type": action_type, "target": target or {}, "runtime_context": runtime_context},
             )
 
-        return SafetyDecision(
+        return self._decision(
             verdict="allow",
             reason="computer_use_action_allowed",
             risk_code="computer_use_action_allowed",
+            governance_target="external_mutation",
+            posture=posture,
             details={"action_type": action_type, "target": target or {}, "runtime_context": runtime_context},
         )
 
@@ -1060,6 +1555,8 @@ class SafetyGuardian:
     ) -> Dict[str, Any]:
         audit_id = f"skillscan_{uuid4().hex[:12]}"
         root = self._normalize_path(skill_root)
+        config = self._config()
+        posture = self._current_posture(config)
         excluded = {
             path
             for path in [self._normalize_path(instruction_path)]
@@ -1068,13 +1565,17 @@ class SafetyGuardian:
         if root is None or not root.exists() or not root.is_dir():
             return {
                 "auditId": audit_id,
-                "verdict": "medium",
+                "verdict": "review",
+                "governanceTarget": "skill_supply_chain",
+                "posture": posture,
                 "confidence": 0.74,
                 "reasons": ["Skill 根目录不存在或不可访问，无法完成安全初筛。"],
                 "flaggedFiles": [],
                 "skillTrustScore": 35,
                 "scannedFiles": 0,
                 "candidateFiles": 0,
+                "findingCategories": [],
+                "llmReviewRecommended": False,
                 "skillName": skill_name,
                 "skillPath": skill_root,
             }
@@ -1084,6 +1585,7 @@ class SafetyGuardian:
         reason_hits: dict[str, int] = {}
         total_score = 0
         highest_severity_rank = 1
+        finding_categories: set[str] = set()
 
         for candidate in candidates:
             assessment = self._assess_skill_candidate(root, candidate)
@@ -1093,6 +1595,9 @@ class SafetyGuardian:
             total_score = min(100, total_score + int(assessment.get("score") or 0))
             highest_severity_rank = max(highest_severity_rank, self._severity_rank(str(assessment.get("severity") or "low")))
             for finding in list(assessment.get("findings") or []):
+                finding_id = str(finding.get("id") or "").strip()
+                if finding_id:
+                    finding_categories.add(finding_id)
                 label = str(finding.get("label") or "").strip()
                 if label:
                     reason_hits[label] = reason_hits.get(label, 0) + 1
@@ -1110,19 +1615,27 @@ class SafetyGuardian:
             else:
                 reasons.append("未发现需要扫描的可执行或高风险候选文件。")
 
-        verdict = self._skill_scan_verdict(total_score, highest_severity_rank)
+        verdict, governance_target, llm_review_recommended = self._skill_scan_governance(
+            finding_categories=finding_categories,
+            config=config,
+            posture=posture,
+        )
         confidence = self._skill_scan_confidence(total_score, len(flagged_files), highest_severity_rank)
         trust_score = max(0, 100 - total_score)
 
         return {
             "auditId": audit_id,
             "verdict": verdict,
+            "governanceTarget": governance_target,
+            "posture": posture,
             "confidence": confidence,
             "reasons": reasons,
             "flaggedFiles": flagged_files[:_SKILL_SCAN_MAX_FLAGGED_FILES],
             "skillTrustScore": trust_score,
             "scannedFiles": len(candidates),
             "candidateFiles": len(candidates),
+            "findingCategories": sorted(finding_categories),
+            "llmReviewRecommended": llm_review_recommended,
             "skillName": skill_name,
             "skillPath": str(root),
         }
@@ -1134,8 +1647,13 @@ class SafetyGuardian:
         skill_root: str,
         scan_payload: Dict[str, Any],
     ) -> Dict[str, Any] | None:
+        config = self._config()
         static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
-        if static_verdict not in {"medium", "high"}:
+        if static_verdict != "review":
+            return None
+        if not bool(scan_payload.get("llmReviewRecommended")):
+            return None
+        if static_verdict not in set(config.get("skillRules", {}).get("llmReviewEnabledFor") or []):
             return None
 
         try:
@@ -1169,10 +1687,12 @@ class SafetyGuardian:
             "skillName": skill_name,
             "skillRoot": skill_root,
             "staticVerdict": static_verdict,
+            "governanceTarget": scan_payload.get("governanceTarget"),
             "confidence": scan_payload.get("confidence"),
             "skillTrustScore": scan_payload.get("skillTrustScore"),
             "reasons": reasons,
             "flaggedFiles": flagged_files,
+            "findingCategories": list(scan_payload.get("findingCategories") or []),
         }
         system_prompt = (
             "你是 V8 Agent OS 的 Safety Review 模型。"
@@ -1245,6 +1765,161 @@ class SafetyGuardian:
         if not isinstance(parsed, dict):
             raise ValueError("review response must be a JSON object")
         return parsed
+
+    def _is_package_install_command(self, command: str) -> bool:
+        normalized = (command or "").strip().lower()
+        if not normalized:
+            return False
+        install_patterns = (
+            r"\bpip(?:3)?\s+install\b",
+            r"\bpython\s+-m\s+pip\s+install\b",
+            r"\bnpm\s+install\b",
+            r"\bpnpm\s+add\b",
+            r"\byarn\s+add\b",
+            r"\buv\s+pip\s+install\b",
+            r"\bapt(?:-get)?\s+install\b",
+            r"\bbrew\s+install\b",
+            r"\bchoco\s+install\b",
+            r"\bwinget\s+install\b",
+        )
+        return any(re.search(pattern, normalized) for pattern in install_patterns)
+
+    def _http_request_looks_sensitive(
+        self,
+        *,
+        url: str,
+        body: str | None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        combined = self._flatten_text_values(
+            {
+                "url": url,
+                "body": body or "",
+                "runtime_context": runtime_context or {},
+            }
+        )
+        sensitive_tokens = (
+            "authorization",
+            "bearer ",
+            "api_key",
+            "token",
+            "secret",
+            "password",
+            "cookie",
+            "session",
+            "credential",
+            ".ssh",
+            ".aws",
+            ".kube",
+            "id_rsa",
+            "login data",
+            "cookies.sqlite",
+            "user data",
+        )
+        return any(token in combined for token in sensitive_tokens)
+
+    def _http_request_looks_like_credential_exfiltration(
+        self,
+        *,
+        url: str,
+        body: str | None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        combined = self._flatten_text_values(
+            {
+                "url": url,
+                "body": body or "",
+                "runtime_context": runtime_context or {},
+            }
+        )
+        local_sensitive_tokens = (
+            "cookies.sqlite",
+            "login data",
+            "user data",
+            ".ssh",
+            ".aws",
+            ".kube",
+            "id_rsa",
+            "authorization",
+            "bearer ",
+            "api_key",
+            "secret_key",
+            "token",
+            "cookie",
+            "session",
+        )
+        exfil_tokens = (
+            "multipart/form-data",
+            "webhook",
+            "upload",
+            "exfil",
+            "sendfile",
+            "attachment",
+            "file=",
+            "content-disposition",
+        )
+        return any(token in combined for token in local_sensitive_tokens) and any(token in combined for token in exfil_tokens)
+
+    def _skill_scan_governance(
+        self,
+        *,
+        finding_categories: set[str],
+        config: Dict[str, Any],
+        posture: str,
+    ) -> tuple[str, str, bool]:
+        if not finding_categories:
+            return "allow", "skill_supply_chain", False
+
+        skill_rules = dict(config.get("skillRules") or {})
+        hard_block_categories = {"download_then_execute", "credential_exfiltration", "persistence", "destructive_fs"}
+        if finding_categories & hard_block_categories:
+            governance_target = "private_data_exfiltration" if "credential_exfiltration" in finding_categories else "skill_supply_chain"
+            if "destructive_fs" in finding_categories:
+                governance_target = "system_integrity"
+            return "block", governance_target, False
+
+        if "browser_profile_access" in finding_categories:
+            verdict = self._posture_verdict(
+                skill_rules.get("browserProfileAccessVerdict") or {},
+                posture=posture,
+                fallback="review",
+            )
+            return verdict, "private_data_exfiltration", False
+
+        if "local_secret_read" in finding_categories:
+            verdict = self._normalize_verdict(
+                skill_rules.get("localSecretReadVerdict"),
+                fallback="review",
+                allowed={"audit", "review", "block"},
+            )
+            return verdict, "private_data_exfiltration", False
+
+        ambiguous_categories = {"binary_executable", "encoded_payload", "hidden_shell_exec"}
+        if finding_categories & ambiguous_categories:
+            verdict = self._normalize_verdict(
+                skill_rules.get("binaryPayloadVerdict"),
+                fallback="review",
+                allowed={"audit", "review", "block"},
+            )
+            return verdict, "skill_supply_chain", verdict == "review"
+
+        if finding_categories == {"secret_declaration"}:
+            verdict = self._normalize_verdict(
+                skill_rules.get("declarationVerdict"),
+                fallback="audit",
+                allowed={"allow", "audit", "review"},
+            )
+            return verdict, "skill_supply_chain", False
+
+        if "secret_declaration" in finding_categories and finding_categories.issubset({"secret_declaration"} | ambiguous_categories):
+            verdict = self._normalize_verdict(
+                skill_rules.get("binaryPayloadVerdict"),
+                fallback="review",
+                allowed={"audit", "review", "block"},
+            )
+            return verdict, "skill_supply_chain", verdict == "review"
+
+        return "review", "skill_supply_chain", False
 
     def _collect_skill_scan_candidates(self, root: Path, *, excluded_paths: set[Path]) -> list[Path]:
         candidates: list[Path] = []

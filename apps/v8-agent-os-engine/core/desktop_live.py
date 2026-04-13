@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -224,6 +225,29 @@ class DesktopLiveService:
                     "idleReleaseSeconds": int(config.get("idleReleaseSeconds") or 15),
                     "captureDisplay": str(config.get("captureDisplay") or "primary"),
                 },
+            }
+
+    def get_observation_context(self) -> dict[str, Any]:
+        self._cleanup_expired_sessions()
+        with self._lock:
+            active = self._sessions.get(self._active_session_id or "")
+            if not active:
+                return {
+                    "source": "computer_use_local_capture",
+                    "sessionId": None,
+                    "frameTimestamp": None,
+                    "frameArtifactId": None,
+                    "frameRef": None,
+                }
+            frame_time = active.last_seen_at or active.activated_at or active.created_at
+            frame_ref = f"desktop-live:{active.id}:{int(frame_time * 1000)}"
+            return {
+                "source": "desktop_live",
+                "sessionId": active.id,
+                "frameTimestamp": datetime.fromtimestamp(frame_time, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "frameArtifactId": None,
+                "frameRef": frame_ref,
+                "connectionState": active.connection_state,
             }
 
     def create_session(self, viewer_id: str) -> dict[str, Any]:

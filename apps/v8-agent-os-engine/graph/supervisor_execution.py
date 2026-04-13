@@ -7,6 +7,7 @@ from langgraph.types import Command
 
 from core.context_governance import emit_context_prepared_event
 from erc.runtime_context import get_runtime_context
+from .route_context import merge_route_context
 
 
 def _safe_console_text(value) -> str:
@@ -145,9 +146,12 @@ def debug_supervisor_messages(messages) -> None:
         _safe_print(f"  [{i}] {message.type}{tool_context}: {str(message.content)[:120]}")
 
 
-def route_supervisor_response(response) -> Command:
+def route_supervisor_response(response, *, existing_route_context: dict | None = None) -> Command:
     additional_kwargs = dict(getattr(response, "additional_kwargs", None) or {})
-    current_route_context = dict(additional_kwargs.get("v8_delegation_context") or {})
+    current_route_context = merge_route_context(
+        existing_route_context,
+        dict(additional_kwargs.get("v8_delegation_context") or {}),
+    )
     if hasattr(response, "tool_calls") and response.tool_calls:
         return Command(
             goto="supervisor_tools",

@@ -15,7 +15,6 @@ from core.runtime.startup_profile import (
 )
 from core.storage import storage
 from erc.kernel import erc_kernel
-from skills.loader import SkillLoader
 from runtimes.memory.prompts import (
     render_memory_admin_chat_prompt,
     render_memory_consolidation_prompt,
@@ -43,11 +42,7 @@ def _include_optional_router(module_name: str) -> None:
 
 
 def _get_extensions_runtime_service():
-    return importlib.import_module("core.extensions_runtime").extensions_runtime_service
-
-
-def _get_mcp_manager():
-    return importlib.import_module("mcp_client").mcp_manager
+    return importlib.import_module("runtimes.extensions.runtime").extensions_runtime_service
 
 
 def _get_memory_backend_health():
@@ -146,12 +141,13 @@ def _get_agent_profile(agent_id: str) -> dict[str, str]:
 @router.get("/health")
 async def health():
     service_states = _service_states()
-    skills_status = SkillLoader.get_startup_status()
+    extensions_runtime_service = _get_extensions_runtime_service()
+    skills_status = extensions_runtime_service.get_skill_startup_status()
     mcp_enabled = service_enabled("mcp", profile=_STARTUP_PROFILE)
     extensions_enabled = service_enabled("extensions", profile=_STARTUP_PROFILE)
-    mcp_status = _get_mcp_manager().get_startup_status() if mcp_enabled else {"startupState": "disabled"}
+    mcp_status = extensions_runtime_service.get_mcp_startup_status() if mcp_enabled else {"startupState": "disabled"}
     extensions_status = (
-        _get_extensions_runtime_service().get_startup_status()
+        extensions_runtime_service.get_startup_status()
         if extensions_enabled
         else {"startupState": "disabled"}
     )
@@ -159,8 +155,8 @@ async def health():
     return {
         "status": "ok",
         **build_installation_snapshot(),
-        "mcp_tools": len(_get_mcp_manager().get_tools()) if mcp_enabled else 0,
-        "mcp": _get_mcp_manager().get_health_summary() if mcp_enabled else {"status": "disabled"},
+        "mcp_tools": len(extensions_runtime_service.get_mcp_tools()) if mcp_enabled else 0,
+        "mcp": extensions_runtime_service.get_mcp_health_summary() if mcp_enabled else {"status": "disabled"},
         "skillsStartupState": skills_status.get("startupState"),
         "extensionsStartupState": extensions_status.get("startupState"),
         "mcpStartupState": mcp_status.get("startupState"),

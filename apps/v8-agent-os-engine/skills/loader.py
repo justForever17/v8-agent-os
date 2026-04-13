@@ -426,7 +426,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
                 instruction_path=skill.get("instructionPath") or "",
             )
             static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
-            if static_verdict in {"medium", "high"}:
+            if static_verdict == "review" and bool(scan_payload.get("llmReviewRecommended")):
                 review_payload = safety_guardian.review_skill_scan_with_llm(
                     skill_name=skill.get("name") or skill_name,
                     skill_root=skill.get("path") or "",
@@ -439,7 +439,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
                         review_summary = str(review_payload.get("summary") or "").strip()
                         if review_payload.get("decision") == "allow":
                             scan_payload["staticVerdict"] = static_verdict
-                            scan_payload["verdict"] = "medium" if static_verdict == "high" else "low"
+                            scan_payload["verdict"] = "audit"
                             reasons = list(scan_payload.get("reasons") or [])
                             reasons.append(
                                 f"安全复审模型认为该 skill 可放行：{review_summary or '证据不足以支持阻断。'}"
@@ -447,7 +447,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
                             scan_payload["reasons"] = reasons[:10]
                         elif review_payload.get("decision") == "block":
                             scan_payload["staticVerdict"] = static_verdict
-                            scan_payload["verdict"] = "high" if static_verdict == "medium" else static_verdict
+                            scan_payload["verdict"] = "block"
                             reasons = list(scan_payload.get("reasons") or [])
                             reasons.append(
                                 f"安全复审模型维持阻断：{review_summary or '疑点仍然足够高风险。'}"
@@ -460,7 +460,13 @@ def fetch_skill_instructions(skill_name: str) -> str:
             audit_logger.log(
                 source_type="SAFETY",
                 action="skill_scan",
-                status="WARNING" if scan_payload.get("verdict") in {"high", "critical"} else "INFO",
+                status=(
+                    "ERROR"
+                    if scan_payload.get("verdict") == "block"
+                    else "WARNING"
+                    if scan_payload.get("verdict") == "review"
+                    else "INFO"
+                ),
                 details=json.dumps(
                     {
                         "skillName": skill.get("name") or skill_name,
@@ -474,14 +480,14 @@ def fetch_skill_instructions(skill_name: str) -> str:
         except Exception:
             scan_payload = None
 
-        if scan_payload and scan_payload.get("verdict") in {"high", "critical"}:
+        if scan_payload and scan_payload.get("verdict") == "block":
             try:
                 from core.extensions_runtime import extensions_runtime_service
 
                 extensions_runtime_service.emit_skill_blocked(
                     skill_name=skill["name"],
                     skill_path=skill["path"],
-                    verdict=str(scan_payload.get("verdict") or "high"),
+                    verdict=str(scan_payload.get("verdict") or "block"),
                     confidence=float(scan_payload.get("confidence") or 0.0),
                     skill_trust_score=int(scan_payload.get("skillTrustScore") or 0),
                     audit_id=str(scan_payload.get("auditId") or ""),
@@ -508,6 +514,22 @@ def fetch_skill_instructions(skill_name: str) -> str:
                 f"Safety Guardian 已阻断该 skill 的说明读取。不要继续使用这个 skill，"
                 f"请改用其他 skill、MCP、插件工具或系统工具继续完成当前任务。"
             )
+        safety_banner = ""
+        if scan_payload and scan_payload.get("verdict") in {"audit", "review"}:
+            verdict = str(scan_payload.get("verdict") or "").strip().lower()
+            reasons = "\n".join(f"- {item}" for item in list(scan_payload.get("reasons") or [])[:6]) or "- Safety Guardian 未返回额外说明。"
+            banner_title = "=== SKILL SAFETY REVIEW ==="
+            banner_mode = "审计放行" if verdict == "audit" else "允许读取，但建议复核"
+            safety_banner = (
+                f"{banner_title}\n"
+                f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
+                f"Verdict: {verdict}\n"
+                f"Mode: {banner_mode}\n"
+                f"Governance Target: {scan_payload.get('governanceTarget') or 'skill_supply_chain'}\n"
+                f"Posture: {scan_payload.get('posture') or ''}\n"
+                f"Audit ID: {scan_payload.get('auditId')}\n"
+                f"Reasons:\n{reasons}\n\n"
+            )
         try:
             from core.extensions_runtime import extensions_runtime_service
 
@@ -520,6 +542,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
         available_files = list(skill.get("availableFiles") or [])
         structure = "\n".join(f"- {item}" for item in available_files[:64]) if available_files else "- (no extra references/scripts/assets/templates found)"
         return (
+            f"{safety_banner}"
             f"=== SKILL ENTRYPOINTS ===\n"
             f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
             f"Skill Root: {skill.get('skillRoot') or skill.get('path') or ''}\n"

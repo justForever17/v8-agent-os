@@ -35,7 +35,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     },
     "extensions": {
         "displayName": "ExtensionsRuntime",
-        "summary": "负责 Skills、扩展目录、候选工具筛选与扩展健康状态。",
+        "summary": "负责 Skills + MCP 的扩展目录、候选工具筛选、健康状态与统一暴露语义。",
         "visibility": "primary",
     },
     "plugin_host": {

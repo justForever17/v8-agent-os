@@ -119,6 +119,12 @@ class WebPagePayload:
 
 
 def _enforce_safety_decision(decision, *, tool_call_id: str, question: str) -> tuple[bool, str | None]:
+    safety_guardian.log_decision_event(
+        action="web_fetch_safety",
+        decision=decision,
+        subject=question,
+        metadata={"toolCallId": tool_call_id},
+    )
     if decision.is_allow():
         return True, None
 

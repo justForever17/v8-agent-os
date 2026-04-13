@@ -1,3 +1,15 @@
-from core.extensions_runtime import ExtensionRouteBundle, ExtensionsRuntimeService, extensions_runtime_service
+from core.extensions_runtime import (
+    ExtensionRouteBundle,
+    ExtensionsRuntime,
+    ExtensionsRuntimeService,
+    extensions_runtime,
+    extensions_runtime_service,
+)
 
-__all__ = ["ExtensionRouteBundle", "ExtensionsRuntimeService", "extensions_runtime_service"]
+__all__ = [
+    "ExtensionRouteBundle",
+    "ExtensionsRuntime",
+    "ExtensionsRuntimeService",
+    "extensions_runtime",
+    "extensions_runtime_service",
+]

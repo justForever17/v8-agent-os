@@ -9,7 +9,6 @@ from core.model_control_plane import model_control_plane
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
-from mcp_client import mcp_manager
 
 
 router = APIRouter()
@@ -87,7 +86,7 @@ async def get_mcp_config():
 @router.get("/mcp/status")
 async def get_mcp_status():
     try:
-        return {"servers": mcp_manager.get_status()}
+        return {"servers": extensions_runtime_service.get_mcp_status()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -100,7 +99,8 @@ async def update_mcp_config(config: dict = Body(...)):
         existing_servers = existing.get("mcpServers", {})
         existing_servers.update(new_servers)
         storage.save_mcp_config({"mcpServers": existing_servers})
-        return {"status": "success"}
+        runtime_health = await extensions_runtime_service.reload()
+        return {"status": "success", "extensionsRuntime": runtime_health}
     except McpConfigValidationError as e:
         raise HTTPException(status_code=400, detail=e.to_payload())
     except Exception as e:
@@ -136,9 +136,7 @@ async def reload_system():
 @router.get("/skills/list")
 async def get_skills_list():
     try:
-        from skills.loader import SkillLoader
-
-        return {"skills": list(SkillLoader.get_all_skills().values())}
+        return {"skills": list(extensions_runtime_service.list_skills(force_refresh=False))}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -146,7 +144,9 @@ async def get_skills_list():
 @router.post("/skills/install/command")
 async def install_skill_command(command: str = Body(..., embed=True)):
     try:
-        return install_skill_from_command(command)
+        result = install_skill_from_command(command)
+        extensions_runtime_service.request_skill_inventory_refresh(reason="platform_skill_install_command")
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -157,7 +157,9 @@ async def install_skill_command(command: str = Body(..., embed=True)):
 async def install_skill_zip(file: UploadFile = File(...)):
     try:
         content = await file.read()
-        return install_skills_from_zip(file.filename or "skills.zip", content)
+        result = install_skills_from_zip(file.filename or "skills.zip", content)
+        extensions_runtime_service.request_skill_inventory_refresh(reason="platform_skill_install_zip")
+        return result
     except SkillInstallValidationError as e:
         raise HTTPException(status_code=400, detail=e.to_payload())
     except ValueError as e:
@@ -171,7 +173,7 @@ async def get_mcp_tools():
     try:
         from core.native_tools import NATIVE_TOOLS
 
-        tools = mcp_manager.get_tools()
+        tools = extensions_runtime_service.get_mcp_tools()
         mcp_list = [
             {
                 "name": tool.name,

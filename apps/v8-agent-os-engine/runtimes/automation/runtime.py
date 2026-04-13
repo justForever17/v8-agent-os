@@ -479,6 +479,12 @@ class AutomationRuntime:
         task_name: str,
         safety_override: bool = False,
     ) -> Optional[Dict[str, Any]]:
+        safety_guardian.log_decision_event(
+            action="automation_preflight",
+            decision=decision,
+            subject=task_name,
+            metadata={"runId": run_handle.run_id, "sessionId": run_handle.session_id},
+        )
         if decision.is_allow() or (safety_override and decision.is_review()):
             return None
 
@@ -539,6 +545,12 @@ class AutomationRuntime:
         task_name: str,
         safety_override: bool = False,
     ) -> Optional[Dict[str, Any]]:
+        safety_guardian.log_decision_event(
+            action="automation_action",
+            decision=decision,
+            subject=f"{task_name}:{action_type}",
+            metadata={"runId": run_handle.run_id, "sessionId": run_handle.session_id, "target": target},
+        )
         if decision.is_allow() or (safety_override and decision.is_review()):
             return None
 

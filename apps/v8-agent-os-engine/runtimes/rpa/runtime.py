@@ -94,7 +94,7 @@ class RPARuntime:
                 }
             ],
             "metadata": {
-                "managedToolPrefixes": [],
+                "managedToolPrefixes": ["rpa_"],
             },
         }
 
@@ -623,6 +623,12 @@ class RPARuntime:
         trigger_source: str | None,
         subject: str,
     ) -> Optional[Dict[str, Any]]:
+        safety_guardian.log_decision_event(
+            action="rpa_preflight",
+            decision=decision,
+            subject=subject,
+            metadata={"runId": run_handle.run_id, "sessionId": run_handle.session_id, "triggerSource": trigger_source},
+        )
         if decision.is_allow():
             return None
         if decision.is_review():

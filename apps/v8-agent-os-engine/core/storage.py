@@ -322,35 +322,155 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     },
     "computerUse": {
         "candidateRerankEnabled": False,
+        "browserLane": {
+            "enabled": True,
+            "mode": "auto_if_available",
+            "provider": "engine_managed_cdp",
+            "proxyPort": 3456,
+            "connectTimeoutMs": 3000,
+            "targetFamilies": ["chromium", "electron", "webview2"],
+            "allowManagedLaunch": True,
+        },
+        "observationPolicy": {
+            "frameSequenceEnabled": True,
+            "frameSequenceCount": 3,
+            "frameSequenceIntervalMs": 200,
+        },
+        "inputPolicy": {
+            "normalizeDeterministicTextIme": True,
+        },
     },
     "runtimeStability": {"version": 1, "strictSupervisorDurability": True, "sessionLanePolicy": "queue"},
     "safety": {
         "enabled": True,
-        "protectedPaths": [*protected_runtime_paths(include_home=True), str(Path.home() / ".ssh")],
-        "blockedCommandPatterns": [
-            "shutdown",
-            "reboot",
-            "poweroff",
-            "diskpart",
-            "mkfs",
-            "format ",
-            "rm -rf /",
-            "remove-item",
+        "machinePosture": "dedicated_runtime_host",
+        "commandRules": [
+            {
+                "id": "command_block",
+                "label": "系统级阻断命令",
+                "verdict": "block",
+                "description": "命中后直接阻断，不允许 override。",
+                "patterns": [
+                    "shutdown",
+                    "reboot",
+                    "poweroff",
+                    "diskpart",
+                    "mkfs",
+                    "format ",
+                    "rm -rf /",
+                    "remove-item",
+                ],
+            },
+            {
+                "id": "command_review",
+                "label": "高风险复核命令",
+                "verdict": "review",
+                "description": "命中后进入 pending approval。",
+                "patterns": [
+                    "taskkill",
+                    "pkill",
+                    "kill",
+                    "git push",
+                    "curl -x post",
+                    "invoke-webrequest",
+                    "pip install",
+                    "npm install",
+                    "pnpm add",
+                    "yarn add",
+                ],
+            },
         ],
-        "reviewCommandPatterns": [
-            "taskkill",
-            "pkill",
-            "kill ",
-            "git push",
-            "curl -x post",
-            "invoke-webrequest",
-            "pip install",
-            "npm install",
-            "pnpm add",
-            "yarn add",
-        ],
-        "protectedProcessPatterns": ["v8-agent-os", "uvicorn main:app", "next dev", "next start"],
-        "localHosts": ["127.0.0.1", "localhost", "::1"],
+        "fileRules": {
+            "protectedPaths": [*protected_runtime_paths(include_home=True), str(Path.home() / ".ssh")],
+            "blockedPathPatterns": [".ssh", ".aws", ".kube"],
+            "reviewPathPatterns": [".v8chat", "projects.json", "hooks_config.json", "cron_config.json"],
+            "protectedFileExtensions": [".db", ".sqlite", ".sqlite3"],
+        },
+        "processRules": {
+            "protectedPatterns": ["v8-agent-os", "uvicorn main:app", "next dev", "next start"],
+            "reviewPatterns": ["python", "node", "uvicorn"],
+        },
+        "networkRules": {
+            "localHosts": ["127.0.0.1", "localhost", "::1"],
+            "blockedHosts": [],
+            "reviewHosts": [],
+            "reviewMethods": ["POST", "PUT", "PATCH", "DELETE"],
+        },
+        "automationRules": {
+            "blockedActionTypes": [],
+            "reviewActionTypes": ["command"],
+            "reviewTargetPatterns": [],
+            "blockedTargetPatterns": [],
+        },
+        "runtimeRules": {
+            "chat": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
+            "automation": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
+            "plugin_host": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
+            "computer_use": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
+            "rpa": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
+        },
+        "skillRules": {
+            "declarationVerdict": "audit",
+            "localSecretReadVerdict": "review",
+            "browserProfileAccessVerdict": {
+                "dedicated_runtime_host": "review",
+                "developer_mixed_host": "block",
+            },
+            "downloadExecuteVerdict": "block",
+            "persistenceVerdict": "block",
+            "destructiveVerdict": "block",
+            "binaryPayloadVerdict": "review",
+            "llmReviewEnabledFor": ["review"],
+        },
+        "networkMutationRules": {
+            "defaultExternalMutationVerdict": {
+                "dedicated_runtime_host": "audit",
+                "developer_mixed_host": "review",
+            },
+            "sensitivePayloadVerdict": "review",
+            "credentialExfiltrationVerdict": "block",
+        },
+        "computerUseRules": {
+            "defaultMutationVerdict": {
+                "dedicated_runtime_host": "audit",
+                "developer_mixed_host": "review",
+            },
+            "destructiveKeywordVerdict": "block",
+            "hotkeyLifecycleVerdict": "review",
+        },
+        "systemIntegrityRules": {
+            "packageInstallVerdict": {
+                "dedicated_runtime_host": "audit",
+                "developer_mixed_host": "review",
+            },
+            "destructiveCommandVerdict": "block",
+        },
+        "v8IntegrityRules": {
+            "protectedConfigWriteVerdict": "review",
+            "protectedRuntimeProcessVerdict": "block",
+        },
+        "channelGroupGuard": {
+            "enabled": False,
+            "allowlistOnly": False,
+            "requireMention": False,
+            "auditOnly": False,
+            "allowlistGroups": [],
+        },
+        "postActionRules": {
+            "enabledFamilies": [
+                "command",
+                "file_write",
+                "http_request",
+                "process",
+                "cron_mutation",
+                "hook_mutation",
+                "background_command",
+                "automation_action",
+                "computer_use_action",
+            ],
+            "highlightFamilies": ["process", "cron_mutation", "hook_mutation", "http_request", "computer_use_action"],
+            "mutatingHttpMethods": ["POST", "PUT", "PATCH", "DELETE"],
+        },
     },
     "projects": {"version": 1, "defaultProjectId": None, "projects": []},
     "music": {"tracks": []},
@@ -1970,14 +2090,31 @@ class StorageManager:
         return payload
 
     def get_safety_guardian_config(self) -> Dict[str, Any]:
-        data = self.read_json("safety_guardian.json")
-        normalized = self._normalize_safety_guardian_config(data)
-        if normalized != data:
+        payload = self._read_config_payload()
+        structured = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
+        legacy = self.read_json("safety_guardian.json")
+        merged = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["safety"],
+            legacy if isinstance(legacy, dict) else {},
+        )
+        merged = self._deep_merge(
+            merged,
+            structured if isinstance(structured, dict) else {},
+        )
+        normalized = self._normalize_safety_guardian_config(merged)
+        if normalized != structured:
+            payload["safety"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
+            self._write_config_payload(payload)
+        if isinstance(legacy, dict) and normalized != legacy:
             self.write_json("safety_guardian.json", normalized)
         return normalized
 
     def save_safety_guardian_config(self, data: Dict[str, Any]):
-        self.write_json("safety_guardian.json", self._normalize_safety_guardian_config(data))
+        normalized = self._normalize_safety_guardian_config(data)
+        payload = self._read_config_payload()
+        payload["safety"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
+        self._write_config_payload(payload)
+        self.write_json("safety_guardian.json", normalized)
 
     def get_music_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("music") or {}

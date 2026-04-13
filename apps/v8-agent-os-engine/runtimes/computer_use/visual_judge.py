@@ -105,6 +105,16 @@ def build_visual_judge_prompt(
             f"观察器推测的主按钮区：{primary_action_button_bounds}。"
             "如果某个候选明显落在这个区域或与其角色一致，应优先考虑。"
         )
+    observation_bundle = dict(suggestion.get("observationBundle") or {})
+    bundle_diff = dict(observation_bundle.get("diff") or {})
+    bundle_hint = ""
+    if observation_bundle:
+        bundle_hint = (
+            f"\n时序观测摘要：route={observation_bundle.get('route') or 'unknown'}；"
+            f"stateAdvanced={bool(bundle_diff.get('stateAdvanced'))}；"
+            f"preToPost={json.dumps(bundle_diff.get('preToPost') or {}, ensure_ascii=False)}。"
+            "\n请把这看成 pre/mid/post 三帧短序列摘要，而不是单帧静态图。"
+        )
     return (
         "你是 Windows GUI 的视觉裁判。图片已经裁到当前目标 scope（通常是弹窗或其局部区域）。\n"
         "你的任务不是重新定位坐标，而是在现有候选里判断哪个最像应该点击的目标；如果都不对，就明确拒绝点击。\n"
@@ -112,6 +122,7 @@ def build_visual_judge_prompt(
         f"触发原因：{trigger}\n"
         f"当前 dialog 置信等级：{dialog_confidence}\n"
         f"{primary_action_hint}\n"
+        f"{bundle_hint}\n"
         "候选列表：\n"
         + "\n".join(candidate_lines or ["无候选。"])
         + "\n输出要求：只输出一个 JSON 对象，不要输出其他说明。\n"

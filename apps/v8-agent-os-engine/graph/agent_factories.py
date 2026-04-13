@@ -24,8 +24,8 @@ from core.system_tools.baseline import select_baseline_system_tool_names
 from core.workspace_guard import build_workspace_path_status
 from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
-from skills.loader import SkillLoader
 from .tool_routing import create_routed_tool_node
+from .route_context import merge_route_context
 
 
 def _canonical_tool_name(tool_ref) -> str:
@@ -161,7 +161,7 @@ def _resolve_selected_skill_names(selectors: list[str]) -> list[str]:
     if not selector_set:
         return []
     matched: list[str] = []
-    for skill in SkillLoader.get_all_skills(force_refresh=False).values():
+    for skill in extensions_runtime_service.list_skills(force_refresh=False, prefer_cached_ready_inventory=True):
         skill_name = str(skill.get("name") or skill.get("folder") or "").strip()
         skill_folder = str(skill.get("folder") or "").strip()
         skill_path = str(skill.get("path") or "").strip()
@@ -196,6 +196,13 @@ def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_
         selected_skill_entries=legacy.get("selectedSkillEntries"),
         selected_mcp_tools=legacy.get("selectedMcpTools"),
         selected_plugin_host_tools=legacy.get("selectedPluginHostTools"),
+    )
+
+
+def _merged_route_context(state: dict | None, overlay: dict | None) -> dict:
+    return merge_route_context(
+        dict((state or {}).get("current_route_context") or {}),
+        dict(overlay or {}),
     )
 
 
@@ -236,7 +243,7 @@ def build_handoff_tool(agent_id: str, agent_name: str, agent_desc: str):
                     HumanMessage(content=f"[Supervisor Delegated Task to {agent_name}]:\n{reason}"),
                 ],
                 "delegation_contexts": [branch_context],
-                "current_route_context": branch_context,
+                "current_route_context": _merged_route_context(state, branch_context),
             },
         )
 
@@ -372,7 +379,9 @@ def build_agent_node(
                     "[Interactive CLI Rule]\n"
                     "If you need to use an interactive CLI or REPL (examples: qwen, python REPL, node REPL, powershell, bash, cmd), NEVER use sync mode.\n"
                     "You MUST use `run_system_command` with `mode=session`, then inspect with `read_background_output`, send replies with `send_background_input`, and clean up with `terminate_background_command`.\n"
+                    "For known AI CLIs, `run_system_command(mode=session)` may automatically enable the `chat_cli` profile so that `read_background_output` returns only the latest semantic delta instead of replaying the whole accumulated screen.\n"
                     "For `interactive + tty + terminal_screen` sessions, treat `screenSnapshot`, `observationState`, `awaitingInput`, and `status` as the primary truth.\n"
+                    "If `read_background_output` reports that the CLI still has more reply to emit, keep polling or use `wait(seconds, note)` before polling again; do NOT assume the model stalled just because it did not replay the full transcript.\n"
                     "If the prompt/input box is already rendered and `awaitingInput=true`, the CLI is ready for dialogue even if MCP/debug banners are still visible.\n"
                     "When sending input, treat a rendered prompt as ready immediately. `send_background_input` accepts both actual newlines and common escaped sequences like `\\n` to represent Enter.\n"
                     "NEVER conclude that the CLI has stalled or produced no reply solely because appended text is empty; full-screen TUIs often redraw the screen in place.\n"
@@ -433,7 +442,7 @@ def build_agent_node(
                     update={
                         "messages": [fallback_msg, feedback_msg],
                         "delegation_contexts": [route_context_record],
-                        "current_route_context": route_context_record,
+                        "current_route_context": _merged_route_context(state, route_context_record),
                     },
                 )
 
@@ -484,7 +493,7 @@ def build_agent_node(
                     update={
                         "messages": [fallback_msg, feedback_msg],
                         "delegation_contexts": [route_context_record],
-                        "current_route_context": route_context_record,
+                        "current_route_context": _merged_route_context(state, route_context_record),
                     },
                 )
 
@@ -496,7 +505,7 @@ def build_agent_node(
                     update={
                         "messages": [response],
                         "delegation_contexts": [route_context_record],
-                        "current_route_context": route_context_record,
+                        "current_route_context": _merged_route_context(state, route_context_record),
                     },
                 )
 
@@ -506,7 +515,7 @@ def build_agent_node(
                     update={
                         "messages": [response],
                         "delegation_contexts": [route_context_record],
-                        "current_route_context": route_context_record,
+                        "current_route_context": _merged_route_context(state, route_context_record),
                     },
                 )
 
@@ -532,7 +541,7 @@ def build_agent_node(
                 update={
                     "messages": [refined_msg],
                     "delegation_contexts": [route_context_record],
-                    "current_route_context": route_context_record,
+                    "current_route_context": _merged_route_context(state, route_context_record),
                 },
             )
         except Exception as exc:

@@ -11,10 +11,12 @@ export function SourceMetaRow({
     source,
     savePath,
     reloadRequired,
+    warnings = [],
 }: {
     source: string;
     savePath: string | string[];
     reloadRequired: boolean;
+    warnings?: string[];
 }) {
     const paths = normalizePaths(savePath);
     const t = useT();
@@ -37,6 +39,15 @@ export function SourceMetaRow({
                     </div>
                 ))}
             </div>
+            {warnings.length > 0 ? (
+                <div className="mt-3 space-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+                    {warnings.map((warning) => (
+                        <div key={warning} className="text-xs text-amber-700">
+                            {warning}
+                        </div>
+                    ))}
+                </div>
+            ) : null}
         </div>
     );
 }

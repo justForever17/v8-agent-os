@@ -857,6 +857,12 @@ class PluginHostRuntime:
             node="plugin_host_safety",
             agent_id=None,
         )
+        safety_guardian.log_decision_event(
+            action="plugin_host_group_guard",
+            decision=group_guard_decision,
+            subject=message.sender_name or remote_id,
+            metadata={"sessionId": session_id, "runId": run_id, "remoteId": remote_id, "source": source},
+        )
         if not group_guard_decision.is_allow():
             preflight_block = await self._handle_preflight_block(
                 source=source,
@@ -886,6 +892,12 @@ class PluginHostRuntime:
             payload=preflight_decision.to_payload(),
             node="safety_guardian",
             agent_id=None,
+        )
+        safety_guardian.log_decision_event(
+            action="plugin_host_preflight",
+            decision=preflight_decision,
+            subject=message.sender_name or remote_id,
+            metadata={"sessionId": session_id, "runId": run_id, "remoteId": remote_id, "source": source},
         )
         run_handle.transition("running", reason="plugin_host_message_received", node="plugin_host_runtime")
         if not scope_result.reused_existing_binding:

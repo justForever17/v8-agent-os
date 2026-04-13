@@ -106,6 +106,12 @@ async def _mount_in_workspace(file_path: Path) -> str:
 def _enforce_remote_media_guard(url: str, *, tool_call_id: str) -> tuple[bool, str | None]:
     runtime_context = get_runtime_context()
     decision = safety_guardian.assess_http_request("GET", url, body=None, runtime_context=runtime_context)
+    safety_guardian.log_decision_event(
+        action="vision_media_safety",
+        decision=decision,
+        subject=f"GET {url}",
+        metadata={"toolCallId": tool_call_id},
+    )
     if decision.is_allow():
         return True, None
 

@@ -27,10 +27,23 @@ def assess_channel_inbound_group_risk(
 ) -> SafetyDecision:
     config = safety_guardian.export_config()
     guard = dict(config.get("channelGroupGuard") or {})
+    posture = str(config.get("machinePosture") or "dedicated_runtime_host").strip() or "dedicated_runtime_host"
     if str(chat_type or "").strip().lower() != "group":
-        return SafetyDecision(verdict="allow", reason="not_group_chat", risk_code="channel_group_guard")
+        return SafetyDecision(
+            verdict="allow",
+            reason="not_group_chat",
+            risk_code="channel_group_guard",
+            governance_target="operator_posture",
+            posture=posture,
+        )
     if not bool(guard.get("enabled", False)):
-        return SafetyDecision(verdict="allow", reason="group_guard_disabled", risk_code="channel_group_guard")
+        return SafetyDecision(
+            verdict="allow",
+            reason="group_guard_disabled",
+            risk_code="channel_group_guard",
+            governance_target="operator_posture",
+            posture=posture,
+        )
 
     allowlist = {str(item).strip() for item in list(guard.get("allowlistGroups") or []) if str(item).strip()}
     requires_mention = bool(guard.get("requireMention", False))
@@ -42,11 +55,13 @@ def assess_channel_inbound_group_risk(
     explicit_mentioned = bool(metadata.get("mentioned")) or bool(mentions) or wake_triggered
 
     if allowlist_only and remote_id not in allowlist:
-        verdict = "allow" if audit_only else "block"
+        verdict = "audit" if audit_only else "block"
         return SafetyDecision(
             verdict=verdict,
             reason=f"群聊 {remote_id} 不在自动响应 allowlist 中",
             risk_code="channel_group_not_allowlisted",
+            governance_target="operator_posture",
+            posture=posture,
             details={
                 "source": source,
                 "remote_id": remote_id,
@@ -58,11 +73,13 @@ def assess_channel_inbound_group_risk(
         )
 
     if requires_mention and not explicit_mentioned:
-        verdict = "allow" if audit_only else "block"
+        verdict = "audit" if audit_only else "block"
         return SafetyDecision(
             verdict=verdict,
             reason="当前群聊未明确 @ 机器人，已按群聊危险会话拦截策略处理",
             risk_code="channel_group_requires_mention",
+            governance_target="operator_posture",
+            posture=posture,
             details={
                 "source": source,
                 "remote_id": remote_id,
@@ -77,6 +94,8 @@ def assess_channel_inbound_group_risk(
         verdict="allow",
         reason="group_guard_passed",
         risk_code="channel_group_guard",
+        governance_target="operator_posture",
+        posture=posture,
         details={
             "source": source,
             "remote_id": remote_id,

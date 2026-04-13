@@ -14,6 +14,10 @@ def _split_command(value: str | None) -> List[str]:
     return [raw] if raw else []
 
 
+def _normalized_stem(value: str | None) -> str:
+    return Path(str(value or "").strip()).stem.strip().lower()
+
+
 def _unique(values: List[str], *, lower: bool = False) -> List[str]:
     ordered: List[str] = []
     seen = set()
@@ -27,6 +31,41 @@ def _unique(values: List[str], *, lower: bool = False) -> List[str]:
         seen.add(key)
         ordered.append(value.lower() if lower else value)
     return ordered
+
+
+def _infer_candidate_role(*, executable: Path, source: str) -> str:
+    stem = _normalized_stem(executable.name)
+    if not stem:
+        return "unknown"
+    if source == "windows_registry_uninstall_string":
+        return "uninstall_fallback"
+    if any(token in stem for token in ("uninstall", "unins", "remove", "repair")):
+        return "uninstall_fallback"
+    if any(token in stem for token in ("setup", "install", "bootstrap", "stub")):
+        return "installer"
+    if any(token in stem for token in ("update", "updater", "autoupdate", "upgrade")):
+        return "updater"
+    if any(token in stem for token in ("helper", "service", "proxy", "driver", "bugreporter", "crashpad", "messagehost", "hardwarecheck")):
+        return "helper"
+    if source == "windows_app_paths":
+        return "primary_gui"
+    if source == "windows_registry_display_icon":
+        return "display_icon"
+    if source.endswith("_scan"):
+        return "install_scan"
+    return "primary_gui"
+
+
+def _build_launch_candidate(*, command: List[str], source: str) -> Dict[str, Any]:
+    executable = Path(str((command or [None])[0] or "").strip())
+    return {
+        "command": [str(item or "").strip() for item in list(command or []) if str(item or "").strip()],
+        "source": source,
+        "role": _infer_candidate_role(executable=executable, source=source),
+        "executableName": executable.name,
+        "executableStem": executable.stem,
+        "directory": str(executable.parent) if str(executable.parent or "").strip() else None,
+    }
 
 
 class WindowsAppDiscoveryProvider:
@@ -128,6 +167,12 @@ class WindowsAppDiscoveryProvider:
                                 "displayName": display_name,
                                 "aliases": _unique([display_name, Path(child_name).stem, executable_path.name]),
                                 "launchCommands": [[str(executable_path)]],
+                                "launchCandidates": [
+                                    _build_launch_candidate(
+                                        command=[str(executable_path)],
+                                        source="windows_app_paths",
+                                    )
+                                ],
                                 "processNames": [executable_path.name.lower()],
                                 "titlePatterns": [display_name],
                                 "sources": ["windows_app_paths"],
@@ -165,12 +210,13 @@ class WindowsAppDiscoveryProvider:
                         display_name = self._query_value(child, "DisplayName")
                         if not display_name:
                             continue
-                        commands = self._candidate_commands(
+                        launch_candidates = self._candidate_commands(
                             display_icon=self._query_value(child, "DisplayIcon"),
                             install_location=self._query_value(child, "InstallLocation"),
                             install_source=self._query_value(child, "InstallSource"),
                             uninstall_string=self._query_value(child, "UninstallString"),
                         )
+                        commands = [list(candidate.get("command") or []) for candidate in launch_candidates]
                         process_names = [
                             Path(command[0]).name.lower()
                             for command in commands
@@ -181,6 +227,7 @@ class WindowsAppDiscoveryProvider:
                                 "displayName": display_name,
                                 "aliases": _unique([display_name, *process_names]),
                                 "launchCommands": commands,
+                                "launchCandidates": launch_candidates,
                                 "processNames": process_names,
                                 "titlePatterns": [display_name],
                                 "sources": ["windows_registry_uninstall"],
@@ -195,34 +242,41 @@ class WindowsAppDiscoveryProvider:
         install_location: str,
         install_source: str,
         uninstall_string: str,
-    ) -> List[List[str]]:
-        candidates: List[List[str]] = []
-        for raw in (
-            str(display_icon or "").split(",", 1)[0].strip().strip('"'),
-            str(uninstall_string or "").split(" /", 1)[0].strip().strip('"'),
+    ) -> List[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        for raw, source in (
+            (str(display_icon or "").split(",", 1)[0].strip().strip('"'), "windows_registry_display_icon"),
+            (str(uninstall_string or "").split(" /", 1)[0].strip().strip('"'), "windows_registry_uninstall_string"),
         ):
             command = _split_command(raw)
-            if command and Path(command[0]).exists():
-                candidates.append(command)
-        for root in self._candidate_dirs([install_location, install_source]):
+            if command:
+                executable_path = Path(command[0])
+                if executable_path.exists() and executable_path.suffix.lower() == ".exe":
+                    candidates.append(_build_launch_candidate(command=command, source=source))
+        for root, source in self._candidate_dirs(
+            [
+                (install_location, "windows_registry_install_location_scan"),
+                (install_source, "windows_registry_install_source_scan"),
+            ]
+        ):
             if not root.exists():
                 continue
             for executable in root.glob("*.exe"):
-                candidates.append([str(executable)])
-        deduped: List[List[str]] = []
+                candidates.append(_build_launch_candidate(command=[str(executable)], source=source))
+        deduped: List[Dict[str, Any]] = []
         seen = set()
-        for command in candidates:
-            key = tuple(str(item or "").strip().lower() for item in command)
+        for candidate in candidates:
+            key = tuple(str(item or "").strip().lower() for item in list(candidate.get("command") or []))
             if key in seen:
                 continue
             seen.add(key)
-            deduped.append(command)
+            deduped.append(candidate)
         return deduped[:8]
 
-    def _candidate_dirs(self, values: Iterable[str]) -> List[Path]:
-        ordered: List[Path] = []
+    def _candidate_dirs(self, values: Iterable[tuple[str, str]]) -> List[tuple[Path, str]]:
+        ordered: List[tuple[Path, str]] = []
         seen = set()
-        for raw in values:
+        for raw, source in values:
             value = str(raw or "").strip().strip('"')
             if not value:
                 continue
@@ -231,7 +285,7 @@ class WindowsAppDiscoveryProvider:
             if key in seen:
                 continue
             seen.add(key)
-            ordered.append(path)
+            ordered.append((path, source))
         return ordered
 
     def _query_value(self, key: Any, name: str) -> str:

@@ -3,6 +3,25 @@ from __future__ import annotations
 from typing import Any
 
 
+def _route_executable_draft_id(route: dict[str, Any]) -> str | None:
+    direct_draft_id = str(route.get("recommendedDraftId") or "").strip()
+    if direct_draft_id:
+        return direct_draft_id
+    recommended_match = dict(route.get("recommendedMatch") or {})
+    source = dict(recommended_match.get("source") or {})
+    source_draft_id = str(source.get("draftId") or "").strip()
+    return source_draft_id or None
+
+
+def determine_execution_ready_mode(route: dict[str, Any]) -> str:
+    recommended_mode = str(route.get("recommendedMode") or "").strip() or "learn_mode"
+    if recommended_mode == "reuse_mode":
+        return "reuse_mode"
+    if recommended_mode == "hybrid_mode":
+        return "hybrid_mode" if _route_executable_draft_id(route) else "learn_mode"
+    return "learn_mode"
+
+
 def _normalized_app_payload(
     *,
     app_hint: str | None,
@@ -17,7 +36,7 @@ def _normalized_app_payload(
 
 
 def _route_runtime(mode: str) -> str:
-    if mode == "reuse_mode":
+    if mode in {"reuse_mode", "hybrid_mode"}:
         return "rpa"
     return "computer_use"
 
@@ -25,10 +44,14 @@ def _route_runtime(mode: str) -> str:
 def _route_high_level_tool(
     *,
     mode: str,
+    route: dict[str, Any],
     app_hint: str | None,
     target_hint: str | None,
 ) -> str | None:
-    if mode == "reuse_mode":
+    executable_draft_id = _route_executable_draft_id(route)
+    if mode in {"reuse_mode", "hybrid_mode"}:
+        if executable_draft_id:
+            return "rpa_run_draft"
         return None
     if app_hint:
         return "computer_use_launch_app"
@@ -39,16 +62,25 @@ def _route_high_level_tool(
 
 def _route_next_action_summary(
     *,
-    mode: str,
+    recommended_mode: str,
+    execution_ready_mode: str,
+    route: dict[str, Any],
     app_hint: str | None,
     target_hint: str | None,
 ) -> dict[str, Any]:
-    runtime_kind = _route_runtime(mode)
-    next_tool = _route_high_level_tool(mode=mode, app_hint=app_hint, target_hint=target_hint)
-    if mode == "reuse_mode":
+    runtime_kind = _route_runtime(execution_ready_mode)
+    next_tool = _route_high_level_tool(
+        mode=execution_ready_mode,
+        route=route,
+        app_hint=app_hint,
+        target_hint=target_hint,
+    )
+    if recommended_mode == "reuse_mode":
         summary = "已存在可复用肌肉记忆，应优先交给 RPA/模板主执行链。"
-    elif mode == "hybrid_mode":
-        summary = "已有部分可复用肌肉记忆，应以既有流程为骨架，由 Computer Use 局部补足。"
+    elif recommended_mode == "hybrid_mode" and execution_ready_mode == "hybrid_mode":
+        summary = "已有部分可复用肌肉记忆，当前存在可执行骨架，应优先从 RPA 主执行链进入。"
+    elif recommended_mode == "hybrid_mode":
+        summary = "已识别到 hybrid 线索，但当前没有可直接执行骨架，Supervisor 侧应降为 Computer Use 学习模式。"
     else:
         summary = "未找到足够可信的肌肉记忆，应进入 Computer Use 学习模式。"
     return {
@@ -195,18 +227,22 @@ def build_compact_execution_route(
 ) -> dict[str, Any]:
     recommended_match = dict(route.get("recommendedMatch") or {})
     recommended_mode = str(route.get("recommendedMode") or "").strip() or "learn_mode"
+    execution_ready_mode = determine_execution_ready_mode(route)
+    recommended_draft_id = _route_executable_draft_id(route)
     route_summary = dict(route.get("summary") or {})
     next_action = _route_next_action_summary(
-        mode=recommended_mode,
+        recommended_mode=recommended_mode,
+        execution_ready_mode=execution_ready_mode,
+        route=route,
         app_hint=app_hint,
         target_hint=target_hint,
     )
     recommended_tool = next_action.get("tool")
     recommended_tool_input = None
-    if str(route.get("recommendedDraftId") or "").strip():
+    if recommended_draft_id:
         recommended_tool = "rpa_run_draft"
         recommended_tool_input = {
-            "script_id": route.get("recommendedDraftId"),
+            "script_id": recommended_draft_id,
         }
     return {
         "ok": True,
@@ -222,6 +258,7 @@ def build_compact_execution_route(
         ),
         "lookupMode": route.get("lookupMode"),
         "recommendedMode": recommended_mode,
+        "executionReadyMode": execution_ready_mode,
         "recommendedModeLabel": route.get("recommendedModeLabel"),
         "recommendedAction": route.get("recommendedAction"),
         "recommendedActionLabel": route.get("recommendedActionLabel"),
@@ -229,6 +266,8 @@ def build_compact_execution_route(
         "recommendedTool": recommended_tool,
         "recommendedToolSummary": next_action.get("summary"),
         "recommendedToolInput": recommended_tool_input,
+        "recommendedTemplateId": route.get("recommendedTemplateId"),
+        "recommendedDraftId": recommended_draft_id,
         "requiresVariableBinding": bool(route.get("requiresVariableBinding")),
         "missingVariables": list(route.get("missingVariables") or []),
         "providedVariables": list(route.get("providedVariables") or []),

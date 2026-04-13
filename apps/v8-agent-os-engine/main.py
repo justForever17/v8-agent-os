@@ -47,7 +47,6 @@ from core.storage import storage
 from core.system_base import get_allowed_origins
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
-from skills.loader import SkillLoader
 from erc.checkpoint_store import checkpoint_store
 
 from erc.session_admission_service import session_admission_service
@@ -91,11 +90,11 @@ def _import_module(module_name: str):
 
 
 def _get_mcp_manager():
-    return _import_module("mcp_client").mcp_manager
+    return _import_module("runtimes.extensions.mcp.client").mcp_manager
 
 
 def _get_extensions_runtime_service():
-    return _import_module("core.extensions_runtime").extensions_runtime_service
+    return _import_module("runtimes.extensions.runtime").extensions_runtime_service
 
 
 def _get_plugin_host_service():
@@ -221,12 +220,13 @@ async def _safe_initialize_mcp(app: FastAPI):
 
 
 def _start_skill_refresh(app: FastAPI) -> None:
-    loaded_from_cache = SkillLoader.prime_startup_cache()
+    extensions_runtime_service = _get_extensions_runtime_service()
+    loaded_from_cache = extensions_runtime_service.prime_skill_cache()
     if loaded_from_cache:
-        print(f"[Engine] Loaded {len(SkillLoader.get_all_skills(force_refresh=False))} cached native skills.")
+        print(f"[Engine] Loaded {len(extensions_runtime_service.list_skills(force_refresh=False))} cached native skills.")
     else:
         print("[Engine] No cached skills snapshot found. Skill registry will warm up in background.")
-    task = SkillLoader.schedule_background_refresh()
+    task = extensions_runtime_service.schedule_skill_refresh()
     task.add_done_callback(lambda refresh_task: _log_background_task(refresh_task, "skills_refresh"))
     app.state.skills_refresh_task = task
 
@@ -408,10 +408,11 @@ async def serve_workspace_file(file_path: str):
 async def health_check():
     service_flags = _service_flags()
     service_states = _service_states()
-    skills_status = SkillLoader.get_startup_status()
-    mcp_status = _get_mcp_manager().get_startup_status() if service_flags["mcp"] else {"startupState": "disabled"}
+    extensions_runtime_service = _get_extensions_runtime_service()
+    skills_status = extensions_runtime_service.get_skill_startup_status()
+    mcp_status = extensions_runtime_service.get_mcp_startup_status() if service_flags["mcp"] else {"startupState": "disabled"}
     extensions_status = (
-        _get_extensions_runtime_service().get_startup_status()
+        extensions_runtime_service.get_startup_status()
         if service_flags["extensions"]
         else {"startupState": "disabled"}
     )
@@ -428,8 +429,8 @@ async def health_check():
         "startupDiagnostics": startup_bundle_diagnostics(STARTUP_PROFILE),
         "disabledReasons": disabled_reason_summary(STARTUP_PROFILE),
         "serviceStates": service_states,
-        "mcp_tools": len(_get_mcp_manager().get_tools()) if service_flags["mcp"] else 0,
-        "mcp": _get_mcp_manager().get_health_summary() if service_flags["mcp"] else {"status": "disabled"},
+        "mcp_tools": len(extensions_runtime_service.get_mcp_tools()) if service_flags["mcp"] else 0,
+        "mcp": extensions_runtime_service.get_mcp_health_summary() if service_flags["mcp"] else {"status": "disabled"},
         "skillsStartupState": skills_status.get("startupState"),
         "extensionsStartupState": extensions_status.get("startupState"),
         "mcpStartupState": mcp_status.get("startupState"),

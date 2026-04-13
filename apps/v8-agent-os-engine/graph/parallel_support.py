@@ -11,6 +11,7 @@ from langgraph.types import Command, Send
 from pydantic import BaseModel, Field
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from .route_context import merge_route_context
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -25,6 +26,11 @@ def _merge_state_update(state: dict[str, Any], update: dict[str, Any] | None) ->
             continue
         if key in {"messages", "todos", "delegation_contexts", "parallel_results", "parallel_invocations"}:
             merged[key] = list(merged.get(key) or []) + list(value or [])
+        elif key == "current_route_context":
+            merged[key] = merge_route_context(
+                dict(merged.get("current_route_context") or {}),
+                dict(value or {}),
+            )
         else:
             merged[key] = value
     return merged
@@ -130,7 +136,7 @@ def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
             ]
             branch_state["todos"] = list(base_todos)
             branch_state["delegation_contexts"] = base_contexts + [branch_context]
-            branch_state["current_route_context"] = branch_context
+            branch_state["current_route_context"] = merge_route_context(inherited_context, branch_context)
             branch_state["parallel_branch"] = {
                 "invocationId": invocation_id,
                 "branchIndex": index,

@@ -15,6 +15,11 @@ from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
+try:  # pragma: no cover - environment dependent
+    import psutil
+except Exception:  # pragma: no cover
+    psutil = None
+
 from core.artifact_store import artifact_store
 from core.database import db
 from core.models.factory import llm_factory
@@ -32,6 +37,7 @@ from runtimes.computer_use.action_policy import (
     build_action_policy_metadata,
     promotion_allowed_for_invocation,
 )
+from runtimes.computer_use.app_adapters import ComputerUseAppAdapterRegistry
 from runtimes.computer_use.app_binding_policy import AppBindingDecision, resolve_app_binding
 from erc.kernel import erc_kernel
 from erc.runtime_control import RuntimeControlInterruption, apply_control_signal, consume_stop_signal
@@ -45,6 +51,7 @@ from erc.run_service import run_service
 from langchain_core.messages import HumanMessage, SystemMessage
 from runtimes.computer_use.app_catalog import ComputerUseAppCatalog
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
+from runtimes.computer_use.browser_automation import BrowserAutomationProvider, BrowserLaneDecision
 from runtimes.computer_use.budgeting import (
     build_budget_update_request,
     collect_budget_usage,
@@ -57,6 +64,7 @@ from runtimes.computer_use.coordinate_anchor import (
     offset_relative_point,
     resolve_absolute_click_point,
 )
+from runtimes.computer_use.capability_matrix import build_runtime_capability_matrix
 from runtimes.computer_use.drivers import DesktopDriverError, create_desktop_driver
 from runtimes.computer_use.environment_probes import (
     collect_environment_probe_snapshot,
@@ -66,11 +74,17 @@ from runtimes.computer_use.environment_probes import (
 from runtimes.computer_use.fallback_policy import recovery_fallback_order, normalize_visual_fallback_payload
 from runtimes.computer_use.feedback_policy import build_feedback_suggestions
 from runtimes.computer_use.invocation_classifier import classify_computer_use_invocation
+from runtimes.computer_use.input_policy import (
+    classify_target_input_kind,
+    deterministic_input_normalization_required,
+)
 from runtimes.computer_use.live_matrix_feedback import primitive_live_feedback_for_action
+from runtimes.computer_use.observation_bundle import build_observation_bundle
 from runtimes.computer_use.platform_adapters import create_platform_discovery_providers
 from runtimes.computer_use.preflight_policy import build_preflight_context
 from runtimes.computer_use.post_action_visual_check import (
     normalize_expected_texts,
+    summarize_semantic_post_action_verification,
     summarize_post_action_visual_check,
 )
 from runtimes.computer_use.primitives import resolve_computer_use_primitive
@@ -97,6 +111,7 @@ from runtimes.computer_use.target_strategy import (
 )
 from runtimes.computer_use.trace_store import trace_store
 from runtimes.computer_use.recovery_policy import build_recovery_policy_metadata
+from runtimes.computer_use.route_policy import build_platform_route_policy, decide_execution_route
 from runtimes.computer_use.verification_contract import build_result_contract
 from runtimes.computer_use.visual_locator_provider import VisualLocatorProvider, create_visual_locator_provider
 from runtimes.computer_use.visual_locator_runtime import _normalize_ocr_query
@@ -244,6 +259,7 @@ class ComputerUseRuntime:
                 "managedToolPrefixes": ["computer_use_"],
                 "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
                 "onlineVisualLocator": self._online_visual_locator_descriptor(),
+                "browserLane": self.browser_automation.availability_summary(),
                 "environmentProbes": environment_probe_capabilities(),
             },
         }
@@ -251,9 +267,12 @@ class ComputerUseRuntime:
     def __init__(self) -> None:
         self.driver = create_desktop_driver()
         self.visual_locator_runtime: VisualLocatorProvider = create_visual_locator_provider()
+        self.browser_automation = BrowserAutomationProvider()
+        self.app_adapters = ComputerUseAppAdapterRegistry()
         self.app_profiles = ComputerUseAppProfiles()
         self.app_catalog = ComputerUseAppCatalog(
             app_profiles=self.app_profiles,
+            app_adapters=self.app_adapters,
             platform_providers=create_platform_discovery_providers(driver=self.driver),
         )
         self.selector_memory = ComputerUseSelectorMemory()
@@ -262,6 +281,20 @@ class ComputerUseRuntime:
         self._runtime_ready = False
         self._runtime_ready_lock = threading.Lock()
 
+    def _computer_use_config(self) -> Dict[str, Any]:
+        return dict(storage.get_computer_use_config() or {})
+
+    def _browser_lane_config(self) -> Dict[str, Any]:
+        config = self._computer_use_config()
+        self.browser_automation.configure(config)
+        return dict(config.get("browserLane") or {})
+
+    def _observation_policy_config(self) -> Dict[str, Any]:
+        return dict(self._computer_use_config().get("observationPolicy") or {})
+
+    def _input_policy_config(self) -> Dict[str, Any]:
+        return dict(self._computer_use_config().get("inputPolicy") or {})
+
     def _ensure_runtime_ready(self) -> None:
         if self._runtime_ready:
             return
@@ -269,6 +302,7 @@ class ComputerUseRuntime:
             if self._runtime_ready:
                 return
             self.app_catalog.warm_start()
+            self.browser_automation.configure(self._computer_use_config())
             self._runtime_ready = True
 
     def _classify_invocation(self, invocation_metadata: Optional[Dict[str, Any]] = None, *, default_trigger_source: str) -> Any:
@@ -319,6 +353,277 @@ class ComputerUseRuntime:
         if metadata.get("resolvedAppId") and not normalized.get("resolved_app_id"):
             normalized["resolved_app_id"] = metadata.get("resolvedAppId")
         return normalized
+
+    def _browser_lane_decision(
+        self,
+        *,
+        action_type: str,
+        action_payload: Dict[str, Any],
+        app_id: str | None = None,
+        process_name: str | None = None,
+    ) -> BrowserLaneDecision:
+        self.browser_automation.configure(self._computer_use_config())
+        return self.browser_automation.decide_lane(
+            action_type=action_type,
+            action_payload=action_payload,
+            app_id=app_id or action_payload.get("app_id") or action_payload.get("resolved_app_id"),
+            window_title=action_payload.get("window_title"),
+            class_name=action_payload.get("class_name"),
+            process_name=process_name,
+        )
+
+    def _build_browser_lane_metadata(self, decision: BrowserLaneDecision) -> Dict[str, Any]:
+        payload = decision.as_dict()
+        payload["available"] = bool(decision.available)
+        return payload
+
+    def _app_adapter_summary(self) -> Dict[str, Any]:
+        summary = self.app_adapters.capability_summary()
+        summary["available"] = bool(summary.get("available"))
+        summary["implemented"] = bool(summary.get("implemented"))
+        return summary
+
+    def _platform_capability_inputs(self) -> Dict[str, Dict[str, Any]]:
+        payload: Dict[str, Dict[str, Any]] = {}
+        current_platform = str(getattr(self.driver, "platform", "") or "")
+        try:
+            payload[current_platform] = dict(self.driver.capability_summary() or {})
+        except Exception:
+            payload[current_platform] = {}
+        lazy_factories = (
+            ("windows", "runtimes.computer_use.drivers.windows_uia", "WindowsUIADriver"),
+            ("macos", "runtimes.computer_use.drivers.mac_ax", "MacAXUIDriver"),
+            ("linux", "runtimes.computer_use.drivers.linux_atspi", "LinuxATSPIADriver"),
+        )
+        for name, module_name, class_name in lazy_factories:
+            if name in payload:
+                continue
+            try:
+                module = __import__(module_name, fromlist=[class_name])
+                factory = getattr(module, class_name)
+                payload[name] = dict(factory().capability_summary() or {})
+            except Exception:
+                payload[name] = {"platform": name, "backend": "unavailable"}
+        return payload
+
+    def _runtime_capability_matrix(self) -> Dict[str, Any]:
+        current_platform = str(getattr(self.driver, "platform", "") or os.name)
+        return build_runtime_capability_matrix(
+            current_platform=current_platform,
+            platform_capabilities=self._platform_capability_inputs(),
+            browser_lane=self.browser_automation.lane_capabilities(),
+            app_adapter=self._app_adapter_summary(),
+        )
+
+    def _platform_route_policy_summary(self, *, capability_truth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        current_platform = str(getattr(self.driver, "platform", "") or os.name)
+        return build_platform_route_policy(
+            platform_name=current_platform,
+            capability_truth=dict(capability_truth or {}),
+        )
+
+    def _control_class_for_action(
+        self,
+        *,
+        binding_decision: AppBindingDecision | None = None,
+        catalog_entry: Dict[str, Any] | None = None,
+        target: Dict[str, Any] | None = None,
+        action_payload: Dict[str, Any] | None = None,
+    ) -> str | None:
+        for source in (
+            catalog_entry or {},
+            getattr(binding_decision, "catalog_entry", None) or {},
+            target or {},
+            action_payload or {},
+        ):
+            token = str(source.get("controlClass") or source.get("control_class") or "").strip()
+            if token:
+                return token
+        return None
+
+    def _prepare_input_preflight(
+        self,
+        *,
+        action_payload: Dict[str, Any],
+        browser_decision: BrowserLaneDecision | None = None,
+    ) -> Dict[str, Any] | None:
+        input_policy = self._input_policy_config()
+        text = str(action_payload.get("text") or "")
+        target_input_kind = classify_target_input_kind(
+            action_payload=action_payload,
+            text=text,
+            browser_lane_active=bool(browser_decision and browser_decision.available),
+            browser_family=(browser_decision.family if browser_decision else None),
+        )
+        if not hasattr(self.driver, "preflight_text_input_context"):
+            return {
+                "targetInputKind": target_input_kind,
+                "normalizationApplied": False,
+                "inputStrategy": None,
+            }
+        normalization_requested = bool(input_policy.get("normalizeDeterministicTextIme", True)) and deterministic_input_normalization_required(
+            target_input_kind
+        )
+        try:
+            preflight = self.driver.preflight_text_input_context(
+                text=text,
+                target_input_kind=target_input_kind,
+                window_handle=action_payload.get("window_handle"),
+                normalization_requested=normalization_requested,
+            )
+        except Exception as exc:
+            preflight = {
+                "targetInputKind": target_input_kind,
+                "normalizationApplied": False,
+                "error": str(exc),
+            }
+        preflight["targetInputKind"] = target_input_kind
+        return preflight
+
+    def _restore_input_preflight(self, preflight: Dict[str, Any] | None) -> Dict[str, Any] | None:
+        if not preflight or not hasattr(self.driver, "restore_text_input_context"):
+            return preflight
+        try:
+            return self.driver.restore_text_input_context(preflight)
+        except Exception as exc:
+            payload = dict(preflight)
+            payload["restoreApplied"] = False
+            payload["restoreError"] = str(exc)
+            return payload
+
+    def _attach_input_preflight_metadata(
+        self,
+        *,
+        result: Dict[str, Any],
+        preflight: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        if not preflight:
+            return result
+        metadata = dict(result.get("metadata") or {})
+        metadata.setdefault("targetInputKind", preflight.get("targetInputKind"))
+        metadata["imeStateBefore"] = preflight.get("imeStateBefore")
+        metadata["imeStateAfter"] = preflight.get("imeStateAfter")
+        metadata["layoutBefore"] = preflight.get("layoutBefore")
+        metadata["layoutAfter"] = preflight.get("layoutAfter")
+        metadata["normalizationApplied"] = bool(preflight.get("normalizationApplied"))
+        metadata["restoreApplied"] = bool(preflight.get("restoreApplied"))
+        if preflight.get("inputStrategy") not in (None, ""):
+            metadata["inputStrategy"] = preflight.get("inputStrategy")
+        result["metadata"] = metadata
+        return result
+
+    def _desktop_live_observation_context(self) -> Dict[str, Any]:
+        try:
+            from core.desktop_live import desktop_live_service
+        except Exception as exc:
+            return {
+                "source": "computer_use_local_capture",
+                "sessionId": None,
+                "frameTimestamp": None,
+                "frameArtifactId": None,
+                "frameRef": None,
+                "error": str(exc),
+            }
+        try:
+            context = desktop_live_service.get_observation_context()
+            if isinstance(context, dict) and context:
+                return dict(context)
+        except Exception as exc:
+            return {
+                "source": "computer_use_local_capture",
+                "sessionId": None,
+                "frameTimestamp": None,
+                "frameArtifactId": None,
+                "frameRef": None,
+                "error": str(exc),
+            }
+        return {
+            "source": "computer_use_local_capture",
+            "sessionId": None,
+            "frameTimestamp": None,
+            "frameArtifactId": None,
+            "frameRef": None,
+        }
+
+    def _merge_semantic_verification(
+        self,
+        *,
+        action_type: str,
+        verification: ComputerUseVerification,
+        observation_bundle: Dict[str, Any] | None,
+        action_payload: Dict[str, Any],
+    ) -> ComputerUseVerification:
+        details = dict(verification.details or {})
+        semantic = summarize_semantic_post_action_verification(
+            action_type=action_type,
+            action_payload=action_payload,
+            verification_details=details,
+            observation_bundle=observation_bundle,
+        )
+        details["semanticVerificationStatus"] = semantic.get("status")
+        details["semanticEvidenceType"] = semantic.get("evidenceType")
+        details["semanticEvidenceSummary"] = semantic.get("evidenceSummary")
+        details["frameSequenceSamplingAvailable"] = bool(semantic.get("frameSequenceSamplingAvailable"))
+        details["frameSequenceSemanticVerificationAvailable"] = bool(semantic.get("frameSequenceSemanticVerificationAvailable"))
+        if not semantic.get("available"):
+            return ComputerUseVerification(
+                passed=verification.passed,
+                status=verification.status,
+                reason=verification.reason,
+                details=details,
+                level=verification.level,
+            )
+
+        semantic_passed = bool(semantic.get("passed"))
+        semantic_status = str(semantic.get("status") or "").strip() or verification.status
+        semantic_reason = str(semantic.get("reason") or "").strip() or verification.reason
+        semantic_level = str(semantic.get("level") or "").strip() or verification.level
+        normalized_action = str(action_type or "").strip().lower()
+        downgrade_verified_actions = {"open_app", "focus_window", "type_text", "scroll", "paste_files"}
+
+        if semantic_passed:
+            if verification.level in {"executed_only", "soft_verified", "review_required"}:
+                return ComputerUseVerification(
+                    passed=True,
+                    status=semantic_status,
+                    reason=semantic_reason,
+                    details=details,
+                    level=semantic_level,
+                )
+            return ComputerUseVerification(
+                passed=verification.passed,
+                status=verification.status,
+                reason=verification.reason,
+                details=details,
+                level=verification.level,
+            )
+
+        if semantic_level == "failed" and verification.level != "failed" and normalized_action in downgrade_verified_actions:
+            return ComputerUseVerification(
+                passed=False,
+                status=semantic_status,
+                reason=semantic_reason,
+                details=details,
+                level="failed",
+            )
+
+        if semantic_level == "review_required":
+            if verification.level in {"executed_only", "soft_verified"} or normalized_action in downgrade_verified_actions:
+                return ComputerUseVerification(
+                    passed=False,
+                    status=semantic_status,
+                    reason=semantic_reason,
+                    details=details,
+                    level="review_required",
+                )
+
+        return ComputerUseVerification(
+            passed=verification.passed,
+            status=verification.status,
+            reason=verification.reason,
+            details=details,
+            level=verification.level,
+        )
 
     def _pop_invocation_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any] | None:
         invocation = payload.pop("invocation_metadata", None)
@@ -1834,6 +2139,8 @@ class ComputerUseRuntime:
         expected_process_names: List[str],
         expected_title: str | None,
         expected_class: str | None,
+        browser_window_preferences: Dict[str, Any] | None = None,
+        title_as_hint_only: bool = False,
     ) -> Dict[str, Any] | None:
         running_windows = list((catalog_entry or {}).get("runningWindows") or [])
         if not running_windows:
@@ -1852,7 +2159,7 @@ class ComputerUseRuntime:
                 continue
             title = str(item.get("title") or "").strip().lower()
             class_name = str(item.get("className") or "").strip().lower()
-            if expected_title_lower and expected_title_lower not in title:
+            if expected_title_lower and not title_as_hint_only and expected_title_lower not in title:
                 continue
             if expected_class_lower and expected_class_lower != class_name:
                 continue
@@ -1867,6 +2174,17 @@ class ComputerUseRuntime:
                 score += 8
             if item.get("isVisible") is True:
                 score += 4
+            if browser_window_preferences:
+                preferred_process_names = list(browser_window_preferences.get("preferredProcessNames") or [])
+                for index, candidate in enumerate(preferred_process_names):
+                    if process_name == str(candidate).strip().lower():
+                        score += max(18, 52 - (index * 8))
+                        break
+                if browser_window_preferences.get("preferAttachedExistingBrowser"):
+                    if preferred_process_names and process_name == str(preferred_process_names[0]).strip().lower():
+                        score += 20
+                    if title and "chrome" in title:
+                        score += 8
             ranked.append((score, item))
         if not ranked:
             return None
@@ -1881,25 +2199,165 @@ class ComputerUseRuntime:
         expected_class: str | None,
         expected_classes: List[str],
         expected_process_names: List[str],
+        browser_window_preferences: Dict[str, Any] | None = None,
+        title_as_hint_only: bool = False,
     ) -> Dict[str, Any] | None:
-        candidates = self.driver.list_windows(
-            title_filter=expected_title,
-            title_filters=expected_titles,
+        query_title = None if title_as_hint_only else expected_title
+        query_titles = [] if title_as_hint_only else list(expected_titles or [])
+        candidate_pool: List[Dict[str, Any]] = []
+        for candidate in self.driver.list_windows(
+            title_filter=query_title,
+            title_filters=query_titles,
             class_name=expected_class,
             class_names=expected_classes,
             process_names=expected_process_names,
             limit=20,
-        )
-        if candidates:
-            return candidates[0]
+        ):
+            candidate_pool.append(dict(candidate))
         if expected_process_names:
-            candidates = self.driver.list_windows(
+            for candidate in self.driver.list_windows(
                 process_names=expected_process_names,
                 limit=20,
+            ):
+                candidate_pool.append(dict(candidate))
+        if candidate_pool:
+            deduped_candidates: List[Dict[str, Any]] = []
+            seen_keys: set[str] = set()
+            for item in candidate_pool:
+                handle = str(item.get("handle") or "").strip()
+                title = str(item.get("title") or "").strip().lower()
+                process_name = str(item.get("processName") or "").strip().lower()
+                signature = handle or f"{process_name}:{title}"
+                if signature in seen_keys:
+                    continue
+                seen_keys.add(signature)
+                deduped_candidates.append(item)
+            ranked = self._pick_running_window(
+                catalog_entry={"runningWindows": deduped_candidates},
+                profile=None,
+                expected_process_names=expected_process_names,
+                expected_title=expected_title,
+                expected_class=expected_class,
+                browser_window_preferences=browser_window_preferences,
+                title_as_hint_only=title_as_hint_only,
             )
-            if candidates:
-                return candidates[0]
+            if ranked is not None:
+                return ranked
         return None
+
+    def _running_process_ids(self, *, process_names: List[str]) -> List[int]:
+        if psutil is None:
+            return []
+        filters = {str(item).strip().lower() for item in list(process_names or []) if str(item).strip()}
+        if not filters:
+            return []
+        matched: List[int] = []
+        try:
+            for process in psutil.process_iter(["pid", "name"]):
+                name = str((process.info or {}).get("name") or "").strip().lower()
+                if name and name in filters:
+                    pid = int((process.info or {}).get("pid") or 0)
+                    if pid > 0 and pid not in matched:
+                        matched.append(pid)
+        except Exception:
+            return matched
+        return matched[:24]
+
+    def _restore_existing_window(
+        self,
+        *,
+        expected_titles: List[str],
+        expected_classes: List[str],
+        expected_process_names: List[str],
+    ) -> Dict[str, Any] | None:
+        process_ids = self._running_process_ids(process_names=expected_process_names)
+        if not process_ids and not expected_process_names:
+            return None
+        restore_method = getattr(self.driver, "restore_process_window", None)
+        if callable(restore_method):
+            try:
+                restored = restore_method(
+                    title_filters=expected_titles,
+                    class_names=expected_classes,
+                    process_ids=process_ids,
+                    process_names=expected_process_names,
+                )
+                if isinstance(restored, dict) and restored:
+                    return restored
+            except Exception:
+                return None
+        return None
+
+    def _restore_existing_window_from_tray(
+        self,
+        *,
+        catalog_entry: Dict[str, Any] | None,
+        expected_titles: List[str],
+        expected_classes: List[str],
+        expected_process_names: List[str],
+    ) -> Dict[str, Any] | None:
+        process_ids = self._running_process_ids(process_names=expected_process_names)
+        if not process_ids:
+            return None
+        restore_method = getattr(self.driver, "restore_app_from_tray", None)
+        if not callable(restore_method):
+            return None
+        restore_labels: List[str] = []
+        for raw in [
+            (catalog_entry or {}).get("displayName"),
+            *list((catalog_entry or {}).get("aliases") or []),
+            *expected_titles,
+            *[Path(item).stem for item in expected_process_names],
+        ]:
+            value = str(raw or "").strip()
+            if value and value not in restore_labels:
+                restore_labels.append(value)
+        try:
+            restored = restore_method(
+                labels=restore_labels,
+                process_ids=process_ids,
+                process_names=expected_process_names,
+                title_filters=expected_titles,
+                class_names=expected_classes,
+            )
+            if isinstance(restored, dict) and restored:
+                return restored
+        except Exception:
+            return None
+        return None
+
+    def _browser_window_preferences(
+        self,
+        *,
+        app_id: str | None,
+        app_name: str | None,
+        launch_command: List[str] | str | None,
+        window_title: str | None,
+        class_name: str | None,
+        lane_decision: BrowserLaneDecision | None,
+    ) -> Dict[str, Any] | None:
+        family = self.browser_automation.infer_family(
+            app_id=app_id,
+            app_name=app_name,
+            class_name=class_name,
+            launch_command=launch_command,
+            window_title=window_title,
+        )
+        if family != "chromium":
+            return None
+        preferred_process_names = self.browser_automation.preferred_window_process_names(
+            app_id=app_id,
+            app_name=app_name,
+        )
+        return {
+            "family": family,
+            "preferredProcessNames": preferred_process_names,
+            "preferAttachedExistingBrowser": bool(
+                lane_decision is not None
+                and lane_decision.available
+                and str(lane_decision.reason or "").strip().lower() == "attached_existing_debug_browser"
+            ),
+        }
 
     def _is_visual_guard_desktop_capture_mismatch(self, visual_guard: Dict[str, Any] | None) -> bool:
         if not isinstance(visual_guard, dict):
@@ -2165,6 +2623,7 @@ class ComputerUseRuntime:
         *,
         app_id: str | None = None,
         launch_target_path: str | None = None,
+        environment: Dict[str, str] | None = None,
     ):
         if not launch_command:
             raise DesktopDriverError("缺少应用启动命令。")
@@ -2177,7 +2636,7 @@ class ComputerUseRuntime:
         ):
             os.startfile(normalized_target_path)
             return None
-        return subprocess.Popen(launch_command)
+        return subprocess.Popen(launch_command, env=environment or None)
 
     def _resolve_launch_command(
         self,
@@ -2188,41 +2647,118 @@ class ComputerUseRuntime:
         command: str | None,
         profile: Any,
     ) -> List[str] | str:
+        selection = self._resolve_launch_selection(
+            app_id=app_id,
+            app_name=app_name,
+            window_title=window_title,
+            command=command,
+            profile=profile,
+        )
+        return selection["command"]
+
+    def _resolve_launch_selection(
+        self,
+        *,
+        app_id: str | None,
+        app_name: str | None,
+        window_title: str | None,
+        command: str | None,
+        profile: Any,
+    ) -> Dict[str, Any]:
         if command and str(command).strip():
-            return str(command).strip()
+            return {
+                "command": str(command).strip(),
+                "selectionReason": "explicit_command",
+                "launchCandidateSource": "explicit_command",
+                "launchCandidateRole": "explicit_command",
+                "launchCandidateScore": None,
+            }
 
         launch_command = self.app_profiles.launch_command_for(app_id)
+        launch_command = self.browser_automation.resolve_preferred_launch_command(
+            app_id=app_id,
+            app_name=app_name,
+            launch_command=launch_command or None,
+        ) or launch_command
         if not launch_command:
-            catalog_command = self.app_catalog.resolve_launch_command(
+            launch_candidate = self.app_catalog.resolve_launch_candidate(
                 app_id=app_id,
                 app_name=app_name,
                 window_title=window_title,
                 class_name=None,
             )
-            return catalog_command or []
+            catalog_command = list((launch_candidate or {}).get("command") or [])
+            preferred_catalog_command = self.browser_automation.resolve_preferred_launch_command(
+                app_id=app_id,
+                app_name=app_name,
+                launch_command=catalog_command or None,
+            )
+            return {
+                "command": preferred_catalog_command or catalog_command or [],
+                "selectionReason": (launch_candidate or {}).get("selectionReason") or "catalog_fallback",
+                "launchCandidateSource": (launch_candidate or {}).get("source"),
+                "launchCandidateRole": (launch_candidate or {}).get("role"),
+                "launchCandidateScore": (launch_candidate or {}).get("score"),
+            }
 
         executable = str(launch_command[0] or "").strip()
         if not executable:
-            return launch_command
+            return {
+                "command": launch_command,
+                "selectionReason": "profile_launch_empty_executable",
+                "launchCandidateSource": "app_profile",
+                "launchCandidateRole": "profile_launch",
+                "launchCandidateScore": None,
+            }
 
         executable_path = Path(executable)
         if executable_path.exists():
-            return [str(executable_path), *launch_command[1:]]
+            return {
+                "command": [str(executable_path), *launch_command[1:]],
+                "selectionReason": "profile_launch_resolved",
+                "launchCandidateSource": "app_profile",
+                "launchCandidateRole": "profile_launch",
+                "launchCandidateScore": None,
+            }
 
         resolved = shutil.which(executable)
         if resolved:
-            return [str(resolved), *launch_command[1:]]
+            return {
+                "command": [str(resolved), *launch_command[1:]],
+                "selectionReason": "profile_launch_shutil_which",
+                "launchCandidateSource": "app_profile",
+                "launchCandidateRole": "profile_launch",
+                "launchCandidateScore": None,
+            }
 
-        catalog_command = self.app_catalog.resolve_launch_command(
+        launch_candidate = self.app_catalog.resolve_launch_candidate(
             app_id=app_id,
             app_name=app_name,
             window_title=window_title,
             class_name=None,
         )
+        catalog_command = list((launch_candidate or {}).get("command") or [])
         if catalog_command:
-            return catalog_command
+            preferred_catalog_command = self.browser_automation.resolve_preferred_launch_command(
+                app_id=app_id,
+                app_name=app_name,
+                launch_command=catalog_command,
+            )
+            return {
+                "command": preferred_catalog_command or catalog_command,
+                "selectionReason": (launch_candidate or {}).get("selectionReason") or "catalog_selected",
+                "launchCandidateSource": (launch_candidate or {}).get("source"),
+                "launchCandidateRole": (launch_candidate or {}).get("role"),
+                "launchCandidateScore": (launch_candidate or {}).get("score"),
+            }
 
-        return launch_command
+        return {
+            "command": launch_command,
+            "selectionReason": "profile_launch_unresolved",
+            "launchCandidateSource": "app_profile",
+            "launchCandidateRole": "profile_launch",
+            "launchCandidateScore": None,
+        }
 
     def _artifact_output_path(
         self,
@@ -4206,6 +4742,7 @@ class ComputerUseRuntime:
         ).strip().lower()
         allowed_routes = {
             "native_command",
+            "browser_automation",
             "structured_accessibility",
             "visual_locator",
             "coordinate_fallback",
@@ -4240,26 +4777,73 @@ class ComputerUseRuntime:
             }
             or (isinstance(update_request, dict) and update_request.get("requested") and str(update_request.get("kind") or "").strip().lower() == "human_approval")
         )
-        if not route:
-            if action_type == "open_app":
-                route = "native_command"
-            elif human_approval_required:
-                route = "human_approval"
-            elif has_visual_locator:
-                route = "visual_locator"
-            elif coordinate_fallback:
-                route = "coordinate_fallback"
-            else:
-                route = "structured_accessibility"
+        browser_target_family = str(
+            target_metadata.get("browserTargetFamily")
+            or ((metadata.get("browserAutomation") or {}).get("family") if isinstance(metadata.get("browserAutomation"), dict) else "")
+            or existing_payload.get("browserTargetFamily")
+            or ""
+        ).strip().lower() or None
+        browser_lane_reason = str(
+            target_metadata.get("browserLaneReason")
+            or ((metadata.get("browserAutomation") or {}).get("reason") if isinstance(metadata.get("browserAutomation"), dict) else "")
+            or existing_payload.get("browserLaneReason")
+            or ""
+        ).strip() or None
+        browser_lane_provider = str(
+            target_metadata.get("browserLaneProvider")
+            or ((metadata.get("browserAutomation") or {}).get("provider") if isinstance(metadata.get("browserAutomation"), dict) else "")
+            or existing_payload.get("browserLaneProvider")
+            or ""
+        ).strip() or None
+        browser_lane_available = bool(
+            target_metadata.get("route") == "browser_automation"
+            or target_metadata.get("browserTargetId")
+            or (isinstance(metadata.get("browserAutomation"), dict) and metadata.get("browserAutomation", {}).get("available"))
+        )
+        if not browser_target_family or not browser_lane_reason or not browser_lane_provider:
+            browser_decision = self._browser_lane_decision(
+                action_type=action_type,
+                action_payload=action_payload,
+                app_id=(
+                    result.target.get("appId")
+                    or result.target.get("profileId")
+                    or action_payload.get("app_id")
+                    or action_payload.get("resolved_app_id")
+                ),
+                process_name=(target_metadata.get("processName") or result.target.get("processName")),
+            )
+            browser_target_family = browser_target_family or browser_decision.family
+            browser_lane_reason = browser_lane_reason or browser_decision.reason
+            browser_lane_provider = browser_lane_provider or browser_decision.provider
+            browser_lane_available = browser_lane_available or bool(browser_decision.available)
+        capability_matrix = self._runtime_capability_matrix()
+        capability_truth = dict(capability_matrix.get("truth") or {})
+        policy_result = decide_execution_route(
+            action_type=action_type,
+            current_platform=str(getattr(self.driver, "platform", "") or os.name),
+            capability_truth=capability_truth,
+            control_class=self._control_class_for_action(target=result.target, action_payload=action_payload),
+            browser_lane_available=browser_lane_available,
+            browser_target_family=browser_target_family,
+            browser_lane_reason=browser_lane_reason,
+            has_visual_locator=has_visual_locator,
+            coordinate_fallback=coordinate_fallback,
+            human_approval_required=human_approval_required,
+            existing_route=route,
+        )
         return {
-            "route": route,
-            "source": "existing_metadata" if existing_payload else "runtime_inference",
+            **policy_result,
             "visualLocatorBacked": has_visual_locator,
             "coordinateFallback": coordinate_fallback,
             "humanApprovalRequired": human_approval_required,
             "windowHandle": result.target.get("windowHandle") or result.target.get("window_handle"),
             "windowTitle": result.target.get("windowTitle") or result.target.get("window_title") or result.target.get("title"),
             "primitiveId": str((metadata.get("primitive") or {}).get("id") or ""),
+            "browserTargetFamily": browser_target_family,
+            "browserLaneReason": browser_lane_reason,
+            "browserLaneProvider": browser_lane_provider,
+            "browserLaneAvailable": browser_lane_available,
+            "routePolicy": self._platform_route_policy_summary(capability_truth=capability_truth),
         }
 
     def _learning_loop_summary(
@@ -5536,7 +6120,10 @@ class ComputerUseRuntime:
     def _collect_post_action_visual_locator_check(
         self,
         *,
+        action_type: str,
         action_payload: Dict[str, Any],
+        verification: ComputerUseVerification | None = None,
+        observation_bundle: Dict[str, Any] | None = None,
     ) -> Dict[str, Any] | None:
         request = self._visual_locator_request_from_payload(action_payload, prefix="post_action_")
         if not request:
@@ -5557,6 +6144,10 @@ class ComputerUseRuntime:
                 resolved={},
                 expected_texts=expected_texts,
                 error="在线统一视觉定位层当前不可用。",
+                action_type=action_type,
+                action_payload=action_payload,
+                verification_details=(verification.details if isinstance(verification, ComputerUseVerification) else None),
+                observation_bundle=observation_bundle,
             )
         try:
             resolved = self.visual_locator_runtime.locate(
@@ -5571,6 +6162,10 @@ class ComputerUseRuntime:
                 locator=str(request.get("locator") or ""),
                 resolved=resolved,
                 expected_texts=expected_texts,
+                action_type=action_type,
+                action_payload=action_payload,
+                verification_details=(verification.details if isinstance(verification, ComputerUseVerification) else None),
+                observation_bundle=observation_bundle,
             )
         except Exception as exc:
             return summarize_post_action_visual_check(
@@ -5579,6 +6174,10 @@ class ComputerUseRuntime:
                 resolved={},
                 expected_texts=expected_texts,
                 error=str(exc),
+                action_type=action_type,
+                action_payload=action_payload,
+                verification_details=(verification.details if isinstance(verification, ComputerUseVerification) else None),
+                observation_bundle=observation_bundle,
             )
 
     def _merge_post_action_visual_locator_verification(
@@ -5807,6 +6406,18 @@ class ComputerUseRuntime:
         }
 
     def _click_target_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        browser_decision = self._browser_lane_decision(
+            action_type="click",
+            action_payload=payload,
+        )
+        if browser_decision.available:
+            try:
+                return self.browser_automation.click_target(
+                    payload=payload,
+                    decision=browser_decision,
+                )
+            except Exception:
+                pass
         point = payload.get("point")
         point_candidates = self._normalize_runtime_point_candidates(
             payload.get("point_candidates"),
@@ -5971,6 +6582,56 @@ class ComputerUseRuntime:
                     "status": "failed",
                     "error": str(exc),
                 }
+        browser_decision = self._browser_lane_decision(
+            action_type="type_text",
+            action_payload=payload,
+        )
+        preflight = None
+        text_value = str(clipboard_payload.get("text") or "")
+        target_input_kind = classify_target_input_kind(
+            action_payload=payload,
+            text=text_value,
+            browser_lane_active=bool(browser_decision.available),
+            browser_family=browser_decision.family,
+        )
+        if browser_decision.available:
+            try:
+                browser_payload = dict(payload)
+                if clipboard_payload.get("file_paths"):
+                    browser_payload["file_paths"] = list(clipboard_payload.get("file_paths") or [])
+                if clipboard_payload.get("text") not in (None, ""):
+                    browser_payload["text"] = text_value
+                if clipboard_payload.get("file_paths") and (
+                    browser_payload.get("browser_selector")
+                    or browser_payload.get("browserSelector")
+                    or browser_payload.get("dom_selector")
+                    or browser_payload.get("domSelector")
+                    or browser_payload.get("css_selector")
+                    or browser_payload.get("cssSelector")
+                ):
+                    return self._finalize_type_result(
+                        typed=self.browser_automation.set_files(
+                            payload=browser_payload,
+                            decision=browser_decision,
+                        ),
+                        clipboard_payload=clipboard_payload,
+                        focus_hotkey_metadata=focus_hotkey_metadata,
+                    )
+                return self._finalize_type_result(
+                    typed=self.browser_automation.type_text(
+                        payload=browser_payload,
+                        decision=browser_decision,
+                        target_input_kind=target_input_kind,
+                    ),
+                    clipboard_payload=clipboard_payload,
+                    focus_hotkey_metadata=focus_hotkey_metadata,
+                )
+            except Exception:
+                pass
+        preflight = self._prepare_input_preflight(
+            action_payload=payload,
+            browser_decision=browser_decision,
+        )
         point = payload.get("point")
         point_candidates = self._normalize_runtime_point_candidates(
             payload.get("point_candidates"),
@@ -6008,7 +6669,12 @@ class ComputerUseRuntime:
                     clipboard_payload=clipboard_payload,
                     focus_hotkey_metadata=focus_hotkey_metadata,
                 )
-                return typed
+                return self._finalize_type_result(
+                    typed=typed,
+                    clipboard_payload=clipboard_payload,
+                    focus_hotkey_metadata=focus_hotkey_metadata,
+                    preflight=preflight,
+                )
             resolved_point = None
             resolved_points = None
             observation = None
@@ -6059,7 +6725,12 @@ class ComputerUseRuntime:
                 metadata["visualLocator"] = dict(visual_locator_resolution)
                 metadata["coordinateSource"] = "visual_locator"
             typed["metadata"] = metadata
-            return typed
+            return self._finalize_type_result(
+                typed=typed,
+                clipboard_payload=clipboard_payload,
+                focus_hotkey_metadata=focus_hotkey_metadata,
+                preflight=preflight,
+            )
         if has_visual_locator:
             click_point, visual_locator_resolution, focus_strategy = self._resolve_pure_visual_click_point(
                 payload,
@@ -6087,7 +6758,12 @@ class ComputerUseRuntime:
                 clipboard_payload=clipboard_payload,
                 focus_hotkey_metadata=focus_hotkey_metadata,
             )
-            return typed
+            return self._finalize_type_result(
+                typed=typed,
+                clipboard_payload=clipboard_payload,
+                focus_hotkey_metadata=focus_hotkey_metadata,
+                preflight=preflight,
+            )
         if point_candidates or isinstance(point, list) or isinstance(point_rect, list) or isinstance(spatial_anchor, dict):
             absolute_points, observation, normalized_points, visual_locator_resolution = self._resolve_runtime_click_points(payload)
             absolute_point = absolute_points[0]
@@ -6133,7 +6809,12 @@ class ComputerUseRuntime:
             if isinstance(visual_locator_resolution, dict):
                 metadata["visualLocator"] = dict(visual_locator_resolution)
             typed["metadata"] = metadata
-            return typed
+            return self._finalize_type_result(
+                typed=typed,
+                clipboard_payload=clipboard_payload,
+                focus_hotkey_metadata=focus_hotkey_metadata,
+                preflight=preflight,
+            )
         typed = self.driver.type_text(
             text=str(clipboard_payload.get("text") or ""),
             file_paths=list(clipboard_payload.get("file_paths") or []),
@@ -6147,12 +6828,28 @@ class ComputerUseRuntime:
             clear_first=bool(payload.get("clear_first", False)),
             press_enter=bool(payload.get("press_enter", False)),
         ).as_dict()
+        return self._finalize_type_result(
+            typed=typed,
+            clipboard_payload=clipboard_payload,
+            focus_hotkey_metadata=focus_hotkey_metadata,
+            preflight=preflight,
+        )
+
+    def _finalize_type_result(
+        self,
+        *,
+        typed: Dict[str, Any],
+        clipboard_payload: Dict[str, Any],
+        focus_hotkey_metadata: Dict[str, Any] | None,
+        preflight: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         typed_metadata = dict(typed.get("metadata") or {})
-        typed_metadata["clipboardPayload"] = dict(clipboard_payload)
+        typed_metadata.setdefault("clipboardPayload", dict(clipboard_payload))
         if focus_hotkey_metadata is not None:
-            typed_metadata["focusHotkey"] = dict(focus_hotkey_metadata)
+            typed_metadata.setdefault("focusHotkey", dict(focus_hotkey_metadata))
         typed["metadata"] = typed_metadata
-        return typed
+        restored_preflight = self._restore_input_preflight(preflight)
+        return self._attach_input_preflight_metadata(result=typed, preflight=restored_preflight)
 
     def _right_click_target_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self._has_explicit_visual_locator(payload):
@@ -6280,6 +6977,26 @@ class ComputerUseRuntime:
             window_handle=payload.get("window_handle"),
         )
 
+    def _scroll_target_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        browser_decision = self._browser_lane_decision(
+            action_type="scroll",
+            action_payload=payload,
+        )
+        if browser_decision.available:
+            try:
+                return self.browser_automation.scroll_view(
+                    payload=payload,
+                    decision=browser_decision,
+                )
+            except Exception:
+                pass
+        return self.driver.scroll(
+            amount=int(payload["amount"]),
+            element_id=payload.get("element_id"),
+            window_title=payload.get("window_title"),
+            window_handle=payload.get("window_handle"),
+        )
+
     def _verify_action_result(
         self,
         *,
@@ -6290,6 +7007,25 @@ class ComputerUseRuntime:
         after_observation: Dict[str, Any] | None = None,
     ) -> ComputerUseVerification:
         target_metadata = dict(result.target.get("metadata") or {}) if isinstance(result.target, dict) else {}
+        if str(target_metadata.get("route") or "").strip().lower() == "browser_automation":
+            browser_result = dict(target_metadata.get("browserResult") or {})
+            return ComputerUseVerification(
+                passed=True,
+                status=f"browser_{action_type}_executed",
+                reason="已通过浏览器自动化专项通道执行动作。",
+                details={
+                    "browserLaneProvider": target_metadata.get("browserLaneProvider"),
+                    "browserTargetFamily": target_metadata.get("browserTargetFamily"),
+                    "browserTargetId": target_metadata.get("browserTargetId"),
+                    "browserResult": browser_result,
+                    "beforeTreeHash": (before_observation or {}).get("treeHash"),
+                    "afterTreeHash": (after_observation or {}).get("treeHash"),
+                    "beforeScreenHash": (before_observation or {}).get("screenHash"),
+                    "afterScreenHash": (after_observation or {}).get("screenHash"),
+                    "observationBundle": dict(result.metadata.get("observationBundle") or {}),
+                },
+                level="executed_only",
+            )
         text_input_status = str(((target_metadata.get("textInputCapability") or {}).get("status")) or "").strip().lower()
         payload_file_paths = list(action_payload.get("file_paths") or action_payload.get("attachment_paths") or [])
         if not payload_file_paths and action_payload.get("file_path"):
@@ -6906,6 +7642,31 @@ class ComputerUseRuntime:
             metadata["pageIdentityConfidence"] = page_identity_hint.get("confidence")
             metadata["bindingAssessment"] = binding_assessment
             metadata.update(build_action_policy_metadata(binding_decision=observed_binding, invocation=invocation))
+            browser_decision = self._browser_lane_decision(
+                action_type="observe",
+                action_payload={
+                    "app_id": resolved_app_id,
+                    "resolved_app_id": resolved_app_id,
+                    "window_title": payload.get("windowTitle"),
+                    "window_handle": metadata.get("windowHandle"),
+                    "class_name": metadata.get("className"),
+                },
+                app_id=resolved_app_id,
+                process_name=metadata.get("processName"),
+            )
+            browser_metadata = self._build_browser_lane_metadata(browser_decision)
+            if browser_decision.available:
+                try:
+                    browser_metadata.update(
+                        self.browser_automation.observe(
+                            window_title=payload.get("windowTitle"),
+                            decision=browser_decision,
+                        )
+                    )
+                except Exception as exc:
+                    browser_metadata["available"] = False
+                    browser_metadata["error"] = str(exc)
+            metadata["browserAutomation"] = browser_metadata
             environment_probe = self._collect_environment_probe_snapshot(
                 action_payload={
                     "observe_notifications": observe_notifications,
@@ -7083,18 +7844,54 @@ class ComputerUseRuntime:
         )
         resolved_app_id = binding_decision.resolved_app_id
         catalog_entry = dict(binding_decision.catalog_entry or {}) if binding_decision.catalog_entry else None
+        adapter_match = self.app_adapters.match(
+            app_id=resolved_app_id or app_id,
+            app_name=app_name or (catalog_entry or {}).get("displayName"),
+            process_names=list((catalog_entry or {}).get("processNames") or []),
+            title_patterns=list((catalog_entry or {}).get("titlePatterns") or []),
+            launch_candidates=list((catalog_entry or {}).get("launchCandidates") or []),
+            catalog_entry=catalog_entry,
+        )
         profile_lookup_app_id = self._profile_lookup_app_id_for_binding(
             binding_decision=binding_decision,
             fallback_app_id=app_id,
         )
         profile = self.app_profiles.get(profile_lookup_app_id)
-        launch_command = self._resolve_launch_command(
+        launch_selection = self._resolve_launch_selection(
             app_id=resolved_app_id,
             app_name=app_name,
             window_title=window_title,
             command=command,
             profile=profile,
         )
+        launch_command = launch_selection["command"]
+        adapter_open = None
+        if adapter_match is not None:
+            try:
+                adapter_open = adapter_match.adapter.build_open_command(
+                    app_id=resolved_app_id or app_id,
+                    app_name=app_name or (catalog_entry or {}).get("displayName"),
+                    launch_target_path=launch_target_path,
+                )
+            except Exception:
+                adapter_open = None
+        if adapter_open and list(adapter_open.get("command") or []):
+            launch_command = list(adapter_open.get("command") or [])
+            launch_selection = {
+                **dict(launch_selection or {}),
+                "command": launch_command,
+                "selectionReason": adapter_open.get("selectionReason") or "app_adapter_open",
+                "launchCandidateSource": "app_adapter",
+                "launchCandidateRole": "structured_open",
+                "launchCandidateScore": 999,
+            }
+            catalog_entry = {
+                **dict(catalog_entry or {}),
+                "appAdapterId": adapter_open.get("appAdapterId") or (catalog_entry or {}).get("appAdapterId"),
+                "controlClass": adapter_open.get("controlClass") or (catalog_entry or {}).get("controlClass"),
+                "processNames": list(adapter_open.get("processNames") or (catalog_entry or {}).get("processNames") or []),
+                "titlePatterns": list(adapter_open.get("windowTitleHints") or (catalog_entry or {}).get("titlePatterns") or []),
+            }
         if not launch_command:
             raise DesktopDriverError(
                 f"未提供可执行的应用启动命令。app_id={resolved_app_id or ''} app_name={str(app_name or '').strip()}".strip()
@@ -7105,7 +7902,7 @@ class ComputerUseRuntime:
         profile_titles = list(profile.title_patterns) if profile else []
         profile_classes = list(profile.class_names) if profile else []
         profile_processes = list(profile.process_names) if profile else []
-        combined_processes = profile_processes or catalog_processes
+        combined_processes = list((catalog_entry or {}).get("processNames") or []) or profile_processes or catalog_processes
         expected_title = window_title or (profile_titles[0] if profile_titles else None) or (catalog_titles[0] if catalog_titles else None)
         expected_class = class_name or (profile_classes[0] if profile_classes else None) or (catalog_classes[0] if catalog_classes else None)
         launch_title_hints = derive_window_title_hints(
@@ -7129,6 +7926,33 @@ class ComputerUseRuntime:
         expected_titles = list(binding_candidates["titles"])
         expected_classes = list(binding_candidates["classes"])
         expected_process_names = list(binding_candidates["processNames"])
+        browser_lane_decision = self.browser_automation.decide_lane(
+            action_type="open_app",
+            action_payload={
+                "app_id": resolved_app_id,
+                "app_name": app_name,
+                "window_title": expected_title,
+                "class_name": expected_class,
+            },
+            app_id=resolved_app_id,
+            window_title=expected_title,
+            class_name=expected_class,
+        )
+        control_class = self._control_class_for_action(
+            binding_decision=binding_decision,
+            catalog_entry=catalog_entry,
+        )
+        browser_window_preferences = self._browser_window_preferences(
+            app_id=resolved_app_id,
+            app_name=app_name,
+            launch_command=launch_command,
+            window_title=expected_title,
+            class_name=expected_class,
+            lane_decision=browser_lane_decision,
+        )
+        browser_title_hint_only = bool(browser_window_preferences and not str(window_title or "").strip())
+        running_lookup_title = None if browser_title_hint_only else expected_title
+        running_lookup_titles = [] if browser_title_hint_only else list(expected_titles)
         visual_expectation = self._visual_expectation(app_id=profile_lookup_app_id, action_name="open_app")
 
         def _runner(_run_handle, _runtime_payload=None):
@@ -7137,31 +7961,87 @@ class ComputerUseRuntime:
                 and str(launch_target_path or "").strip()
             )
             existing_window = None
+            restore_strategy = None
+            tray_restore_attempted = False
+            tray_restore_matched_label = None
+            running_process_ids = self._running_process_ids(process_names=expected_process_names)
             if not explorer_targeted_launch:
                 existing_window = self._pick_running_window(
                     catalog_entry=catalog_entry,
                     profile=profile,
                     expected_process_names=expected_process_names,
-                    expected_title=expected_title,
+                    expected_title=running_lookup_title,
                     expected_class=expected_class,
+                    browser_window_preferences=browser_window_preferences,
+                    title_as_hint_only=browser_title_hint_only,
                 )
+                if existing_window is not None:
+                    restore_strategy = "direct_window"
                 if existing_window is None:
-                    existing_window = self._probe_existing_window(
-                        expected_title=expected_title,
+                    existing_window = self._restore_existing_window(
                         expected_titles=expected_titles,
-                        expected_class=expected_class,
                         expected_classes=expected_classes,
                         expected_process_names=expected_process_names,
                     )
+                    if existing_window is not None:
+                        restore_strategy = "process_window"
+                if existing_window is None:
+                    existing_window = self._probe_existing_window(
+                        expected_title=running_lookup_title,
+                        expected_titles=running_lookup_titles,
+                        expected_class=expected_class,
+                        expected_classes=expected_classes,
+                        expected_process_names=expected_process_names,
+                        browser_window_preferences=browser_window_preferences,
+                        title_as_hint_only=browser_title_hint_only,
+                    )
+                    if existing_window is not None:
+                        restore_strategy = "direct_window"
+                if existing_window is None:
+                    tray_restore_attempted = bool(running_process_ids)
+                    existing_window = self._restore_existing_window_from_tray(
+                        catalog_entry=catalog_entry,
+                        expected_titles=expected_titles,
+                        expected_classes=expected_classes,
+                        expected_process_names=expected_process_names,
+                    )
+                    if existing_window is not None:
+                        restore_strategy = "tray_icon"
+                        tray_restore_matched_label = (
+                            dict(existing_window.get("metadata") or {}).get("trayRestoreMatchedLabel")
+                        )
             process = None
             process_ids = None
+            effective_launch_command = launch_command
+            effective_launch_environment = None
+            effective_browser_lane: Dict[str, Any] = dict(browser_lane_decision.as_dict())
             if existing_window is not None:
                 window = dict(existing_window)
             else:
+                try:
+                    (
+                        effective_launch_command,
+                        effective_launch_environment,
+                        launch_browser_lane,
+                    ) = self.browser_automation.prepare_launch(
+                        app_id=resolved_app_id,
+                        launch_command=launch_command,
+                        environment=None,
+                    )
+                    if launch_browser_lane:
+                        effective_browser_lane.update(dict(launch_browser_lane))
+                except Exception as exc:
+                    effective_browser_lane.update(
+                        {
+                            "managedLaunch": False,
+                            "error": str(exc),
+                        }
+                    )
                 process = self._spawn_process(
-                    launch_command,
+                    effective_launch_command,
                     app_id=resolved_app_id,
                     launch_target_path=launch_target_path,
+                    environment=effective_launch_environment,
                 )
                 process_ids = (
                     [int(process.pid)]
@@ -7228,8 +8108,30 @@ class ComputerUseRuntime:
                 profile=profile,
                 catalog_entry=catalog_entry,
             )
+            resolved_window["controlClass"] = control_class
+            resolved_window["appAdapterId"] = (catalog_entry or {}).get("appAdapterId")
             if visual_expectation:
                 resolved_window["visualExpectation"] = visual_expectation
+            if browser_window_preferences:
+                effective_browser_lane.setdefault("family", browser_window_preferences.get("family"))
+                effective_browser_lane.setdefault("preferredExistingBrowserWindow", True)
+                effective_browser_lane.setdefault(
+                    "preferredProcessNames",
+                    list(browser_window_preferences.get("preferredProcessNames") or []),
+                )
+            if existing_window is not None and browser_window_preferences:
+                effective_browser_lane["reusedExistingBrowserWindow"] = True
+                effective_browser_lane.setdefault("profilePersistenceMode", "reused_existing_window")
+                if str(browser_lane_decision.reason or "").strip().lower() == "attached_existing_debug_browser":
+                    effective_browser_lane["attachedExistingBrowser"] = True
+                    effective_browser_lane["profilePersistenceMode"] = "attached_existing_debug_browser"
+            elif existing_window is not None and control_class == "electron_shell_app":
+                effective_browser_lane.setdefault("profilePersistenceMode", "attached_existing_window_without_debug")
+            elif existing_window is None and control_class == "electron_shell_app":
+                if bool(browser_lane_decision.available):
+                    effective_browser_lane.setdefault("profilePersistenceMode", "managed_launch_debuggable")
+                else:
+                    effective_browser_lane.setdefault("profilePersistenceMode", "managed_launch_shell_only")
             self._remember_window_binding(
                 app_id=resolved_app_id,
                 window=resolved_window,
@@ -7251,7 +8153,7 @@ class ComputerUseRuntime:
                     profile=profile,
                     catalog_entry=catalog_entry,
                 ),
-                launch_command=launch_command if isinstance(launch_command, list) else [launch_command],
+                launch_command=effective_launch_command if isinstance(effective_launch_command, list) else [effective_launch_command],
                 window=resolved_window,
             )
             return ComputerUseActionResult(
@@ -7262,11 +8164,31 @@ class ComputerUseRuntime:
                 target=resolved_window,
                 metadata={
                     "appId": resolved_app_id,
-                    "launchCommand": launch_command if isinstance(launch_command, list) else [launch_command],
+                    "launchCommand": effective_launch_command if isinstance(effective_launch_command, list) else [effective_launch_command],
                     "processNames": list(expected_process_names),
                     "reusedRunningWindow": existing_window is not None,
+                    "launchSelectionReason": launch_selection.get("selectionReason"),
+                    "launchCandidateSource": launch_selection.get("launchCandidateSource"),
+                    "launchCandidateRole": launch_selection.get("launchCandidateRole"),
+                    "launchCandidateScore": launch_selection.get("launchCandidateScore"),
+                    "restoreStrategy": restore_strategy,
+                    "trayRestoreAttempted": tray_restore_attempted,
+                    "trayRestoreMatchedLabel": tray_restore_matched_label,
+                    "spawnSuppressedByRestore": bool(existing_window is not None and restore_strategy in {"process_window", "tray_icon"}),
                     "visualExpectation": visual_expectation or None,
                     "catalogDisplayName": (catalog_entry or {}).get("displayName"),
+                    "controlClass": control_class,
+                    "appAdapterId": (catalog_entry or {}).get("appAdapterId"),
+                    "appAdapter": (
+                        {
+                            "id": adapter_match.adapter_id,
+                            "selectionReason": adapter_open.get("selectionReason") if isinstance(adapter_open, dict) else None,
+                            "targetKind": adapter_open.get("targetKind") if isinstance(adapter_open, dict) else None,
+                        }
+                        if adapter_match is not None
+                        else None
+                    ),
+                    "browserAutomation": dict(effective_browser_lane),
                 },
             )
 
@@ -7288,6 +8210,8 @@ class ComputerUseRuntime:
                 "class_name": expected_class,
                 "class_name_candidates": list(expected_classes),
                 "process_names": list(expected_process_names),
+                "control_class": control_class,
+                "app_adapter_id": (catalog_entry or {}).get("appAdapterId"),
                 "visual_expectation": visual_expectation or None,
                 "strict_window_title_match": strict_title_binding,
                 "require_visual_guard": require_visual_guard,
@@ -7385,6 +8309,7 @@ class ComputerUseRuntime:
                 class_name=expected_class,
                 class_name_candidates=expected_classes,
                 process_names=expected_process_names,
+                include_titleless=bool(expected_process_names),
             )
             focused = self._ensure_app_ready_window(
                 run_handle=_run_handle,
@@ -8217,6 +9142,20 @@ class ComputerUseRuntime:
                         post_observation = observed.as_dict()
                     except Exception:
                         result.observation = result.observation
+                    observation_policy = self._observation_policy_config()
+                    if bool(observation_policy.get("frameSequenceEnabled", True)):
+                        result.metadata["observationBundle"] = build_observation_bundle(
+                            action_type=action_type,
+                            action_payload=normalized_payload,
+                            route=str(
+                                (dict(result.target.get("metadata") or {}) if isinstance(result.target, dict) else {}).get("route")
+                                or ""
+                            ).strip().lower() or None,
+                            before_observation=before_observation,
+                            mid_observation=(settle_observation.as_dict() if settle_observation is not None else None),
+                            after_observation=post_observation,
+                            desktop_live_context=self._desktop_live_observation_context(),
+                        )
                     verification = self._verify_action_result(
                         action_type=action_type,
                         action_payload=normalized_payload,
@@ -8224,8 +9163,27 @@ class ComputerUseRuntime:
                         before_observation=before_observation,
                         after_observation=post_observation,
                     )
-                    post_action_visual_locator = self._collect_post_action_visual_locator_check(
+                    verification = self._merge_semantic_verification(
+                        action_type=action_type,
+                        verification=verification,
+                        observation_bundle=(result.metadata.get("observationBundle") if isinstance(result.metadata.get("observationBundle"), dict) else None),
                         action_payload=normalized_payload,
+                    )
+                    if isinstance(result.metadata.get("observationBundle"), dict):
+                        verification_details = dict(verification.details or {})
+                        verification_details["observationBundle"] = dict(result.metadata.get("observationBundle") or {})
+                        verification = ComputerUseVerification(
+                            passed=verification.passed,
+                            status=verification.status,
+                            reason=verification.reason,
+                            details=verification_details,
+                            level=verification.level,
+                        )
+                    post_action_visual_locator = self._collect_post_action_visual_locator_check(
+                        action_type=action_type,
+                        action_payload=normalized_payload,
+                        verification=verification,
+                        observation_bundle=(result.metadata.get("observationBundle") if isinstance(result.metadata.get("observationBundle"), dict) else None),
                     )
                     if isinstance(post_action_visual_locator, dict):
                         result.metadata["postActionVisualLocator"] = dict(post_action_visual_locator)
@@ -8521,6 +9479,8 @@ class ComputerUseRuntime:
             verification=normalized_verification,
             update_request=normalized_update_request,
         )
+        if isinstance(result.metadata.get("observationBundle"), dict):
+            result.metadata["observationBundle"]["route"] = result.metadata["executionRoute"].get("route")
         result_contract = build_result_contract(
             action_type=action_type,
             execution_mode=execution_mode,
@@ -8810,12 +9770,7 @@ class ComputerUseRuntime:
                 action_type="scroll",
                 status="completed",
                 message="滚动动作已完成。",
-                target=self.driver.scroll(
-                    amount=int(runtime_payload["amount"]),
-                    element_id=runtime_payload.get("element_id"),
-                    window_title=runtime_payload.get("window_title"),
-                    window_handle=runtime_payload.get("window_handle"),
-                ),
+                target=self._scroll_target_from_payload(runtime_payload),
             ),
         )
 
@@ -10110,21 +11065,34 @@ class ComputerUseRuntime:
 
     def availability(self) -> Dict[str, Any]:
         vision_state = self._vision_fallback_state()
+        self.browser_automation.configure(self._computer_use_config())
+        capability_matrix = self._runtime_capability_matrix()
+        capability_truth = dict(capability_matrix.get("truth") or {})
+        current_matrix = dict(capability_matrix.get("current") or {})
+        capabilities = dict(current_matrix.get("facets") or {})
+        capabilities["execution"] = {
+            **dict(current_matrix.get("execution") or {}),
+            **self._platform_route_policy_summary(capability_truth=capability_truth),
+        }
         return {
             "platform": self.driver.platform,
             "backend": self.driver.backend,
             "available": self.driver.is_available(),
                 "details": {
                     "driver": "pywinauto.uia+win32_fallback",
-                    "backends": {
-                        "primary": "uia",
-                        "fallback": "win32",
+                "backends": {
+                    "primary": "uia",
+                    "fallback": "win32",
                 },
                 "requires": ["pywinauto", "pywin32", "mss", "Pillow"],
-                    "capabilities": self.driver.capability_summary() if hasattr(self.driver, "capability_summary") else {},
+                    "capabilities": capabilities,
+                    "capabilityMatrix": capability_matrix,
+                    "routePolicy": capabilities.get("execution"),
                     "visionFallback": vision_state,
                     "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
                     "onlineVisualLocator": self._online_visual_locator_descriptor(),
+                    "browserLane": self.browser_automation.availability_summary(),
+                    "appAdapter": self._app_adapter_summary(),
                     "selectorStats": self.driver.selector_metrics(),
                     "appCatalog": self.app_catalog.summary(include_running=True),
                 },

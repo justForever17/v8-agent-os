@@ -59,16 +59,107 @@ def _unique_commands(commands: List[List[str]]) -> List[List[str]]:
     return ordered
 
 
+def _normalize_launch_candidate(candidate: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    payload = dict(candidate or {})
+    command = [str(item or "").strip() for item in list(payload.get("command") or []) if str(item or "").strip()]
+    if not command:
+        return None
+    executable = str(command[0] or "").strip()
+    executable_path = Path(executable)
+    return {
+        "command": command,
+        "source": str(payload.get("source") or "").strip() or "unknown",
+        "role": str(payload.get("role") or "").strip() or "unknown",
+        "executableName": str(payload.get("executableName") or executable_path.name or "").strip() or None,
+        "executableStem": str(payload.get("executableStem") or executable_path.stem or "").strip() or None,
+        "directory": str(payload.get("directory") or executable_path.parent or "").strip() or None,
+    }
+
+
+def _derive_launch_candidates_from_commands(
+    commands: List[List[str]],
+    *,
+    fallback_source: str = "unknown",
+    fallback_role: str = "unknown",
+) -> List[Dict[str, Any]]:
+    derived: List[Dict[str, Any]] = []
+    for command in list(commands or []):
+        normalized = _normalize_launch_candidate(
+            {
+                "command": command,
+                "source": fallback_source,
+                "role": fallback_role,
+            }
+        )
+        if normalized is not None:
+            derived.append(normalized)
+    return derived
+
+
+def _unique_launch_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered: List[Dict[str, Any]] = []
+    seen = set()
+    for candidate in list(candidates or []):
+        normalized = _normalize_launch_candidate(candidate)
+        if normalized is None:
+            continue
+        key = json.dumps(
+            {
+                "command": normalized["command"],
+                "source": normalized["source"],
+                "role": normalized["role"],
+            },
+            ensure_ascii=False,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    return ordered
+
+
+_SUSPICIOUS_LAUNCH_TOKEN_GROUPS: Dict[str, tuple[str, ...]] = {
+    "uninstall": ("uninstall", "unins", "remove", "repair"),
+    "installer": ("setup", "install", "bootstrap", "stub"),
+    "updater": ("update", "updater", "autoupdate", "upgrade"),
+    "helper": (
+        "helper",
+        "service",
+        "proxy",
+        "crashpad",
+        "bugreporter",
+        "driver",
+        "native",
+        "messagehost",
+        "hardwarecheck",
+        "elevation",
+        "elevate",
+    ),
+}
+
+
+def _is_suspicious_launch_stem(stem: str) -> str | None:
+    normalized = _normalize(stem)
+    if not normalized:
+        return None
+    for group, tokens in _SUSPICIOUS_LAUNCH_TOKEN_GROUPS.items():
+        if any(token in normalized for token in tokens):
+            return group
+    return None
+
+
 class ComputerUseAppCatalog:
     def __init__(
         self,
         *,
         app_profiles,
+        app_adapters=None,
         platform_providers: Optional[List[ComputerUseAppDiscoveryProvider]] = None,
         static_ttl_seconds: int = 900,
         running_ttl_seconds: int = 20,
     ) -> None:
         self.app_profiles = app_profiles
+        self.app_adapters = app_adapters
         self.platform_providers = list(platform_providers or [])
         self.static_ttl_seconds = max(60, int(static_ttl_seconds))
         self.running_ttl_seconds = max(5, int(running_ttl_seconds))
@@ -106,6 +197,12 @@ class ComputerUseAppCatalog:
                 continue
             payload = copy.deepcopy(entry)
             payload["matchScore"] = int(score)
+            selected_candidate = self._select_launch_candidate(payload)
+            if selected_candidate:
+                payload["launchSelectionReason"] = selected_candidate.get("selectionReason")
+                payload["launchCandidateSource"] = selected_candidate.get("source")
+                payload["launchCandidateRole"] = selected_candidate.get("role")
+                payload["launchCandidateScore"] = selected_candidate.get("score")
             ranked.append((score, payload))
         ranked.sort(
             key=lambda item: (
@@ -196,6 +293,22 @@ class ComputerUseAppCatalog:
         window_title: str | None = None,
         class_name: str | None = None,
     ) -> List[str]:
+        candidate = self.resolve_launch_candidate(
+            app_id=app_id,
+            app_name=app_name,
+            window_title=window_title,
+            class_name=class_name,
+        )
+        return list(candidate.get("command") or []) if candidate else []
+
+    def resolve_launch_candidate(
+        self,
+        *,
+        app_id: str | None = None,
+        app_name: str | None = None,
+        window_title: str | None = None,
+        class_name: str | None = None,
+    ) -> Dict[str, Any] | None:
         entry = self.resolve_app(
             explicit_app_id=app_id,
             app_name=app_name,
@@ -204,12 +317,8 @@ class ComputerUseAppCatalog:
             include_running=False,
         )
         if entry is None:
-            return []
-        commands = [list(command) for command in list(entry.get("launchCommands") or [])]
-        for command in commands:
-            if self._command_resolves(command):
-                return command
-        return commands[0] if commands else []
+            return None
+        return self._select_launch_candidate(entry)
 
     def record_runtime_window(
         self,
@@ -300,8 +409,15 @@ class ComputerUseAppCatalog:
             "appId": profile.app_id,
             "profileId": profile.app_id,
             "displayName": profile.display_name,
+            "controlClass": profile.control_class,
+            "appAdapterId": profile.app_adapter_id or None,
             "aliases": aliases,
             "launchCommands": [list(profile.launch_command)] if profile.launch_command else [],
+            "launchCandidates": _derive_launch_candidates_from_commands(
+                [list(profile.launch_command)] if profile.launch_command else [],
+                fallback_source="app_profile",
+                fallback_role="profile_launch",
+            ),
             "processNames": list(profile.process_names),
             "titlePatterns": list(profile.title_patterns),
             "classNames": list(profile.class_names),
@@ -341,14 +457,30 @@ class ComputerUseAppCatalog:
             "appId": app_id,
             "profileId": profile_id or None,
             "displayName": display_name,
+            "controlClass": str(entry.get("controlClass") or "").strip() or None,
+            "appAdapterId": str(entry.get("appAdapterId") or "").strip() or None,
             "aliases": _unique(list(entry.get("aliases") or [])),
             "launchCommands": _unique_commands([list(item) for item in list(entry.get("launchCommands") or [])]),
+            "launchCandidates": [],
             "processNames": _unique(list(entry.get("processNames") or []), lower=True),
             "titlePatterns": _unique(list(entry.get("titlePatterns") or [])),
             "classNames": _unique(list(entry.get("classNames") or [])),
             "sources": _unique(list(entry.get("sources") or [])),
             "runningWindows": self._unique_windows(list(entry.get("runningWindows") or [])),
         }
+        explicit_launch_candidates = list(entry.get("launchCandidates") or [])
+        fallback_launch_candidates = []
+        if not explicit_launch_candidates:
+            fallback_launch_candidates = _derive_launch_candidates_from_commands(
+                normalized["launchCommands"],
+                fallback_source=normalized["sources"][0] if normalized["sources"] else "unknown",
+                fallback_role="unknown",
+            )
+        launch_candidates = _unique_launch_candidates(
+            explicit_launch_candidates + fallback_launch_candidates
+        )
+        normalized["launchCandidates"] = launch_candidates
+        normalized["launchCommands"] = _unique_commands([list(item.get("command") or []) for item in launch_candidates])
         if not normalized["aliases"]:
             normalized["aliases"] = _unique(
                 [
@@ -363,6 +495,8 @@ class ComputerUseAppCatalog:
         normalized["isRunning"] = bool(normalized["runningWindows"])
         normalized["profileBound"] = bool(normalized["profileId"])
         normalized["installed"] = bool(normalized["launchCommands"] or normalized["profileBound"])
+        normalized["controlClass"] = self._infer_control_class(normalized)
+        normalized["appAdapterId"] = self._infer_app_adapter_id(normalized)
         return normalized
 
     def _merge(self, bucket: Dict[str, Dict[str, Any]], raw_entry: Dict[str, Any]) -> None:
@@ -375,6 +509,12 @@ class ComputerUseAppCatalog:
             normalized["launchCommands"] = _unique_commands(
                 [list(item) for item in list(existing.get("launchCommands") or []) + list(normalized.get("launchCommands") or [])]
             )
+            normalized["launchCandidates"] = _unique_launch_candidates(
+                list(existing.get("launchCandidates") or []) + list(normalized.get("launchCandidates") or [])
+            )
+            normalized["launchCommands"] = _unique_commands(
+                [list(item.get("command") or []) for item in list(normalized.get("launchCandidates") or [])]
+            )
             normalized["processNames"] = _unique(
                 list(existing.get("processNames") or []) + list(normalized.get("processNames") or []),
                 lower=True,
@@ -386,6 +526,8 @@ class ComputerUseAppCatalog:
                 list(existing.get("runningWindows") or []) + list(normalized.get("runningWindows") or [])
             )
             normalized["profileId"] = normalized.get("profileId") or existing.get("profileId")
+            normalized["controlClass"] = normalized.get("controlClass") or existing.get("controlClass")
+            normalized["appAdapterId"] = normalized.get("appAdapterId") or existing.get("appAdapterId")
         bucket[app_id] = self._normalize_entry(normalized, preferred_app_id=app_id)
 
     def _pick_display_name(self, existing: Dict[str, Any], incoming: Dict[str, Any]) -> str:
@@ -433,6 +575,45 @@ class ComputerUseAppCatalog:
         digest = hashlib.md5(digest_source.encode("utf-8")).hexdigest()[:10]
         return f"app_{digest}"
 
+    def _infer_app_adapter_id(self, entry: Dict[str, Any]) -> str | None:
+        explicit = str(entry.get("appAdapterId") or "").strip()
+        if explicit:
+            return explicit
+        if self.app_adapters is None:
+            return None
+        match = self.app_adapters.match(
+            app_id=entry.get("appId"),
+            app_name=entry.get("displayName"),
+            process_names=list(entry.get("processNames") or []),
+            title_patterns=list(entry.get("titlePatterns") or []),
+            launch_candidates=list(entry.get("launchCandidates") or []),
+            catalog_entry=entry,
+        )
+        return match.adapter_id if match is not None else None
+
+    def _infer_control_class(self, entry: Dict[str, Any]) -> str:
+        explicit = str(entry.get("controlClass") or "").strip()
+        if explicit:
+            return explicit
+        adapter_id = str(entry.get("appAdapterId") or "").strip()
+        if adapter_id and self.app_adapters is not None:
+            adapter = self.app_adapters.get(adapter_id)
+            if adapter is not None:
+                return str(getattr(adapter, "control_class", "") or "native_window_app")
+        aliases = " ".join(
+            [
+                str(entry.get("appId") or ""),
+                str(entry.get("displayName") or ""),
+                " ".join(list(entry.get("aliases") or [])),
+                " ".join(list(entry.get("processNames") or [])),
+            ]
+        ).lower()
+        if any(token in aliases for token in ("chrome", "edge", "chromium", "firefox", "browser")):
+            return "browser_host_app"
+        if any(token in aliases for token in ("obsidian", "code", "kiro", "electron")):
+            return "electron_shell_app"
+        return "native_window_app"
+
     def _unique_windows(self, windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ordered: List[Dict[str, Any]] = []
         seen = set()
@@ -467,6 +648,109 @@ class ComputerUseAppCatalog:
         if not executable:
             return False
         return Path(executable).exists() or bool(shutil.which(executable))
+
+    def _select_launch_candidate(self, entry: Dict[str, Any]) -> Dict[str, Any] | None:
+        candidates = _unique_launch_candidates(list(entry.get("launchCandidates") or []))
+        if not candidates:
+            return None
+        ranked: List[tuple[int, Dict[str, Any]]] = []
+        for candidate in candidates:
+            resolved = self._command_resolves(list(candidate.get("command") or []))
+            score, reasons = self._score_launch_candidate(entry, candidate, resolved=resolved)
+            if not resolved:
+                score -= 120
+                reasons.append("command_unresolved")
+            payload = dict(candidate)
+            payload["score"] = score
+            payload["selectionReason"] = ",".join(reasons) if reasons else "fallback_candidate"
+            ranked.append((score, payload))
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return ranked[0][1]
+
+    def _score_launch_candidate(self, entry: Dict[str, Any], candidate: Dict[str, Any], *, resolved: bool) -> tuple[int, List[str]]:
+        score = 0
+        reasons: List[str] = []
+        source = str(candidate.get("source") or "").strip().lower()
+        role = str(candidate.get("role") or "").strip().lower()
+        executable_stem = _normalize(str(candidate.get("executableStem") or ""))
+        executable_name = str(candidate.get("executableName") or "").strip().lower()
+        if source == "app_profile":
+            score += 260
+            reasons.append("profile_launch")
+        elif source == "windows_app_paths":
+            score += 180
+            reasons.append("app_paths")
+        elif source == "windows_registry_display_icon":
+            score += 120
+            reasons.append("display_icon")
+        elif source.endswith("_scan"):
+            score += 40
+            reasons.append("install_scan")
+        elif source == "windows_registry_uninstall_string":
+            score -= 80
+            reasons.append("uninstall_string_low_priority")
+
+        if role in {"primary_gui", "display_icon", "profile_launch"}:
+            score += 90
+            reasons.append(f"role_{role}")
+        elif role == "install_scan":
+            score += 24
+            reasons.append("role_install_scan")
+        elif role in {"helper", "updater", "installer"}:
+            score -= 120
+            reasons.append(f"role_{role}")
+        elif role == "uninstall_fallback":
+            score -= 220
+            reasons.append("role_uninstall")
+
+        suspicious_group = _is_suspicious_launch_stem(executable_stem)
+        if suspicious_group == "uninstall":
+            score -= 220
+            reasons.append("stem_uninstall")
+        elif suspicious_group == "installer":
+            score -= 120
+            reasons.append("stem_installer")
+        elif suspicious_group == "updater":
+            score -= 90
+            reasons.append("stem_updater")
+        elif suspicious_group == "helper":
+            score -= 110
+            reasons.append("stem_helper")
+
+        primary_tokens = {
+            _normalize(str(entry.get("displayName") or "")),
+            _normalize(str(entry.get("appId") or "")),
+            _normalize(str(entry.get("profileId") or "")),
+        }
+        for alias in list(entry.get("aliases") or []):
+            normalized = _normalize(alias)
+            if normalized and not _is_suspicious_launch_stem(normalized):
+                primary_tokens.add(normalized)
+        for process_name in list(entry.get("processNames") or []):
+            stem = _normalize(_stem(process_name))
+            if stem and not _is_suspicious_launch_stem(stem):
+                primary_tokens.add(stem)
+        primary_tokens = {token for token in primary_tokens if token and len(token) >= 2}
+
+        best_token_score = 0
+        for token in primary_tokens:
+            if executable_stem == token:
+                best_token_score = max(best_token_score, 180)
+            elif executable_stem and token and token in executable_stem:
+                best_token_score = max(best_token_score, 90 + min(len(token), 24))
+            elif executable_stem and token and executable_stem in token:
+                best_token_score = max(best_token_score, 70 + min(len(executable_stem), 20))
+        if best_token_score:
+            score += best_token_score
+            reasons.append("matches_primary_name")
+
+        if executable_name.endswith(".exe"):
+            score += 8
+        if resolved:
+            score += 16
+        return score, reasons
 
     def _match_score(self, entry: Dict[str, Any], query: str | None) -> int:
         normalized_query = _normalize(query)

@@ -128,6 +128,11 @@ class DesktopObservationCapabilities:
     supports_blocker_detection: bool = False
     supports_goal_state_detection: bool = False
     supports_keyframe_visual_fallback: bool = False
+    frame_sequence_sampling_available: bool = False
+    frame_sequence_semantic_verification_available: bool = False
+    supports_browser_automation: bool = False
+    browser_lane_available: bool = False
+    browser_lane_provider: str | None = None
     notes: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -136,6 +141,11 @@ class DesktopObservationCapabilities:
             "supportsBlockerDetection": bool(self.supports_blocker_detection),
             "supportsGoalStateDetection": bool(self.supports_goal_state_detection),
             "supportsKeyframeVisualFallback": bool(self.supports_keyframe_visual_fallback),
+            "frameSequenceSamplingAvailable": bool(self.frame_sequence_sampling_available),
+            "frameSequenceSemanticVerificationAvailable": bool(self.frame_sequence_semantic_verification_available),
+            "supportsBrowserAutomation": bool(self.supports_browser_automation),
+            "browserLaneAvailable": bool(self.browser_lane_available),
+            "browserLaneProvider": self.browser_lane_provider,
             "notes": list(self.notes),
         }
 
@@ -168,6 +178,7 @@ class DesktopExecutionRouteCapabilities:
     supports_semantic_route: bool = False
     supports_visual_route: bool = False
     supports_coordinate_fallback: bool = False
+    supports_browser_automation: bool = False
     preferred_route_order: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -177,6 +188,7 @@ class DesktopExecutionRouteCapabilities:
             "supportsSemanticRoute": bool(self.supports_semantic_route),
             "supportsVisualRoute": bool(self.supports_visual_route),
             "supportsCoordinateFallback": bool(self.supports_coordinate_fallback),
+            "supportsBrowserAutomation": bool(self.supports_browser_automation),
             "preferredRouteOrder": list(self.preferred_route_order),
             "notes": list(self.notes),
         }

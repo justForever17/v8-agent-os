@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 class ComputerUseAppProfile:
     app_id: str
     display_name: str
+    control_class: str = "native_window_app"
+    app_adapter_id: str = ""
     launch_command: List[str] = field(default_factory=list)
     process_names: List[str] = field(default_factory=list)
     scenario_tags: List[str] = field(default_factory=list)
@@ -47,6 +49,8 @@ class ComputerUseAppProfile:
         return {
             "appId": self.app_id,
             "displayName": self.display_name,
+            "controlClass": self.control_class,
+            "appAdapterId": self.app_adapter_id or None,
             "launchCommand": list(self.launch_command),
             "processNames": list(self.process_names),
             "scenarioTags": list(self.scenario_tags),
@@ -206,12 +210,13 @@ class ComputerUseAppProfiles:
             "browser_checkout": ComputerUseAppProfile(
                 app_id="browser_checkout",
                 display_name="浏览器支付/提交",
-                launch_command=["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"],
-                process_names=["msedge.exe", "chrome.exe", "firefox.exe"],
+                control_class="browser_host_app",
+                launch_command=["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"],
+                process_names=["chrome.exe", "msedge.exe", "firefox.exe"],
                 scenario_tags=["browser", "payment", "form_submit"],
-                title_patterns=["microsoft edge", "chrome", "firefox", "支付", "checkout"],
+                title_patterns=["chrome", "google chrome", "microsoft edge", "firefox", "支付", "checkout"],
                 class_names=["Chrome_WidgetWin_1", "MozillaWindowClass"],
-                app_names=["edge", "chrome", "browser"],
+                app_names=["chrome", "browser", "chromium", "edge"],
                 selectors={
                     "address_bar": {
                         "control_type": "Edit",
@@ -260,6 +265,30 @@ class ComputerUseAppProfiles:
                 window_probe_selector_keys=["address_bar", "primary_button", "confirm_button", "pay_button"],
                 bind_process_ids=True,
                 notes="支付、提交类网页场景要求更保守的视觉保底确认。",
+            ),
+            "vscode": ComputerUseAppProfile(
+                app_id="vscode",
+                display_name="VS Code",
+                control_class="electron_shell_app",
+                app_adapter_id="vscode",
+                launch_command=["code.cmd"],
+                process_names=["code.exe"],
+                scenario_tags=["editor", "workspace", "developer_tool", "structured_open"],
+                title_patterns=["Visual Studio Code", "VS Code", "Code"],
+                class_names=["Chrome_WidgetWin_1"],
+                app_names=["vscode", "visual studio code", "vs code", "code"],
+                selectors={
+                    "editor": {
+                        "control_type": "Document",
+                    }
+                },
+                visual_expectations={
+                    "open_app": "VS Code 窗口应已经打开，并显示目标工作区、文件或编辑器。",
+                },
+                visual_guard_actions=["open_app"],
+                window_probe_selector_keys=["editor"],
+                bind_process_ids=False,
+                notes="优先通过 CLI/URI 复用现有窗口并打开目标，而不是依赖桌面菜单点击。",
             ),
         }
 

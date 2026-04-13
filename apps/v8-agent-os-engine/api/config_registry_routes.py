@@ -498,20 +498,21 @@ def _save_runtime_stability_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_safety_domain() -> dict[str, Any]:
     safety_review_model = model_control_plane.get_role_model_id("safety_review") or ""
     recent_skill_scans = []
-    blocked_count = 0
-    verdict_counts: dict[str, int] = {}
+    verdict_counts: dict[str, int] = {"audit": 0, "review": 0, "block": 0}
+    skill_verdict_counts: dict[str, int] = {"audit": 0, "review": 0, "block": 0}
     try:
         for item in audit_logger.get_logs(limit=50, source_type="SAFETY"):
-            if str(item.get("action") or "").strip() != "skill_scan":
-                continue
             details_raw = str(item.get("details") or "").strip()
             details = json.loads(details_raw) if details_raw else {}
             if not isinstance(details, dict):
                 details = {}
             verdict = str(details.get("verdict") or "unknown").strip() or "unknown"
-            verdict_counts[verdict] = int(verdict_counts.get(verdict) or 0) + 1
-            if verdict in {"high", "critical"}:
-                blocked_count += 1
+            if verdict in {"audit", "review", "block"}:
+                verdict_counts[verdict] = int(verdict_counts.get(verdict) or 0) + 1
+            if str(item.get("action") or "").strip() != "skill_scan":
+                continue
+            if verdict in {"audit", "review", "block"}:
+                skill_verdict_counts[verdict] = int(skill_verdict_counts.get(verdict) or 0) + 1
             if len(recent_skill_scans) < 6:
                 recent_skill_scans.append(
                     {
@@ -526,24 +527,46 @@ def _build_safety_domain() -> dict[str, Any]:
                 )
     except Exception:
         recent_skill_scans = []
-        blocked_count = 0
-        verdict_counts = {}
+        verdict_counts = {"audit": 0, "review": 0, "block": 0}
+        skill_verdict_counts = {"audit": 0, "review": 0, "block": 0}
+
+    safety_config = safety_guardian.export_config()
+    posture = str(safety_config.get("machinePosture") or "dedicated_runtime_host").strip() or "dedicated_runtime_host"
 
     return {
         "domain": "safety",
         "title": "安全控制",
-        "summary": "定义命令、文件、网络和运行时的安全护栏。",
+        "summary": "按机器姿态、治理目标和执行面定义安全护栏，默认以审计优先、恶意链路复核/阻断为主。",
         "data": {
-            **safety_guardian.export_config(),
+            **safety_config,
             "modelBindings": {
                 "safetyReviewModel": safety_review_model,
             },
+            "governancePolicies": {
+                "machinePosture": posture,
+                "governanceTargets": [
+                    "system_integrity",
+                    "v8_integrity",
+                    "private_data_exfiltration",
+                    "skill_supply_chain",
+                    "external_mutation",
+                    "operator_posture",
+                ],
+                "skillStrategy": "declaration_audit_first",
+            },
             "runtimeSummary": {
-                "mode": "rules_audit_plus_llm_review" if safety_review_model else "rules_audit_first",
+                "machinePosture": posture,
+                "mode": "goal_layered_posture_aware",
                 "llmBound": bool(safety_review_model),
-                "skillStaticScanEnabled": True,
-                "blockedSkillScans": blocked_count,
+                "safetyReviewModel": safety_review_model or None,
+                "auditCount": int(verdict_counts.get("audit") or 0),
+                "reviewCount": int(verdict_counts.get("review") or 0),
+                "blockCount": int(verdict_counts.get("block") or 0),
                 "verdictDistribution": verdict_counts,
+            },
+            "skillScanSummary": {
+                "enabled": True,
+                "verdictDistribution": skill_verdict_counts,
                 "recentSkillScans": recent_skill_scans,
             },
         },
@@ -551,7 +574,19 @@ def _build_safety_domain() -> dict[str, Any]:
         "savePath": [f"{CONFIG_JSON_PATH}#safety", f"{CONFIG_JSON_PATH}#models"],
         "reloadRequired": False,
         "warnings": [],
-        "advancedFields": ["commandRules", "runtimeRules", "channelGroupGuard", "postActionRules", "modelBindings"],
+        "advancedFields": [
+            "machinePosture",
+            "commandRules",
+            "runtimeRules",
+            "skillRules",
+            "networkMutationRules",
+            "computerUseRules",
+            "systemIntegrityRules",
+            "v8IntegrityRules",
+            "channelGroupGuard",
+            "postActionRules",
+            "modelBindings",
+        ],
     }
 
 
@@ -566,6 +601,9 @@ def _save_safety_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_computer_use_domain() -> dict[str, Any]:
     memory_config = storage.get_computer_use_memory() or {"version": 1, "apps": {}}
     runtime_config = storage.get_computer_use_config() or {}
+    browser_lane = dict(runtime_config.get("browserLane") or {})
+    observation_policy = dict(runtime_config.get("observationPolicy") or {})
+    input_policy = dict(runtime_config.get("inputPolicy") or {})
     return {
         "domain": "computer-use",
         "title": "桌面操作",
@@ -579,6 +617,23 @@ def _build_computer_use_domain() -> dict[str, Any]:
                 "fallbackRerankerModel": model_control_plane.get_role_model_id("reranker") or "",
             },
             "candidateRerankEnabled": bool(runtime_config.get("candidateRerankEnabled", False)),
+            "browserLane": {
+                "enabled": bool(browser_lane.get("enabled", True)),
+                "mode": str(browser_lane.get("mode") or "auto_if_available"),
+                "provider": str(browser_lane.get("provider") or "engine_managed_cdp"),
+                "proxyPort": int(browser_lane.get("proxyPort") or 3456),
+                "connectTimeoutMs": int(browser_lane.get("connectTimeoutMs") or 3000),
+                "targetFamilies": list(browser_lane.get("targetFamilies") or ["chromium", "electron", "webview2"]),
+                "allowManagedLaunch": bool(browser_lane.get("allowManagedLaunch", True)),
+            },
+            "observationPolicy": {
+                "frameSequenceEnabled": bool(observation_policy.get("frameSequenceEnabled", True)),
+                "frameSequenceCount": int(observation_policy.get("frameSequenceCount") or 3),
+                "frameSequenceIntervalMs": int(observation_policy.get("frameSequenceIntervalMs") or 200),
+            },
+            "inputPolicy": {
+                "normalizeDeterministicTextIme": bool(input_policy.get("normalizeDeterministicTextIme", True)),
+            },
             "memoryProfiles": memory_config,
             "environmentPolicy": {
                 "runtimeFirst": True,
@@ -593,7 +648,7 @@ def _build_computer_use_domain() -> dict[str, Any]:
             "普通系统通知、切歌和无关窗口切换默认不会升级为桌面操作中断。",
             "候选重排只作用于文本化候选排序，不会替代视觉裁判。",
         ],
-        "advancedFields": ["memoryProfiles", "environmentPolicy"],
+        "advancedFields": ["browserLane", "observationPolicy", "inputPolicy", "memoryProfiles", "environmentPolicy"],
     }
 
 
@@ -611,6 +666,9 @@ def _save_computer_use_domain(payload: dict[str, Any]) -> dict[str, Any]:
     storage.save_computer_use_config(
         {
             "candidateRerankEnabled": bool(data.get("candidateRerankEnabled", False)),
+            "browserLane": dict(data.get("browserLane") or {}),
+            "observationPolicy": dict(data.get("observationPolicy") or {}),
+            "inputPolicy": dict(data.get("inputPolicy") or {}),
         }
     )
     if isinstance(data.get("memoryProfiles"), dict):

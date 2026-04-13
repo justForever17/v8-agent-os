@@ -1019,6 +1019,12 @@ class ChatRuntime:
 
     def handle_preflight_gate(self, chat_run: ChatRunContext) -> list[dict[str, Any]]:
         decision = chat_run.preflight_decision
+        safety_guardian.log_decision_event(
+            action="chat_preflight",
+            decision=decision,
+            subject=chat_run.prepared.latest_user_content or chat_run.session_id,
+            metadata={"runId": chat_run.active_run_id, "sessionId": chat_run.session_id},
+        )
         if decision.is_allow():
             return []
 

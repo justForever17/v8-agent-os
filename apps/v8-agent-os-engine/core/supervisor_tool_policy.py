@@ -103,6 +103,7 @@ class _FallbackToolRef:
 
 def _native_tool_definitions() -> list[SupervisorToolDefinition]:
     from erc.capability_registry import capability_registry
+    runtime_defs = _runtime_managed_definitions()
     try:
         from core.native_tools import NATIVE_TOOLS
 
@@ -116,6 +117,8 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
         for tool_ref in selected_native_tools:
             tool_name = str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip()
             if not tool_name:
+                continue
+            if _matches_runtime_managed_tool(tool_name, runtime_defs):
                 continue
             definitions.append(
                 SupervisorToolDefinition(
@@ -140,6 +143,8 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
             normalized = str(getattr(tool_ref, "name", tool_ref) or "").strip()
             if not normalized:
                 continue
+            if _matches_runtime_managed_tool(normalized, runtime_defs):
+                continue
             definitions.append(
                 SupervisorToolDefinition(
                     name=normalized,
@@ -150,9 +155,28 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
         return definitions
 
 
+def _ensure_runtime_managed_descriptors_loaded() -> None:
+    try:
+        from erc.runtime_registry import runtime_registry
+
+        existing_kinds = {descriptor.kind for descriptor in runtime_registry.list_descriptors()}
+        if {"computer_use", "rpa"}.issubset(existing_kinds):
+            return
+        from runtimes.chat.runtime import chat_runtime  # noqa: F401
+        from runtimes.memory.runtime import memory_runtime  # noqa: F401
+        from runtimes.automation.runtime import automation_runtime  # noqa: F401
+        from runtimes.network_supervisor.runtime import network_supervisor_runtime  # noqa: F401
+        from runtimes.plugin_host.runtime import plugin_host_runtime  # noqa: F401
+        from runtimes.computer_use.runtime import computer_use_runtime  # noqa: F401
+        from runtimes.rpa.runtime import rpa_runtime  # noqa: F401
+    except Exception:
+        return
+
+
 def _runtime_managed_definitions() -> list[SupervisorToolDefinition]:
     from erc.capability_registry import capability_registry
 
+    _ensure_runtime_managed_descriptors_loaded()
     definitions: list[SupervisorToolDefinition] = []
     for descriptor in capability_registry.list():
         metadata = descriptor.metadata or {}

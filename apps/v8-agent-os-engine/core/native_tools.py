@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import shutil
 import shlex
 import subprocess
@@ -32,7 +33,9 @@ else:
     import os
     HAS_WINPTY = False
 
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool, InjectedToolCallId
+from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, Interrupt as LangGraphInterrupt, interrupt
 try:
     from langgraph.errors import GraphBubbleUp, GraphInterrupt, Interrupt as ErrorInterrupt, NodeInterrupt
@@ -99,6 +102,7 @@ from core.computer_use_execution_route import (
     _compact_timing_signal_summary,
     _compact_visual_signal_summary,
     build_compact_execution_route,
+    determine_execution_ready_mode,
 )
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.storage import StorageManager
@@ -128,6 +132,24 @@ _COMPUTER_USE_POINT_TAG_PATTERN = re.compile(
     r"<point>\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*</point>",
     re.IGNORECASE,
 )
+_DESKTOP_ROUTE_SOURCE = "computer_use_resolve_execution_route"
+_DESKTOP_ROUTE_COMPUTER_USE_MUTATING_TOOLS = {
+    "computer_use_launch_app",
+    "computer_use_ensure_window",
+    "computer_use_click_target",
+    "computer_use_input_text",
+    "computer_use_paste_text",
+    "computer_use_paste_files",
+    "computer_use_right_click_target",
+    "computer_use_hover_target",
+    "computer_use_send_hotkey",
+    "computer_use_scroll_view",
+    "computer_use_drag_pointer",
+}
+_DESKTOP_ROUTE_RPA_MUTATING_TOOLS = {
+    "rpa_run_draft",
+    "rpa_run_existing_flow",
+}
 
 def _get_memory_runtime():
     from runtimes.memory.runtime import memory_runtime
@@ -153,6 +175,12 @@ def _enforce_safety_decision(
     tool_call_id: str,
     question: str,
 ) -> tuple[bool, str | None]:
+    safety_guardian.log_decision_event(
+        action="native_tool_safety",
+        decision=decision,
+        subject=question,
+        metadata={"toolCallId": tool_call_id},
+    )
     if decision.is_allow():
         return True, None
 
@@ -215,6 +243,10 @@ def _detect_interactive_command(command: str) -> str | None:
 
     bare_interactive = {
         "qwen",
+        "claude",
+        "gemini",
+        "codex",
+        "aider",
         "python",
         "python3",
         "ipython",
@@ -248,7 +280,7 @@ def _detect_interactive_command(command: str) -> str | None:
     if head == "cmd" and "/c" not in tokens:
         return "检测到 `cmd` 缺少 `/c`，很可能进入交互式终端。"
 
-    if head in {"qwen", "claude", "gemini"}:
+    if head in {"qwen", "claude", "gemini", "codex", "aider"}:
         return f"检测到 `{head}` 可能需要 TTY 或交互输入。"
 
     return None
@@ -393,6 +425,222 @@ def _computer_use_runtime_kwargs(goal: str) -> dict:
             "rootGoal": root_goal or None,
         },
     }
+
+
+def _message_text_content(message: Any) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    return str(content)
+
+
+def _is_supervisor_delegated_task_message(message: Any) -> bool:
+    if not isinstance(message, HumanMessage):
+        return False
+    normalized = _message_text_content(message).strip()
+    return normalized.startswith("[Supervisor Delegated Task")
+
+
+def _desktop_route_message_fingerprint(message: Any, index: int) -> str:
+    explicit_id = str(getattr(message, "id", "") or "").strip()
+    if explicit_id:
+        return explicit_id
+    digest = hashlib.md5(f"{index}:{_message_text_content(message)}".encode("utf-8")).hexdigest()[:12]
+    return f"human:{index}:{digest}"
+
+
+def _desktop_route_latest_bound_human_message(state: dict[str, Any] | None) -> tuple[str | None, Any | None]:
+    messages = list((state or {}).get("messages") or [])
+    fallback: tuple[str | None, Any | None] = (None, None)
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, HumanMessage):
+            continue
+        fingerprint = _desktop_route_message_fingerprint(message, index)
+        if fallback == (None, None):
+            fallback = (fingerprint, message)
+        if _is_supervisor_delegated_task_message(message):
+            continue
+        return fingerprint, message
+    return fallback
+
+
+def _desktop_route_normalize_token(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _desktop_route_compact_metadata(
+    desktop_route: dict[str, Any] | None,
+    *,
+    route_gate_applied: bool,
+    runtime_governed: bool = True,
+    gate_error_code: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "routeGateApplied": bool(route_gate_applied),
+        "desktopRouteMode": str((desktop_route or {}).get("recommendedMode") or "").strip() or None,
+        "executionReadyMode": str((desktop_route or {}).get("executionReadyMode") or "").strip() or None,
+        "runtimeGoverned": bool(runtime_governed),
+        "gateErrorCode": str(gate_error_code or "").strip() or None,
+    }
+
+
+def _desktop_route_merge_into_response(
+    response: str,
+    *,
+    desktop_route: dict[str, Any] | None,
+    route_gate_applied: bool,
+    runtime_governed: bool = True,
+    gate_error_code: str | None = None,
+) -> str:
+    try:
+        payload = json.loads(response)
+    except Exception:
+        return response
+    if not isinstance(payload, dict):
+        return response
+    payload.update(
+        _desktop_route_compact_metadata(
+            desktop_route,
+            route_gate_applied=route_gate_applied,
+            runtime_governed=runtime_governed,
+            gate_error_code=gate_error_code,
+        )
+    )
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _desktop_route_gate_failure_response(
+    *,
+    gate_error_code: str,
+    summary: str,
+    desktop_route: dict[str, Any] | None,
+    recommended_next_tool: str,
+    runtime_governed: bool = True,
+) -> str:
+    payload = {
+        "ok": False,
+        "status": "blocked",
+        "blocked": True,
+        "summary": summary,
+        "gateErrorCode": gate_error_code,
+        "recommendedNextTool": recommended_next_tool,
+        "recommendedMode": str((desktop_route or {}).get("recommendedMode") or "").strip() or None,
+        "executionReadyMode": str((desktop_route or {}).get("executionReadyMode") or "").strip() or None,
+        "runtimeGoverned": bool(runtime_governed),
+    }
+    payload.update(
+        _desktop_route_compact_metadata(
+            desktop_route,
+            route_gate_applied=True,
+            runtime_governed=runtime_governed,
+            gate_error_code=gate_error_code,
+        )
+    )
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _desktop_route_app_stale_reason(
+    *,
+    desktop_route: dict[str, Any],
+    app_query: str | None,
+    resolved_app: dict[str, Any] | None,
+) -> str | None:
+    normalized_requested_app = _desktop_route_normalize_token(app_query)
+    if not normalized_requested_app:
+        return None
+    route_app_id = _desktop_route_normalize_token(desktop_route.get("appId"))
+    route_requested_app = _desktop_route_normalize_token(desktop_route.get("requestedApp"))
+    resolved_app_id = _desktop_route_normalize_token((resolved_app or {}).get("appId"))
+    if route_app_id and resolved_app_id and route_app_id != resolved_app_id:
+        return "当前工具目标应用与已解析的桌面路由不一致。"
+    if route_requested_app and normalized_requested_app != route_requested_app and route_app_id != resolved_app_id:
+        return "当前工具目标应用与已绑定的桌面路由不一致。"
+    return None
+
+
+def _desktop_route_gate(
+    *,
+    state: dict[str, Any] | None,
+    tool_name: str,
+    app_query: str | None = None,
+    resolved_app: dict[str, Any] | None = None,
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    if not isinstance(state, dict):
+        return True, None, None
+
+    current_route_context = dict(state.get("current_route_context") or {})
+    desktop_route = dict(current_route_context.get("desktopRoute") or {})
+    if not desktop_route:
+        return (
+            False,
+            _desktop_route_gate_failure_response(
+                gate_error_code="ROUTE_GATE_REQUIRED",
+                summary="桌面类变更工具必须先调用 computer_use_resolve_execution_route，再按返回的 executionReadyMode 选择执行面。",
+                desktop_route=None,
+                recommended_next_tool="computer_use_resolve_execution_route",
+            ),
+            None,
+        )
+
+    latest_human_id, _ = _desktop_route_latest_bound_human_message(state)
+    bound_human_id = str(desktop_route.get("boundHumanMessageId") or "").strip()
+    if bound_human_id and latest_human_id and bound_human_id != latest_human_id:
+        return (
+            False,
+            _desktop_route_gate_failure_response(
+                gate_error_code="STALE_ROUTE_CONTEXT",
+                summary="桌面路由已过期：检测到新的用户输入或任务上下文，请重新调用 computer_use_resolve_execution_route。",
+                desktop_route=desktop_route,
+                recommended_next_tool="computer_use_resolve_execution_route",
+            ),
+            desktop_route,
+        )
+
+    stale_app_reason = _desktop_route_app_stale_reason(
+        desktop_route=desktop_route,
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if stale_app_reason:
+        return (
+            False,
+            _desktop_route_gate_failure_response(
+                gate_error_code="STALE_ROUTE_CONTEXT",
+                summary=stale_app_reason,
+                desktop_route=desktop_route,
+                recommended_next_tool="computer_use_resolve_execution_route",
+            ),
+            desktop_route,
+        )
+
+    execution_ready_mode = str(desktop_route.get("executionReadyMode") or "").strip() or "learn_mode"
+    if tool_name in _DESKTOP_ROUTE_RPA_MUTATING_TOOLS:
+        if execution_ready_mode not in {"reuse_mode", "hybrid_mode"}:
+            return (
+                False,
+                _desktop_route_gate_failure_response(
+                    gate_error_code="RUNTIME_MISMATCH",
+                    summary="当前桌面路由已进入 learn_mode，Supervisor 应直接使用高层 computer_use_* 变更工具，而不是继续走 RPA 执行面。",
+                    desktop_route=desktop_route,
+                    recommended_next_tool="computer_use_launch_app",
+                ),
+                desktop_route,
+            )
+    elif tool_name in _DESKTOP_ROUTE_COMPUTER_USE_MUTATING_TOOLS:
+        if execution_ready_mode in {"reuse_mode", "hybrid_mode"}:
+            return (
+                False,
+                _desktop_route_gate_failure_response(
+                    gate_error_code="RUNTIME_MISMATCH",
+                    summary="当前桌面路由要求先从 RPA 主执行链进入，Supervisor 不应直接调用 mutating computer_use_* 工具。",
+                    desktop_route=desktop_route,
+                    recommended_next_tool=str(desktop_route.get("recommendedTool") or "rpa_run_draft"),
+                ),
+                desktop_route,
+            )
+
+    return True, None, desktop_route
 
 
 def _computer_use_parse_point_tag(value: str | None) -> list[float] | None:
@@ -1031,6 +1279,22 @@ def _computer_use_compact_response(
             observation=observation,
             evidence_summary=evidence,
         )
+    browser_automation = dict(observation.get("metadata", {}).get("browserAutomation") or metadata.get("browserAutomation") or {})
+    if metadata.get("browserLaneProvider") and not browser_automation.get("provider"):
+        browser_automation["provider"] = metadata.get("browserLaneProvider")
+    if metadata.get("browserTargetFamily") and not browser_automation.get("family"):
+        browser_automation["family"] = metadata.get("browserTargetFamily")
+    if metadata.get("browserTargetId") and not browser_automation.get("targetId"):
+        browser_automation["targetId"] = metadata.get("browserTargetId")
+    if metadata.get("route") and not browser_automation.get("route"):
+        browser_automation["route"] = metadata.get("route")
+    browser_session_mode = str(browser_automation.get("profilePersistenceMode") or "").strip() or None
+    if browser_session_mode:
+        browser_automation["preservesLoginState"] = browser_session_mode in {
+            "reused_existing_window",
+            "attached_existing_debug_browser",
+            "default_user_profile_launch",
+        }
     response = {
         "ok": ok,
         "action": action,
@@ -1042,6 +1306,14 @@ def _computer_use_compact_response(
             "requested": app_hint,
             "resolved": (resolved_app or {}).get("displayName") or (resolved_app or {}).get("appId"),
             "appId": (resolved_app or {}).get("appId") or target.get("appId") or target.get("profileId"),
+            "controlClass": metadata.get("controlClass") or (resolved_app or {}).get("controlClass"),
+            "appAdapterId": metadata.get("appAdapterId") or (resolved_app or {}).get("appAdapterId"),
+            "launchSelectionReason": metadata.get("launchSelectionReason"),
+            "launchCandidateSource": metadata.get("launchCandidateSource"),
+            "launchCandidateRole": metadata.get("launchCandidateRole"),
+            "launchCandidateScore": metadata.get("launchCandidateScore"),
+            "restoreStrategy": metadata.get("restoreStrategy"),
+            "spawnSuppressedByRestore": bool(metadata.get("spawnSuppressedByRestore")),
         },
         "target": {
             "requested": target_hint,
@@ -1063,6 +1335,14 @@ def _computer_use_compact_response(
         "visualSignalSummary": visual_signal_summary,
         "timingSignalSummary": timing_signal_summary,
         "environmentSignalSummary": environment_signal_summary,
+        "browserAutomation": browser_automation,
+        "appAdapter": dict(metadata.get("appAdapter") or {}),
+        "browserSession": {
+            "mode": browser_session_mode,
+            "preservesLoginState": bool(browser_automation.get("preservesLoginState")),
+            "attachedExistingBrowser": bool(browser_automation.get("attachedExistingBrowser")),
+            "reusedExistingBrowserWindow": bool(browser_automation.get("reusedExistingBrowserWindow")),
+        } if browser_automation else None,
         "recommendedNextAction": runtime_recommended
         or _computer_use_recommended_next_action(
             action_result=action_result,
@@ -1159,6 +1439,8 @@ def _computer_use_compact_observation(
             "requested": app_hint,
             "resolved": (resolved_app or {}).get("displayName") or (resolved_app or {}).get("appId"),
             "appId": (resolved_app or {}).get("appId") or observation.get("metadata", {}).get("appId"),
+            "controlClass": observation.get("metadata", {}).get("controlClass") or (resolved_app or {}).get("controlClass"),
+            "appAdapterId": observation.get("metadata", {}).get("appAdapterId") or (resolved_app or {}).get("appAdapterId"),
         },
         "window": {
             "title": observation.get("windowTitle"),
@@ -1185,11 +1467,28 @@ def _computer_use_compact_observation(
             "reasons": list(binding_assessment.get("reasons") or []),
         },
         "environmentSignalSummary": environment_signal_summary,
+        "browserAutomation": dict(metadata.get("browserAutomation") or {}),
+        "appAdapter": dict(metadata.get("appAdapter") or {}),
         "elements": elements,
         "screenshotArtifact": observation.get("screenshotArtifact"),
         "sessionId": raw_result.get("sessionId"),
         "runId": raw_result.get("runId"),
     }
+    browser_automation = dict(payload.get("browserAutomation") or {})
+    browser_session_mode = str(browser_automation.get("profilePersistenceMode") or "").strip() or None
+    if browser_session_mode:
+        browser_automation["preservesLoginState"] = browser_session_mode in {
+            "reused_existing_window",
+            "attached_existing_debug_browser",
+            "default_user_profile_launch",
+        }
+        payload["browserAutomation"] = browser_automation
+    payload["browserSession"] = {
+        "mode": browser_session_mode,
+        "preservesLoginState": bool(browser_automation.get("preservesLoginState")),
+        "attachedExistingBrowser": bool(browser_automation.get("attachedExistingBrowser")),
+        "reusedExistingBrowserWindow": bool(browser_automation.get("reusedExistingBrowserWindow")),
+    } if browser_automation else None
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -1797,15 +2096,21 @@ def _computer_use_compact_primitive_catalog(*, category: str | None = None) -> s
 
 def _computer_use_compact_driver_capabilities() -> str:
     runtime_descriptor = _get_computer_use_runtime().runtime_descriptor()
-    capabilities = {}
     computer_use_runtime = _get_computer_use_runtime()
-    if hasattr(computer_use_runtime, "driver") and hasattr(computer_use_runtime.driver, "capability_summary"):
-        capabilities = dict(computer_use_runtime.driver.capability_summary() or {})
+    availability = (
+        computer_use_runtime.availability()
+        if hasattr(computer_use_runtime, "availability")
+        else {}
+    )
+    availability_details = dict((availability or {}).get("details") or {})
+    capabilities = dict(availability_details.get("capabilities") or {})
     return json.dumps(
         {
             "ok": True,
             "action": "desktop_capabilities",
             "driver": capabilities,
+            "capabilityMatrix": dict(availability_details.get("capabilityMatrix") or {}),
+            "routePolicy": dict(availability_details.get("routePolicy") or {}),
             "runtime": {
                 "kind": runtime_descriptor.get("kind"),
                 "displayName": runtime_descriptor.get("displayName"),
@@ -1821,6 +2126,8 @@ def _computer_use_compact_driver_capabilities() -> str:
                 "environmentProbes": dict(
                     ((runtime_descriptor.get("metadata") or {}).get("environmentProbes")) or {}
                 ),
+                "browserLane": dict(availability_details.get("browserLane") or {}),
+                "appAdapter": dict(availability_details.get("appAdapter") or {}),
             },
             "primitiveMatrix": dict((primitive_validation_matrix().get("summary")) or {}),
         },
@@ -1991,11 +2298,18 @@ def rpa_run_existing_flow(
     workspace_id: Optional[str] = None,
     workspace_path: Optional[str] = None,
     trigger_source: Optional[str] = "manual",
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Run an existing .robot flow through RPARuntime without requiring trace compilation."""
     normalized_robot_file = str(robot_file or "").strip()
     if not normalized_robot_file:
         return "Error: robot_file 不能为空。"
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="rpa_run_existing_flow",
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     try:
         variables = _computer_use_parse_variables_json(variables_json)
         raw_result = _get_rpa_runtime().run_existing_flow(
@@ -2012,11 +2326,16 @@ def rpa_run_existing_flow(
             workspace_path=workspace_path,
             trigger_source=trigger_source or "manual",
         )
-        return _rpa_compact_run_existing_flow_response(
+        response = _rpa_compact_run_existing_flow_response(
             raw_result=dict(raw_result or {}),
             robot_file=normalized_robot_file,
             cwd=cwd,
             output_dir=output_dir,
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error running existing .robot flow: {e}"
@@ -2037,11 +2356,18 @@ def rpa_run_draft(
     workspace_id: Optional[str] = None,
     workspace_path: Optional[str] = None,
     trigger_source: Optional[str] = "manual",
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Run an existing RPA draft script through RPARuntime."""
     normalized_script_id = str(script_id or "").strip()
     if not normalized_script_id:
         return "Error: script_id 不能为空。"
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="rpa_run_draft",
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     runtime_context = get_runtime_context()
     try:
         variables = _computer_use_parse_variables_json(variables_json)
@@ -2059,11 +2385,16 @@ def rpa_run_draft(
             workspace_path=workspace_path or runtime_context.get("workspace_path"),
             trigger_source=trigger_source or "manual",
         )
-        return _rpa_compact_run_draft_response(
+        response = _rpa_compact_run_draft_response(
             raw_result=dict(raw_result or {}),
             script_id=normalized_script_id,
             cwd=cwd,
             output_dir=output_dir,
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error running RPA draft: {e}"
@@ -2335,8 +2666,10 @@ def _launch_background_command(
     command: str,
     *,
     tool_call_id: str = "",
+    profile: str = "auto",
 ) -> dict[str, Any]:
     interactive_reason = _detect_interactive_command(command)
+    resolved_profile, profile_reason = _detect_background_command_profile(command, requested_profile=profile)
     interactive_mode = interactive_reason is not None
     if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
         raise RuntimeError(
@@ -2358,17 +2691,21 @@ def _launch_background_command(
         session_id=runtime_context.get("session_id"),
         run_id=runtime_context.get("run_id"),
         interactive=interactive_mode,
+        profile=resolved_profile,
+        profile_reason=profile_reason,
     )
     bg_proc.command_id = cmd_id
     _bg_processes[cmd_id] = bg_proc
 
     initial_chunks = []
-    deadline = time.time() + 3.0
+    initial_capture_seconds = 0.6 if resolved_profile == "chat_cli" else 3.0
+    initial_capture_limit = 192 if resolved_profile == "chat_cli" else 512
+    deadline = time.time() + initial_capture_seconds
     while time.time() < deadline:
         chunk = bg_proc.get_new_output()
         if chunk:
             initial_chunks.append(chunk)
-            if len("".join(initial_chunks)) >= 512:
+            if len("".join(initial_chunks)) >= initial_capture_limit:
                 break
         if not bg_proc.is_running:
             break
@@ -2385,6 +2722,9 @@ def _launch_background_command(
             "interactive": interactive_mode,
             "tty": tty_label,
             "run_id": runtime_context.get("run_id"),
+            "profile": resolved_profile,
+            "profile_reason": profile_reason,
+            "chat_cli_variant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
         },
         runtime_context=runtime_context,
     )
@@ -2396,6 +2736,9 @@ def _launch_background_command(
         "runId": runtime_context.get("run_id"),
         "status": status,
         "interactive": interactive_mode,
+        "profile": resolved_profile,
+        "profileReason": profile_reason,
+        "chatCliVariant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
         "initialOutput": initial_out,
     }
 
@@ -3057,7 +3400,7 @@ _PROMPT_HINT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _BUSY_HINT_PATTERN = re.compile(
-    r"(thinking|generating|loading|connecting|处理中|思考中|生成中|连接中|\.\.\.|⋯|█)",
+    r"(thinking|generating|loading|connecting|initializing|authorizing|处理中|思考中|生成中|连接中|esc to cancel|pressing 'a' to continue|i'm feeling lucky|channeling the force|magic smoke|\.\.\.|⋯|█)",
     re.IGNORECASE,
 )
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -3066,6 +3409,333 @@ _RAW_FRAME_PREVIEW_LIMIT = 240
 _TERMINAL_TEXT_SNIPPET_LIMIT = 4000
 _SPACED_CJK_SEQUENCE_PATTERN = re.compile(r"(?:[\u3400-\u9fff]\s){4,}[\u3400-\u9fff]")
 _REPEATED_CJK_PATTERN = re.compile(r"([\u3400-\u9fff])\1{7,}")
+_BOX_DRAWING_ONLY_LINE_PATTERN = re.compile(r"^[\s┌┐└┘├┤┬┴┼─│╭╮╰╯═║╔╗╚╝╠╣╦╩╬]+$")
+_BACKGROUND_COMMAND_PROFILES = {"auto", "chat_cli", "shell"}
+_CHAT_CLI_VARIANT_ALIASES = {
+    "qwen": "qwen",
+    "claude": "claude",
+    "claude-code": "claude",
+    "gemini": "gemini",
+    "gemini-cli": "gemini",
+    "codex": "codex",
+    "aider": "aider",
+}
+_KNOWN_CHAT_CLI_COMMANDS = set(_CHAT_CLI_VARIANT_ALIASES.keys())
+_CHAT_CLI_IDLE_COMPLETE_SECONDS = 1.2
+_CHAT_CLI_CHUNK_TARGET = 320
+_CHAT_CLI_CHUNK_MIN = 200
+_CHAT_CLI_CHUNK_MAX = 500
+_CHAT_CLI_SENTENCE_BOUNDARIES = "。！？!?；;\n"
+_CHAT_CLI_SOFT_BOUNDARIES = "，,、:： "
+_CHAT_CLI_SHARED_NOISE_LINE_PATTERNS = (
+    re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:connecting to mcp servers?|loading|spinning)\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:[⠁-⣿]+\s+)?just a tick, i'm polishing my wit\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:thinking|generating|processing|initializing|authorizing)\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:[⠁-⣿]+\s+)?[^(]{0,160}\(\d+s\s+·\s+.*(?:cancel|取消)\)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:type your message|输入您的消息)\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:\?|按\s*\?)\s+.*(?:shortcuts|快捷键)", re.IGNORECASE),
+    re.compile(r"^\s*>\s+type your message\b.*$", re.IGNORECASE),
+)
+_CHAT_CLI_VARIANT_NOISE_LINE_PATTERNS = {
+    "qwen": (
+        re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:pressing 'a' to continue|i'm feeling lucky|channeling the force|ensuring the magic smoke stays inside the wires|tasting the snozberries|just a moment, i'm tuning the algorithms)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*qwen(?:\s+code)?(?:\s*\(v[\w.\-]+\))?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*qwen oauth\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*tips:\s*(?:switch auth type quickly|start a fresh idea)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*✦\s*(?:用户|user)\s*$", re.IGNORECASE),
+        re.compile(r"^\s*[│|].*\bqwen(?:\s+code|\s+oauth)?\b.*[│|]\s*$", re.IGNORECASE),
+    ),
+    "claude": (
+        re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:thinking|working|analyzing|tooling up)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:claude|claude code)(?:\s*\(v[\w.\-]+\))?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:press\s+esc\s+to\s+interrupt|esc\s+to\s+cancel)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*model\s*:\s*claude\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*[│|].*\bclaude(?:\s+code)?\b.*[│|]\s*$", re.IGNORECASE),
+    ),
+    "gemini": (
+        re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:thinking|loading|connecting|authorizing|switching models?)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:gemini|gemini cli)(?:\s*\(v[\w.\-]+\))?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*model\s*:\s*gemini\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*[│|].*\bgemini(?:\s+cli)?\b.*[│|]\s*$", re.IGNORECASE),
+    ),
+    "codex": (
+        re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:thinking|loading|connecting|working)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*codex(?:\s+cli)?(?:\s*\(v[\w.\-]+\))?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*model\s*:\s*codex\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:press\s+/|type\s+/help)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*[│|].*\bcodex(?:\s+cli)?\b.*[│|]\s*$", re.IGNORECASE),
+    ),
+}
+
+
+def _extract_chat_cli_command_head(command: str) -> str:
+    stripped = str(command or "").strip()
+    if not stripped:
+        return ""
+    try:
+        tokens = shlex.split(stripped, posix=False)
+    except Exception:
+        tokens = stripped.split()
+    if not tokens:
+        return ""
+    candidate = str(tokens[0] or "").strip()
+    if not candidate:
+        return ""
+    path_value = Path(candidate)
+    normalized = path_value.stem.lower() or path_value.name.lower()
+    return _CHAT_CLI_VARIANT_ALIASES.get(normalized, normalized)
+
+
+def _normalize_background_command_profile(profile: str | None) -> str:
+    normalized = str(profile or "auto").strip().lower() or "auto"
+    if normalized not in _BACKGROUND_COMMAND_PROFILES:
+        raise ValueError("profile 必须是 auto、chat_cli 或 shell。")
+    return normalized
+
+
+def _detect_background_command_profile(command: str, *, requested_profile: str = "auto") -> tuple[str, str]:
+    normalized_profile = _normalize_background_command_profile(requested_profile)
+    if normalized_profile in {"chat_cli", "shell"}:
+        return normalized_profile, ("显式指定 chat_cli profile。" if normalized_profile == "chat_cli" else "显式指定 shell profile。")
+
+    stripped = str(command or "").strip()
+    if not stripped:
+        return "shell", "命令为空，回退到 shell profile。"
+
+    head = _extract_chat_cli_command_head(stripped)
+    if head in _KNOWN_CHAT_CLI_COMMANDS:
+        return "chat_cli", f"检测到 AI CLI `{head}`，自动启用 chat_cli profile。"
+    return "shell", "默认 shell profile。"
+
+
+def _detect_chat_cli_variant(command: str) -> str:
+    head = _extract_chat_cli_command_head(command)
+    return _CHAT_CLI_VARIANT_ALIASES.get(head, head if head in _CHAT_CLI_VARIANT_NOISE_LINE_PATTERNS else "")
+
+
+def _normalize_chat_cli_text(text: str) -> str:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\u200b", "")
+    normalized = _ANSI_ESCAPE_PATTERN.sub("", normalized)
+    normalized = normalized.strip()
+    if not normalized:
+        return ""
+    return normalized
+
+
+def _looks_like_prompt_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    return bool(_PROMPT_HINT_PATTERN.search(f"\n{stripped}"))
+
+
+def _strip_chat_cli_prompt_tail(text: str) -> str:
+    lines = _normalize_chat_cli_text(text).splitlines()
+    while lines and _looks_like_prompt_line(lines[-1]):
+        lines.pop()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _looks_like_chat_cli_border_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if len(stripped) < 12:
+        return False
+    if _BOX_DRAWING_ONLY_LINE_PATTERN.fullmatch(stripped):
+        return True
+    unique_chars = {char for char in stripped if not char.isspace()}
+    return len(unique_chars) <= 2
+
+
+def _looks_like_chat_cli_noise_line(line: str, *, variant: str = "") -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    if _looks_like_prompt_line(stripped):
+        return True
+    if _looks_like_chat_cli_border_line(stripped):
+        return True
+    if any(pattern.search(stripped) for pattern in _CHAT_CLI_SHARED_NOISE_LINE_PATTERNS):
+        return True
+    return any(pattern.search(stripped) for pattern in _CHAT_CLI_VARIANT_NOISE_LINE_PATTERNS.get(str(variant or "").lower(), ()))
+
+
+def _sanitize_chat_cli_semantic_text(text: str, *, variant: str = "") -> str:
+    lines = _normalize_chat_cli_text(text).splitlines()
+    if not lines:
+        return ""
+    filtered: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if filtered and filtered[-1] != "":
+                filtered.append("")
+            continue
+        if _looks_like_chat_cli_noise_line(stripped, variant=variant):
+            continue
+        cleaned_line = re.sub(r"^\s*[✦◆◉●]\s*", "", line).rstrip()
+        filtered.append(cleaned_line)
+    while filtered and not filtered[0].strip():
+        filtered.pop(0)
+    while filtered and not filtered[-1].strip():
+        filtered.pop()
+    return "\n".join(filtered).strip()
+
+
+def _collapse_chat_cli_cumulative_lines(text: str, *, variant: str = "") -> str:
+    lines = _sanitize_chat_cli_semantic_text(text, variant=variant).splitlines()
+    if not lines:
+        return ""
+    collapsed: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            if collapsed and collapsed[-1] != "":
+                collapsed.append("")
+            continue
+        future_candidates = [candidate.strip() for candidate in lines[index + 1 : index + 4] if candidate.strip()]
+        if any(len(candidate) > len(stripped) and candidate.startswith(stripped) for candidate in future_candidates):
+            continue
+        if collapsed:
+            previous = collapsed[-1].strip()
+            if previous and len(stripped) > len(previous) and stripped.startswith(previous):
+                collapsed[-1] = line
+                continue
+            if previous and len(previous) > len(stripped) and previous.startswith(stripped):
+                continue
+        collapsed.append(line)
+    while collapsed and not collapsed[-1].strip():
+        collapsed.pop()
+    return "\n".join(collapsed).strip()
+
+
+def _longest_overlap_suffix_prefix(left: str, right: str) -> int:
+    max_overlap = min(len(left), len(right))
+    for size in range(max_overlap, 0, -1):
+        if left.endswith(right[:size]):
+            return size
+    return 0
+
+
+def _consume_chat_cli_semantic_suffix(previous: str, current: str) -> str:
+    previous_value = _normalize_chat_cli_text(previous)
+    current_value = _normalize_chat_cli_text(current)
+    if not current_value:
+        return ""
+    if not previous_value:
+        return current_value
+    if current_value.startswith(previous_value):
+        return current_value[len(previous_value):]
+    marker_index = current_value.rfind(previous_value)
+    if marker_index >= 0:
+        return current_value[marker_index + len(previous_value):]
+    overlap = _longest_overlap_suffix_prefix(previous_value, current_value)
+    if overlap > 0:
+        return current_value[overlap:]
+    return current_value
+
+
+def _merge_chat_cli_turn_text(previous: str, current: str) -> str:
+    previous_value = _normalize_chat_cli_text(previous)
+    current_value = _normalize_chat_cli_text(current)
+    if not current_value:
+        return previous_value
+    if not previous_value:
+        return current_value
+    if current_value == previous_value:
+        return previous_value
+    if current_value.startswith(previous_value):
+        return current_value
+    if previous_value.startswith(current_value):
+        return previous_value
+    marker_index = current_value.rfind(previous_value)
+    if marker_index >= 0:
+        return current_value
+    overlap = _longest_overlap_suffix_prefix(previous_value, current_value)
+    if overlap > 0:
+        return previous_value + current_value[overlap:]
+    return current_value if len(current_value) >= len(previous_value) else previous_value
+
+
+def _strip_chat_cli_input_echo(text: str, input_text: str) -> str:
+    normalized_text = _normalize_chat_cli_text(text)
+    normalized_input = _normalize_chat_cli_text(input_text)
+    if not normalized_text or not normalized_input:
+        return normalized_text
+
+    input_lines = [line.strip() for line in normalized_input.splitlines() if line.strip()]
+    if not input_lines:
+        return normalized_text
+
+    lines = normalized_text.splitlines()
+    while lines and input_lines:
+        first_line = re.sub(r"^[>#»❯]\s*", "", lines[0].strip())
+        expected = input_lines[0]
+        if (
+            first_line == expected
+            or first_line.endswith(expected)
+            or (len(expected) >= 4 and expected in first_line)
+        ):
+            lines.pop(0)
+            input_lines.pop(0)
+            continue
+        break
+    if not input_lines:
+        return "\n".join(lines).strip()
+
+    filtered_lines: list[str] = []
+    remaining_inputs = list(input_lines)
+    normalized_expected_lines = {line.strip() for line in input_lines if line.strip()}
+    for line in lines:
+        stripped = re.sub(r"^[>#»❯]\s*", "", line.strip())
+        if stripped in normalized_expected_lines:
+            continue
+        if remaining_inputs:
+            expected = remaining_inputs[0]
+            if (
+                stripped == expected
+                or stripped.endswith(expected)
+                or (len(expected) >= 4 and expected in stripped)
+            ):
+                remaining_inputs.pop(0)
+                continue
+        filtered_lines.append(line)
+    return "\n".join(filtered_lines).strip()
+
+
+def _digest_chat_cli_text(text: str) -> str:
+    normalized = _normalize_chat_cli_text(text)
+    if not normalized:
+        return ""
+    return hashlib.sha1(normalized.encode("utf-8", "ignore")).hexdigest()[:12]
+
+
+def _slice_chat_cli_delta_chunk(
+    text: str,
+    *,
+    target: int = _CHAT_CLI_CHUNK_TARGET,
+    minimum: int = _CHAT_CLI_CHUNK_MIN,
+    maximum: int = _CHAT_CLI_CHUNK_MAX,
+) -> str:
+    normalized = _normalize_chat_cli_text(text)
+    if len(normalized) <= maximum:
+        return normalized
+
+    upper_bound = normalized[:maximum]
+    for boundaries in ("\n\n", _CHAT_CLI_SENTENCE_BOUNDARIES, _CHAT_CLI_SOFT_BOUNDARIES):
+        best_index = -1
+        if boundaries == "\n\n":
+            best_index = upper_bound.rfind(boundaries)
+            if best_index >= minimum:
+                return upper_bound[: best_index + len(boundaries)].rstrip()
+            continue
+        for idx, char in enumerate(upper_bound):
+            if char in boundaries and idx + 1 >= minimum:
+                best_index = idx + 1
+        if best_index >= minimum:
+            return upper_bound[:best_index].rstrip()
+    return upper_bound.rstrip()
 
 
 def _is_skills_add_command(command: str) -> bool:
@@ -3792,11 +4462,16 @@ class BackgroundProcess:
         session_id: str | None = None,
         run_id: str | None = None,
         interactive: bool = False,
+        profile: str = "shell",
+        profile_reason: str = "",
     ):
         self.command = command
         self.session_id = session_id
         self.run_id = run_id
         self.interactive = interactive
+        self.profile = profile if profile in {"shell", "chat_cli"} else "shell"
+        self.profile_reason = str(profile_reason or "")
+        self.chat_cli_variant = _detect_chat_cli_variant(command) if self.profile == "chat_cli" else ""
         self.output_queue = queue.Queue()
         self.output_history = []
         self.is_running = True
@@ -3822,6 +4497,17 @@ class BackgroundProcess:
         self.last_input_at = None
         self.completed_at = None
         self.return_code = None
+        self.conversation_turns: list[dict[str, Any]] = []
+        self.active_turn_index: int = -1
+        self.current_turn_role: str | None = None
+        self.current_turn_text = ""
+        self.reported_offset = 0
+        self.turn_completed = True
+        self.current_turn_baseline = ""
+        self.last_semantic_digest = ""
+        self.last_semantic_view = ""
+        self.last_semantic_update_at: float | None = None
+        self.pending_input_echo = ""
         self.terminal_env_overrides = _build_terminal_env_overrides()
         self.command_diagnostics = _extend_command_diagnostics_for_terminal(
             _build_command_diagnostics_snapshot(command),
@@ -3856,6 +4542,224 @@ class BackgroundProcess:
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
+
+    def _chat_cli_turn(self) -> dict[str, Any] | None:
+        if self.active_turn_index < 0 or self.active_turn_index >= len(self.conversation_turns):
+            return None
+        turn = self.conversation_turns[self.active_turn_index]
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            return None
+        return turn
+
+    def _append_chat_cli_user_turn(self, input_text: str, *, now: float | None = None) -> None:
+        if self.profile != "chat_cli":
+            return
+        normalized_input = _normalize_chat_cli_text(input_text)
+        if not normalized_input:
+            return
+        stamp = now or time.time()
+        self.conversation_turns.append(
+            {
+                "role": "user",
+                "text": normalized_input,
+                "created_at": stamp,
+                "completed": True,
+            }
+        )
+
+    def _complete_chat_cli_turn(self, *, now: float | None = None, reason: str = "") -> None:
+        turn = self._chat_cli_turn()
+        if not turn:
+            return
+        stamp = now or time.time()
+        turn["completed"] = True
+        turn["completed_at"] = stamp
+        if reason:
+            turn["completed_reason"] = reason
+        self.current_turn_text = str(turn.get("text") or "")
+        self.reported_offset = int(turn.get("reported_offset") or 0)
+        self.turn_completed = True
+        self.current_turn_role = "assistant"
+        self.last_semantic_digest = str(turn.get("digest") or self.last_semantic_digest or "")
+        turn["pending_input_echo"] = ""
+        self.pending_input_echo = ""
+
+    def _start_chat_cli_assistant_turn(
+        self,
+        *,
+        baseline_text: str,
+        pending_input_echo: str = "",
+        now: float | None = None,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        stamp = now or time.time()
+        turn = {
+            "role": "assistant",
+            "text": "",
+            "baseline_text": _normalize_chat_cli_text(baseline_text),
+            "reported_offset": 0,
+            "completed": False,
+            "created_at": stamp,
+            "pending_input_echo": _normalize_chat_cli_text(pending_input_echo),
+            "reason": reason,
+            "digest": "",
+        }
+        self.conversation_turns.append(turn)
+        self.active_turn_index = len(self.conversation_turns) - 1
+        self.current_turn_role = "assistant"
+        self.current_turn_text = ""
+        self.reported_offset = 0
+        self.turn_completed = False
+        self.current_turn_baseline = str(turn["baseline_text"])
+        self.pending_input_echo = str(turn["pending_input_echo"])
+        self.last_semantic_digest = ""
+        return turn
+
+    def _ensure_chat_cli_assistant_turn(self, *, baseline_text: str = "", now: float | None = None, reason: str = "") -> dict[str, Any]:
+        turn = self._chat_cli_turn()
+        if turn:
+            return turn
+        return self._start_chat_cli_assistant_turn(
+            baseline_text=baseline_text,
+            pending_input_echo="",
+            now=now,
+            reason=reason or "implicit_assistant_turn",
+        )
+
+    def _select_chat_cli_semantic_source(self, *, status: dict[str, Any], appended_output: str) -> str:
+        if not self.uses_tty and str(appended_output or "").strip():
+            return str(appended_output or "")
+        stable_snapshot = str(status.get("stable_screen_snapshot") or "").strip()
+        screen_snapshot = str(status.get("screen_snapshot") or "").strip()
+        if stable_snapshot:
+            return stable_snapshot
+        if screen_snapshot:
+            return screen_snapshot
+        return str(appended_output or "")
+
+    def _prepare_chat_cli_for_input(self, input_text: str, *, status_before: dict[str, Any] | None = None) -> None:
+        if self.profile != "chat_cli":
+            return
+        normalized_input = _normalize_chat_cli_text(_decode_background_input_escapes(input_text))
+        stamp = time.time()
+        baseline_status = status_before or self.status_snapshot()
+        baseline_text = _normalize_chat_cli_text(self._select_chat_cli_semantic_source(status=baseline_status, appended_output=""))
+        current_turn = self._chat_cli_turn()
+        if current_turn and not bool(current_turn.get("completed")):
+            self._complete_chat_cli_turn(now=stamp, reason="user_input")
+        self._append_chat_cli_user_turn(normalized_input, now=stamp)
+        self._start_chat_cli_assistant_turn(
+            baseline_text=baseline_text,
+            pending_input_echo=normalized_input,
+            now=stamp,
+            reason="after_user_input",
+        )
+
+    def _update_chat_cli_semantic_state(
+        self,
+        *,
+        status: dict[str, Any],
+        appended_output: str,
+        screen_changed: bool,
+        raw_changed: bool,
+    ) -> dict[str, Any]:
+        now = time.time()
+        observation_state = str(status.get("observation_state") or "idle")
+        prompt_ready = bool(status.get("awaiting_input"))
+        turn = self._chat_cli_turn()
+        source_text = self._select_chat_cli_semantic_source(status=status, appended_output=appended_output)
+        raw_semantic_view = _normalize_chat_cli_text(source_text)
+        semantic_view = _strip_chat_cli_prompt_tail(
+            _collapse_chat_cli_cumulative_lines(raw_semantic_view, variant=self.chat_cli_variant)
+        )
+        self.last_semantic_view = semantic_view
+
+        has_user_turn = any(isinstance(item, dict) and item.get("role") == "user" for item in self.conversation_turns)
+        should_bootstrap_assistant_turn = False
+        if turn is None and semantic_view:
+            if has_user_turn:
+                should_bootstrap_assistant_turn = True
+            elif not prompt_ready and not _terminal_snapshot_looks_like_prompt(semantic_view):
+                should_bootstrap_assistant_turn = True
+        if should_bootstrap_assistant_turn:
+            turn = self._start_chat_cli_assistant_turn(
+                baseline_text="",
+                pending_input_echo="",
+                now=now,
+                reason="initial_observation",
+            )
+
+        delta_text = ""
+        has_more = False
+        if turn:
+            baseline_text = str(turn.get("baseline_text") or "")
+            candidate_text = _consume_chat_cli_semantic_suffix(baseline_text, semantic_view) if semantic_view else ""
+            if not candidate_text and appended_output:
+                candidate_text = _strip_chat_cli_prompt_tail(
+                    _collapse_chat_cli_cumulative_lines(str(appended_output or ""), variant=self.chat_cli_variant)
+                )
+            candidate_text = _strip_chat_cli_input_echo(candidate_text, str(turn.get("pending_input_echo") or self.pending_input_echo or ""))
+            candidate_text = _strip_chat_cli_prompt_tail(candidate_text)
+            candidate_text = _collapse_chat_cli_cumulative_lines(candidate_text, variant=self.chat_cli_variant)
+
+            merged_text = _merge_chat_cli_turn_text(str(turn.get("text") or ""), candidate_text)
+            merged_text = _strip_chat_cli_input_echo(
+                merged_text,
+                str(turn.get("pending_input_echo") or self.pending_input_echo or ""),
+            )
+            if merged_text != str(turn.get("text") or ""):
+                turn["text"] = merged_text
+                turn["digest"] = _digest_chat_cli_text(merged_text)
+                turn["updated_at"] = now
+                self.last_semantic_update_at = now
+                self.current_turn_text = merged_text
+                self.last_semantic_digest = str(turn.get("digest") or "")
+                self.turn_completed = False
+            else:
+                self.current_turn_text = str(turn.get("text") or "")
+                self.last_semantic_digest = str(turn.get("digest") or self.last_semantic_digest or "")
+
+            if prompt_ready:
+                self._complete_chat_cli_turn(now=now, reason="awaiting_input")
+            elif not self.is_running:
+                self._complete_chat_cli_turn(now=now, reason="process_exit")
+            elif (
+                not bool(turn.get("completed"))
+                and observation_state in {"idle", "awaiting_input"}
+                and not screen_changed
+                and not raw_changed
+                and self.last_semantic_update_at is not None
+                and (now - self.last_semantic_update_at) >= _CHAT_CLI_IDLE_COMPLETE_SECONDS
+            ):
+                self._complete_chat_cli_turn(now=now, reason="stable_idle")
+
+            reported_offset = int(turn.get("reported_offset") or 0)
+            current_text = str(turn.get("text") or "")
+            pending_delta = current_text[reported_offset:]
+            if pending_delta:
+                delta_text = _slice_chat_cli_delta_chunk(pending_delta)
+                turn["reported_offset"] = reported_offset + len(delta_text)
+                self.reported_offset = int(turn["reported_offset"])
+            else:
+                self.reported_offset = reported_offset
+
+            has_more = int(turn.get("reported_offset") or 0) < len(current_text) or not bool(turn.get("completed"))
+            self.turn_completed = bool(turn.get("completed"))
+            self.current_turn_role = "assistant"
+            self.current_turn_baseline = str(turn.get("baseline_text") or "")
+
+        return {
+            "profile": self.profile,
+            "turn_index": self.active_turn_index,
+            "delta_text": delta_text,
+            "has_more": bool(has_more),
+            "turn_completed": bool(self.turn_completed),
+            "awaiting_input": prompt_ready,
+            "observation_state": observation_state,
+            "screen_changed": bool(screen_changed),
+            "raw_changed": bool(raw_changed),
+            "semantic_view": semantic_view,
+        }
 
     def _read_return_code(self) -> int | None:
         if self.proc is not None and hasattr(self.proc, "poll"):
@@ -3994,12 +4898,12 @@ class BackgroundProcess:
         raw_recent = since_raw <= 0.9
         screen_recent = since_screen <= 0.9
 
+        if _terminal_snapshot_looks_like_prompt(snapshot) and not _terminal_snapshot_looks_busy(snapshot):
+            return "awaiting_input"
         if raw_recent and not screen_recent:
             return "render_stalled"
         if raw_recent or screen_recent:
             return "busy"
-        if _terminal_snapshot_looks_like_prompt(snapshot):
-            return "awaiting_input"
         if _terminal_snapshot_looks_busy(snapshot):
             return "busy"
         return "idle"
@@ -4024,6 +4928,9 @@ class BackgroundProcess:
             "is_running": self.is_running,
             "uses_tty": self.uses_tty,
             "interactive": self.interactive,
+            "profile": self.profile,
+            "profile_reason": self.profile_reason,
+            "chat_cli_variant": self.chat_cli_variant if self.profile == "chat_cli" else None,
             "tty_mode": tty_mode,
             "screen_mode": "terminal_screen" if self.uses_tty else "append_only",
             "screen_snapshot": screen_snapshot,
@@ -4054,6 +4961,11 @@ class BackgroundProcess:
             "seconds_since_input": None
             if self.last_input_at is None
             else round(max(0.0, time.time() - self.last_input_at), 2),
+            "chat_cli_turn_index": self.active_turn_index if self.profile == "chat_cli" else None,
+            "chat_cli_turn_completed": self.turn_completed if self.profile == "chat_cli" else None,
+            "chat_cli_total_chars": len(self.current_turn_text) if self.profile == "chat_cli" else None,
+            "chat_cli_reported_chars": int(self.reported_offset) if self.profile == "chat_cli" else None,
+            "chat_cli_last_digest": self.last_semantic_digest if self.profile == "chat_cli" else None,
             "command_diagnostics": dict(self.command_diagnostics),
         }
 
@@ -4153,6 +5065,7 @@ def list_background_process_snapshots(
 @tool
 def start_background_command(
     command: str,
+    profile: str = "auto",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Start a long-running or interactive system command in the background.
@@ -4169,9 +5082,10 @@ def start_background_command(
     
     Arguments:
         command (str): The interactive or long-running command to execute.
+        profile (str): auto、chat_cli 或 shell。chat_cli 适用于 AI CLI 的多轮对话语义增量读取。
     """
     try:
-        launched = _launch_background_command(command, tool_call_id=tool_call_id)
+        launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=profile)
         guidance = (
             "\nNext step: 使用 `read_background_output` 观察输出；若 CLI 等待输入，使用 "
             "`send_background_input` 发送文本或回车；结束时使用 `terminate_background_command`。"
@@ -4182,6 +5096,7 @@ def start_background_command(
         return (
             f"Command started in background with ID: {launched['commandId']}\n"
             f"Mode: {launched['mode']}\n"
+            f"Profile: {launched['profile']}\n"
             f"TTY: {launched['tty']}\n"
             f"RunId: {launched['runId'] or 'n/a'}\n"
             f"Status: {json.dumps(launched['status'], ensure_ascii=False)}\n"
@@ -4196,6 +5111,7 @@ def start_background_command(
 def run_system_command(
     command: str,
     mode: str = "auto",
+    profile: str = "auto",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run a system command through a unified command surface.
@@ -4209,10 +5125,19 @@ def run_system_command(
 
     mode=session:
     - 强制后台/交互模式，返回 commandId
+
+    profile:
+    - auto: 自动识别 shell / chat_cli
+    - chat_cli: 把 AI CLI 作为对话终端处理，只向 supervisor 暴露最新语义增量
+    - shell: 普通终端模式
     """
     normalized_mode = str(mode or "auto").strip().lower()
     if normalized_mode not in {"auto", "sync", "session"}:
         return "Error: mode 必须是 auto、sync 或 session。"
+    try:
+        normalized_profile = _normalize_background_command_profile(profile)
+    except ValueError as exc:
+        return f"Error: {exc}"
 
     interactive_reason = _detect_interactive_command(command)
     session_reason = _detect_session_preferred_command(command)
@@ -4226,13 +5151,14 @@ def run_system_command(
 
     if effective_mode == "session":
         try:
-            launched = _launch_background_command(command, tool_call_id=tool_call_id)
+            launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=normalized_profile)
             payload = {
                 "kind": "command_session",
                 "mode": "session",
                 "commandId": launched["commandId"],
                 "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
+                "profile": launched["profile"],
                 "tty": launched["tty"],
                 "runId": launched["runId"],
                 "reason": interactive_reason or session_reason or "显式 session 模式",
@@ -4256,6 +5182,9 @@ def _build_terminal_status_tool_view(status: dict) -> dict:
         "command",
         "session_id",
         "is_running",
+        "profile",
+        "profile_reason",
+        "chat_cli_variant",
         "uses_tty",
         "interactive",
         "tty_mode",
@@ -4278,6 +5207,11 @@ def _build_terminal_status_tool_view(status: dict) -> dict:
         "seconds_since_input",
         "last_screen_at",
         "last_raw_frame_at",
+        "chat_cli_turn_index",
+        "chat_cli_turn_completed",
+        "chat_cli_total_chars",
+        "chat_cli_reported_chars",
+        "chat_cli_last_digest",
     ):
         value = status.get(key)
         if value is None or value == "":
@@ -4319,6 +5253,78 @@ def read_background_output(command_id: str) -> str:
     include_raw_preview = observation_state == "render_stalled" or encoding_state not in {"", "clean"}
     include_appended_delta = not screen_snapshot
     compact_status = _build_terminal_status_tool_view(status)
+
+    if bg_proc.profile == "chat_cli":
+        semantic_state = bg_proc._update_chat_cli_semantic_state(
+            status=status,
+            appended_output=new_out,
+            screen_changed=screen_changed,
+            raw_changed=raw_changed,
+        )
+        chat_cli_status = dict(compact_status)
+        chat_cli_status["chat_cli_turn_index"] = semantic_state.get("turn_index")
+        chat_cli_status["chat_cli_turn_completed"] = semantic_state.get("turn_completed")
+        chat_cli_status["chat_cli_total_chars"] = len(bg_proc.current_turn_text)
+        chat_cli_status["chat_cli_reported_chars"] = int(bg_proc.reported_offset)
+        if bg_proc.last_semantic_digest:
+            chat_cli_status["chat_cli_last_digest"] = bg_proc.last_semantic_digest
+        delta_text = str(semantic_state.get("delta_text") or "").strip()
+        turn_completed = bool(semantic_state.get("turn_completed"))
+        has_more = bool(semantic_state.get("has_more"))
+        turn_index = int(semantic_state.get("turn_index") or 0)
+
+        def _format_chat_cli_response(observation: str) -> str:
+            sections = [f"Observation: {observation}"]
+            if delta_text:
+                sections.append(f"CLI 新增回复（turn {turn_index}）:\n{delta_text}")
+                if turn_completed:
+                    sections.append("Turn Status: 本轮回复已结束，可继续输入。")
+                elif has_more:
+                    sections.append("Turn Status: 本轮回复仍在继续输出，本次只返回最新语义增量。")
+                else:
+                    sections.append("Turn Status: 已捕获本轮最新语义增量。")
+            else:
+                if turn_completed and prompt_ready:
+                    sections.append("Turn Status: 当前没有新的语义回复，prompt 已就绪，可继续输入。")
+                elif screen_changed or raw_changed:
+                    sections.append("Turn Status: 当前只有屏幕变化，没有新的语义回复。")
+                else:
+                    sections.append("Turn Status: 当前没有新的语义回复。")
+            if include_raw_preview and raw_frame_preview:
+                sections.append(f"Raw Frame Preview:\n{raw_frame_preview}")
+            if include_appended_delta and appended_output:
+                sections.append(f"Appended Output:\n{_truncate_terminal_text(new_out)}")
+            sections.append(f"Status: {json.dumps(chat_cli_status, ensure_ascii=False)}")
+            return "\n\n".join(section for section in sections if section)
+
+        if screen_changed:
+            bg_proc.mark_screen_reported()
+        if raw_changed:
+            bg_proc.mark_raw_frame_reported()
+
+        if not bg_proc.is_running:
+            rcode = bg_proc.return_code
+            if rcode is None and hasattr(bg_proc.proc, "poll"):
+                try:
+                    rcode = bg_proc.proc.poll()
+                except Exception:
+                    rcode = None
+            return f"{_format_chat_cli_response('chat_cli 会话已结束。')}\n\n[Process terminated with exit code {rcode}]"
+
+        if delta_text:
+            observation = "CLI 有新增回复。"
+            if turn_completed and prompt_ready:
+                observation = "CLI 有新增回复，且本轮回复已结束，可继续输入。"
+            elif has_more:
+                observation = "CLI 有新增回复，本轮尚未结束。"
+            return _format_chat_cli_response(observation)
+        if prompt_ready:
+            return _format_chat_cli_response("当前没有新的语义回复，prompt 已就绪，可继续输入。")
+        if screen_changed or raw_changed:
+            return _format_chat_cli_response("当前只有屏幕变化，没有新的语义回复。")
+        if appended_output:
+            return _format_chat_cli_response("观测到新的终端文本增量，但尚未确认新的语义回复。")
+        return _format_chat_cli_response("当前未观测到新的终端变化。")
 
     def _format_interactive_screen_response(observation: str) -> str:
         sections = [f"Observation: {observation}"]
@@ -4404,6 +5410,7 @@ def send_background_input(command_id: str, input_text: str) -> str:
         previous_screen_version = int(status_before.get("screen_version") or 0)
         previous_raw_frame_version = int(status_before.get("raw_frame_version") or 0)
         normalized_input = _decode_background_input_escapes(input_text)
+        bg_proc._prepare_chat_cli_for_input(normalized_input, status_before=status_before)
         bg_proc.write_input(normalized_input)
         time.sleep(0.5)  # Wait for response
         resp = bg_proc.get_new_output()
@@ -4447,6 +5454,8 @@ def send_background_input(command_id: str, input_text: str) -> str:
             sections.append(f"Screen Snapshot:\n{screen_snapshot}")
         if include_appended_delta and appended_output:
             sections.append(f"Appended Output:\n{_truncate_terminal_text(resp)}")
+        if bg_proc.profile == "chat_cli":
+            sections.append("Profile: chat_cli（后续请用 `read_background_output` 读取最新语义增量，而不是期待整屏重放）。")
         sections.append(f"Status: {json.dumps(compact_status, ensure_ascii=False)}")
         return "\n\n".join(section for section in sections if section)
     except Exception as e:
@@ -5378,7 +6387,9 @@ def computer_use_resolve_execution_route(
     target: Optional[str] = None,
     variables_json: Optional[str] = None,
     limit: int = 5,
-) -> str:
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> Command | str:
     """Resolve whether the desktop task should reuse muscle memory, run hybrid, or enter learning mode.
 
     This is the preferred Wave 6 entrypoint for Supervisor before invoking any concrete desktop primitive.
@@ -5409,7 +6420,41 @@ def computer_use_resolve_execution_route(
             resolved_app=resolved_app,
             route=route,
         )
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        latest_human_id, _ = _desktop_route_latest_bound_human_message(state if isinstance(state, dict) else {})
+        desktop_route = {
+            "goal": normalized_goal,
+            "appId": payload.get("app", {}).get("appId") or route.get("appId"),
+            "requestedApp": app_query,
+            "target": target_hint,
+            "recommendedMode": payload.get("recommendedMode"),
+            "executionReadyMode": payload.get("executionReadyMode") or determine_execution_ready_mode(route),
+            "recommendedRuntime": payload.get("recommendedRuntime"),
+            "recommendedTool": payload.get("recommendedTool"),
+            "recommendedDraftId": payload.get("recommendedDraftId"),
+            "recommendedTemplateId": payload.get("recommendedTemplateId"),
+            "routeAction": payload.get("recommendedAction"),
+            "boundHumanMessageId": latest_human_id,
+            "source": _DESKTOP_ROUTE_SOURCE,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update(
+            _desktop_route_compact_metadata(
+                desktop_route,
+                route_gate_applied=False,
+                runtime_governed=True,
+            )
+        )
+        payload_str = json.dumps(payload, ensure_ascii=False, indent=2)
+        if not isinstance(state, dict):
+            return payload_str
+        updated_route_context = dict(state.get("current_route_context") or {})
+        updated_route_context["desktopRoute"] = desktop_route
+        return Command(
+            update={
+                "messages": [ToolMessage(content=payload_str, tool_call_id=tool_call_id)],
+                "current_route_context": updated_route_context,
+            }
+        )
     except Exception as e:
         return f"Error resolving desktop execution route: {e}"
 
@@ -5423,6 +6468,7 @@ def computer_use_launch_app(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Launch a desktop app with minimal parameters.
 
@@ -5433,6 +6479,14 @@ def computer_use_launch_app(
     if not app_query:
         return "Error: app 不能为空。"
     resolved_app = _computer_use_resolve_app(app_query)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_launch_app",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     launch_override = _computer_use_launch_target_override(
         app_query=app_query,
         resolved_app=resolved_app,
@@ -5466,7 +6520,7 @@ def computer_use_launch_app(
             resolved_app=resolved_app,
             raw_result=raw_result,
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="launch_app",
             raw_result=raw_result,
             app_hint=app_query,
@@ -5474,6 +6528,11 @@ def computer_use_launch_app(
             resolved_app=resolved_app,
             expected_window_title=expected_window_title,
             strict_expected_window_title=bool(launch_override.get("strict_expected_window_title")),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         fallback_target_path = str(launch_override.get("resolved_target_path") or "").strip() or None
@@ -5499,7 +6558,7 @@ def computer_use_launch_app(
                     resolved_app=resolved_app,
                     raw_result=recovered_result,
                 )
-                return _computer_use_compact_response(
+                response = _computer_use_compact_response(
                     action="launch_app",
                     raw_result=recovered_result,
                     app_hint=app_query,
@@ -5507,6 +6566,11 @@ def computer_use_launch_app(
                     resolved_app=resolved_app,
                     expected_window_title=expected_window_title,
                     strict_expected_window_title=bool(launch_override.get("strict_expected_window_title")),
+                )
+                return _desktop_route_merge_into_response(
+                    response,
+                    desktop_route=desktop_route,
+                    route_gate_applied=isinstance(state, dict),
                 )
             except Exception:
                 pass
@@ -5523,6 +6587,7 @@ def computer_use_ensure_window(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Ensure a desktop window is bound and focused before the next action.
 
@@ -5530,6 +6595,14 @@ def computer_use_ensure_window(
     """
     app_query = str(app or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_ensure_window",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     launch_override = _computer_use_launch_target_override(
         app_query=app_query,
         resolved_app=resolved_app,
@@ -5560,7 +6633,7 @@ def computer_use_ensure_window(
             resolved_app=resolved_app,
             raw_result=raw_result,
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="ensure_window",
             raw_result=raw_result,
             app_hint=app_query,
@@ -5571,6 +6644,11 @@ def computer_use_ensure_window(
                 str(launch_override.get("strict_expected_window_title") or "").strip()
                 or str(window_title or "").strip()
             ),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error ensuring desktop window: {e}"
@@ -5651,6 +6729,7 @@ def computer_use_click_target(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Click a semantic desktop target with built-in verification and blocking.
 
@@ -5661,6 +6740,14 @@ def computer_use_click_target(
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_click_target",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
         action_name="click_target_prebind",
         app_query=app_query,
@@ -5688,13 +6775,17 @@ def computer_use_click_target(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="double_click" if double else "click",
-            summary=error_message or "Safety Guardian 已阻止桌面点击动作。",
-            app_hint=app_query,
-            target_hint=target_hint or target_text,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="double_click" if double else "click",
+                summary=error_message or "Safety Guardian 已阻止桌面点击动作。",
+                app_hint=app_query,
+                target_hint=target_hint or target_text,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": "double_click" if double else "click",
@@ -5750,7 +6841,7 @@ def computer_use_click_target(
             step=step,
             goal=f"{step['action']}:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action=step["action"],
             raw_result=raw_result,
             app_hint=app_query,
@@ -5758,6 +6849,11 @@ def computer_use_click_target(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error clicking desktop target: {e}"
@@ -5788,6 +6884,7 @@ def computer_use_input_text(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Input text into a desktop target using the simplest possible interface.
 
@@ -5798,6 +6895,14 @@ def computer_use_input_text(
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_input_text",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
         action_name="input_text_prebind",
         app_query=app_query,
@@ -5826,13 +6931,17 @@ def computer_use_input_text(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="input_text",
-            summary=error_message or "Safety Guardian 已阻止桌面输入动作。",
-            app_hint=app_query,
-            target_hint=target_hint,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="input_text",
+                summary=error_message or "Safety Guardian 已阻止桌面输入动作。",
+                app_hint=app_query,
+                target_hint=target_hint,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": "type_text",
@@ -5886,7 +6995,7 @@ def computer_use_input_text(
             step=step,
             goal=f"input_text:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="input_text",
             raw_result=raw_result,
             app_hint=app_query,
@@ -5894,6 +7003,11 @@ def computer_use_input_text(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error inputting text on desktop: {e}"
@@ -5924,12 +7038,21 @@ def computer_use_paste_text(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Paste text via clipboard-first desktop input, with built-in focus confirmation and verification."""
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_paste_text",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
         action_name="paste_text_prebind",
         app_query=app_query,
@@ -5957,13 +7080,17 @@ def computer_use_paste_text(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="paste_text",
-            summary=error_message or "Safety Guardian 已阻止文本粘贴动作。",
-            app_hint=app_query,
-            target_hint=target_hint,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="paste_text",
+                summary=error_message or "Safety Guardian 已阻止文本粘贴动作。",
+                app_hint=app_query,
+                target_hint=target_hint,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": "type_text",
@@ -6017,7 +7144,7 @@ def computer_use_paste_text(
             step=step,
             goal=f"paste_text:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="paste_text",
             raw_result=raw_result,
             app_hint=app_query,
@@ -6025,6 +7152,11 @@ def computer_use_paste_text(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error pasting text on desktop: {e}"
@@ -6056,6 +7188,7 @@ def computer_use_paste_files(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Paste files into a desktop target via clipboard file payload, optionally with accompanying text."""
     try:
@@ -6073,6 +7206,14 @@ def computer_use_paste_files(
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_paste_files",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     target_override = _computer_use_launch_target_override(
         app_query=app_query,
         resolved_app=resolved_app,
@@ -6110,13 +7251,17 @@ def computer_use_paste_files(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="paste_files",
-            summary=error_message or "Safety Guardian 已阻止文件粘贴动作。",
-            app_hint=app_query,
-            target_hint=target_hint,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="paste_files",
+                summary=error_message or "Safety Guardian 已阻止文件粘贴动作。",
+                app_hint=app_query,
+                target_hint=target_hint,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": "type_text",
@@ -6171,7 +7316,7 @@ def computer_use_paste_files(
             step=step,
             goal=f"paste_files:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="paste_files",
             raw_result=raw_result,
             app_hint=app_query,
@@ -6179,6 +7324,11 @@ def computer_use_paste_files(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error pasting files on desktop: {e}"
@@ -6207,12 +7357,21 @@ def computer_use_right_click_target(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Right-click a desktop target with the same guarded semantics as click_target."""
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_right_click_target",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
         action_name="right_click_target_prebind",
         app_query=app_query,
@@ -6236,13 +7395,17 @@ def computer_use_right_click_target(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="right_click",
-            summary=error_message or "Safety Guardian 已阻止桌面右键动作。",
-            app_hint=app_query,
-            target_hint=target_hint or target_text,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="right_click",
+                summary=error_message or "Safety Guardian 已阻止桌面右键动作。",
+                app_hint=app_query,
+                target_hint=target_hint or target_text,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {"action": "right_click"}
     if (resolved_app or {}).get("appId"):
@@ -6293,7 +7456,7 @@ def computer_use_right_click_target(
             step=step,
             goal=f"right_click:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="right_click",
             raw_result=raw_result,
             app_hint=app_query,
@@ -6301,6 +7464,11 @@ def computer_use_right_click_target(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error right-clicking desktop target: {e}"
@@ -6329,12 +7497,21 @@ def computer_use_hover_target(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Hover over a desktop target while keeping verification, evidence, and blocking semantics."""
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_hover_target",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
         action_name="hover_target_prebind",
         app_query=app_query,
@@ -6358,13 +7535,17 @@ def computer_use_hover_target(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="hover",
-            summary=error_message or "Safety Guardian 已阻止桌面悬停动作。",
-            app_hint=app_query,
-            target_hint=target_hint or target_text,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="hover",
+                summary=error_message or "Safety Guardian 已阻止桌面悬停动作。",
+                app_hint=app_query,
+                target_hint=target_hint or target_text,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {"action": "hover"}
     if (resolved_app or {}).get("appId"):
@@ -6410,7 +7591,7 @@ def computer_use_hover_target(
             step=step,
             goal=f"hover:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="hover",
             raw_result=raw_result,
             app_hint=app_query,
@@ -6418,6 +7599,11 @@ def computer_use_hover_target(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error hovering desktop target: {e}"
@@ -6433,11 +7619,20 @@ def computer_use_send_hotkey(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Send a desktop hotkey with compact verification and evidence output."""
     app_query = str(app or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_send_hotkey",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     allowed, error_message = _computer_use_action_guard(
         action_type="hotkey",
         target={
@@ -6449,13 +7644,17 @@ def computer_use_send_hotkey(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="send_hotkey",
-            summary=error_message or "Safety Guardian 已阻止桌面热键动作。",
-            app_hint=app_query,
-            target_hint=sequence,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="send_hotkey",
+                summary=error_message or "Safety Guardian 已阻止桌面热键动作。",
+                app_hint=app_query,
+                target_hint=sequence,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": "hotkey",
@@ -6477,7 +7676,7 @@ def computer_use_send_hotkey(
             step=step,
             goal=f"hotkey:{app_query or effective_window_title or sequence}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="send_hotkey",
             raw_result=raw_result,
             app_hint=app_query,
@@ -6485,6 +7684,11 @@ def computer_use_send_hotkey(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error sending desktop hotkey: {e}"
@@ -6502,6 +7706,7 @@ def computer_use_scroll_view(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Scroll a desktop view with built-in verification and evidence.
 
@@ -6511,6 +7716,14 @@ def computer_use_scroll_view(
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_scroll_view",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     action_name = "page_scroll" if by_page else "scroll"
     allowed, error_message = _computer_use_action_guard(
         action_type="scroll",
@@ -6525,13 +7738,17 @@ def computer_use_scroll_view(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action=action_name,
-            summary=error_message or "Safety Guardian 已阻止桌面滚动动作。",
-            app_hint=app_query,
-            target_hint=target_hint,
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action=action_name,
+                summary=error_message or "Safety Guardian 已阻止桌面滚动动作。",
+                app_hint=app_query,
+                target_hint=target_hint,
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": action_name,
@@ -6562,7 +7779,7 @@ def computer_use_scroll_view(
             step=step,
             goal=f"{action_name}:{app_query or effective_window_title or target_hint or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action=action_name,
             raw_result=raw_result,
             app_hint=app_query,
@@ -6570,6 +7787,11 @@ def computer_use_scroll_view(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error scrolling desktop view: {e}"
@@ -6591,6 +7813,7 @@ def computer_use_drag_pointer(
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
+    state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
     """Drag from one point to another with built-in verification and blocking."""
     start_point = None
@@ -6613,6 +7836,14 @@ def computer_use_drag_pointer(
     app_query = str(app or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     effective_window_title = _computer_use_effective_window_title(window_title, resolved_app)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_drag_pointer",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
     allowed, error_message = _computer_use_action_guard(
         action_type="drag",
         target={
@@ -6628,13 +7859,17 @@ def computer_use_drag_pointer(
         tool_call_id=tool_call_id,
     )
     if not allowed:
-        return _computer_use_guard_failure_response(
-            action="drag_pointer",
-            summary=error_message or "Safety Guardian 已阻止拖拽动作。",
-            app_hint=app_query,
-            target_hint="drag",
-            resolved_app=resolved_app,
-            window_title=effective_window_title,
+        return _desktop_route_merge_into_response(
+            _computer_use_guard_failure_response(
+                action="drag_pointer",
+                summary=error_message or "Safety Guardian 已阻止拖拽动作。",
+                app_hint=app_query,
+                target_hint="drag",
+                resolved_app=resolved_app,
+                window_title=effective_window_title,
+            ),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     step: dict[str, Any] = {
         "action": "drag",
@@ -6674,7 +7909,7 @@ def computer_use_drag_pointer(
             step=step,
             goal=f"drag:{app_query or effective_window_title or 'desktop'}",
         )
-        return _computer_use_compact_response(
+        response = _computer_use_compact_response(
             action="drag_pointer",
             raw_result=raw_result,
             app_hint=app_query,
@@ -6682,6 +7917,11 @@ def computer_use_drag_pointer(
             resolved_app=resolved_app,
             expected_window_title=effective_window_title,
             strict_expected_window_title=bool(str(window_title or "").strip()),
+        )
+        return _desktop_route_merge_into_response(
+            response,
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
         )
     except Exception as e:
         return f"Error dragging pointer: {e}"

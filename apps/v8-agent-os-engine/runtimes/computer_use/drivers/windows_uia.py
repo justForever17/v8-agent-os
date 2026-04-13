@@ -228,7 +228,12 @@ class WindowsUIADriver:
                 supports_scene_identity=True,
                 supports_blocker_detection=True,
                 supports_goal_state_detection=True,
-                supports_keyframe_visual_fallback=mss is not None,
+                supports_keyframe_visual_fallback=False,
+                frame_sequence_sampling_available=mss is not None,
+                frame_sequence_semantic_verification_available=False,
+                supports_browser_automation=False,
+                browser_lane_available=False,
+                browser_lane_provider=None,
             ),
             verification=DesktopVerificationCapabilities(
                 supports_window_verification=True,
@@ -243,8 +248,10 @@ class WindowsUIADriver:
                 supports_semantic_route=True,
                 supports_visual_route=mss is not None,
                 supports_coordinate_fallback=bool(self._sendinput_click_engine.is_available()),
+                supports_browser_automation=False,
                 preferred_route_order=[
                     "native_command",
+                    "browser_automation",
                     "structured_accessibility",
                     "visual_locator",
                     "coordinate_fallback",
@@ -272,6 +279,111 @@ class WindowsUIADriver:
     @property
     def desktop(self):
         return self.desktop_uia
+
+    def _foreground_window_handle(self) -> int | None:
+        try:
+            return int(ctypes.windll.user32.GetForegroundWindow() or 0) or None
+        except Exception:
+            return None
+
+    def _keyboard_layout_for_window(self, window_handle: int | None) -> str | None:
+        try:
+            user32 = ctypes.windll.user32
+            handle = int(window_handle or 0)
+            thread_id = int(user32.GetWindowThreadProcessId(handle, None) or 0) if handle else 0
+            hkl = int(user32.GetKeyboardLayout(thread_id) or 0)
+            if hkl == 0:
+                return None
+            return f"{hkl & 0xFFFFFFFF:08x}"
+        except Exception:
+            return None
+
+    def _ime_open_for_window(self, window_handle: int | None) -> bool | None:
+        try:
+            handle = int(window_handle or 0)
+            if handle == 0:
+                return None
+            imm32 = ctypes.windll.imm32
+            himc = imm32.ImmGetContext(handle)
+            if himc == 0:
+                return None
+            try:
+                return bool(imm32.ImmGetOpenStatus(himc))
+            finally:
+                imm32.ImmReleaseContext(handle, himc)
+        except Exception:
+            return None
+
+    def _switch_foreground_to_english_layout(self, window_handle: int | None) -> bool:
+        try:
+            user32 = ctypes.windll.user32
+            handle = int(window_handle or 0)
+            if handle == 0:
+                return False
+            english_hkl = user32.LoadKeyboardLayoutW("00000409", 0x00000001)
+            if not english_hkl:
+                return False
+            user32.PostMessageW(handle, 0x0050, 0, int(english_hkl))
+            user32.ActivateKeyboardLayout(english_hkl, 0)
+            time.sleep(0.03)
+            return True
+        except Exception:
+            return False
+
+    def preflight_text_input_context(
+        self,
+        *,
+        text: str,
+        target_input_kind: str,
+        window_handle: int | None = None,
+        normalization_requested: bool = False,
+    ) -> Dict[str, Any]:
+        foreground_handle = int(window_handle or self._foreground_window_handle() or 0) or None
+        layout_before = self._keyboard_layout_for_window(foreground_handle)
+        ime_before = self._ime_open_for_window(foreground_handle)
+        normalization_applied = False
+        if normalization_requested and target_input_kind in {
+            "browser_address_bar",
+            "browser_dom_input",
+            "url",
+            "path",
+            "ascii_code_like",
+            "file_receiver",
+        }:
+            normalization_applied = self._switch_foreground_to_english_layout(foreground_handle)
+        layout_after = self._keyboard_layout_for_window(foreground_handle)
+        ime_after = self._ime_open_for_window(foreground_handle)
+        return {
+            "targetInputKind": target_input_kind,
+            "layoutBefore": layout_before,
+            "layoutAfter": layout_after,
+            "imeStateBefore": ime_before,
+            "imeStateAfter": ime_after,
+            "normalizationApplied": normalization_applied,
+            "restoreLayout": layout_before if normalization_applied and layout_before and layout_before != layout_after else None,
+            "windowHandle": foreground_handle,
+            "inputTextLength": len(str(text or "")),
+        }
+
+    def restore_text_input_context(self, preflight: Dict[str, Any] | None) -> Dict[str, Any]:
+        payload = dict(preflight or {})
+        restore_layout = str(payload.get("restoreLayout") or "").strip()
+        handle = int(payload.get("windowHandle") or 0) or None
+        restored = False
+        if restore_layout and handle:
+            try:
+                user32 = ctypes.windll.user32
+                hkl = user32.LoadKeyboardLayoutW(restore_layout, 0x00000001)
+                if hkl:
+                    user32.PostMessageW(handle, 0x0050, 0, int(hkl))
+                    user32.ActivateKeyboardLayout(hkl, 0)
+                    time.sleep(0.02)
+                    restored = True
+            except Exception:
+                restored = False
+        payload["restoreApplied"] = restored
+        payload["layoutRestoredTo"] = restore_layout or None
+        return payload
 
     @property
     def desktop_uia(self):
@@ -353,6 +465,8 @@ class WindowsUIADriver:
         process_names: Iterable[str] | None = None,
         backend_name: str = "uia",
         limit: int = 20,
+        include_titleless: bool = False,
+        include_shell_windows: bool = False,
     ) -> List[Dict[str, Any]]:
         windows: List[Tuple[int, Dict[str, Any]]] = []
         process_filter = {int(item) for item in (process_ids or []) if item not in (None, "")}
@@ -366,9 +480,9 @@ class WindowsUIADriver:
         for wrapper in self._safe_backend_windows(backend_name):
             data = self._window_dict(wrapper)
             title = (data.get("title") or "").strip()
-            if not title:
+            if not title and not include_titleless:
                 continue
-            if is_shell_surface_window(data, platform=self.platform):
+            if not include_shell_windows and is_shell_surface_window(data, platform=self.platform):
                 continue
             lowered_title = self._normalize_window_text(title)
             title_score = 0 if not title_filter_values else window_title_match_score(lowered_title, title_filter_values)
@@ -414,6 +528,8 @@ class WindowsUIADriver:
         backend_name: str = "uia",
         timeout_ms: int = 12000,
         poll_ms: int = 250,
+        include_titleless: bool = False,
+        include_shell_windows: bool = False,
     ) -> Dict[str, Any]:
         deadline = time.time() + (max(timeout_ms, 200) / 1000.0)
         last_error: Exception | None = None
@@ -428,6 +544,8 @@ class WindowsUIADriver:
                     process_names=process_names,
                     backend_name=backend_name,
                     limit=1,
+                    include_titleless=include_titleless,
+                    include_shell_windows=include_shell_windows,
                 )
                 if windows:
                     return windows[0]
@@ -447,6 +565,8 @@ class WindowsUIADriver:
         process_ids: Iterable[int] | None = None,
         process_names: Iterable[str] | None = None,
         backend_name: str = "uia",
+        include_titleless: bool = False,
+        include_shell_windows: bool = False,
     ) -> Dict[str, Any]:
         if window_handle in (None, ""):
             matched = self.wait_for_window(
@@ -459,6 +579,8 @@ class WindowsUIADriver:
                 backend_name=backend_name,
                 timeout_ms=4000,
                 poll_ms=180,
+                include_titleless=include_titleless,
+                include_shell_windows=include_shell_windows,
             )
             window_handle = matched.get("handle")
             window_title = matched.get("title") or window_title
@@ -483,6 +605,222 @@ class WindowsUIADriver:
                 except Exception:
                     pass
         return self._window_dict(wrapper)
+
+    def restore_process_window(
+        self,
+        *,
+        title_filters: Iterable[str] | None = None,
+        class_names: Iterable[str] | None = None,
+        process_ids: Iterable[int] | None = None,
+        process_names: Iterable[str] | None = None,
+        backend_name: str = "uia",
+        limit: int = 24,
+    ) -> Dict[str, Any] | None:
+        candidates = self.list_windows(
+            title_filters=title_filters,
+            class_names=class_names,
+            process_ids=process_ids,
+            process_names=process_names,
+            backend_name=backend_name,
+            limit=max(8, int(limit)),
+            include_titleless=True,
+            include_shell_windows=False,
+        )
+        ranked: List[tuple[int, Dict[str, Any]]] = []
+        for item in list(candidates or []):
+            score = int(item.get("matchScore") or 0)
+            if item.get("isVisible") is True:
+                score += 6
+            if str(item.get("title") or "").strip():
+                score += 8
+            ranked.append((score, dict(item)))
+        ranked.sort(key=lambda row: row[0], reverse=True)
+        for _score, candidate in ranked:
+            handle = candidate.get("handle")
+            if handle in (None, "", 0):
+                continue
+            try:
+                self._focus_message_window(int(handle))
+                time.sleep(0.08)
+                wrapper = self._resolve_root_resilient(window_handle=int(handle), backend_name=backend_name)
+                self._focus_wrapper(wrapper)
+                payload = self._window_dict(wrapper)
+                payload.setdefault("metadata", {})
+                payload["metadata"]["restoreStrategy"] = "process_window"
+                return payload
+            except Exception:
+                continue
+        return None
+
+    def restore_app_from_tray(
+        self,
+        *,
+        labels: Iterable[str] | None = None,
+        process_ids: Iterable[int] | None = None,
+        process_names: Iterable[str] | None = None,
+        title_filters: Iterable[str] | None = None,
+        class_names: Iterable[str] | None = None,
+        backend_name: str = "uia",
+        timeout_ms: int = 3200,
+        poll_ms: int = 180,
+    ) -> Dict[str, Any] | None:
+        label_tokens = [self._normalize_window_text(item) for item in list(labels or []) if self._normalize_window_text(item)]
+        if not label_tokens:
+            return None
+        clicked = self._click_shell_surface_candidate(
+            label_tokens=label_tokens,
+            backend_name=backend_name,
+            allow_overflow=False,
+            double=False,
+        )
+        if clicked is None:
+            self._expand_hidden_icons(backend_name=backend_name)
+            clicked = self._click_shell_surface_candidate(
+                label_tokens=label_tokens,
+                backend_name=backend_name,
+                allow_overflow=True,
+                double=False,
+            )
+        if clicked is None:
+            return None
+        deadline = time.time() + (max(timeout_ms, 400) / 1000.0)
+        double_click_attempted = False
+        while time.time() < deadline:
+            restored = self.restore_process_window(
+                title_filters=title_filters,
+                class_names=class_names,
+                process_ids=process_ids,
+                process_names=process_names,
+                backend_name=backend_name,
+                limit=24,
+            )
+            if restored is not None:
+                metadata = dict(restored.get("metadata") or {})
+                metadata["restoreStrategy"] = "tray_icon"
+                metadata["trayRestoreMatchedLabel"] = clicked.get("matchedLabel")
+                metadata["shellSurfaceClassName"] = clicked.get("shellSurfaceClassName")
+                metadata["shellSurfaceActivation"] = clicked.get("activation")
+                restored["metadata"] = metadata
+                return restored
+            if not double_click_attempted:
+                retried = self._click_shell_surface_candidate(
+                    label_tokens=label_tokens,
+                    backend_name=backend_name,
+                    allow_overflow=True,
+                    double=True,
+                )
+                if retried is not None:
+                    clicked = retried
+                    double_click_attempted = True
+            time.sleep(max(80, poll_ms) / 1000.0)
+        return None
+
+    def _expand_hidden_icons(self, *, backend_name: str = "uia") -> bool:
+        roots = self._shell_surface_roots(backend_name=backend_name, include_overflow=False)
+        trigger_tokens = (
+            self._normalize_window_text("显示隐藏的图标"),
+            self._normalize_window_text("show hidden icons"),
+            self._normalize_window_text("通知 Chevron"),
+        )
+        for root in roots:
+            elements = self._enumerate_elements(root, depth_limit=4, limit=160, backend_name=backend_name)
+            for element in elements:
+                name = self._normalize_window_text(element.name)
+                if not name:
+                    continue
+                if any(token and token in name for token in trigger_tokens):
+                    center = self._center_of_bounds(element.bounds)
+                    try:
+                        self._coordinate_click(
+                            point=center,
+                            root=root,
+                            double=False,
+                            prefer_sendinput_click=True,
+                        )
+                        time.sleep(0.18)
+                        return True
+                    except Exception:
+                        continue
+        return False
+
+    def _click_shell_surface_candidate(
+        self,
+        *,
+        label_tokens: List[str],
+        backend_name: str = "uia",
+        allow_overflow: bool,
+        double: bool,
+    ) -> Dict[str, Any] | None:
+        best_payload: Dict[str, Any] | None = None
+        best_score = 0
+        for root in self._shell_surface_roots(backend_name=backend_name, include_overflow=allow_overflow):
+            root_class = str(getattr(getattr(root, "element_info", None), "class_name", "") or "").strip()
+            root_handle = getattr(getattr(root, "element_info", None), "handle", None)
+            elements = self._enumerate_elements(root, depth_limit=5, limit=260, backend_name=backend_name)
+            for element in elements:
+                name = self._normalize_window_text(element.name)
+                class_name = self._normalize_window_text(element.class_name)
+                if not name:
+                    continue
+                if "隐藏的图标" in name or "show hidden icons" in name:
+                    continue
+                if not any(
+                    token and (
+                        token == name
+                        or token in name
+                        or name in token
+                    )
+                    for token in label_tokens
+                ):
+                    continue
+                score = max(window_title_match_score(name, label_tokens), 1)
+                if "taskbar.tasklistbuttonautomationpeer" in class_name:
+                    score += 36
+                if "systemtray." in class_name:
+                    score += 28
+                if element.metadata.get("isVisible") is True:
+                    score += 8
+                payload = {
+                    "matchedLabel": element.name,
+                    "bounds": list(element.bounds),
+                    "shellSurfaceClassName": root_class,
+                    "shellSurfaceHandle": root_handle,
+                    "elementClassName": element.class_name,
+                    "role": element.role,
+                    "score": score,
+                }
+                if score > best_score:
+                    best_score = score
+                    best_payload = payload
+        if best_payload is None:
+            return None
+        center = self._center_of_bounds(best_payload.get("bounds") or [])
+        shell_root_handle = best_payload.get("shellSurfaceHandle")
+        root = self._resolve_root_resilient(
+            window_handle=int(shell_root_handle) if shell_root_handle not in (None, "", 0) else None,
+            backend_name=backend_name,
+        )
+        activation = "double_click" if double else "single_click"
+        self._coordinate_click(
+            point=center,
+            root=root,
+            double=bool(double),
+            prefer_sendinput_click=True,
+        )
+        time.sleep(0.18)
+        best_payload["activation"] = activation
+        return best_payload
+
+    def _shell_surface_roots(self, *, backend_name: str = "uia", include_overflow: bool) -> List[Any]:
+        roots: List[Any] = []
+        target_classes = {"shell_traywnd"}
+        if include_overflow:
+            target_classes.add("notifyiconoverflowwindow")
+        for wrapper in self._safe_backend_windows(backend_name):
+            class_name = str(getattr(getattr(wrapper, "element_info", None), "class_name", "") or "").strip().lower()
+            if class_name in target_classes:
+                roots.append(wrapper)
+        return roots
 
     def foreground_window(self, *, backend_name: str = "uia") -> Dict[str, Any] | None:
         if os.name != "nt":

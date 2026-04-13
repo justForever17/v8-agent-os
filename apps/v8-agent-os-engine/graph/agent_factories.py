@@ -126,6 +126,11 @@ def _extract_latest_route_context(task_messages: list) -> dict[str, list[str] | 
             continue
         return {
             "query": str(payload.get("query") or "").strip(),
+            "selectedSkillIds": [
+                str(item).strip()
+                for item in list(payload.get("selectedSkillIds") or [])
+                if str(item).strip()
+            ],
             "selectedSkillNames": [
                 str(item).strip()
                 for item in list(payload.get("selectedSkillNames") or [])
@@ -134,6 +139,11 @@ def _extract_latest_route_context(task_messages: list) -> dict[str, list[str] | 
             "selectedSkillEntries": [
                 item
                 for item in list(payload.get("selectedSkillEntries") or [])
+                if isinstance(item, dict)
+            ],
+            "skillRootDescriptors": [
+                item
+                for item in list(payload.get("skillRootDescriptors") or [])
                 if isinstance(item, dict)
             ],
             "selectedMcpTools": [
@@ -149,26 +159,41 @@ def _extract_latest_route_context(task_messages: list) -> dict[str, list[str] | 
         }
     return {
         "query": "",
+        "selectedSkillIds": [],
         "selectedSkillNames": [],
         "selectedSkillEntries": [],
+        "skillRootDescriptors": [],
         "selectedMcpTools": [],
         "selectedPluginHostTools": [],
     }
 
 
-def _resolve_selected_skill_names(selectors: list[str]) -> list[str]:
+def _resolve_selected_skills(selectors: list[str], *, state: dict | None = None) -> tuple[list[str], list[str]]:
     selector_set = {str(item).strip() for item in selectors if str(item).strip()}
     if not selector_set:
-        return []
-    matched: list[str] = []
-    for skill in extensions_runtime_service.list_skills(force_refresh=False, prefer_cached_ready_inventory=True):
+        return [], []
+    matched_ids: list[str] = []
+    matched_names: list[str] = []
+    for skill in extensions_runtime_service.list_skills(
+        force_refresh=False,
+        prefer_cached_ready_inventory=True,
+        session_id=(state or {}).get("session_id"),
+        explicit_workspace_id=(state or {}).get("workspace_id"),
+        explicit_workspace_path=(state or {}).get("workspace_path"),
+        explicit_project_id=(state or {}).get("project_id"),
+        runtime_kind="chat",
+    ):
+        skill_id = str(skill.get("skillId") or "").strip()
         skill_name = str(skill.get("name") or skill.get("folder") or "").strip()
         skill_folder = str(skill.get("folder") or "").strip()
         skill_path = str(skill.get("path") or "").strip()
-        candidates = {value for value in {skill_name, skill_folder, skill_path} if value}
-        if candidates & selector_set and skill_name and skill_name not in matched:
-            matched.append(skill_name)
-    return matched
+        candidates = {value for value in {skill_id, skill_name, skill_folder, skill_path} if value}
+        if candidates & selector_set:
+            if skill_id and skill_id not in matched_ids:
+                matched_ids.append(skill_id)
+            if skill_name and skill_name not in matched_names:
+                matched_names.append(skill_name)
+    return matched_ids, matched_names
 
 
 def _resolved_workspace_prompt_path() -> str:
@@ -183,17 +208,19 @@ def _resolved_workspace_prompt_path() -> str:
 
 def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_id: str) -> dict[str, list[str] | str]:
     delegated = latest_delegation_context(list(state.get("delegation_contexts") or []), agent_id=agent_id)
-    if any(delegated.get(key) for key in ("selectedSkillNames", "selectedSkillEntries", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
+    if any(delegated.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
         return delegated
     current_route_context = dict(state.get("current_route_context") or {})
-    if any(current_route_context.get(key) for key in ("selectedSkillNames", "selectedSkillEntries", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
+    if any(current_route_context.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
         return current_route_context
     legacy = _extract_latest_route_context(task_messages)
     return build_delegation_context(
         mode="legacy",
         query=legacy.get("query"),
+        selected_skill_ids=legacy.get("selectedSkillIds"),
         selected_skill_names=legacy.get("selectedSkillNames"),
         selected_skill_entries=legacy.get("selectedSkillEntries"),
+        skill_root_descriptors=legacy.get("skillRootDescriptors"),
         selected_mcp_tools=legacy.get("selectedMcpTools"),
         selected_plugin_host_tools=legacy.get("selectedPluginHostTools"),
     )
@@ -227,8 +254,10 @@ def build_handoff_tool(agent_id: str, agent_name: str, agent_desc: str):
             query=reason,
             mode="serial",
             source_runtime_kind=inherited_context.get("sourceRuntimeKind"),
+            selected_skill_ids=inherited_context.get("selectedSkillIds"),
             selected_skill_names=inherited_context.get("selectedSkillNames"),
             selected_skill_entries=inherited_context.get("selectedSkillEntries"),
+            skill_root_descriptors=inherited_context.get("skillRootDescriptors"),
             selected_mcp_tools=inherited_context.get("selectedMcpTools"),
             selected_plugin_host_tools=inherited_context.get("selectedPluginHostTools"),
             selected_baseline_tools=inherited_context.get("selectedBaselineTools"),
@@ -331,10 +360,11 @@ def build_agent_node(
             base_tools = _dedupe_tools(list(filtered_native_tools) + [fetch_skill_instructions_tool])
             selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
             selected_plugin_host_tools = _resolve_selected_plugin_host_tools(all_plugin_host_tools, agent_tool_selectors)
-            explicit_skill_names = _resolve_selected_skill_names(agent_tool_selectors)
+            explicit_skill_ids, explicit_skill_names = _resolve_selected_skills(agent_tool_selectors, state=state)
 
             if agent_tool_mode == "explicit":
                 available_tools = _dedupe_tools(base_tools + selected_mcp_tools + selected_plugin_host_tools)
+                inherited_skill_ids: list[str] = explicit_skill_ids
                 inherited_skill_names: list[str] = explicit_skill_names
             else:
                 inherited_mcp_tools = _resolve_selected_mcp_tools(
@@ -345,8 +375,9 @@ def build_agent_node(
                     all_plugin_host_tools,
                     list(inherited_route_context.get("selectedPluginHostTools") or []),
                 )
+                inherited_skill_ids = list(inherited_route_context.get("selectedSkillIds") or [])
                 inherited_skill_names = list(inherited_route_context.get("selectedSkillNames") or [])
-                if inherited_mcp_tools or inherited_plugin_host_tools or inherited_skill_names:
+                if inherited_mcp_tools or inherited_plugin_host_tools or inherited_skill_ids or inherited_skill_names:
                     available_tools = _dedupe_tools(base_tools + inherited_mcp_tools + inherited_plugin_host_tools)
                 else:
                     available_tools = _dedupe_tools(base_tools + list(all_mcp_tools) + list(all_plugin_host_tools))
@@ -356,12 +387,17 @@ def build_agent_node(
                 conversation_id=state.get("session_id"),
                 run_id=state.get("run_id"),
                 agent_id=agent_id,
+                workspace_id=state.get("workspace_id"),
+                workspace_path=state.get("workspace_path"),
+                project_id=state.get("project_id"),
+                runtime_kind="chat",
             )
             try:
                 route_bundle = extensions_runtime_service.build_contextual_route(
                     user_query=delegated_query,
                     available_tools=available_tools,
                     loaded_agents=None,
+                    inherited_skill_ids=inherited_skill_ids,
                     inherited_skill_names=inherited_skill_names,
                     skill_limit=4,
                     mcp_limit=6,
@@ -416,8 +452,10 @@ def build_agent_node(
                     query=delegated_query,
                     mode=str(inherited_route_context.get("mode") or "serial"),
                     source_runtime_kind=inherited_route_context.get("sourceRuntimeKind") or "chat",
+                    selected_skill_ids=route_bundle.selected_skill_ids,
                     selected_skill_names=route_bundle.selected_skill_names,
                     selected_skill_entries=route_bundle.candidate_summary.get("skillEntries") or [],
+                    skill_root_descriptors=route_bundle.skill_root_descriptors or [],
                     selected_mcp_tools=route_bundle.exposed_mcp_tool_names,
                     selected_plugin_host_tools=route_bundle.candidate_summary.get("pluginHostTools") or [],
                     selected_baseline_tools=select_baseline_system_tool_names(combined_tools),
@@ -425,6 +463,7 @@ def build_agent_node(
                     invocation_id=inherited_route_context.get("invocationId"),
                 ),
                 "toolMode": agent_tool_mode,
+                "inheritedSkillIds": inherited_skill_ids,
                 "inheritedSkillNames": inherited_skill_names,
             }
 
@@ -451,6 +490,10 @@ def build_agent_node(
                 conversation_id=state.get("session_id"),
                 run_id=state.get("run_id"),
                 agent_id=agent_id,
+                workspace_id=state.get("workspace_id"),
+                workspace_path=state.get("workspace_path"),
+                project_id=state.get("project_id"),
+                runtime_kind="chat",
             )
             try:
                 response = robust_invoke(

@@ -37,9 +37,14 @@ class CommandPresetSelection(BaseModel):
 class SkillReferenceSelection(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    name: str = Field(description="Skill display name")
+    id: Optional[str] = Field(default=None, description="Stable skill id", alias="id")
+    name: Optional[str] = Field(default=None, description="Skill display name")
     description: Optional[str] = Field(default=None, description="Short skill description")
     path: Optional[str] = Field(default=None, description="Absolute local path to the skill root or SKILL.md")
+    source_type: Optional[str] = Field(default=None, alias="sourceType")
+    workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
+    workspace_id: Optional[str] = Field(default=None, alias="workspaceId")
+    project_id: Optional[str] = Field(default=None, alias="projectId")
 
 
 class ChatRequestData(BaseModel):

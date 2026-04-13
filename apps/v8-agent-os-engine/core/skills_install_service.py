@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import yaml
 
-from skills.loader import SkillLoader
+from runtimes.extensions.skills.loader import SkillLoader
 
 
 _SUPPORTED_NPX_FLAGS = {"-y", "--yes"}

@@ -7,7 +7,7 @@ from core.response_normalizer import ensure_reasoning_content
 
 from langchain_core.messages import BaseMessage
 
-from skills.loader import fetch_skill_instructions
+from runtimes.extensions.skills.loader import fetch_skill_instructions
 from api.models import EngineConfig
 from .compat import sanitize_message_chain as compat_sanitize_message_chain
 from .compat import sanitize_response_tool_calls as compat_sanitize_response_tool_calls

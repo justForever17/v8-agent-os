@@ -15,8 +15,10 @@ from core.system_tools.baseline import select_baseline_system_tool_names
 def _attach_route_context_to_response(response, *, user_query: str, route_bundle, selected_tools) -> None:
     payload = {
         "query": user_query,
+        "selectedSkillIds": list(route_bundle.selected_skill_ids or []),
         "selectedSkillNames": list(route_bundle.selected_skill_names or []),
         "selectedSkillEntries": list(route_bundle.candidate_summary.get("skillEntries") or []),
+        "skillRootDescriptors": list(route_bundle.skill_root_descriptors or []),
         "selectedMcpTools": list(route_bundle.exposed_mcp_tool_names or []),
         "selectedPluginHostTools": list(route_bundle.candidate_summary.get("pluginHostTools") or []),
     }
@@ -24,8 +26,10 @@ def _attach_route_context_to_response(response, *, user_query: str, route_bundle
         mode="route",
         query=user_query,
         source_runtime_kind="chat",
+        selected_skill_ids=route_bundle.selected_skill_ids,
         selected_skill_names=route_bundle.selected_skill_names,
         selected_skill_entries=route_bundle.candidate_summary.get("skillEntries") or [],
+        skill_root_descriptors=route_bundle.skill_root_descriptors or [],
         selected_mcp_tools=route_bundle.exposed_mcp_tool_names,
         selected_plugin_host_tools=route_bundle.candidate_summary.get("pluginHostTools") or [],
         selected_baseline_tools=select_baseline_system_tool_names(selected_tools),
@@ -66,6 +70,10 @@ def execute_supervisor_turn(
         conversation_id=session_id,
         run_id=state.get("run_id"),
         agent_id="supervisor",
+        workspace_id=state.get("workspace_id"),
+        workspace_path=state.get("workspace_path"),
+        project_id=state.get("project_id"),
+        runtime_kind="chat",
     )
     try:
         route_started_at = time.perf_counter()

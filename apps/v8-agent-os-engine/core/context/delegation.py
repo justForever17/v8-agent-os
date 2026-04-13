@@ -21,16 +21,24 @@ def _normalize_skill_entries(values: Iterable[Any] | None) -> list[dict[str, Any
     for value in list(values or []):
         if not isinstance(value, dict):
             continue
+        skill_id = str(value.get("skillId") or value.get("id") or "").strip()
         skill_name = str(value.get("skillName") or value.get("name") or "").strip()
         skill_root = str(value.get("skillRoot") or value.get("path") or "").strip()
-        identity = skill_name or skill_root
+        identity = skill_id or skill_root or skill_name
         if not identity or identity in seen:
             continue
         seen.add(identity)
         entries.append(
             {
+                "skillId": skill_id,
                 "skillName": skill_name,
                 "skillRoot": skill_root,
+                "sourceType": str(value.get("sourceType") or "").strip(),
+                "visibility": str(value.get("visibility") or "").strip(),
+                "workspacePath": str(value.get("workspacePath") or "").strip(),
+                "workspaceId": str(value.get("workspaceId") or "").strip(),
+                "projectId": str(value.get("projectId") or "").strip(),
+                "rootPath": str(value.get("rootPath") or "").strip(),
                 "instructionPath": str(value.get("instructionPath") or "").strip(),
                 "referencesDir": str(value.get("referencesDir") or "").strip(),
                 "scriptsDir": str(value.get("scriptsDir") or "").strip(),
@@ -46,6 +54,29 @@ def _normalize_skill_entries(values: Iterable[Any] | None) -> list[dict[str, Any
     return entries
 
 
+def _normalize_root_descriptors(values: Iterable[Any] | None) -> list[dict[str, Any]]:
+    descriptors: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in list(values or []):
+        if not isinstance(value, dict):
+            continue
+        root_path = str(value.get("rootPath") or "").strip()
+        if not root_path or root_path in seen:
+            continue
+        seen.add(root_path)
+        descriptors.append(
+            {
+                "rootPath": root_path,
+                "sourceType": str(value.get("sourceType") or "").strip(),
+                "workspacePath": str(value.get("workspacePath") or "").strip(),
+                "workspaceId": str(value.get("workspaceId") or "").strip(),
+                "projectId": str(value.get("projectId") or "").strip(),
+                "visibility": str(value.get("visibility") or "").strip(),
+            }
+        )
+    return descriptors
+
+
 def build_delegation_context(
     *,
     agent_id: str | None = None,
@@ -53,8 +84,10 @@ def build_delegation_context(
     query: str | None = None,
     mode: str,
     source_runtime_kind: str | None = None,
+    selected_skill_ids: Iterable[Any] | None = None,
     selected_skill_names: Iterable[Any] | None = None,
     selected_skill_entries: Iterable[Any] | None = None,
+    skill_root_descriptors: Iterable[Any] | None = None,
     selected_mcp_tools: Iterable[Any] | None = None,
     selected_plugin_host_tools: Iterable[Any] | None = None,
     selected_baseline_tools: Iterable[Any] | None = None,
@@ -67,8 +100,10 @@ def build_delegation_context(
         "query": str(query or "").strip(),
         "mode": str(mode or "").strip() or "serial",
         "sourceRuntimeKind": str(source_runtime_kind or "").strip() or None,
+        "selectedSkillIds": _unique_str_list(selected_skill_ids),
         "selectedSkillNames": _unique_str_list(selected_skill_names),
         "selectedSkillEntries": _normalize_skill_entries(selected_skill_entries),
+        "skillRootDescriptors": _normalize_root_descriptors(skill_root_descriptors),
         "selectedMcpTools": _unique_str_list(selected_mcp_tools),
         "selectedPluginHostTools": _unique_str_list(selected_plugin_host_tools),
         "selectedBaselineTools": _unique_str_list(selected_baseline_tools),
@@ -96,8 +131,10 @@ def latest_delegation_context(
             query=item.get("query"),
             mode=item.get("mode") or "serial",
             source_runtime_kind=item.get("sourceRuntimeKind"),
+            selected_skill_ids=item.get("selectedSkillIds"),
             selected_skill_names=item.get("selectedSkillNames"),
             selected_skill_entries=item.get("selectedSkillEntries"),
+            skill_root_descriptors=item.get("skillRootDescriptors"),
             selected_mcp_tools=item.get("selectedMcpTools"),
             selected_plugin_host_tools=item.get("selectedPluginHostTools"),
             selected_baseline_tools=item.get("selectedBaselineTools"),

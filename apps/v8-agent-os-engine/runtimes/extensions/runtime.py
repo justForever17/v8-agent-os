@@ -103,6 +103,8 @@ class ExtensionRouteBundle:
     prompt_addition: str
     filtered_tools: list[Any]
     selected_skill_names: list[str]
+    selected_skill_ids: list[str]
+    skill_root_descriptors: list[dict[str, Any]]
     exposed_mcp_tool_names: list[str]
     candidate_summary: dict[str, Any]
 
@@ -178,9 +180,16 @@ def _build_skill_rerank_document(skill: dict[str, Any]) -> str:
 
 def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
     return {
+        "skillId": str(skill.get("skillId") or "").strip(),
         "skillName": str(skill.get("skillName") or skill.get("name") or skill.get("folder") or "").strip(),
         "skillRoot": str(skill.get("skillRoot") or skill.get("path") or "").strip(),
         "instructionPath": str(skill.get("instructionPath") or "").strip(),
+        "sourceType": str(skill.get("sourceType") or "").strip(),
+        "visibility": str(skill.get("visibility") or "").strip(),
+        "workspacePath": str(skill.get("workspacePath") or "").strip(),
+        "workspaceId": str(skill.get("workspaceId") or "").strip(),
+        "projectId": str(skill.get("projectId") or "").strip(),
+        "rootPath": str(skill.get("rootPath") or skill.get("skillRoot") or skill.get("path") or "").strip(),
         "referencesDir": str(skill.get("referencesDir") or "").strip(),
         "scriptsDir": str(skill.get("scriptsDir") or "").strip(),
         "assetsDir": str(skill.get("assetsDir") or "").strip(),
@@ -374,6 +383,7 @@ class ExtensionsRuntimeService:
             entry = dict(item.get("entry") or {})
             normalized.append(
                 {
+                    "skillId": str(item.get("skillId") or entry.get("skillId") or "").strip(),
                     "name": str(item.get("name") or entry.get("skillName") or "").strip(),
                     "folder": str(item.get("name") or entry.get("skillName") or "").strip(),
                     "description": str(item.get("description") or "").strip(),
@@ -381,6 +391,12 @@ class ExtensionsRuntimeService:
                     "skillName": str(entry.get("skillName") or item.get("name") or "").strip(),
                     "skillRoot": str(entry.get("skillRoot") or item.get("path") or "").strip(),
                     "instructionPath": str(entry.get("instructionPath") or "").strip(),
+                    "sourceType": str(item.get("sourceType") or entry.get("sourceType") or "").strip(),
+                    "visibility": str(item.get("visibility") or entry.get("visibility") or "").strip(),
+                    "workspacePath": str(item.get("workspacePath") or entry.get("workspacePath") or "").strip(),
+                    "workspaceId": str(item.get("workspaceId") or entry.get("workspaceId") or "").strip(),
+                    "projectId": str(item.get("projectId") or entry.get("projectId") or "").strip(),
+                    "rootPath": str(item.get("rootPath") or entry.get("rootPath") or entry.get("skillRoot") or item.get("path") or "").strip(),
                     "referencesDir": str(entry.get("referencesDir") or "").strip(),
                     "scriptsDir": str(entry.get("scriptsDir") or "").strip(),
                     "assetsDir": str(entry.get("assetsDir") or "").strip(),
@@ -390,34 +406,118 @@ class ExtensionsRuntimeService:
             )
         return normalized
 
+    def _resolve_skill_loader_context(
+        self,
+        *,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+        runtime_kind: str | None = None,
+    ) -> dict[str, Any]:
+        context_payload = self._resolve_event_context()
+        return {
+            "session_id": session_id if session_id is not None else str(context_payload.get("session_id") or "").strip() or None,
+            "explicit_workspace_id": explicit_workspace_id if explicit_workspace_id is not None else str(context_payload.get("workspace_id") or "").strip() or None,
+            "explicit_workspace_path": explicit_workspace_path if explicit_workspace_path is not None else str(context_payload.get("workspace_path") or "").strip() or None,
+            "explicit_project_id": explicit_project_id if explicit_project_id is not None else str(context_payload.get("project_id") or "").strip() or None,
+            "runtime_kind": runtime_kind if runtime_kind is not None else str(context_payload.get("runtime_kind") or "chat").strip() or "chat",
+        }
+
+    def _resolve_skill_inventory(
+        self,
+        *,
+        force_refresh: bool = False,
+        prefer_cached_ready_inventory: bool = False,
+        include_scoped: bool = True,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+        runtime_kind: str | None = None,
+    ) -> dict[str, Any]:
+        skill_context = self._resolve_skill_loader_context(
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+            runtime_kind=runtime_kind,
+        )
+        has_scoped_context = include_scoped and any(
+            skill_context.get(key)
+            for key in ("session_id", "explicit_workspace_id", "explicit_workspace_path", "explicit_project_id")
+        )
+        if (
+            prefer_cached_ready_inventory
+            and self._cached_catalog is not None
+            and self._startup_state == "refreshing"
+            and not force_refresh
+            and not has_scoped_context
+            and not include_scoped
+        ):
+            cached_entries = self._cached_skill_entries()
+            if cached_entries:
+                skills_payload = dict((self._cached_catalog or {}).get("skills") or {})
+                root_descriptors = list(skills_payload.get("rootDescriptors") or [])
+                roots = [str(item.get("rootPath") or "") for item in root_descriptors] or list(skills_payload.get("roots") or [])
+                return {
+                    "registry": {
+                        str(item.get("skillId") or item.get("skillRoot") or item.get("skillName") or ""): item
+                        for item in cached_entries
+                        if str(item.get("skillId") or item.get("skillRoot") or item.get("skillName") or "").strip()
+                    },
+                    "items": cached_entries,
+                    "rootDescriptors": root_descriptors,
+                    "roots": roots,
+                    "fingerprint": str(skills_payload.get("fingerprint") or "").strip(),
+                }
+        return SkillLoader.get_inventory(
+            force_refresh=force_refresh,
+            include_scoped=include_scoped,
+            runtime_kind=skill_context.get("runtime_kind"),
+            session_id=skill_context.get("session_id"),
+            explicit_workspace_id=skill_context.get("explicit_workspace_id"),
+            explicit_workspace_path=skill_context.get("explicit_workspace_path"),
+            explicit_project_id=skill_context.get("explicit_project_id"),
+        )
+
     def list_skills(
         self,
         *,
         force_refresh: bool = False,
         prefer_cached_ready_inventory: bool = False,
         include_blocked: bool = False,
+        include_scoped: bool = True,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+        runtime_kind: str | None = None,
     ) -> list[dict[str, Any]]:
-        if prefer_cached_ready_inventory and self._cached_catalog is not None and self._startup_state == "refreshing":
-            cached_entries = self._cached_skill_entries()
-            if cached_entries:
-                skills = cached_entries
-            else:
-                skills = list(SkillLoader.get_all_skills(force_refresh=force_refresh).values())
-        else:
-            skills = list(SkillLoader.get_all_skills(force_refresh=force_refresh).values())
+        inventory = self._resolve_skill_inventory(
+            force_refresh=force_refresh,
+            prefer_cached_ready_inventory=prefer_cached_ready_inventory,
+            include_scoped=include_scoped,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+            runtime_kind=runtime_kind,
+        )
+        skills = list(inventory.get("items") or [])
         if include_blocked:
             return skills
-        blocked_names = {
-            str(item.get("skillName") or "").strip()
+        blocked_keys = {
+            str(item.get("skillId") or item.get("skillPath") or item.get("rootPath") or item.get("skillName") or "").strip()
             for item in self._recent_blocked_skill_records()
-            if str(item.get("skillName") or "").strip()
+            if str(item.get("skillId") or item.get("skillPath") or item.get("rootPath") or item.get("skillName") or "").strip()
         }
-        if not blocked_names:
+        if not blocked_keys:
             return skills
         return [
             item
             for item in skills
-            if str(item.get("skillName") or item.get("name") or item.get("folder") or "").strip() not in blocked_names
+            if str(item.get("skillId") or item.get("skillRoot") or item.get("skillName") or "").strip() not in blocked_keys
         ]
 
     def get_skill_startup_status(self) -> dict[str, Any]:
@@ -578,7 +678,8 @@ class ExtensionsRuntimeService:
         return True
 
     def _build_catalog_live(self) -> dict[str, Any]:
-        skills = self.list_skills(force_refresh=False)
+        skill_inventory = self._resolve_skill_inventory(force_refresh=False, include_scoped=False)
+        skills = list(skill_inventory.get("items") or [])
         skills_sorted = sorted(skills, key=lambda item: str(item.get("name") or "").lower())
         mcp_status = self.get_mcp_status()
         skills_state = self.get_skill_startup_status()
@@ -613,7 +714,8 @@ class ExtensionsRuntimeService:
                 }
             )
 
-        roots = SkillLoader._skills_roots or SkillLoader._resolve_skill_roots()
+        root_descriptors = list(skill_inventory.get("rootDescriptors") or list(skills_state.get("rootDescriptors") or []))
+        roots = [str(item.get("rootPath") or "") for item in root_descriptors]
         skills_fingerprint = str(skills_state.get("fingerprint") or "").strip()
         changed_at = str(
             ((self._last_skill_inventory_change or {}).get("changedAt"))
@@ -636,13 +738,21 @@ class ExtensionsRuntimeService:
             "skills": {
                 "root": str(roots[0]) if roots else "",
                 "roots": [str(root) for root in roots],
+                "rootDescriptors": root_descriptors,
                 "fingerprint": skills_fingerprint,
                 "changedAt": changed_at,
                 "items": [
                     {
+                        "skillId": str(item.get("skillId") or "").strip(),
                         "name": str(item.get("name") or item.get("folder") or ""),
                         "description": str(item.get("description") or "暂无说明。"),
                         "path": str(item.get("path") or ""),
+                        "sourceType": str(item.get("sourceType") or "").strip(),
+                        "visibility": str(item.get("visibility") or "").strip(),
+                        "workspacePath": str(item.get("workspacePath") or "").strip(),
+                        "workspaceId": str(item.get("workspaceId") or "").strip(),
+                        "projectId": str(item.get("projectId") or "").strip(),
+                        "rootPath": str(item.get("rootPath") or item.get("skillRoot") or item.get("path") or "").strip(),
                         "entry": _skill_entry_payload(item),
                     }
                     for item in skills_sorted
@@ -658,12 +768,15 @@ class ExtensionsRuntimeService:
         for server in list(((catalog.get("mcp") or {}).get("servers") or [])):
             status_breakdown[str(server.get("status") or "error")] += 1
 
-        root = str(((catalog.get("skills") or {}).get("root")) or "")
+        skills_payload = dict(catalog.get("skills") or {})
+        root = str(skills_payload.get("root") or "")
         return {
             "summary": dict(catalog.get("summary") or {}),
             "skillDependencyPolicy": dict(catalog.get("skillDependencyPolicy") or {}),
             "skills": {
                 "root": root,
+                "roots": list(skills_payload.get("roots") or []),
+                "rootDescriptors": list(skills_payload.get("rootDescriptors") or []),
                 "available": bool(root),
                 "blockedCount": len(self._recent_blocked_skill_records()),
             },
@@ -897,6 +1010,7 @@ class ExtensionsRuntimeService:
         user_query: str,
         available_tools: list[Any],
         loaded_agents: list[dict[str, Any]] | None = None,
+        inherited_skill_ids: list[str] | None = None,
         inherited_skill_names: list[str] | None = None,
         skill_limit: int = 6,
         mcp_limit: int = 8,
@@ -913,7 +1027,13 @@ class ExtensionsRuntimeService:
         prefilter_role = str(prefilter_policy.get("role") or "").strip()
         prefilter_reason = str(prefilter_policy.get("reason") or "").strip()
 
-        skill_entries = self.list_skills(force_refresh=False, prefer_cached_ready_inventory=True)
+        skill_inventory = self._resolve_skill_inventory(
+            force_refresh=False,
+            prefer_cached_ready_inventory=True,
+            include_scoped=True,
+        )
+        skill_entries = list(skill_inventory.get("items") or [])
+        skill_root_descriptors = list(skill_inventory.get("rootDescriptors") or [])
         ranked_skills = sorted(
             (
                 (
@@ -1181,28 +1301,37 @@ class ExtensionsRuntimeService:
             max_items=plugin_host_bound_limit,
         )
 
+        inherited_skill_ids_set = {
+            str(item or "").strip()
+            for item in list(inherited_skill_ids or [])
+            if str(item or "").strip()
+        }
         inherited_skill_names_set = {
             str(item or "").strip()
             for item in list(inherited_skill_names or [])
             if str(item or "").strip()
         }
-        if inherited_skill_names_set:
+        if inherited_skill_ids_set or inherited_skill_names_set:
             inherited_skill_entries = [
                 item
                 for item in skill_entries
-                if str(item.get("name") or item.get("folder") or "").strip() in inherited_skill_names_set
+                if (
+                    str(item.get("skillId") or "").strip() in inherited_skill_ids_set
+                    or str(item.get("name") or item.get("folder") or "").strip() in inherited_skill_names_set
+                )
             ]
             if inherited_skill_entries:
                 merged_skills: list[dict[str, Any]] = []
                 seen_skill_keys: set[str] = set()
                 for item in inherited_skill_entries + list(selected_skills):
-                    key = str(item.get("path") or item.get("name") or item.get("folder") or "").strip()
+                    key = str(item.get("skillId") or item.get("path") or item.get("name") or item.get("folder") or "").strip()
                     if not key or key in seen_skill_keys:
                         continue
                     seen_skill_keys.add(key)
                     merged_skills.append(item)
                 selected_skills = merged_skills[:effective_skill_limit]
 
+        selected_skill_ids = [str(item.get("skillId") or "").strip() for item in selected_skills if str(item.get("skillId") or "").strip()]
         selected_skill_names = [str(item.get("name") or item.get("folder") or "") for item in selected_skills]
         selected_skill_entries = [_skill_entry_payload(item) for item in selected_skills]
         exposed_mcp_tool_names = [_tool_name(tool) for tool in selected_mcp_tools]
@@ -1224,9 +1353,16 @@ class ExtensionsRuntimeService:
         if selected_skill_names:
             lines.append("- 当前命中的 Skills 目录入口：")
             for entry in selected_skill_entries[:effective_skill_limit]:
-                lines.append(f"  - {entry.get('skillName') or 'unknown'}")
+                source_label = str(entry.get("sourceType") or "global").strip() or "global"
+                lines.append(f"  - {entry.get('skillName') or 'unknown'} [{source_label}]")
+                if entry.get("skillId"):
+                    lines.append(f"    - Skill ID: {entry.get('skillId')}")
                 if entry.get("skillRoot"):
                     lines.append(f"    - Root: {entry.get('skillRoot')}")
+                if entry.get("workspacePath"):
+                    lines.append(f"    - Workspace: {entry.get('workspacePath')}")
+                if entry.get("projectId"):
+                    lines.append(f"    - Project ID: {entry.get('projectId')}")
                 if entry.get("instructionPath"):
                     lines.append(f"    - Instruction: {entry.get('instructionPath')}")
                 if entry.get("referencesDir"):
@@ -1258,6 +1394,8 @@ class ExtensionsRuntimeService:
             prompt_addition="\n".join(lines),
             filtered_tools=filtered_tools,
             selected_skill_names=selected_skill_names,
+            selected_skill_ids=selected_skill_ids,
+            skill_root_descriptors=skill_root_descriptors,
             exposed_mcp_tool_names=exposed_mcp_tool_names,
             candidate_summary={
                 "mode": prefilter_mode,
@@ -1267,7 +1405,9 @@ class ExtensionsRuntimeService:
                 "prefilterTimedOut": bool(any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state))),
                 "prefilterCacheHit": bool(any(bool(state.get("cacheHit")) for state in (skill_state, mcp_state, plugin_host_state))),
                 "skills": selected_skill_names,
+                "selectedSkillIds": selected_skill_ids,
                 "skillEntries": selected_skill_entries,
+                "skillRootDescriptors": skill_root_descriptors,
                 "mcpTools": exposed_mcp_tool_names,
                 "pluginHostTools": exposed_plugin_host_tool_names,
                 "seedUnit": "family",
@@ -1310,12 +1450,28 @@ class ExtensionsRuntimeService:
     ) -> ExtensionRouteBundle:
         context_payload = self._resolve_event_context()
         session_id = str(context_payload.get("session_id") or "").strip() or "global"
+        skill_inventory = self._resolve_skill_inventory(
+            force_refresh=False,
+            include_scoped=True,
+            session_id=str(context_payload.get("session_id") or "").strip() or None,
+            explicit_workspace_id=str(context_payload.get("workspace_id") or "").strip() or None,
+            explicit_workspace_path=str(context_payload.get("workspace_path") or "").strip() or None,
+            explicit_project_id=str(context_payload.get("project_id") or "").strip() or None,
+            runtime_kind=str(context_payload.get("runtime_kind") or "chat").strip() or "chat",
+        )
+        has_scoped_roots = any(
+            str(item.get("sourceType") or "").strip() == "scoped_workspace"
+            for item in list(skill_inventory.get("rootDescriptors") or [])
+        )
         normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
         tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
         inventory_revision = str(self._last_refresh_at or "cold")
         cache_key = "|".join(
             [
                 session_id,
+                str(context_payload.get("project_id") or ""),
+                str(context_payload.get("workspace_id") or ""),
+                str(context_payload.get("workspace_path") or ""),
                 normalized_query,
                 inventory_revision,
                 str(len(list(loaded_agents or []))),
@@ -1326,7 +1482,7 @@ class ExtensionsRuntimeService:
             ]
         )
         now = time.monotonic()
-        cached = self._route_cache.get(cache_key)
+        cached = None if has_scoped_roots else self._route_cache.get(cache_key)
         if cached and (now - cached[0]) <= self._route_cache_ttl_seconds:
             return cached[1]
 
@@ -1338,11 +1494,12 @@ class ExtensionsRuntimeService:
             mcp_limit=mcp_limit,
             plugin_host_limit=plugin_host_limit,
         )
-        self._route_cache[cache_key] = (now, bundle)
-        if len(self._route_cache) > 128:
-            stale_keys = sorted(self._route_cache.items(), key=lambda item: item[1][0])[:32]
-            for stale_key, _ in stale_keys:
-                self._route_cache.pop(stale_key, None)
+        if not has_scoped_roots:
+            self._route_cache[cache_key] = (now, bundle)
+            if len(self._route_cache) > 128:
+                stale_keys = sorted(self._route_cache.items(), key=lambda item: item[1][0])[:32]
+                for stale_key, _ in stale_keys:
+                    self._route_cache.pop(stale_key, None)
         return bundle
 
     def bind_execution_context(self, **context: Any):
@@ -1356,7 +1513,7 @@ class ExtensionsRuntimeService:
     def _resolve_event_context(self) -> dict[str, Any]:
         payload = dict(_EXTENSION_CONTEXT.get() or {})
         runtime_context = get_runtime_context()
-        for key in ("session_id", "conversation_id", "run_id", "agent_id"):
+        for key in ("session_id", "conversation_id", "run_id", "agent_id", "workspace_id", "workspace_path", "project_id", "runtime_kind"):
             if payload.get(key) is None and runtime_context.get(key) is not None:
                 payload[key] = runtime_context.get(key)
         return payload
@@ -1380,7 +1537,9 @@ class ExtensionsRuntimeService:
             {
                 "queryPreview": _truncate(user_query, 160),
                 "skillCandidates": route_bundle.selected_skill_names,
+                "selectedSkillIds": route_bundle.selected_skill_ids,
                 "skillEntries": route_bundle.candidate_summary.get("skillEntries") or [],
+                "skillRootDescriptors": route_bundle.skill_root_descriptors,
                 "mcpToolCandidates": route_bundle.exposed_mcp_tool_names,
                 "pluginHostToolCandidates": route_bundle.candidate_summary.get("pluginHostTools") or [],
                 "counts": route_bundle.candidate_summary,
@@ -1392,6 +1551,7 @@ class ExtensionsRuntimeService:
                     "mcpPoolSize": route_bundle.candidate_summary.get("mcpPoolSize"),
                     "pluginHostPoolSize": route_bundle.candidate_summary.get("pluginHostPoolSize"),
                     "selectedSkills": route_bundle.candidate_summary.get("skills"),
+                    "selectedSkillIds": route_bundle.candidate_summary.get("selectedSkillIds"),
                     "selectedMcpTools": route_bundle.candidate_summary.get("mcpTools"),
                     "selectedPluginHostTools": route_bundle.candidate_summary.get("pluginHostTools"),
                 },
@@ -1408,15 +1568,18 @@ class ExtensionsRuntimeService:
                 node="mcp_candidate_exposed",
             )
 
-    def emit_skill_loaded(self, *, skill_name: str, skill_path: str) -> None:
-        normalized_name = str(skill_name or "").strip()
-        if normalized_name:
+    def emit_skill_loaded(self, *, skill_id: str | None = None, skill_name: str, skill_path: str) -> None:
+        normalized_identity = str(skill_id or skill_path or skill_name or "").strip()
+        if normalized_identity:
             self._blocked_skill_records = [
-                item for item in self._blocked_skill_records if str(item.get("skillName") or "").strip() != normalized_name
+                item
+                for item in self._blocked_skill_records
+                if str(item.get("skillId") or item.get("skillPath") or item.get("skillName") or "").strip() != normalized_identity
             ]
         self._emit(
             "extension.skill.loaded",
             {
+                "skillId": skill_id,
                 "skillName": skill_name,
                 "skillPath": skill_path,
             },
@@ -1426,8 +1589,11 @@ class ExtensionsRuntimeService:
     def emit_skill_blocked(
         self,
         *,
+        skill_id: str,
         skill_name: str,
         skill_path: str,
+        root_path: str,
+        source_type: str,
         verdict: str,
         confidence: float,
         skill_trust_score: int,
@@ -1436,8 +1602,11 @@ class ExtensionsRuntimeService:
         flagged_files: list[dict[str, Any]],
     ) -> None:
         payload = {
+            "skillId": skill_id,
             "skillName": skill_name,
             "skillPath": skill_path,
+            "rootPath": root_path,
+            "sourceType": source_type,
             "verdict": verdict,
             "confidence": confidence,
             "skillTrustScore": skill_trust_score,

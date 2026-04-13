@@ -394,22 +394,32 @@ class ChatRuntime:
         request_data = request.data
         selected = getattr(request_data, "skill_references", None) if request_data else None
         normalized: list[dict[str, str]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         for item in list(selected or []):
+            skill_id = str(getattr(item, "id", "") or "").strip()
             name = str(getattr(item, "name", "") or "").strip()
             description = str(getattr(item, "description", "") or "").strip()
             path = str(getattr(item, "path", "") or "").strip()
-            if not name and not path:
+            source_type = str(getattr(item, "source_type", "") or "").strip()
+            workspace_path = str(getattr(item, "workspace_path", "") or "").strip()
+            workspace_id = str(getattr(item, "workspace_id", "") or "").strip()
+            project_id = str(getattr(item, "project_id", "") or "").strip()
+            if not skill_id and not name and not path:
                 continue
-            dedupe_key = (name.lower(), path.lower())
+            dedupe_key = (skill_id.lower(), name.lower(), path.lower())
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
             normalized.append(
                 {
+                    "id": skill_id,
                     "name": name or Path(path).name or "unknown-skill",
                     "description": description,
                     "path": path,
+                    "sourceType": source_type,
+                    "workspacePath": workspace_path,
+                    "workspaceId": workspace_id,
+                    "projectId": project_id,
                 }
             )
         return normalized
@@ -458,11 +468,21 @@ class ChatRuntime:
             if skill_references:
                 skill_lines = ["[SKILL REFERENCES]"]
                 for skill in skill_references:
+                    if skill.get("id"):
+                        skill_lines.append(f"  id: {skill['id']}")
                     skill_lines.append(f"- name: {skill.get('name') or 'unknown-skill'}")
                     if skill.get("description"):
                         skill_lines.append(f"  description: {skill['description']}")
                     if skill.get("path"):
                         skill_lines.append(f"  path: {skill['path']}")
+                    if skill.get("sourceType"):
+                        skill_lines.append(f"  sourceType: {skill['sourceType']}")
+                    if skill.get("workspacePath"):
+                        skill_lines.append(f"  workspacePath: {skill['workspacePath']}")
+                    if skill.get("workspaceId"):
+                        skill_lines.append(f"  workspaceId: {skill['workspaceId']}")
+                    if skill.get("projectId"):
+                        skill_lines.append(f"  projectId: {skill['projectId']}")
                 skill_lines.append("[/SKILL REFERENCES]")
                 wrapped_sections.append("\n".join(skill_lines))
             if task_planning_mode:

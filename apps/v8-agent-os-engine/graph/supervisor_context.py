@@ -49,6 +49,86 @@ def _resolved_workspace_prompt_path() -> str:
     return workspace_resolution_service.get_main_workspace_path()
 
 
+def _normalize_workspace_path(value: str | None) -> str:
+    raw = str(value or "").strip()
+    return str(Path(raw).expanduser()) if raw else ""
+
+
+def _collect_workspace_rules_roots(*, state, session_id: str | None) -> list[dict[str, str]]:
+    roots: list[dict[str, str]] = []
+    seen_workspace_paths: set[str] = set()
+
+    main_workspace_path = _normalize_workspace_path(workspace_resolution_service.get_main_workspace_path())
+    if main_workspace_path:
+        seen_workspace_paths.add(main_workspace_path)
+        roots.append(
+            {
+                "source": "main_workspace",
+                "label": "main workspace",
+                "workspacePath": main_workspace_path,
+                "workspaceId": "",
+                "projectId": "",
+            }
+        )
+
+    descriptor = workspace_resolution_service.resolve_workspace_descriptor(
+        runtime_kind="chat",
+        session_id=session_id,
+        explicit_workspace_id=state.get("workspace_id"),
+        explicit_workspace_path=state.get("workspace_path"),
+        explicit_project_id=state.get("project_id"),
+    )
+    scoped_workspace_path = _normalize_workspace_path(str(descriptor.get("workspaceRoot") or ""))
+    if (
+        scoped_workspace_path
+        and scoped_workspace_path not in seen_workspace_paths
+        and bool(descriptor.get("isScopedOverride"))
+    ):
+        roots.append(
+            {
+                "source": "scoped_workspace",
+                "label": "scoped workspace",
+                "workspacePath": scoped_workspace_path,
+                "workspaceId": str(descriptor.get("workspaceId") or "").strip(),
+                "projectId": str(descriptor.get("projectId") or "").strip(),
+            }
+        )
+
+    return roots
+
+
+def _build_workspace_rules_context(*, state, session_id: str | None) -> str:
+    rendered_sections: list[str] = []
+    for root in _collect_workspace_rules_roots(state=state, session_id=session_id):
+        workspace_path = str(root.get("workspacePath") or "").strip()
+        if not workspace_path:
+            continue
+        rules_dir = Path(workspace_path) / ".agents" / "rules"
+        if not rules_dir.exists() or not rules_dir.is_dir():
+            continue
+        for rule_path in sorted(rules_dir.glob("*.md"), key=lambda item: item.name.lower()):
+            if not rule_path.is_file():
+                continue
+            content = rule_path.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            header_lines = [
+                f"### {rule_path.name}",
+                f"Source: {root.get('label')}",
+                f"Workspace: {workspace_path}",
+                f"Path: {rule_path}",
+            ]
+            if root.get("projectId"):
+                header_lines.append(f"Project ID: {root.get('projectId')}")
+            if root.get("workspaceId"):
+                header_lines.append(f"Workspace ID: {root.get('workspaceId')}")
+            rendered_sections.append("\n".join(header_lines) + "\n\n" + content)
+
+    if not rendered_sections:
+        return ""
+    return "[WORKSPACE RULES]\n" + "\n\n---\n\n".join(rendered_sections) + "\n[/WORKSPACE RULES]\n"
+
+
 def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dict]]:
     facts: list[dict] = []
     lines: list[str] = []
@@ -179,17 +259,12 @@ def resolve_supervisor_request_context(messages, scope_resolution_service):
                 channel_type=(last_human_message.additional_kwargs or {}).get("channel_type") if last_human_message else None,
                 channel_remote_id=(last_human_message.additional_kwargs or {}).get("channel_remote_id") if last_human_message else None,
                 scope_hint=(last_human_message.additional_kwargs or {}).get("resolved_scope") if last_human_message else None,
-                scope_mode="mixed",
+                scope_mode="explicit",
             )
             current_scope = resolved.binding.resolved_scope
             scope_chain = resolved.scope_chain or ["global", current_scope]
         except Exception:
             pass
-    elif user_query:
-        from core.scope_detector import detect_scope
-
-        current_scope = detect_scope(user_query) or "global"
-        scope_chain = ["global", current_scope] if current_scope != "global" else ["global"]
 
     return {
         "user_query": user_query,
@@ -312,6 +387,7 @@ def build_supervisor_system_content(
         scope=current_scope,
         scope_chain=scope_chain,
     )
+    workspace_rules_context = _build_workspace_rules_context(state=state, session_id=session_id)
 
     runtime_registry_context = capability_registry.build_supervisor_summary(
         user_query=user_query,
@@ -411,6 +487,7 @@ def build_supervisor_system_content(
         f"{specialist_agents_context}"
         f"{available_tools_context}\n"
         f"{todos_context}{memory_context}\n\n"
+        f"{workspace_rules_context}"
         f"{env_context}{approval_directive}\n"
         f"{extension_prompt_addition}{group_moderation_directive}"
     )
@@ -422,6 +499,7 @@ def build_supervisor_system_content(
         "specialist_agents_context": specialist_agents_context,
         "available_tools_context": available_tools_context,
         "todos_context": todos_context,
+        "workspace_rules_context": workspace_rules_context,
         "env_context": env_context,
         "group_moderation_directive": group_moderation_directive,
     }

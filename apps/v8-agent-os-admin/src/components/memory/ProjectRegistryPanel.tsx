@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
@@ -31,21 +30,22 @@ export interface ProjectDescriptor {
     active?: boolean;
 }
 
-const EMPTY_FORM: ProjectDescriptor = {
-    id: "",
+type ProjectFormState = {
+    name: string;
+    workspacePath: string;
+};
+
+const EMPTY_FORM: ProjectFormState = {
     name: "",
-    description: "",
-    workspaceId: "",
     workspacePath: "",
-    defaultScope: "",
-    tags: [],
-    active: true,
 };
 
 function sortProjects(projects: ProjectDescriptor[]) {
     return [...projects].sort((left, right) => {
-        if (left.id === right.id) return 0;
-        return left.id.localeCompare(right.id);
+        const leftKey = `${left.name || ""}:${left.id || ""}`.toLowerCase();
+        const rightKey = `${right.name || ""}:${right.id || ""}`.toLowerCase();
+        if (leftKey === rightKey) return 0;
+        return leftKey.localeCompare(rightKey);
     });
 }
 
@@ -56,13 +56,16 @@ export function ProjectRegistryPanel() {
     const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [selectedId, setSelectedId] = useState<string | null>(null);
-    const [form, setForm] = useState<ProjectDescriptor>(EMPTY_FORM);
+    const [form, setForm] = useState<ProjectFormState>(EMPTY_FORM);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
 
     const isEditing = useMemo(() => Boolean(selectedId), [selectedId]);
+    const selectedProject = useMemo(
+        () => projects.find((project) => project.id === selectedId) || null,
+        [projects, selectedId],
+    );
     const fieldClassName = "border-border/70 bg-card text-foreground placeholder:text-muted-foreground/70";
-    const readonlyFieldClassName = `${fieldClassName} bg-muted/35 text-foreground`;
 
     const loadProjects = useCallback(async () => {
         setLoading(true);
@@ -103,17 +106,17 @@ export function ProjectRegistryPanel() {
     const openProjectDrawer = useCallback((project: ProjectDescriptor) => {
         setSelectedId(project.id);
         setForm({
-            ...project,
-            tags: Array.isArray(project.tags) ? project.tags : [],
+            name: project.name || "",
+            workspacePath: project.workspacePath || "",
         });
         setDrawerOpen(true);
     }, []);
 
     const handleSave = useCallback(async () => {
-        if (!form.id.trim() || !form.name.trim()) {
+        if (!form.name.trim() || !form.workspacePath.trim()) {
             toast({
                 title: t("信息不完整"),
-                description: t("项目 ID 和名称不能为空。"),
+                description: t("项目名称和工作区路径不能为空。"),
                 variant: "destructive",
             });
             return;
@@ -122,17 +125,11 @@ export function ProjectRegistryPanel() {
         setSaving(true);
         try {
             const payload = {
-                id: form.id.trim(),
                 name: form.name.trim(),
-                description: form.description?.trim() || undefined,
-                workspaceId: form.workspaceId?.trim() || undefined,
-                workspacePath: form.workspacePath?.trim() || undefined,
-                defaultScope: form.defaultScope?.trim() || undefined,
-                tags: Array.isArray(form.tags) ? form.tags.filter(Boolean) : [],
-                active: form.active !== false,
+                workspacePath: form.workspacePath.trim(),
             };
 
-            const res = await fetch(isEditing ? `/api/projects/${form.id}` : "/api/projects", {
+            const res = await fetch(isEditing ? `/api/projects/${selectedId}` : "/api/projects", {
                 method: isEditing ? "PATCH" : "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
@@ -159,9 +156,12 @@ export function ProjectRegistryPanel() {
         } finally {
             setSaving(false);
         }
-    }, [form, isEditing, loadProjects, resetForm, t, toast]);
+    }, [form, isEditing, loadProjects, resetForm, selectedId, t, toast]);
 
     const handleDelete = useCallback(async (projectId: string) => {
+        if (!projectId) {
+            return;
+        }
         if (!window.confirm(t(lt(`确定删除项目 ${projectId} 吗？`, `Delete project ${projectId}?`)))) {
             return;
         }
@@ -199,7 +199,7 @@ export function ProjectRegistryPanel() {
                         {t("项目注册表")}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        {t("这里可以查看和编辑项目的说明、工作区和默认范围。")}
+                        {t("这里管理项目级工作区记录。主表单只维护项目名称和工作区路径，内部标识会自动派生。")}
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -221,7 +221,7 @@ export function ProjectRegistryPanel() {
                     </div>
                 ) : projects.length === 0 ? (
                     <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
-                        {t("还没有项目。先创建一个项目，方便会话和自动任务复用同一套项目范围。")}
+                        {t("还没有项目。先创建一个项目，方便项目级工作区和记忆绑定保持稳定。")}
                     </div>
                 ) : (
                     projects.map((project) => (
@@ -241,27 +241,15 @@ export function ProjectRegistryPanel() {
                                         {defaultProjectId === project.id ? <Badge>{t("默认")}</Badge> : null}
                                     </div>
                                     <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
-                                        {project.description || t("暂无描述，点击后可查看全文并编辑。")}
+                                        {project.workspacePath || t("尚未配置项目级工作区路径。")}
                                     </p>
                                 </div>
                             </div>
 
                             <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                                {project.defaultScope ? (
-                                    <span className="rounded-full border border-primary/15 bg-primary/5 px-2 py-1 font-mono text-primary/80">
-                                        {project.defaultScope}
-                                    </span>
-                                ) : null}
-                                {project.workspaceId ? (
-                                    <span className="rounded-full border px-2 py-1">workspace: {project.workspaceId}</span>
-                                ) : null}
-                                {Array.isArray(project.tags) && project.tags.length > 0
-                                    ? project.tags.slice(0, 3).map((tag) => (
-                                        <span key={tag} className="rounded-full border px-2 py-1">
-                                            #{tag}
-                                        </span>
-                                    ))
-                                    : null}
+                                <span className="rounded-full border px-2 py-1">
+                                    {t(lt(`工作区标识 ${project.workspaceId || project.id}`, `Workspace ID ${project.workspaceId || project.id}`))}
+                                </span>
                             </div>
                         </button>
                     ))
@@ -282,42 +270,30 @@ export function ProjectRegistryPanel() {
                         <DialogHeader className="border-b border-border/60 px-5 py-4">
                             <DialogTitle>{isEditing ? t("查看 / 编辑项目") : t("创建项目")}</DialogTitle>
                             <DialogDescription className="text-foreground/70">
-                                {t("这里可以集中查看和修改项目说明、工作区目录和默认范围。")}
+                                {t("这里只维护项目名称和工作区路径。项目 ID、工作区标识和默认范围由系统稳定派生。")}
                             </DialogDescription>
                         </DialogHeader>
 
                         <div className="flex-1 space-y-5 px-5 py-5">
-                            <div className="rounded-2xl border border-border/60 bg-muted/15 p-4">
-                                <p className="text-xs uppercase tracking-[0.22em] text-foreground/55">{t("原始记录")}</p>
-                                <pre className="mt-3 whitespace-pre-wrap break-all text-xs leading-6 text-foreground/78">
-                                    {JSON.stringify(
-                                        {
-                                            id: form.id || undefined,
-                                            name: form.name || undefined,
-                                            description: form.description || undefined,
-                                            workspaceId: form.workspaceId || undefined,
-                                            workspacePath: form.workspacePath || undefined,
-                                            defaultScope: form.defaultScope || undefined,
-                                            tags: form.tags || [],
-                                            active: form.active !== false,
-                                        },
-                                        null,
-                                        2,
-                                    )}
-                                </pre>
-                            </div>
+                            {isEditing && selectedProject ? (
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <div className="rounded-2xl border border-border/60 bg-muted/15 p-4">
+                                        <p className="text-xs uppercase tracking-[0.22em] text-foreground/55">{t("项目 ID")}</p>
+                                        <p className="mt-2 break-all font-mono text-sm text-foreground/85">{selectedProject.id}</p>
+                                    </div>
+                                    <div className="rounded-2xl border border-border/60 bg-muted/15 p-4">
+                                        <p className="text-xs uppercase tracking-[0.22em] text-foreground/55">{t("工作区标识")}</p>
+                                        <p className="mt-2 break-all font-mono text-sm text-foreground/85">{selectedProject.workspaceId || selectedProject.id}</p>
+                                    </div>
+                                    <div className="rounded-2xl border border-border/60 bg-muted/15 p-4">
+                                        <p className="text-xs uppercase tracking-[0.22em] text-foreground/55">{t("默认范围")}</p>
+                                        <p className="mt-2 break-all font-mono text-sm text-foreground/85">{selectedProject.defaultScope || `project:${selectedProject.id}`}</p>
+                                    </div>
+                                </div>
+                            ) : null}
 
-                            <div className="space-y-2">
-                                <Label htmlFor="project-id">{t("项目 ID")}</Label>
-                                <Input
-                                    id="project-id"
-                                    value={form.id}
-                                    readOnly={isEditing}
-                                    aria-readonly={isEditing}
-                                    onChange={(event) => setForm((prev) => ({ ...prev, id: event.target.value }))}
-                                    placeholder={t("例如 v8-agent-os")}
-                                    className={isEditing ? readonlyFieldClassName : fieldClassName}
-                                />
+                            <div className="rounded-2xl border border-border/60 bg-muted/15 p-4 text-sm leading-6 text-foreground/75">
+                                {t("项目级记忆和工作区绑定只依赖这两项输入。其余内部字段会在保存时自动生成或保持稳定。")}
                             </div>
 
                             <div className="space-y-2">
@@ -332,60 +308,12 @@ export function ProjectRegistryPanel() {
                             </div>
 
                             <div className="space-y-2">
-                                <Label htmlFor="project-description">{t("描述全文")}</Label>
-                                <Textarea
-                                    id="project-description"
-                                    value={form.description || ""}
-                                    onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
-                                    rows={8}
-                                    className={`resize-none leading-6 ${fieldClassName}`}
-                                    placeholder={t("写清楚这个项目是做什么的，以及需要长期记住的约束。")}
-                                />
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label htmlFor="project-workspace-id">{t("工作区标识")}</Label>
-                                <Input
-                                    id="project-workspace-id"
-                                    value={form.workspaceId || ""}
-                                    onChange={(event) => setForm((prev) => ({ ...prev, workspaceId: event.target.value }))}
-                                    placeholder={t("例如 main-workspace")}
-                                    className={fieldClassName}
-                                />
-                            </div>
-
-                            <div className="space-y-2">
                                 <Label htmlFor="project-workspace-path">{t("工作区目录")}</Label>
                                 <Input
                                     id="project-workspace-path"
-                                    value={form.workspacePath || ""}
+                                    value={form.workspacePath}
                                     onChange={(event) => setForm((prev) => ({ ...prev, workspacePath: event.target.value }))}
                                     placeholder={t("例如 E:\\Projects\\V8-Agent-OS")}
-                                    className={fieldClassName}
-                                />
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label htmlFor="project-default-scope">{t("默认范围")}</Label>
-                                <Input
-                                    id="project-default-scope"
-                                    value={form.defaultScope || ""}
-                                    onChange={(event) => setForm((prev) => ({ ...prev, defaultScope: event.target.value }))}
-                                    placeholder={t("例如 project:v8-agent-os")}
-                                    className={`${fieldClassName} font-mono`}
-                                />
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label htmlFor="project-tags">{t("Tags")}</Label>
-                                <Input
-                                    id="project-tags"
-                                    value={(form.tags || []).join(", ")}
-                                    onChange={(event) => setForm((prev) => ({
-                                        ...prev,
-                                        tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean),
-                                    }))}
-                                    placeholder={t("例如 memory, rag, realtime")}
                                     className={fieldClassName}
                                 />
                             </div>
@@ -395,7 +323,7 @@ export function ProjectRegistryPanel() {
                             {isEditing ? (
                                 <Button
                                     variant="destructive"
-                                    onClick={() => void handleDelete(form.id)}
+                                    onClick={() => void handleDelete(selectedId || "")}
                                     disabled={saving}
                                     className="mr-auto"
                                 >

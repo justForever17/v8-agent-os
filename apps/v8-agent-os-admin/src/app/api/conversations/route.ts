@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
                 workspaceId: body?.workspaceId,
                 workspacePath: body?.workspacePath,
                 scopeHint: body?.scopeHint,
-                scopeMode: body?.scopeMode || "mixed",
+                scopeMode: body?.scopeMode || "explicit",
             }),
         });
 

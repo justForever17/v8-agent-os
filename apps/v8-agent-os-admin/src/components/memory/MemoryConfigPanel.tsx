@@ -396,16 +396,23 @@ export default function MemoryConfigPanel() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t("上下文窗口")}</CardTitle>
-                    <CardDescription>{t("控制近期日志与记忆注入窗口，让 recall 与长期记忆注入保持节奏一致。")}</CardDescription>
+                    <CardTitle className="text-base">{t(lt("上下文窗口", "Context window"))}</CardTitle>
+                    <CardDescription>
+                        {t(
+                            lt(
+                                "控制详细日志注入窗口（映射 memory.max_recent_days）；窗口外的前一日记忆会自动降级为 summaries + path。",
+                                "Controls the detailed log injection window (maps to memory.max_recent_days); the prior day outside that window is automatically reduced to summaries + path.",
+                            ),
+                        )}
+                    </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                            <Label>{t("近期日志天数")}</Label>
+                            <Label>{t(lt("详细日志天数", "Detailed log days"))}</Label>
                             <Input
                                 type="number"
-                                value={config.max_recent_days ?? 2}
+                                value={config.max_recent_days ?? 1}
                                 onChange={(e) => setConfig(prev => ({ ...prev, max_recent_days: Number(e.target.value) }))}
                                 min={1} max={14}
                             />

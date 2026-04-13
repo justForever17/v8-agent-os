@@ -98,7 +98,7 @@ export function EditKnowledgeDialog({ item, open, onOpenChange, onSave }: EditKn
                                 id="scope"
                                 value={scope}
                                 onChange={(e) => setScope(e.target.value)}
-                                placeholder={t(lt("如: global / app:coding / project:v8-agent-os", "e.g. global / app:coding / project:v8-agent-os"))}
+                                placeholder={t(lt("如: global / project:v8-agent-os", "e.g. global / project:v8-agent-os"))}
                                 className="font-mono text-sm"
                             />
                         </div>

@@ -112,7 +112,7 @@ class RuntimeCommandRouter:
             "workspace_id": binding.workspace_id,
             "workspace_path": binding.workspace_path,
             "scope_hint": binding.resolved_scope,
-            "scope_mode": "explicit" if binding.project_id else "mixed",
+            "scope_mode": "explicit",
         }
 
     def _engine_config_from_run(self, run_record: Dict[str, Any] | None) -> EngineConfig:
@@ -148,7 +148,7 @@ class RuntimeCommandRouter:
             workspace_id=scope_payload.get("workspace_id"),
             workspace_path=scope_payload.get("workspace_path"),
             scope_hint=scope_payload.get("scope_hint"),
-            scope_mode=scope_payload.get("scope_mode") or "mixed",
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
         )
 
     def _build_resume_chat_request(self, approval: Dict[str, Any], response: Dict[str, Any] | None = None) -> ChatRequest | None:
@@ -168,7 +168,7 @@ class RuntimeCommandRouter:
             workspace_id=scope_payload.get("workspace_id"),
             workspace_path=scope_payload.get("workspace_path"),
             scope_hint=scope_payload.get("scope_hint"),
-            scope_mode=scope_payload.get("scope_mode") or "mixed",
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
             resume_run_id=run_record["id"],
             resume_value=resume_value,
         )
@@ -187,7 +187,7 @@ class RuntimeCommandRouter:
             workspace_id=scope_payload.get("workspace_id"),
             workspace_path=scope_payload.get("workspace_path"),
             scope_hint=scope_payload.get("scope_hint"),
-            scope_mode=scope_payload.get("scope_mode") or "mixed",
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
             resume_run_id=run_record["id"],
             resume_value=resume_value,
         )

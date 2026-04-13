@@ -718,7 +718,7 @@ class PluginHostRuntime:
             channel_type=source,
             channel_remote_id=remote_id,
             scope_hint=(message.metadata or {}).get("scope_hint"),
-            scope_mode="mixed",
+            scope_mode="explicit",
             run_id=run_id,
         )
         db.update_session_metadata(

@@ -28,7 +28,6 @@ from core.database import db
 from core.storage import storage
 from core.memory_router import MemoryRouter
 from core.knowledge_db import knowledge_db
-from core.scope_detector import detect_scope
 from core.audit_logger import audit_logger
 from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.prompts import (
@@ -72,7 +71,7 @@ def _utc_now_iso() -> str:
 # === LLM 提取结果模型 ===
 
 class PreferenceExtraction(BaseModel):
-    scope: str = Field(description="Scope of this preference (e.g., 'global', 'app:coding', 'project:v8-agent-os')")
+    scope: str = Field(description="Scope of this preference (e.g., 'global', 'project:v8-agent-os')")
     key: str = Field(description="A short key name for this preference (e.g., 'preferred_framework', 'code_style')")
     value: str = Field(description="The actual value or content of the preference")
     importance: int = Field(default=50, description="Importance score from 0 to 100")
@@ -583,7 +582,6 @@ def _append_session_log(result: MemoryExtractionResult, scope: str, session_id: 
 
 def _align_extraction_scopes(result: MemoryExtractionResult, resolved_scope: str):
     specific_prefixes = ("project:", "workspace:", "workflow:", "channel:")
-    allowed_app_scopes = {"app:chat", "app:coding", "app:writing"}
 
     def _coerce_scope(value: str) -> str:
         normalized = (value or "").strip()
@@ -591,11 +589,9 @@ def _align_extraction_scopes(result: MemoryExtractionResult, resolved_scope: str
             return resolved_scope
         if normalized == "global":
             return normalized
-        if normalized.startswith("app:") and normalized not in allowed_app_scopes:
-            return resolved_scope
         if normalized.startswith(specific_prefixes) and normalized != resolved_scope:
             return resolved_scope
-        return normalized
+        return resolved_scope
 
     for pref in result.preferences:
         pref.scope = _coerce_scope(pref.scope)
@@ -863,7 +859,6 @@ def analyze_session_memory(
         scope = binding.resolved_scope
         scope_chain = build_scope_chain(
             resolved_scope=binding.resolved_scope,
-            detected_app_scope=detect_scope(chat_history_text),
             channel_type=binding.channel_type,
             channel_remote_id=binding.channel_remote_id,
             workspace_id=binding.workspace_id,
@@ -875,7 +870,7 @@ def analyze_session_memory(
             session_id=session_id,
             conversation_id=session_id,
             user_query=chat_history_text,
-            scope_mode="mixed",
+            scope_mode="explicit",
         )
         binding = resolved.binding
         scope = binding.resolved_scope

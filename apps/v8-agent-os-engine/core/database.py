@@ -2213,7 +2213,13 @@ class DatabaseManager:
                     project.get("name"),
                     project.get("workspace_id"),
                     project.get("workspace_path"),
-                    project.get("default_scope") or project.get("defaultScope") or "global",
+                    project.get("default_scope")
+                    or project.get("defaultScope")
+                    or (
+                        f"project:{project.get('project_id') or project.get('id')}"
+                        if (project.get("project_id") or project.get("id"))
+                        else "global"
+                    ),
                     json.dumps(project.get("tags", []), ensure_ascii=False),
                     1 if project.get("active", True) else 0,
                 ),

@@ -124,7 +124,7 @@ export default function ProjectsWorkspacesPage() {
         <AdminPageShell>
             <AdminPageHeader
                 title="项目与工作区"
-                description="查看当前 canonical 主工作区，并管理项目级工作区覆盖关系。"
+                description="这里负责主工作区治理；项目级工作区记录在项目注册表中单独维护。"
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved && !workspaceHasChanges} label="主工作区" />
@@ -228,19 +228,19 @@ export default function ProjectsWorkspacesPage() {
                 </ConfigCard>
 
                 <ConfigCard
-                    title="项目级工作区与 scope"
-                    description="项目绑定后会覆盖主工作区。"
+                    title="项目级工作区记录"
+                    description="项目注册表只维护项目名称和项目级工作区路径。"
                     bodyHeight="clamp"
                     bodyScroll="auto"
                 >
                     <div className="space-y-4">
                         <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-600">
-                            只有项目或会话显式绑定时，系统才会用项目级工作区。
+                            这里只有显式项目绑定才会覆盖主工作区，不再根据聊天内容推测项目或 scope。
                         </div>
                         <Link href="/admin/memory?tab=projects">
                             <Button className="w-full">
                                 <FolderOpen className="mr-2 h-4 w-4" />
-                                打开项目管理入口
+                                打开项目注册表
                             </Button>
                         </Link>
                     </div>

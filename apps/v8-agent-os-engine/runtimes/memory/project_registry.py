@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from core.database import db
@@ -30,7 +32,19 @@ class ProjectRegistryService:
         return self.get_project(project_id)
 
     def save_project(self, payload: Dict[str, Any]) -> ProjectDescriptor:
-        descriptor = ProjectDescriptor.model_validate(payload).normalized()
+        prepared_payload = dict(payload or {})
+        project_id = str(prepared_payload.get("id") or "").strip()
+        if not project_id:
+            project_id = self._generate_project_id(
+                name=prepared_payload.get("name"),
+                workspace_path=prepared_payload.get("workspacePath") or prepared_payload.get("workspace_path"),
+            )
+        prepared_payload["id"] = project_id
+        if not str(prepared_payload.get("workspaceId") or "").strip():
+            prepared_payload["workspaceId"] = project_id
+        prepared_payload["defaultScope"] = f"project:{project_id}"
+
+        descriptor = ProjectDescriptor.model_validate(prepared_payload).normalized()
         saved = self.project_repo.save_project(descriptor)
         if not self.project_repo.get_default_project_id():
             self.project_repo.set_default_project(saved.project_id)
@@ -211,6 +225,24 @@ class ProjectRegistryService:
                 confidence=1.0,
             )
         )
+
+    def _generate_project_id(self, *, name: Any, workspace_path: Any) -> str:
+        raw_name = str(name or "").strip()
+        raw_workspace_path = str(workspace_path or "").strip().rstrip("\\/")
+        workspace_leaf = re.split(r"[\\/]+", raw_workspace_path)[-1] if raw_workspace_path else ""
+        preferred_seed = raw_name or workspace_leaf
+        slug = re.sub(r"[^a-z0-9]+", "-", preferred_seed.lower()).strip("-")
+        if not slug:
+            slug = f"project-{uuid.uuid4().hex[:8]}"
+
+        existing_ids = {project.project_id for project in self.list_projects()}
+        if slug not in existing_ids:
+            return slug
+
+        suffix = 2
+        while f"{slug}-{suffix}" in existing_ids:
+            suffix += 1
+        return f"{slug}-{suffix}"
 
 
 project_registry_service = ProjectRegistryService()

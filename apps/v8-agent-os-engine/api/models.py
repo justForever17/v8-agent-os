@@ -71,7 +71,7 @@ class ChatRequest(BaseModel):
     workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
     thread_id: Optional[str] = Field(default=None, alias="threadId")
     scope_hint: Optional[str] = Field(default=None, alias="scopeHint")
-    scope_mode: Optional[str] = Field(default="mixed", alias="scopeMode")
+    scope_mode: Optional[str] = Field(default="explicit", alias="scopeMode")
     resume_run_id: Optional[str] = Field(default=None, alias="resumeRunId")
     resume_value: Optional[Dict[str, Any]] = Field(default=None, alias="resumeValue")
     data: Optional[ChatRequestData] = Field(default=None, description="Structured command preset / task mode data")
@@ -84,7 +84,7 @@ class StreamEvent(BaseModel):
 class ProjectDescriptorPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str
+    id: Optional[str] = None
     name: str
     description: Optional[str] = None
     workspace_id: Optional[str] = Field(default=None, alias="workspaceId")
@@ -150,7 +150,7 @@ class ScopeResolvePayload(BaseModel):
     channel_remote_id: Optional[str] = Field(default=None, alias="channelRemoteId")
     thread_id: Optional[str] = Field(default=None, alias="threadId")
     scope_hint: Optional[str] = Field(default=None, alias="scopeHint")
-    scope_mode: Optional[str] = Field(default="mixed", alias="scopeMode")
+    scope_mode: Optional[str] = Field(default="explicit", alias="scopeMode")
 
 
 class PreferenceMutationPayload(BaseModel):

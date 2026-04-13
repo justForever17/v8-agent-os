@@ -220,7 +220,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "recall_top_k": 3,
         "retrieval_threshold": MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED,
         "passive_injection_enabled": True,
-        "max_recent_days": 2,
+        "max_recent_days": 1,
         "max_context_tokens": 2000,
         "extraction_enabled": True,
         "preference_importance_threshold": 70,

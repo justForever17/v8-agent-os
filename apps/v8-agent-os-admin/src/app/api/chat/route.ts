@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
         const workspaceId = payload.workspace_id ?? payload.workspaceId ?? data?.workspaceId;
         const workspacePath = payload.workspace_path ?? payload.workspacePath ?? data?.workspacePath;
         const scopeHint = payload.scope_hint ?? payload.scopeHint ?? data?.scopeHint;
-        const scopeMode = payload.scope_mode ?? payload.scopeMode ?? data?.scopeMode ?? "mixed";
+        const scopeMode = payload.scope_mode ?? payload.scopeMode ?? data?.scopeMode ?? "explicit";
         
         const conversationId = payload.session_id || payload.conversationId || data?.conversationId || crypto.randomUUID();
         const currentContent = tool_outputs?.[0]?.output || messages?.[messages.length - 1]?.content || "";

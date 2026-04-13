@@ -36,8 +36,13 @@ class ProjectDescriptor(BaseModel):
 
     def normalized(self) -> "ProjectDescriptor":
         data = self.model_copy(deep=True)
-        if not data.default_scope:
-            data.default_scope = f"project:{data.project_id}"
+        data.project_id = str(data.project_id or "").strip()
+        data.name = str(data.name or "").strip()
+        data.description = str(data.description or "").strip() or None
+        data.workspace_path = str(data.workspace_path or "").strip() or None
+        data.workspace_id = str(data.workspace_id or "").strip() or data.project_id
+        data.default_scope = f"project:{data.project_id}"
+        data.tags = [str(tag).strip() for tag in list(data.tags or []) if str(tag).strip()]
         return data
 
 

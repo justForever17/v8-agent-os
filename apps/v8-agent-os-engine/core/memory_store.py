@@ -43,21 +43,12 @@ language: zh-CN
 system_name: V8 Agent OS
 system_slug: v8-agent-os
 system_author: justForever17
-
-[app:chat]
-# 聊天场景偏好 — Agent 判断为闲聊时使用
-communication_style: 友好、热情
-
-[app:coding]
-# 编程场景偏好 — Agent 判断为技术任务时使用
-communication_style: 专业、严谨
 """
 
 # === 正则 ===
 SCOPE_PATTERN = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 KV_PATTERN = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$', re.MULTILINE)
 _SPECIFIC_SCOPE_PREFIXES = ("project:", "workspace:", "workflow:", "channel:")
-_ALLOWED_APP_SCOPES = {"app:chat", "app:coding", "app:writing"}
 
 
 class MemoryStore:
@@ -85,7 +76,7 @@ class MemoryStore:
         
         # 知识分区目录
         areas_dir = MEMORY_ROOT / "knowledge" / "areas"
-        for area in ["general", "chat", "coding", "writing", "projects", "workspaces", "channels", "workflows"]:
+        for area in ["general", "projects", "workspaces", "channels", "workflows"]:
             (areas_dir / area).mkdir(parents=True, exist_ok=True)
         
         # 日志目录
@@ -108,8 +99,6 @@ class MemoryStore:
         if not normalized:
             return False
         if normalized == "global":
-            return True
-        if normalized in _ALLOWED_APP_SCOPES:
             return True
         return normalized.startswith(_SPECIFIC_SCOPE_PREFIXES)
 
@@ -194,7 +183,7 @@ class MemoryStore:
         """
         加载合并后的偏好（考虑 scope 优先级回退）。
         
-        优先级链: current_scope > app:coding > global
+        优先级链: current_scope > global
         """
         all_data = self._load_raw_preferences()
         
@@ -255,9 +244,6 @@ class MemoryStore:
         # Scope 注释
         scope_comments = {
             "global": "# 全局偏好 — 适用于所有场景",
-            "app:chat": "# 聊天场景偏好 — Agent 判断为闲聊时使用",
-            "app:coding": "# 编程场景偏好 — Agent 判断为技术任务时使用",
-            "app:writing": "# 写作场景偏好 — Agent 判断为内容创作时使用",
         }
         
         # global 优先，其余排序
@@ -320,9 +306,6 @@ class MemoryStore:
         elif scope.startswith("workflow:"):
             workflow_name = scope.split(":", 1)[1]
             path = areas_dir / "workflows" / workflow_name / "items.json"
-        elif scope.startswith("app:"):
-            area_name = scope.split(":", 1)[1]  # chat, coding, writing
-            path = areas_dir / area_name / "items.json"
         else:
             path = areas_dir / "general" / "items.json"
         
@@ -1023,7 +1006,7 @@ class MemoryStore:
             matched.append(snippet)
         return matched[-max_entries_per_day:]
 
-    def get_recent_logs(self, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:
+    def get_recent_logs(self, days: int = 1, scope_chain: Optional[List[str]] = None) -> str:
         """获取最近 N 天与 scope 匹配的日志条目摘要。"""
         now = datetime.now()
         summaries = []
@@ -1042,8 +1025,66 @@ class MemoryStore:
 
             entry = f"[{date_check.strftime('%Y-%m-%d')}] Path: {log_path}\n" + "\n\n".join(matched_entries)
             summaries.append(entry.strip())
-        
+
         return "\n\n".join(summaries) if summaries else ""
+
+    def _read_daily_frontmatter_summaries(self, *, log_path: Path) -> List[str]:
+        content = log_path.read_text(encoding="utf-8")
+        header_match = re.match(r'^---\n(.*?)\n---\s*', content, flags=re.DOTALL)
+        if not header_match:
+            return []
+
+        header = header_match.group(1)
+        lines = header.splitlines()
+        summaries: List[str] = []
+        in_summaries = False
+        for line in lines:
+            if line.startswith("summaries:"):
+                in_summaries = True
+                continue
+            if in_summaries and re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*:", line):
+                break
+            if not in_summaries:
+                continue
+            match = re.match(r'^\s*-\s*"?(.+?)"?\s*$', line)
+            if match:
+                value = match.group(1).strip()
+                if value:
+                    summaries.append(value)
+        return summaries
+
+    def get_prior_window_memory_summary(
+        self,
+        *,
+        detailed_days: int = 1,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        """
+        读取详细日志窗口之前一天的紧凑摘要。
+        仅输出路径与 YAML frontmatter summaries，不回退正文。
+        """
+        normalized_chain = self._normalize_scope_chain(scope_chain=scope_chain)
+        allowed_scopes = [scope for scope in normalized_chain if self._is_valid_scope(scope)]
+        summary_day = max(1, int(detailed_days))
+        date_check = datetime.now() - timedelta(days=summary_day)
+        log_path = self._get_daily_log_path(date_check)
+        if not log_path.exists():
+            return ""
+
+        matched_entries = self._read_scoped_daily_entries(
+            log_path=log_path,
+            allowed_scopes=allowed_scopes,
+            max_entries_per_day=1,
+        )
+        if not matched_entries:
+            return ""
+
+        lines = [f"[{date_check.strftime('%Y-%m-%d')}] Path: {log_path}"]
+        summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
+        if summaries:
+            lines.append("Summaries:")
+            lines.extend(f"- {item}" for item in summaries)
+        return "\n".join(lines).strip()
         
     def get_hierarchical_summaries(self, scope_chain: Optional[List[str]] = None) -> str:
         """读取年、月、周的最高层级摘要，仅在非特定项目上下文中启用以避免跨 scope 污染。"""
@@ -1148,16 +1189,16 @@ class MemoryStore:
     
     def build_session_context(self, user_query: str, scope: str = "global", scope_chain: Optional[List[str]] = None) -> str:
         """
-        构建渐进式 Session 上下文注入文本，结合历史概要、用户偏好和两日的日志YAML头部。
+        构建渐进式 Session 上下文注入文本，结合历史概要、用户偏好、近期详细日志和紧凑前序摘要。
         Returns: 注入到 System Prompt 的文本
         """
         from core.storage import storage
 
         memory_config = storage.get_memory_config() or {}
         try:
-            max_recent_days = max(1, min(int(memory_config.get("max_recent_days") or 2), 30))
+            max_recent_days = max(1, min(int(memory_config.get("max_recent_days") or 1), 30))
         except (TypeError, ValueError):
-            max_recent_days = 2
+            max_recent_days = 1
         try:
             max_context_tokens = max(256, min(int(memory_config.get("max_context_tokens") or 2000), 16000))
         except (TypeError, ValueError):
@@ -1192,9 +1233,20 @@ class MemoryStore:
         recent = self.get_recent_logs(days=max_recent_days, scope_chain=normalized_chain)
         if recent:
             parts.append(
-                f"[RECENT ACTIVITY LOGS (Last {max_recent_days} days)]\n"
+                f"[RECENT ACTIVITY LOGS (Detailed Window: Last {max_recent_days} days)]\n"
                 f"{recent}\n"
                 "[/RECENT ACTIVITY LOGS]"
+            )
+
+        prior_summary = self.get_prior_window_memory_summary(
+            detailed_days=max_recent_days,
+            scope_chain=normalized_chain,
+        )
+        if prior_summary:
+            parts.append(
+                "[PRIOR MEMORY SUMMARY BEFORE DETAILED WINDOW]\n"
+                f"{prior_summary}\n"
+                "[/PRIOR MEMORY SUMMARY BEFORE DETAILED WINDOW]"
             )
 
         rendered_parts: List[str] = []
@@ -1214,8 +1266,6 @@ class MemoryStore:
         candidate_chain = [item for item in (scope_chain or []) if item and self._is_valid_scope(item)]
         if not candidate_chain:
             candidate_chain = ["global"]
-            if scope.startswith(("project:", "workspace:", "workflow:", "channel:")):
-                candidate_chain.append("app:coding")
             if scope != "global" and self._is_valid_scope(scope):
                 candidate_chain.append(scope)
 

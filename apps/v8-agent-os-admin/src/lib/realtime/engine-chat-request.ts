@@ -25,7 +25,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const workspaceId = root.workspace_id ?? root.workspaceId ?? data.workspaceId;
     const workspacePath = root.workspace_path ?? root.workspacePath ?? data.workspacePath;
     const scopeHint = root.scope_hint ?? root.scopeHint ?? data.scopeHint;
-    const scopeMode = root.scope_mode ?? root.scopeMode ?? data.scopeMode ?? "mixed";
+    const scopeMode = root.scope_mode ?? root.scopeMode ?? data.scopeMode ?? "explicit";
     const conversationId = root.session_id || root.conversationId || data.conversationId || crypto.randomUUID();
     const currentContent = toolOutputs?.[0]?.output || messages[messages.length - 1]?.content || "";
     const fileUrls = Array.isArray(data.fileUrls) ? data.fileUrls : [];
@@ -51,7 +51,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
             workspace_id: typeof workspaceId === "string" ? workspaceId : undefined,
             workspace_path: typeof workspacePath === "string" ? workspacePath : undefined,
             scope_hint: typeof scopeHint === "string" ? scopeHint : undefined,
-            scope_mode: typeof scopeMode === "string" ? scopeMode : "mixed",
+            scope_mode: typeof scopeMode === "string" ? scopeMode : "explicit",
             config: {
                 provider,
                 model_name: modelName,

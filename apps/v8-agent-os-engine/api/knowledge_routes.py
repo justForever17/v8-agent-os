@@ -114,7 +114,7 @@ async def get_memory_config():
         config.setdefault("recall_top_k", 3)
         config.setdefault("retrieval_threshold", metadata["recommendedRetrievalThreshold"])
         config.setdefault("passive_injection_enabled", True)
-        config.setdefault("max_recent_days", 2)
+        config.setdefault("max_recent_days", 1)
         config.setdefault("max_context_tokens", 2000)
         config.setdefault("extraction_enabled", True)
         config.setdefault("preference_importance_threshold", 70)
@@ -256,7 +256,12 @@ async def get_graph_multi_hop(entity: str, hops: int = 2):
 async def memory_fts_search(q: str, scope: str = None):
     try:
         results = memory_runtime.search_full_text(query=q, scope=scope, limit=20)
-        valid_results = [item for item in results if str(item.get("scope") or "global").strip() in {"global", "app:chat", "app:coding", "app:writing"} or str(item.get("scope") or "").startswith(("project:", "workspace:", "workflow:", "channel:"))]
+        valid_results = [
+            item
+            for item in results
+            if str(item.get("scope") or "global").strip() == "global"
+            or str(item.get("scope") or "").startswith(("project:", "workspace:", "workflow:", "channel:"))
+        ]
         return {"query": q, "results": valid_results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

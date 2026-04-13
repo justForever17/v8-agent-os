@@ -4,7 +4,6 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.database import db
-from core.context.scope import detect_scope
 from persistence.repositories.scope_binding_repository import ScopeBindingRepository
 from persistence.repositories.scope_resolution_repository import ScopeResolutionRepository
 from runtimes.memory.models import (
@@ -127,7 +126,6 @@ def _scope_for_channel(channel_type: Optional[str], remote_id: Optional[str]) ->
 def build_scope_chain(
     *,
     resolved_scope: str,
-    detected_app_scope: Optional[str] = None,
     channel_type: Optional[str] = None,
     channel_remote_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -135,9 +133,7 @@ def build_scope_chain(
     workflow_id: Optional[str] = None,
 ) -> List[str]:
     chain: List[str] = ["global"]
-    app_scope = detected_app_scope if (detected_app_scope or "").startswith("app:") else None
     for item in (
-        app_scope,
         _scope_for_channel(channel_type, channel_remote_id),
         _scope_for_workspace(workspace_id),
         _scope_for_project(project_id),
@@ -192,13 +188,13 @@ class ScopeResolutionService:
         channel_type: Optional[str] = None,
         channel_remote_id: Optional[str] = None,
         scope_hint: Optional[str] = None,
-        scope_mode: Optional[str] = "mixed",
+        scope_mode: Optional[str] = "explicit",
         run_id: Optional[str] = None,
         force_reresolve: bool = False,
     ) -> ScopeResolutionResult:
-        normalized_scope_mode = (scope_mode or "mixed").strip().lower()
+        normalized_scope_mode = (scope_mode or "explicit").strip().lower()
         if normalized_scope_mode not in {"explicit", "infer", "mixed"}:
-            normalized_scope_mode = "mixed"
+            normalized_scope_mode = "explicit"
 
         explicit_requested_scope = _normalize_scope(scope_hint) or _scope_for_project(project_id)
         requested_scope = explicit_requested_scope
@@ -217,7 +213,7 @@ class ScopeResolutionService:
         )
 
         existing = self.binding_service.get_binding(session_id)
-        if existing and existing.status == "active" and normalized_scope_mode != "explicit":
+        if existing and existing.status == "active":
             matched_anchors, changed_anchors, compared_anchors = _diff_scope_anchors(
                 existing_binding=existing,
                 requested_anchors=requested_anchors,
@@ -240,10 +236,8 @@ class ScopeResolutionService:
                 can_reuse_existing_binding = False
                 reuse_evidence["reuse_reason"] = "force_reresolve_requested"
             if can_reuse_existing_binding:
-                detected_app_scope = detect_scope(user_query) if user_query else None
                 scope_chain = build_scope_chain(
                     resolved_scope=existing.resolved_scope,
-                    detected_app_scope=detected_app_scope,
                     channel_type=existing.channel_type,
                     channel_remote_id=existing.channel_remote_id,
                     workspace_id=existing.workspace_id,
@@ -283,10 +277,8 @@ class ScopeResolutionService:
             compared_anchors = []
             changed_anchors = {}
 
-        detected_app_scope = detect_scope(user_query) if user_query else "global"
         evidence: Dict[str, Any] = {
             "requested_scope": requested_scope,
-            "detected_app_scope": detected_app_scope,
             "requested_anchors": {key: value for key, value in requested_anchors.items() if value is not None},
         }
         if existing and existing.status == "active":
@@ -299,12 +291,10 @@ class ScopeResolutionService:
 
         resolved_project: Optional[ProjectDescriptor] = None
         resolved_scope = "global"
-        scope_source = "fallback_default"
+        scope_source = "main_workspace_default"
         scope_confidence = 1.0
 
-        if normalized_scope_mode != "infer" and (
-            explicit_requested_scope or project_id or workspace_id or workflow_id
-        ):
+        if explicit_requested_scope or project_id or workspace_id or workflow_id:
             resolved_scope, resolved_project = self._resolve_explicit_scope(
                 requested_scope=explicit_requested_scope,
                 project_id=project_id,
@@ -365,19 +355,9 @@ class ScopeResolutionService:
                             workspace_id = workspace_id or workspace_project.workspace_id
                             workspace_path = workspace_path or workspace_project.workspace_path
                             resolved_scope = workspace_project.default_scope or _scope_for_project(project_id) or "global"
-                            scope_source = "workspace_inferred"
+                            scope_source = "workspace_registry_match"
                             scope_confidence = 0.9
-                            evidence["workspace_inferred"] = workspace_project.model_dump(exclude_none=True)
-                        else:
-                            heuristic_scope = detect_scope(
-                                user_query,
-                                project_name=project_id,
-                            ) if user_query else "global"
-                            resolved_scope = heuristic_scope or "global"
-                            if resolved_scope != "global":
-                                scope_source = "heuristic_detected"
-                                scope_confidence = 0.65
-                            evidence["heuristic"] = {"scope": heuristic_scope}
+                            evidence["workspace_registry_match"] = workspace_project.model_dump(exclude_none=True)
 
         if not project_id and resolved_project:
             project_id = resolved_project.project_id
@@ -406,7 +386,6 @@ class ScopeResolutionService:
         saved = self.binding_service.upsert_binding(binding)
         scope_chain = build_scope_chain(
             resolved_scope=saved.resolved_scope,
-            detected_app_scope=detected_app_scope,
             channel_type=saved.channel_type,
             channel_remote_id=saved.channel_remote_id,
             workspace_id=saved.workspace_id,
@@ -445,7 +424,7 @@ class ScopeResolutionService:
         channel_type: Optional[str] = None,
         channel_remote_id: Optional[str] = None,
         scope_hint: Optional[str] = None,
-        scope_mode: Optional[str] = "mixed",
+        scope_mode: Optional[str] = "explicit",
         run_id: Optional[str] = None,
     ) -> ScopeResolutionResult:
         return self.resolve(

@@ -473,7 +473,7 @@ async def create_session(data: dict = Body(...)):
                 workspace_path=data.get("workspacePath"),
                 thread_id=data.get("threadId"),
                 scope_hint=data.get("scopeHint"),
-                scope_mode=data.get("scopeMode", "mixed"),
+                scope_mode=data.get("scopeMode", "explicit"),
             )
         session = db.get_session(session_id)
         workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
@@ -632,7 +632,7 @@ async def reresolve_session_scope(session_id: str, payload: Optional[ScopeResolv
             channel_remote_id=payload.channel_remote_id if payload else None,
             thread_id=payload.thread_id if payload else None,
             scope_hint=payload.scope_hint if payload else None,
-            scope_mode=payload.scope_mode if payload else "mixed",
+            scope_mode=payload.scope_mode if payload else "explicit",
         )
         return {"sessionId": session_id, **_scope_resolution_payload(result)}
     except Exception as e:
@@ -666,7 +666,7 @@ async def resolve_scope(payload: ScopeResolvePayload):
             channel_remote_id=payload.channel_remote_id,
             thread_id=payload.thread_id,
             scope_hint=payload.scope_hint,
-            scope_mode=payload.scope_mode,
+            scope_mode=payload.scope_mode or "explicit",
         )
         return _scope_resolution_payload(result)
     except Exception as e:

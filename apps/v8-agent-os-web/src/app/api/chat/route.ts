@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
             workspace_path: body?.workspace_path ?? body?.workspacePath ?? data?.workspacePath,
             thread_id: body?.thread_id ?? body?.threadId ?? data?.threadId,
             scope_hint: body?.scope_hint ?? body?.scopeHint ?? data?.scopeHint,
-            scope_mode: body?.scope_mode ?? body?.scopeMode ?? data?.scopeMode ?? "mixed",
+            scope_mode: body?.scope_mode ?? body?.scopeMode ?? data?.scopeMode ?? "explicit",
         };
 
         const result = await safeAdminProxyFetch(

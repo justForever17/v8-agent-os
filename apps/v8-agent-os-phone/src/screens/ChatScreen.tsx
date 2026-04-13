@@ -8,10 +8,11 @@ import {
     ScrollView,
     StyleSheet,
     Text,
+    TextInput,
     View,
     useWindowDimensions,
 } from "react-native";
-import { Redirect, router, type Href } from "expo-router";
+import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -70,6 +71,7 @@ import {
     prepareDesktopLive,
     createDesktopLiveSession,
     createConversation,
+    createProject,
     deleteConversation,
     deleteMessage,
     dispatchRunCommand,
@@ -83,7 +85,6 @@ import {
     listConversations,
     listMusicTracks,
     listSkills,
-    reresolveSessionScope,
     requestTextToSpeech,
     releaseDesktopLiveSession,
     submitChatMessage,
@@ -91,7 +92,6 @@ import {
     speechToText,
     streamRealtimeSession,
     uploadAttachment,
-    updateSessionScope,
 } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -135,6 +135,10 @@ type RuntimeSummary = {
     runId?: string;
     label?: string;
 };
+
+type WorkspaceBindingDraft =
+    | { kind: "main" }
+    | { kind: "project"; projectId: string };
 
 function buildRuntimeTimelineEntry(
     runtimeId: PhoneRuntimeId,
@@ -1159,6 +1163,8 @@ async function retryWithDelay<T>(fn: () => Promise<T>, retries: number, delayMs:
 }
 
 export default function ChatScreen() {
+    const params = useLocalSearchParams<{ new?: string | string[] }>();
+    const newConversationIntent = Array.isArray(params.new) ? params.new[0] === "1" : params.new === "1";
     const {
         status,
         user,
@@ -1243,8 +1249,10 @@ export default function ChatScreen() {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
-    const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
-    const [selectedProjectId, setSelectedProjectId] = useState("");
+    const [mainWorkspacePath, setMainWorkspacePath] = useState("");
+    const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
+    const [workspaceChooserBusy, setWorkspaceChooserBusy] = useState(false);
+    const [newProjectName, setNewProjectName] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -1269,7 +1277,7 @@ export default function ChatScreen() {
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<PhoneRuntimeId>("chat");
-    const [scopeSheetOpen, setScopeSheetOpen] = useState(false);
+    const [workspaceInfoOpen, setWorkspaceInfoOpen] = useState(false);
     const [desktopPreviewOpen, setDesktopPreviewOpen] = useState(false);
     const [desktopPreviewBusy, setDesktopPreviewBusy] = useState(false);
     const [desktopPreviewSessionId, setDesktopPreviewSessionId] = useState("");
@@ -1306,14 +1314,20 @@ export default function ChatScreen() {
             || String(item.path || "").toLowerCase().includes(skillQuery),
         );
     }, [selectedSkills, skillQuery, skills]);
-    const selectedProject = useMemo(
-        () => projects.find((project) => project.id === selectedProjectId) || null,
-        [projects, selectedProjectId],
+    const boundProject = useMemo(
+        () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
+        [projects, scopeBinding?.projectId],
     );
     const availableProjects = useMemo(
         () => projects.filter((project) => project.active !== false),
         [projects],
     );
+
+    const clearNewConversationIntent = useCallback(() => {
+        if (newConversationIntent) {
+            router.replace("/chat" as Href);
+        }
+    }, [newConversationIntent]);
 
     useEffect(() => {
         runtimeRef.current = runtime;
@@ -1889,20 +1903,12 @@ export default function ChatScreen() {
     const loadProjects = useCallback(async () => {
         try {
             const payload = await getProjectsRegistry(authorizedFetch);
-            const nextProjects = Array.isArray(payload.projects) ? payload.projects : [];
-            const nextDefaultProjectId = typeof payload.defaultProjectId === "string" ? payload.defaultProjectId : null;
-            setProjects(nextProjects);
-            setDefaultProjectId(nextDefaultProjectId);
-            setSelectedProjectId((current) => {
-                if (current || activeConversationIdRef.current || !nextDefaultProjectId) {
-                    return current;
-                }
-                return nextDefaultProjectId;
-            });
+            setProjects(Array.isArray(payload.projects) ? payload.projects : []);
+            setMainWorkspacePath(typeof payload.mainWorkspacePath === "string" ? payload.mainWorkspacePath : "");
         } catch (error) {
             console.warn("[phone/chat] loadProjects failed", error instanceof Error ? error.message : error);
             setProjects([]);
-            setDefaultProjectId(null);
+            setMainWorkspacePath("");
         }
     }, [authorizedFetch]);
 
@@ -1911,112 +1917,107 @@ export default function ChatScreen() {
         try {
             const binding = await getSessionScope(authorizedFetch, conversationId);
             setScopeBinding(binding);
-            if (binding?.projectId) {
-                setSelectedProjectId(binding.projectId);
-            } else if (!binding && defaultProjectId) {
-                setSelectedProjectId(defaultProjectId);
-            }
         } catch (error) {
             console.warn("[phone/chat] loadSessionScope failed", error instanceof Error ? error.message : error);
             setScopeBinding(null);
         } finally {
             setScopeLoading(false);
         }
-    }, [authorizedFetch, defaultProjectId]);
+    }, [authorizedFetch]);
 
-    const buildScopePayload = useCallback(() => ({
-        projectId: selectedProjectId || undefined,
-        workspaceId: selectedProject?.workspaceId,
-        workspacePath: selectedProject?.workspacePath,
-        scopeHint: selectedProjectId
-            ? (selectedProject?.defaultScope || undefined)
-            : (scopeBinding?.resolvedScope || selectedProject?.defaultScope),
-        scopeMode: selectedProjectId ? "explicit" : "mixed",
-    }), [scopeBinding?.resolvedScope, selectedProject, selectedProjectId]);
-
-    const handleProjectSelect = useCallback(async (projectId: string) => {
-        const nextProjectId = projectId === "__auto__" ? "" : projectId;
-        setSelectedProjectId(nextProjectId);
-
-        const activeSessionId = activeConversationIdRef.current;
-        if (!activeSessionId) {
-            if (!nextProjectId) {
-                setScopeBinding(null);
-            }
-            setScopeSheetOpen(false);
+    const createBoundConversation = useCallback(async (draft: WorkspaceBindingDraft) => {
+        if (workspaceChooserBusy) {
             return;
         }
-
-        setScopeLoading(true);
+        setWorkspaceChooserBusy(true);
         try {
-            if (nextProjectId) {
-                const nextProject = projects.find((project) => project.id === nextProjectId);
-                const binding = await updateSessionScope(authorizedFetch, activeSessionId, {
-                    projectId: nextProjectId,
-                    workspaceId: nextProject?.workspaceId,
-                    workspacePath: nextProject?.workspacePath,
-                    scopeHint: nextProject?.defaultScope,
-                    scopeSource: "phone_selected",
-                    scopeConfidence: 1,
-                });
-                setScopeBinding(binding);
+            let creationPayload: Parameters<typeof createConversation>[1];
+            if (draft.kind === "main") {
+                if (!mainWorkspacePath) {
+                    throw new Error(t("主工作区路径尚未就绪，请稍后再试。", "The main workspace path is not ready yet. Please try again shortly."));
+                }
+                creationPayload = {
+                    title: "",
+                    workspacePath: mainWorkspacePath,
+                    scopeHint: "global",
+                    scopeMode: "explicit",
+                };
             } else {
-                const latestUserText = [...messagesRef.current].reverse().find((message) => message.role === "user")?.content || input;
-                const binding = await reresolveSessionScope(authorizedFetch, activeSessionId, {
-                    userQuery: latestUserText,
-                    scopeMode: "mixed",
-                });
-                setScopeBinding(binding);
+                const project = availableProjects.find((item) => item.id === draft.projectId);
+                if (!project?.id) {
+                    throw new Error(t("项目级工作区不存在或尚未就绪。", "The selected project workspace does not exist or is not ready yet."));
+                }
+                creationPayload = {
+                    title: "",
+                    projectId: project.id,
+                    workspaceId: project.workspaceId,
+                    workspacePath: project.workspacePath,
+                    scopeHint: project.defaultScope,
+                    scopeMode: "explicit",
+                };
             }
-            await loadSessionScope(activeSessionId);
-            await Promise.all([
-                loadSupportDataRef.current(),
-                loadConversationRef.current(activeSessionId, { force: true }),
-            ]);
-            setScopeSheetOpen(false);
+
+            const created = await createConversation(authorizedFetch, creationPayload);
+            const createdSessionId = created.sessionId || created.id;
+            optimisticSeedConversationIdRef.current = createdSessionId;
+            activeConversationIdRef.current = createdSessionId;
+            setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
+            setWorkspaceChooserVisible(false);
+            setWorkspaceInfoOpen(false);
+            setNewProjectName("");
+            clearNewConversationIntent();
+            await setActiveConversationId(createdSessionId);
+            await loadSessionScope(createdSessionId);
         } catch (error) {
-            console.warn("[phone/chat] updateSessionScope failed", error instanceof Error ? error.message : error);
             Alert.alert(
-                t("项目上下文更新失败", "Project context update failed"),
-                t("暂时无法更新当前会话的项目上下文，请稍后重试。", "Unable to update the current session scope right now. Please try again shortly."),
+                t("创建会话失败", "Create conversation failed"),
+                error instanceof Error ? error.message : t("无法按当前工作区绑定创建会话。", "Unable to create a conversation with the selected workspace binding."),
             );
         } finally {
-            setScopeLoading(false);
+            setWorkspaceChooserBusy(false);
         }
-    }, [authorizedFetch, input, loadSessionScope, projects, t]);
+    }, [authorizedFetch, availableProjects, clearNewConversationIntent, loadSessionScope, mainWorkspacePath, setActiveConversationId, t, workspaceChooserBusy]);
 
-    const handleReresolveScope = useCallback(async () => {
-        const activeSessionId = activeConversationIdRef.current;
-        if (!activeSessionId) {
+    const handleCreateProjectConversation = useCallback(async () => {
+        const nextProjectName = newProjectName.trim();
+        if (!nextProjectName || workspaceChooserBusy) {
             return;
         }
-
-        setScopeLoading(true);
+        setWorkspaceChooserBusy(true);
         try {
-            const latestUserText = [...messagesRef.current].reverse().find((message) => message.role === "user")?.content || input;
-            const binding = await reresolveSessionScope(authorizedFetch, activeSessionId, {
-                userQuery: latestUserText,
-                projectId: selectedProjectId || undefined,
-                workspaceId: selectedProject?.workspaceId,
-                workspacePath: selectedProject?.workspacePath,
-                scopeMode: selectedProjectId ? "explicit" : "mixed",
+            const createdProject = await createProject(authorizedFetch, { name: nextProjectName });
+            const createdProjectId = String(createdProject?.id || "").trim();
+            if (!createdProjectId) {
+                throw new Error(t("项目创建成功但没有返回有效的项目标识。", "Project creation succeeded but returned no valid project id."));
+            }
+            await loadProjects();
+            const createdConversation = await createConversation(authorizedFetch, {
+                title: "",
+                projectId: createdProjectId,
+                workspaceId: createdProject.workspaceId,
+                workspacePath: createdProject.workspacePath,
+                scopeHint: createdProject.defaultScope,
+                scopeMode: "explicit",
             });
-            setScopeBinding(binding);
-            await loadSessionScope(activeSessionId);
-            await Promise.all([
-                loadSupportDataRef.current(),
-                loadConversationRef.current(activeSessionId, { force: true }),
-            ]);
+            const createdSessionId = createdConversation.sessionId || createdConversation.id;
+            optimisticSeedConversationIdRef.current = createdSessionId;
+            activeConversationIdRef.current = createdSessionId;
+            setConversations((current) => [createdConversation, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
+            setWorkspaceChooserVisible(false);
+            setWorkspaceInfoOpen(false);
+            setNewProjectName("");
+            clearNewConversationIntent();
+            await setActiveConversationId(createdSessionId);
+            await loadSessionScope(createdSessionId);
         } catch (error) {
-            console.warn("[phone/chat] re-resolve scope failed", error instanceof Error ? error.message : error);
             Alert.alert(
-                t("重新解析失败", "Re-resolve failed"),
-                t("当前会话的项目与 scope 还没重新解析成功，请稍后再试。", "The current session scope could not be re-resolved yet. Please try again shortly."),
+                t("创建项目级工作区失败", "Create project workspace failed"),
+                error instanceof Error ? error.message : t("无法创建新的项目级工作区。", "Unable to create a new project workspace."),
             );
         } finally {
-            setScopeLoading(false);
+            setWorkspaceChooserBusy(false);
         }
-    }, [authorizedFetch, input, loadSessionScope, selectedProject?.workspaceId, selectedProject?.workspacePath, selectedProjectId, t]);
+    }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectName, setActiveConversationId, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
         const [nextConversations, nextCommands, nextSkills, nextMusic] = await Promise.all([
@@ -3060,29 +3061,6 @@ export default function ChatScreen() {
         }
     }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState]);
 
-    const ensureConversation = useCallback(async () => {
-        if (activeConversationId) {
-            return { id: activeConversationId, created: false };
-        }
-
-        const scopePayload = buildScopePayload();
-        const created = await createConversation(authorizedFetch, {
-            title: "",
-            projectId: scopePayload.projectId,
-            workspaceId: scopePayload.workspaceId,
-            workspacePath: scopePayload.workspacePath,
-            scopeHint: scopePayload.scopeHint,
-            scopeMode: scopePayload.scopeMode,
-        });
-        const createdSessionId = created.sessionId || created.id;
-        optimisticSeedConversationIdRef.current = createdSessionId;
-        activeConversationIdRef.current = createdSessionId;
-        setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
-        await setActiveConversationId(createdSessionId);
-        await loadSessionScope(createdSessionId);
-        return { id: createdSessionId, created: true };
-    }, [activeConversationId, authorizedFetch, buildScopePayload, loadSessionScope, setActiveConversationId]);
-
     loadSupportDataRef.current = loadSupportData;
     loadConversationRef.current = loadConversation;
     startRealtimeRef.current = startRealtime;
@@ -3158,13 +3136,29 @@ export default function ChatScreen() {
         if (!activeConversationId) {
             setScopeBinding(null);
             setScopeLoading(false);
-            if (defaultProjectId) {
-                setSelectedProjectId((current) => current || defaultProjectId);
-            }
             return;
         }
         void loadSessionScope(activeConversationId);
-    }, [activeConversationId, defaultProjectId, loadSessionScope, status]);
+    }, [activeConversationId, loadSessionScope, status]);
+
+    useEffect(() => {
+        if (status !== "authenticated") {
+            setWorkspaceChooserVisible(false);
+            setWorkspaceInfoOpen(false);
+            setMainWorkspacePath("");
+            setProjects([]);
+            setNewProjectName("");
+            return;
+        }
+        if (activeConversationId) {
+            setWorkspaceChooserVisible(false);
+            clearNewConversationIntent();
+            return;
+        }
+        if (newConversationIntent) {
+            setWorkspaceChooserVisible(true);
+        }
+    }, [activeConversationId, clearNewConversationIntent, newConversationIntent, status]);
 
     useEffect(() => {
         if (status !== "authenticated") {
@@ -3259,6 +3253,10 @@ export default function ChatScreen() {
         setSelectedCommand(null);
         setSelectedSkills([]);
         setTaskPlanningMode(false);
+        setWorkspaceChooserVisible(false);
+        setWorkspaceInfoOpen(false);
+        setNewProjectName("");
+        clearNewConversationIntent();
         if (canonicalSessionId === activeConversationIdRef.current) {
             return;
         }
@@ -3268,7 +3266,8 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         clearActiveConversationViewState();
         await setActiveConversationId(canonicalSessionId);
-    }, [clearActiveConversationViewState, setActiveConversationId]);
+        router.replace("/chat" as Href);
+    }, [clearActiveConversationViewState, clearNewConversationIntent, setActiveConversationId]);
 
     const handleNewConversation = useCallback(async () => {
         stopRealtime();
@@ -3282,17 +3281,38 @@ export default function ChatScreen() {
         setSelectedCommand(null);
         setSelectedSkills([]);
         setTaskPlanningMode(false);
-        setScopeSheetOpen(false);
+        setWorkspaceInfoOpen(false);
+        setWorkspaceChooserVisible(true);
+        setNewProjectName("");
         setScopeBinding(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
         await setActiveConversationId(null);
+        router.replace("/chat?new=1" as Href);
     }, [clearActiveConversationViewState, setActiveConversationId, stopRealtime]);
 
     const handleBrandPress = useCallback(async () => {
-        await handleNewConversation();
+        stopRealtime();
+        optimisticSeedConversationIdRef.current = null;
+        hydratedConversationIdRef.current = null;
+        loadingConversationIdRef.current = null;
+        setHistoryOpen(false);
+        setInput("");
+        clearActiveConversationViewState();
+        setUploadedFiles([]);
+        setSelectedCommand(null);
+        setSelectedSkills([]);
+        setTaskPlanningMode(false);
+        setWorkspaceChooserVisible(false);
+        setWorkspaceInfoOpen(false);
+        setNewProjectName("");
+        setScopeBinding(null);
+        setRuntimePanelOpen(false);
+        setSelectedRuntimeId("chat");
+        await setActiveConversationId(null);
+        clearNewConversationIntent();
         router.replace("/chat" as Href);
-    }, [handleNewConversation]);
+    }, [clearActiveConversationViewState, clearNewConversationIntent, setActiveConversationId, stopRealtime]);
 
     const handleDeleteConversation = useCallback((item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
@@ -3719,6 +3739,12 @@ export default function ChatScreen() {
         if (!text && !selectedCommand && selectedSkills.length === 0 && uploadedFiles.length === 0) {
             return;
         }
+        const currentConversationId = activeConversationIdRef.current;
+        if (!currentConversationId) {
+            setWorkspaceChooserVisible(true);
+            clearNewConversationIntent();
+            return;
+        }
 
         const pendingCommand = selectedCommand;
         const pendingSkills = [...selectedSkills];
@@ -3726,7 +3752,6 @@ export default function ChatScreen() {
         let submissionAccepted = false;
         setSending(true);
         try {
-            const ensuredConversation = await ensureConversation();
             const historyMessages = messagesRef.current
                 .filter((message) => !message.uiEphemeral)
                 .map((message) => ({
@@ -3734,9 +3759,9 @@ export default function ChatScreen() {
                     content: message.content,
                 }));
 
-            if (realtimeConversationIdRef.current !== ensuredConversation.id || !realtimeAbortRef.current) {
-                activeConversationIdRef.current = ensuredConversation.id;
-                void startRealtimeRef.current(ensuredConversation.id);
+            if (realtimeConversationIdRef.current !== currentConversationId || !realtimeAbortRef.current) {
+                activeConversationIdRef.current = currentConversationId;
+                void startRealtimeRef.current(currentConversationId);
             }
 
             const userMessage = buildUserMessage(text, {
@@ -3770,7 +3795,7 @@ export default function ChatScreen() {
                 );
                 lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
                 messagesRef.current = next;
-                messageConversationIdRef.current = ensuredConversation.id;
+                messageConversationIdRef.current = currentConversationId;
                 return next;
             });
             setRuntime((current) => ({
@@ -3784,7 +3809,7 @@ export default function ChatScreen() {
 
             if (text) {
                 setConversations((current) => current.map((conversation) =>
-                    conversation.id === ensuredConversation.id
+                    conversation.id === currentConversationId
                         ? {
                             ...conversation,
                             title: isPlaceholderConversationTitle(conversation.title)
@@ -3802,7 +3827,7 @@ export default function ChatScreen() {
                 text,
                 {
                     messages: historyMessages,
-                    conversationId: ensuredConversation.id,
+                    conversationId: currentConversationId,
                     commandPresetName: pendingCommand?.name || null,
                     skillReferences: pendingSkills,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
@@ -3839,7 +3864,7 @@ export default function ChatScreen() {
                         runId: submittedRunId,
                     };
                     messagesRef.current = next;
-                    messageConversationIdRef.current = ensuredConversation.id;
+                    messageConversationIdRef.current = currentConversationId;
                     realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
                         next,
                         PHONE_STREAM_LIFECYCLE_OPTIONS,
@@ -3861,7 +3886,7 @@ export default function ChatScreen() {
         }
     }, [
         authorizedFetch,
-        ensureConversation,
+        clearNewConversationIntent,
         input,
         selectedCommand,
         selectedSkills,
@@ -3883,9 +3908,12 @@ export default function ChatScreen() {
         ? {
             icon: "hand-wave-outline" as const,
             title: getDayGreeting(locale),
-            subtitle: t("想先聊什么？", "What would you like to start with?"),
+            subtitle: t("新对话会先绑定工作区，再创建会话。", "A new conversation binds a workspace before the session is created."),
         }
         : null;
+    const currentWorkspaceLabel = boundProject?.name || t("主工作区", "Main workspace");
+    const currentWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || t("未绑定", "Unbound");
+    const showWorkspaceChooser = !activeConversationId && workspaceChooserVisible;
     const composerHorizontalInset = isLandscape ? 18 : 10;
     const composerBottomInset = Math.max(safeAreaInsets.bottom, Platform.OS === "ios" ? 8 : 10);
     const todosVisible = projection.todos.length > 0;
@@ -4073,30 +4101,38 @@ export default function ChatScreen() {
                 }
             }}
         >
-            <Composer
-                value={input}
-                onChange={setInput}
-                onSend={() => void handleSend()}
-                busy={sending}
-                isRunning={composerRunActive}
-                canStop={composerCanStop}
-                onStop={() => void handleRunCommand("interrupt")}
-                selectedCommand={selectedCommand}
-                onClearCommand={() => setSelectedCommand(null)}
-                selectedSkills={selectedSkills}
-                onRemoveSkill={(skill) => setSelectedSkills((current) =>
-                    current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
-                )}
-                taskPlanningMode={taskPlanningMode}
-                onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
-                uploadedFiles={uploadedFiles}
-                onRemoveUploadedFile={(file) => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
-                onPickAttachment={() => void handlePickAttachment()}
-                onToggleRecording={() => void handleToggleRecording()}
-                attachmentBusy={attachmentBusy}
-                recording={recorderState.isRecording}
-                transcribing={transcribing}
-            />
+            {activeConversationId ? (
+                <Composer
+                    value={input}
+                    onChange={setInput}
+                    onSend={() => void handleSend()}
+                    busy={sending}
+                    isRunning={composerRunActive}
+                    canStop={composerCanStop}
+                    onStop={() => void handleRunCommand("interrupt")}
+                    selectedCommand={selectedCommand}
+                    onClearCommand={() => setSelectedCommand(null)}
+                    selectedSkills={selectedSkills}
+                    onRemoveSkill={(skill) => setSelectedSkills((current) =>
+                        current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
+                    )}
+                    taskPlanningMode={taskPlanningMode}
+                    onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
+                    uploadedFiles={uploadedFiles}
+                    onRemoveUploadedFile={(file) => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
+                    onPickAttachment={() => void handlePickAttachment()}
+                    onToggleRecording={() => void handleToggleRecording()}
+                    attachmentBusy={attachmentBusy}
+                    recording={recorderState.isRecording}
+                    transcribing={transcribing}
+                />
+            ) : (
+                <GlassCard style={[styles.workspaceHintCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                    <Text style={[styles.workspaceHintText, { color: palette.textMuted }]}>
+                        {t("先选择主工作区或项目级工作区，再开始新对话。", "Choose the main workspace or a project workspace before starting a new conversation.")}
+                    </Text>
+                </GlassCard>
+            )}
         </View>
     );
 
@@ -4118,32 +4154,139 @@ export default function ChatScreen() {
                 <View style={styles.chatShell}>
                     <View style={[styles.chatStage, isLandscape && styles.chatStageLandscape]}>
                         <View style={styles.chatWindowWrap}>
-                            <ChatWindow
-                                adminBaseUrl={adminBaseUrl}
-                                messages={projection.projectedMessages}
-                                scrollLocked={pickerOverlayVisible}
-                                refreshing={conversationBusy}
-                                onRefresh={() => {
-                                    if (activeConversationId) {
-                                        void loadConversation(activeConversationId, { force: true });
-                                    }
-                                }}
-                                onDeleteMessage={handleDeleteMessage}
-                                speakingKey={speakingId}
-                                onSpeakVoice={handleSpeakVoice}
-                                userImageUri={profileImageUri || ""}
-                                userDisplayName={user?.name || user?.login || user?.email || ""}
-                                processes={hudProcesses}
-                                contextReferences={projection.contextReferences}
-                                pendingApproval={projection.pendingApproval}
-                                pendingApprovalCount={projection.pendingApprovalCount}
-                                approvalBusy={sending}
-                                onResolveApproval={handleApprovalResolve}
-                                onOpenApprovalPanel={openApprovalPanel}
-                                isLandscape={isLandscape}
-                                bottomInset={chatBottomInset}
-                                emptyState={greetingEmptyState}
-                            />
+                            {showWorkspaceChooser ? (
+                                <ScrollView
+                                    contentContainerStyle={styles.workspaceChooserStage}
+                                    keyboardShouldPersistTaps="handled"
+                                    showsVerticalScrollIndicator={false}
+                                >
+                                    <GlassCard style={[styles.workspaceChooserCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                                        <View style={styles.workspaceChooserHeader}>
+                                            <View style={styles.workspaceChooserHeaderBody}>
+                                                <Text style={[styles.workspaceChooserTitle, { color: palette.text }]}>
+                                                    {t("选择工作区", "Choose a workspace")}
+                                                </Text>
+                                                <Text style={[styles.workspaceChooserSubtitle, { color: palette.textMuted }]}>
+                                                    {t("历史会话始终优先；这里只在你明确开始新对话时出现。", "History always stays higher priority; this only appears when you explicitly start a new conversation.")}
+                                                </Text>
+                                            </View>
+                                            <Pressable
+                                                style={[styles.workspaceChooserCloseButton, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                                onPress={() => {
+                                                    setWorkspaceChooserVisible(false);
+                                                    clearNewConversationIntent();
+                                                }}
+                                            >
+                                                <MaterialCommunityIcons name="close" size={18} color={palette.textMuted} />
+                                            </Pressable>
+                                        </View>
+
+                                        <Pressable
+                                            style={[styles.workspaceOptionCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                            disabled={workspaceChooserBusy || !mainWorkspacePath}
+                                            onPress={() => void createBoundConversation({ kind: "main" })}
+                                        >
+                                            <Text style={[styles.workspaceOptionTitle, { color: palette.text }]}>
+                                                {t("主工作区", "Main workspace")}
+                                            </Text>
+                                            <Text style={[styles.workspaceOptionMeta, { color: palette.textMuted }]}>
+                                                {mainWorkspacePath || t("正在读取主工作区路径…", "Loading main workspace path...")}
+                                            </Text>
+                                        </Pressable>
+
+                                        <View style={[styles.workspaceChooserSection, { borderColor: palette.border }]}>
+                                            <Text style={[styles.workspaceSectionLabel, { color: palette.textMuted }]}>
+                                                {t("现有项目级工作区", "Existing project workspaces")}
+                                            </Text>
+                                            <View style={styles.workspaceOptionList}>
+                                                {availableProjects.length === 0 ? (
+                                                    <Text style={[styles.workspaceEmptyText, { color: palette.textMuted }]}>
+                                                        {t("当前还没有可用的项目级工作区。", "No project workspaces are available yet.")}
+                                                    </Text>
+                                                ) : (
+                                                    availableProjects.map((project) => (
+                                                        <Pressable
+                                                            key={project.id || project.name}
+                                                            style={[styles.workspaceOptionCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                                            disabled={workspaceChooserBusy || !project.id}
+                                                            onPress={() => project.id && void createBoundConversation({ kind: "project", projectId: project.id })}
+                                                        >
+                                                            <Text style={[styles.workspaceOptionTitle, { color: palette.text }]}>
+                                                                {project.name || project.id || t("未命名项目", "Unnamed project")}
+                                                            </Text>
+                                                            <Text style={[styles.workspaceOptionMeta, { color: palette.textMuted }]}>
+                                                                {project.workspacePath || project.id || t("路径未就绪", "Path unavailable")}
+                                                            </Text>
+                                                        </Pressable>
+                                                    ))
+                                                )}
+                                            </View>
+                                        </View>
+
+                                        <View style={[styles.workspaceChooserSection, { borderColor: palette.border }]}>
+                                            <Text style={[styles.workspaceSectionLabel, { color: palette.textMuted }]}>
+                                                {t("新建项目级工作区", "Create a project workspace")}
+                                            </Text>
+                                            <Text style={[styles.workspaceSectionHint, { color: palette.textMuted }]}>
+                                                {t("这里只填项目名称；系统会在 ~/.v8-agent-os/workspace/projects 下自动创建路径。", "Only a project name is needed here; the system creates the path under ~/.v8-agent-os/workspace/projects automatically.")}
+                                            </Text>
+                                            <View style={styles.workspaceCreateRow}>
+                                                <TextInput
+                                                    value={newProjectName}
+                                                    onChangeText={setNewProjectName}
+                                                    placeholder={t("输入项目名称", "Enter a project name")}
+                                                    placeholderTextColor={palette.textSoft}
+                                                    style={[styles.workspaceNameInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border }]}
+                                                />
+                                                <Pressable
+                                                    style={[
+                                                        styles.workspaceCreateButton,
+                                                        {
+                                                            backgroundColor: palette.primary,
+                                                            opacity: workspaceChooserBusy || newProjectName.trim().length === 0 ? 0.56 : 1,
+                                                        },
+                                                    ]}
+                                                    disabled={workspaceChooserBusy || newProjectName.trim().length === 0}
+                                                    onPress={() => void handleCreateProjectConversation()}
+                                                >
+                                                    {workspaceChooserBusy ? (
+                                                        <ActivityIndicator size="small" color="#FFFFFF" />
+                                                    ) : (
+                                                        <Text style={styles.workspaceCreateButtonText}>{t("创建并开始", "Create and start")}</Text>
+                                                    )}
+                                                </Pressable>
+                                            </View>
+                                        </View>
+                                    </GlassCard>
+                                </ScrollView>
+                            ) : (
+                                <ChatWindow
+                                    adminBaseUrl={adminBaseUrl}
+                                    messages={projection.projectedMessages}
+                                    scrollLocked={pickerOverlayVisible}
+                                    refreshing={conversationBusy}
+                                    onRefresh={() => {
+                                        if (activeConversationId) {
+                                            void loadConversation(activeConversationId, { force: true });
+                                        }
+                                    }}
+                                    onDeleteMessage={handleDeleteMessage}
+                                    speakingKey={speakingId}
+                                    onSpeakVoice={handleSpeakVoice}
+                                    userImageUri={profileImageUri || ""}
+                                    userDisplayName={user?.name || user?.login || user?.email || ""}
+                                    processes={hudProcesses}
+                                    contextReferences={projection.contextReferences}
+                                    pendingApproval={projection.pendingApproval}
+                                    pendingApprovalCount={projection.pendingApprovalCount}
+                                    approvalBusy={sending}
+                                    onResolveApproval={handleApprovalResolve}
+                                    onOpenApprovalPanel={openApprovalPanel}
+                                    isLandscape={isLandscape}
+                                    bottomInset={chatBottomInset}
+                                    emptyState={greetingEmptyState}
+                                />
+                            )}
 
                             <View pointerEvents="box-none" style={[styles.chatStageHeader, isLandscape && styles.chatStageHeaderLandscape]}>
                                 <View style={[styles.chatStageTopRow, isLandscape && styles.chatStageTopRowLandscape]}>
@@ -4168,24 +4311,31 @@ export default function ChatScreen() {
                                     >
                                         <Pressable
                                             accessibilityRole="button"
-                                            accessibilityLabel={t("项目上下文", "Project context")}
+                                            accessibilityLabel={t("当前工作区", "Current workspace")}
                                             style={[
                                                 styles.scopeTrigger,
                                                 {
-                                                    backgroundColor: scopeSheetOpen ? palette.primarySoft : palette.surfaceStrong,
-                                                    borderColor: scopeSheetOpen ? `${palette.primary}33` : palette.border,
+                                                    backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : palette.surfaceStrong,
+                                                    borderColor: workspaceInfoOpen || workspaceChooserVisible ? `${palette.primary}33` : palette.border,
                                                 },
                                             ]}
-                                            onPress={() => setScopeSheetOpen(true)}
+                                            onPress={() => {
+                                                if (activeConversationId) {
+                                                    setWorkspaceInfoOpen(true);
+                                                    return;
+                                                }
+                                                setWorkspaceChooserVisible(true);
+                                                clearNewConversationIntent();
+                                            }}
                                         >
                                             <View style={styles.scopeTriggerIconWrap}>
                                                 {scopeLoading ? (
-                                                    <ActivityIndicator size="small" color={scopeSheetOpen ? palette.primary : palette.textMuted} />
+                                                    <ActivityIndicator size="small" color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted} />
                                                 ) : (
                                                     <MaterialCommunityIcons
                                                         name="file-tree-outline"
                                                         size={16}
-                                                        color={scopeSheetOpen ? palette.primary : palette.textMuted}
+                                                        color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
                                                     />
                                                 )}
                                             </View>
@@ -4262,21 +4412,21 @@ export default function ChatScreen() {
                     onClose={handleGovernanceApprovalDismiss}
                 />
 
-                <Modal visible={scopeSheetOpen} transparent animationType="fade" onRequestClose={() => setScopeSheetOpen(false)}>
+                <Modal visible={workspaceInfoOpen} transparent animationType="fade" onRequestClose={() => setWorkspaceInfoOpen(false)}>
                     <View style={[styles.scopeSheetOverlay, { backgroundColor: palette.overlay }]}>
-                        <Pressable style={StyleSheet.absoluteFill} onPress={() => setScopeSheetOpen(false)} />
+                        <Pressable style={StyleSheet.absoluteFill} onPress={() => setWorkspaceInfoOpen(false)} />
                         <GlassCard style={[styles.scopeSheetCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
                             <View style={[styles.scopeSheetHandle, { backgroundColor: palette.border }]} />
                             <View style={styles.scopeSheetHeader}>
                                 <View style={styles.scopeSheetHeaderText}>
-                                    <Text style={[styles.contextTitle, { color: palette.text }]}>{t("项目上下文", "Project context")}</Text>
+                                    <Text style={[styles.contextTitle, { color: palette.text }]}>{t("当前工作区", "Current workspace")}</Text>
                                     <Text style={[styles.contextSubtitle, { color: palette.textMuted }]}>
-                                        {t("和网页端保持同一条 session scope 真相链。", "Keep the same session scope truth as web.")}
+                                        {t("当前会话的工作区绑定在创建后已冻结；如需切换，请新建对话。", "This conversation binding is frozen after creation. Start a new conversation to switch workspaces.")}
                                     </Text>
                                 </View>
                                 <Pressable
                                     style={[styles.scopeSheetCloseButton, { backgroundColor: palette.surface, borderColor: palette.border }]}
-                                    onPress={() => setScopeSheetOpen(false)}
+                                    onPress={() => setWorkspaceInfoOpen(false)}
                                 >
                                     <MaterialCommunityIcons name="close" size={18} color={palette.textMuted} />
                                 </Pressable>
@@ -4290,103 +4440,46 @@ export default function ChatScreen() {
                             >
                                 <View style={styles.scopeSheetSection}>
                                     <Text style={[styles.scopeSheetSectionLabel, { color: palette.textMuted }]}>
-                                        {t("项目选择", "Project selection")}
+                                        {t("当前绑定", "Current binding")}
                                     </Text>
                                     <View style={styles.scopeOptionGrid}>
-                                        <Pressable
-                                            style={[
-                                                styles.scopeOptionChip,
-                                                {
-                                                    backgroundColor: !selectedProjectId ? palette.primarySoft : palette.surface,
-                                                    borderColor: !selectedProjectId ? `${palette.primary}33` : palette.border,
-                                                },
-                                            ]}
-                                            disabled={scopeLoading}
-                                            onPress={() => void handleProjectSelect("__auto__")}
-                                        >
-                                            <Text style={[styles.scopeOptionTitle, { color: !selectedProjectId ? palette.primaryDeep : palette.text }]}>
-                                                {t("自动推断项目", "Auto-detect project")}
+                                        <View style={[styles.scopeOptionChip, { backgroundColor: palette.primarySoft, borderColor: `${palette.primary}33` }]}>
+                                            <Text style={[styles.scopeOptionTitle, { color: palette.primaryDeep }]}>
+                                                {currentWorkspaceLabel}
                                             </Text>
                                             <Text style={[styles.scopeOptionMeta, { color: palette.textMuted }]}>
-                                                {t("继续使用会话内容重新解析。", "Re-resolve from the current session context.")}
+                                                {currentWorkspacePath}
                                             </Text>
-                                        </Pressable>
-                                        {availableProjects.map((project) => {
-                                            const active = project.id === selectedProjectId;
-                                            return (
-                                                <Pressable
-                                                    key={project.id || project.name}
-                                                    style={[
-                                                        styles.scopeOptionChip,
-                                                        {
-                                                            backgroundColor: active ? palette.primarySoft : palette.surface,
-                                                            borderColor: active ? `${palette.primary}33` : palette.border,
-                                                        },
-                                                    ]}
-                                                    disabled={scopeLoading}
-                                                    onPress={() => void handleProjectSelect(project.id || "")}
-                                                >
-                                                    <Text style={[styles.scopeOptionTitle, { color: active ? palette.primaryDeep : palette.text }]}>
-                                                        {project.name || project.id || t("未命名项目", "Unnamed project")}
-                                                    </Text>
-                                                    <Text style={[styles.scopeOptionMeta, { color: palette.textMuted }]}>
-                                                        {project.defaultScope || project.workspaceId || t("未绑定工作区", "No workspace bound")}
-                                                    </Text>
-                                                </Pressable>
-                                            );
-                                        })}
+                                        </View>
                                     </View>
                                 </View>
 
                                 <View style={styles.scopeSheetSection}>
                                     <Text style={[styles.scopeSheetSectionLabel, { color: palette.textMuted }]}>
-                                        {t("当前绑定", "Current binding")}
+                                        {t("会话信息", "Conversation info")}
                                     </Text>
                                     <View style={styles.contextChips}>
                                         <View style={[styles.contextChip, { backgroundColor: palette.primarySoft, borderColor: `${palette.primary}1A` }]}>
                                             <Text style={[styles.contextChipText, { color: palette.primaryDeep }]}>
-                                                {t("项目", "Project")}：{selectedProject?.name || t("自动", "Auto")}
+                                                {t("会话", "Conversation")}：{projection.activeConversation?.title || t("当前对话", "Current conversation")}
                                             </Text>
                                         </View>
                                         <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                                             <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
-                                                Scope：{scopeBinding?.resolvedScope || t("待解析", "Pending")}
+                                                {t("工作区类型", "Workspace kind")}：{currentWorkspaceLabel}
                                             </Text>
                                         </View>
                                         <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                                             <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
-                                                {t("来源", "Source")}：{scopeBinding?.scopeSource || t("未绑定", "Unbound")}
+                                                Scope：{scopeBinding?.resolvedScope || "global"}
                                             </Text>
                                         </View>
-                                        {scopeBinding?.workspaceId ? (
-                                            <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                                                <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
-                                                    {t("工作区", "Workspace")}：{scopeBinding.workspaceId}
-                                                </Text>
-                                            </View>
-                                        ) : null}
-                                        {availableProjects.length === 0 && !scopeLoading ? (
-                                            <Text style={[styles.scopeHintText, { color: palette.textMuted }]}>
-                                                {t("当前还没有可用的项目注册表。", "No project registry is available yet.")}
+                                        <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                                            <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
+                                                {t("路径", "Path")}：{currentWorkspacePath}
                                             </Text>
-                                        ) : null}
+                                        </View>
                                     </View>
-                                </View>
-
-                                <View style={styles.scopeSheetActions}>
-                                    <Pressable
-                                        style={[
-                                            styles.scopeActionButton,
-                                            { backgroundColor: palette.surface, borderColor: palette.border, opacity: activeConversationId && !scopeLoading ? 1 : 0.56 },
-                                        ]}
-                                        disabled={!activeConversationId || scopeLoading}
-                                        onPress={() => void handleReresolveScope()}
-                                    >
-                                        {scopeLoading ? <ActivityIndicator size="small" color={palette.textMuted} /> : <MaterialCommunityIcons name="refresh" size={15} color={palette.textMuted} />}
-                                        <Text style={[styles.scopeActionButtonText, { color: palette.text }]}>
-                                            {t("重新解析", "Re-resolve")}
-                                        </Text>
-                                    </Pressable>
                                 </View>
                             </ScrollView>
                         </GlassCard>
@@ -4826,6 +4919,115 @@ const styles = StyleSheet.create({
     contextChipText: {
         fontSize: 11,
         fontWeight: "700",
+    },
+    workspaceChooserStage: {
+        flexGrow: 1,
+        justifyContent: "center",
+        paddingHorizontal: 16,
+        paddingTop: 88,
+        paddingBottom: 180,
+    },
+    workspaceChooserCard: {
+        borderRadius: 24,
+        borderWidth: 1,
+        paddingHorizontal: 16,
+        paddingVertical: 16,
+        gap: 14,
+    },
+    workspaceChooserHeader: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 12,
+    },
+    workspaceChooserHeaderBody: {
+        flex: 1,
+        gap: 4,
+    },
+    workspaceChooserTitle: {
+        fontSize: 16,
+        fontWeight: "900",
+        letterSpacing: -0.3,
+    },
+    workspaceChooserSubtitle: {
+        fontSize: 12,
+        lineHeight: 18,
+    },
+    workspaceChooserCloseButton: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    workspaceChooserSection: {
+        gap: 10,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        paddingTop: 14,
+    },
+    workspaceSectionLabel: {
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    workspaceSectionHint: {
+        fontSize: 11,
+        lineHeight: 17,
+    },
+    workspaceOptionList: {
+        gap: 8,
+    },
+    workspaceOptionCard: {
+        borderRadius: 18,
+        borderWidth: 1,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        gap: 4,
+    },
+    workspaceOptionTitle: {
+        fontSize: 14,
+        fontWeight: "800",
+    },
+    workspaceOptionMeta: {
+        fontSize: 11,
+        lineHeight: 17,
+    },
+    workspaceEmptyText: {
+        fontSize: 12,
+        lineHeight: 18,
+    },
+    workspaceCreateRow: {
+        gap: 10,
+    },
+    workspaceNameInput: {
+        minHeight: 46,
+        borderRadius: 16,
+        borderWidth: 1,
+        paddingHorizontal: 14,
+        fontSize: 14,
+        fontWeight: "600",
+    },
+    workspaceCreateButton: {
+        minHeight: 44,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 14,
+    },
+    workspaceCreateButtonText: {
+        color: "#FFFFFF",
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    workspaceHintCard: {
+        borderRadius: 18,
+        borderWidth: 1,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+    },
+    workspaceHintText: {
+        fontSize: 13,
+        lineHeight: 19,
+        textAlign: "center",
     },
     scopeSheetOverlay: {
         flex: 1,

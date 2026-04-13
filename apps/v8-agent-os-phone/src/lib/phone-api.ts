@@ -45,6 +45,11 @@ type CreateConversationInput = {
     scopeMode?: string;
 };
 
+type CreateProjectInput = {
+    name: string;
+    workspacePath?: string;
+};
+
 function normalizeArray<T>(value: unknown): T[] {
     return Array.isArray(value) ? (value as T[]) : [];
 }
@@ -177,7 +182,7 @@ export async function listProjects(authorizedFetch: AuthorizedFetch) {
 }
 
 export async function getProjectsRegistry(authorizedFetch: AuthorizedFetch) {
-    const payload = await authorizedJson<{ projects?: ProjectSummary[] }>(
+    const payload = await authorizedJson<{ projects?: ProjectSummary[]; defaultProjectId?: string | null; mainWorkspacePath?: string }>(
         authorizedFetch,
         "/api/client/projects",
         "读取项目列表失败",
@@ -188,7 +193,21 @@ export async function getProjectsRegistry(authorizedFetch: AuthorizedFetch) {
         defaultProjectId: typeof (payload as { defaultProjectId?: unknown }).defaultProjectId === "string"
             ? (payload as { defaultProjectId?: string }).defaultProjectId
             : null,
+        mainWorkspacePath: typeof payload.mainWorkspacePath === "string" ? payload.mainWorkspacePath : "",
     };
+}
+
+export async function createProject(authorizedFetch: AuthorizedFetch, input: CreateProjectInput) {
+    return authorizedJson<ProjectSummary>(
+        authorizedFetch,
+        "/api/client/projects",
+        "创建项目级工作区失败",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+        },
+    );
 }
 
 export async function getSessionScope(authorizedFetch: AuthorizedFetch, sessionId: string) {

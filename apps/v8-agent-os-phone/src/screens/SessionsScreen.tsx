@@ -18,7 +18,7 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { conversationGroupOrder, getConversationGroupLabel, groupConversations, type ConversationGroupKey } from "@/src/lib/conversation-groups";
-import { createConversation, deleteConversation, listConversations } from "@/src/lib/phone-api";
+import { deleteConversation, listConversations } from "@/src/lib/phone-api";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -69,10 +69,8 @@ export default function SessionsScreen() {
     const createNew = async () => {
         setBusy(true);
         try {
-            const created = await createConversation(authorizedFetch, t("新对话", "New chat"));
-            await setActiveConversationId(created.sessionId || created.id);
-            await load();
-            router.push("/chat" as Href);
+            await setActiveConversationId(null);
+            router.push("/chat?new=1" as Href);
         } catch (error) {
             Alert.alert(t("创建失败", "Create failed"), error instanceof Error ? error.message : t("无法创建新会话", "Unable to create a new conversation"));
         } finally {

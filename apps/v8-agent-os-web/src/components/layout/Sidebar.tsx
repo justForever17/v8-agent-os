@@ -68,7 +68,7 @@ export function Sidebar() {
 
     const handleNewChat = () => {
         setIsMobileOpen(false);
-        router.push("/chat");
+        router.push("/chat?new=1");
     };
 
     const handleNavigation = (id: string) => {

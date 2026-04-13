@@ -462,7 +462,7 @@ async def create_session(data: dict = Body(...)):
             title=data.get("title", "New Chat"),
             user_id=data.get("userId", "anonymous"),
         )
-        if data.get("projectId") or data.get("workspaceId") or data.get("scopeHint"):
+        if data.get("projectId") or data.get("workspaceId") or data.get("workspacePath") or data.get("scopeHint"):
             scope_resolution_service.resolve(
                 session_id=session_id,
                 conversation_id=session_id,

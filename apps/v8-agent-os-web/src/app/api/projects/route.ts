@@ -34,3 +34,8 @@ async function proxyToAdmin(path: string, method: string, body?: unknown) {
 export async function GET() {
     return proxyToAdmin("/projects", "GET");
 }
+
+export async function POST(req: Request) {
+    const body = await req.json().catch(() => ({}));
+    return proxyToAdmin("/projects", "POST", body);
+}

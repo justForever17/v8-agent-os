@@ -21,6 +21,7 @@ from core.model_control_plane import model_control_plane
 from core.realtime_protocol import format_ndjson
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls
 from core.storage import storage
+from core.workspace_resolution import workspace_resolution_service
 from runtimes.chat.runtime import StreamFilter
 from runtimes.memory.prompts import render_memory_admin_chat_prompt
 from runtimes.memory.project_registry import project_registry_service
@@ -400,6 +401,7 @@ async def list_projects():
     try:
         return {
             "defaultProjectId": storage.get_projects_registry().get("defaultProjectId"),
+            "mainWorkspacePath": workspace_resolution_service.get_main_workspace_path(),
             "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in project_registry_service.list_projects()],
         }
     except Exception as e:

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.v8_agent_os_paths import WORKSPACE_HOME
 from core.database import db
 from persistence.repositories.project_registry_repository import ProjectRegistryRepository
 from persistence.repositories.scope_binding_repository import ScopeBindingRepository
@@ -42,7 +44,18 @@ class ProjectRegistryService:
         prepared_payload["id"] = project_id
         if not str(prepared_payload.get("workspaceId") or "").strip():
             prepared_payload["workspaceId"] = project_id
+        workspace_path = str(
+            prepared_payload.get("workspacePath") or prepared_payload.get("workspace_path") or ""
+        ).strip()
+        if not workspace_path:
+            workspace_path = str(self._default_project_workspace_path(project_id))
+            prepared_payload["workspacePath"] = workspace_path
         prepared_payload["defaultScope"] = f"project:{project_id}"
+
+        try:
+            Path(workspace_path).expanduser().mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to create project workspace directory: {workspace_path}") from exc
 
         descriptor = ProjectDescriptor.model_validate(prepared_payload).normalized()
         saved = self.project_repo.save_project(descriptor)
@@ -243,6 +256,10 @@ class ProjectRegistryService:
         while f"{slug}-{suffix}" in existing_ids:
             suffix += 1
         return f"{slug}-{suffix}"
+
+    @staticmethod
+    def _default_project_workspace_path(project_id: str) -> Path:
+        return WORKSPACE_HOME.expanduser() / "projects" / str(project_id or "").strip()
 
 
 project_registry_service = ProjectRegistryService()

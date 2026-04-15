@@ -8,16 +8,13 @@ from core.context_governance import (
 )
 from core.database import db
 from core.runtime_projection import (
-    apply_projection_overlay,
-    build_chat_projection_snapshot,
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
-    format_durable_chat_messages,
-    merge_authoritative_timeline_messages,
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
+from erc.chat_canonical_transcript import build_canonical_chat_messages
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
 from erc.session_realtime_contract import (
@@ -32,15 +29,52 @@ from erc.workflow_projection import workflow_projection_service
 
 
 class SnapshotService:
-    def _merge_authoritative_messages(self, session_id: str, snapshot: Dict) -> Dict:
-        if not isinstance(snapshot, dict):
-            return snapshot
-        durable_messages = format_durable_chat_messages(db.get_messages(session_id))
-        merged_messages = merge_authoritative_timeline_messages(
-            snapshot.get("messages") if isinstance(snapshot.get("messages"), list) else [],
-            durable_messages,
-        )
-        return {**snapshot, "messages": merged_messages}
+    @staticmethod
+    def _flatten_artifacts(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        artifacts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for message in messages:
+            for artifact in list(message.get("artifacts") or []):
+                if not isinstance(artifact, dict):
+                    continue
+                fingerprint = str(
+                    artifact.get("id")
+                    or artifact.get("artifactId")
+                    or artifact.get("workspacePath")
+                    or artifact.get("sourcePath")
+                    or artifact.get("previewUrl")
+                    or artifact.get("externalUrl")
+                    or ""
+                ).strip()
+                if fingerprint and fingerprint in seen:
+                    continue
+                if fingerprint:
+                    seen.add(fingerprint)
+                artifacts.append(dict(artifact))
+        return artifacts
+
+    def _has_legacy_chat_data(self, session_id: str) -> bool:
+        if db.get_chat_canonical_max_version(session_id) > 0:
+            return False
+        return bool(db.get_messages(session_id) or db.get_runtime_events(session_id))
+
+    def _build_projection_snapshot(
+        self,
+        session_id: str,
+        *,
+        latest_seq: int,
+        canonical_version: int,
+        legacy_chat_unsupported: bool = False,
+    ) -> Dict:
+        messages = build_canonical_chat_messages(session_id) if canonical_version > 0 else []
+        return {
+            "session_id": session_id,
+            "latest_seq": latest_seq,
+            "canonicalVersion": canonical_version,
+            "legacyChatUnsupported": legacy_chat_unsupported,
+            "messages": messages,
+            "artifacts": self._flatten_artifacts(messages),
+        }
 
     def record_runtime_snapshot(
         self,
@@ -62,15 +96,19 @@ class SnapshotService:
         return snapshot
 
     def refresh_chat_projection(self, session_id: str, *, run_id: Optional[str] = None) -> Dict:
-        runtime_events = db.get_runtime_events(session_id)
-        snapshot = build_chat_projection_snapshot(session_id, runtime_events)
-        snapshot = self._merge_authoritative_messages(session_id, snapshot)
-        snapshot = apply_projection_overlay(snapshot, workflow_ledger_service.get_session_projection_overlay(session_id))
-        snapshot = self._merge_authoritative_messages(session_id, snapshot)
+        latest_seq = db.get_latest_runtime_seq(session_id)
+        canonical_version = db.get_chat_canonical_max_version(session_id)
+        legacy_chat_unsupported = canonical_version <= 0 and self._has_legacy_chat_data(session_id)
+        snapshot = self._build_projection_snapshot(
+            session_id,
+            latest_seq=latest_seq,
+            canonical_version=canonical_version,
+            legacy_chat_unsupported=legacy_chat_unsupported,
+        )
         self.record_runtime_snapshot(
             session_id=session_id,
-            run_id=run_id or (runtime_events[-1].get("run_id") if runtime_events else None),
-            latest_seq=snapshot["latest_seq"],
+            run_id=run_id,
+            latest_seq=latest_seq,
             snapshot_type="chat_projection",
             snapshot=snapshot,
         )
@@ -79,23 +117,23 @@ class SnapshotService:
     def ensure_chat_projection_row(self, session_id: str) -> Optional[Dict]:
         snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
         latest_runtime_seq = db.get_latest_runtime_seq(session_id)
+        latest_canonical_version = db.get_chat_canonical_max_version(session_id)
         if (
             not snapshot_row
             or int(snapshot_row.get("latest_seq") or 0) < latest_runtime_seq
+            or int((snapshot_row.get("snapshot") or {}).get("canonicalVersion") or 0) < latest_canonical_version
         ):
-            runtime_events = db.get_runtime_events(session_id)
-            if runtime_events:
-                self.refresh_chat_projection(
-                    session_id,
-                    run_id=runtime_events[-1].get("run_id"),
-                )
-                snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
-        elif snapshot_row:
-            snapshot_row["snapshot"] = apply_projection_overlay(
-                snapshot_row.get("snapshot", {}),
-                workflow_ledger_service.get_session_projection_overlay(session_id),
+            self.refresh_chat_projection(session_id)
+            snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
+        elif snapshot_row and not isinstance(snapshot_row.get("snapshot"), dict):
+            snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
+        if snapshot_row and isinstance(snapshot_row.get("snapshot"), dict):
+            snapshot = dict(snapshot_row.get("snapshot") or {})
+            snapshot["canonicalVersion"] = max(
+                int(snapshot.get("canonicalVersion") or 0),
+                latest_canonical_version,
             )
-            snapshot_row["snapshot"] = self._merge_authoritative_messages(session_id, snapshot_row.get("snapshot", {}))
+            snapshot_row["snapshot"] = snapshot
         return snapshot_row
 
     def build_chat_projection_payload(self, session_id: str) -> Dict:
@@ -128,8 +166,7 @@ class SnapshotService:
             lane_view=lane_view,
         )
         if not snapshot_row:
-            overlay = workflow_ledger_service.get_session_projection_overlay(session_id)
-            source = "projection_overlay"
+            source = "canonical_projection"
             workflow_projection = augment_workflow_projection(
                 workflow_projection_service.build(session_id=session_id),
                 todos=todos,
@@ -137,41 +174,13 @@ class SnapshotService:
                 runtime_status=runtime_status,
                 latest_seq=0,
             )
-            if not overlay:
-                controls = build_projection_controls(workflow_view, pending_approvals)
-                return {
-                    "session_id": session_id,
-                    "snapshot": None,
-                    "latestSeq": 0,
-                    "runtimeTimeline": runtime_timeline,
-                    "workflow": workflow_view,
-                    "workflowProjection": workflow_projection,
-                    "approvals": pending_approvals,
-                    "controls": controls,
-                    "recoverable": build_recoverable_view(workflow_view, controls),
-                    "todos": todos,
-                    "processes": [],
-                    "contextReferences": [],
-                    "currentRun": current_run,
-                    "runtimeStatus": runtime_status,
-                    "summary": build_projection_summary(
-                        session=session_row,
-                        snapshot=None,
-                        workflow=workflow_view,
-                        approvals=pending_approvals,
-                        latest_seq=0,
-                        source=source,
-                    ),
-                    "source": source,
-                    "contextGovernance": context_governance,
-                    "contextGovernanceHistory": context_governance_history,
-                    "lane": lane_view,
-                    "liveness": liveness,
-                    "recoveryClass": recovery_class,
-                }
-            base_snapshot = {"session_id": session_id, "latest_seq": 0, "messages": [], "artifacts": []}
-            snapshot = apply_projection_overlay(base_snapshot, overlay)
-            latest_seq = int(overlay.get("lastEventSeq") or 0)
+            latest_seq = 0
+            snapshot = self._build_projection_snapshot(
+                session_id,
+                latest_seq=latest_seq,
+                canonical_version=0,
+                legacy_chat_unsupported=self._has_legacy_chat_data(session_id),
+            )
             workflow_projection = augment_workflow_projection(
                 workflow_projection,
                 todos=todos,
@@ -209,8 +218,9 @@ class SnapshotService:
                 "lane": lane_view,
                 "liveness": liveness,
                 "recoveryClass": recovery_class,
+                "legacyChatUnsupported": bool(snapshot.get("legacyChatUnsupported")),
             }
-        snapshot = self._merge_authoritative_messages(session_id, snapshot_row.get("snapshot", {}))
+        snapshot = snapshot_row.get("snapshot", {})
         latest_seq = int(snapshot_row.get("latest_seq", 0) or 0)
         controls = build_projection_controls(workflow_view, pending_approvals)
         workflow_projection = augment_workflow_projection(
@@ -241,14 +251,15 @@ class SnapshotService:
                 workflow=workflow_view,
                 approvals=pending_approvals,
                 latest_seq=latest_seq,
-                source="runtime_snapshot",
+                source="canonical_snapshot",
             ),
-            "source": "runtime_snapshot",
+            "source": "canonical_snapshot",
             "contextGovernance": context_governance,
             "contextGovernanceHistory": context_governance_history,
             "lane": lane_view,
             "liveness": liveness,
             "recoveryClass": recovery_class,
+            "legacyChatUnsupported": bool(snapshot.get("legacyChatUnsupported")),
         }
 
     def get_latest_chat_projection(self, session_id: str) -> Optional[Dict]:

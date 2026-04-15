@@ -88,12 +88,16 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
     return null;
   }
   const summary = String(
-    normalized.data?.label
-    || normalized.data?.summary
-    || normalized.data?.message
-    || normalized.data?.question
-    || normalized.content
-    || topic,
+    normalized.type === "reasoning_chunk"
+      ? (normalized.data?.snapshot || normalized.data?.summary || "正在思考...")
+      : (
+          normalized.data?.label
+          || normalized.data?.summary
+          || normalized.data?.message
+          || normalized.data?.question
+          || normalized.content
+          || topic
+        ),
   ).trim();
   if (!summary) {
     return null;

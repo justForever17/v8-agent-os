@@ -24,9 +24,17 @@ class AuthoritativeSessionRuntimeState:
 def build_current_run_view(run_record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not run_record:
         return None
+    session_id = str(run_record.get("session_id") or "").strip() or None
+    run_id = str(run_record.get("id") or "").strip() or None
+    canonical_message = (
+        db.get_chat_canonical_message_by_run(session_id=session_id, run_id=run_id, role="assistant")
+        if session_id and run_id
+        else None
+    )
     return {
-        "id": run_record.get("id"),
-        "session_id": run_record.get("session_id"),
+        "id": run_id,
+        "session_id": session_id,
+        "messageId": canonical_message.get("id") if isinstance(canonical_message, dict) else None,
         "status": run_record.get("status"),
         "started_at": run_record.get("started_at"),
         "finished_at": run_record.get("finished_at"),

@@ -123,7 +123,15 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
     const preferIncomingId = nextId && (!currentId || currentId.startsWith("user-") || currentId.startsWith("assistant-"));
     const existingContent = String(existing.content || "");
     const incomingContent = String(incoming.content || "");
-    const content = incomingContent.length >= existingContent.length ? incomingContent : existingContent;
+    const existingTranscriptVersion = Number((existing.metadata || {}).transcriptVersion || 0);
+    const incomingTranscriptVersion = Number((incoming.metadata || {}).transcriptVersion || 0);
+    const existingCanonical = existingTranscriptVersion > 0 || (existing.nodes?.length || 0) > 0;
+    const incomingCanonical = incomingTranscriptVersion > 0 || (incoming.nodes?.length || 0) > 0;
+    const content = incomingCanonical
+        ? (incomingContent || existingContent)
+        : existingCanonical
+            ? (existingContent || incomingContent)
+            : (incomingContent.length >= existingContent.length ? incomingContent : existingContent);
 
     return {
         ...existing,
@@ -151,6 +159,9 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
 function normalizeProjectedPartsToNodes(message: ChatMessage) {
     const rawMessage = message as ChatMessage & { parts?: unknown };
     const parts = Array.isArray(rawMessage.parts) ? (rawMessage.parts as ProjectedMessagePart[]) : [];
+    if (Array.isArray(message.nodes) && message.nodes.length > 0) {
+        return normalizeMessageNodes(message.nodes.map((node) => ({ ...node })));
+    }
     if (!parts.length) {
         return Array.isArray(message.nodes) ? normalizeMessageNodes(message.nodes.map((node) => ({ ...node }))) : [];
     }

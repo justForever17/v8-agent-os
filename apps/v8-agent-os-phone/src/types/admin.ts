@@ -320,6 +320,7 @@ export type ConversationDetail = {
     artifacts?: ArtifactDetail[];
     projection?: RealtimeSessionSnapshot & Record<string, unknown>;
     summary?: { title?: string };
+    legacyChatUnsupported?: boolean;
 };
 
 export type SessionTodoItem = {
@@ -360,8 +361,10 @@ export type RealtimeSessionSnapshot = {
     snapshot?: {
         messages?: ChatMessage[];
         artifacts?: ChatArtifact[];
+        legacyChatUnsupported?: boolean;
         [key: string]: unknown;
     };
+    legacyChatUnsupported?: boolean;
 };
 
 export type OperationsSummary = {

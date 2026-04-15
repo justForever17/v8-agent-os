@@ -17,13 +17,11 @@ from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
-    format_durable_chat_messages,
-    merge_authoritative_timeline_messages,
-    project_chat_messages_from_events,
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
 from erc.capability_registry import capability_registry
+from erc.chat_canonical_transcript import build_canonical_chat_messages
 from erc.command_router import runtime_command_router
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
@@ -280,9 +278,30 @@ async def get_session_messages(session_id: str):
                 "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
                 "projection": snapshot_payload,
             }
+        if snapshot_payload.get("legacyChatUnsupported") or snapshot.get("legacyChatUnsupported"):
+            return {
+                "messages": [],
+                "artifacts": [],
+                "source": snapshot_payload.get("source") or "legacy_chat_unsupported",
+                "latestSeq": snapshot_payload.get("latestSeq", 0),
+                "runtimeTimeline": snapshot_payload.get("runtimeTimeline") or [],
+                "workflow": snapshot_payload.get("workflow"),
+                "workflowProjection": snapshot_payload.get("workflowProjection"),
+                "approvals": snapshot_payload.get("approvals") or [],
+                "controls": snapshot_payload.get("controls") or {},
+                "recoverable": snapshot_payload.get("recoverable") or {},
+                "todos": snapshot_payload.get("todos") or {"items": [], "allCompleted": False},
+                "currentRun": snapshot_payload.get("currentRun"),
+                "runtimeStatus": snapshot_payload.get("runtimeStatus"),
+                "summary": snapshot_payload.get("summary") or {},
+                "contextGovernance": snapshot_payload.get("contextGovernance"),
+                "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
+                "projection": snapshot_payload,
+                "legacyChatUnsupported": True,
+            }
 
         session_row = db.get_session(session_id) or {"id": session_id, "title": "New Chat", "metadata": {}}
-        durable_messages = format_durable_chat_messages(db.get_messages(session_id))
+        durable_messages = build_canonical_chat_messages(session_id)
         runtime_events = db.get_runtime_events(session_id)
         context_governance = extract_latest_context_governance(runtime_events)
         context_governance_history = extract_context_governance_history(runtime_events)
@@ -519,21 +538,13 @@ async def get_session_history(session_id: str):
         snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
         snapshot = snapshot_payload.get("snapshot")
         latest_seq = int(snapshot_payload.get("latestSeq") or 0)
-        snapshot_messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
-        durable_messages = format_durable_chat_messages(db.get_messages(session_id))
-        event_projected_messages = project_chat_messages_from_events(runtime_events)
-        timeline_messages = merge_authoritative_timeline_messages(
-            event_projected_messages,
-            durable_messages,
-        )
-        timeline_messages = merge_authoritative_timeline_messages(
-            timeline_messages,
-            list(snapshot_messages) if isinstance(snapshot_messages, list) else None,
-        )
+        timeline_messages = build_canonical_chat_messages(session_id)
+        if not timeline_messages and (snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported")):
+            timeline_messages = []
         root_run_id = str(workflow_view.get("rootRunId") or "").strip()
         run_record = db.get_run_record(root_run_id) if root_run_id else None
         session_source = _derive_session_source(session_row, run_record)
-        return build_session_history_detail(
+        detail = build_session_history_detail(
             session_row={**session_row, "controls": controls},
             workflow_view=workflow_view,
             approvals=approvals,
@@ -545,6 +556,9 @@ async def get_session_history(session_id: str):
             runtime_timeline=project_runtime_timeline_from_events(runtime_events),
             run_record=run_record,
         )
+        if snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported"):
+            detail["legacyChatUnsupported"] = True
+        return detail
     except HTTPException:
         raise
     except Exception as e:

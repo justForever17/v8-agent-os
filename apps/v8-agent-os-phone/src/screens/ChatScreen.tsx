@@ -857,6 +857,11 @@ function mergeStructuredSnapshotMessages(
         if (!matchingLocal) {
             return snapshotMessage;
         }
+        const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
+        const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
+        if (snapshotCanonical) {
+            return normalizeMessagesForState([snapshotMessage])[0] || snapshotMessage;
+        }
 
         const localHasStructuredState = hasStructuredAssistantPayload(matchingLocal);
         const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
@@ -936,6 +941,11 @@ function mergeAuthoritativeSnapshotMessages(
         });
 
         if (!matchingLocal) {
+            return snapshotMessage;
+        }
+        const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
+        const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
+        if (snapshotCanonical) {
             return snapshotMessage;
         }
 
@@ -1051,6 +1061,12 @@ function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeS
         }
     }
     return null;
+}
+
+function isLegacyChatUnsupportedPayload(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
+    const root = asRecord(payload);
+    const snapshot = asRecord(root.snapshot);
+    return Boolean(root.legacyChatUnsupported || snapshot.legacyChatUnsupported);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -1247,6 +1263,7 @@ export default function ChatScreen() {
 
     const [input, setInput] = useState("");
     const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
@@ -1410,6 +1427,7 @@ export default function ChatScreen() {
         messagesRef.current = [];
         messageConversationIdRef.current = null;
         setMessages([]);
+        setLegacyChatUnsupported(false);
         setApprovals([]);
         setTodos([]);
         todosRef.current = [];
@@ -2171,6 +2189,9 @@ export default function ChatScreen() {
         const snapshotMessages = extractSnapshotMessages(payload);
         const snapshotSeq = buildSnapshotSequence(payload);
         const targetConversationId = String(activeConversationIdRef.current || "").trim();
+        if (isLegacyChatUnsupportedPayload(payload)) {
+            setLegacyChatUnsupported(true);
+        }
         if (snapshotMessages) {
             const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
             const snapshotFingerprint = buildMessagesFingerprint(normalizedSnapshot);
@@ -3008,6 +3029,7 @@ export default function ChatScreen() {
             const timelineMessages = Array.isArray(detail.timeline)
                 ? detail.timeline
                 : [];
+            setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detail));
             const snapshotMessages = normalizeMessagesForState(timelineMessages);
             const preserveOptimisticLocalState = Boolean(
                 messageConversationIdRef.current === conversationId
@@ -3911,6 +3933,16 @@ export default function ChatScreen() {
             subtitle: t("新对话会先绑定工作区，再创建会话。", "A new conversation binds a workspace before the session is created."),
         }
         : null;
+    const legacyChatEmptyState = activeConversationId && legacyChatUnsupported && projection.projectedMessages.length === 0
+        ? {
+            icon: "archive-alert-outline" as const,
+            title: t("旧会话未接入 Canonical Transcript", "Legacy conversation is not on Canonical Transcript"),
+            subtitle: t(
+                "这条历史记录没有稳定 transcript 节点。为避免继续混用旧数据源造成漂移，当前版本已停止回放旧混源聊天内容。",
+                "This history record has no stable transcript nodes. To avoid mixed-source drift, this version no longer replays legacy chat content.",
+            ),
+        }
+        : null;
     const currentWorkspaceLabel = boundProject?.name || t("主工作区", "Main workspace");
     const currentWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || t("未绑定", "Unbound");
     const showWorkspaceChooser = !activeConversationId && workspaceChooserVisible;
@@ -4284,7 +4316,7 @@ export default function ChatScreen() {
                                     onOpenApprovalPanel={openApprovalPanel}
                                     isLandscape={isLandscape}
                                     bottomInset={chatBottomInset}
-                                    emptyState={greetingEmptyState}
+                                    emptyState={legacyChatEmptyState || greetingEmptyState}
                                 />
                             )}
 

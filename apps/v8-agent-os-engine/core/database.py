@@ -146,6 +146,28 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS chat_canonical_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT,
+                    ordinal INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    nodes_json TEXT NOT NULL,
+                    artifacts_json TEXT,
+                    content_text TEXT,
+                    reasoning_text TEXT,
+                    metadata_json TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finalized_at TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS session_lane_records (
                     session_id TEXT PRIMARY KEY,
                     active_run_id TEXT,
@@ -434,6 +456,10 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_events_run_id ON runtime_events (run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_events_topic ON runtime_events (topic)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_session_id ON runtime_snapshots (session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_session_id ON chat_canonical_messages (session_id, ordinal ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_run_id ON chat_canonical_messages (run_id, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_updated_at ON chat_canonical_messages (updated_at DESC)')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_canonical_messages_session_ordinal ON chat_canonical_messages (session_id, ordinal)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_records_active_run_id ON session_lane_records (active_run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_records_updated_at ON session_lane_records (updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_session_id ON session_lane_queue_entries (session_id, created_at DESC)')
@@ -499,6 +525,23 @@ class DatabaseManager:
                 artifact_columns = [row['name'] for row in cursor.fetchall()]
                 if artifact_columns and 'message_id' not in artifact_columns:
                     conn.execute("ALTER TABLE runtime_artifacts ADD COLUMN message_id TEXT")
+
+                cursor.execute("PRAGMA table_info(chat_canonical_messages)")
+                canonical_columns = [row['name'] for row in cursor.fetchall()]
+                if canonical_columns and 'artifacts_json' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN artifacts_json TEXT")
+                if canonical_columns and 'content_text' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN content_text TEXT")
+                if canonical_columns and 'reasoning_text' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN reasoning_text TEXT")
+                if canonical_columns and 'metadata_json' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN metadata_json TEXT")
+                if canonical_columns and 'version' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+                if canonical_columns and 'updated_at' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                if canonical_columns and 'finalized_at' not in canonical_columns:
+                    conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN finalized_at TIMESTAMP")
             except Exception as e:
                 print(f"[Database] Migration note: {e}")
             
@@ -817,6 +860,190 @@ class DatabaseManager:
                 (json.dumps(current, ensure_ascii=False), session_id),
             )
             conn.commit()
+
+    # --- Canonical Chat Transcript Operations ---
+
+    def get_next_chat_canonical_ordinal(self, session_id: str) -> int:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal FROM chat_canonical_messages WHERE session_id = ?',
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            return int(row["next_ordinal"]) if row else 1
+
+    def create_chat_canonical_message(
+        self,
+        *,
+        message_id: str,
+        session_id: str,
+        run_id: Optional[str],
+        ordinal: int,
+        role: str,
+        state: str,
+        nodes: list[dict[str, Any]],
+        artifacts: Optional[list[dict[str, Any]]] = None,
+        content_text: Optional[str] = None,
+        reasoning_text: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        finalized_at: Optional[str] = None,
+    ) -> None:
+        nodes_str = json.dumps(to_jsonable(nodes or []), ensure_ascii=False)
+        artifacts_str = json.dumps(to_jsonable(artifacts or []), ensure_ascii=False)
+        metadata_str = json.dumps(to_jsonable(metadata or {}), ensure_ascii=False)
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO chat_canonical_messages
+                    (id, session_id, run_id, ordinal, role, state, nodes_json, artifacts_json, content_text, reasoning_text, metadata_json, version, finalized_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    ''',
+                    (
+                        message_id,
+                        session_id,
+                        run_id,
+                        ordinal,
+                        role,
+                        state,
+                        nodes_str,
+                        artifacts_str,
+                        content_text,
+                        reasoning_text,
+                        metadata_str,
+                        finalized_at,
+                    ),
+                )
+                conn.execute('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (session_id,))
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+
+    def update_chat_canonical_message(
+        self,
+        message_id: str,
+        *,
+        state: Optional[str] = None,
+        nodes: Optional[list[dict[str, Any]]] = None,
+        artifacts: Optional[list[dict[str, Any]]] = None,
+        content_text: Optional[str] = None,
+        reasoning_text: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        finalized_at: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        existing = self.get_chat_canonical_message(message_id)
+        if not existing:
+            return None
+        next_nodes = nodes if nodes is not None else existing.get("nodes") or []
+        next_artifacts = artifacts if artifacts is not None else existing.get("artifacts") or []
+        next_metadata = metadata if metadata is not None else existing.get("metadata") or {}
+        next_state = state or existing.get("state") or "pending"
+        next_content = existing.get("content_text") if content_text is None else content_text
+        next_reasoning = existing.get("reasoning_text") if reasoning_text is None else reasoning_text
+        next_version = int(existing.get("version") or 0) + 1
+        finalized_value = finalized_at if finalized_at is not None else existing.get("finalized_at")
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE chat_canonical_messages
+                    SET state = ?,
+                        nodes_json = ?,
+                        artifacts_json = ?,
+                        content_text = ?,
+                        reasoning_text = ?,
+                        metadata_json = ?,
+                        version = ?,
+                        updated_at = CURRENT_TIMESTAMP,
+                        finalized_at = ?
+                    WHERE id = ?
+                    ''',
+                    (
+                        next_state,
+                        json.dumps(to_jsonable(next_nodes), ensure_ascii=False),
+                        json.dumps(to_jsonable(next_artifacts), ensure_ascii=False),
+                        next_content,
+                        next_reasoning,
+                        json.dumps(to_jsonable(next_metadata), ensure_ascii=False),
+                        next_version,
+                        finalized_value,
+                        message_id,
+                    ),
+                )
+                session_id = str(existing.get("session_id") or "").strip()
+                if session_id:
+                    conn.execute('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (session_id,))
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_chat_canonical_message(message_id)
+
+    def get_chat_canonical_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM chat_canonical_messages WHERE id = ?', (message_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._hydrate_chat_canonical_row(dict(row))
+
+    def get_chat_canonical_message_by_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        role: str = "assistant",
+    ) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM chat_canonical_messages
+                WHERE session_id = ? AND run_id = ? AND role = ?
+                ORDER BY ordinal DESC, updated_at DESC
+                LIMIT 1
+                ''',
+                (session_id, run_id, role),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._hydrate_chat_canonical_row(dict(row))
+
+    def get_chat_canonical_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM chat_canonical_messages
+                WHERE session_id = ?
+                ORDER BY ordinal ASC, created_at ASC
+                ''',
+                (session_id,),
+            )
+            return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
+
+    def get_chat_canonical_max_version(self, session_id: str) -> int:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COALESCE(MAX(version), 0) AS max_version FROM chat_canonical_messages WHERE session_id = ?',
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            return int(row["max_version"]) if row else 0
+
+    def _hydrate_chat_canonical_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["nodes"] = json.loads(data["nodes_json"]) if data.get("nodes_json") else []
+        data["artifacts"] = json.loads(data["artifacts_json"]) if data.get("artifacts_json") else []
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        return data
 
     # --- Runtime Event / Run Operations ---
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -17,11 +18,17 @@ from runtimes.chat.runtime import ChatRuntime, ChatStreamState
 
 class FakeChatRun:
     def __init__(self) -> None:
-        self.active_run_id = "run_test"
-        self.session_id = "session_test"
+        self.active_run_id = None
+        self.session_id = f"session_test_{uuid.uuid4().hex}"
         self.transport = "chat"
-        binding = SimpleNamespace(project_id=None, workspace_id=None, resolved_scope="global")
-        self.scope_result = SimpleNamespace(binding=binding)
+        binding = SimpleNamespace(
+            project_id=None,
+            workspace_id=None,
+            workspace_path=None,
+            resolved_scope="global",
+            scope_source="test",
+        )
+        self.scope_result = SimpleNamespace(binding=binding, scope_chain=["global"])
         self.events: list[dict] = []
 
     def emit_runtime_event(self, topic: str, payload: dict, **kwargs):
@@ -35,6 +42,11 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = ChatRuntime()
         self.runtime._get_agent_profile = lambda _node: {"name": "智能主管", "avatar": "", "roleLabel": "主理人"}
         self.chat_run = FakeChatRun()
+        chat_runtime_module.db.create_or_update_session(
+            session_id=self.chat_run.session_id,
+            title="canonical transcript cleanup test",
+            user_id="test",
+        )
         self.stream_state = ChatStreamState()
         self.workflow_patch = mock.patch.object(
             chat_runtime_module.workflow_ledger_service,
@@ -45,6 +57,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.workflow_patch.stop()
+        chat_runtime_module.db.delete_session(self.chat_run.session_id)
 
     async def test_non_monotonic_stream_text_is_not_hard_appended_and_terminal_text_stays_clean(self):
         prefix = "已在工作区中找到3张JPEG格式的图片，本地路径如下：\n"
@@ -140,11 +153,145 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run.reasoning.delta", topics)
         self.assertEqual("".join(self.stream_state.reasoning_buffer), "只有思考，没有正文。")
 
-    def test_persist_prefers_authoritative_final_text(self):
-        self.stream_state.output_buffer = ["坏前缀", "和残片"]
-        self.stream_state.authoritative_final_text = "干净正文"
+    async def test_reasoning_token_deltas_patch_one_canonical_node(self):
+        for token in ["用户", "正在", "查询"]:
+            await self.runtime.handle_stream_event(
+                self.chat_run,
+                self.stream_state,
+                {
+                    "event": "on_chat_model_stream",
+                    "run_id": "model_reasoning_tokens",
+                    "name": "V8ChatModelAdapter",
+                    "data": {"chunk": {"additional_kwargs": {"reasoning_content": token}}},
+                },
+            )
 
-        with mock.patch.object(chat_runtime_module.db, "add_message") as add_message_mock, mock.patch.object(
+        row = chat_runtime_module.db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        reasoning_nodes = [
+            node for node in row["nodes"]
+            if node.get("kind") == "execution" and node.get("executionType") == "reasoning"
+        ]
+
+        self.assertEqual(len(reasoning_nodes), 1)
+        self.assertEqual(reasoning_nodes[0]["content"], "用户正在查询")
+        self.assertEqual("".join(self.stream_state.reasoning_buffer), "用户正在查询")
+        self.assertEqual(self.chat_run.events[-1]["payload"]["snapshot"], "用户正在查询")
+
+    async def test_reasoning_cumulative_snapshots_patch_one_canonical_node(self):
+        for snapshot in ["用户正在", "用户正在查询", "用户正在查询 LangChain"]:
+            await self.runtime.handle_stream_event(
+                self.chat_run,
+                self.stream_state,
+                {
+                    "event": "on_chat_model_stream",
+                    "run_id": "model_reasoning_snapshot",
+                    "name": "V8ChatModelAdapter",
+                    "data": {"chunk": {"additional_kwargs": {"reasoning_content": snapshot}}},
+                },
+            )
+
+        row = chat_runtime_module.db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        reasoning_nodes = [
+            node for node in row["nodes"]
+            if node.get("kind") == "execution" and node.get("executionType") == "reasoning"
+        ]
+
+        self.assertEqual(len(reasoning_nodes), 1)
+        self.assertEqual(reasoning_nodes[0]["content"], "用户正在查询 LangChain")
+        self.assertEqual("".join(self.stream_state.reasoning_buffer), "用户正在查询 LangChain")
+
+    async def test_tool_internal_model_stream_does_not_mutate_assistant_transcript(self):
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "tool_internal_model",
+                "name": "ToolInternalModel",
+                "metadata": {"v8_model_scope": "tool_internal"},
+                "data": {
+                    "chunk": {
+                        "content": "内部正文",
+                        "additional_kwargs": {"reasoning_content": "内部思考"},
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(emitted, [])
+        self.assertIsNone(self.stream_state.assistant_message_id)
+        self.assertEqual(self.stream_state.output_buffer, [])
+        self.assertEqual(self.stream_state.reasoning_buffer, [])
+
+    async def test_model_stream_during_active_tool_does_not_become_assistant_text(self):
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_start",
+                "run_id": "vision_tool_run",
+                "name": "vision_media_analyzer",
+                "data": {
+                    "input": {
+                        "file_path": r"C:\Users\sunny\.v8-agent-os\workspace\uploads\sample.webp",
+                        "prompt": "识别图片人物",
+                    }
+                },
+            },
+        )
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "vision_internal_model",
+                "name": "VisionInternalModel",
+                "data": {"chunk": "这个角色是三月七。"},
+            },
+        )
+
+        self.assertEqual(emitted, [])
+        self.assertEqual(self.stream_state.output_buffer, [])
+        self.assertEqual([event["topic"] for event in self.chat_run.events], ["tool.started"])
+        row = chat_runtime_module.db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertFalse(any(node.get("kind") == "narrative" for node in row["nodes"]))
+
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_end",
+                "run_id": "vision_tool_run",
+                "name": "vision_media_analyzer",
+                "data": {"output": "--- Vision Analysis Complete ---\n这个角色是三月七。"},
+            },
+        )
+        self.assertEqual(self.stream_state.active_tool_call_ids, set())
+
+    def test_persist_prefers_authoritative_final_text(self):
+        self.stream_state.assistant_message_id = "assistant-canonical-test"
+        canonical_row = {
+            "id": "assistant-canonical-test",
+            "session_id": self.chat_run.session_id,
+            "run_id": self.chat_run.active_run_id,
+            "role": "assistant",
+            "state": "completed",
+            "nodes": [
+                {"id": "assistant-canonical-test:text", "kind": "narrative", "role": "assistant", "content": "干净正文"}
+            ],
+            "artifacts": [],
+            "content_text": "干净正文",
+            "reasoning_text": None,
+            "metadata": {"agentName": "智能主管"},
+            "version": 2,
+        }
+
+        with mock.patch.object(chat_runtime_module.canonical_transcript_builder, "set_message_state"), mock.patch.object(
+            chat_runtime_module.db,
+            "get_chat_canonical_message",
+            return_value=canonical_row,
+        ), mock.patch.object(chat_runtime_module.db, "add_message") as add_message_mock, mock.patch.object(
             chat_runtime_module.db,
             "attach_runtime_artifacts_to_message",
         ), mock.patch.object(chat_runtime_module.workflow_ledger_service, "clear_chat_projection"):
@@ -152,7 +299,6 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(add_message_mock.called)
         self.assertEqual(add_message_mock.call_args.kwargs["content"], "干净正文")
-        self.assertEqual(self.stream_state.output_buffer, ["干净正文"])
 
     async def test_tool_start_sanitizes_runtime_internal_input(self):
         await self.runtime.handle_stream_event(

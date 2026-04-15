@@ -44,7 +44,7 @@ export type SessionStreamArtifact = {
 
 export type SessionStreamUiEvent = Pick<
   NormalizedSessionRuntimeEvent,
-  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "seq"
+  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "seq" | "message_id" | "node_id" | "transcript_version"
 > & {
   agent?: {
     id?: string;
@@ -442,6 +442,52 @@ function appendNarrativeContent(
   message.content = `${String(message.content || "")}${normalizedContent}`;
 }
 
+function findMessageById<TMessage extends SessionStreamMessage>(localMessages: TMessage[], messageId?: string) {
+  const normalizedId = String(messageId || "").trim();
+  if (!normalizedId) {
+    return undefined;
+  }
+  return localMessages.find((message) => String(message.id || "").trim() === normalizedId);
+}
+
+function upsertTimelineNode(message: SessionStreamMessage, node: SessionStreamTimelineNode) {
+  const nodes = Array.isArray(message.nodes) ? [...message.nodes] : [];
+  const nodeId = String(node.id || "").trim();
+  if (nodeId) {
+    const existingIndex = nodes.findIndex((candidate) => String(candidate.id || "").trim() === nodeId);
+    if (existingIndex >= 0) {
+      nodes[existingIndex] = {
+        ...nodes[existingIndex],
+        ...node,
+      } as SessionStreamTimelineNode;
+      message.nodes = nodes;
+      message.timestamp = Date.now();
+      return nodes[existingIndex];
+    }
+  }
+  nodes.push(node);
+  message.nodes = nodes;
+  message.timestamp = Date.now();
+  return node;
+}
+
+function applyTranscriptVersion(message: SessionStreamMessage, event: SessionStreamUiEvent) {
+  if (typeof event.transcript_version !== "number" || !Number.isFinite(event.transcript_version)) {
+    return;
+  }
+  message.metadata = {
+    ...(message.metadata || {}),
+    transcriptVersion: event.transcript_version,
+  };
+}
+
+function deriveNarrativeContentFromNodes(message: SessionStreamMessage): string {
+  return (Array.isArray(message.nodes) ? message.nodes : [])
+    .filter((node): node is SessionStreamNarrativeNode => node.kind === "narrative" && node.role === "assistant")
+    .map((node) => String(node.content || ""))
+    .join("");
+}
+
 function appendArtifactNode(
   message: SessionStreamMessage,
   artifact: SessionStreamArtifact | null,
@@ -623,13 +669,30 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
   });
 
   const ensureCurrent = () => {
-    nextCurrentAiMsg = ensureCurrentAiMessage(
-      localMessages,
-      nextCurrentAiMsg,
-      nextActiveAgentProfile,
-      event.run_id,
-      options,
-    );
+    const explicitMessage = findMessageById(localMessages, event.message_id);
+    if (explicitMessage) {
+      nextCurrentAiMsg = explicitMessage;
+      if (!Array.isArray(nextCurrentAiMsg.nodes)) {
+        nextCurrentAiMsg.nodes = [];
+      }
+      if (!Array.isArray(nextCurrentAiMsg.images)) {
+        nextCurrentAiMsg.images = [];
+      }
+      if (!Array.isArray(nextCurrentAiMsg.artifacts)) {
+        nextCurrentAiMsg.artifacts = [];
+      }
+      if (event.run_id) {
+        nextCurrentAiMsg.runId = event.run_id;
+      }
+      ensureAssistantIdentity(nextCurrentAiMsg, nextActiveAgentProfile);
+      applyTranscriptVersion(nextCurrentAiMsg, event);
+      return nextCurrentAiMsg;
+    }
+    nextCurrentAiMsg = ensureCurrentAiMessage(localMessages, nextCurrentAiMsg, nextActiveAgentProfile, event.run_id, options);
+    if (event.message_id) {
+      nextCurrentAiMsg.id = event.message_id;
+    }
+    applyTranscriptVersion(nextCurrentAiMsg, event);
     return nextCurrentAiMsg;
   };
   const appendEventArtifactIfPresent = (message: SessionStreamMessage) => {
@@ -646,45 +709,79 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     if (shouldPromoteMessageIdentity(current, nextActiveAgentProfile, defaultAgentProfile)) {
       ensureAssistantIdentity(current, nextActiveAgentProfile, { overwrite: true });
     }
-  } else if (event.type === "text_chunk") {
-    const current = ensureCurrent();
-    current.uiStreamPhase = "streaming";
-    const content = String(event.content || "");
-    const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
-    if (lastNode && lastNode.kind === "narrative" && lastNode.role === "assistant" && lastNode.agentName === nextActiveAgentProfile.agentName) {
-      const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
-      if (suffix) {
-        lastNode.content = `${String(lastNode.content || "")}${suffix}`;
-        current.content = `${String(current.content || "")}${suffix}`;
-      }
-    } else {
-      appendNode(current, {
-        id: nextId("node", options?.createId),
-        kind: "narrative",
-        role: "assistant",
-        content,
+    if (event.node_id) {
+      upsertTimelineNode(current, {
+        id: event.node_id,
+        kind: "execution",
+        executionType: "agent_start",
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
       });
-      current.content = `${String(current.content || "")}${content}`;
+    }
+  } else if (event.type === "text_chunk") {
+    const current = ensureCurrent();
+    current.uiStreamPhase = "streaming";
+    const eventData = asRecord(event.data);
+    const content = String(event.content || "");
+    const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
+    const explicitNode = event.node_id
+      ? (Array.isArray(current.nodes)
+        ? current.nodes.find((node) => String(node.id || "").trim() === event.node_id)
+        : undefined)
+      : undefined;
+    const lastNode = explicitNode || (Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined);
+    if (lastNode && lastNode.kind === "narrative" && lastNode.role === "assistant" && lastNode.agentName === nextActiveAgentProfile.agentName) {
+      if (snapshot !== undefined) {
+        lastNode.content = snapshot;
+        current.content = deriveNarrativeContentFromNodes(current);
+      } else {
+        const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
+        if (suffix) {
+          lastNode.content = `${String(lastNode.content || "")}${suffix}`;
+          current.content = `${String(current.content || "")}${suffix}`;
+        }
+      }
+    } else {
+      upsertTimelineNode(current, {
+        id: event.node_id || nextId("node", options?.createId),
+        kind: "narrative",
+        role: "assistant",
+        content: snapshot ?? content,
+        timestamp: Date.now(),
+        ...nextActiveAgentProfile,
+      });
+      current.content = snapshot !== undefined
+        ? deriveNarrativeContentFromNodes(current)
+        : `${String(current.content || "")}${content}`;
     }
     appendEventArtifactIfPresent(current);
   } else if (event.type === "reasoning_chunk") {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const eventData = asRecord(event.data);
     const content = String(event.content || "");
-    const lastNode = Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined;
+    const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
+    const explicitNode = event.node_id
+      ? (Array.isArray(current.nodes)
+        ? current.nodes.find((node) => String(node.id || "").trim() === event.node_id)
+        : undefined)
+      : undefined;
+    const lastNode = explicitNode || (Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined);
     if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "reasoning" && !lastNode.time) {
-      const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
-      if (suffix) {
-        lastNode.content = `${String(lastNode.content || "")}${suffix}`;
+      if (snapshot !== undefined) {
+        lastNode.content = snapshot;
+      } else {
+        const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
+        if (suffix) {
+          lastNode.content = `${String(lastNode.content || "")}${suffix}`;
+        }
       }
     } else {
-      appendNode(current, {
-        id: nextId("node", options?.createId),
+      upsertTimelineNode(current, {
+        id: event.node_id || nextId("node", options?.createId),
         kind: "execution",
         executionType: "reasoning",
-        content,
+        content: snapshot ?? content,
         time: 0,
         startTime: Date.now(),
         timestamp: Date.now(),
@@ -707,8 +804,8 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         : typeof eventData.message === "string" && eventData.message.trim()
           ? eventData.message.trim()
           : "";
-    appendNode(current, {
-      id: nextId("node", options?.createId),
+    upsertTimelineNode(current, {
+      id: event.node_id || nextId("node", options?.createId),
       kind: "execution",
       executionType: "tool_call",
       toolCallId: event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
@@ -738,21 +835,9 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         : typeof eventData.message === "string" && eventData.message.trim()
           ? eventData.message.trim()
           : "";
-    const existingToolCall = (current.nodes || []).find((node) =>
-      node.kind === "execution"
-      && node.executionType === "tool_call"
-      && node.toolCallId === toolCallId,
-    ) as SessionStreamExecutionNode | undefined;
-
-    if (existingToolCall) {
-      existingToolCall.result = event.tool?.result ?? eventData.result;
-      existingToolCall.toolName = existingToolCall.toolName
-        || event.tool?.toolName
-        || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
-      existingToolCall.timestamp = Date.now();
-    } else {
-      appendNode(current, {
-        id: nextId("node", options?.createId),
+    if (event.node_id) {
+      upsertTimelineNode(current, {
+        id: event.node_id,
         kind: "execution",
         executionType: "tool_result",
         toolCallId,
@@ -761,6 +846,31 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
       });
+    } else {
+      const existingToolCall = (current.nodes || []).find((node) =>
+        node.kind === "execution"
+        && node.executionType === "tool_call"
+        && node.toolCallId === toolCallId,
+      ) as SessionStreamExecutionNode | undefined;
+
+      if (existingToolCall) {
+        existingToolCall.result = event.tool?.result ?? eventData.result;
+        existingToolCall.toolName = existingToolCall.toolName
+          || event.tool?.toolName
+          || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
+        existingToolCall.timestamp = Date.now();
+      } else {
+        upsertTimelineNode(current, {
+          id: nextId("node", options?.createId),
+          kind: "execution",
+          executionType: "tool_result",
+          toolCallId,
+          toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
+          result: event.tool?.result ?? eventData.result,
+          timestamp: Date.now(),
+          ...nextActiveAgentProfile,
+        });
+      }
     }
     if (narrativeContent) {
       appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);

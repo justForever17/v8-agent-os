@@ -218,6 +218,9 @@ export type NormalizedSessionRuntimeEvent = {
   session_id?: string;
   conversation_id?: string;
   run_id?: string;
+  message_id?: string;
+  node_id?: string;
+  transcript_version?: number;
   event_id?: string;
   ts?: string;
   status?: string;

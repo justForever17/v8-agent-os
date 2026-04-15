@@ -102,6 +102,12 @@ type SessionProjectionView = AuthoritativeSessionView & {
     contextGovernanceHistory?: Record<string, unknown>[];
 };
 
+function isLegacyChatUnsupportedPayload(value: unknown) {
+    const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const snapshot = root.snapshot && typeof root.snapshot === "object" ? root.snapshot as Record<string, unknown> : {};
+    return Boolean(root.legacyChatUnsupported || snapshot.legacyChatUnsupported);
+}
+
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     if (!raw || typeof raw !== "object") {
         return null;
@@ -203,6 +209,8 @@ function hasRenderableWebMessagePayload(message: Message | null | undefined) {
 }
 
 function mergeWebMessagePayload(base: Message, incoming: Message): Message {
+    const incomingTranscriptVersion = Number((incoming.metadata || {}).transcriptVersion || 0);
+    const incomingCanonical = incomingTranscriptVersion > 0 || (incoming.nodes?.length || 0) > 0;
     const merged: Message = {
         ...base,
         ...incoming,
@@ -211,13 +219,13 @@ function mergeWebMessagePayload(base: Message, incoming: Message): Message {
             ...(incoming.metadata || {}),
         },
     };
-    if ((base.nodes?.length || 0) > (incoming.nodes?.length || 0)) {
+    if (!incomingCanonical && (base.nodes?.length || 0) > (incoming.nodes?.length || 0)) {
         merged.nodes = base.nodes;
     }
-    if ((base.artifacts?.length || 0) > (incoming.artifacts?.length || 0)) {
+    if (!incomingCanonical && (base.artifacts?.length || 0) > (incoming.artifacts?.length || 0)) {
         merged.artifacts = base.artifacts;
     }
-    if ((base.images?.length || 0) > (incoming.images?.length || 0)) {
+    if (!incomingCanonical && (base.images?.length || 0) > (incoming.images?.length || 0)) {
         merged.images = base.images;
     }
     if (!merged.agentName && base.agentName) merged.agentName = base.agentName;
@@ -248,6 +256,11 @@ function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: u
                 .map((key) => currentByKey.get(key))
                 .find(Boolean);
         if (!matchingCurrent) {
+            return snapshotMessage;
+        }
+        const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
+        const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
+        if (snapshotCanonical) {
             return snapshotMessage;
         }
         const snapshotAuthoritativeAssistant = snapshotMessage.role === "assistant"
@@ -368,6 +381,7 @@ export default function ChatClient() {
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [runActionLoading, setRunActionLoading] = useState(false);
     const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
+    const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const lastSessionProcessSurfaceAtRef = useRef(0);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
@@ -870,6 +884,7 @@ export default function ChatClient() {
         const projectionPayload = (detailPayload?.projection && typeof detailPayload.projection === "object")
             ? detailPayload.projection
             : detailPayload;
+        setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detailPayload) || isLegacyChatUnsupportedPayload(projectionPayload));
         const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
         setSessionProjection(projection);
         if (projection?.approvals?.length) {
@@ -1404,6 +1419,7 @@ export default function ChatClient() {
             realtimeMessageStateRef.current = createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS);
             setScopeBinding(null);
             setSessionProjection(null);
+            setLegacyChatUnsupported(false);
             clearApprovalState();
             setRunEntries([]);
             messagesRef.current = [];
@@ -1422,6 +1438,9 @@ export default function ChatClient() {
             try {
                 const data = JSON.parse(event.data);
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+                if (isLegacyChatUnsupportedPayload(snapshotPayload)) {
+                    setLegacyChatUnsupported(true);
+                }
                 const localStreamActive = isLocalStreamActive(activeConversationId);
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
                 setSessionProjection((current) => {
@@ -1743,6 +1762,23 @@ export default function ChatClient() {
                                         </Button>
                                     </div>
                                 )}
+                            </div>
+                        </div>
+                    ) : activeConversationId && legacyChatUnsupported && messages.length === 0 ? (
+                        <div className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto p-8 animate-in fade-in zoom-in-95 duration-300">
+                            <div className="max-w-xl rounded-[28px] border border-amber-300/50 bg-amber-50/80 p-6 text-center shadow-sm backdrop-blur dark:border-amber-500/30 dark:bg-amber-500/10">
+                                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
+                                    <Bot className="h-6 w-6" />
+                                </div>
+                                <h2 className="mt-4 text-base font-semibold text-foreground">
+                                    {t(lt("旧会话未接入 Canonical Transcript", "Legacy conversation is not on Canonical Transcript"))}
+                                </h2>
+                                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                                    {t(lt(
+                                        "这条历史记录没有稳定 transcript 节点。为避免继续混用 runtime_events / messages / snapshots 造成漂移，当前版本已停止回放旧混源聊天内容。",
+                                        "This history record has no stable transcript nodes. To avoid mixing runtime_events, messages and snapshots again, this version no longer replays legacy mixed-source chat content.",
+                                    ))}
+                                </p>
                             </div>
                         </div>
                     ) : (

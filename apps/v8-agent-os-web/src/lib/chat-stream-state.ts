@@ -225,7 +225,15 @@ function mergeMessageRecords(existing: Message, incoming: Message): Message {
         );
     const existingContent = String(existing.content || '');
     const incomingContent = String(incoming.content || '');
-    const content = incomingContent.length >= existingContent.length ? incomingContent : existingContent;
+    const existingTranscriptVersion = Number((existing.metadata || {}).transcriptVersion || 0);
+    const incomingTranscriptVersion = Number((incoming.metadata || {}).transcriptVersion || 0);
+    const existingCanonical = existingTranscriptVersion > 0 || (existing.nodes?.length || 0) > 0;
+    const incomingCanonical = incomingTranscriptVersion > 0 || (incoming.nodes?.length || 0) > 0;
+    const content = incomingCanonical
+        ? (incomingContent || existingContent)
+        : existingCanonical
+            ? (existingContent || incomingContent)
+            : (incomingContent.length >= existingContent.length ? incomingContent : existingContent);
 
     return {
         ...existing,
@@ -298,8 +306,13 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
             agentAvatar: resolveAgentAvatar(msg.agentAvatar),
             agentRoleLabel: typeof msg.agentRoleLabel === 'string' ? msg.agentRoleLabel : undefined,
         };
+        const existingNodes = Array.isArray((msg as { nodes?: unknown[] }).nodes)
+            ? ((msg as { nodes?: UiTimelineNode[] }).nodes || [])
+            : [];
         const parts = Array.isArray(msg.parts) ? (msg.parts as ProjectedMessagePart[]) : [];
-        const projectedNodes: UiTimelineNode[] = parts.flatMap<UiTimelineNode>((part, index) => {
+        const projectedNodes: UiTimelineNode[] = existingNodes.length > 0
+            ? normalizeMessageNodes(existingNodes.map((node) => ({ ...node })))
+            : parts.flatMap<UiTimelineNode>((part, index) => {
             const nodeAgentProfile = {
                 agentName: typeof part.agentName === 'string' ? part.agentName : messageAgentProfile.agentName,
                 agentAvatar: resolveAgentAvatar(part.agentAvatar) || messageAgentProfile.agentAvatar,

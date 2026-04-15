@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 import uuid
 import logging
 from contextlib import aclosing
@@ -13,7 +14,6 @@ from typing import Any
 from api.models import ChatRequest
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
 from core.system_tools.command_presets import read_command_preset
-from core.chat_output_extractor import extract_text_and_reasoning
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.models.provider_compatibility import normalize_provider_error
 from core.database import db
@@ -29,6 +29,12 @@ from core.realtime_protocol import protocol_connected_event
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
 from core.context.workspace import workspace_resolution_service
+from erc.chat_canonical_transcript import (
+    CanonicalTranscriptBuilder,
+    export_legacy_message_payload,
+    validate_canonical_message_invariants,
+)
+from erc.canonical_model_events import LangChainCanonicalModelEventAdapter
 from erc.kernel import erc_kernel
 from erc.models import RuntimeSource
 from erc.runtime_registry import runtime_registry
@@ -195,6 +201,14 @@ class ChatStreamState:
     text_filter: StreamFilter = field(default_factory=lambda: StreamFilter(["NONE", "None", "null", "```json", "```"]))
     text_aggregator: TextChunkAggregator = field(default_factory=TextChunkAggregator)
     pending_stream_event_task: asyncio.Task[Any] | None = None
+    assistant_message_id: str | None = None
+    assistant_transcript_version: int = 0
+    narrative_started_model_run_ids: set[str] = field(default_factory=set)
+    active_tool_call_ids: set[str] = field(default_factory=set)
+
+
+canonical_transcript_builder = CanonicalTranscriptBuilder()
+canonical_model_event_adapter = LangChainCanonicalModelEventAdapter()
 
 
 class ChatRuntime:
@@ -816,6 +830,29 @@ class ChatRuntime:
         if not chat_run.is_resume_request and request.messages and request.messages[-1].role == "user":
             latest_user = request.messages[-1]
             user_message_id = str(uuid.uuid4())
+            user_node_id = f"{user_message_id}:narrative"
+            user_metadata = self._canonical_message_metadata(
+                chat_run,
+                role="user",
+                images=request.fileUrls,
+            )
+            user_row = self._create_canonical_message(
+                chat_run,
+                message_id=user_message_id,
+                role="user",
+                state="completed",
+                nodes=[
+                    {
+                        "id": user_node_id,
+                        "kind": "narrative",
+                        "role": "user",
+                        "content": latest_user.content,
+                        "timestamp": user_metadata["timestamp"],
+                    }
+                ],
+                metadata=user_metadata,
+                content_text=latest_user.content,
+            )
             db.add_message(
                 msg_id=user_message_id,
                 session_id=chat_run.session_id,
@@ -828,6 +865,8 @@ class ChatRuntime:
                 "message.user.recorded",
                 {
                     "message_id": user_message_id,
+                    "node_id": user_node_id,
+                    "transcript_version": int(user_row.get("version") or 1),
                     "content": latest_user.content,
                     "images": request.fileUrls or [],
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
@@ -885,6 +924,34 @@ class ChatRuntime:
         if not chat_run.is_resume_request and request.tool_outputs:
             for tool_output in request.tool_outputs:
                 tool_message_id = str(uuid.uuid4())
+                tool_node_id = f"{tool_message_id}:tool_result:{tool_output.tool_call_id or 'ask_user'}"
+                tool_metadata = self._canonical_message_metadata(
+                    chat_run,
+                    role="tool",
+                    extra={
+                        "tool_call_id": tool_output.tool_call_id,
+                        "tool_name": tool_output.name or "ask_user",
+                    },
+                )
+                tool_row = self._create_canonical_message(
+                    chat_run,
+                    message_id=tool_message_id,
+                    role="tool",
+                    state="completed",
+                    nodes=[
+                        {
+                            "id": tool_node_id,
+                            "kind": "execution",
+                            "executionType": "tool_result",
+                            "toolCallId": tool_output.tool_call_id,
+                            "toolName": tool_output.name or "ask_user",
+                            "result": tool_output.output,
+                            "timestamp": tool_metadata["timestamp"],
+                        }
+                    ],
+                    metadata=tool_metadata,
+                    content_text=tool_output.output,
+                )
                 db.add_message(
                     msg_id=tool_message_id,
                     session_id=chat_run.session_id,
@@ -900,6 +967,8 @@ class ChatRuntime:
                     "message.tool.recorded",
                     {
                         "message_id": tool_message_id,
+                        "node_id": tool_node_id,
+                        "transcript_version": int(tool_row.get("version") or 1),
                         "content": tool_output.output,
                         "tool_call_id": tool_output.tool_call_id,
                         "tool_name": tool_output.name or "ask_user",
@@ -1001,6 +1070,176 @@ class ChatRuntime:
         valid_nodes = [item.get("id") for item in loaded_agents if item.get("id")] + ["supervisor", "reviewer"]
         return ChatStreamState(valid_agent_node_names=valid_nodes)
 
+    @staticmethod
+    def _now_timestamp_ms() -> int:
+        return int(time.time() * 1000)
+
+    def _canonical_message_metadata(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        role: str,
+        profile: dict[str, str] | None = None,
+        images: list[str] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        binding = chat_run.scope_result.binding
+        metadata: dict[str, Any] = {
+            "run_id": chat_run.active_run_id,
+            "runId": chat_run.active_run_id,
+            "transport": chat_run.transport,
+            "project_id": getattr(binding, "project_id", None),
+            "workspace_id": getattr(binding, "workspace_id", None),
+            "workspace_path": getattr(binding, "workspace_path", None),
+            "resolved_scope": getattr(binding, "resolved_scope", None),
+            "scope_source": getattr(binding, "scope_source", None),
+            "scope_chain": list(getattr(chat_run.scope_result, "scope_chain", []) or []),
+            "timestamp": self._now_timestamp_ms(),
+            "role": role,
+        }
+        if profile:
+            metadata.update(
+                {
+                    "agentName": profile.get("name"),
+                    "agentAvatar": profile.get("avatar"),
+                    "agentRoleLabel": profile.get("roleLabel"),
+                }
+            )
+        if images:
+            metadata["images"] = list(images)
+        if extra:
+            metadata.update(extra)
+        return {key: value for key, value in metadata.items() if value is not None}
+
+    def _create_canonical_message(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        message_id: str,
+        role: str,
+        state: str,
+        nodes: list[dict[str, Any]],
+        metadata: dict[str, Any],
+        run_id: str | None = None,
+        content_text: str | None = None,
+        reasoning_text: str | None = None,
+    ) -> dict[str, Any]:
+        ordinal = db.get_next_chat_canonical_ordinal(chat_run.session_id)
+        return canonical_transcript_builder.create_message(
+            message_id=message_id,
+            session_id=chat_run.session_id,
+            run_id=run_id,
+            ordinal=ordinal,
+            role=role,
+            state=state,
+            metadata=metadata,
+            nodes=nodes,
+            content_text=content_text,
+            reasoning_text=reasoning_text,
+        )
+
+    def _ensure_assistant_canonical_message(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> str:
+        if stream_state.assistant_message_id:
+            return stream_state.assistant_message_id
+        message_id = str(uuid.uuid4())
+        profile = self._get_agent_profile(stream_state.current_agent)
+        metadata = self._canonical_message_metadata(
+            chat_run,
+            role="assistant",
+            profile=profile,
+            extra={"agentId": stream_state.current_agent},
+        )
+        self._create_canonical_message(
+            chat_run,
+            message_id=message_id,
+            role="assistant",
+            state="streaming",
+            nodes=[],
+            metadata=metadata,
+            run_id=chat_run.active_run_id,
+        )
+        stream_state.assistant_message_id = message_id
+        stream_state.assistant_transcript_version = 1
+        return message_id
+
+    def _upsert_canonical_node(
+        self,
+        *,
+        nodes: list[dict[str, Any]],
+        node: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str]:
+        node_id = str(node.get("id") or "").strip() or str(uuid.uuid4())
+        normalized_node = {**node, "id": node_id}
+        for index, existing in enumerate(nodes):
+            if str(existing.get("id") or "").strip() == node_id:
+                nodes[index] = {**existing, **normalized_node}
+                return nodes, node_id
+        nodes.append(normalized_node)
+        return nodes, node_id
+
+    def _append_canonical_node(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        node: dict[str, Any],
+        metadata_updates: dict[str, Any] | None = None,
+        state: str = "streaming",
+        finalize: bool = False,
+    ) -> tuple[str, int]:
+        message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        mutation = canonical_transcript_builder.mutate_message(
+            message_id,
+            lambda nodes, metadata: self._upsert_canonical_node(nodes=nodes, node=node),
+            state=state,
+            metadata_updates=metadata_updates,
+            finalize=finalize,
+        )
+        stream_state.assistant_transcript_version = mutation.version
+        return mutation.node_id or str(node.get("id") or ""), mutation.version
+
+    def _emit_message_targeted_runtime_event(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        topic: str,
+        payload: dict[str, Any],
+        node: dict[str, Any] | None = None,
+        agent_id: str | None = None,
+        runtime_node: str | None = None,
+        state: str = "streaming",
+        finalize: bool = False,
+    ) -> dict[str, Any]:
+        message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        enriched_payload = dict(payload)
+        if node is not None:
+            node_id, version = self._append_canonical_node(
+                chat_run,
+                stream_state,
+                node=node,
+                state=state,
+                finalize=finalize,
+            )
+            enriched_payload["message_id"] = message_id
+            enriched_payload["node_id"] = node_id
+            enriched_payload["transcript_version"] = version
+        else:
+            mutation = canonical_transcript_builder.set_message_state(
+                message_id,
+                state=state,
+                finalize=finalize,
+            )
+            stream_state.assistant_transcript_version = mutation.version
+            enriched_payload["message_id"] = message_id
+            enriched_payload["transcript_version"] = mutation.version
+        return chat_run.emit_runtime_event(
+            topic,
+            enriched_payload,
+            agent_id=agent_id or stream_state.current_agent,
+            node=runtime_node or stream_state.current_agent,
+        )
+
     def emit_stream_connected_events(self, chat_run: ChatRunContext) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         chat_run.emit_runtime_event(
@@ -1015,8 +1254,19 @@ class ChatRuntime:
     def emit_stream_start_events(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         init_profile = self._get_agent_profile(stream_state.current_agent)
+        self._ensure_assistant_canonical_message(chat_run, stream_state)
+        agent_start_node = {
+            "id": f"{stream_state.assistant_message_id}:agent_start:{stream_state.current_agent}",
+            "kind": "execution",
+            "executionType": "agent_start",
+            "timestamp": self._now_timestamp_ms(),
+            "agentName": init_profile["name"],
+            "agentAvatar": init_profile["avatar"],
+            "agentRoleLabel": init_profile["roleLabel"],
+        }
         init_agent_event = {
             "type": "agent_start",
+            "message_id": stream_state.assistant_message_id,
             "agent": {
                 "id": stream_state.current_agent,
                 "name": init_profile["name"],
@@ -1024,7 +1274,17 @@ class ChatRuntime:
                 "roleLabel": init_profile["roleLabel"],
             },
         }
-        chat_run.emit_runtime_event("agent.started", init_agent_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
+        runtime_event = self._emit_message_targeted_runtime_event(
+            chat_run,
+            stream_state,
+            topic="agent.started",
+            payload=init_agent_event,
+            node=agent_start_node,
+            agent_id=stream_state.current_agent,
+            runtime_node=stream_state.current_agent,
+        )
+        init_agent_event["node_id"] = agent_start_node["id"]
+        init_agent_event["transcript_version"] = stream_state.assistant_transcript_version
         events.append(init_agent_event)
         return events
 
@@ -1123,34 +1383,123 @@ class ChatRuntime:
         chat_run: ChatRunContext,
         stream_state: ChatStreamState,
         stable_chunk: str,
+        *,
+        model_run_id: str,
+        snapshot: str | None = None,
     ) -> dict[str, Any] | None:
         if not stable_chunk:
             return None
-        text_event = {"type": "text_chunk", "content": stable_chunk, "timestamp": 0}
-        runtime_event = chat_run.emit_runtime_event(
-            "run.text.delta",
-            text_event,
+        profile = self._get_agent_profile(stream_state.current_agent)
+        run_key = self._normalized_stream_run_id(model_run_id)
+        node_content = snapshot or stream_state.text_snapshots_by_run.get(run_key) or stable_chunk
+        text_event = {"type": "text_chunk", "content": stable_chunk, "snapshot": node_content, "timestamp": 0}
+        narrative_node = {
+            "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:narrative:{run_key}",
+            "kind": "narrative",
+            "role": "assistant",
+            "content": node_content,
+            "timestamp": self._now_timestamp_ms(),
+            "agentName": profile["name"],
+            "agentAvatar": profile["avatar"],
+            "agentRoleLabel": profile["roleLabel"],
+        }
+        runtime_event = self._emit_message_targeted_runtime_event(
+            chat_run,
+            stream_state,
+            topic="run.text.delta",
+            payload=text_event,
+            node=narrative_node,
             agent_id=stream_state.current_agent,
-            node=stream_state.current_agent,
+            runtime_node=stream_state.current_agent,
         )
+        payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+        if isinstance(payload, dict):
+            text_event["message_id"] = payload.get("message_id")
+            text_event["node_id"] = payload.get("node_id")
+            text_event["transcript_version"] = payload.get("transcript_version")
         workflow_ledger_service.append_chat_projection(
             session_id=chat_run.session_id,
             run_id=chat_run.active_run_id,
             text_delta=stable_chunk,
-            agent_profile=self._get_agent_profile(stream_state.current_agent),
+            agent_profile=profile,
             latest_seq=runtime_event.get("seq"),
         )
         stream_state.text_emitted_chunks += 1
         return text_event
 
-    async def _emit_text_delta(self, chat_run: ChatRunContext, stream_state: ChatStreamState, delta: str) -> list[dict[str, Any]]:
+    def _emit_reasoning_delta(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        reasoning_delta: str,
+        *,
+        model_run_id: str,
+        snapshot: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not reasoning_delta:
+            return None
+        profile = self._get_agent_profile(stream_state.current_agent)
+        run_key = self._normalized_stream_run_id(model_run_id)
+        node_content = snapshot or stream_state.reasoning_snapshots_by_run.get(run_key) or reasoning_delta
+        reasoning_event = {
+            "type": "reasoning_chunk",
+            "content": reasoning_delta,
+            "snapshot": node_content,
+            "timestamp": 0,
+        }
+        reasoning_node = {
+            "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:reasoning:{run_key}",
+            "kind": "execution",
+            "executionType": "reasoning",
+            "content": node_content,
+            "timestamp": self._now_timestamp_ms(),
+            "agentName": profile["name"],
+            "agentAvatar": profile["avatar"],
+            "agentRoleLabel": profile["roleLabel"],
+        }
+        runtime_event = self._emit_message_targeted_runtime_event(
+            chat_run,
+            stream_state,
+            topic="run.reasoning.delta",
+            payload=reasoning_event,
+            node=reasoning_node,
+            agent_id=stream_state.current_agent,
+            runtime_node=stream_state.current_agent,
+        )
+        payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+        if isinstance(payload, dict):
+            reasoning_event["message_id"] = payload.get("message_id")
+            reasoning_event["node_id"] = payload.get("node_id")
+            reasoning_event["transcript_version"] = payload.get("transcript_version")
+        workflow_ledger_service.append_chat_projection(
+            session_id=chat_run.session_id,
+            run_id=chat_run.active_run_id,
+            reasoning_delta=reasoning_delta,
+            agent_profile=profile,
+            latest_seq=runtime_event.get("seq"),
+        )
+        return reasoning_event
+
+    async def _emit_text_delta(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        delta: str,
+        *,
+        model_run_id: str,
+    ) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
             return emitted_events
         for stable_chunk in stream_state.text_aggregator.push(delta):
             if not stable_chunk:
                 continue
-            text_event = await self._emit_stable_text_chunk(chat_run, stream_state, stable_chunk)
+            text_event = await self._emit_stable_text_chunk(
+                chat_run,
+                stream_state,
+                stable_chunk,
+                model_run_id=model_run_id,
+            )
             if text_event is not None:
                 emitted_events.append(text_event)
         if emitted_events or not stream_state.text_aggregator.has_buffered_content():
@@ -1176,7 +1525,12 @@ class ChatRuntime:
             stream_state.text_timer_flushes += 1
         if final:
             stream_state.text_final_flush_chars += len(final_chunk)
-        text_event = await self._emit_stable_text_chunk(chat_run, stream_state, final_chunk)
+        text_event = await self._emit_stable_text_chunk(
+            chat_run,
+            stream_state,
+            final_chunk,
+            model_run_id=stream_state.last_text_delta_run_id,
+        )
         return [text_event] if text_event is not None else []
 
     def _emit_text_stream_diagnostics(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
@@ -1472,8 +1826,18 @@ class ChatRuntime:
             return None
         stream_state.current_agent = node_name
         profile = self._get_agent_profile(node_name)
+        agent_start_node = {
+            "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:agent_start:{node_name}:{self._now_timestamp_ms()}",
+            "kind": "execution",
+            "executionType": "agent_start",
+            "timestamp": self._now_timestamp_ms(),
+            "agentName": profile["name"],
+            "agentAvatar": profile["avatar"],
+            "agentRoleLabel": profile["roleLabel"],
+        }
         agent_event = {
             "type": "agent_start",
+            "message_id": stream_state.assistant_message_id,
             "agent": {
                 "id": node_name,
                 "name": profile["name"],
@@ -1481,7 +1845,17 @@ class ChatRuntime:
                 "roleLabel": profile["roleLabel"],
             },
         }
-        chat_run.emit_runtime_event("agent.started", payload=agent_event, agent_id=node_name, node=node_name)
+        runtime_event = self._emit_message_targeted_runtime_event(
+            chat_run,
+            stream_state,
+            topic="agent.started",
+            payload=agent_event,
+            node=agent_start_node,
+            agent_id=node_name,
+            runtime_node=node_name,
+        )
+        agent_event["node_id"] = agent_start_node["id"]
+        agent_event["transcript_version"] = stream_state.assistant_transcript_version
         return agent_event
 
     async def handle_stream_event(
@@ -1528,19 +1902,19 @@ class ChatRuntime:
                 return emitted_events
 
         if kind == "on_chat_model_stream":
-            chunk = data.get("chunk")
-            if chunk:
-                model_run_id = (event.get("run_id") or "").strip()
-                raw_text, raw_reasoning = extract_text_and_reasoning(chunk)
-                if not raw_text and isinstance(chunk, str):
-                    raw_text = chunk
-                text_delta = self._consume_stream_suffix(stream_state.text_snapshots_by_run, model_run_id, raw_text)
-                reasoning_delta = self._consume_stream_suffix(stream_state.reasoning_snapshots_by_run, model_run_id, raw_reasoning)
-                if text_delta or reasoning_delta:
-                    stream_state.streamed_model_run_ids.add(model_run_id)
-                if text_delta:
+            if stream_state.active_tool_call_ids:
+                return emitted_events
+            model_events = canonical_model_event_adapter.normalize_chat_model_stream(
+                event,
+                text_snapshots=stream_state.text_snapshots_by_run,
+                reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
+            )
+            for model_event in model_events:
+                model_run_id = model_event.model_run_id
+                stream_state.streamed_model_run_ids.add(model_run_id)
+                if model_event.event_type == "text_delta":
+                    text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
-                if text_delta:
                     text_delta = stream_state.text_filter.process(text_delta)
                     text_delta = self._suppress_neighbor_duplicate_delta(
                         stream_state,
@@ -1548,93 +1922,138 @@ class ChatRuntime:
                         model_run_id=model_run_id,
                         kind="text",
                     )
-                if text_delta:
+                    if not text_delta:
+                        continue
                     stream_state.watchdog.note_text_progress()
                     stream_state.output_buffer.append(text_delta)
-                    emitted_events.extend(await self._emit_text_delta(chat_run, stream_state, text_delta))
-                if reasoning_delta:
+                    stream_state.narrative_started_model_run_ids.add(self._normalized_stream_run_id(model_run_id))
+                    emitted_events.extend(
+                        await self._emit_text_delta(
+                            chat_run,
+                            stream_state,
+                            text_delta,
+                            model_run_id=model_run_id,
+                        )
+                    )
+                elif model_event.event_type == "reasoning_delta":
                     reasoning_delta = self._suppress_neighbor_duplicate_delta(
                         stream_state,
-                        delta=reasoning_delta,
+                        delta=model_event.delta,
                         model_run_id=model_run_id,
                         kind="reasoning",
                     )
-                if reasoning_delta:
-                    stream_state.streamed_model_run_ids.add(event.get("run_id", ""))
+                    if not reasoning_delta:
+                        continue
                     stream_state.watchdog.note_text_progress()
                     stream_state.reasoning_buffer.append(reasoning_delta)
-                    reasoning_event = {"type": "reasoning_chunk", "content": reasoning_delta, "timestamp": 0}
-                    runtime_event = chat_run.emit_runtime_event("run.reasoning.delta", reasoning_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
-                    workflow_ledger_service.append_chat_projection(
-                        session_id=chat_run.session_id,
-                        run_id=chat_run.active_run_id,
-                        reasoning_delta=reasoning_delta,
-                        agent_profile=self._get_agent_profile(stream_state.current_agent),
-                        latest_seq=runtime_event.get("seq"),
+                    reasoning_event = self._emit_reasoning_delta(
+                        chat_run,
+                        stream_state,
+                        reasoning_delta,
+                        model_run_id=model_run_id,
+                        snapshot=model_event.snapshot,
                     )
-                    emitted_events.append(reasoning_event)
+                    if reasoning_event is not None:
+                        emitted_events.append(reasoning_event)
             return emitted_events
 
         if kind == "on_chat_model_end":
+            if stream_state.active_tool_call_ids:
+                return emitted_events
             model_run_id = (event.get("run_id") or "").strip()
-            final_output = data.get("output")
-            raw_text, raw_reasoning = extract_text_and_reasoning(final_output)
-            if not raw_text and isinstance(final_output, str):
-                raw_text = final_output
-            text_delta = self._consume_terminal_text_suffix(
-                stream_state,
-                stream_state.text_snapshots_by_run,
-                model_run_id,
-                raw_text,
+            model_events = canonical_model_event_adapter.normalize_chat_model_end(
+                event,
+                text_snapshots=stream_state.text_snapshots_by_run,
+                reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
+                suppress_reasoning=self._normalized_stream_run_id(model_run_id) in stream_state.narrative_started_model_run_ids,
+                emitted_text=self._current_canonical_text(stream_state),
             )
-            reasoning_delta = self._consume_stream_suffix(stream_state.reasoning_snapshots_by_run, model_run_id, raw_reasoning)
-            if text_delta:
-                stream_state.text_raw_chars += len(text_delta)
-            if self._has_started_narrative_output(stream_state, raw_text=raw_text):
-                reasoning_delta = ""
-            if reasoning_delta:
-                reasoning_delta = self._suppress_neighbor_duplicate_delta(
-                    stream_state,
-                    delta=reasoning_delta,
-                    model_run_id=model_run_id,
-                    kind="reasoning",
-                )
-            if reasoning_delta:
-                stream_state.watchdog.note_text_progress()
-                stream_state.reasoning_buffer.append(reasoning_delta)
-                reasoning_event = {"type": "reasoning_chunk", "content": reasoning_delta, "timestamp": 0}
-                runtime_event = chat_run.emit_runtime_event("run.reasoning.delta", reasoning_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
-                workflow_ledger_service.append_chat_projection(
-                    session_id=chat_run.session_id,
-                    run_id=chat_run.active_run_id,
-                    reasoning_delta=reasoning_delta,
-                    agent_profile=self._get_agent_profile(stream_state.current_agent),
-                    latest_seq=runtime_event.get("seq"),
-                )
-                emitted_events.append(reasoning_event)
-            if text_delta:
-                text_delta = stream_state.text_filter.process(text_delta)
-                text_delta = self._suppress_neighbor_duplicate_delta(
-                    stream_state,
-                    delta=text_delta,
-                    model_run_id=model_run_id,
-                    kind="text",
-                )
-                if text_delta:
+            final_snapshot = stream_state.text_snapshots_by_run.get(self._normalized_stream_run_id(model_run_id))
+            if final_snapshot:
+                stream_state.authoritative_final_text = final_snapshot
+            for model_event in model_events:
+                if model_event.event_type == "text_delta":
+                    text_delta = model_event.delta
+                    stream_state.text_raw_chars += len(text_delta)
+                    text_delta = stream_state.text_filter.process(text_delta)
+                    text_delta = self._suppress_neighbor_duplicate_delta(
+                        stream_state,
+                        delta=text_delta,
+                        model_run_id=model_event.model_run_id,
+                        kind="text",
+                    )
+                    if not text_delta:
+                        continue
                     stream_state.watchdog.note_text_progress()
                     stream_state.output_buffer.append(text_delta)
-                    emitted_events.extend(await self._emit_text_delta(chat_run, stream_state, text_delta))
+                    stream_state.narrative_started_model_run_ids.add(self._normalized_stream_run_id(model_event.model_run_id))
+                    emitted_events.extend(
+                        await self._emit_text_delta(
+                            chat_run,
+                            stream_state,
+                            text_delta,
+                            model_run_id=model_event.model_run_id,
+                        )
+                    )
+                elif model_event.event_type == "reasoning_delta":
+                    reasoning_delta = self._suppress_neighbor_duplicate_delta(
+                        stream_state,
+                        delta=model_event.delta,
+                        model_run_id=model_event.model_run_id,
+                        kind="reasoning",
+                    )
+                    if not reasoning_delta:
+                        continue
+                    stream_state.watchdog.note_text_progress()
+                    stream_state.reasoning_buffer.append(reasoning_delta)
+                    reasoning_event = self._emit_reasoning_delta(
+                        chat_run,
+                        stream_state,
+                        reasoning_delta,
+                        model_run_id=model_event.model_run_id,
+                        snapshot=model_event.snapshot,
+                    )
+                    if reasoning_event is not None:
+                        emitted_events.append(reasoning_event)
             return emitted_events
 
         if kind == "on_tool_start":
             inputs = self._sanitize_tool_input_value(data.get("input", {}))
             tool_call_id = event.get("run_id", "")
+            active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
+            stream_state.active_tool_call_ids.add(active_tool_key)
             tool_start_event = {
                 "type": "tool_start",
                 "tool": {"toolCallId": tool_call_id, "toolName": name, "args": inputs},
                 "timestamp": 0,
             }
-            chat_run.emit_runtime_event("tool.started", tool_start_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
+            profile = self._get_agent_profile(stream_state.current_agent)
+            tool_call_node = {
+                "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:tool_call:{tool_call_id or name}",
+                "kind": "execution",
+                "executionType": "tool_call",
+                "toolCallId": tool_call_id,
+                "toolName": name,
+                "args": inputs,
+                "timestamp": self._now_timestamp_ms(),
+                "agentName": profile["name"],
+                "agentAvatar": profile["avatar"],
+                "agentRoleLabel": profile["roleLabel"],
+            }
+            runtime_event = self._emit_message_targeted_runtime_event(
+                chat_run,
+                stream_state,
+                topic="tool.started",
+                payload=tool_start_event,
+                node=tool_call_node,
+                agent_id=stream_state.current_agent,
+                runtime_node=stream_state.current_agent,
+            )
+            payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+            if isinstance(payload, dict):
+                tool_start_event["message_id"] = payload.get("message_id")
+                tool_start_event["node_id"] = payload.get("node_id")
+                tool_start_event["transcript_version"] = payload.get("transcript_version")
             stream_state.watchdog.note_tool_start(tool_call_id)
             stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": name, "args": inputs})
             emitted_events.append(tool_start_event)
@@ -1643,6 +2062,7 @@ class ChatRuntime:
         if kind == "on_tool_end":
             output = data.get("output", "")
             tool_call_id = event.get("run_id", "")
+            active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             output_str = str(output.content) if hasattr(output, "content") else str(output)
             tool_result_event = {
                 "type": "tool_result",
@@ -1650,7 +2070,36 @@ class ChatRuntime:
                 "timestamp": 0,
             }
             stream_state.watchdog.note_tool_end(tool_call_id)
-            chat_run.emit_runtime_event("tool.finished", tool_result_event, agent_id=stream_state.current_agent, node=stream_state.current_agent)
+            profile = self._get_agent_profile(stream_state.current_agent)
+            tool_result_node = {
+                "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:tool_result:{tool_call_id or name}",
+                "kind": "execution",
+                "executionType": "tool_result",
+                "toolCallId": tool_call_id,
+                "toolName": name,
+                "result": output_str,
+                "timestamp": self._now_timestamp_ms(),
+                "agentName": profile["name"],
+                "agentAvatar": profile["avatar"],
+                "agentRoleLabel": profile["roleLabel"],
+            }
+            runtime_event = self._emit_message_targeted_runtime_event(
+                chat_run,
+                stream_state,
+                topic="tool.finished",
+                payload=tool_result_event,
+                node=tool_result_node,
+                agent_id=stream_state.current_agent,
+                runtime_node=stream_state.current_agent,
+            )
+            payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+            if isinstance(payload, dict):
+                tool_result_event["message_id"] = payload.get("message_id")
+                tool_result_event["node_id"] = payload.get("node_id")
+                tool_result_event["transcript_version"] = payload.get("transcript_version")
+            stream_state.active_tool_call_ids.discard(active_tool_key)
+            if not active_tool_key:
+                stream_state.active_tool_call_ids.clear()
             emitted_events.append(tool_result_event)
             return emitted_events
 
@@ -1662,43 +2111,67 @@ class ChatRuntime:
         final_filtered_text = stream_state.text_filter.flush()
         if final_filtered_text:
             stream_state.output_buffer.append(final_filtered_text)
-            emitted_events.extend(await self._emit_text_delta(chat_run, stream_state, final_filtered_text))
+            emitted_events.extend(
+                await self._emit_text_delta(
+                    chat_run,
+                    stream_state,
+                    final_filtered_text,
+                    model_run_id=stream_state.last_text_delta_run_id,
+                )
+            )
 
         emitted_events.extend(await self._flush_pending_text_aggregator(chat_run, stream_state, final=True))
         self._emit_text_stream_diagnostics(chat_run, stream_state)
         return emitted_events
 
     def persist_final_assistant_message(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
-        final_content = stream_state.authoritative_final_text or "".join(stream_state.output_buffer)
-        if not final_content and not stream_state.tool_calls_buffer and not stream_state.reasoning_buffer:
+        assistant_message_id = stream_state.assistant_message_id
+        if not assistant_message_id:
             return
-        if stream_state.authoritative_final_text is not None:
-            stream_state.output_buffer = [final_content] if final_content else []
-        profile = self._get_agent_profile(stream_state.current_agent)
-        message_id = str(uuid.uuid4())
-        db.add_message(
-            msg_id=message_id,
-            session_id=chat_run.session_id,
-            role="assistant",
-            content=final_content,
-            reasoning_content="".join(stream_state.reasoning_buffer) if stream_state.reasoning_buffer else None,
-            tool_calls=stream_state.tool_calls_buffer if stream_state.tool_calls_buffer else None,
-            metadata={
-                "run_id": chat_run.active_run_id,
-                "transport": chat_run.transport,
-                "project_id": chat_run.scope_result.binding.project_id,
-                "workspace_id": chat_run.scope_result.binding.workspace_id,
-                "resolved_scope": chat_run.scope_result.binding.resolved_scope,
+        canonical_transcript_builder.set_message_state(
+            assistant_message_id,
+            state="completed",
+            metadata_updates={
+                "timestamp": self._now_timestamp_ms(),
+                "agentId": stream_state.current_agent,
             },
-            agent_id=stream_state.current_agent,
-            agent_name=profile["name"],
-            agent_avatar=profile["avatar"],
-            agent_role_label=profile["roleLabel"],
+            finalize=True,
+        )
+        row = db.get_chat_canonical_message(assistant_message_id)
+        if not row:
+            return
+        invariant_errors = validate_canonical_message_invariants(row)
+        if invariant_errors:
+            error_message = f"Canonical transcript invariant failed: {', '.join(invariant_errors)}"
+            chat_run.emit_runtime_event(
+                "run.transcript.invariant_failed",
+                {"errors": invariant_errors, "messageId": assistant_message_id},
+                agent_id=None,
+                node="canonical_transcript",
+            )
+            raise RuntimeError(error_message)
+        export_payload = export_legacy_message_payload(row)
+        final_content = str(export_payload.get("content") or "")
+        if not final_content and not export_payload.get("tool_calls") and not export_payload.get("reasoning_content"):
+            return
+        db.add_message(
+            msg_id=assistant_message_id,
+            session_id=chat_run.session_id,
+            role=str(export_payload.get("role") or "assistant"),
+            content=final_content,
+            reasoning_content=export_payload.get("reasoning_content"),
+            tool_calls=export_payload.get("tool_calls"),
+            images=export_payload.get("images"),
+            metadata=export_payload.get("metadata"),
+            agent_id=export_payload.get("agent_id"),
+            agent_name=export_payload.get("agent_name"),
+            agent_avatar=export_payload.get("agent_avatar"),
+            agent_role_label=export_payload.get("agent_role_label"),
         )
         db.attach_runtime_artifacts_to_message(
             session_id=chat_run.session_id,
             run_id=chat_run.active_run_id,
-            message_id=message_id,
+            message_id=assistant_message_id,
         )
         workflow_ledger_service.clear_chat_projection(chat_run.active_run_id)
 

@@ -76,6 +76,7 @@ _OPENCLAW_GATEWAY_BUILTIN_TOOLS = {
 _OPENCLAW_PLUGIN_INVENTORY_TTL_SECONDS = 60.0
 _OPENCLAW_CHANNEL_ACCOUNTS_TTL_SECONDS = 60.0
 _OPENCLAW_BRIDGE_DEFAULT_MANAGED_CHANNELS = ("openclaw-weixin",)
+_PLUGIN_HOST_PUBLIC_REFRESH_TTL_SECONDS = 15.0
 _BRIDGE_TOOL_CATALOG_TTL_SECONDS = 300.0
 _BRIDGE_STATUS_HOT_TTL_SECONDS = 5.0
 _BRIDGE_STATUS_HOT_REFRESH_TIMEOUT_SECONDS = 1.5
@@ -172,6 +173,8 @@ class PluginHostService:
         self._last_refresh_at: str | None = None
         self._last_live_refresh_at: str | None = None
         self._last_deep_refresh_at: str | None = None
+        self._last_live_refresh_monotonic: float = 0.0
+        self._last_public_refresh_request_monotonic: float = 0.0
         self._last_refresh_error: str | None = None
         self._cached_public_snapshot: dict[str, Any] | None = None
         self._background_refresh_task: asyncio.Task[Any] | None = None
@@ -188,10 +191,12 @@ class PluginHostService:
         worker.start()
 
     def _snapshot_status_fields(self) -> dict[str, Any]:
+        background_task = self._background_refresh_task
+        refresh_in_flight = bool(self._refresh_in_flight or (background_task is not None and not background_task.done()))
         return {
             "startupState": str(self._startup_state or "cold"),
             "snapshotFreshness": str(self._snapshot_freshness or "cached"),
-            "refreshInFlight": bool(self._refresh_in_flight),
+            "refreshInFlight": refresh_in_flight,
             "lastRefreshAt": self._last_refresh_at,
             "lastLiveRefreshAt": self._last_live_refresh_at,
             "lastDeepRefreshAt": self._last_deep_refresh_at,
@@ -1370,6 +1375,7 @@ class PluginHostService:
                 self._last_refresh_at = refreshed_at
                 self._last_live_refresh_at = refreshed_at
                 self._last_deep_refresh_at = refreshed_at
+                self._last_live_refresh_monotonic = time.monotonic()
                 response_snapshot = self._set_cached_public_snapshot(self._public_snapshot_from_full(snapshot))
             except Exception as exc:
                 self._startup_state = "error"
@@ -1397,7 +1403,31 @@ class PluginHostService:
         task = self._background_refresh_task
         if task and not task.done():
             return
-        self._background_refresh_task = asyncio.create_task(self._refresh_snapshot_async(refresh_registry=refresh_registry))
+        loop = asyncio.get_running_loop()
+        self._background_refresh_task = loop.create_task(self._refresh_snapshot_async(refresh_registry=refresh_registry))
+
+    def _schedule_public_snapshot_refresh(self) -> bool:
+        task = self._background_refresh_task
+        if self._refresh_in_flight or (task and not task.done()):
+            self._mark_snapshot_refreshing(preserve_error=True)
+            return False
+        now = time.monotonic()
+        last_request_at = max(self._last_public_refresh_request_monotonic, self._last_live_refresh_monotonic)
+        if last_request_at > 0 and now - last_request_at < _PLUGIN_HOST_PUBLIC_REFRESH_TTL_SECONDS:
+            return False
+        self._last_public_refresh_request_monotonic = now
+        self._mark_snapshot_refreshing(preserve_error=True)
+        try:
+            self._schedule_background_refresh(refresh_registry=False)
+        except RuntimeError:
+            def _worker() -> None:
+                try:
+                    self._refresh_snapshot_blocking(refresh_registry=False)
+                except Exception:
+                    return
+
+            self._schedule_daemon_thread(_worker)
+        return True
 
     def get_runtime_config(self) -> dict[str, Any]:
         return storage.get_plugin_host_config()
@@ -4501,32 +4531,8 @@ class PluginHostService:
             return self._refresh_snapshot_blocking(refresh_registry=True)
         if self._cached_public_snapshot is None:
             self._set_cached_public_snapshot(self._minimal_public_snapshot())
-        if not self._snapshot_refresh_lock.acquire(blocking=False):
-            self._mark_snapshot_refreshing(preserve_error=True)
-            return self._decorate_public_snapshot(dict(self._cached_public_snapshot or {}))
-        response_snapshot: dict[str, Any] | None = None
-        self._refresh_in_flight = True
-        try:
-            public = self._fast_refresh_public_snapshot()
-            refreshed_at = _now_iso()
-            self._startup_state = "ready"
-            self._snapshot_freshness = "live"
-            self._last_refresh_error = None
-            self._last_refresh_at = refreshed_at
-            self._last_live_refresh_at = refreshed_at
-            response_snapshot = self._set_cached_public_snapshot(public)
-        except Exception as exc:
-            self._startup_state = "error"
-            self._snapshot_freshness = "cached"
-            self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
-            self._last_refresh_at = _now_iso()
-            if self._cached_public_snapshot is None:
-                self._set_cached_public_snapshot(self._minimal_public_snapshot())
-            response_snapshot = dict(self._cached_public_snapshot or {})
-        finally:
-            self._refresh_in_flight = False
-            self._snapshot_refresh_lock.release()
-        return self._decorate_public_snapshot(response_snapshot or dict(self._cached_public_snapshot or {}))
+        self._schedule_public_snapshot_refresh()
+        return self._decorate_public_snapshot(dict(self._cached_public_snapshot or {}))
 
     def _shell_command_argv(self, command: str) -> list[str]:
         if os.name == "nt":

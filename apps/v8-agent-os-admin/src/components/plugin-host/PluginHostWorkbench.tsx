@@ -438,6 +438,21 @@ export function PluginHostWorkbench() {
     const [toolCatalogError, setToolCatalogError] = useState<string | null>(null);
     const hostRefreshInFlightRef = useRef(false);
     const lastHotRefreshAtRef = useRef(0);
+    const pollerStateRef = useRef({
+        busy: false,
+        doctorBusy: null as "check" | "repair" | null,
+        toolConfigBusy: false,
+        toolCatalogBusy: false,
+    });
+
+    useEffect(() => {
+        pollerStateRef.current = {
+            busy,
+            doctorBusy,
+            toolConfigBusy,
+            toolCatalogBusy,
+        };
+    }, [busy, doctorBusy, toolConfigBusy, toolCatalogBusy]);
 
     const loadToolCatalog = useCallback(async (query: string, refresh = false) => {
         setToolCatalogError(null);
@@ -491,7 +506,7 @@ export function PluginHostWorkbench() {
 
     const refreshHostSnapshot = useCallback(async (refresh = false) => {
         if (hostRefreshInFlightRef.current) {
-            return snapshot;
+            return null;
         }
         hostRefreshInFlightRef.current = true;
         try {
@@ -505,7 +520,7 @@ export function PluginHostWorkbench() {
         } finally {
             hostRefreshInFlightRef.current = false;
         }
-    }, [snapshot]);
+    }, []);
 
     const load = useCallback(async (quiet = false) => {
         if (!quiet) setLoading(true);
@@ -520,7 +535,6 @@ export function PluginHostWorkbench() {
                     .then((response) => response.json().catch(() => []))
                     .catch(() => []),
             ]);
-            setSnapshot(nextSnapshot);
             setConfig(domain?.data?.config || nextSnapshot.runtimeConfig || DEFAULT_CONFIG);
             setMeta(domain ? { source: domain.source, savePath: domain.savePath, reloadRequired: domain.reloadRequired } : null);
             setExtensionsConfig(
@@ -565,8 +579,7 @@ export function PluginHostWorkbench() {
                     return;
                 }
                 const now = Date.now();
-                const hostIsStale = Boolean(snapshot?.hostSurface?.bridgeStatusStale);
-                const shouldHotRefresh = hostIsStale || now - lastHotRefreshAtRef.current >= 30000;
+                const shouldHotRefresh = now - lastHotRefreshAtRef.current >= 30000;
                 await refreshHostSnapshot(shouldHotRefresh);
             } catch {
                 // 轮询失败不打断当前页面，仍保留手动刷新入口。
@@ -574,7 +587,14 @@ export function PluginHostWorkbench() {
         }
         void tick();
         const timer = window.setInterval(() => {
-            if (busy || doctorBusy !== null || toolConfigBusy || toolCatalogBusy || hostRefreshInFlightRef.current) {
+            const pollerState = pollerStateRef.current;
+            if (
+                pollerState.busy
+                || pollerState.doctorBusy !== null
+                || pollerState.toolConfigBusy
+                || pollerState.toolCatalogBusy
+                || hostRefreshInFlightRef.current
+            ) {
                 return;
             }
             void tick();
@@ -583,7 +603,7 @@ export function PluginHostWorkbench() {
             cancelled = true;
             window.clearInterval(timer);
         };
-    }, [busy, doctorBusy, loading, refreshHostSnapshot, snapshot?.hostSurface?.bridgeStatusStale, toolCatalogBusy, toolConfigBusy]);
+    }, [loading, refreshHostSnapshot]);
 
     async function save() {
         setBusy(true);

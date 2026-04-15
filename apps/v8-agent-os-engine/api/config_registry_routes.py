@@ -286,7 +286,7 @@ def _save_context_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_plugin_host_domain() -> dict[str, Any]:
     config = storage.get_plugin_host_config()
-    snapshot = _get_plugin_host_service().build_snapshot()
+    snapshot = _get_plugin_host_service().public_snapshot()
     warnings: list[str] = []
     if not config.get("enabled", True):
         warnings.append("PluginHostRuntime 当前已关闭；插件仍可扫描与安装，但不会接管渠道入站与出站。")

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 import json
 import re
 from typing import Any, Dict, List, Optional
 
 from core.context_governance import normalize_context_audit
+from core.json_safe import to_jsonable
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.storage import storage
 
@@ -29,6 +31,16 @@ STATUS_LABELS = {
     "failed": "失败",
     "cancelled": "已取消",
     "completed": "已完成",
+}
+
+TOOL_INPUT_INTERNAL_KEYS = {
+    "runtime",
+    "callbacks",
+    "config",
+    "context",
+    "store",
+    "streamwriter",
+    "toolcallid",
 }
 
 
@@ -55,6 +67,23 @@ def _read_string(record: Dict[str, Any], keys: List[str]) -> str:
 def _coerce_string(value: Any) -> Optional[str]:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _normalize_tool_arg_key(key: Any) -> str:
+    return "".join(ch for ch in str(key or "").lower() if ch.isalnum())
+
+
+def _sanitize_tool_payload_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, raw_value in value.items():
+            if _normalize_tool_arg_key(key) in TOOL_INPUT_INTERNAL_KEYS:
+                continue
+            sanitized[str(key)] = _sanitize_tool_payload_value(raw_value)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_tool_payload_value(item) for item in value]
+    return to_jsonable(value)
 
 
 def _normalize_source_group(value: Any) -> str:
@@ -304,6 +333,265 @@ def _is_todo_tool_payload(value: Dict[str, Any]) -> bool:
     return tool_name in {"write_todos", "update_todo"} or _contains_todo_mutation_hint(value)
 
 
+def _merge_unique_list(base_list: object, incoming_list: object) -> list:
+    merged: list = []
+    seen: set[str] = set()
+    for collection in (base_list, incoming_list):
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            fingerprint = str(item)
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            merged.append(item)
+    return merged
+
+
+def _normalize_merge_text(value: object) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _coerce_merge_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _message_identity_keys(message: dict | None) -> list[str]:
+    if not isinstance(message, dict):
+        return []
+    keys: list[str] = []
+    message_id = str(message.get("id") or "").strip()
+    if message_id:
+        keys.append(f"id:{message_id}")
+    role = str(message.get("role") or "").strip().lower()
+    run_id = str(message.get("runId") or message.get("run_id") or "").strip()
+    if role == "assistant" and run_id:
+        keys.append(f"assistant-run:{run_id}")
+    if role == "tool" and run_id:
+        keys.append(f"tool-run:{run_id}")
+    timestamp = _coerce_merge_int(message.get("timestamp"))
+    time_bucket = timestamp // 60000 if timestamp > 0 else 0
+    if role:
+        content_signature = _normalize_merge_text(message.get("content"))
+        if content_signature and time_bucket > 0:
+            keys.append(f"{role}-content:{time_bucket}:{content_signature}")
+        reasoning_signature = _normalize_merge_text(message.get("reasoningContent"))
+        if reasoning_signature and time_bucket > 0:
+            keys.append(f"{role}-reasoning:{time_bucket}:{reasoning_signature}")
+        tool_invocations = message.get("toolInvocations")
+        if isinstance(tool_invocations, list):
+            for invocation in tool_invocations:
+                if not isinstance(invocation, dict):
+                    continue
+                tool_call_id = str(invocation.get("toolCallId") or "").strip()
+                tool_name = str(invocation.get("toolName") or "").strip().lower()
+                if tool_call_id:
+                    keys.append(f"{role}-tool-call:{tool_call_id}")
+                elif tool_name and time_bucket > 0:
+                    keys.append(f"{role}-tool-name:{time_bucket}:{tool_name}")
+    return keys
+
+
+def _message_richness(message: dict | None) -> int:
+    if not isinstance(message, dict):
+        return 0
+    return (
+        len(str(message.get("content") or "").strip())
+        + (len(message.get("parts") or []) * 140 if isinstance(message.get("parts"), list) else 0)
+        + (len(message.get("nodes") or []) * 120 if isinstance(message.get("nodes"), list) else 0)
+        + (len(message.get("artifacts") or []) * 200 if isinstance(message.get("artifacts"), list) else 0)
+        + (len(message.get("images") or []) * 80 if isinstance(message.get("images"), list) else 0)
+    )
+
+
+def _merge_message_payload(base: dict, incoming: dict) -> dict:
+    merged = dict(base)
+    for key, value in incoming.items():
+        if value is None:
+            continue
+        if key in {"artifacts", "images"} and isinstance(value, list):
+            merged[key] = _merge_unique_list(merged.get(key), value)
+            continue
+        if key in {"parts", "nodes", "toolInvocations"} and isinstance(value, list):
+            base_list = merged.get(key) if isinstance(merged.get(key), list) else []
+            if not base_list:
+                merged[key] = value
+            continue
+        if key == "metadata" and isinstance(value, dict):
+            merged[key] = {
+                **(merged.get("metadata") if isinstance(merged.get("metadata"), dict) else {}),
+                **value,
+            }
+            continue
+        if key in {"content", "reasoningContent"}:
+            current_content = str(merged.get(key) or "").strip()
+            next_content = str(value or "").strip()
+            if not next_content:
+                continue
+            if not current_content or len(next_content) > len(current_content):
+                merged[key] = value
+            continue
+        merged[key] = value
+    return merged
+
+
+def merge_authoritative_timeline_messages(
+    primary_messages: list[dict],
+    incoming_messages: list[dict] | None,
+) -> list[dict]:
+    """Merge same-run messages while letting richer/durable content repair thin snapshots."""
+    merged: list[dict] = []
+    seen_by_identity: dict[str, int] = {}
+
+    for item in list(primary_messages or []):
+        if not isinstance(item, dict):
+            continue
+        merged.append(dict(item))
+        for identity_key in _message_identity_keys(item):
+            seen_by_identity[identity_key] = len(merged) - 1
+
+    for item in list(incoming_messages or []):
+        if not isinstance(item, dict):
+            continue
+        matching_index = next(
+            (
+                seen_by_identity[identity_key]
+                for identity_key in _message_identity_keys(item)
+                if identity_key in seen_by_identity
+            ),
+            None,
+        )
+        if matching_index is not None:
+            index = matching_index
+            current = merged[index]
+            if _message_richness(item) > _message_richness(current):
+                merged[index] = _merge_message_payload(current, item)
+            else:
+                merged[index] = _merge_message_payload(item, current)
+            for identity_key in _message_identity_keys(merged[index]):
+                seen_by_identity[identity_key] = index
+            continue
+        merged.append(dict(item))
+        for identity_key in _message_identity_keys(item):
+            seen_by_identity[identity_key] = len(merged) - 1
+    return merged
+
+
+def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
+    formatted: list[dict] = []
+    for row in rows:
+        created_at = row.get("created_at")
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        try:
+            timestamp = int(datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).timestamp() * 1000) if created_at else 0
+        except Exception:
+            timestamp = 0
+        nodes = []
+        message = {
+            "id": row["id"],
+            "role": row["role"],
+            "runId": str(metadata.get("run_id") or metadata.get("runId") or "").strip() or None,
+            "content": row.get("content") or "",
+            "reasoningContent": row.get("reasoning_content"),
+            "createdAt": row.get("created_at"),
+            "timestamp": timestamp,
+            "agentName": row.get("agent_name"),
+            "agentAvatar": row.get("agent_avatar"),
+            "agentRoleLabel": row.get("agent_role_label"),
+            "agentId": row.get("agent_id"),
+            "images": row.get("images") or [],
+            "metadata": metadata,
+            "nodes": nodes,
+        }
+        if row.get("reasoning_content"):
+            nodes.append(
+                {
+                    "id": f"{row['id']}:reasoning",
+                    "kind": "execution",
+                    "executionType": "reasoning",
+                    "content": row.get("reasoning_content"),
+                    "timestamp": timestamp,
+                    "agentName": row.get("agent_name"),
+                    "agentAvatar": row.get("agent_avatar"),
+                    "agentRoleLabel": row.get("agent_role_label"),
+                }
+            )
+        if row.get("content"):
+            nodes.append(
+                {
+                    "id": f"{row['id']}:content",
+                    "kind": "narrative",
+                    "role": row.get("role"),
+                    "content": row.get("content"),
+                    "timestamp": timestamp,
+                    "agentName": row.get("agent_name"),
+                    "agentAvatar": row.get("agent_avatar"),
+                    "agentRoleLabel": row.get("agent_role_label"),
+                }
+            )
+        tool_calls = row.get("tool_calls")
+        if isinstance(tool_calls, str):
+            try:
+                tool_calls = json.loads(tool_calls)
+            except Exception:
+                tool_calls = None
+        if isinstance(tool_calls, list):
+            invocations = []
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_call_id = tool_call.get("id", "")
+                tool_name = tool_call.get("name", tool_call.get("function", {}).get("name", ""))
+                tool_args = _sanitize_tool_payload_value(
+                    tool_call.get("args", tool_call.get("function", {}).get("arguments", {}))
+                )
+                tool_result = tool_call.get("result", None)
+                invocations.append(
+                    {
+                        "toolCallId": tool_call_id,
+                        "toolName": tool_name,
+                        "args": tool_args,
+                        "result": tool_result,
+                    }
+                )
+                nodes.append(
+                    {
+                        "id": f"{row['id']}:tool:{tool_call_id or len(invocations)}:call",
+                        "kind": "execution",
+                        "executionType": "tool_call",
+                        "toolCallId": tool_call_id,
+                        "toolName": tool_name,
+                        "args": tool_args,
+                        "timestamp": timestamp,
+                        "agentName": row.get("agent_name"),
+                        "agentAvatar": row.get("agent_avatar"),
+                        "agentRoleLabel": row.get("agent_role_label"),
+                    }
+                )
+                if tool_result is not None:
+                    nodes.append(
+                        {
+                            "id": f"{row['id']}:tool:{tool_call_id or len(invocations)}:result",
+                            "kind": "execution",
+                            "executionType": "tool_result",
+                            "toolCallId": tool_call_id,
+                            "toolName": tool_name,
+                            "result": tool_result,
+                            "timestamp": timestamp,
+                            "agentName": row.get("agent_name"),
+                            "agentAvatar": row.get("agent_avatar"),
+                            "agentRoleLabel": row.get("agent_role_label"),
+                        }
+                    )
+            if invocations:
+                message["toolInvocations"] = invocations
+        formatted.append(message)
+    return formatted
+
+
 def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     messages: List[Dict[str, Any]] = []
     current_assistant: Optional[Dict[str, Any]] = None
@@ -517,7 +805,7 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                     "type": "tool_call",
                     "toolCallId": tool.get("toolCallId") or tool.get("tool_call_id"),
                     "toolName": tool.get("toolName") or tool.get("tool_name"),
-                    "args": tool.get("args") or {},
+                    "args": _sanitize_tool_payload_value(tool.get("args") or {}),
                     **active_agent_profile,
                 }
             )
@@ -751,13 +1039,10 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
             )
         elif topic == "extension.execution.completed":
             tool_names = [str(item).strip() for item in list(payload.get("toolNames") or []) if str(item).strip()]
-            message_preview = _truncate_runtime_summary(str(payload.get("messagePreview") or ""), 96)
             if tool_names:
                 summary = f"扩展执行完成，调用了 {', '.join(tool_names[:3])}"
-            elif message_preview:
-                summary = f"扩展返回：{message_preview}"
             else:
-                summary = "扩展执行完成"
+                summary = "扩展候选执行完成"
             entry = _runtime_timeline_entry(
                 event,
                 runtime_id="extensions",
@@ -821,7 +1106,14 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 actor_label="运行调度",
             )
         elif topic == "run.state.changed":
-            next_state = str(payload.get("status") or payload.get("state") or payload.get("nextState") or "unknown").strip() or "unknown"
+            next_state = str(
+                payload.get("to_status")
+                or payload.get("toStatus")
+                or payload.get("status")
+                or payload.get("state")
+                or payload.get("nextState")
+                or "unknown"
+            ).strip() or "unknown"
             entry = _runtime_timeline_entry(
                 event,
                 runtime_id="chat",

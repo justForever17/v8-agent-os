@@ -154,6 +154,33 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(add_message_mock.call_args.kwargs["content"], "干净正文")
         self.assertEqual(self.stream_state.output_buffer, ["干净正文"])
 
+    async def test_tool_start_sanitizes_runtime_internal_input(self):
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_start",
+                "run_id": "tool_run_1",
+                "name": "generate_image",
+                "data": {
+                    "input": {
+                        "params": {"prompt": "雷电将军", "size": "1:1"},
+                        "runtime": "ToolRuntime(state={'messages': ['bad']})",
+                        "callbacks": {"manager": "internal"},
+                        "config": {"debug": True},
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(len(self.chat_run.events), 1)
+        tool_args = self.chat_run.events[0]["payload"]["tool"]["args"]
+        self.assertEqual(tool_args, {"params": {"prompt": "雷电将军", "size": "1:1"}})
+        self.assertEqual(
+            self.stream_state.tool_calls_buffer,
+            [{"id": "tool_run_1", "name": "generate_image", "args": {"params": {"prompt": "雷电将军", "size": "1:1"}}}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

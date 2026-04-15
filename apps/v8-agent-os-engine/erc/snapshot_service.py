@@ -13,6 +13,8 @@ from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
+    format_durable_chat_messages,
+    merge_authoritative_timeline_messages,
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
@@ -30,6 +32,16 @@ from erc.workflow_projection import workflow_projection_service
 
 
 class SnapshotService:
+    def _merge_authoritative_messages(self, session_id: str, snapshot: Dict) -> Dict:
+        if not isinstance(snapshot, dict):
+            return snapshot
+        durable_messages = format_durable_chat_messages(db.get_messages(session_id))
+        merged_messages = merge_authoritative_timeline_messages(
+            snapshot.get("messages") if isinstance(snapshot.get("messages"), list) else [],
+            durable_messages,
+        )
+        return {**snapshot, "messages": merged_messages}
+
     def record_runtime_snapshot(
         self,
         *,
@@ -52,7 +64,9 @@ class SnapshotService:
     def refresh_chat_projection(self, session_id: str, *, run_id: Optional[str] = None) -> Dict:
         runtime_events = db.get_runtime_events(session_id)
         snapshot = build_chat_projection_snapshot(session_id, runtime_events)
+        snapshot = self._merge_authoritative_messages(session_id, snapshot)
         snapshot = apply_projection_overlay(snapshot, workflow_ledger_service.get_session_projection_overlay(session_id))
+        snapshot = self._merge_authoritative_messages(session_id, snapshot)
         self.record_runtime_snapshot(
             session_id=session_id,
             run_id=run_id or (runtime_events[-1].get("run_id") if runtime_events else None),
@@ -81,6 +95,7 @@ class SnapshotService:
                 snapshot_row.get("snapshot", {}),
                 workflow_ledger_service.get_session_projection_overlay(session_id),
             )
+            snapshot_row["snapshot"] = self._merge_authoritative_messages(session_id, snapshot_row.get("snapshot", {}))
         return snapshot_row
 
     def build_chat_projection_payload(self, session_id: str) -> Dict:
@@ -195,7 +210,7 @@ class SnapshotService:
                 "liveness": liveness,
                 "recoveryClass": recovery_class,
             }
-        snapshot = snapshot_row.get("snapshot", {})
+        snapshot = self._merge_authoritative_messages(session_id, snapshot_row.get("snapshot", {}))
         latest_seq = int(snapshot_row.get("latest_seq", 0) or 0)
         controls = build_projection_controls(workflow_view, pending_approvals)
         workflow_projection = augment_workflow_projection(

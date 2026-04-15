@@ -1,6 +1,5 @@
 import uuid
 import importlib
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +17,8 @@ from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
+    format_durable_chat_messages,
+    merge_authoritative_timeline_messages,
     project_chat_messages_from_events,
     project_runtime_timeline_from_events,
     project_pending_approvals,
@@ -73,256 +74,8 @@ def _scope_history_event_payload(event) -> dict:
     return payload
 
 
-def _merge_authoritative_timeline_messages(
-    durable_messages: list[dict],
-    snapshot_messages: list[dict] | None,
-) -> list[dict]:
-    """Prefer durable/runtime-backed timeline, but keep snapshot-only residues if they are not yet persisted."""
-    def _merge_unique_list(base_list: object, incoming_list: object) -> list:
-        merged: list = []
-        seen: set[str] = set()
-        for collection in (base_list, incoming_list):
-            if not isinstance(collection, list):
-                continue
-            for item in collection:
-                fingerprint = str(item)
-                if fingerprint in seen:
-                    continue
-                seen.add(fingerprint)
-                merged.append(item)
-        return merged
-
-    def _normalize_text(value: object) -> str:
-        return " ".join(str(value or "").strip().lower().split())
-
-    def _coerce_int(value: object) -> int:
-        try:
-            return int(value or 0)
-        except Exception:
-            return 0
-
-    def _message_identity_keys(message: dict | None) -> list[str]:
-        if not isinstance(message, dict):
-            return []
-        keys: list[str] = []
-        message_id = str(message.get("id") or "").strip()
-        if message_id:
-            keys.append(f"id:{message_id}")
-        role = str(message.get("role") or "").strip().lower()
-        run_id = str(message.get("runId") or message.get("run_id") or "").strip()
-        if role == "assistant" and run_id:
-            keys.append(f"assistant-run:{run_id}")
-        if role == "tool" and run_id:
-            keys.append(f"tool-run:{run_id}")
-        timestamp = _coerce_int(message.get("timestamp"))
-        time_bucket = timestamp // 60000 if timestamp > 0 else 0
-        if role:
-            content_signature = _normalize_text(message.get("content"))
-            if content_signature and time_bucket > 0:
-                keys.append(f"{role}-content:{time_bucket}:{content_signature}")
-            reasoning_signature = _normalize_text(message.get("reasoningContent"))
-            if reasoning_signature and time_bucket > 0:
-                keys.append(f"{role}-reasoning:{time_bucket}:{reasoning_signature}")
-            tool_invocations = message.get("toolInvocations")
-            if isinstance(tool_invocations, list):
-                for invocation in tool_invocations:
-                    if not isinstance(invocation, dict):
-                        continue
-                    tool_call_id = str(invocation.get("toolCallId") or "").strip()
-                    tool_name = str(invocation.get("toolName") or "").strip().lower()
-                    if tool_call_id:
-                        keys.append(f"{role}-tool-call:{tool_call_id}")
-                    elif tool_name and time_bucket > 0:
-                        keys.append(f"{role}-tool-name:{time_bucket}:{tool_name}")
-        return keys
-
-    def _message_richness(message: dict | None) -> int:
-        if not isinstance(message, dict):
-            return 0
-        return (
-            len(str(message.get("content") or "").strip())
-            + (len(message.get("parts") or []) * 140 if isinstance(message.get("parts"), list) else 0)
-            + (len(message.get("nodes") or []) * 120 if isinstance(message.get("nodes"), list) else 0)
-            + (len(message.get("artifacts") or []) * 200 if isinstance(message.get("artifacts"), list) else 0)
-            + (len(message.get("images") or []) * 80 if isinstance(message.get("images"), list) else 0)
-        )
-
-    def _merge_message_payload(base: dict, incoming: dict) -> dict:
-        merged = dict(base)
-        for key, value in incoming.items():
-            if value is None:
-                continue
-            if key in {"artifacts", "images"} and isinstance(value, list):
-                merged[key] = _merge_unique_list(merged.get(key), value)
-                continue
-            if key in {"parts", "nodes", "toolInvocations"} and isinstance(value, list):
-                base_list = merged.get(key) if isinstance(merged.get(key), list) else []
-                if not base_list:
-                    merged[key] = value
-                continue
-            if key == "metadata" and isinstance(value, dict):
-                merged[key] = {
-                    **(merged.get("metadata") if isinstance(merged.get("metadata"), dict) else {}),
-                    **value,
-                }
-                continue
-            if key in {"content", "reasoningContent"}:
-                current_content = str(merged.get(key) or "").strip()
-                next_content = str(value or "").strip()
-                if next_content and not current_content:
-                    merged[key] = value
-                continue
-            merged[key] = value
-        return merged
-
-    merged: list[dict] = []
-    seen_by_identity: dict[str, int] = {}
-
-    for item in list(durable_messages or []):
-        if not isinstance(item, dict):
-            continue
-        merged.append(dict(item))
-        for identity_key in _message_identity_keys(item):
-            seen_by_identity[identity_key] = len(merged) - 1
-
-    for item in list(snapshot_messages or []):
-        if not isinstance(item, dict):
-            continue
-        matching_index = next(
-            (
-                seen_by_identity[identity_key]
-                for identity_key in _message_identity_keys(item)
-                if identity_key in seen_by_identity
-            ),
-            None,
-        )
-        if matching_index is not None:
-            index = matching_index
-            current = merged[index]
-            if _message_richness(item) > _message_richness(current):
-                merged[index] = _merge_message_payload(current, item)
-            else:
-                merged[index] = _merge_message_payload(item, current)
-            for identity_key in _message_identity_keys(merged[index]):
-                seen_by_identity[identity_key] = index
-            continue
-        merged.append(dict(item))
-        for identity_key in _message_identity_keys(item):
-            seen_by_identity[identity_key] = len(merged) - 1
-    return merged
-
-
 def _memory_runtime():
     return importlib.import_module("runtimes.memory.runtime").memory_runtime
-
-
-def _format_db_session_messages(rows: list[dict]) -> list[dict]:
-    formatted = []
-    for row in rows:
-        created_at = row.get("created_at")
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        try:
-            timestamp = int(datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).timestamp() * 1000) if created_at else 0
-        except Exception:
-            timestamp = 0
-        nodes = []
-        msg_obj = {
-            "id": row["id"],
-            "role": row["role"],
-            "runId": str(metadata.get("run_id") or metadata.get("runId") or "").strip() or None,
-            "content": row["content"],
-            "reasoningContent": row.get("reasoning_content"),
-            "createdAt": row["created_at"],
-            "timestamp": timestamp,
-            "agentName": row.get("agent_name"),
-            "agentAvatar": row.get("agent_avatar"),
-            "agentRoleLabel": row.get("agent_role_label"),
-            "agentId": row.get("agent_id"),
-            "images": row.get("images") or [],
-            "metadata": metadata,
-            "nodes": nodes,
-        }
-        if row.get("reasoning_content"):
-            nodes.append({
-                "id": f"{row['id']}:reasoning",
-                "kind": "execution",
-                "executionType": "reasoning",
-                "content": row.get("reasoning_content"),
-                "timestamp": timestamp,
-                "agentName": row.get("agent_name"),
-                "agentAvatar": row.get("agent_avatar"),
-                "agentRoleLabel": row.get("agent_role_label"),
-            })
-        if row.get("content"):
-            nodes.append({
-                "id": f"{row['id']}:content",
-                "kind": "narrative",
-                "role": row.get("role"),
-                "content": row.get("content"),
-                "timestamp": timestamp,
-                "agentName": row.get("agent_name"),
-                "agentAvatar": row.get("agent_avatar"),
-                "agentRoleLabel": row.get("agent_role_label"),
-            })
-        if row.get("tool_calls"):
-            try:
-                tool_calls = row["tool_calls"]
-                if isinstance(tool_calls, str):
-                    import json
-
-                    tool_calls = json.loads(tool_calls)
-
-                invocations = []
-                for tool_call in tool_calls:
-                    if isinstance(tool_call, dict):
-                        tool_call_id = tool_call.get("id", "")
-                        tool_name = tool_call.get("name", tool_call.get("function", {}).get("name", ""))
-                        tool_args = tool_call.get("args", tool_call.get("function", {}).get("arguments", {}))
-                        tool_result = tool_call.get("result", None)
-                        invocations.append(
-                            {
-                                "toolCallId": tool_call_id,
-                                "toolName": tool_name,
-                                "args": tool_args,
-                                "result": tool_result,
-                            }
-                        )
-                        nodes.append(
-                            {
-                                "id": f"{row['id']}:tool:{tool_call_id or len(invocations)}:call",
-                                "kind": "execution",
-                                "executionType": "tool_call",
-                                "toolCallId": tool_call_id,
-                                "toolName": tool_name,
-                                "args": tool_args,
-                                "timestamp": timestamp,
-                                "agentName": row.get("agent_name"),
-                                "agentAvatar": row.get("agent_avatar"),
-                                "agentRoleLabel": row.get("agent_role_label"),
-                            }
-                        )
-                        if tool_result is not None:
-                            nodes.append(
-                                {
-                                    "id": f"{row['id']}:tool:{tool_call_id or len(invocations)}:result",
-                                    "kind": "execution",
-                                    "executionType": "tool_result",
-                                    "toolCallId": tool_call_id,
-                                    "toolName": tool_name,
-                                    "result": tool_result,
-                                    "timestamp": timestamp,
-                                    "agentName": row.get("agent_name"),
-                                    "agentAvatar": row.get("agent_avatar"),
-                                    "agentRoleLabel": row.get("agent_role_label"),
-                                }
-                            )
-                if invocations:
-                    msg_obj["toolInvocations"] = invocations
-            except Exception as exc:
-                print(f"Error parsing tool_calls: {exc}")
-        formatted.append(msg_obj)
-    return formatted
-
 
 def _build_durable_detail_payload(
     *,
@@ -529,7 +282,7 @@ async def get_session_messages(session_id: str):
             }
 
         session_row = db.get_session(session_id) or {"id": session_id, "title": "New Chat", "metadata": {}}
-        durable_messages = _format_db_session_messages(db.get_messages(session_id))
+        durable_messages = format_durable_chat_messages(db.get_messages(session_id))
         runtime_events = db.get_runtime_events(session_id)
         context_governance = extract_latest_context_governance(runtime_events)
         context_governance_history = extract_context_governance_history(runtime_events)
@@ -767,13 +520,13 @@ async def get_session_history(session_id: str):
         snapshot = snapshot_payload.get("snapshot")
         latest_seq = int(snapshot_payload.get("latestSeq") or 0)
         snapshot_messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
-        durable_messages = _format_db_session_messages(db.get_messages(session_id))
+        durable_messages = format_durable_chat_messages(db.get_messages(session_id))
         event_projected_messages = project_chat_messages_from_events(runtime_events)
-        timeline_messages = _merge_authoritative_timeline_messages(
+        timeline_messages = merge_authoritative_timeline_messages(
             event_projected_messages,
             durable_messages,
         )
-        timeline_messages = _merge_authoritative_timeline_messages(
+        timeline_messages = merge_authoritative_timeline_messages(
             timeline_messages,
             list(snapshot_messages) if isinstance(snapshot_messages, list) else None,
         )

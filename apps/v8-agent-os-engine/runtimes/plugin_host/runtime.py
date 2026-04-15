@@ -129,6 +129,72 @@ class PluginHostRuntime:
             return visible
         return ""
 
+    @staticmethod
+    def _longest_overlap_suffix_prefix(previous: str, current: str) -> int:
+        max_overlap = min(len(previous), len(current))
+        for size in range(max_overlap, 0, -1):
+            if previous[-size:] == current[:size]:
+                return size
+        return 0
+
+    def _consume_stream_suffix(self, snapshots: dict[str, str], model_run_id: str, raw_value: str) -> str:
+        normalized_run_id = (model_run_id or "").strip() or "__default__"
+        current_value = raw_value or ""
+        if not current_value:
+            return ""
+
+        previous_value = snapshots.get(normalized_run_id, "")
+        if not previous_value:
+            snapshots[normalized_run_id] = current_value
+            return current_value
+
+        if current_value == previous_value:
+            return ""
+
+        if current_value.startswith(previous_value):
+            suffix = current_value[len(previous_value):]
+            snapshots[normalized_run_id] = current_value
+            return suffix
+
+        if previous_value.endswith(current_value) or current_value in previous_value:
+            return ""
+
+        overlap = self._longest_overlap_suffix_prefix(previous_value, current_value)
+        if overlap > 0:
+            suffix = current_value[overlap:]
+            snapshots[normalized_run_id] = previous_value + suffix
+            return suffix
+
+        snapshots[normalized_run_id] = current_value
+        return ""
+
+    def _consume_terminal_text_suffix(
+        self,
+        snapshots: dict[str, str],
+        model_run_id: str,
+        raw_value: str,
+        emitted_text: str,
+    ) -> str:
+        normalized_run_id = (model_run_id or "").strip() or "__default__"
+        current_value = raw_value or ""
+        if not current_value:
+            return ""
+
+        snapshots[normalized_run_id] = current_value
+        if not emitted_text:
+            return current_value
+        if current_value == emitted_text:
+            return ""
+        if current_value.startswith(emitted_text):
+            return current_value[len(emitted_text):]
+        if emitted_text.endswith(current_value) or current_value in emitted_text:
+            return ""
+
+        overlap = self._longest_overlap_suffix_prefix(emitted_text, current_value)
+        if overlap > 0:
+            return current_value[overlap:]
+        return ""
+
     def _extract_delivery_message_id(self, delivery_receipt: Dict[str, Any] | None) -> str | None:
         receipt = dict(delivery_receipt or {})
         queue: list[Any] = [receipt]
@@ -1192,7 +1258,7 @@ class PluginHostRuntime:
         )
 
         output_buffer: list[str] = []
-        streamed_model_run_ids: set[str] = set()
+        text_snapshots_by_run: dict[str, str] = {}
         watchdog = GraphStreamWatchdogState()
         supervisor_profile = storage.get_agent_runtime_profile("supervisor")
         self._persist_runtime_event(
@@ -1283,19 +1349,28 @@ class PluginHostRuntime:
                                     )
 
                             if kind == "on_chat_model_stream":
+                                model_run_id = (event.get("run_id") or "").strip()
                                 chunk = data_obj.get("chunk")
                                 if chunk:
-                                    text_delta, _ = extract_text_and_reasoning(chunk)
+                                    raw_text, _ = extract_text_and_reasoning(chunk)
+                                    if not raw_text and isinstance(chunk, str):
+                                        raw_text = chunk
+                                    text_delta = self._consume_stream_suffix(text_snapshots_by_run, model_run_id, raw_text)
                                     if text_delta:
                                         watchdog.note_text_progress()
-                                        streamed_model_run_ids.add(event.get("run_id", ""))
                                         output_buffer.append(text_delta)
                             elif kind == "on_chat_model_end":
-                                model_run_id = event.get("run_id", "")
-                                if model_run_id in streamed_model_run_ids:
-                                    continue
+                                model_run_id = (event.get("run_id") or "").strip()
                                 final_output = data_obj.get("output")
-                                text_delta, _ = extract_text_and_reasoning(final_output)
+                                raw_text, _ = extract_text_and_reasoning(final_output)
+                                if not raw_text and isinstance(final_output, str):
+                                    raw_text = final_output
+                                text_delta = self._consume_terminal_text_suffix(
+                                    text_snapshots_by_run,
+                                    model_run_id,
+                                    raw_text,
+                                    "".join(output_buffer),
+                                )
                                 if text_delta:
                                     watchdog.note_text_progress()
                                     output_buffer.append(text_delta)

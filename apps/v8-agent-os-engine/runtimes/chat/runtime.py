@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import uuid
 import logging
 from contextlib import aclosing
@@ -23,6 +24,7 @@ from core.graph_stream_watchdog import (
     GraphStreamWatchdogState,
     normalize_stream_iterator_exception,
 )
+from core.json_safe import to_jsonable
 from core.realtime_protocol import protocol_connected_event
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
@@ -204,6 +206,15 @@ class ChatRuntime:
 
     kind = "chat"
     TEXT_FLUSH_INTERVAL_SECONDS = 0.22
+    TOOL_INPUT_INTERNAL_KEYS = {
+        "runtime",
+        "callbacks",
+        "config",
+        "context",
+        "store",
+        "streamwriter",
+        "toolcallid",
+    }
 
     def runtime_descriptor(self) -> dict[str, Any]:
         return {
@@ -1383,6 +1394,34 @@ class ChatRuntime:
     def _normalized_stream_run_id(model_run_id: str) -> str:
         return (model_run_id or "").strip() or "__default__"
 
+    @classmethod
+    def _normalize_tool_arg_key(cls, key: object) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(key or "").strip().lower())
+
+    @classmethod
+    def _sanitize_tool_input_value(cls, value: Any) -> Any:
+        sentinel = object()
+
+        def _sanitize(item: Any) -> Any:
+            if item is None or isinstance(item, (str, int, float, bool)):
+                return item
+            if isinstance(item, dict):
+                cleaned: dict[str, Any] = {}
+                for raw_key, raw_value in item.items():
+                    if cls._normalize_tool_arg_key(raw_key) in cls.TOOL_INPUT_INTERNAL_KEYS:
+                        continue
+                    sanitized_child = _sanitize(raw_value)
+                    if sanitized_child is sentinel:
+                        continue
+                    cleaned[str(raw_key)] = sanitized_child
+                return cleaned
+            if isinstance(item, list):
+                return [sanitized_child for child in item if (sanitized_child := _sanitize(child)) is not sentinel]
+            return sentinel
+
+        sanitized = _sanitize(to_jsonable(value))
+        return {} if sanitized is sentinel else sanitized
+
     def _suppress_neighbor_duplicate_delta(
         self,
         stream_state: ChatStreamState,
@@ -1588,7 +1627,7 @@ class ChatRuntime:
             return emitted_events
 
         if kind == "on_tool_start":
-            inputs = data.get("input", {})
+            inputs = self._sanitize_tool_input_value(data.get("input", {}))
             tool_call_id = event.get("run_id", "")
             tool_start_event = {
                 "type": "tool_start",

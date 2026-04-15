@@ -34,6 +34,7 @@ type SystemBaseConfig = {
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
 const DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9528/api";
 const DEFAULT_DESKTOP_LIVE_BRIDGE_BASE_URL = "http://127.0.0.1:8011/v1";
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
 function inferEnginePythonPath() {
     const repoRoots = [
@@ -104,6 +105,37 @@ export function resolveDesktopLiveBridgeBaseUrl() {
 export function resolveAdminPublicBaseUrl() {
     const apiBaseUrl = resolveAdminApiBaseUrl();
     return apiBaseUrl.endsWith("/api") ? apiBaseUrl.slice(0, -4) : apiBaseUrl;
+}
+
+export function isReachableClientSurfaceOrigin(baseUrl: string) {
+    const normalized = String(baseUrl || "").trim();
+    if (!normalized) {
+        return false;
+    }
+    try {
+        const parsed = new URL(normalized);
+        return !LOOPBACK_HOSTS.has(parsed.hostname || "");
+    } catch {
+        return false;
+    }
+}
+
+export function resolveReachableClientSurfaceOrigin(candidate: string) {
+    const normalized = String(candidate || "").trim().replace(/\/$/, "");
+    return isReachableClientSurfaceOrigin(normalized) ? normalized : "";
+}
+
+export function resolveReachableClientSurfaceOriginFromRequest(requestUrl: string) {
+    try {
+        return resolveReachableClientSurfaceOrigin(new URL(String(requestUrl || "")).origin);
+    } catch {
+        return "";
+    }
+}
+
+export function resolveReachableAdminPublicBaseUrl() {
+    const publicBase = resolveAdminPublicBaseUrl();
+    return resolveReachableClientSurfaceOrigin(publicBase);
 }
 
 export function resolveInternalSecret() {

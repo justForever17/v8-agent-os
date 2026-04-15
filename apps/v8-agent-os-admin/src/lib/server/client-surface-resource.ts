@@ -1,7 +1,12 @@
 import crypto from "crypto";
 import type { NextRequest } from "next/server";
 
-import { resolveAdminApiBaseUrl, resolveAdminPublicBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import {
+    resolveAdminApiBaseUrl,
+    resolveInternalSecret,
+    resolveReachableAdminPublicBaseUrl,
+    resolveReachableClientSurfaceOrigin,
+} from "@/lib/server/runtime-config";
 
 const DEFAULT_SURFACE_RESOURCE_TTL_SECONDS = 60 * 10;
 const INTERNAL_SURFACE_USER_EMAIL = "surface-resource@internal";
@@ -30,7 +35,10 @@ function buildSignature(path: string, exp: string) {
     return crypto.createHmac("sha256", secret).update(`${path}|${exp}`).digest("hex");
 }
 
-export function buildSignedClientSurfaceUrl(path: string, options?: { ttlSeconds?: number; absolute?: boolean }) {
+export function buildSignedClientSurfaceUrl(
+    path: string,
+    options?: { ttlSeconds?: number; absolute?: boolean; publicBaseUrl?: string },
+) {
     const normalizedPath = normalizeClientSurfacePath(path);
     if (!normalizedPath) {
         return "";
@@ -48,7 +56,12 @@ export function buildSignedClientSurfaceUrl(path: string, options?: { ttlSeconds
     if (options?.absolute === false) {
         return signedPath;
     }
-    return `${resolveAdminPublicBaseUrl()}${signedPath}`;
+    const publicBase = resolveReachableClientSurfaceOrigin(String(options?.publicBaseUrl || ""))
+        || resolveReachableAdminPublicBaseUrl();
+    if (!publicBase) {
+        return "";
+    }
+    return `${publicBase}${signedPath}`;
 }
 
 export function verifySignedClientSurfaceRequest(req: NextRequest) {

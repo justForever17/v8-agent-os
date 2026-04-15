@@ -146,6 +146,75 @@ type ExtensionsConfigData = {
     modelBindings?: { prefilterModel?: string };
 };
 
+type ExtensionPreviewSkillEntry = {
+    skillId?: string;
+    skillName?: string;
+    skillRoot?: string;
+    instructionPath?: string;
+    sourceType?: string;
+    visibility?: string;
+    workspacePath?: string;
+    workspaceId?: string;
+    projectId?: string;
+    rootPath?: string;
+    referencesDir?: string;
+    scriptsDir?: string;
+    assetsDir?: string;
+    templatesDir?: string;
+    availableFiles?: string[];
+};
+
+type ExtensionPreviewMcpServer = {
+    serverKey?: string;
+    familyKey: string;
+    serverName: string;
+    title: string;
+    toolCount: number;
+    toolNames: string[];
+    tools?: Array<{ name: string; description?: string }>;
+    descriptions?: string[];
+};
+
+type ExtensionPrefilterPreviewResponse = {
+    queryPreview?: string;
+    skillEntries?: ExtensionPreviewSkillEntry[];
+    skillRootDescriptors?: NonNullable<ExtensionCatalogResponse["skills"]>["rootDescriptors"];
+    mcpServers?: ExtensionPreviewMcpServer[];
+    mcpFamilies?: ExtensionPreviewMcpServer[];
+    counts?: {
+        mode?: string;
+        modelId?: string;
+        role?: string;
+        reason?: string | null;
+        prefilterTimedOut?: boolean;
+        prefilterCacheHit?: boolean;
+        skillCandidates?: number;
+        mcpCandidates?: number;
+        mcpServerCandidates?: number;
+        skillPoolSize?: number;
+        mcpPoolSize?: number;
+        mcpServerPoolSize?: number;
+        mcpFamilyPoolSize?: number;
+    };
+    routing?: {
+        mode?: string;
+        modelId?: string;
+        role?: string;
+        reason?: string | null;
+        prefilterTimedOut?: boolean;
+        prefilterCacheHit?: boolean;
+        selectedSkills?: string[];
+        selectedSkillIds?: string[];
+        selectedMcpServers?: string[];
+        selectedMcpFamilies?: string[];
+        selectedMcpTools?: string[];
+        skillPoolSize?: number;
+        mcpPoolSize?: number;
+        mcpServerPoolSize?: number;
+        mcpFamilyPoolSize?: number;
+    };
+};
+
 type StructuredValidationPayload = {
     code?: string;
     message?: string;
@@ -176,6 +245,13 @@ function StatPill({ label, value }: { label: string; value: string | number }) {
             <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
         </div>
     );
+}
+
+function previewMcpServerTools(server: ExtensionPreviewMcpServer): Array<{ name: string; description?: string }> {
+    if (server.tools && server.tools.length > 0) {
+        return server.tools;
+    }
+    return (server.toolNames || []).map((name) => ({ name, description: "" }));
 }
 
 function skillSourceBadgeLabel(sourceType: string | undefined, t: TranslateFn) {
@@ -320,6 +396,11 @@ export default function ExtensionsPage() {
     const [zipValidationError, setZipValidationError] = useState("");
     const [mcpValidationError, setMcpValidationError] = useState("");
     const [mcpValidationSummary, setMcpValidationSummary] = useState("");
+    const [previewQuery, setPreviewQuery] = useState("");
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewError, setPreviewError] = useState("");
+    const [previewedQuery, setPreviewedQuery] = useState("");
+    const [previewResult, setPreviewResult] = useState<ExtensionPrefilterPreviewResponse | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const { toast } = useToast();
 
@@ -366,6 +447,7 @@ export default function ExtensionsPage() {
         ],
         [catalog]
     );
+    const previewMcpServers = previewResult?.mcpServers || previewResult?.mcpFamilies || [];
 
     const updateConfig = (patch: Partial<ExtensionsConfigData>) => {
         if (!configEnvelope) return;
@@ -420,6 +502,34 @@ export default function ExtensionsPage() {
             toast({ title: t(lt("刷新失败", "Refresh failed")), description: t(lt("请稍后重试。", "Please try again later.")), variant: "destructive" });
         } finally {
             setReloading(false);
+        }
+    };
+
+    const previewExtensionsSelection = async () => {
+        const normalizedQuery = String(previewQuery || "").trim();
+        if (!normalizedQuery) return;
+        setPreviewLoading(true);
+        setPreviewError("");
+        setPreviewedQuery(normalizedQuery);
+        try {
+            const params = new URLSearchParams({ query: normalizedQuery });
+            const res = await fetch(`/api/extensions/preview?${params.toString()}`, { cache: "no-store" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(String(data?.detail || data?.error || t(lt("扩展筛选预览失败", "Extensions preview failed"))));
+            }
+            setPreviewResult(data as ExtensionPrefilterPreviewResponse);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t(lt("扩展筛选预览失败", "Extensions preview failed"));
+            setPreviewResult(null);
+            setPreviewError(message);
+            toast({
+                title: t(lt("预览失败", "Preview failed")),
+                description: message,
+                variant: "destructive",
+            });
+        } finally {
+            setPreviewLoading(false);
         }
     };
 
@@ -589,14 +699,14 @@ export default function ExtensionsPage() {
 
             <ConfigCard
                 title={lt("候选预筛", "Candidate prefilter")}
-                description={lt("控制 Skills、MCP 与 PluginHost 工具树的 LLM 预筛。", "Control LLM prefiltering for Skills, MCP, and PluginHost tool trees.")}
+                description={lt("控制 Skills、MCP Server 与 PluginHost 工具树的 LLM 预筛。", "Control LLM prefiltering for Skills, MCP servers, and PluginHost tool trees.")}
             >
                 <div className="grid gap-6 xl:grid-cols-[1.2fr,1fr]">
                     <div className="space-y-5">
                         <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                                 <div className="space-y-1">
                                 <div className="text-sm font-medium text-slate-900">{t(lt("启用扩展候选预筛", "Enable extensions candidate prefilter"))}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t(lt("先做 lexical 家族召回，再用廉价 LLM 做工具树预筛；模型失败时自动退回 lexical。", "Build a lexical family pool first, then use a low-cost LLM to prefilter tool trees. Fall back to lexical automatically if the model fails."))}</div>
+                                <div className="text-xs leading-5 text-slate-500">{t(lt("先做 lexical 召回，再用廉价 LLM 预筛 Skills 与 MCP Servers；MCP 一旦选中 server，会暴露完整工具树。模型失败时自动退回 lexical。", "Build a lexical pool first, then use a low-cost LLM to prefilter Skills and MCP servers. Selecting an MCP server exposes its full tool tree. Fall back to lexical automatically if the model fails."))}</div>
                             </div>
                             <Switch checked={prefilterEnabled} onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "llm_tree" } })} />
                         </div>
@@ -632,6 +742,130 @@ export default function ExtensionsPage() {
                         <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs leading-6 text-slate-500">
                             {t(lt("提示：这里只有“候选预筛权”，不会把结果写进聊天正文，也不会替代 Skills 安装或 MCP 配置本身。", "Note: this only controls candidate prefiltering. It does not write output into chat content, and it does not replace skill installation or MCP configuration itself."))}
                         </div>
+                    </div>
+                </div>
+            </ConfigCard>
+
+            <ConfigCard
+                title={lt("筛选预查询（诊断）", "Selection preview (diagnostic)")}
+                description={lt("输入一条模拟用户需求，查看当前预筛链会暴露出的 Skills 与 MCP Servers。", "Enter a mock user request to inspect which Skills and MCP servers the current prefilter chain would expose.")}
+            >
+                <div className="space-y-5">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-600">
+                        {t(lt("这里不会改动当前会话，也不会写入 supervisor。它只复用 extensions runtime 当前的候选预筛配置，做一次诊断预览。", "This does not alter the active conversation and does not write anything into the supervisor. It only reuses the current extensions runtime prefilter settings for a diagnostic preview."))}
+                    </div>
+
+                    <div className="flex flex-col gap-3 lg:flex-row">
+                        <Input
+                            value={previewQuery}
+                            onChange={(event) => setPreviewQuery(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter" && !event.shiftKey) {
+                                    event.preventDefault();
+                                    void previewExtensionsSelection();
+                                }
+                            }}
+                            placeholder={t(lt("输入一条模拟用户需求，例如：查一下飞书最近的日报", "Enter a mock user request, for example: find the latest Feishu daily report"))}
+                            className="h-11 flex-1"
+                        />
+                        <Button onClick={() => void previewExtensionsSelection()} disabled={previewLoading || !previewQuery.trim()} className="h-11 min-w-[120px]">
+                            {previewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            {t(lt("预览", "Preview"))}
+                        </Button>
+                    </div>
+
+                    {previewResult ? (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            <StatPill label={t(lt("命中 Skills", "Selected skills"))} value={previewResult.counts?.skillCandidates ?? 0} />
+                            <StatPill label={t(lt("命中 MCP Servers", "Selected MCP servers"))} value={previewMcpServers.length} />
+                            <StatPill label={t(lt("Skills 候选池", "Skill pool"))} value={previewResult.counts?.skillPoolSize ?? 0} />
+                            <StatPill label={t(lt("MCP Server 池", "MCP server pool"))} value={previewResult.counts?.mcpServerPoolSize ?? previewResult.counts?.mcpFamilyPoolSize ?? 0} />
+                        </div>
+                    ) : null}
+
+                    {previewResult ? (
+                        <div className="grid gap-6 xl:grid-cols-2">
+                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-900">{t(lt("Skills 暴露预览", "Skills exposure preview"))}</div>
+                                    <Badge variant="outline">{previewResult.counts?.skillCandidates ?? 0}</Badge>
+                                </div>
+                                {(previewResult.skillEntries || []).length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
+                                        {t(lt("这条查询下没有命中 Skills 候选。", "No Skills candidates were selected for this query."))}
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {(previewResult.skillEntries || []).map((skill) => (
+                                            <div key={skill.skillId || skill.instructionPath || skill.skillRoot || skill.skillName} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <PackageCheck className="h-4 w-4 text-emerald-600" />
+                                                    <div className="text-sm font-semibold text-slate-900">{skill.skillName || "unknown"}</div>
+                                                    <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
+                                                    {skill.visibility === "scoped" ? <Badge variant="outline">{t(lt("Scoped", "Scoped"))}</Badge> : null}
+                                                </div>
+                                                {skill.skillId ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">id: {skill.skillId}</div> : null}
+                                                {skill.workspacePath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t(lt("工作区：", "Workspace:"))}{skill.workspacePath}</div> : null}
+                                                {skill.projectId ? <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t(lt("项目：", "Project:"))}{skill.projectId}</div> : null}
+                                                {skill.instructionPath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{skill.instructionPath}</div> : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-900">{t(lt("MCP Server 暴露预览", "MCP server exposure preview"))}</div>
+                                    <Badge variant="outline">{previewMcpServers.length}</Badge>
+                                </div>
+                                {previewMcpServers.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
+                                        {t(lt("这条查询下没有命中 MCP Server。", "No MCP servers were selected for this query."))}
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {previewMcpServers.map((server) => (
+                                            <div key={server.serverKey || server.familyKey || server.serverName} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Server className="h-4 w-4 text-sky-600" />
+                                                    <div className="text-sm font-semibold text-slate-900">{server.serverName || server.title}</div>
+                                                    <Badge variant="secondary">server</Badge>
+                                                    <Badge variant="outline">{t(lt(`${server.toolCount} 个工具`, `${server.toolCount} tool(s)`))}</Badge>
+                                                </div>
+                                                {(server.descriptions || []).length > 0 ? (
+                                                    <div className="mt-2 text-xs leading-6 text-slate-500">
+                                                        {(server.descriptions || []).slice(0, 3).join(" / ")}
+                                                    </div>
+                                                ) : null}
+                                                <div className="mt-3 space-y-2">
+                                                    {previewMcpServerTools(server).map((tool) => (
+                                                        <div key={`${server.serverKey || server.familyKey || server.serverName}:${tool.name}`} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                                                            <div className="font-mono text-xs font-semibold text-slate-800">{tool.name}</div>
+                                                            {tool.description ? <div className="mt-1 text-xs leading-5 text-slate-500">{tool.description}</div> : null}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-6 text-sm leading-6 text-slate-500">
+                                {previewError
+                                    ? previewError
+                                    : t(lt("尚未运行诊断预览。输入一条模拟用户需求并点击“预览”，即可看到这条查询会暴露出的 Skills 与 MCP Servers。", "No diagnostic preview has been run yet. Enter a mock user request and click Preview to inspect the exposed Skills and MCP servers."))}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-6 text-slate-500">
+                        {previewedQuery
+                            ? t(lt(`最近一次预览查询：${previewedQuery}。这只是诊断面板，真实任务仍会在收到用户消息后由 extensions runtime 按上下文重新计算候选。`, `Latest preview query: ${previewedQuery}. This is a diagnostic panel only. Real tasks are still recalculated by the extensions runtime after user input arrives.`))
+                            : t(lt("运行时真相：真实任务不会读取这里的结果。supervisor 收到用户消息后，extensions runtime 会基于当轮上下文、lexical seed 与 LLM 预筛重新计算 Skills 与 MCP Servers。", "Runtime truth: real tasks do not read this panel. After the supervisor receives user input, the extensions runtime recalculates Skills and MCP servers from the current context, lexical seeds, and LLM prefiltering."))}
                     </div>
                 </div>
             </ConfigCard>

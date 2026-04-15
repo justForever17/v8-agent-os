@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveReachableClientSurfaceOriginFromRequest } from "@/lib/server/runtime-config";
 import { normalizeMessageForRealtimeSurface, normalizeProcessForRealtimeSurface, normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
@@ -21,6 +21,7 @@ export async function GET(
     }
 
     const { id } = await params;
+    const publicBaseUrl = resolveReachableClientSurfaceOriginFromRequest(req.url);
 
     try {
         const [snapshotResponse, historyResponse] = await Promise.all([
@@ -41,7 +42,10 @@ export async function GET(
             return NextResponse.json({ error: "Failed to fetch from engine" }, { status: 500 });
         }
 
-        const snapshotData = normalizeSnapshotForRealtimeSurface(await snapshotResponse.json().catch(() => ({}))) as Record<string, unknown>;
+        const snapshotData = normalizeSnapshotForRealtimeSurface(
+            await snapshotResponse.json().catch(() => ({})),
+            { publicBaseUrl },
+        ) as Record<string, unknown>;
         const historyData = historyResponse.ok
             ? await historyResponse.json().catch(() => ({}))
             : null;
@@ -52,10 +56,10 @@ export async function GET(
                 ? snapshotData.messages
                 : [];
         const historyTimeline = Array.isArray(historyRecord.timeline)
-            ? historyRecord.timeline.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
+            ? historyRecord.timeline.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl }))
             : [];
         const historyMessages = Array.isArray(historyRecord.messages)
-            ? historyRecord.messages.map((message: unknown) => normalizeMessageForRealtimeSurface(message))
+            ? historyRecord.messages.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl }))
             : [];
         const detailMessages = historyTimeline.length > 0
             ? historyTimeline

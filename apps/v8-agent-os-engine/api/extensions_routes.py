@@ -32,6 +32,20 @@ async def get_extensions_usage_summary(window_hours: int = 24):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.get("/extensions/preview")
+async def get_extensions_preview(query: str = "", refresh: bool = False):
+    normalized_query = str(query or "").strip()
+    if not normalized_query:
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        return await extensions_runtime_service.build_prefilter_preview(
+            user_query=normalized_query,
+            refresh=bool(refresh),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.post("/extensions/reload")
 async def reload_extensions():
     try:

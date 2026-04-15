@@ -1035,12 +1035,65 @@ class SafetyGuardian:
     def assess_system_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
         config = self._config()
         posture = self._current_posture(config)
+        runtime_context = runtime_context or {}
         if not config["enabled"]:
             return SafetyDecision()
 
         normalized = (command or "").strip().lower()
         if not normalized:
             return SafetyDecision()
+
+        if self._is_workspace_read_only_enumeration_command(command, runtime_context):
+            return self._decision(
+                verdict="allow",
+                reason="workspace_read_allowed",
+                risk_code="workspace_read_allowed",
+                governance_target="system_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context},
+            )
+
+        if self._looks_like_read_only_enumeration_command(command) and self._targets_sensitive_system_path_in_command(command):
+            return self._decision(
+                verdict="review",
+                reason="当前命令会枚举或访问系统敏感路径，需要人工确认。",
+                risk_code="sensitive_system_read_command",
+                governance_target="system_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context},
+            )
+
+        if self._touches_protected_path_in_command(command):
+            return self._decision(
+                verdict=config["systemIntegrityRules"]["destructiveCommandVerdict"],
+                reason="命令试图删除、覆盖或移动 v8chat 核心目录/受保护路径。",
+                risk_code="protected_path_command",
+                governance_target="v8_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context},
+                allow_override=False,
+            )
+
+        if self._targets_protected_process(command):
+            return self._decision(
+                verdict=config["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
+                reason="命令疑似试图结束 v8chat 主程序或关键守护进程。",
+                risk_code="protected_process_command",
+                governance_target="v8_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context},
+                allow_override=False,
+            )
+
+        if self._is_process_control_command(command):
+            return self._decision(
+                verdict="review",
+                reason="当前命令涉及进程控制，需要人工确认。",
+                risk_code="process_control_command",
+                governance_target="system_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context},
+            )
 
         for rule in config["commandRules"]:
             for pattern in rule["patterns"]:
@@ -1059,31 +1112,9 @@ class SafetyGuardian:
                         risk_code="blocked_command_pattern" if verdict == "block" else "review_command_pattern",
                         governance_target=governance_target,
                         posture=posture,
-                        details={"command": command, "pattern": pattern, "rule": rule, "runtime_context": runtime_context or {}},
+                        details={"command": command, "pattern": pattern, "rule": rule, "runtime_context": runtime_context},
                         allow_override=verdict != "block",
                     )
-
-        if self._touches_protected_path_in_command(command):
-            return self._decision(
-                verdict=config["systemIntegrityRules"]["destructiveCommandVerdict"],
-                reason="命令试图删除、覆盖或移动 v8chat 核心目录/受保护路径。",
-                risk_code="protected_path_command",
-                governance_target="v8_integrity",
-                posture=posture,
-                details={"command": command, "runtime_context": runtime_context or {}},
-                allow_override=False,
-            )
-
-        if self._targets_protected_process(command):
-            return self._decision(
-                verdict=config["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
-                reason="命令疑似试图结束 v8chat 主程序或关键守护进程。",
-                risk_code="protected_process_command",
-                governance_target="v8_integrity",
-                posture=posture,
-                details={"command": command, "runtime_context": runtime_context or {}},
-                allow_override=False,
-            )
 
         if self._is_package_install_command(command):
             verdict = self._posture_verdict(
@@ -1097,7 +1128,7 @@ class SafetyGuardian:
                 risk_code="package_install_command",
                 governance_target="system_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context or {}},
+                details={"command": command, "runtime_context": runtime_context},
             )
 
         return self._decision(
@@ -1106,7 +1137,7 @@ class SafetyGuardian:
             risk_code="command_allowed",
             governance_target="system_integrity",
             posture=posture,
-            details={"command": command, "runtime_context": runtime_context or {}},
+            details={"command": command, "runtime_context": runtime_context},
         )
 
     def assess_background_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
@@ -2077,6 +2108,8 @@ class SafetyGuardian:
             Path.home() / ".aws",
             Path.home() / ".kube",
             Path(os.environ.get("WINDIR", "C:/Windows")),
+            Path(os.environ.get("ProgramFiles", "C:/Program Files")),
+            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")),
             Path("/etc"),
         ]
         for root in sensitive_roots:
@@ -2102,6 +2135,8 @@ class SafetyGuardian:
         return any(pattern.lower() in lower for pattern in patterns if pattern)
 
     def _targets_protected_process(self, command: str) -> bool:
+        if not self._is_process_control_command(command):
+            return False
         return self._matches_process_patterns(command, self._config()["processRules"]["protectedPatterns"])
 
     def _matches_path_patterns(self, path: Path, patterns: list[str]) -> bool:
@@ -2130,6 +2165,92 @@ class SafetyGuardian:
             return [token.lower() for token in shlex.split(normalized, posix=False) if token]
         except Exception:
             return [token for token in re.split(r"\s+", normalized) if token]
+
+    def _extract_explicit_paths_from_command(self, command: str) -> list[Path]:
+        raw = str(command or "").strip()
+        if not raw:
+            return []
+        seen: set[str] = set()
+        extracted: list[Path] = []
+        quoted_matches = re.findall(r'["\']((?:[a-zA-Z]:[\\/]|\\\\|/)[^"\']+)["\']', raw)
+        tokens = quoted_matches + self._command_tokens(raw)
+        for token in tokens:
+            candidate = str(token or "").strip().strip("\"'")
+            if not candidate:
+                continue
+            if candidate.startswith(("-", "/")) and not re.match(r"^[a-zA-Z]:[\\/]", candidate):
+                continue
+            if not (
+                re.match(r"^[a-zA-Z]:[\\/]", candidate)
+                or candidate.startswith(("\\\\", "/", "~\\", "~/"))
+            ):
+                continue
+            normalized = self._normalize_path(candidate)
+            if normalized is None:
+                continue
+            key = str(normalized).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            extracted.append(normalized)
+        return extracted
+
+    def _workspace_root_from_context(self, runtime_context: Optional[Dict[str, Any]]) -> Optional[Path]:
+        if not isinstance(runtime_context, dict):
+            return None
+        raw = runtime_context.get("workspace_path") or runtime_context.get("workspacePath")
+        if not raw:
+            return None
+        return self._normalize_path(str(raw))
+
+    def _is_path_within_root(self, path: Path, root: Path) -> bool:
+        normalized_path = self._normalize_path(str(path))
+        normalized_root = self._normalize_path(str(root))
+        if normalized_path is None or normalized_root is None:
+            return False
+        try:
+            normalized_path.relative_to(normalized_root)
+            return True
+        except ValueError:
+            return False
+
+    def _is_process_control_command(self, command: str) -> bool:
+        lower = str(command or "").strip().lower()
+        if not lower:
+            return False
+        return bool(re.search(
+            r"(?<![a-z0-9_])(taskkill|stop-process|kill|pkill|wmic(?:\s+process)?|sc\s+stop|net\s+stop)(?![a-z0-9_])",
+            lower,
+        )) and (
+            "terminate" in lower
+            or "taskkill" in lower
+            or "stop-process" in lower
+            or re.search(r"(?<![a-z0-9_])(kill|pkill)(?![a-z0-9_])", lower) is not None
+            or re.search(r"\b(?:sc|net)\s+stop\b", lower) is not None
+            or "wmic" in lower
+        )
+
+    def _looks_like_read_only_enumeration_command(self, command: str) -> bool:
+        lower = str(command or "").strip().lower()
+        if not lower:
+            return False
+        if any(token in lower for token in ["&&", "||", ";", ">", ">>", "|", "remove-item", "del ", "erase ", "rmdir", "rd ", "move ", "mv ", "rename ", "ren ", "copy ", "xcopy", "robocopy", "set-content", "add-content", "out-file", "new-item", "start-process", "taskkill", "stop-process", "kill", "pkill"]):
+            return False
+        return re.search(r"(?<![a-z0-9_])(dir|get-childitem|where|findstr|rg)(?![a-z0-9_-])", lower) is not None
+
+    def _is_workspace_read_only_enumeration_command(self, command: str, runtime_context: Optional[Dict[str, Any]]) -> bool:
+        if not self._looks_like_read_only_enumeration_command(command):
+            return False
+        workspace_root = self._workspace_root_from_context(runtime_context)
+        if workspace_root is None:
+            return False
+        target_paths = self._extract_explicit_paths_from_command(command)
+        if not target_paths:
+            return False
+        return all(self._is_path_within_root(path, workspace_root) for path in target_paths)
+
+    def _targets_sensitive_system_path_in_command(self, command: str) -> bool:
+        return any(self._is_sensitive_system_path(path) for path in self._extract_explicit_paths_from_command(command))
 
     def _matches_command_pattern(self, command: str, pattern: str) -> bool:
         normalized_pattern = str(pattern or "").strip().lower()

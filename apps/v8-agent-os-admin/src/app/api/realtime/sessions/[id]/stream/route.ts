@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sessionFanoutHub } from "@/lib/realtime/session-fanout";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveReachableClientSurfaceOriginFromRequest } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import {
     buildAuthoritativeSnapshotFingerprint,
@@ -38,6 +38,7 @@ export async function GET(
     }
 
     const { id } = await params;
+    const publicBaseUrl = resolveReachableClientSurfaceOriginFromRequest(req.url);
     const encoder = new TextEncoder();
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -102,7 +103,10 @@ export async function GET(
                         throw new Error(`snapshot request failed: ${snapshotRes.status}`);
                     }
 
-                    const snapshotData = normalizeSnapshotForRealtimeSurface(await snapshotRes.json().catch(() => null));
+                    const snapshotData = normalizeSnapshotForRealtimeSurface(
+                        await snapshotRes.json().catch(() => null),
+                        { publicBaseUrl },
+                    );
                     if (!snapshotData) {
                         return;
                     }
@@ -179,7 +183,7 @@ export async function GET(
                 if (seq > latestSeq) {
                     latestSeq = seq;
                 }
-                sendSse(normalizeRuntimeEventForRealtimeSurface(normalizedEvent), "runtime");
+                sendSse(normalizeRuntimeEventForRealtimeSurface(normalizedEvent, { publicBaseUrl }), "runtime");
                 if (shouldAuthoritativelyRefreshOnRuntimeEvent(normalizedEvent)) {
                     queueSnapshotPush();
                 }

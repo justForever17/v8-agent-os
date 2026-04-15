@@ -1,61 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { saveResponseToCache } from "@/src/lib/file-transfer";
-import { fetchWorkspaceFileResponse } from "@/src/lib/phone-api";
 import {
     isPhonePreviewBlockedByLoopback,
     resolveRenderableMediaCandidates,
     resolveRenderableMediaUrl,
-    resolveWorkspaceSubpathFromMediaCandidate,
 } from "@/src/lib/workspace-links";
 import { useAppSession } from "@/src/providers/app-session";
-
-const materializedMediaCache = new Map<string, Promise<string>>();
-
-function extractCandidateFilename(candidate: string, fallbackTitle?: string) {
-    const normalizedCandidate = String(candidate || "").trim();
-    if (normalizedCandidate) {
-        const withoutQuery = normalizedCandidate.split("?")[0] || normalizedCandidate;
-        const fileName = withoutQuery.split(/[\\/]/).filter(Boolean).pop();
-        if (fileName) {
-            return fileName;
-        }
-    }
-    const normalizedTitle = String(fallbackTitle || "").trim();
-    if (normalizedTitle) {
-        return normalizedTitle;
-    }
-    return `media-${Date.now()}`;
-}
-
-async function materializeWorkspaceMediaUri(
-    authorizedFetch: ReturnType<typeof useAppSession>["authorizedFetch"],
-    candidate: string,
-    title?: string,
-) {
-    const workspaceSubpath = resolveWorkspaceSubpathFromMediaCandidate(candidate);
-    if (!workspaceSubpath) {
-        return candidate;
-    }
-
-    const cacheKey = `workspace:${workspaceSubpath}`;
-    let pending = materializedMediaCache.get(cacheKey);
-    if (!pending) {
-        pending = (async () => {
-            const response = await fetchWorkspaceFileResponse(authorizedFetch, workspaceSubpath);
-            const saved = await saveResponseToCache(response, {
-                prefix: "media",
-                filename: extractCandidateFilename(workspaceSubpath, title),
-            });
-            return saved.uri;
-        })().catch((error) => {
-            materializedMediaCache.delete(cacheKey);
-            throw error;
-        });
-        materializedMediaCache.set(cacheKey, pending);
-    }
-    return pending;
-}
 
 export function usePreparedPhoneMediaSource({
     src,
@@ -66,7 +16,7 @@ export function usePreparedPhoneMediaSource({
     candidates?: string[];
     title?: string;
 }) {
-    const { adminBaseUrl, authorizedFetch } = useAppSession();
+    const { adminBaseUrl } = useAppSession();
     const candidateSources = useMemo(
         () => {
             const provided = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
@@ -103,50 +53,29 @@ export function usePreparedPhoneMediaSource({
         if (!rawCandidate) {
             setResolvedSrc("");
             setLoading(false);
-            setError("");
+            setError(title ? `${title} 暂不可达` : "当前媒体内容暂不可达。");
             return () => {
                 cancelled = true;
             };
         }
 
-        const workspaceSubpath = resolveWorkspaceSubpathFromMediaCandidate(rawCandidate);
-        if (!workspaceSubpath || previewBlocked) {
-            setResolvedSrc(rawCandidate);
+        if (previewBlocked) {
+            setResolvedSrc("");
             setLoading(false);
-            setError("");
+            setError("当前预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。");
             return () => {
                 cancelled = true;
             };
         }
 
-        setResolvedSrc("");
-        setLoading(true);
+        setResolvedSrc(rawCandidate);
+        setLoading(false);
         setError("");
-        void materializeWorkspaceMediaUri(authorizedFetch, rawCandidate, title)
-            .then((uri) => {
-                if (cancelled) {
-                    return;
-                }
-                setResolvedSrc(uri);
-                setLoading(false);
-            })
-            .catch((reason) => {
-                if (cancelled) {
-                    return;
-                }
-                if (candidateIndex < candidateSources.length - 1) {
-                    setCandidateIndex((value) => (value < candidateSources.length - 1 ? value + 1 : value));
-                    return;
-                }
-                setResolvedSrc("");
-                setLoading(false);
-                setError(reason instanceof Error ? reason.message : String(reason || "媒体加载失败"));
-            });
 
         return () => {
             cancelled = true;
         };
-    }, [adminBaseUrl, authorizedFetch, candidateIndex, candidateSources.length, previewBlocked, rawCandidate, title]);
+    }, [adminBaseUrl, candidateIndex, previewBlocked, rawCandidate, title]);
 
     return {
         candidateSources,

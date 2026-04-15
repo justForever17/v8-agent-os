@@ -75,7 +75,7 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                                 {t("正在准备媒体内容", "Preparing media")}
                             </Text>
                             <Text style={styles.blockedText}>
-                                {t("正在为手机端准备可播放的本地媒体源。", "Preparing a playable local media source for the phone.")}
+                                {t("正在检查可预览的媒体地址。", "Checking for a previewable media URL.")}
                             </Text>
                         </View>
                     ) : current.type === "video" && !previewBlocked && resolvedSrc ? (
@@ -116,7 +116,9 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                                 {t("图片预览不可达", "Image preview unavailable")}
                             </Text>
                             <Text style={styles.blockedText}>
-                                {error || t("当前图片内容暂不可用。", "The image content is currently unavailable.")}
+                                {previewBlocked
+                                    ? t("当前图片地址仍指向 localhost/127.0.0.1，手机端无法直接打开。", "The image URL still points to localhost/127.0.0.1, so the phone cannot open it directly.")
+                                    : (error || t("当前图片内容暂不可用。", "The image content is currently unavailable."))}
                             </Text>
                         </View>
                     )}

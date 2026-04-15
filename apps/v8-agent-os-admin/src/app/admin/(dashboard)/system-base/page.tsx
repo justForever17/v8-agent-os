@@ -128,6 +128,11 @@ function formatOriginsSummary(origins: string[] | undefined, t: (value: string) 
     return `${normalized[0]} · ${normalized.length}`;
 }
 
+function looksLikeLoopbackOrigin(value?: string) {
+    const normalized = String(value || "").trim();
+    return /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(normalized);
+}
+
 const DESKTOP_LIVE_PRESETS = [
     {
         id: "smooth",
@@ -199,7 +204,13 @@ export default function SystemBasePage() {
         const missingItems = readiness?.missingItems || [];
         return [
             { label: "引擎地址", value: formatEndpointSummary(bridge.engineBaseUrl, t("未设置")), description: "影响管理台和网页端连接引擎的地址。" },
-            { label: "管理台地址", value: formatEndpointSummary(bridge.adminBaseUrl, t("未设置")), description: "影响网页端连接管理台接口的地址。" },
+            {
+                label: "管理台地址",
+                value: formatEndpointSummary(bridge.adminBaseUrl, t("未设置")),
+                description: looksLikeLoopbackOrigin(bridge.adminBaseUrl)
+                    ? t("当前是 loopback 地址，仅本机浏览器可用，手机预览会失效。")
+                    : t("这是 Phone/Web 访问管理台资源与预览的公共地址。"),
+            },
             {
                 label: t("桌面依赖"),
                 value: desktopStatusLabel(readiness?.status, t),
@@ -334,6 +345,11 @@ export default function SystemBasePage() {
                                 }
                                 placeholder="http://127.0.0.1:9528/api"
                             />
+                            <div className="text-xs leading-5 text-slate-500">
+                                {looksLikeLoopbackOrigin(bridge.adminBaseUrl)
+                                    ? t("当前配置是 loopback，只能本机浏览器访问。Phone/Web 预览工作区图片、视频、音频时，请改成同局域网可达的地址，例如 http://192.168.x.x:9528/api。")
+                                    : t("这里填写的是客户端可达的管理台公共地址。Phone/Web 会用它来生成资源预览链接，建议保持为局域网或公网可访问的 /api 地址。")}
+                            </div>
                         </div>
                         <div className="space-y-2 md:col-span-2">
                             <Label>{t("内部密钥")}</Label>

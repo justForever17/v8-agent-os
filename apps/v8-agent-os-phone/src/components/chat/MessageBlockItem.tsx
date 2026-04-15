@@ -158,9 +158,13 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 
     if (block.type === "image" || block.type === "video" || block.type === "audio") {
         const rawSrc = String(block.data?.src || block.content || "").trim();
+        const resourceRef = coerceAdminResourceRef(block.data?.resourceRef || null);
+        const resourceSubtitle = typeof resourceRef?.displaySubtitle === "string" && resourceRef.displaySubtitle.trim()
+            ? resourceRef.displaySubtitle.trim()
+            : "";
         const mediaCandidates = resolveRenderableMediaCandidates(adminBaseUrl, {
             value: rawSrc,
-            resourceRef: coerceAdminResourceRef(block.data?.resourceRef || null),
+            resourceRef,
             previewUrl: typeof block.data?.previewUrl === "string" ? block.data.previewUrl : undefined,
             externalUrl: typeof block.data?.externalUrl === "string" ? block.data.externalUrl : undefined,
             workspacePath: typeof block.data?.workspacePath === "string" ? block.data.workspacePath : undefined,
@@ -172,7 +176,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return (
                 <UnresolvedResourceCard
                     title={title || t("媒体资源暂不可预览", "Media preview unavailable")}
-                    subtitle={t("当前资源地址暂不可达，已降级显示该节点。", "The media URL is currently unreachable, so this node has been downgraded instead of disappearing.")}
+                    subtitle={resourceSubtitle || t("当前资源地址暂不可达，已降级显示该节点。", "The media URL is currently unreachable, so this node has been downgraded instead of disappearing.")}
                 />
             );
         }

@@ -442,6 +442,30 @@ function appendNarrativeContent(
   message.content = `${String(message.content || "")}${normalizedContent}`;
 }
 
+function appendArtifactNode(
+  message: SessionStreamMessage,
+  artifact: SessionStreamArtifact | null,
+  profile: SessionAgentProfile,
+  options?: SessionStreamLifecycleOptions,
+) {
+  if (!artifact) {
+    return;
+  }
+  const currentArtifacts = Array.isArray(message.artifacts) ? message.artifacts : [];
+  const key = artifactKey(artifact);
+  if (!key || currentArtifacts.some((item) => artifactKey(item) === key)) {
+    return;
+  }
+  message.artifacts = [...currentArtifacts, artifact];
+  appendNode(message, {
+    id: nextId("node", options?.createId),
+    kind: "artifact",
+    artifact,
+    timestamp: Date.now(),
+    ...profile,
+  });
+}
+
 function longestOverlapSuffixPrefix(current: string, incoming: string) {
   const maxOverlap = Math.min(current.length, incoming.length);
   for (let size = maxOverlap; size > 0; size -= 1) {
@@ -608,6 +632,12 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     );
     return nextCurrentAiMsg;
   };
+  const appendEventArtifactIfPresent = (message: SessionStreamMessage) => {
+    if (!event.artifact) {
+      return;
+    }
+    appendArtifactNode(message, resolveArtifact(event), nextActiveAgentProfile, options);
+  };
 
   if (event.type === "agent_start") {
     nextActiveAgentProfile = resolveAgentProfile(event, nextActiveAgentProfile, defaultAgentProfile);
@@ -638,6 +668,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       });
       current.content = `${String(current.content || "")}${content}`;
     }
+    appendEventArtifactIfPresent(current);
   } else if (event.type === "reasoning_chunk") {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
@@ -689,6 +720,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     if (narrativeContent) {
       appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
     }
+    appendEventArtifactIfPresent(current);
   } else if (event.type === "tool_result") {
     if (todoToolEvent) {
       return {
@@ -733,24 +765,11 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     if (narrativeContent) {
       appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
     }
+    appendEventArtifactIfPresent(current);
   } else if (event.type === "custom_event" && event.name === "artifact_recorded") {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-    const artifact = resolveArtifact(event);
-    if (artifact) {
-      const currentArtifacts = Array.isArray(current.artifacts) ? current.artifacts : [];
-      const key = artifactKey(artifact);
-      if (key && !currentArtifacts.some((item) => artifactKey(item) === key)) {
-        current.artifacts = [...currentArtifacts, artifact];
-        appendNode(current, {
-          id: nextId("node", options?.createId),
-          kind: "artifact",
-          artifact,
-          timestamp: Date.now(),
-          ...nextActiveAgentProfile,
-        });
-      }
-    }
+    appendArtifactNode(current, resolveArtifact(event), nextActiveAgentProfile, options);
   } else if (event.type === "custom_event" && (event.name === "runtime_progress" || event.name === "runtime_event")) {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
@@ -774,6 +793,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     if (targets.includes("message") && narrativeContent && narrativeContent !== label) {
       appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
     }
+    appendEventArtifactIfPresent(current);
   } else if (event.type === "custom_event" && event.name === "ask_user") {
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
@@ -913,6 +933,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
   } else if (event.type === "done") {
     if (nextCurrentAiMsg) {
       nextCurrentAiMsg.uiStreamPhase = "settling";
+      appendEventArtifactIfPresent(nextCurrentAiMsg);
       upsertCurrentAiMessage(localMessages, nextCurrentAiMsg);
     }
     nextCurrentAiMsg = undefined;

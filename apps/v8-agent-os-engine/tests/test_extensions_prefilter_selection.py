@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import sys
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+ENGINE_ROOT = Path(__file__).resolve().parents[1]
+if str(ENGINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(ENGINE_ROOT))
+
+from core import llm_tree_prefilter
+from runtimes.extensions import runtime as extensions_runtime_module
+from runtimes.extensions.runtime import ExtensionsRuntimeService
+
+
+class _FakeResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeModel:
+    def __init__(self, content: str, calls: list[str]) -> None:
+        self._content = content
+        self._calls = calls
+
+    def invoke(self, messages, config=None):  # noqa: ANN001
+        self._calls.append(str(messages[-1].content))
+        return _FakeResponse(self._content)
+
+
+class _FakeLlmFactory:
+    def __init__(self, content: str, calls: list[str]) -> None:
+        self._content = content
+        self._calls = calls
+
+    def create_for_role(self, role: str, **kwargs):  # noqa: ANN001
+        return _FakeModel(self._content, self._calls)
+
+
+class _FakeTool:
+    def __init__(self, name: str, description: str, server_name: str) -> None:
+        self.name = name
+        self.description = description
+        self.metadata = {"server_name": server_name}
+
+
+class ExtensionsPrefilterSelectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        llm_tree_prefilter._PREFILTER_CACHE.clear()
+
+    def test_llm_prefilter_bypasses_when_candidate_count_is_under_limit(self):
+        calls: list[str] = []
+        original_factory = llm_tree_prefilter.llm_factory
+        llm_tree_prefilter.llm_factory = _FakeLlmFactory(
+            '{"selected":["jimeng_visual_generation"],"reason":"视觉生成相关"}',
+            calls,
+        )
+        try:
+            selected, state = llm_tree_prefilter.select_family_keys_with_llm(
+                role="extensions_prefilter",
+                user_query=f"图像/视频生成 {time.time_ns()}",
+                family_label="mcp_servers",
+                families=[
+                    {
+                        "key": "context7",
+                        "serverName": "context7",
+                        "tools": [{"name": "query-docs", "description": "documentation lookup"}],
+                    },
+                    {
+                        "key": "jimeng_visual_generation",
+                        "serverName": "jimeng_visual_generation",
+                        "tools": [{"name": "generate_video", "description": "video generation"}],
+                    },
+                ],
+                max_families=2,
+                timeout_seconds=1.0,
+            )
+        finally:
+            llm_tree_prefilter.llm_factory = original_factory
+
+        self.assertEqual(selected, ["context7", "jimeng_visual_generation"])
+        self.assertEqual(state.get("mode"), "lexical")
+        self.assertTrue(state.get("bypassed"))
+        self.assertEqual(calls, [], "候选数未超过上限时不应强制调用 LLM")
+
+    def test_extensions_runtime_selects_mcp_servers_and_exposes_full_tool_tree(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool("query-docs", "Retrieves documentation from Context7.", "context7"),
+            _FakeTool("resolve-library-id", "Resolves a package name to a Context7 library id.", "context7"),
+            _FakeTool("generate_image", "Generate images using Volcengine visual generation API.", "jimeng_visual_generation"),
+            _FakeTool("generate_video", "Create a video generation task using Volcengine API.", "jimeng_visual_generation"),
+            _FakeTool("send_mail", "Send an email message.", "mail"),
+        ]
+        captured_mcp_families: list[dict[str, object]] = []
+
+        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
+            if kwargs.get("family_label") == "mcp":
+                captured_mcp_families.extend(list(kwargs.get("families") or []))
+                return ["jimeng_visual_generation"], {"mode": "llm_tree", "reason": "video generation", "timedOut": False, "cacheHit": False}
+            return [], {"mode": "lexical", "reason": "empty", "timedOut": False, "cacheHit": False}
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "llm_tree",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ), patch.object(
+            extensions_runtime_module,
+            "select_family_keys_with_llm",
+            side_effect=fake_select_family_keys_with_llm,
+        ):
+            bundle = service.build_contextual_route(
+                user_query="视频生成",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=2,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual({item["key"] for item in captured_mcp_families}, {"context7", "jimeng_visual_generation", "mail"})
+        jimeng_payload = next(item for item in captured_mcp_families if item["key"] == "jimeng_visual_generation")
+        self.assertEqual(jimeng_payload["serverName"], "jimeng_visual_generation")
+        self.assertEqual(
+            [tool["name"] for tool in jimeng_payload["tools"]],
+            ["generate_image", "generate_video"],
+        )
+        self.assertIn("Create a video generation task", jimeng_payload["tools"][1]["description"])
+        self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["jimeng_visual_generation"])
+        self.assertEqual(
+            set(bundle.candidate_summary.get("mcpTools") or []),
+            {"generate_image", "generate_video"},
+        )
+        self.assertEqual(
+            set(tool.name for tool in bundle.filtered_tools if getattr(tool, "metadata", {}).get("server_name") == "jimeng_visual_generation"),
+            {"generate_image", "generate_video"},
+        )
+
+    def test_video_skill_selection_uses_all_skill_name_description_candidates(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {"name": "ai-avatar-video", "description": "talking head avatar video", "path": "C:/skills/ai-avatar-video"},
+            {"name": "brand-guidelines", "description": "brand color and typography", "path": "C:/skills/brand-guidelines"},
+            {"name": "canvas-design", "description": "static visual design", "path": "C:/skills/canvas-design"},
+            {"name": "building-native-ui", "description": "Expo app UI", "path": "C:/skills/building-native-ui"},
+            {"name": "remotion-video", "description": "使用 Remotion 框架以编程方式创建视频。", "path": "C:/skills/remotion-video"},
+            {"name": "seedance2-api", "description": "Out-of-the-box Seedance 2.0 API skill to generate AI videos.", "path": "C:/skills/seedance2-api"},
+            {"name": "llm-video", "description": "Enterprise-grade AI video generation pipeline.", "path": "C:/skills/llm-video"},
+        ]
+        captured_skill_families: list[dict[str, object]] = []
+
+        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
+            if kwargs.get("family_label") == "skills":
+                captured_skill_families.extend(list(kwargs.get("families") or []))
+                return [
+                    "C:/skills/remotion-video",
+                    "C:/skills/seedance2-api",
+                    "C:/skills/llm-video",
+                ], {"mode": "llm_tree", "reason": "video skills", "timedOut": False, "cacheHit": False}
+            return [], {"mode": "lexical", "reason": "empty", "timedOut": False, "cacheHit": False}
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "llm_tree",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ), patch.object(
+            extensions_runtime_module,
+            "select_family_keys_with_llm",
+            side_effect=fake_select_family_keys_with_llm,
+        ):
+            bundle = service.build_contextual_route(
+                user_query="视频生成",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=2,
+                plugin_host_limit=0,
+            )
+
+        family_names = {str(item.get("name") or item.get("title") or "") for item in captured_skill_families}
+        self.assertIn("remotion-video", family_names)
+        self.assertIn("seedance2-api", family_names)
+        self.assertIn("llm-video", family_names)
+        self.assertLessEqual(len(bundle.selected_skill_names), 5)
+        self.assertEqual(
+            bundle.selected_skill_names,
+            ["remotion-video", "seedance2-api", "llm-video"],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

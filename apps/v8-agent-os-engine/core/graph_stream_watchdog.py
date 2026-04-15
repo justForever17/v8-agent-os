@@ -21,6 +21,24 @@ class GraphStreamIdleTimeoutError(TimeoutError):
         )
 
 
+class GraphStreamDownstreamTimeoutError(TimeoutError):
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        phase: str,
+        last_event: str | None,
+        message: str,
+    ) -> None:
+        last_event_hint = f", last_event={last_event}" if last_event else ""
+        detail = message.strip() or "Downstream stream iterator raised timeout."
+        super().__init__(
+            "Downstream stream timeout while waiting in "
+            f"phase={phase} (session={session_id}, run={run_id}{last_event_hint}): {detail}"
+        )
+
+
 @dataclass(slots=True)
 class GraphStreamWatchdogState:
     active_tool_call_ids: set[str] = field(default_factory=set)
@@ -82,6 +100,37 @@ class GraphStreamWatchdogState:
             self.active_tool_call_ids.discard(tool_call_id)
 
 
+async def _cancel_task_safely(task: asyncio.Task[Any]) -> None:
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, StopAsyncIteration, Exception):
+        return
+
+
+def normalize_stream_iterator_exception(
+    exc: Exception,
+    *,
+    session_id: str,
+    run_id: str,
+    phase: str,
+    last_event: str | None,
+) -> Exception:
+    if isinstance(exc, (GraphStreamIdleTimeoutError, GraphStreamDownstreamTimeoutError)):
+        return exc
+    if isinstance(exc, asyncio.TimeoutError):
+        return GraphStreamDownstreamTimeoutError(
+            run_id=run_id,
+            session_id=session_id,
+            phase=phase,
+            last_event=last_event,
+            message=str(exc),
+        )
+    return exc
+
+
 async def next_graph_stream_event(
     stream_iter,
     *,
@@ -92,9 +141,10 @@ async def next_graph_stream_event(
 ) -> dict[str, Any]:
     idle_timeout = state.idle_timeout_seconds()
     phase = state.idle_phase()
-    try:
-        event = await asyncio.wait_for(anext(stream_iter), timeout=idle_timeout)
-    except asyncio.TimeoutError as exc:
+    next_event_task = asyncio.create_task(anext(stream_iter))
+    done, _ = await asyncio.wait({next_event_task}, timeout=idle_timeout)
+    if next_event_task not in done:
+        await _cancel_task_safely(next_event_task)
         payload = {
             "idleTimeoutSeconds": idle_timeout,
             "phase": phase,
@@ -107,6 +157,16 @@ async def next_graph_stream_event(
             run_id=run_id,
             session_id=session_id,
             idle_seconds=idle_timeout,
+            phase=phase,
+            last_event=state.last_observed_event,
+        )
+    try:
+        event = next_event_task.result()
+    except Exception as exc:
+        raise normalize_stream_iterator_exception(
+            exc,
+            session_id=session_id,
+            run_id=run_id,
             phase=phase,
             last_event=state.last_observed_event,
         ) from exc

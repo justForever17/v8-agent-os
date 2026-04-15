@@ -36,6 +36,21 @@ export const MediaPlayer = memo(function MediaPlayer({
         : [];
 
     if (type === "audio") {
+        if (previewBlocked || !resolvedSrc) {
+            return (
+                <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                    <View style={styles.blockedWrap}>
+                        <MaterialCommunityIcons name="music-off" size={28} color={colors.warning} />
+                        <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
+                        <Text style={[styles.blockedText, { color: colors.textMuted }]}>
+                            {previewBlocked
+                                ? t("当前音频预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。", "The audio preview URL still points to localhost, which is unreachable from the phone. Use a reachable Admin URL and try again.")
+                                : (error || t("当前音频内容暂不可达。", "The audio content is currently unavailable."))}
+                        </Text>
+                    </View>
+                </View>
+            );
+        }
         return (
             <View style={[styles.audioCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                 <View style={[styles.audioIcon, { backgroundColor: colors.primarySoft }]}>
@@ -47,7 +62,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                         {t("点击打开音频", "Tap to open audio")}
                     </Text>
                 </View>
-                <Pressable onPress={() => void Linking.openURL(resolvedSrc || src)} style={styles.openButton}>
+                <Pressable onPress={() => void Linking.openURL(resolvedSrc)} style={styles.openButton}>
                     <MaterialCommunityIcons name="open-in-new" size={16} color={colors.textSoft} />
                 </Pressable>
             </View>
@@ -132,7 +147,7 @@ export const ImagePreview = memo(function ImagePreview({
 }) {
     const { colors, t } = useUiPrefs();
     const [open, setOpen] = useState(false);
-    const { candidateSources, resolvedSrc, loading, error, advanceCandidate } = usePreparedPhoneMediaSource({
+    const { candidateSources, resolvedSrc, previewBlocked, loading, error, advanceCandidate } = usePreparedPhoneMediaSource({
         src,
         candidates,
         title: alt,
@@ -160,7 +175,9 @@ export const ImagePreview = memo(function ImagePreview({
                 <View style={styles.loadingWrap}>
                     <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.warning} />
                     <Text style={[styles.audioSubtitle, { color: colors.textMuted }]}>
-                        {error || t("当前图片内容暂不可达。", "The image content is currently unavailable.")}
+                        {previewBlocked
+                            ? t("当前图片预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。", "The image preview URL still points to localhost, which is unreachable from the phone. Use a reachable Admin URL and try again.")
+                            : (error || t("当前图片内容暂不可达。", "The image content is currently unavailable."))}
                     </Text>
                 </View>
             </View>

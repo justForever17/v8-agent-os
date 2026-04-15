@@ -109,10 +109,10 @@ def _invoke_prefilter_model(*, role: str, prompt_payload: str) -> tuple[str, dic
             SystemMessage(
                 content=(
                     "你是 V8 Agent OS 的扩展候选预筛器。\n"
-                    "任务：根据用户查询，从候选工具树/技能家族中选出最相关的家族 key。\n"
+                    "任务：根据用户查询，从候选 Skills / MCP servers / 工具树中选出最相关的 key。\n"
                     "要求：\n"
-                    "1. 只做家族级预筛，不做叶子工具改写。\n"
-                    "2. 优先保留能覆盖完整任务链的家族，避免漏掉联动工具。\n"
+                    "1. 只做候选单位级预筛，不做叶子工具改写。\n"
+                    "2. MCP 候选以 server 为单位；选中 server 代表暴露完整工具树。\n"
                     "3. 只能返回 JSON，不要输出解释性文本。\n"
                     "4. JSON 结构必须为 {\"selected\": [\"key1\", ...], \"reason\": \"...\"}。\n"
                     "5. selected 中的 key 必须来自输入 families，且数量不能超过 maxFamilies。"
@@ -135,21 +135,45 @@ def select_family_keys_with_llm(
     max_families: int,
     timeout_seconds: float | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
-    normalized_families = [
-        {
-            "key": str(item.get("key") or "").strip(),
-            "title": str(item.get("title") or "").strip(),
+    normalized_families: list[dict[str, Any]] = []
+    for item in list(families or []):
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        family: dict[str, Any] = {
+            "key": key,
+            "title": str(item.get("title") or item.get("name") or item.get("serverName") or "").strip(),
             "description": str(item.get("description") or "").strip(),
             "memberCount": int(item.get("memberCount") or 0),
             "examples": [
                 str(example).strip()
                 for example in list(item.get("examples") or [])
                 if str(example).strip()
-            ][:4],
+            ][:8],
         }
-        for item in list(families or [])
-        if str(item.get("key") or "").strip()
-    ]
+        name = str(item.get("name") or "").strip()
+        if name:
+            family["name"] = name
+        server_name = str(item.get("serverName") or "").strip()
+        if server_name:
+            family["serverName"] = server_name
+        tools: list[dict[str, str]] = []
+        for raw_tool in list(item.get("tools") or []):
+            if isinstance(raw_tool, dict):
+                tool_name = str(raw_tool.get("name") or "").strip()
+                tool_description = str(raw_tool.get("description") or "").strip()
+            else:
+                tool_name = str(raw_tool or "").strip()
+                tool_description = ""
+            if tool_name or tool_description:
+                tools.append({"name": tool_name, "description": tool_description})
+        if tools:
+            family["tools"] = tools
+            if not family["memberCount"]:
+                family["memberCount"] = len(tools)
+        normalized_families.append(family)
     if not normalized_families or max_families <= 0:
         return [], {
             "mode": "lexical",
@@ -159,11 +183,11 @@ def select_family_keys_with_llm(
     if len(normalized_families) <= max_families:
         return [item["key"] for item in normalized_families], {
             "mode": "lexical",
-            "reason": "候选家族数量不足，无需额外预筛。",
+            "reason": "候选数量不足，无需额外预筛。",
             "rawResponse": "",
             "timedOut": False,
             "cacheHit": False,
-            "durationMs": 0,
+            "bypassed": True,
         }
 
     prompt_payload = json.dumps(
@@ -230,7 +254,15 @@ def select_family_keys_with_llm(
     selected_keys: list[str] = []
     seen: set[str] = set()
     allowed = {item["key"] for item in normalized_families}
-    for key in list(payload.get("selected") or payload.get("keys") or payload.get("families") or []):
+    selected_field_present = any(key in payload for key in ("selected", "keys", "families"))
+    raw_selected = payload.get("selected")
+    if raw_selected is None:
+        raw_selected = payload.get("keys")
+    if raw_selected is None:
+        raw_selected = payload.get("families")
+    if not isinstance(raw_selected, list):
+        raw_selected = []
+    for key in raw_selected:
         normalized_key = str(key or "").strip()
         if not normalized_key or normalized_key not in allowed or normalized_key in seen:
             continue
@@ -238,8 +270,10 @@ def select_family_keys_with_llm(
         selected_keys.append(normalized_key)
         if len(selected_keys) >= max_families:
             break
-    mode = "llm_tree" if selected_keys else "fallback"
-    reason = str(payload.get("reason") or "").strip() or ("LLM 未返回可用家族。" if not selected_keys else "")
+    mode = "llm_tree" if selected_field_present else "fallback"
+    reason = str(payload.get("reason") or "").strip()
+    if not reason:
+        reason = "LLM 明确返回空候选。" if selected_field_present and not selected_keys else ("LLM 未返回可用家族。" if not selected_keys else "")
     return _write_prefilter_cache(
         cache_key,
         selected_keys=selected_keys,
@@ -247,6 +281,7 @@ def select_family_keys_with_llm(
             "mode": mode,
             "reason": reason,
             "rawResponse": raw_response,
+            "emptySelection": bool(selected_field_present and not selected_keys),
             "timedOut": False,
             "cacheHit": False,
             "durationMs": duration_ms,

@@ -296,6 +296,91 @@ def _mcp_tool_family_title(tool_ref: Any, sibling_tool_names: Iterable[str]) -> 
     return family_prefix or _tool_name(tool_ref) or _mcp_tool_server_name(tool_ref)
 
 
+def _mcp_family_payload(
+    family_key: str,
+    items: list[Any],
+    mcp_sibling_names_by_server: dict[str, list[str]],
+) -> dict[str, Any]:
+    ordered_items = sorted(
+        list(items or []),
+        key=lambda tool: (
+            _mcp_tool_server_name(tool).lower(),
+            _tool_name(tool).lower(),
+        ),
+    )
+    if not ordered_items:
+        return {
+            "familyKey": family_key,
+            "serverName": "unknown",
+            "title": family_key,
+            "toolCount": 0,
+            "toolNames": [],
+            "descriptions": [],
+        }
+    seed_tool = ordered_items[0]
+    server_name = _mcp_tool_server_name(seed_tool)
+    sibling_names = mcp_sibling_names_by_server.get(server_name, [])
+    descriptions = [
+        _tool_description(tool)
+        for tool in ordered_items
+        if _tool_description(tool)
+    ]
+    unique_descriptions: list[str] = []
+    seen_descriptions: set[str] = set()
+    for item in descriptions:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen_descriptions:
+            continue
+        seen_descriptions.add(normalized)
+        unique_descriptions.append(normalized)
+    return {
+        "familyKey": family_key,
+        "serverName": server_name,
+        "title": _mcp_tool_family_title(seed_tool, sibling_names),
+        "toolCount": len(ordered_items),
+        "toolNames": [_tool_name(tool) for tool in ordered_items],
+        "descriptions": unique_descriptions[:4],
+    }
+
+
+def _mcp_server_payload(server_name: str, items: list[Any]) -> dict[str, Any]:
+    normalized_server_name = str(server_name or "").strip() or "unknown"
+    ordered_items = sorted(
+        list(items or []),
+        key=lambda tool: (
+            _mcp_tool_server_name(tool).lower(),
+            _tool_name(tool).lower(),
+        ),
+    )
+    tool_entries: list[dict[str, str]] = []
+    unique_descriptions: list[str] = []
+    seen_descriptions: set[str] = set()
+    for tool in ordered_items:
+        tool_name = _tool_name(tool)
+        tool_description = _tool_description(tool)
+        if tool_name:
+            tool_entries.append(
+                {
+                    "name": tool_name,
+                    "description": tool_description,
+                }
+            )
+        normalized_description = str(tool_description or "").strip()
+        if normalized_description and normalized_description not in seen_descriptions:
+            seen_descriptions.add(normalized_description)
+            unique_descriptions.append(normalized_description)
+    return {
+        "serverKey": normalized_server_name,
+        "familyKey": normalized_server_name,
+        "serverName": normalized_server_name,
+        "title": normalized_server_name,
+        "toolCount": len(tool_entries),
+        "toolNames": [item["name"] for item in tool_entries],
+        "tools": tool_entries,
+        "descriptions": unique_descriptions,
+    }
+
+
 def _should_enable_cross_runtime_escape(query_tokens: list[str]) -> bool:
     if not query_tokens:
         return False
@@ -1004,6 +1089,54 @@ class ExtensionsRuntimeService:
     async def reload(self) -> dict[str, Any]:
         return await self._refresh_runtime_snapshot(force_skill_reload=True, force_mcp_reload=True)
 
+    async def build_prefilter_preview(self, *, user_query: str, refresh: bool = False) -> dict[str, Any]:
+        normalized_query = str(user_query or "").strip()
+        if not normalized_query:
+            return {
+                "queryPreview": "",
+                "skillEntries": [],
+                "mcpServers": [],
+                "mcpFamilies": [],
+                "counts": {},
+                "routing": {},
+            }
+        if refresh:
+            await self.reload()
+        route_bundle = self.build_contextual_route(
+            user_query=normalized_query,
+            available_tools=list(self.get_mcp_tools()),
+            loaded_agents=None,
+            skill_limit=5,
+            mcp_limit=2,
+            plugin_host_limit=0,
+        )
+        candidate_summary = route_bundle.candidate_summary
+        return {
+            "queryPreview": _truncate(normalized_query, 160),
+            "skillEntries": candidate_summary.get("skillEntries") or [],
+            "skillRootDescriptors": candidate_summary.get("skillRootDescriptors") or [],
+            "mcpServers": candidate_summary.get("mcpServers") or [],
+            "mcpFamilies": candidate_summary.get("mcpFamilies") or [],
+            "counts": candidate_summary,
+            "routing": {
+                "mode": candidate_summary.get("mode"),
+                "modelId": candidate_summary.get("modelId"),
+                "role": candidate_summary.get("role"),
+                "reason": candidate_summary.get("reason"),
+                "prefilterTimedOut": candidate_summary.get("prefilterTimedOut"),
+                "prefilterCacheHit": candidate_summary.get("prefilterCacheHit"),
+                "skillPoolSize": candidate_summary.get("skillPoolSize"),
+                "mcpPoolSize": candidate_summary.get("mcpPoolSize"),
+                "mcpServerPoolSize": candidate_summary.get("mcpServerPoolSize"),
+                "mcpFamilyPoolSize": candidate_summary.get("mcpFamilyPoolSize"),
+                "selectedSkills": candidate_summary.get("skills") or [],
+                "selectedSkillIds": candidate_summary.get("selectedSkillIds") or [],
+                "selectedMcpServers": candidate_summary.get("mcpSelectedServers") or [],
+                "selectedMcpFamilies": candidate_summary.get("mcpSelectedFamilies") or [],
+                "selectedMcpTools": candidate_summary.get("mcpTools") or [],
+            },
+        }
+
     def build_contextual_route(
         self,
         *,
@@ -1012,8 +1145,8 @@ class ExtensionsRuntimeService:
         loaded_agents: list[dict[str, Any]] | None = None,
         inherited_skill_ids: list[str] | None = None,
         inherited_skill_names: list[str] | None = None,
-        skill_limit: int = 6,
-        mcp_limit: int = 8,
+        skill_limit: int = 5,
+        mcp_limit: int = 2,
         plugin_host_limit: int = 8,
     ) -> ExtensionRouteBundle:
         query_tokens = _tokenize(user_query)
@@ -1058,19 +1191,13 @@ class ExtensionsRuntimeService:
         mcp_tools = [tool for tool in available_tools if _is_mcp_tool(tool)]
         plugin_host_tools = [tool for tool in available_tools if _is_plugin_host_tool(tool)]
         base_tools = [tool for tool in available_tools if not _is_mcp_tool(tool) and not _is_plugin_host_tool(tool)]
-        mcp_sibling_names_by_server: dict[str, list[str]] = {}
+        mcp_server_map: dict[str, list[Any]] = {}
         for tool in mcp_tools:
             server_name = _mcp_tool_server_name(tool)
-            mcp_sibling_names_by_server.setdefault(server_name, []).append(_tool_name(tool))
+            mcp_server_map.setdefault(server_name, []).append(tool)
 
-        mcp_family_map: dict[str, list[Any]] = {}
-        for tool in mcp_tools:
-            server_name = _mcp_tool_server_name(tool)
-            family_key = _mcp_tool_family_key(tool, mcp_sibling_names_by_server.get(server_name, []))
-            mcp_family_map.setdefault(family_key, []).append(tool)
-
-        ranked_mcp_families: list[tuple[int, str, Any]] = []
-        for family_key, raw_items in mcp_family_map.items():
+        ranked_mcp_servers: list[tuple[int, str, list[Any]]] = []
+        for server_name, raw_items in mcp_server_map.items():
             items = sorted(
                 raw_items,
                 key=lambda tool: (
@@ -1080,63 +1207,55 @@ class ExtensionsRuntimeService:
             )
             if not items:
                 continue
-            seed_tool = items[0]
-            server_name = _mcp_tool_server_name(seed_tool)
-            sibling_names = mcp_sibling_names_by_server.get(server_name, [])
-            family_title = _mcp_tool_family_title(seed_tool, sibling_names)
-            family_examples = [_tool_name(tool) for tool in items[:6]]
-            family_descriptions = [
+            tool_names = [_tool_name(tool) for tool in items if _tool_name(tool)]
+            tool_descriptions = [
                 _tool_description(tool)
-                for tool in items[:4]
+                for tool in items
                 if _tool_description(tool)
             ]
-            family_description = " | ".join(
+            server_description = " | ".join(
                 part
                 for part in [
-                    f"MCP 服务 {server_name} 的工具树",
-                    family_title if family_title and family_title != server_name else "",
-                    " ".join(family_examples),
-                    " ".join(family_descriptions),
+                    f"MCP server {server_name}",
+                    " ".join(tool_names),
+                    " ".join(tool_descriptions),
                 ]
                 if str(part or "").strip()
             )
-            family_score = _score_text(
+            server_score = _score_text(
                 query_tokens=query_tokens,
-                title=family_title,
-                description=family_description,
+                title=server_name,
+                description=server_description,
             )
-            ranked_mcp_families.append((family_score, family_key, seed_tool))
+            ranked_mcp_servers.append((server_score, server_name, items))
 
-        ranked_mcp_families.sort(
+        ranked_mcp_servers.sort(
             key=lambda row: (
                 -row[0],
-                _mcp_tool_server_name(row[2]).lower(),
-                _mcp_tool_family_title(
-                    row[2],
-                    mcp_sibling_names_by_server.get(_mcp_tool_server_name(row[2]), []),
-                ).lower(),
+                row[1].lower(),
             ),
         )
 
         mcp_pool_limit = max(effective_mcp_limit * 2, _MCP_RERANK_POOL_FLOOR)
-        mcp_pool = [row[2] for row in ranked_mcp_families if row[0] > 0][:mcp_pool_limit]
-        if not mcp_pool:
-            mcp_pool = [row[2] for row in ranked_mcp_families[: min(mcp_pool_limit, len(ranked_mcp_families))]]
-        mcp_pool_keys = [
-            family_key
-            for score, family_key, _tool in ranked_mcp_families
+        mcp_pool_server_keys = [
+            server_name
+            for score, server_name, _items in ranked_mcp_servers
             if score > 0
         ][:mcp_pool_limit]
-        if not mcp_pool_keys:
-            mcp_pool_keys = [family_key for _score, family_key, _tool in ranked_mcp_families[: min(mcp_pool_limit, len(ranked_mcp_families))]]
-        selected_mcp_family_keys = list(mcp_pool_keys[:effective_mcp_limit])
+        if not mcp_pool_server_keys:
+            mcp_pool_server_keys = [
+                server_name
+                for _score, server_name, _items in ranked_mcp_servers[: min(mcp_pool_limit, len(ranked_mcp_servers))]
+            ]
+        mcp_pool = list(mcp_pool_server_keys)
+        selected_mcp_server_keys = list(mcp_pool_server_keys[:effective_mcp_limit])
 
-        def _expand_mcp_family_keys(family_keys: list[str], max_items: int) -> list[Any]:
+        def _expand_mcp_server_keys(server_keys: list[str]) -> list[Any]:
             expanded: list[Any] = []
             seen: set[str] = set()
-            for family_key in family_keys:
+            for server_key in server_keys:
                 items = sorted(
-                    mcp_family_map.get(family_key, []),
+                    mcp_server_map.get(server_key, []),
                     key=lambda tool: (
                         _mcp_tool_server_name(tool).lower(),
                         _tool_name(tool).lower(),
@@ -1148,15 +1267,9 @@ class ExtensionsRuntimeService:
                         continue
                     seen.add(identity)
                     expanded.append(tool)
-                    if len(expanded) >= max_items:
-                        return expanded
             return expanded
 
-        mcp_bound_limit = min(
-            max(effective_mcp_limit * 3, _MCP_RERANK_POOL_FLOOR),
-            max(len(mcp_tools), effective_mcp_limit),
-        )
-        selected_mcp_tools = _expand_mcp_family_keys(selected_mcp_family_keys, mcp_bound_limit)
+        selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
 
         ranked_plugin_host = sorted(
             (
@@ -1182,7 +1295,7 @@ class ExtensionsRuntimeService:
         selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
         skill_family_map = {
             str(item.get("path") or item.get("name") or item.get("folder") or "").strip(): item
-            for item in skill_pool
+            for item in skill_entries
             if str(item.get("path") or item.get("name") or item.get("folder") or "").strip()
         }
         plugin_host_seed_map: dict[str, Any] = {}
@@ -1193,10 +1306,14 @@ class ExtensionsRuntimeService:
         skill_state: dict[str, Any] = {}
         mcp_state: dict[str, Any] = {}
         plugin_host_state: dict[str, Any] = {}
-        should_prefilter = len(skill_family_map) > 1 or len(mcp_family_map) > 1 or len(plugin_host_seed_map) > 1
+        should_prefilter = (
+            len(skill_family_map) > effective_skill_limit
+            or len(mcp_server_map) > effective_mcp_limit
+            or len(plugin_host_seed_map) > effective_plugin_host_limit
+        )
         if prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id and not should_prefilter:
             prefilter_mode = "lexical"
-            prefilter_reason = "候选家族数量不足，无需额外预筛。"
+            prefilter_reason = "候选数量不足，无需额外预筛。"
         if prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id and should_prefilter:
             try:
                 skill_keys, skill_state = select_family_keys_with_llm(
@@ -1206,17 +1323,19 @@ class ExtensionsRuntimeService:
                     families=[
                         {
                             "key": key,
+                            "name": str(item.get("name") or item.get("folder") or "").strip() or key,
                             "title": str(item.get("name") or item.get("folder") or "").strip() or key,
                             "description": str(item.get("description") or "").strip(),
                             "memberCount": 1,
-                            "examples": [str(item.get("name") or item.get("folder") or "").strip() or key],
                         }
                         for key, item in skill_family_map.items()
                     ],
                     max_families=effective_skill_limit,
                     timeout_seconds=1.0,
                 )
-                if skill_keys:
+                if str(skill_state.get("mode") or "") == "llm_tree":
+                    selected_skills = [skill_family_map[key] for key in skill_keys if key in skill_family_map][:effective_skill_limit]
+                elif skill_keys:
                     selected_skills = [skill_family_map[key] for key in skill_keys if key in skill_family_map][:effective_skill_limit]
 
                 mcp_keys, mcp_state = select_family_keys_with_llm(
@@ -1225,21 +1344,40 @@ class ExtensionsRuntimeService:
                     family_label="mcp",
                     families=[
                         {
-                            "key": family_key,
-                            "title": _mcp_tool_family_title(items[0], mcp_sibling_names_by_server.get(_mcp_tool_server_name(items[0]), [])),
-                            "description": f"MCP 服务 {_mcp_tool_server_name(items[0])} 的工具树",
+                            "key": server_name,
+                            "serverName": server_name,
+                            "title": server_name,
+                            "description": " | ".join(
+                                part
+                                for part in [
+                                    " ".join(_tool_name(tool) for tool in items if _tool_name(tool)),
+                                    " ".join(_tool_description(tool) for tool in items if _tool_description(tool)),
+                                ]
+                                if str(part or "").strip()
+                            ),
                             "memberCount": len(items),
-                            "examples": [_tool_name(tool) for tool in items[:4]],
+                            "examples": [_tool_name(tool) for tool in items],
+                            "tools": [
+                                {
+                                    "name": _tool_name(tool),
+                                    "description": _tool_description(tool),
+                                }
+                                for tool in items
+                                if _tool_name(tool)
+                            ],
                         }
-                        for family_key, items in mcp_family_map.items()
+                        for server_name, items in mcp_server_map.items()
                         if items
                     ],
-                    max_families=max(1, min(effective_mcp_limit, len(mcp_family_map))),
+                    max_families=max(1, min(effective_mcp_limit, len(mcp_server_map))),
                     timeout_seconds=1.0,
                 )
-                if mcp_keys:
-                    selected_mcp_family_keys = [key for key in mcp_keys if key in mcp_family_map]
-                    selected_mcp_tools = _expand_mcp_family_keys(selected_mcp_family_keys, mcp_bound_limit)
+                if str(mcp_state.get("mode") or "") == "llm_tree":
+                    selected_mcp_server_keys = [key for key in mcp_keys if key in mcp_server_map]
+                    selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+                elif mcp_keys:
+                    selected_mcp_server_keys = [key for key in mcp_keys if key in mcp_server_map]
+                    selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
 
                 plugin_host_keys, plugin_host_state = select_family_keys_with_llm(
                     role=prefilter_role or "extensions_prefilter",
@@ -1258,7 +1396,9 @@ class ExtensionsRuntimeService:
                     max_families=effective_plugin_host_limit,
                     timeout_seconds=1.0,
                 )
-                if plugin_host_keys:
+                if str(plugin_host_state.get("mode") or "") == "llm_tree":
+                    selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
+                elif plugin_host_keys:
                     selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
 
                 prefilter_mode = "llm_tree"
@@ -1272,15 +1412,15 @@ class ExtensionsRuntimeService:
                     prefilter_mode = "fallback"
                     prefilter_reason = "timeout"
                     selected_skills = list(skill_pool[:effective_skill_limit])
-                    selected_mcp_family_keys = list(mcp_pool_keys[:effective_mcp_limit])
-                    selected_mcp_tools = _expand_mcp_family_keys(selected_mcp_family_keys, mcp_bound_limit)
+                    selected_mcp_server_keys = list(mcp_pool_server_keys[:effective_mcp_limit])
+                    selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
                     selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
             except Exception as exc:
                 prefilter_mode = "fallback"
                 prefilter_reason = str(exc)
                 selected_skills = list(skill_pool[:effective_skill_limit])
-                selected_mcp_family_keys = list(mcp_pool_keys[:effective_mcp_limit])
-                selected_mcp_tools = _expand_mcp_family_keys(selected_mcp_family_keys, mcp_bound_limit)
+                selected_mcp_server_keys = list(mcp_pool_server_keys[:effective_mcp_limit])
+                selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
                 selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
 
         plugin_host_bound_limit = min(
@@ -1335,6 +1475,11 @@ class ExtensionsRuntimeService:
         selected_skill_names = [str(item.get("name") or item.get("folder") or "") for item in selected_skills]
         selected_skill_entries = [_skill_entry_payload(item) for item in selected_skills]
         exposed_mcp_tool_names = [_tool_name(tool) for tool in selected_mcp_tools]
+        selected_mcp_servers = [
+            _mcp_server_payload(server_key, mcp_server_map.get(server_key, []))
+            for server_key in selected_mcp_server_keys
+            if mcp_server_map.get(server_key)
+        ]
         exposed_plugin_host_tool_names = [_tool_name(tool) for tool in selected_plugin_host_tools]
         filtered_tools = base_tools + selected_mcp_tools + selected_plugin_host_tools
 
@@ -1377,11 +1522,13 @@ class ExtensionsRuntimeService:
                     lines.append(f"    - {item}")
             lines.append("  - 按当前 skill 的要求去做。")
         if exposed_mcp_tool_names:
+            lines.append("- 当前暴露给本轮的 MCP servers（选中 server 后暴露完整工具树）：")
+            for server in selected_mcp_servers:
+                lines.append(f"  - {server.get('serverName')} ({server.get('toolCount')} tools)")
             lines.append("- 当前暴露给本轮的 MCP 工具：")
-            for tool in selected_mcp_tools[:mcp_bound_limit]:
+            for tool in selected_mcp_tools:
                 server_name = _mcp_tool_server_name(tool)
-                family_title = _mcp_tool_family_title(tool, mcp_sibling_names_by_server.get(server_name, []))
-                lines.append(f"  - {_tool_name(tool)} ({server_name} / {family_title}): {_truncate(_tool_description(tool), 80)}")
+                lines.append(f"  - {_tool_name(tool)} ({server_name}): {_truncate(_tool_description(tool), 80)}")
         if exposed_plugin_host_tool_names:
             lines.append("- 当前暴露给本轮的 OpenClaw 工具：")
             for tool in selected_plugin_host_tools[:effective_plugin_host_limit]:
@@ -1409,17 +1556,25 @@ class ExtensionsRuntimeService:
                 "skillEntries": selected_skill_entries,
                 "skillRootDescriptors": skill_root_descriptors,
                 "mcpTools": exposed_mcp_tool_names,
+                "mcpServers": selected_mcp_servers,
+                "mcpFamilies": selected_mcp_servers,
                 "pluginHostTools": exposed_plugin_host_tool_names,
-                "seedUnit": "family",
+                "seedUnit": "skill_or_mcp_server",
                 "skillCandidates": len(selected_skill_names),
                 "mcpCandidates": len(exposed_mcp_tool_names),
+                "mcpServerCandidates": len(selected_mcp_servers),
                 "pluginHostCandidates": len(exposed_plugin_host_tool_names),
-                "skillPoolSize": len(skill_pool),
-                "mcpPoolSize": len(mcp_pool),
-                "mcpFamilyPoolSize": len(mcp_pool_keys),
-                "mcpFamilyCount": len(mcp_family_map),
+                "skillPoolSize": len(skill_family_map),
+                "skillLexicalPoolSize": len(skill_pool),
+                "mcpPoolSize": len(mcp_server_map),
+                "mcpLexicalPoolSize": len(mcp_pool),
+                "mcpServerPoolSize": len(mcp_server_map),
+                "mcpServerCount": len(mcp_server_map),
+                "mcpFamilyPoolSize": len(mcp_server_map),
+                "mcpFamilyCount": len(mcp_server_map),
                 "mcpExpandedToolCount": len(exposed_mcp_tool_names),
-                "mcpSelectedFamilies": list(selected_mcp_family_keys),
+                "mcpSelectedServers": list(selected_mcp_server_keys),
+                "mcpSelectedFamilies": list(selected_mcp_server_keys),
                 "pluginHostPoolSize": len(plugin_host_pool),
                 "requestedSkillLimit": skill_limit,
                 "requestedMcpLimit": mcp_limit,
@@ -1444,8 +1599,8 @@ class ExtensionsRuntimeService:
         user_query: str,
         supervisor_tools: list[Any],
         loaded_agents: list[dict[str, Any]] | None = None,
-        skill_limit: int = 6,
-        mcp_limit: int = 8,
+        skill_limit: int = 5,
+        mcp_limit: int = 2,
         plugin_host_limit: int = 8,
     ) -> ExtensionRouteBundle:
         context_payload = self._resolve_event_context()
@@ -1541,6 +1696,7 @@ class ExtensionsRuntimeService:
                 "skillEntries": route_bundle.candidate_summary.get("skillEntries") or [],
                 "skillRootDescriptors": route_bundle.skill_root_descriptors,
                 "mcpToolCandidates": route_bundle.exposed_mcp_tool_names,
+                "mcpServerCandidates": route_bundle.candidate_summary.get("mcpServers") or [],
                 "pluginHostToolCandidates": route_bundle.candidate_summary.get("pluginHostTools") or [],
                 "counts": route_bundle.candidate_summary,
                 "routing": {
@@ -1552,6 +1708,7 @@ class ExtensionsRuntimeService:
                     "pluginHostPoolSize": route_bundle.candidate_summary.get("pluginHostPoolSize"),
                     "selectedSkills": route_bundle.candidate_summary.get("skills"),
                     "selectedSkillIds": route_bundle.candidate_summary.get("selectedSkillIds"),
+                    "selectedMcpServers": route_bundle.candidate_summary.get("mcpSelectedServers"),
                     "selectedMcpTools": route_bundle.candidate_summary.get("mcpTools"),
                     "selectedPluginHostTools": route_bundle.candidate_summary.get("pluginHostTools"),
                 },
@@ -1796,7 +1953,7 @@ class ExtensionsRuntime:
                 "controls": [item["id"] for item in self.service._controls_payload()],
                 "selectionUnits": {
                     "skills": "item",
-                    "mcp": "server_family_tool",
+                    "mcp": "server",
                 },
             },
         }

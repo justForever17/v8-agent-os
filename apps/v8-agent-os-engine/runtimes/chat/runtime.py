@@ -17,7 +17,12 @@ from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.models.provider_compatibility import normalize_provider_error
 from core.database import db
 from core.engine_config_resolver import resolve_engine_config_for_role
-from core.graph_stream_watchdog import GraphStreamIdleTimeoutError, GraphStreamWatchdogState
+from core.graph_stream_watchdog import (
+    GraphStreamDownstreamTimeoutError,
+    GraphStreamIdleTimeoutError,
+    GraphStreamWatchdogState,
+    normalize_stream_iterator_exception,
+)
 from core.realtime_protocol import protocol_connected_event
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
@@ -168,6 +173,7 @@ class ChatStreamState:
     current_agent: str = "supervisor"
     output_buffer: list[str] = field(default_factory=list)
     reasoning_buffer: list[str] = field(default_factory=list)
+    authoritative_final_text: str | None = None
     tool_calls_buffer: list[dict[str, Any]] = field(default_factory=list)
     streamed_model_run_ids: set[str] = field(default_factory=set)
     text_snapshots_by_run: dict[str, str] = field(default_factory=dict)
@@ -186,6 +192,7 @@ class ChatStreamState:
     valid_agent_node_names: list[str] = field(default_factory=list)
     text_filter: StreamFilter = field(default_factory=lambda: StreamFilter(["NONE", "None", "null", "```json", "```"]))
     text_aggregator: TextChunkAggregator = field(default_factory=TextChunkAggregator)
+    pending_stream_event_task: asyncio.Task[Any] | None = None
 
 
 class ChatRuntime:
@@ -1182,6 +1189,17 @@ class ChatRuntime:
             node="stream_chunk_aggregator",
         )
 
+    async def _cancel_pending_stream_event_task(self, stream_state: ChatStreamState) -> None:
+        task = stream_state.pending_stream_event_task
+        stream_state.pending_stream_event_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, StopAsyncIteration, Exception):
+            return
+
     async def _wait_for_stream_signal(
         self,
         *,
@@ -1194,25 +1212,30 @@ class ChatRuntime:
         loop = asyncio.get_running_loop()
         now = loop.time()
         effective_timeout = idle_timeout
+        selected_deadline_kind = "idle_watchdog"
         if stream_state.text_flush_deadline is not None and stream_state.text_aggregator.has_buffered_content():
-            effective_timeout = min(effective_timeout, max(stream_state.text_flush_deadline - now, 0.0))
-        try:
-            event = await asyncio.wait_for(anext(stream_iter), timeout=effective_timeout)
-        except asyncio.TimeoutError as exc:
-            now = loop.time()
-            if (
-                stream_state.text_flush_deadline is not None
-                and stream_state.text_aggregator.has_buffered_content()
-                and now >= stream_state.text_flush_deadline
-            ):
+            flush_timeout = max(stream_state.text_flush_deadline - now, 0.0)
+            if flush_timeout <= effective_timeout:
+                effective_timeout = flush_timeout
+                selected_deadline_kind = "text_flush"
+        if stream_state.pending_stream_event_task is None:
+            stream_state.pending_stream_event_task = asyncio.create_task(anext(stream_iter))
+        next_event_task = stream_state.pending_stream_event_task
+        done, _ = await asyncio.wait({next_event_task}, timeout=effective_timeout)
+        if next_event_task not in done:
+            if selected_deadline_kind == "text_flush":
                 return "text_flush", None
 
             payload = {
                 "idleTimeoutSeconds": idle_timeout,
+                "configuredIdleTimeoutSeconds": idle_timeout,
+                "effectiveTimeoutSeconds": effective_timeout,
+                "deadlineKind": selected_deadline_kind,
                 "phase": phase,
                 "activeToolCount": len(stream_state.watchdog.active_tool_call_ids),
                 "lastObservedEvent": stream_state.watchdog.last_observed_event,
             }
+            await self._cancel_pending_stream_event_task(stream_state)
             chat_run.emit_runtime_event(
                 "run.watchdog.stream_idle_timeout",
                 payload,
@@ -1237,7 +1260,35 @@ class ChatRuntime:
                 idle_seconds=idle_timeout,
                 phase=phase,
                 last_event=stream_state.watchdog.last_observed_event,
-            ) from exc
+            )
+
+        stream_state.pending_stream_event_task = None
+        try:
+            event = next_event_task.result()
+        except Exception as exc:
+            normalized_exc = normalize_stream_iterator_exception(
+                exc,
+                session_id=chat_run.session_id,
+                run_id=chat_run.active_run_id,
+                phase=phase,
+                last_event=stream_state.watchdog.last_observed_event,
+            )
+            if isinstance(normalized_exc, GraphStreamDownstreamTimeoutError):
+                chat_run.emit_runtime_event(
+                    "run.stream.downstream_timeout",
+                    {
+                        "phase": phase,
+                        "idleTimeoutSeconds": idle_timeout,
+                        "configuredIdleTimeoutSeconds": idle_timeout,
+                        "effectiveTimeoutSeconds": effective_timeout,
+                        "deadlineKind": "stream_event",
+                        "lastObservedEvent": stream_state.watchdog.last_observed_event,
+                        "message": str(normalized_exc),
+                    },
+                    agent_id=None,
+                    node="stream_watchdog",
+                )
+            raise normalized_exc from exc
 
         stream_state.watchdog.observe_event(event)
         return "graph_event", event
@@ -1283,8 +1334,50 @@ class ChatRuntime:
             snapshots[normalized_run_id] = previous_value + suffix
             return suffix
 
-        snapshots[normalized_run_id] = previous_value + current_value
-        return current_value
+        snapshots[normalized_run_id] = current_value
+        return ""
+
+    @staticmethod
+    def _current_canonical_text(stream_state: ChatStreamState) -> str:
+        return "".join(stream_state.output_buffer)
+
+    @staticmethod
+    def _has_started_narrative_output(stream_state: ChatStreamState, *, raw_text: str = "") -> bool:
+        return bool(raw_text or stream_state.output_buffer or stream_state.text_aggregator.has_buffered_content())
+
+    def _consume_terminal_text_suffix(
+        self,
+        stream_state: ChatStreamState,
+        snapshots: dict[str, str],
+        model_run_id: str,
+        raw_value: str,
+    ) -> str:
+        normalized_run_id = (model_run_id or "").strip() or "__default__"
+        current_value = raw_value or ""
+        if not current_value:
+            return ""
+
+        snapshots[normalized_run_id] = current_value
+        stream_state.authoritative_final_text = current_value
+
+        emitted_text = self._current_canonical_text(stream_state)
+        if not emitted_text:
+            return current_value
+
+        if current_value == emitted_text:
+            return ""
+
+        if current_value.startswith(emitted_text):
+            return current_value[len(emitted_text):]
+
+        if emitted_text.endswith(current_value) or current_value in emitted_text:
+            return ""
+
+        overlap = self._longest_overlap_suffix_prefix(emitted_text, current_value)
+        if overlap > 0:
+            return current_value[overlap:]
+
+        return ""
 
     @staticmethod
     def _normalized_stream_run_id(model_run_id: str) -> str:
@@ -1449,10 +1542,17 @@ class ChatRuntime:
             raw_text, raw_reasoning = extract_text_and_reasoning(final_output)
             if not raw_text and isinstance(final_output, str):
                 raw_text = final_output
-            text_delta = self._consume_stream_suffix(stream_state.text_snapshots_by_run, model_run_id, raw_text)
+            text_delta = self._consume_terminal_text_suffix(
+                stream_state,
+                stream_state.text_snapshots_by_run,
+                model_run_id,
+                raw_text,
+            )
             reasoning_delta = self._consume_stream_suffix(stream_state.reasoning_snapshots_by_run, model_run_id, raw_reasoning)
             if text_delta:
                 stream_state.text_raw_chars += len(text_delta)
+            if self._has_started_narrative_output(stream_state, raw_text=raw_text):
+                reasoning_delta = ""
             if reasoning_delta:
                 reasoning_delta = self._suppress_neighbor_duplicate_delta(
                     stream_state,
@@ -1530,15 +1630,18 @@ class ChatRuntime:
         return emitted_events
 
     def persist_final_assistant_message(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
-        if not stream_state.output_buffer and not stream_state.tool_calls_buffer and not stream_state.reasoning_buffer:
+        final_content = stream_state.authoritative_final_text or "".join(stream_state.output_buffer)
+        if not final_content and not stream_state.tool_calls_buffer and not stream_state.reasoning_buffer:
             return
+        if stream_state.authoritative_final_text is not None:
+            stream_state.output_buffer = [final_content] if final_content else []
         profile = self._get_agent_profile(stream_state.current_agent)
         message_id = str(uuid.uuid4())
         db.add_message(
             msg_id=message_id,
             session_id=chat_run.session_id,
             role="assistant",
-            content="".join(stream_state.output_buffer),
+            content=final_content,
             reasoning_content="".join(stream_state.reasoning_buffer) if stream_state.reasoning_buffer else None,
             tool_calls=stream_state.tool_calls_buffer if stream_state.tool_calls_buffer else None,
             metadata={
@@ -1892,44 +1995,47 @@ class ChatRuntime:
                     with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
                         async with aclosing(event_stream):
                             stream_iter = event_stream.__aiter__()
-                            while True:
-                                event = None
-                                try:
-                                    signal_kind, event = await self._wait_for_stream_signal(
-                                        stream_iter=stream_iter,
-                                        chat_run=chat_run,
-                                        stream_state=stream_state,
-                                    )
-                                except StopAsyncIteration:
-                                    break
-                                if signal_kind == "text_flush":
-                                    for emitted_event in await self._flush_pending_text_aggregator(
-                                        chat_run,
-                                        stream_state,
-                                        from_timer=True,
-                                    ):
-                                        yield emitted_event
-                                    continue
-                                try:
-                                    control_signal = self.consume_control_signal(chat_run.active_run_id)
-                                    if self.should_stop_stream(control_signal):
-                                        interrupted_signal = control_signal
+                            try:
+                                while True:
+                                    event = None
+                                    try:
+                                        signal_kind, event = await self._wait_for_stream_signal(
+                                            stream_iter=stream_iter,
+                                            chat_run=chat_run,
+                                            stream_state=stream_state,
+                                        )
+                                    except StopAsyncIteration:
                                         break
+                                    if signal_kind == "text_flush":
+                                        for emitted_event in await self._flush_pending_text_aggregator(
+                                            chat_run,
+                                            stream_state,
+                                            from_timer=True,
+                                        ):
+                                            yield emitted_event
+                                        continue
+                                    try:
+                                        control_signal = self.consume_control_signal(chat_run.active_run_id)
+                                        if self.should_stop_stream(control_signal):
+                                            interrupted_signal = control_signal
+                                            break
 
-                                    emitted_events = await self.handle_stream_event(
-                                        chat_run,
-                                        stream_state,
-                                        event,
-                                    )
-                                    for emitted_event in emitted_events:
-                                        yield emitted_event
+                                        emitted_events = await self.handle_stream_event(
+                                            chat_run,
+                                            stream_state,
+                                            event,
+                                        )
+                                        for emitted_event in emitted_events:
+                                            yield emitted_event
 
-                                    if stream_state.interrupted_signal:
-                                        interrupted_signal = stream_state.interrupted_signal
-                                        break
-                                finally:
-                                    if event is not None:
-                                        stream_state.watchdog.finish_event(event)
+                                        if stream_state.interrupted_signal:
+                                            interrupted_signal = stream_state.interrupted_signal
+                                            break
+                                    finally:
+                                        if event is not None:
+                                            stream_state.watchdog.finish_event(event)
+                            finally:
+                                await self._cancel_pending_stream_event_task(stream_state)
                     break
                 except GraphRecursionError:
                     if continuation_count >= 1:

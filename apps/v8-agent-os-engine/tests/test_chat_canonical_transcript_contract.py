@@ -10,6 +10,9 @@ ENGINE_ROOT = Path(__file__).resolve().parents[1]
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
+from api.models import ChatRequest
+from core.computer_use_tool_surface import select_supervisor_native_tools
+from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAMES
 from erc import chat_canonical_transcript as transcript_module
 from erc.chat_canonical_transcript import CanonicalTranscriptBuilder
 from erc.canonical_model_events import LangChainCanonicalModelEventAdapter, consume_canonical_stream_value
@@ -165,7 +168,8 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual(first_delta, "已找到文件：")
         self.assertEqual(first_snapshot, "已找到文件：")
         self.assertEqual(dirty_delta, "")
-        self.assertEqual(dirty_snapshot, "C:\\Usersuny\\.v8")
+        self.assertEqual(dirty_snapshot, "已找到文件：")
+        self.assertEqual(snapshots["model-a"], "已找到文件：")
 
     def test_model_event_adapter_classifies_langgraph_tool_nodes_as_internal(self):
         adapter = LangChainCanonicalModelEventAdapter()
@@ -196,6 +200,50 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
 
         self.assertEqual(view["messageId"], "assistant-process-1")
         self.assertEqual(view["status"], "running")
+
+    def test_chat_request_accepts_structured_attachments_and_legacy_file_urls(self):
+        request = ChatRequest.model_validate(
+            {
+                "messages": [{"role": "user", "content": ""}],
+                "fileUrls": ["https://example.test/a.png"],
+                "attachments": [
+                    {
+                        "name": "b.png",
+                        "publicUrl": "https://example.test/b.png",
+                        "mimeType": "image/png",
+                        "size": 123,
+                    }
+                ],
+                "data": {
+                    "fileUrls": ["https://example.test/c.png"],
+                    "attachments": [{"url": "https://example.test/d.png", "source": "web"}],
+                },
+            }
+        )
+
+        self.assertEqual(request.attachments[0].public_url, "https://example.test/b.png")
+        self.assertEqual(request.data.attachments[0].url, "https://example.test/d.png")
+        self.assertEqual(request.data.fileUrls, ["https://example.test/c.png"])
+
+    def test_baseline_tools_expose_s3_and_hide_list_native_directory(self):
+        self.assertIn("ask_user", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertNotIn("list_native_directory", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("s3_upload_file", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("s3_list_objects", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("s3_download_file", BASELINE_SYSTEM_TOOL_NAMES)
+
+    def test_ask_user_survives_supervisor_default_tool_filter(self):
+        class _Tool:
+            def __init__(self, name: str):
+                self.name = name
+
+        selected = select_supervisor_native_tools(
+            filtered_native_tools=[_Tool("ask_user")],
+            supervisor_allowed_tools=None,
+            config_allowed_tools=None,
+        )
+
+        self.assertEqual([tool.name for tool in selected], ["ask_user"])
 
     def test_builder_preserves_stable_node_timeline_and_derived_exports(self):
         fake_db = _FakeCanonicalDb()

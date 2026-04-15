@@ -113,6 +113,7 @@ from erc.safety_guardian import SafetyDecision, safety_guardian
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
 from core.tools.media_downloader import download_media_for_vision
+from core.tools.s3_tools import s3_download_file, s3_list_objects, s3_upload_file
 from core.tools.vision_media_analyzer import vision_media_analyzer
 from core.tools.web_fetcher import web_extract, web_fetch, web_read, web_search
 from runtimes.computer_use.verification_contract import (
@@ -2469,30 +2470,6 @@ def execute_system_command(
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error executing command: {str(e)}"
-
-@tool
-def list_native_directory(path: str) -> str:
-    """List the contents of a directory on the host filesystem.
-    
-    Arguments:
-        path (str): The absolute path of the directory to list.
-    """
-    try:
-        target_path = Path(path)
-        if not target_path.exists():
-            return f"Error: Path '{path}' does not exist."
-        if not target_path.is_dir():
-            return f"Error: Path '{path}' is not a directory."
-            
-        items = []
-        for item in target_path.iterdir():
-            file_type = "DIR" if item.is_dir() else "FILE"
-            size = item.stat().st_size if item.is_file() else "-"
-            items.append(f"[{file_type}] {item.name} (Size: {size} bytes)")
-            
-        return "\n".join(items) if items else "Directory is empty."
-    except Exception as e:
-        return f"Error listing directory: {str(e)}"
 
 @tool
 def read_native_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
@@ -7994,7 +7971,6 @@ NATIVE_TOOLS = [
     computer_use_scroll_list,
     computer_use_click_toolbar_action,
     computer_use_execute_plan,
-    list_native_directory,
     read_native_file,
     write_native_file,
     grep_search,
@@ -8005,6 +7981,9 @@ NATIVE_TOOLS = [
     web_search,
     delegate_network_task,
     http_request,
+    s3_upload_file,
+    s3_list_objects,
+    s3_download_file,
     wait,
     list_processes,
     manage_process,

@@ -316,16 +316,25 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 }))
                 .filter((item: { name: string; description: string; path: string }) => item.name || item.path);
         }
-        const nextImages = Array.isArray(data?.fileUrls) ? data.fileUrls : [];
-        const nextNodes = userMessage.trim()
-            ? [{ id: createClientId('node'), kind: 'narrative' as const, role: 'user' as const, content: userMessage, timestamp: Date.now() }]
+        const dataAttachments = Array.isArray(data?.attachments)
+            ? data.attachments.filter((item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+            : [];
+        const nextImages = Array.isArray(data?.fileUrls)
+            ? data.fileUrls
+            : dataAttachments
+                .map((item: Record<string, unknown>) => item.publicUrl || item.url || item.workspacePath)
+                .filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0);
+        const effectiveUserMessage = userMessage.trim()
+            || (nextImages.length === 1 ? '已上传 1 个文件' : nextImages.length > 1 ? `已上传 ${nextImages.length} 个文件` : '');
+        const nextNodes = effectiveUserMessage.trim()
+            ? [{ id: createClientId('node'), kind: 'narrative' as const, role: 'user' as const, content: effectiveUserMessage, timestamp: Date.now() }]
             : [];
 
         // Optimistic User Message
         const tempUserMsg: Message = {
             id: createClientId('message'),
             role: 'user',
-            content: userMessage,
+            content: effectiveUserMessage,
             nodes: nextNodes,
             timestamp: Date.now(),
             images: nextImages,
@@ -347,7 +356,8 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             const requestBody: any = {
                 messages: [...currentMessages, tempUserMsg].map(m => ({ role: m.role, content: m.content })), // Send only history up to user msg
                 data: data, // Keep passing the whole object just in case backend expects it
-                fileUrls: data?.fileUrls // Explicitly pass fileUrls
+                fileUrls: nextImages, // Explicitly pass fileUrls
+                attachments: dataAttachments,
             };
             applyScopeRequestFields(requestBody, data);
             const finalMessages = await streamNdjson(requestBody, newHistory);

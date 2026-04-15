@@ -614,6 +614,14 @@ export function InputArea({
                 const nextData: Record<string, unknown> = {};
                 if (uploadedUrls.length > 0) {
                     nextData.fileUrls = uploadedUrls;
+                    nextData.attachments = uploadedUrls.map((url, index) => ({
+                        url,
+                        publicUrl: url,
+                        name: files[index]?.name || undefined,
+                        mimeType: files[index]?.type || undefined,
+                        size: typeof files[index]?.size === "number" ? files[index]?.size : undefined,
+                        source: "os_web_upload",
+                    }));
                 }
                 if (selectedCommandPreset?.name) {
                     nextData.commandPreset = { name: selectedCommandPreset.name };

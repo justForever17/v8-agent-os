@@ -98,8 +98,11 @@ def consume_canonical_stream_value(
         snapshots[run_key] = snapshot
         return current_value, snapshot
 
-    snapshots[run_key] = current_value
-    return "", current_value
+    # Strict text streams treat non-monotonic values as provider correction
+    # snapshots. Do not replace the active baseline here: the chat runtime may
+    # still have short text deltas buffered for a later flush, and replacing the
+    # baseline would make those buffered chunks patch the wrong canonical text.
+    return "", previous_value
 
 
 class LangChainCanonicalModelEventAdapter:
@@ -259,17 +262,23 @@ class LangChainCanonicalModelEventAdapter:
         if not current_value:
             return "", snapshots.get(run_key, "")
 
-        snapshots[run_key] = current_value
         if not emitted_text:
+            snapshots[run_key] = current_value
             return current_value, current_value
         if current_value == emitted_text:
+            snapshots[run_key] = current_value
             return "", current_value
         if current_value.startswith(emitted_text):
+            snapshots[run_key] = current_value
             return current_value[len(emitted_text):], current_value
         if emitted_text.endswith(current_value) or current_value in emitted_text:
             return "", current_value
 
         overlap = longest_overlap_suffix_prefix(emitted_text, current_value)
         if overlap > 0:
+            snapshots[run_key] = current_value
             return current_value[overlap:], current_value
-        return "", current_value
+        # Final non-overlap is reconciled from the completed graph state by the
+        # chat runtime. Leaving the streaming baseline intact prevents a late
+        # terminal snapshot from corrupting buffered text.
+        return "", snapshots.get(run_key, "")

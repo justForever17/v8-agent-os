@@ -8132,6 +8132,16 @@ class ComputerUseRuntime:
                     effective_browser_lane.setdefault("profilePersistenceMode", "managed_launch_debuggable")
                 else:
                     effective_browser_lane.setdefault("profilePersistenceMode", "managed_launch_shell_only")
+            if browser_window_preferences:
+                if existing_window is not None:
+                    effective_browser_lane["selectedBrowserOwner"] = "existing_window"
+                    effective_browser_lane["suppressedBrowserOwners"] = ["managed_cdp", "system_default"]
+                elif bool(effective_browser_lane.get("managedLaunch")):
+                    effective_browser_lane["selectedBrowserOwner"] = "managed_cdp"
+                    effective_browser_lane["suppressedBrowserOwners"] = ["system_default"]
+                else:
+                    effective_browser_lane["selectedBrowserOwner"] = "system_or_profile_launch"
+                    effective_browser_lane["suppressedBrowserOwners"] = ["managed_cdp"]
             self._remember_window_binding(
                 app_id=resolved_app_id,
                 window=resolved_window,

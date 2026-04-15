@@ -47,12 +47,27 @@ class SkillReferenceSelection(BaseModel):
     project_id: Optional[str] = Field(default=None, alias="projectId")
 
 
+class ChatAttachment(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: Optional[str] = None
+    name: Optional[str] = None
+    url: Optional[str] = None
+    public_url: Optional[str] = Field(default=None, alias="publicUrl")
+    workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
+    mime_type: Optional[str] = Field(default=None, alias="mimeType")
+    size: Optional[int] = None
+    source: Optional[str] = None
+
+
 class ChatRequestData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     command_preset: Optional[CommandPresetSelection] = Field(default=None, alias="commandPreset")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
+    fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
+    attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
 
 
 class ChatRequest(BaseModel):
@@ -65,6 +80,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, alias="conversationId")
     user_id: Optional[str] = Field(default="anonymous")
     fileUrls: Optional[List[str]] = Field(default=None, description="Local paths or URLs to uploaded files")
+    attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
     tool_outputs: Optional[List[ToolOutput]] = Field(default=None, description="Structured tool outputs for HITL resume")
     project_id: Optional[str] = Field(default=None, alias="projectId")
     workspace_id: Optional[str] = Field(default=None, alias="workspaceId")

@@ -211,6 +211,7 @@ function buildUserMessage(
 ): ChatMessage {
     const now = Date.now();
     const metadata: ChatMessage["metadata"] = {};
+    const attachments = buildUploadedFileAttachments(options.files);
     if (options.command) {
         metadata.commandPreset = { name: options.command.name };
     }
@@ -220,11 +221,14 @@ function buildUserMessage(
     if (options.taskPlanningMode) {
         metadata.taskPlanningMode = true;
     }
+    if (attachments.length > 0) {
+        metadata.attachments = attachments;
+    }
 
     return {
         id: `user-${now}`,
         role: "user",
-        content: text,
+        content: text || (attachments.length === 1 ? "已上传 1 个文件" : attachments.length > 1 ? `已上传 ${attachments.length} 个文件` : ""),
         timestamp: now,
         images: options.files
             .map((file) => file.url || file.publicUrl || "")
@@ -232,6 +236,26 @@ function buildUserMessage(
         artifacts: [],
         metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
+}
+
+function buildUploadedFileAttachments(files: UploadedWorkspaceFile[]) {
+    return files
+        .map((file) => {
+            const url = String(file.url || file.publicUrl || "").trim();
+            const workspacePath = String(file.workspacePath || file.path || "").trim();
+            if (!url && !workspacePath) return null;
+            return {
+                id: file.id || file.localId,
+                name: file.name,
+                url: url || undefined,
+                publicUrl: String(file.publicUrl || file.url || "").trim() || undefined,
+                workspacePath: workspacePath || undefined,
+                mimeType: file.type,
+                size: file.size,
+                source: "os_phone_upload",
+            };
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item));
 }
 
 function buildUploadedFileStableKey(file: UploadedWorkspaceFile) {
@@ -3771,6 +3795,7 @@ export default function ChatScreen() {
         const pendingCommand = selectedCommand;
         const pendingSkills = [...selectedSkills];
         const pendingFiles = [...uploadedFiles];
+        const effectiveText = text || (pendingFiles.length === 1 ? "已上传 1 个文件" : pendingFiles.length > 1 ? `已上传 ${pendingFiles.length} 个文件` : "");
         let submissionAccepted = false;
         setSending(true);
         try {
@@ -3786,7 +3811,7 @@ export default function ChatScreen() {
                 void startRealtimeRef.current(currentConversationId);
             }
 
-            const userMessage = buildUserMessage(text, {
+            const userMessage = buildUserMessage(effectiveText, {
                 command: pendingCommand,
                 skills: pendingSkills,
                 taskPlanningMode,
@@ -3829,16 +3854,16 @@ export default function ChatScreen() {
             setSelectedSkills([]);
             setUploadedFiles([]);
 
-            if (text) {
+            if (effectiveText) {
                 setConversations((current) => current.map((conversation) =>
                     conversation.id === currentConversationId
                         ? {
                             ...conversation,
                             title: isPlaceholderConversationTitle(conversation.title)
-                                ? (text.slice(0, 36) || conversation.title || "")
+                                ? (effectiveText.slice(0, 36) || conversation.title || "")
                                 : conversation.title,
                             updatedAt: new Date().toISOString(),
-                            previewExcerpt: text.slice(0, 120),
+                            previewExcerpt: effectiveText.slice(0, 120),
                         }
                         : conversation,
                 ));
@@ -3846,13 +3871,14 @@ export default function ChatScreen() {
 
             const submitResult = await submitChatMessage(
                 authorizedFetch,
-                text,
+                effectiveText,
                 {
                     messages: historyMessages,
                     conversationId: currentConversationId,
                     commandPresetName: pendingCommand?.name || null,
                     skillReferences: pendingSkills,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
+                    attachments: buildUploadedFileAttachments(pendingFiles),
                     taskPlanningMode,
                 },
             );

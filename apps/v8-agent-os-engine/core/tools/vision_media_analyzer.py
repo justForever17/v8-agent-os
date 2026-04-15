@@ -32,52 +32,12 @@ from core.system_base import get_engine_origin
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 
 async def _upload_to_temp_s3(file_path: Path) -> str:
-    from core.storage import storage
+    from core.tools.s3_tools import upload_file_to_s3
 
-    system_base = storage.get_system_base_config()
-    s3_config = system_base.get("s3") if isinstance(system_base.get("s3"), dict) else None
-    
-    if not s3_config or not s3_config.get("accessKeyId"):
-        raise ValueError("S3 is not configured. Vision models require a public URL to process local media. Please configure S3 credentials in the Admin UI first.")
-    
-    import boto3
-    from botocore.config import Config as BotoConfig
-    from botocore.exceptions import NoCredentialsError
-    from urllib.parse import urlparse
-    
-    # Many S3-compatible services (MinIO, hi168, etc.) require path-style addressing + V2 signature
-    s3_client = boto3.client('s3',
-        endpoint_url=s3_config.get('endpoint'),
-        region_name=s3_config.get('region'),
-        aws_access_key_id=s3_config.get('accessKeyId'),
-        aws_secret_access_key=s3_config.get('secretAccessKey'),
-        config=BotoConfig(
-            s3={'addressing_style': 'path'},
-            signature_version='s3'
-        )
-    )
-    bucket_name = s3_config.get('bucket')
-    
-    key = f"v8chat/media_{file_path.name}"
-    
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-    content_type = mime_type or 'application/octet-stream'
-    
     try:
-        s3_client.upload_file(
-            Filename=str(file_path),
-            Bucket=bucket_name,
-            Key=key,
-            ExtraArgs={'ContentType': content_type}
-        )
-        endpoint = s3_config.get('endpoint', '').rstrip('/')
-        if not endpoint.startswith("http"):
-            endpoint = "https://" + endpoint
-        
-        # Path-style URL: endpoint/bucket/key
-        return f"{endpoint}/{bucket_name}/{key}"
+        return str(upload_file_to_s3(file_path, prefix="v8chat").get("url") or "")
     except Exception as e:
-        raise ValueError(f"S3 Upload failed: Failed to upload {file_path} to {bucket_name}/{key}: {e}")
+        raise ValueError(f"S3 Upload failed: Failed to upload {file_path}: {e}")
 
 async def _mount_in_workspace(file_path: Path) -> str:
     import shutil

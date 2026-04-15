@@ -563,6 +563,7 @@ export async function submitChatMessage(
                 conversationId: options.conversationId || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
+                attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 taskPlanningMode: options.taskPlanningMode ? true : undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
@@ -728,6 +729,7 @@ type SendChatOptions = {
     commandPresetName?: string | null;
     skillReferences?: SkillReferenceSummary[];
     fileUrls?: string[];
+    attachments?: Array<Record<string, unknown>>;
     taskPlanningMode?: boolean;
 };
 
@@ -749,6 +751,7 @@ export async function sendChatMessageStream(
                 conversationId: options.conversationId || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
+                attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 taskPlanningMode: options.taskPlanningMode ? true : undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({

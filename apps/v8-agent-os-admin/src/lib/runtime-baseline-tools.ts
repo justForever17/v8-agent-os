@@ -1,5 +1,5 @@
 export const BASELINE_SYSTEM_TOOLS = [
-    "list_native_directory",
+    "ask_user",
     "read_native_file",
     "write_native_file",
     "grep_search",
@@ -11,4 +11,7 @@ export const BASELINE_SYSTEM_TOOLS = [
     "vision_media_analyzer",
     "web_fetch",
     "http_request",
+    "s3_upload_file",
+    "s3_list_objects",
+    "s3_download_file",
 ] as const;

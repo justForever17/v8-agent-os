@@ -3,7 +3,6 @@ from __future__ import annotations
 from core.system_tools.baseline import is_baseline_system_tool_name
 
 DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
-    "ask_user",
     "computer_use_capture_screenshot",
     "computer_use_click",
     "computer_use_click_toolbar_action",

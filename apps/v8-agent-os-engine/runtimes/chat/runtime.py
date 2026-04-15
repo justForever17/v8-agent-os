@@ -13,6 +13,7 @@ from typing import Any
 
 from api.models import ChatRequest
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
+from core.chat_output_extractor import extract_text_and_reasoning
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.models.provider_compatibility import normalize_provider_error
@@ -387,12 +388,88 @@ class ChatRuntime:
                 )
         return lc_messages
 
+    @staticmethod
+    def _attachment_url(attachment: dict[str, Any]) -> str:
+        return str(
+            attachment.get("url")
+            or attachment.get("publicUrl")
+            or attachment.get("public_url")
+            or attachment.get("workspacePath")
+            or attachment.get("workspace_path")
+            or attachment.get("path")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _attachment_name(attachment: dict[str, Any]) -> str:
+        name = str(attachment.get("name") or "").strip()
+        if name:
+            return name
+        url = ChatRuntime._attachment_url(attachment)
+        return Path(url).name if url else "uploaded-file"
+
+    def _normalize_request_attachments(self, request: ChatRequest) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _add(raw: Any, *, source: str) -> None:
+            if raw is None:
+                return
+            if isinstance(raw, str):
+                item: dict[str, Any] = {"url": raw, "source": source}
+            elif hasattr(raw, "model_dump"):
+                item = dict(raw.model_dump(mode="json", by_alias=True, exclude_none=True))
+                item.setdefault("source", source)
+            elif isinstance(raw, dict):
+                item = dict(raw)
+                item.setdefault("source", source)
+            else:
+                return
+            url = self._attachment_url(item)
+            if not url:
+                return
+            fingerprint = url.lower()
+            if fingerprint in seen:
+                return
+            seen.add(fingerprint)
+            item.setdefault("id", str(uuid.uuid4()))
+            item.setdefault("name", self._attachment_name(item))
+            normalized.append({key: value for key, value in item.items() if value is not None})
+
+        for attachment in list(request.attachments or []):
+            _add(attachment, source="chat_request.attachments")
+        request_data = request.data
+        for attachment in list(getattr(request_data, "attachments", None) or []):
+            _add(attachment, source="chat_request.data.attachments")
+        for url in list(request.fileUrls or []):
+            _add(url, source="chat_request.fileUrls")
+        for url in list(getattr(request_data, "fileUrls", None) or []):
+            _add(url, source="chat_request.data.fileUrls")
+
+        request.attachments = normalized  # type: ignore[assignment]
+        request.fileUrls = [self._attachment_url(item) for item in normalized if self._attachment_url(item)]
+        return normalized
+
+    def _ensure_latest_user_content_for_attachments(self, request: ChatRequest, attachments: list[dict[str, Any]]) -> None:
+        if not attachments:
+            return
+        for message in reversed(request.messages):
+            if message.role != "user":
+                continue
+            if str(message.content or "").strip():
+                return
+            count = len(attachments)
+            message.content = f"已上传 {count} 个文件" if count != 1 else "已上传 1 个文件"
+            return
+
     def _inject_uploaded_file_notices(self, request: ChatRequest, lc_messages: list[Any]) -> None:
-        if not request.fileUrls:
+        attachments = [dict(item) for item in list(request.attachments or []) if isinstance(item, dict)]
+        if not attachments:
             return
 
         local_files: list[str] = []
-        for url in request.fileUrls:
+        for attachment in attachments:
+            url = self._attachment_url(attachment)
             if "/api/workspace/files/" in url:
                 subpath = url.split("/api/workspace/files/")[-1]
                 workspace_dir = workspace_resolution_service.resolve_workspace_path(
@@ -407,7 +484,7 @@ class ChatRuntime:
             else:
                 local_files.append(url)
 
-        file_notices = "\n\n" + "\n".join([f"[User uploaded file: {path}]" for path in local_files])
+        file_notices = "\n\n" + "\n".join([f"[User uploaded file: {path}]" for path in local_files if path])
         for message in reversed(lc_messages):
             if isinstance(message, HumanMessage):
                 if isinstance(message.content, str):
@@ -608,6 +685,8 @@ class ChatRuntime:
         session_id = request.session_id or str(uuid.uuid4())
         conversation_id = request.conversation_id or session_id
         user_id = request.user_id or "anonymous"
+        attachments = self._normalize_request_attachments(request)
+        self._ensure_latest_user_content_for_attachments(request, attachments)
         lc_messages = self._to_langchain_messages(request)
         self._inject_uploaded_file_notices(request, lc_messages)
         command_preset, task_planning_mode, skill_references = self._resolve_request_context(request)
@@ -831,10 +910,33 @@ class ChatRuntime:
             latest_user = request.messages[-1]
             user_message_id = str(uuid.uuid4())
             user_node_id = f"{user_message_id}:narrative"
+            attachments = [dict(item) for item in list(request.attachments or []) if isinstance(item, dict)]
+            attachment_nodes = [
+                {
+                    "id": f"{user_message_id}:artifact:{index}",
+                    "kind": "artifact",
+                    "artifact": {
+                        "id": str(attachment.get("id") or f"{user_message_id}:attachment:{index}"),
+                        "kind": "file",
+                        "title": self._attachment_name(attachment),
+                        "displayLabel": self._attachment_name(attachment),
+                        "sourcePath": self._attachment_url(attachment),
+                        "workspacePath": attachment.get("workspacePath") or attachment.get("workspace_path"),
+                        "externalUrl": attachment.get("publicUrl") or attachment.get("public_url") or attachment.get("url"),
+                        "previewUrl": attachment.get("publicUrl") or attachment.get("public_url") or attachment.get("url"),
+                        "mimeType": attachment.get("mimeType") or attachment.get("mime_type") or attachment.get("type"),
+                        "size": attachment.get("size"),
+                        "metadata": {"source": attachment.get("source") or "chat_attachment"},
+                    },
+                    "timestamp": self._now_timestamp_ms(),
+                }
+                for index, attachment in enumerate(attachments)
+            ]
             user_metadata = self._canonical_message_metadata(
                 chat_run,
                 role="user",
                 images=request.fileUrls,
+                extra={"attachments": attachments} if attachments else None,
             )
             user_row = self._create_canonical_message(
                 chat_run,
@@ -848,7 +950,8 @@ class ChatRuntime:
                         "role": "user",
                         "content": latest_user.content,
                         "timestamp": user_metadata["timestamp"],
-                    }
+                    },
+                    *attachment_nodes,
                 ],
                 metadata=user_metadata,
                 content_text=latest_user.content,
@@ -859,7 +962,7 @@ class ChatRuntime:
                 role="user",
                 content=latest_user.content,
                 images=request.fileUrls,
-                metadata=metadata,
+                metadata={**metadata, "attachments": attachments} if attachments else metadata,
             )
             chat_run.emit_runtime_event(
                 "message.user.recorded",
@@ -869,6 +972,7 @@ class ChatRuntime:
                     "transcript_version": int(user_row.get("version") or 1),
                     "content": latest_user.content,
                     "images": request.fileUrls or [],
+                    "attachments": attachments,
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
                     "metadata": metadata,
                 },
@@ -912,6 +1016,7 @@ class ChatRuntime:
                     "latest_user_message_id": user_message_id,
                     "latest_user_content": latest_user.content,
                     "images": request.fileUrls or [],
+                    "attachments": attachments,
                     "transport": chat_run.transport,
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
                     "command_preset_name": chat_run.prepared.command_preset_name,
@@ -1487,6 +1592,7 @@ class ChatRuntime:
         delta: str,
         *,
         model_run_id: str,
+        snapshot: str | None = None,
     ) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
@@ -1499,6 +1605,7 @@ class ChatRuntime:
                 stream_state,
                 stable_chunk,
                 model_run_id=model_run_id,
+                snapshot=snapshot or self._current_canonical_text(stream_state),
             )
             if text_event is not None:
                 emitted_events.append(text_event)
@@ -1530,6 +1637,7 @@ class ChatRuntime:
             stream_state,
             final_chunk,
             model_run_id=stream_state.last_text_delta_run_id,
+            snapshot=self._current_canonical_text(stream_state),
         )
         return [text_event] if text_event is not None else []
 
@@ -1933,6 +2041,7 @@ class ChatRuntime:
                             stream_state,
                             text_delta,
                             model_run_id=model_run_id,
+                            snapshot=self._current_canonical_text(stream_state),
                         )
                     )
                 elif model_event.event_type == "reasoning_delta":
@@ -1993,6 +2102,7 @@ class ChatRuntime:
                             stream_state,
                             text_delta,
                             model_run_id=model_event.model_run_id,
+                            snapshot=self._current_canonical_text(stream_state),
                         )
                     )
                 elif model_event.event_type == "reasoning_delta":
@@ -2174,6 +2284,111 @@ class ChatRuntime:
             message_id=assistant_message_id,
         )
         workflow_ledger_service.clear_chat_projection(chat_run.active_run_id)
+
+    @staticmethod
+    def _extract_final_assistant_text_from_state(state: dict[str, Any] | None) -> str:
+        if not isinstance(state, dict):
+            return ""
+        for message in reversed(list(state.get("messages") or [])):
+            if not isinstance(message, AIMessage):
+                continue
+            raw_text, _raw_reasoning = extract_text_and_reasoning(message)
+            if not raw_text and isinstance(getattr(message, "content", None), str):
+                raw_text = str(message.content or "")
+            raw_text = str(raw_text or "").strip()
+            if raw_text:
+                return raw_text
+        return ""
+
+    @classmethod
+    def _should_reconcile_final_text(cls, *, current_text: str, final_text: str) -> bool:
+        current = str(current_text or "").strip()
+        final = str(final_text or "").strip()
+        if not final or final == current:
+            return False
+        if any(marker in final for marker in ("ToolRuntime(", "PregelScratchpad", "__pregel_", "stream_writer=")):
+            return False
+        if not current:
+            return True
+        if len(current) <= 4:
+            return True
+        if final.startswith(current) or current in final:
+            return True
+        return len(final) >= max(len(current) * 2, 16)
+
+    async def reconcile_final_assistant_message(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        execution_bundle: ChatExecutionBundle | None,
+    ) -> None:
+        if execution_bundle is None:
+            return
+        try:
+            state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to inspect final graph state for transcript reconciliation in run '%s'",
+                chat_run.active_run_id,
+            )
+            return
+        final_text = self._extract_final_assistant_text_from_state(state)
+        if not final_text:
+            return
+        message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        row = db.get_chat_canonical_message(message_id) or {}
+        current_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")
+        if not self._should_reconcile_final_text(current_text=current_text, final_text=final_text):
+            return
+        profile = self._get_agent_profile(stream_state.current_agent)
+        final_node = {
+            "id": f"{message_id}:narrative:final",
+            "kind": "narrative",
+            "role": "assistant",
+            "content": final_text,
+            "timestamp": self._now_timestamp_ms(),
+            "agentName": profile["name"],
+            "agentAvatar": profile["avatar"],
+            "agentRoleLabel": profile["roleLabel"],
+        }
+
+        def _replace_narrative(nodes: list[dict[str, Any]], _metadata: dict[str, Any]):
+            preserved = [
+                dict(node)
+                for node in nodes
+                if not (
+                    str(node.get("kind") or "").strip() == "narrative"
+                    and str(node.get("role") or "").strip() == "assistant"
+                )
+            ]
+            return [*preserved, final_node], final_node["id"]
+
+        mutation = canonical_transcript_builder.mutate_message(
+            message_id,
+            _replace_narrative,
+            state="streaming",
+            metadata_updates={
+                "timestamp": self._now_timestamp_ms(),
+                "agentId": stream_state.current_agent,
+                "transcriptReconciled": True,
+            },
+        )
+        stream_state.assistant_transcript_version = mutation.version
+        stream_state.output_buffer = [final_text]
+        stream_state.authoritative_final_text = final_text
+        chat_run.emit_runtime_event(
+            "run.transcript.reconciled",
+            {
+                "message_id": message_id,
+                "node_id": final_node["id"],
+                "transcript_version": mutation.version,
+                "previousContentChars": len(current_text),
+                "finalContentChars": len(final_text),
+                "reason": "final_graph_state_authoritative",
+            },
+            agent_id=None,
+            node="canonical_transcript",
+        )
 
     def emit_task_planning_mode_decision(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
         if not chat_run.prepared.task_planning_mode:
@@ -2492,8 +2707,10 @@ class ChatRuntime:
             continuation_count = 0
             continuation_reason = ""
             continuation_bundle: ChatExecutionBundle | None = None
+            last_execution_bundle: ChatExecutionBundle | None = None
             while True:
                 execution_bundle = continuation_bundle or await self.resolve_execution_bundle(chat_run=chat_run)
+                last_execution_bundle = execution_bundle
                 if execution_bundle.runner_bundle.diagnostics:
                     chat_run.emit_runtime_event(
                         "supervisor.graph.diagnostics",
@@ -2580,6 +2797,7 @@ class ChatRuntime:
 
             for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                 yield flushed_event
+            await self.reconcile_final_assistant_message(chat_run, stream_state, last_execution_bundle)
             self.persist_final_assistant_message(chat_run, stream_state)
             self.emit_task_planning_mode_decision(chat_run, stream_state)
             yield self.finalize_success_run(chat_run)

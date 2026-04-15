@@ -280,6 +280,8 @@ class BrowserAutomationProvider:
         elif requested & _EDGE_APP_IDS:
             preferred_families = ["edge"]
         elif requested & _GENERIC_BROWSER_APP_IDS:
+            if launch_command:
+                return launch_command
             preferred_families = ["chrome", "edge"]
         if not preferred_families:
             return launch_command

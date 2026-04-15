@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 BASELINE_SYSTEM_TOOL_NAMES = {
-    "list_native_directory",
+    "ask_user",
     "read_native_file",
     "write_native_file",
     "grep_search",
@@ -15,6 +15,9 @@ BASELINE_SYSTEM_TOOL_NAMES = {
     "vision_media_analyzer",
     "web_fetch",
     "http_request",
+    "s3_upload_file",
+    "s3_list_objects",
+    "s3_download_file",
 }
 
 

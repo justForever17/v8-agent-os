@@ -54,8 +54,9 @@ _NOISY_KNOWLEDGE_HINTS = (
     "连通性测试",
     "验证通过",
     "验证失败",
-    "voice",
-    "tts",
+    "voice reply script",
+    "tts copy",
+    "语音文案",
     "reply_",
     ".ogg",
     ".mp3",
@@ -450,45 +451,84 @@ def _build_historical_context(*, quick_summary: str, scope_chain: List[str]) -> 
     return "\n\n".join(context_sections) if context_sections else "No prior knowledge retrieved."
 
 
-def _should_store_preference(pref: PreferenceExtraction, policy: Dict[str, Any]) -> bool:
+def _scope_kind(scope: str) -> str:
+    normalized = str(scope or "").strip().lower()
+    if normalized.startswith("project:"):
+        return "project"
+    if normalized.startswith("channel:"):
+        return "channel"
+    return "global"
+
+
+def _is_path_like_fact(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(token in normalized for token in (":\\", "/users/", "\\users\\", "~/"))
+
+
+def _item_key(item: Any, fields: List[str]) -> tuple:
+    return tuple(str(getattr(item, field, "") or "").strip() for field in fields)
+
+
+def _evaluate_preference_persistence(pref: PreferenceExtraction, policy: Dict[str, Any]) -> tuple[bool, str]:
     if _normalize_target_store(pref.target_store, default="preference") != "preference":
-        return False
+        return False, f"target_store_{_normalize_target_store(pref.target_store, default='preference')}"
     if _normalize_durability(pref.durability, default="stable") != "stable":
-        return False
-    return (
-        int(pref.importance or 0) >= int(policy["preference_importance_threshold"])
-        and float(pref.confidence or 0.0) >= float(policy["preference_confidence_threshold"])
-    )
+        return False, f"durability_{_normalize_durability(pref.durability, default='stable')}"
+    if int(pref.importance or 0) < int(policy["preference_importance_threshold"]):
+        return False, "importance_below_threshold"
+    if float(pref.confidence or 0.0) < float(policy["preference_confidence_threshold"]):
+        return False, "confidence_below_threshold"
+    return True, "persisted"
 
 
-def _should_store_knowledge(fact: KnowledgeExtraction, policy: Dict[str, Any]) -> bool:
+def _evaluate_knowledge_persistence(fact: KnowledgeExtraction, policy: Dict[str, Any]) -> tuple[bool, str]:
     if _normalize_target_store(fact.target_store, default="knowledge") != "knowledge":
-        return False
+        return False, f"target_store_{_normalize_target_store(fact.target_store, default='knowledge')}"
     durability = _normalize_durability(fact.durability, default="operational")
     if durability == "transient":
-        return False
+        return False, "durability_transient"
+
     normalized_scope = str(fact.scope or "").strip().lower()
+    scope_kind = _scope_kind(normalized_scope)
     fact_text = str(fact.fact or "").strip().lower()
     category_text = str(fact.category or "").strip().lower()
     if any(token in f"{fact_text} {category_text}" for token in _NOISY_KNOWLEDGE_HINTS):
-        return False
-    if ":\\" in fact_text or "/users/" in fact_text or "\\users\\" in fact_text or "~/" in fact_text:
-        return False
-    if normalized_scope == "global":
-        return (
-            durability == "stable"
-            and int(fact.importance or 0) >= 75
-            and float(fact.confidence or 0.0) >= 0.85
-        )
-    return (
-        int(fact.importance or 0) >= int(policy["knowledge_importance_threshold"])
-        and float(fact.confidence or 0.0) >= float(policy["knowledge_confidence_threshold"])
-    )
+        return False, "noise_hint"
+
+    if scope_kind == "global":
+        if _is_path_like_fact(fact_text):
+            return False, "path_like_global"
+        if durability != "stable":
+            return False, "global_requires_stable"
+        if int(fact.importance or 0) < 75:
+            return False, "importance_below_global_threshold"
+        if float(fact.confidence or 0.0) < 0.85:
+            return False, "confidence_below_global_threshold"
+        return True, "persisted"
+
+    if durability not in {"stable", "operational"}:
+        return False, f"durability_{durability}"
+    if int(fact.importance or 0) < int(policy["knowledge_importance_threshold"]):
+        return False, "importance_below_threshold"
+    if float(fact.confidence or 0.0) < float(policy["knowledge_confidence_threshold"]):
+        return False, "confidence_below_threshold"
+    return True, "persisted"
 
 
-def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]):
+def _should_store_preference(pref: PreferenceExtraction, policy: Dict[str, Any]) -> bool:
+    allowed, _ = _evaluate_preference_persistence(pref, policy)
+    return allowed
+
+
+def _should_store_knowledge(fact: KnowledgeExtraction, policy: Dict[str, Any]) -> bool:
+    allowed, _ = _evaluate_knowledge_persistence(fact, policy)
+    return allowed
+
+
+def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]) -> tuple[int, List[PreferenceExtraction]]:
     """[专业工具] 将偏好存入 MEMORY.md（按评分与 store 约束过滤）"""
     stored = 0
+    stored_items: List[PreferenceExtraction] = []
     for pref in result.preferences:
         if not _should_store_preference(pref, policy):
             continue
@@ -498,10 +538,11 @@ def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]):
         try:
             memory_runtime.upsert_preference(key=key, value=pref.value, scope=pref.scope)
             stored += 1
+            stored_items.append(pref)
             logger.info(f"[MemoryAgent] Preference → MEMORY.md [{pref.scope}] {key} = {pref.value}")
         except ValueError as exc:
             logger.warning(f"[MemoryAgent] Preference skipped due to invalid scope: {exc}")
-    return stored
+    return stored, stored_items
 
 def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Dict[str, Any]) -> tuple[int, List[KnowledgeExtraction]]:
     """[专业工具] 将知识存入分区 JSON + ChromaDB，处理覆盖与新增"""
@@ -544,36 +585,46 @@ def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Di
                 logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
     return stored, stored_items
 
-def _align_extraction_scopes(result: MemoryExtractionResult, resolved_scope: str):
+def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_scope: str):
     specific_prefixes = ("project:", "channel:")
+    target_scope = str(effective_memory_scope or "").strip() or "global"
 
     def _coerce_scope(value: str) -> str:
         normalized = (value or "").strip()
-        if not normalized:
-            return resolved_scope
-        if normalized == "global":
-            return normalized
-        if normalized.startswith(specific_prefixes) and normalized != resolved_scope:
-            return resolved_scope
-        return resolved_scope
+        if target_scope == "global":
+            return "global"
+        if not normalized or normalized == "global":
+            return target_scope
+        if normalized.startswith(specific_prefixes) and normalized != target_scope:
+            return target_scope
+        return target_scope
 
     for pref in result.preferences:
         pref.scope = _coerce_scope(pref.scope)
     for fact in result.knowledge:
         fact.scope = _coerce_scope(fact.scope)
 
-def _build_knowledge_graph(result: MemoryExtractionResult, *, stored_knowledge_items: Optional[List[KnowledgeExtraction]] = None):
+def _build_knowledge_graph(
+    result: MemoryExtractionResult,
+    *,
+    stored_knowledge_items: Optional[List[KnowledgeExtraction]] = None,
+) -> Dict[str, int]:
     """
     [专业工具] 从提取结果中提取图谱实体与关系。
     通过 SQLite INSERT OR IGNORE 自动去重。
     """
     if not stored_knowledge_items:
-        return
+        return {"entities": 0, "relations": 0}
+    entities_added = 0
     relations_added = 0
     
     # 插入 Entities
     for entity in result.entities:
-        knowledge_db.add_entity(entity.name.lower(), entity.type)
+        name = entity.name.strip().lower()
+        if not name:
+            continue
+        knowledge_db.add_entity(name, entity.type)
+        entities_added += 1
         
     # 插入 Relations
     for rel in result.relations:
@@ -586,6 +637,7 @@ def _build_knowledge_graph(result: MemoryExtractionResult, *, stored_knowledge_i
             
     if relations_added:
         logger.info(f"[MemoryAgent] Built {relations_added} graph relations via LLM structured extraction.")
+    return {"entities": entities_added, "relations": relations_added}
 
 def _run_incremental_index():
     """[专业工具] 执行增量索引刷新"""
@@ -608,6 +660,41 @@ def _emit_memory_event(
         run_handle.emit(topic, payload)
     except Exception as exc:
         logger.debug(f"[MemoryAgent] Failed to emit runtime event {topic}: {exc}")
+
+
+def _stored_preference_key(pref: PreferenceExtraction) -> tuple:
+    return _item_key(pref, ["scope", "key", "value"])
+
+
+def _stored_knowledge_key(fact: KnowledgeExtraction) -> tuple:
+    return _item_key(fact, ["scope", "category", "fact"])
+
+
+def _filter_reason_summary(
+    result: MemoryExtractionResult,
+    *,
+    stored_preference_items: List[PreferenceExtraction],
+    stored_knowledge_items: List[KnowledgeExtraction],
+    policy: Dict[str, Any],
+) -> Dict[str, Dict[str, int]]:
+    stored_pref_keys = {_stored_preference_key(item) for item in stored_preference_items}
+    stored_knowledge_keys = {_stored_knowledge_key(item) for item in stored_knowledge_items}
+    reasons: Dict[str, Dict[str, int]] = {"preference": {}, "knowledge": {}}
+
+    for pref in result.preferences:
+        if _stored_preference_key(pref) in stored_pref_keys:
+            continue
+        _, reason = _evaluate_preference_persistence(pref, policy)
+        reasons["preference"][reason] = reasons["preference"].get(reason, 0) + 1
+
+    for fact in result.knowledge:
+        if _stored_knowledge_key(fact) in stored_knowledge_keys:
+            continue
+        _, reason = _evaluate_knowledge_persistence(fact, policy)
+        reasons["knowledge"][reason] = reasons["knowledge"].get(reason, 0) + 1
+
+    return {kind: value for kind, value in reasons.items() if value}
+
 
 # === 系统指令入口 ===
 
@@ -637,6 +724,61 @@ def _effective_memory_scope(binding: Any | None, resolved_scope: str) -> str:
     if normalized_scope.startswith("channel:") or normalized_scope.startswith("project:"):
         return normalized_scope
     return "global"
+
+
+def _session_scope_hints(session_id: str) -> Dict[str, Any]:
+    try:
+        session = db.get_session(session_id) or {}
+    except Exception:
+        session = {}
+    metadata = session.get("metadata") if isinstance(session, dict) else {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    workspace = metadata.get("workspace") if isinstance(metadata.get("workspace"), dict) else {}
+    project = metadata.get("project") if isinstance(metadata.get("project"), dict) else {}
+    channel = metadata.get("channel") if isinstance(metadata.get("channel"), dict) else {}
+    return {
+        "project_id": (
+            metadata.get("project_id")
+            or metadata.get("projectId")
+            or project.get("id")
+            or project.get("project_id")
+        ),
+        "workspace_id": (
+            metadata.get("workspace_id")
+            or metadata.get("workspaceId")
+            or workspace.get("id")
+            or workspace.get("workspace_id")
+        ),
+        "workspace_path": (
+            metadata.get("workspace_path")
+            or metadata.get("workspacePath")
+            or workspace.get("path")
+            or workspace.get("workspace_path")
+        ),
+        "workflow_id": metadata.get("workflow_id") or metadata.get("workflowId"),
+        "channel_type": (
+            metadata.get("channel_type")
+            or metadata.get("channelType")
+            or channel.get("type")
+            or channel.get("channel_type")
+        ),
+        "channel_remote_id": (
+            metadata.get("channel_remote_id")
+            or metadata.get("channelRemoteId")
+            or metadata.get("remote_id")
+            or metadata.get("remoteId")
+            or channel.get("remote_id")
+            or channel.get("remoteId")
+        ),
+        "scope_hint": metadata.get("scope_hint") or metadata.get("scopeHint"),
+    }
 
 
 def _memory_source_runtime(trigger_source: str) -> str:
@@ -681,26 +823,61 @@ def _append_session_log(
     source_runtime: str,
     provenance_class: str,
     memory_policy: str,
-    extracted_long_term_items_count: int,
+    stored_preference_items: List[PreferenceExtraction],
+    stored_knowledge_items: List[KnowledgeExtraction],
+    policy: Dict[str, Any],
 ):
     """[专业工具] 记录结构化 provenance 日志，同时维护 YAML frontmatter。"""
     content_lines = []
-    if result.knowledge:
-        content_lines.append("**Extracted Knowledge:**")
+    stored_pref_keys = {_stored_preference_key(item) for item in stored_preference_items}
+    stored_knowledge_keys = {_stored_knowledge_key(item) for item in stored_knowledge_items}
+
+    content_lines.append("**Extracted candidates:**")
+    if result.knowledge or result.preferences:
         for f in result.knowledge:
             op = "[UPDATE]" if f.overwrite_id else "[NEW]"
-            content_lines.append(f"- {op} {f.fact}")
-    if result.preferences:
-        content_lines.append("**Extracted Preferences:**")
+            content_lines.append(
+                f"- [knowledge][{f.scope}][{_normalize_durability(f.durability, default='operational')}] {op} {f.fact}"
+            )
         for p in result.preferences:
-            content_lines.append(f"- [{p.scope}] {p.key}: {p.value}")
+            content_lines.append(
+                f"- [preference][{p.scope}][{_normalize_durability(p.durability, default='stable')}] {p.key}: {p.value}"
+            )
+    else:
+        content_lines.append("- none")
+
+    content_lines.append("")
+    content_lines.append("**Persisted long-term memory:**")
+    if stored_knowledge_items or stored_preference_items:
+        for f in stored_knowledge_items:
+            content_lines.append(f"- [knowledge][{f.scope}] {f.fact}")
+        for p in stored_preference_items:
+            content_lines.append(f"- [preference][{p.scope}] {p.key}: {p.value}")
+    else:
+        content_lines.append("- none")
+
+    content_lines.append("")
+    content_lines.append("**Filtered out (policy reason):**")
+    filtered_lines = 0
+    for f in result.knowledge:
+        if _stored_knowledge_key(f) in stored_knowledge_keys:
+            continue
+        _, reason = _evaluate_knowledge_persistence(f, policy)
+        content_lines.append(f"- [knowledge][{f.scope}][{reason}] {f.fact}")
+        filtered_lines += 1
+    for p in result.preferences:
+        if _stored_preference_key(p) in stored_pref_keys:
+            continue
+        _, reason = _evaluate_preference_persistence(p, policy)
+        content_lines.append(f"- [preference][{p.scope}][{reason}] {p.key}: {p.value}")
+        filtered_lines += 1
+    if filtered_lines <= 0:
+        content_lines.append("- none")
 
     if memory_policy == "daily_summary_only":
         content_lines = ["Automation/Hook/Cron provenance retained as daily summary only."]
     elif memory_policy == "skipped":
         content_lines = ["Skipped long-term memory write due to provenance policy."]
-    elif not content_lines:
-        content_lines.append("No durable long-term items extracted.")
 
     full_content = (
         f"Session `{session_id[:8]}`\n"
@@ -713,7 +890,18 @@ def _append_session_log(
         "source_runtime": source_runtime,
         "provenance_class": provenance_class,
         "memory_policy": memory_policy,
-        "extracted_long_term_items_count": extracted_long_term_items_count,
+        "extracted_preference_count": len(result.preferences),
+        "extracted_knowledge_count": len(result.knowledge),
+        "persisted_preference_count": len(stored_preference_items),
+        "persisted_knowledge_count": len(stored_knowledge_items),
+        "filtered_preference_count": max(0, len(result.preferences) - len(stored_preference_items)),
+        "filtered_knowledge_count": max(0, len(result.knowledge) - len(stored_knowledge_items)),
+        "filter_reasons": _filter_reason_summary(
+            result,
+            stored_preference_items=stored_preference_items,
+            stored_knowledge_items=stored_knowledge_items,
+            policy=policy,
+        ),
     }
 
     if hasattr(memory_runtime, "append_daily_log_with_yaml"):
@@ -937,11 +1125,19 @@ def analyze_session_memory(
             workflow_id=binding.workflow_id,
         )
     else:
+        scope_hints = _session_scope_hints(session_id)
         resolved = scope_resolution_service.resolve(
             session_id=session_id,
             conversation_id=session_id,
             user_query=chat_history_text,
             scope_mode="explicit",
+            project_id=scope_hints.get("project_id"),
+            workspace_id=scope_hints.get("workspace_id"),
+            workspace_path=scope_hints.get("workspace_path"),
+            workflow_id=scope_hints.get("workflow_id"),
+            channel_type=scope_hints.get("channel_type"),
+            channel_remote_id=scope_hints.get("channel_remote_id"),
+            scope_hint=scope_hints.get("scope_hint"),
         )
         binding = resolved.binding
         scope = binding.resolved_scope
@@ -1061,7 +1257,7 @@ def analyze_session_memory(
             "resolved_scope": scope,
         }
 
-    _align_extraction_scopes(result, scope)
+    _align_extraction_scopes(result, effective_memory_scope)
     _emit_memory_event(
         run_handle,
         "memory.extraction.completed",
@@ -1085,11 +1281,21 @@ def analyze_session_memory(
     # 5. 分别落库
     stored_preferences = 0
     stored_knowledge = 0
+    stored_preference_items: List[PreferenceExtraction] = []
     stored_knowledge_items: List[KnowledgeExtraction] = []
+    graph_stats = {"entities": 0, "relations": 0}
     if memory_policy == "durable":
-        stored_preferences = _store_preferences(result, policy)
+        stored_preferences, stored_preference_items = _store_preferences(result, policy)
         stored_knowledge, stored_knowledge_items = _store_knowledge(result, session_id, policy)
-        _build_knowledge_graph(result, stored_knowledge_items=stored_knowledge_items)
+        graph_stats = _build_knowledge_graph(result, stored_knowledge_items=stored_knowledge_items)
+    filter_reasons = _filter_reason_summary(
+        result,
+        stored_preference_items=stored_preference_items,
+        stored_knowledge_items=stored_knowledge_items,
+        policy=policy,
+    )
+    filtered_preferences = max(0, len(result.preferences) - len(stored_preference_items))
+    filtered_knowledge = max(0, len(result.knowledge) - len(stored_knowledge_items))
     _emit_memory_event(
         run_handle,
         "memory.preferences.updated",
@@ -1119,12 +1325,13 @@ def analyze_session_memory(
             "session_id": session_id,
             "resolved_scope": scope,
             "effective_memory_scope": effective_memory_scope,
-            "entity_count": len(result.entities),
-            "relation_count": len(result.relations),
+            "entity_count": graph_stats["entities"],
+            "relation_count": graph_stats["relations"],
+            "persisted_entity_count": graph_stats["entities"],
+            "persisted_relation_count": graph_stats["relations"],
             "memory_policy": memory_policy,
         },
     )
-    extracted_long_term_items_count = stored_preferences + stored_knowledge
     _append_session_log(
         result,
         effective_memory_scope=effective_memory_scope,
@@ -1132,7 +1339,9 @@ def analyze_session_memory(
         source_runtime=source_runtime,
         provenance_class=provenance_class,
         memory_policy=memory_policy,
-        extracted_long_term_items_count=extracted_long_term_items_count,
+        stored_preference_items=stored_preference_items,
+        stored_knowledge_items=stored_knowledge_items,
+        policy=policy,
     )
     _emit_memory_event(
         run_handle,
@@ -1180,8 +1389,19 @@ def analyze_session_memory(
             "tags": result.tags,
             "preference_count": stored_preferences,
             "knowledge_count": stored_knowledge,
-            "entity_count": len(result.entities),
-            "relation_count": len(result.relations),
+            "entity_count": graph_stats["entities"],
+            "relation_count": graph_stats["relations"],
+            "extracted_preference_count": len(result.preferences),
+            "extracted_knowledge_count": len(result.knowledge),
+            "extracted_entity_count": len(result.entities),
+            "extracted_relation_count": len(result.relations),
+            "persisted_preference_count": stored_preferences,
+            "persisted_knowledge_count": stored_knowledge,
+            "persisted_entity_count": graph_stats["entities"],
+            "persisted_relation_count": graph_stats["relations"],
+            "filtered_preference_count": filtered_preferences,
+            "filtered_knowledge_count": filtered_knowledge,
+            "filter_reasons": filter_reasons,
             "status": "completed",
             "extraction_mode": extraction_mode,
             "transcript_source": transcript["source"],
@@ -1205,8 +1425,10 @@ def analyze_session_memory(
         action=f"Memory Agent: Session Extraction",
         status="SUCCESS",
         details=(
-            f"Session {session_id[:8]} => {len(result.knowledge)} facts, "
-            f"{len(result.preferences)} prefs, {len(result.relations)} relations. "
+            f"Session {session_id[:8]} => extracted {len(result.knowledge)} facts, "
+            f"{len(result.preferences)} prefs, {len(result.relations)} relations; "
+            f"persisted {stored_knowledge} facts, {stored_preferences} prefs, "
+            f"{graph_stats['relations']} graph relations. "
             f"source={transcript['source']}, entries={len(transcript_entries)}, "
             f"seq={transcript['latest_seq']}"
             + (f", no_persisted_memory_reason={no_persisted_memory_reason}" if no_persisted_memory_reason else "")
@@ -1223,8 +1445,19 @@ def analyze_session_memory(
         "tags": result.tags,
         "preference_count": stored_preferences,
         "knowledge_count": stored_knowledge,
-        "entity_count": len(result.entities),
-        "relation_count": len(result.relations),
+        "entity_count": graph_stats["entities"],
+        "relation_count": graph_stats["relations"],
+        "extracted_preference_count": len(result.preferences),
+        "extracted_knowledge_count": len(result.knowledge),
+        "extracted_entity_count": len(result.entities),
+        "extracted_relation_count": len(result.relations),
+        "persisted_preference_count": stored_preferences,
+        "persisted_knowledge_count": stored_knowledge,
+        "persisted_entity_count": graph_stats["entities"],
+        "persisted_relation_count": graph_stats["relations"],
+        "filtered_preference_count": filtered_preferences,
+        "filtered_knowledge_count": filtered_knowledge,
+        "filter_reasons": filter_reasons,
         "parent_run_id": parent_run_id,
         "extraction_mode": extraction_mode,
         "transcript_source": transcript["source"],

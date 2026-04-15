@@ -32,6 +32,10 @@ def _normalize_scope(scope: Optional[str]) -> Optional[str]:
     return value or None
 
 
+def _is_global_scope_hint(scope: Optional[str]) -> bool:
+    return str(scope or "").strip().lower() == "global"
+
+
 def _normalize_anchor_value(value: Optional[str]) -> Optional[str]:
     text = str(value or "").strip()
     return text or None
@@ -182,7 +186,17 @@ class ScopeResolutionService:
         if normalized_scope_mode not in {"explicit", "infer", "mixed"}:
             normalized_scope_mode = "explicit"
 
-        explicit_requested_scope = _normalize_scope(scope_hint) or _scope_for_project(project_id)
+        normalized_scope_hint = _normalize_scope(scope_hint)
+        # Most clients send scope_hint=global as a default. Treat that as a
+        # neutral hint when concrete workspace/project/workflow anchors exist,
+        # otherwise it masks project workspace bindings and prevents scoped
+        # durable memory from ever being written.
+        neutralize_global_hint = _is_global_scope_hint(normalized_scope_hint) and bool(
+            project_id or workspace_id or workspace_path or workflow_id
+        )
+        explicit_requested_scope = (
+            None if neutralize_global_hint else normalized_scope_hint
+        ) or _scope_for_project(project_id)
         requested_scope = explicit_requested_scope
 
         requested_anchors = _requested_scope_anchors(
@@ -219,6 +233,20 @@ class ScopeResolutionService:
             if force_reresolve:
                 can_reuse_existing_binding = False
                 reuse_evidence["reuse_reason"] = "force_reresolve_requested"
+            elif (
+                can_reuse_existing_binding
+                and existing.resolved_scope == "global"
+                and not existing.project_id
+                and (workspace_id or workspace_path)
+            ):
+                workspace_project = self.project_registry.find_project_for_workspace(
+                    workspace_id=workspace_id,
+                    workspace_path=workspace_path,
+                )
+                if workspace_project:
+                    can_reuse_existing_binding = False
+                    reuse_evidence["reuse_reason"] = "workspace_project_binding_available"
+                    reuse_evidence["workspace_registry_match"] = workspace_project.model_dump(exclude_none=True)
             if can_reuse_existing_binding:
                 scope_chain = build_scope_chain(
                     resolved_scope=existing.resolved_scope,
@@ -278,7 +306,7 @@ class ScopeResolutionService:
         scope_source = "main_workspace_default"
         scope_confidence = 1.0
 
-        if explicit_requested_scope or project_id or workspace_id or workflow_id:
+        if explicit_requested_scope or project_id or workspace_id or workspace_path or workflow_id:
             resolved_scope, resolved_project = self._resolve_explicit_scope(
                 requested_scope=explicit_requested_scope,
                 project_id=project_id,
@@ -471,7 +499,7 @@ class ScopeResolutionService:
         if project_id:
             return _scope_for_project(project_id) or "global", self.project_registry.get_project(project_id)
 
-        if workspace_id:
+        if workspace_id or workspace_path:
             workspace_project = self.project_registry.find_project_for_workspace(
                 workspace_id=workspace_id,
                 workspace_path=workspace_path,

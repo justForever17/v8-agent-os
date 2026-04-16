@@ -36,6 +36,31 @@ function isImageFile(file: UploadedWorkspaceFile) {
     return type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(name);
 }
 
+function isVideoFile(file: UploadedWorkspaceFile) {
+    const type = String(file.type || "").toLowerCase();
+    const name = String(file.name || file.url || file.publicUrl || "").toLowerCase();
+    return type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(name);
+}
+
+function resolvePreviewUri(adminBaseUrl: string, file: UploadedWorkspaceFile) {
+    const candidate = String(
+        file.previewUri
+        || file.localUri
+        || file.url
+        || file.publicUrl
+        || file.path
+        || "",
+    ).trim();
+    if (!candidate) {
+        return "";
+    }
+    return candidate.startsWith("file:")
+        || candidate.startsWith("content:")
+        || candidate.startsWith("data:")
+        ? candidate
+        : normalizeRenderableWorkspaceUrl(adminBaseUrl, candidate);
+}
+
 function ComposerActionButton({
     mode,
     disabled,
@@ -133,17 +158,20 @@ function ComposerActionButton({
 }
 
 export const Composer = memo(function Composer({
-    value,
-    onChange,
+    bodyValue,
+    onChangeBody,
+    activeQueryMode,
+    activeQueryText,
+    onChangeQueryText,
+    onBodyBackspace,
+    onQueryBackspace,
     onSend,
     busy = false,
     isRunning = false,
     canStop = false,
     onStop,
     selectedCommand,
-    onClearCommand,
     selectedSkills,
-    onRemoveSkill,
     taskPlanningMode,
     onToggleTaskPlanningMode,
     uploadedFiles,
@@ -155,17 +183,20 @@ export const Composer = memo(function Composer({
     recording = false,
     transcribing = false,
 }: {
-    value: string;
-    onChange: (next: string) => void;
+    bodyValue: string;
+    onChangeBody: (next: string) => void;
+    activeQueryMode: "command" | "skill" | null;
+    activeQueryText: string;
+    onChangeQueryText: (next: string) => void;
+    onBodyBackspace?: () => void;
+    onQueryBackspace?: () => void;
     onSend: () => void;
     busy?: boolean;
     isRunning?: boolean;
     canStop?: boolean;
     onStop?: () => void;
     selectedCommand: CommandPresetSummary | null;
-    onClearCommand: () => void;
     selectedSkills: SkillReferenceSummary[];
-    onRemoveSkill: (skill: SkillReferenceSummary) => void;
     taskPlanningMode: boolean;
     onToggleTaskPlanningMode: () => void;
     uploadedFiles: UploadedWorkspaceFile[];
@@ -179,13 +210,13 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
-    const inputRef = useRef<TextInput | null>(null);
-    void onClearCommand;
-    void onRemoveSkill;
-    const hasPayload = Boolean(value.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0);
+    const bodyInputRef = useRef<TextInput | null>(null);
+    const queryInputRef = useRef<TextInput | null>(null);
+    const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
     const canSend = hasPayload && !busy && !isRunning;
     const canAct = stopAvailable || canSend;
+    const hasComposerTokens = Boolean(selectedCommand || selectedSkills.length > 0 || activeQueryMode);
     const actionMode: "send" | "stop" | "busy" = stopAvailable
         ? "stop"
         : (busy || isRunning)
@@ -208,6 +239,15 @@ export const Composer = memo(function Composer({
             WebkitAppearance: "none",
         }
         : null;
+
+    useEffect(() => {
+        const targetRef = activeQueryMode ? queryInputRef : bodyInputRef;
+        const timer = setTimeout(() => {
+            targetRef.current?.focus();
+        }, 16);
+        return () => clearTimeout(timer);
+    }, [activeQueryMode]);
+
     const handlePrimaryAction = () => {
         if (stopAvailable && onStop) {
             onStop();
@@ -240,16 +280,104 @@ export const Composer = memo(function Composer({
                             },
                         ]}
                     >
+                        {hasComposerTokens ? (
+                            <ScrollView
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                keyboardShouldPersistTaps="always"
+                                overScrollMode="never"
+                                contentContainerStyle={styles.tokenRow}
+                                style={styles.tokenRowScroll}
+                            >
+                                {selectedCommand ? (
+                                    <View
+                                        style={[
+                                            styles.tokenChip,
+                                            {
+                                                backgroundColor: themeMode === "dark" ? "rgba(167,139,250,0.18)" : "rgba(139,92,246,0.12)",
+                                                borderColor: themeMode === "dark" ? "rgba(167,139,250,0.28)" : "rgba(139,92,246,0.22)",
+                                            },
+                                        ]}
+                                    >
+                                        <MaterialCommunityIcons name="slash-forward" size={12} color={colors.primary} />
+                                        <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                            {selectedCommand.name}
+                                        </Text>
+                                    </View>
+                                ) : null}
+                                {selectedSkills.map((skill) => (
+                                    <View
+                                        key={`${skill.name}:${skill.path || ""}`}
+                                        style={[
+                                            styles.tokenChip,
+                                            {
+                                                backgroundColor: themeMode === "dark" ? "rgba(251,191,36,0.16)" : "rgba(251,191,36,0.14)",
+                                                borderColor: themeMode === "dark" ? "rgba(251,191,36,0.24)" : "rgba(251,191,36,0.22)",
+                                            },
+                                        ]}
+                                    >
+                                        <MaterialCommunityIcons name="at" size={12} color={colors.warning} />
+                                        <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                            {skill.name}
+                                        </Text>
+                                    </View>
+                                ))}
+                                {activeQueryMode ? (
+                                    <View
+                                        style={[
+                                            styles.queryChip,
+                                            {
+                                                backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.78)",
+                                                borderColor: `${colors.primary}26`,
+                                            },
+                                        ]}
+                                    >
+                                        <Text style={[styles.queryPrefix, { color: colors.primary }]}>
+                                            {activeQueryMode === "command" ? "/" : "@"}
+                                        </Text>
+                                        <TextInput
+                                            ref={queryInputRef}
+                                            value={activeQueryText}
+                                            onChangeText={onChangeQueryText}
+                                            onFocus={() => setIsFocused(true)}
+                                            onBlur={() => setIsFocused(false)}
+                                            onKeyPress={(event) => {
+                                                if (event.nativeEvent.key === "Backspace" && !activeQueryText) {
+                                                    onQueryBackspace?.();
+                                                }
+                                            }}
+                                            placeholder={activeQueryMode === "command"
+                                                ? t("搜索命令", "Search command")
+                                                : t("搜索 Skill", "Search skill")}
+                                            placeholderTextColor={colors.textSoft}
+                                            autoCorrect={false}
+                                            spellCheck={false}
+                                            autoComplete="off"
+                                            importantForAutofill="no"
+                                            selectionColor={colors.primary}
+                                            cursorColor={colors.accent}
+                                            returnKeyType="done"
+                                            style={[styles.queryInput, { color: colors.text }, inputWebStyle]}
+                                        />
+                                    </View>
+                                ) : null}
+                            </ScrollView>
+                        ) : null}
                         <TextInput
-                            ref={inputRef}
-                            value={value}
-                            onChangeText={onChange}
+                            ref={bodyInputRef}
+                            value={bodyValue}
+                            onChangeText={onChangeBody}
                             onFocus={() => setIsFocused(true)}
                             onBlur={() => setIsFocused(false)}
-                            placeholder={t("给 智能主管 发送消息...", "Message Supervisor...")}
+                            onKeyPress={(event) => {
+                                if (event.nativeEvent.key === "Backspace" && !bodyValue) {
+                                    onBodyBackspace?.();
+                                }
+                            }}
+                            placeholder={hasComposerTokens ? "" : t("给 智能主管 发送消息...", "Message Supervisor...")}
                             placeholderTextColor={colors.textSoft}
                             multiline
-                            editable
+                            editable={!activeQueryMode}
                             scrollEnabled
                             showSoftInputOnFocus
                             blurOnSubmit={false}
@@ -267,7 +395,12 @@ export const Composer = memo(function Composer({
                             disableFullscreenUI
                             returnKeyType="default"
                             textAlignVertical="top"
-                            style={[styles.input, { color: colors.text }, inputWebStyle]}
+                            style={[
+                                styles.input,
+                                hasComposerTokens ? styles.inputWithTokens : null,
+                                { color: colors.text },
+                                inputWebStyle,
+                            ]}
                         />
                     </View>
 
@@ -328,12 +461,13 @@ export const Composer = memo(function Composer({
                                     style={styles.filePreviewScroll}
                                 >
                                     {uploadedFiles.map((file) => {
-                                        const rawUrl = file.url || file.publicUrl || file.path || "";
-                                        const previewUrl = rawUrl ? normalizeRenderableWorkspaceUrl(adminBaseUrl, rawUrl) : "";
+                                        const previewUrl = resolvePreviewUri(adminBaseUrl, file);
                                         const image = isImageFile(file) && previewUrl;
+                                        const video = isVideoFile(file) && previewUrl;
+                                        const previewKey = file.localId || file.id || previewUrl || file.name;
                                         return (
                                             <Pressable
-                                                key={file.localId || file.id || rawUrl || file.name}
+                                                key={previewKey}
                                                 accessibilityRole="button"
                                                 accessibilityLabel={t("移除附件", "Remove attachment")}
                                                 hitSlop={6}
@@ -349,6 +483,17 @@ export const Composer = memo(function Composer({
                                             >
                                                 {image ? (
                                                     <Image source={{ uri: previewUrl }} style={styles.filePreviewImage} />
+                                                ) : video ? (
+                                                    <View style={styles.filePreviewVideo}>
+                                                        <Image source={{ uri: previewUrl }} style={styles.filePreviewImage} />
+                                                        {file.durationLabel ? (
+                                                            <View style={styles.filePreviewDurationBadge}>
+                                                                <Text style={styles.filePreviewDurationText}>
+                                                                    {file.durationLabel}
+                                                                </Text>
+                                                            </View>
+                                                        ) : null}
+                                                    </View>
                                                 ) : (
                                                     <View style={[styles.filePreviewFallback, { backgroundColor: colors.surfaceStrong }]}>
                                                         <Text style={[styles.filePreviewExt, { color: colors.textMuted }]} numberOfLines={1}>
@@ -402,7 +547,9 @@ const styles = StyleSheet.create({
         overflow: "visible",
         justifyContent: "flex-start",
         width: "100%",
-        padding: 0,
+        paddingHorizontal: 10,
+        paddingTop: 10,
+        paddingBottom: 6,
     },
     input: {
         minHeight: 82,
@@ -417,14 +564,67 @@ const styles = StyleSheet.create({
         backgroundColor: "transparent",
         borderWidth: 0,
         includeFontPadding: false,
-        paddingTop: 12,
+        paddingTop: 10,
         paddingBottom: 12,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
+        paddingHorizontal: 4,
+        paddingVertical: 0,
         margin: 0,
         borderRadius: 0,
         borderBottomWidth: 0,
         borderBottomColor: "transparent",
+    },
+    inputWithTokens: {
+        minHeight: 54,
+        paddingTop: 6,
+    },
+    tokenRowScroll: {
+        maxWidth: "100%",
+        flexGrow: 0,
+    },
+    tokenRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingBottom: 2,
+        paddingRight: 8,
+    },
+    tokenChip: {
+        minHeight: 28,
+        maxWidth: 148,
+        paddingHorizontal: 10,
+        borderRadius: 14,
+        borderWidth: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+    tokenText: {
+        fontSize: 13,
+        fontWeight: "700",
+    },
+    queryChip: {
+        minHeight: 28,
+        minWidth: 96,
+        maxWidth: 168,
+        paddingHorizontal: 10,
+        borderRadius: 14,
+        borderWidth: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+    queryPrefix: {
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    queryInput: {
+        minWidth: 52,
+        maxWidth: 132,
+        paddingVertical: 0,
+        paddingHorizontal: 0,
+        fontSize: 13,
+        lineHeight: 18,
+        includeFontPadding: false,
     },
     bottomControls: {
         flexDirection: "row",
@@ -462,6 +662,7 @@ const styles = StyleSheet.create({
         maxWidth: 132,
     },
     filePreviewRow: {
+        flexDirection: "row",
         alignItems: "center",
         gap: 4,
         paddingHorizontal: 2,
@@ -479,6 +680,10 @@ const styles = StyleSheet.create({
         width: "100%",
         height: "100%",
     },
+    filePreviewVideo: {
+        width: "100%",
+        height: "100%",
+    },
     filePreviewFallback: {
         width: "100%",
         height: "100%",
@@ -489,6 +694,23 @@ const styles = StyleSheet.create({
     filePreviewExt: {
         fontSize: 8,
         fontWeight: "900",
+        letterSpacing: 0.2,
+    },
+    filePreviewDurationBadge: {
+        position: "absolute",
+        right: 2,
+        bottom: 2,
+        paddingHorizontal: 4,
+        minHeight: 12,
+        borderRadius: 6,
+        backgroundColor: "rgba(15,23,42,0.78)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    filePreviewDurationText: {
+        color: "#FFFFFF",
+        fontSize: 7,
+        fontWeight: "800",
         letterSpacing: 0.2,
     },
     sendWrap: {

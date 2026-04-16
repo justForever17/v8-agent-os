@@ -100,7 +100,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                     ]
                     : styles.inlineOverlay,
             ]}
-            pointerEvents={position === "absolute" ? "box-none" : "auto"}
+            pointerEvents="auto"
         >
             <View
                 style={[
@@ -111,6 +111,8 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                         shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
                     },
                 ]}
+                onStartShouldSetResponderCapture={() => true}
+                onMoveShouldSetResponderCapture={() => true}
             >
                 <Text style={[styles.hint, { color: colors.textMuted }]}>
                     {isCommand
@@ -126,7 +128,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                         scrollEnabled
                         nestedScrollEnabled
                         persistentScrollbar
-                        keyboardShouldPersistTaps="handled"
+                        keyboardShouldPersistTaps="always"
                         keyboardDismissMode="none"
                         showsVerticalScrollIndicator
                         overScrollMode="never"

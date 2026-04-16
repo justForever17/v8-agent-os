@@ -28,6 +28,8 @@ import {
     useAudioRecorder,
     useAudioRecorderState,
 } from "expo-audio";
+import { createVideoPlayer, type SourceLoadEventPayload, type VideoPlayer } from "expo-video";
+import { getThumbnailAsync } from "expo-video-thumbnails";
 
 import { ChatWindow } from "@/src/components/chat/ChatWindow";
 import { Composer } from "@/src/components/chat/Composer";
@@ -242,71 +244,101 @@ function buildUserMessage(
     };
 }
 
-function controlTokenForCommand(command: CommandPresetSummary | null | undefined) {
-    const name = String(command?.name || "").trim();
-    return name ? `/${name}` : "";
-}
-
-function controlTokenForSkill(skill: SkillReferenceSummary | null | undefined) {
-    const name = String(skill?.name || "").trim();
-    return name ? `@${name}` : "";
-}
-
-function getLeadingControlTokens(value: string) {
-    const trimmed = value.trimStart();
-    if (!trimmed) {
-        return new Set<string>();
+function getUploadedFilePreviewKind(name?: string, mimeType?: string): UploadedWorkspaceFile["previewKind"] {
+    const filename = String(name || "").toLowerCase();
+    const type = String(mimeType || "").toLowerCase();
+    if (type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(filename)) {
+        return "image";
     }
-    const tokens = new Set<string>();
-    for (const segment of trimmed.split(/\s+/)) {
-        if (!segment.startsWith("/") && !segment.startsWith("@")) {
-            break;
-        }
-        tokens.add(segment);
+    if (type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(filename)) {
+        return "video";
     }
-    return tokens;
+    return "file";
 }
 
-function stripSelectedControlTokens(value: string, command: CommandPresetSummary | null, skills: SkillReferenceSummary[]) {
-    const selectedTokens = new Set([
-        controlTokenForCommand(command),
-        ...skills.map(controlTokenForSkill),
-    ].filter(Boolean));
-    let rest = value.trimStart();
-    let changed = true;
-    while (changed && rest) {
-        changed = false;
-        for (const token of selectedTokens) {
-            if (rest === token || rest.startsWith(`${token} `) || rest.startsWith(`${token}\n`) || rest.startsWith(`${token}\t`)) {
-                rest = rest.slice(token.length).trimStart();
-                changed = true;
-                break;
+function formatVideoDurationLabel(durationSeconds: number) {
+    const safe = Math.max(0, Math.round(durationSeconds));
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    const seconds = safe % 60;
+    if (hours > 0) {
+        return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+    }
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+async function readLocalVideoDurationSeconds(uri: string) {
+    if (!uri || Platform.OS === "web") {
+        return undefined;
+    }
+    const player: VideoPlayer = createVideoPlayer(uri);
+    try {
+        return await new Promise<number | undefined>((resolve) => {
+            let settled = false;
+            const settle = (duration?: number) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                sourceLoadSub.remove();
+                statusSub.remove();
+                clearTimeout(timeoutId);
+                resolve(typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? duration : undefined);
+            };
+
+            const sourceLoadSub = player.addListener("sourceLoad", (payload: SourceLoadEventPayload) => {
+                settle(payload.duration);
+            });
+            const statusSub = player.addListener("statusChange", () => {
+                if (player.duration > 0) {
+                    settle(player.duration);
+                }
+            });
+            const timeoutId = setTimeout(() => settle(player.duration), 2200);
+
+            if (player.duration > 0) {
+                settle(player.duration);
             }
-        }
+        });
+    } catch {
+        return undefined;
+    } finally {
+        player.release();
     }
-    return rest;
 }
 
-function removeCommandPickerQuery(value: string) {
-    return value.trimStart().startsWith("/") ? "" : value;
-}
+async function buildLocalUploadedFileDraft(
+    asset: DocumentPicker.DocumentPickerAsset,
+    uploaded: UploadedWorkspaceFile,
+    localId: string,
+): Promise<UploadedWorkspaceFile> {
+    const previewKind = getUploadedFilePreviewKind(asset.name, asset.mimeType || uploaded.type);
+    const draft: UploadedWorkspaceFile = {
+        ...uploaded,
+        localId,
+        localUri: asset.uri,
+        previewKind,
+    };
 
-function removeSkillPickerQuery(value: string) {
-    return value.replace(/(?:^|\s)@[^\s@]*$/, "").trimStart();
-}
-
-function composeControlTokenInput(
-    body: string,
-    command: CommandPresetSummary | null,
-    skills: SkillReferenceSummary[],
-) {
-    const tokens = [
-        controlTokenForCommand(command),
-        ...skills.map(controlTokenForSkill),
-    ].filter(Boolean);
-    const trimmedBody = stripSelectedControlTokens(body, command, skills).trimStart();
-    const tokenPrefix = tokens.join(" ");
-    return [tokenPrefix, trimmedBody].filter(Boolean).join(" ");
+    if (previewKind === "image") {
+        draft.previewUri = asset.uri;
+        return draft;
+    }
+    if (previewKind === "video") {
+        draft.localUri = asset.uri;
+        const [thumbnailResult, durationSeconds] = await Promise.allSettled([
+            getThumbnailAsync(asset.uri, { time: 0, quality: 0.72 }),
+            readLocalVideoDurationSeconds(asset.uri),
+        ]);
+        if (thumbnailResult.status === "fulfilled" && thumbnailResult.value?.uri) {
+            draft.previewUri = thumbnailResult.value.uri;
+        }
+        if (durationSeconds.status === "fulfilled" && durationSeconds.value) {
+            draft.durationLabel = formatVideoDurationLabel(durationSeconds.value);
+        }
+        return draft;
+    }
+    return draft;
 }
 
 function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): ChatMessage | null {
@@ -414,11 +446,6 @@ function buildAssistantPlaceholder(runId?: string): ChatMessage {
         agentAvatar: "/brand-mark.png",
         agentRoleLabel: "主理人",
     }, runId, "placeholder");
-}
-
-function extractSkillQuery(input: string) {
-    const match = input.match(/(?:^|\s)@([^\s@]*)$/);
-    return match ? match[1] : "";
 }
 
 function mergeArtifacts(base: ChatArtifact[] = [], incoming: ChatArtifact[] = []) {
@@ -1450,6 +1477,8 @@ export default function ChatScreen() {
     const [uploadedFiles, setUploadedFiles] = useState<UploadedWorkspaceFile[]>([]);
     const [selectedCommand, setSelectedCommand] = useState<CommandPresetSummary | null>(null);
     const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
+    const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
+    const [activeQueryText, setActiveQueryText] = useState("");
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
     const [bottomLayerHeight, setBottomLayerHeight] = useState(132);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
@@ -1468,44 +1497,30 @@ export default function ChatScreen() {
     const [desktopPreviewWebReady, setDesktopPreviewWebReady] = useState(false);
     const [desktopLiveStatus, setDesktopLiveStatus] = useState<DesktopLiveStatus | null>(null);
 
-    const slashQuery = useMemo(() => {
-        const trimmed = input.trimStart();
-        return !selectedCommand && trimmed.startsWith("/") ? trimmed.slice(1).trim().toLowerCase() : "";
-    }, [input, selectedCommand]);
-    const skillQuery = useMemo(() => extractSkillQuery(input).toLowerCase(), [input]);
-    const commandPickerOpen = !selectedCommand && input.trimStart().startsWith("/");
-    const skillPickerOpen = /(?:^|\s)@([^\s@]*)$/.test(input);
+    const queryTerm = activeQueryText.trim().toLowerCase();
+    const commandPickerOpen = activeQueryMode === "command" && !selectedCommand;
+    const skillPickerOpen = activeQueryMode === "skill";
     const filteredCommands = useMemo(() => {
-        if (!slashQuery) {
+        if (!queryTerm) {
             return commands;
         }
         return commands.filter((item) =>
-            item.name.toLowerCase().includes(slashQuery)
-            || String(item.summary || "").toLowerCase().includes(slashQuery),
+            item.name.toLowerCase().includes(queryTerm)
+            || String(item.summary || "").toLowerCase().includes(queryTerm),
         );
-    }, [commands, slashQuery]);
+    }, [commands, queryTerm]);
     const filteredSkills = useMemo(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}:${skill.path || ""}`));
         const base = skills.filter((item) => !selectedKeys.has(`${item.name}:${item.path || ""}`));
-        if (!skillQuery) {
+        if (!queryTerm) {
             return base;
         }
         return base.filter((item) =>
-            item.name.toLowerCase().includes(skillQuery)
-            || String(item.description || "").toLowerCase().includes(skillQuery)
-            || String(item.path || "").toLowerCase().includes(skillQuery),
+            item.name.toLowerCase().includes(queryTerm)
+            || String(item.description || "").toLowerCase().includes(queryTerm)
+            || String(item.path || "").toLowerCase().includes(queryTerm),
         );
-    }, [selectedSkills, skillQuery, skills]);
-    useEffect(() => {
-        const leadingTokens = getLeadingControlTokens(input);
-        setSelectedCommand((current) => {
-            if (!current) {
-                return current;
-            }
-            return leadingTokens.has(controlTokenForCommand(current)) ? current : null;
-        });
-        setSelectedSkills((current) => current.filter((skill) => leadingTokens.has(controlTokenForSkill(skill))));
-    }, [input]);
+    }, [queryTerm, selectedSkills, skills]);
     const boundProject = useMemo(
         () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
         [projects, scopeBinding?.projectId],
@@ -3516,6 +3531,8 @@ export default function ChatScreen() {
         const canonicalSessionId = item.sessionId || item.id;
         setHistoryOpen(false);
         setInput("");
+        setActiveQueryMode(null);
+        setActiveQueryText("");
         setUploadedFiles([]);
         setSelectedCommand(null);
         setSelectedSkills([]);
@@ -3543,6 +3560,8 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
+        setActiveQueryMode(null);
+        setActiveQueryText("");
         clearActiveConversationViewState();
         setUploadedFiles([]);
         setSelectedCommand(null);
@@ -3565,6 +3584,8 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
+        setActiveQueryMode(null);
+        setActiveQueryText("");
         clearActiveConversationViewState();
         setUploadedFiles([]);
         setSelectedCommand(null);
@@ -3645,15 +3666,13 @@ export default function ChatScreen() {
 
             const uploaded: UploadedWorkspaceFile[] = [];
             for (const [index, asset] of result.assets.entries()) {
+                const localId = `upload:${Date.now()}:${index}:${asset.name || "file"}`;
                 const nextFile = await uploadAttachment(authorizedFetch, {
                     uri: asset.uri,
                     name: asset.name,
                     type: asset.mimeType || "application/octet-stream",
                 });
-                uploaded.push({
-                    ...nextFile,
-                    localId: nextFile.localId || `upload:${Date.now()}:${index}:${asset.name || "file"}`,
-                });
+                uploaded.push(await buildLocalUploadedFileDraft(asset, nextFile, nextFile.localId || localId));
             }
 
             setUploadedFiles((current) => mergeUploadedWorkspaceFiles(current, uploaded));
@@ -3709,6 +3728,54 @@ export default function ChatScreen() {
             setTranscribing(false);
         }
     }, [authorizedFetch, recorder, t]);
+
+    const handleBodyInputChange = useCallback((next: string) => {
+        const leading = next.trimStart();
+        if (!input.trim() && !activeQueryMode) {
+            if (!selectedCommand && leading.startsWith("/")) {
+                setActiveQueryMode("command");
+                setActiveQueryText(leading.slice(1));
+                setInput("");
+                return;
+            }
+            if (leading.startsWith("@")) {
+                const query = leading.slice(1);
+                if (!/\s/.test(query)) {
+                    setActiveQueryMode("skill");
+                    setActiveQueryText(query);
+                    setInput("");
+                    return;
+                }
+            }
+        }
+        setInput(next);
+    }, [activeQueryMode, input, selectedCommand]);
+
+    const handleQueryBackspace = useCallback(() => {
+        if (activeQueryText) {
+            return;
+        }
+        setActiveQueryMode(null);
+        setActiveQueryText("");
+    }, [activeQueryText]);
+
+    const handleComposerBackspace = useCallback(() => {
+        if (input.trim()) {
+            return;
+        }
+        setSelectedSkills((current) => {
+            if (current.length === 0) {
+                return current;
+            }
+            return current.slice(0, -1);
+        });
+        setSelectedCommand((current) => {
+            if (selectedSkills.length > 0) {
+                return current;
+            }
+            return current ? null : current;
+        });
+    }, [input, selectedSkills.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
         const voiceText = text.trim();
@@ -4054,7 +4121,7 @@ export default function ChatScreen() {
     ]);
 
     const handleSend = useCallback(async () => {
-        const text = stripSelectedControlTokens(input, selectedCommand, selectedSkills).trim();
+        const text = input.trim();
         if (!text && !selectedCommand && selectedSkills.length === 0 && uploadedFiles.length === 0) {
             return;
         }
@@ -4132,6 +4199,8 @@ export default function ChatScreen() {
                 status: "running",
             }));
             setInput("");
+            setActiveQueryMode(null);
+            setActiveQueryText("");
             setSelectedCommand(null);
             setSelectedSkills([]);
             setUploadedFiles([]);
@@ -4188,6 +4257,8 @@ export default function ChatScreen() {
             setSelectedCommand(null);
             setSelectedSkills([]);
             setUploadedFiles([]);
+            setActiveQueryMode(null);
+            setActiveQueryText("");
 
             const submittedRunId = String(
                 submitResult.runId
@@ -4270,11 +4341,11 @@ export default function ChatScreen() {
     const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const greetingEmptyState = !activeConversationId && projection.projectedMessages.length === 0
         ? {
-            icon: "hand-wave-outline" as const,
             title: getDayGreeting(locale),
-            subtitle: t("新对话会先绑定工作区，再创建会话。", "A new conversation binds a workspace before the session is created."),
+            subtitle: t("先选工作区，再开始一段新对话。", "Choose a workspace, then start a new conversation."),
             actionLabel: t("开始新对话", "Start a new conversation"),
             onAction: () => void handleNewConversation(),
+            variant: "greeting" as const,
         }
         : null;
     const legacyChatEmptyState = activeConversationId && legacyChatUnsupported && projection.projectedMessages.length === 0
@@ -4326,16 +4397,17 @@ export default function ChatScreen() {
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
         setSelectedCommand(command);
-        setInput((current) => composeControlTokenInput(removeCommandPickerQuery(current), command, selectedSkills));
+        setActiveQueryMode(null);
+        setActiveQueryText("");
     };
 
     const handleSelectSkillFromPicker = (skill: SkillReferenceSummary) => {
         setSelectedSkills((current) => {
             const exists = current.some((item) => item.name === skill.name && (item.path || "") === (skill.path || ""));
-            const nextSkills = exists ? current : [...current, skill];
-            setInput((inputValue) => composeControlTokenInput(removeSkillPickerQuery(inputValue), selectedCommand, nextSkills));
-            return nextSkills;
+            return exists ? current : [...current, skill];
         });
+        setActiveQueryMode(null);
+        setActiveQueryText("");
     };
 
     const overlayDockContent = hasOverlayLayer ? (
@@ -4399,19 +4471,20 @@ export default function ChatScreen() {
         >
             {activeConversationId ? (
                 <Composer
-                    value={input}
-                    onChange={setInput}
+                    bodyValue={input}
+                    onChangeBody={handleBodyInputChange}
+                    activeQueryMode={activeQueryMode}
+                    activeQueryText={activeQueryText}
+                    onChangeQueryText={setActiveQueryText}
+                    onBodyBackspace={handleComposerBackspace}
+                    onQueryBackspace={handleQueryBackspace}
                     onSend={() => void handleSend()}
                     busy={sending}
                     isRunning={composerRunActive}
                     canStop={composerCanStop}
                     onStop={() => void handleRunCommand("interrupt")}
                     selectedCommand={selectedCommand}
-                    onClearCommand={() => setSelectedCommand(null)}
                     selectedSkills={selectedSkills}
-                    onRemoveSkill={(skill) => setSelectedSkills((current) =>
-                        current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
-                    )}
                     taskPlanningMode={taskPlanningMode}
                     onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
                     uploadedFiles={uploadedFiles}

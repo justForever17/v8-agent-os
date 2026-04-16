@@ -227,6 +227,10 @@ export type UploadedWorkspaceFile = {
     type?: string;
     size?: number;
     createdAt?: string;
+    localUri?: string;
+    previewUri?: string;
+    previewKind?: "image" | "video" | "file";
+    durationLabel?: string;
 };
 
 export type ChatMessage = {

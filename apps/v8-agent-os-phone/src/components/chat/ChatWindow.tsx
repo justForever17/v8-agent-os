@@ -48,6 +48,7 @@ type ChatWindowProps = {
         subtitle?: string;
         actionLabel?: string;
         onAction?: () => void;
+        variant?: "default" | "greeting";
     } | null;
 };
 
@@ -126,7 +127,9 @@ export const ChatWindow = memo(function ChatWindow({
         icon: "robot-happy-outline" as const,
         title: t("没有消息历史", "No messages yet"),
         subtitle: t("打个招呼吧", "Start the conversation"),
+        variant: "default" as const,
     };
+    const greetingEmptyState = resolvedEmptyState.variant === "greeting";
     const scrollToBottomOffset = Math.max(92, bottomInset - 40);
     const hudBottomOffset = Math.max(56, bottomInset - 96);
 
@@ -170,16 +173,30 @@ export const ChatWindow = memo(function ChatWindow({
                 >
                     {visibleMessages.length === 0 ? (
                         <View style={styles.emptyState}>
-                            <MaterialCommunityIcons
-                                name={resolvedEmptyState.icon || "robot-happy-outline"}
-                                size={42}
-                                color={colors.textSoft}
-                            />
-                            <Text style={[styles.emptyTitle, { color: colors.textMuted }]}>
+                            {resolvedEmptyState.icon ? (
+                                <MaterialCommunityIcons
+                                    name={resolvedEmptyState.icon}
+                                    size={42}
+                                    color={colors.textSoft}
+                                />
+                            ) : null}
+                            <Text
+                                style={[
+                                    styles.emptyTitle,
+                                    greetingEmptyState ? styles.emptyTitleGreeting : null,
+                                    { color: greetingEmptyState ? colors.text : colors.textMuted },
+                                ]}
+                            >
                                 {resolvedEmptyState.title}
                             </Text>
                             {resolvedEmptyState.subtitle ? (
-                                <Text style={[styles.emptySubtitle, { color: colors.textSoft }]}>
+                                <Text
+                                    style={[
+                                        styles.emptySubtitle,
+                                        greetingEmptyState ? styles.emptySubtitleGreeting : null,
+                                        { color: greetingEmptyState ? colors.textMuted : colors.textSoft },
+                                    ]}
+                                >
                                     {resolvedEmptyState.subtitle}
                                 </Text>
                             ) : null}
@@ -349,9 +366,20 @@ const styles = StyleSheet.create({
         fontWeight: "800",
         textAlign: "center",
     },
+    emptyTitleGreeting: {
+        fontSize: 40,
+        lineHeight: 48,
+        letterSpacing: -1.1,
+        fontWeight: "900",
+    },
     emptySubtitle: {
         fontSize: 12,
         textAlign: "center",
+    },
+    emptySubtitleGreeting: {
+        fontSize: 13,
+        lineHeight: 20,
+        maxWidth: 240,
     },
     emptyAction: {
         marginTop: 6,

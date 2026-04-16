@@ -46,6 +46,8 @@ type ChatWindowProps = {
         icon?: keyof typeof MaterialCommunityIcons.glyphMap;
         title: string;
         subtitle?: string;
+        actionLabel?: string;
+        onAction?: () => void;
     } | null;
 };
 
@@ -180,6 +182,14 @@ export const ChatWindow = memo(function ChatWindow({
                                 <Text style={[styles.emptySubtitle, { color: colors.textSoft }]}>
                                     {resolvedEmptyState.subtitle}
                                 </Text>
+                            ) : null}
+                            {resolvedEmptyState.actionLabel && resolvedEmptyState.onAction ? (
+                                <Pressable
+                                    style={[styles.emptyAction, { backgroundColor: colors.primary }]}
+                                    onPress={resolvedEmptyState.onAction}
+                                >
+                                    <Text style={styles.emptyActionText}>{resolvedEmptyState.actionLabel}</Text>
+                                </Pressable>
                             ) : null}
                         </View>
                     ) : (
@@ -342,6 +352,19 @@ const styles = StyleSheet.create({
     emptySubtitle: {
         fontSize: 12,
         textAlign: "center",
+    },
+    emptyAction: {
+        marginTop: 6,
+        minHeight: 42,
+        borderRadius: radii.pill,
+        paddingHorizontal: 18,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    emptyActionText: {
+        color: "#FFFFFF",
+        fontSize: 13,
+        fontWeight: "800",
     },
     bottomFade: {
         position: "absolute",

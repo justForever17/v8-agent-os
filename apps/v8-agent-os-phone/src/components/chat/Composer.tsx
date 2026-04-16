@@ -1,8 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
     Platform,
+    Image,
     Pressable,
+    ScrollView,
     StyleSheet,
+    Text,
     TextInput,
     View,
 } from "react-native";
@@ -19,7 +22,19 @@ import Animated, {
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
+import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import type { CommandPresetSummary, SkillReferenceSummary, UploadedWorkspaceFile } from "@/src/types/admin";
+
+function fileExtension(name?: string) {
+    const ext = String(name || "").split(".").pop()?.trim();
+    return ext && ext !== name ? ext.slice(0, 4).toUpperCase() : "FILE";
+}
+
+function isImageFile(file: UploadedWorkspaceFile) {
+    const type = String(file.type || "").toLowerCase();
+    const name = String(file.name || file.url || file.publicUrl || "").toLowerCase();
+    return type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(name);
+}
 
 function ComposerActionButton({
     mode,
@@ -133,6 +148,7 @@ export const Composer = memo(function Composer({
     onToggleTaskPlanningMode,
     uploadedFiles,
     onRemoveUploadedFile,
+    adminBaseUrl,
     onPickAttachment,
     onToggleRecording,
     attachmentBusy = false,
@@ -154,6 +170,7 @@ export const Composer = memo(function Composer({
     onToggleTaskPlanningMode: () => void;
     uploadedFiles: UploadedWorkspaceFile[];
     onRemoveUploadedFile: (file: UploadedWorkspaceFile) => void;
+    adminBaseUrl: string;
     onPickAttachment: () => void;
     onToggleRecording: () => void;
     attachmentBusy?: boolean;
@@ -165,7 +182,6 @@ export const Composer = memo(function Composer({
     const inputRef = useRef<TextInput | null>(null);
     void onClearCommand;
     void onRemoveSkill;
-    void onRemoveUploadedFile;
     const hasPayload = Boolean(value.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
     const canSend = hasPayload && !busy && !isRunning;
@@ -302,6 +318,49 @@ export const Composer = memo(function Composer({
                                         color={recording ? "#FFFFFF" : colors.textMuted}
                                     />
                                 </Pressable>
+                            {uploadedFiles.length > 0 ? (
+                                <ScrollView
+                                    horizontal
+                                    showsHorizontalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="always"
+                                    overScrollMode="never"
+                                    contentContainerStyle={styles.filePreviewRow}
+                                    style={styles.filePreviewScroll}
+                                >
+                                    {uploadedFiles.map((file) => {
+                                        const rawUrl = file.url || file.publicUrl || file.path || "";
+                                        const previewUrl = rawUrl ? normalizeRenderableWorkspaceUrl(adminBaseUrl, rawUrl) : "";
+                                        const image = isImageFile(file) && previewUrl;
+                                        return (
+                                            <Pressable
+                                                key={file.localId || file.id || rawUrl || file.name}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={t("移除附件", "Remove attachment")}
+                                                hitSlop={6}
+                                                style={({ pressed }) => [
+                                                    styles.filePreviewButton,
+                                                    {
+                                                        borderColor: colors.border,
+                                                        backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.84)",
+                                                        opacity: pressed ? 0.72 : 1,
+                                                    },
+                                                ]}
+                                                onPress={() => onRemoveUploadedFile(file)}
+                                            >
+                                                {image ? (
+                                                    <Image source={{ uri: previewUrl }} style={styles.filePreviewImage} />
+                                                ) : (
+                                                    <View style={[styles.filePreviewFallback, { backgroundColor: colors.surfaceStrong }]}>
+                                                        <Text style={[styles.filePreviewExt, { color: colors.textMuted }]} numberOfLines={1}>
+                                                            {fileExtension(file.name)}
+                                                        </Text>
+                                                    </View>
+                                                )}
+                                            </Pressable>
+                                        );
+                                    })}
+                                </ScrollView>
+                            ) : null}
                         </View>
                         <ComposerActionButton
                             mode={actionMode}
@@ -379,6 +438,7 @@ const styles = StyleSheet.create({
         gap: 4,
         flex: 1,
         flexWrap: "nowrap",
+        minWidth: 0,
     },
     taskModeButton: {
         width: 32,
@@ -395,6 +455,41 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         alignItems: "center",
         justifyContent: "center",
+    },
+    filePreviewScroll: {
+        flexShrink: 1,
+        minWidth: 0,
+        maxWidth: 132,
+    },
+    filePreviewRow: {
+        alignItems: "center",
+        gap: 4,
+        paddingHorizontal: 2,
+    },
+    filePreviewButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 12,
+        borderWidth: 1,
+        overflow: "hidden",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    filePreviewImage: {
+        width: "100%",
+        height: "100%",
+    },
+    filePreviewFallback: {
+        width: "100%",
+        height: "100%",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 2,
+    },
+    filePreviewExt: {
+        fontSize: 8,
+        fontWeight: "900",
+        letterSpacing: 0.2,
     },
     sendWrap: {
         width: 48,

@@ -1,5 +1,5 @@
 import { Redirect, router, type Href } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
     Alert,
     ActivityIndicator,
@@ -18,6 +18,15 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
+import {
+    type AdminConnectionProfile,
+    readActiveAdminConnectionProfileId,
+    readAdminConnectionProfiles,
+    removeAdminConnectionProfile,
+    upsertAdminConnectionProfile,
+    writeActiveAdminConnectionProfileId,
+    writeAdminConnectionProfiles,
+} from "@/src/lib/admin-connection-profiles";
 import { getConnectionSummary, listProjects } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -33,10 +42,25 @@ export default function ConnectScreen() {
     const [summary, setSummary] = useState<ConnectionSummary | null>(null);
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
+    const [profiles, setProfiles] = useState<AdminConnectionProfile[]>([]);
+    const [activeProfileId, setActiveProfileId] = useState("");
 
     useEffect(() => {
         setDraftBaseUrl(adminBaseUrl);
     }, [adminBaseUrl]);
+
+    const refreshProfiles = useCallback(async () => {
+        const [nextProfiles, nextActiveId] = await Promise.all([
+            readAdminConnectionProfiles(),
+            readActiveAdminConnectionProfileId(),
+        ]);
+        setProfiles(nextProfiles);
+        setActiveProfileId(nextActiveId || "");
+    }, []);
+
+    useEffect(() => {
+        void refreshProfiles();
+    }, [refreshProfiles]);
 
     const actions: PhoneTopbarAction[] = [
         { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
@@ -60,6 +84,19 @@ export default function ConnectScreen() {
                 if (!cancelled) {
                     setSummary(nextSummary);
                     setProjects(nextProjects);
+                    const storedProfiles = await readAdminConnectionProfiles();
+                    const { profile, profiles: nextProfiles } = upsertAdminConnectionProfile(storedProfiles, {
+                        adminBaseUrl,
+                        summary: nextSummary,
+                    });
+                    await Promise.all([
+                        writeAdminConnectionProfiles(nextProfiles),
+                        writeActiveAdminConnectionProfileId(profile?.id || null),
+                    ]);
+                    if (!cancelled) {
+                        setProfiles(nextProfiles);
+                        setActiveProfileId(profile?.id || "");
+                    }
                 }
             } catch (error) {
                 if (!cancelled) {
@@ -75,7 +112,7 @@ export default function ConnectScreen() {
         return () => {
             cancelled = true;
         };
-    }, [authorizedFetch, status, t]);
+    }, [adminBaseUrl, authorizedFetch, status, t]);
 
     if (status === "booting") {
         return <LoadingScreen label={t("正在读取连接信息…", "Loading connection details...")} />;
@@ -97,7 +134,14 @@ export default function ConnectScreen() {
         }
         setBusy(true);
         try {
-            await setAdminBaseUrl(nextUrl);
+            const { profile, profiles: nextProfiles } = upsertAdminConnectionProfile(profiles, { adminBaseUrl: nextUrl });
+            await Promise.all([
+                writeAdminConnectionProfiles(nextProfiles),
+                writeActiveAdminConnectionProfileId(profile?.id || null),
+                setAdminBaseUrl(nextUrl),
+            ]);
+            setProfiles(nextProfiles);
+            setActiveProfileId(profile?.id || "");
             await signOut();
             router.replace("/login");
         } catch (error) {
@@ -105,6 +149,49 @@ export default function ConnectScreen() {
         } finally {
             setBusy(false);
         }
+    };
+
+    const reconnectProfile = async (profile: AdminConnectionProfile) => {
+        if (!profile.adminBaseUrl) {
+            return;
+        }
+        setDraftBaseUrl(profile.adminBaseUrl);
+        if (profile.adminBaseUrl === adminBaseUrl) {
+            Alert.alert(t("已经连接", "Already connected"), t("当前手机端已经连接到这个对象。", "Phone is already connected to this target."));
+            return;
+        }
+        setBusy(true);
+        try {
+            const { profile: updatedProfile, profiles: nextProfiles } = upsertAdminConnectionProfile(profiles, {
+                adminBaseUrl: profile.adminBaseUrl,
+                profileId: profile.id,
+                label: profile.label,
+            });
+            await Promise.all([
+                writeAdminConnectionProfiles(nextProfiles),
+                writeActiveAdminConnectionProfileId(updatedProfile?.id || profile.id),
+                setAdminBaseUrl(profile.adminBaseUrl),
+            ]);
+            setProfiles(nextProfiles);
+            setActiveProfileId(updatedProfile?.id || profile.id);
+            await signOut();
+            router.replace("/login");
+        } catch (error) {
+            Alert.alert(t("重连失败", "Reconnect failed"), error instanceof Error ? error.message : t("无法切换连接对象", "Unable to switch connection target"));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const deleteProfile = async (profile: AdminConnectionProfile) => {
+        const nextProfiles = removeAdminConnectionProfile(profiles, profile.id);
+        const nextActiveId = activeProfileId === profile.id ? "" : activeProfileId;
+        await Promise.all([
+            writeAdminConnectionProfiles(nextProfiles),
+            writeActiveAdminConnectionProfileId(nextActiveId || null),
+        ]);
+        setProfiles(nextProfiles);
+        setActiveProfileId(nextActiveId);
     };
 
     return (
@@ -179,6 +266,58 @@ export default function ConnectScreen() {
                         <Pressable style={[styles.primaryButton, busy && styles.disabled]} onPress={() => void saveAndReconnect()}>
                             <Text style={styles.primaryButtonText}>{busy ? t("切换中…", "Switching...") : t("保存并重新登录", "Save and sign in again")}</Text>
                         </Pressable>
+                    </GlassCard>
+
+                    <GlassCard>
+                        <View style={styles.sectionTitleRow}>
+                            <Text style={styles.sectionTitle}>{t("曾连接过", "Saved targets")}</Text>
+                            <Pressable style={styles.refreshProfilesButton} onPress={() => void refreshProfiles()}>
+                                <MaterialCommunityIcons name="refresh" size={15} color={colors.textSoft} />
+                            </Pressable>
+                        </View>
+                        {profiles.length === 0 ? (
+                            <Text style={styles.emptyProfilesText}>
+                                {t("保存并登录过的 Admin 会出现在这里。", "Admin targets you have signed into will appear here.")}
+                            </Text>
+                        ) : (
+                            <View style={styles.profileList}>
+                                {profiles.map((profile) => {
+                                    const active = profile.id === activeProfileId || profile.adminBaseUrl === adminBaseUrl;
+                                    return (
+                                        <View key={profile.id} style={[styles.profileCard, active && styles.profileCardActive]}>
+                                            <View style={styles.profileMain}>
+                                                <View style={styles.profileTitleRow}>
+                                                    <Text style={styles.profileTitle} numberOfLines={1}>
+                                                        {profile.label || profile.adminBaseUrl}
+                                                    </Text>
+                                                    {active ? (
+                                                        <View style={styles.currentBadge}>
+                                                            <Text style={styles.currentBadgeText}>{t("当前", "Current")}</Text>
+                                                        </View>
+                                                    ) : null}
+                                                </View>
+                                                <Text style={styles.profileUrl} numberOfLines={1}>{profile.adminBaseUrl}</Text>
+                                                <Text style={styles.profileMeta} numberOfLines={1}>
+                                                    {[
+                                                        profile.bridgeMode || "",
+                                                        profile.reachable === true ? t("已验证", "Reachable") : profile.reachable === false ? t("未连通", "Unreachable") : "",
+                                                        profile.lastUsedAt ? new Date(profile.lastUsedAt).toLocaleString() : "",
+                                                    ].filter(Boolean).join(" · ")}
+                                                </Text>
+                                            </View>
+                                            <View style={styles.profileActions}>
+                                                <Pressable style={styles.profileActionButton} onPress={() => void reconnectProfile(profile)} disabled={busy}>
+                                                    <Text style={styles.profileActionText}>{t("重连", "Reconnect")}</Text>
+                                                </Pressable>
+                                                <Pressable style={styles.profileDeleteButton} onPress={() => void deleteProfile(profile)} disabled={busy}>
+                                                    <MaterialCommunityIcons name="trash-can-outline" size={16} color={colors.textSoft} />
+                                                </Pressable>
+                                            </View>
+                                        </View>
+                                    );
+                                })}
+                            </View>
+                        )}
                     </GlassCard>
                 </ScrollView>
             </SafeAreaView>
@@ -310,6 +449,93 @@ const styles = StyleSheet.create({
         color: "#FFFFFF",
         fontWeight: "800",
         fontSize: 15,
+    },
+    refreshProfilesButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.58)",
+    },
+    emptyProfilesText: {
+        color: colors.textSoft,
+        fontSize: 13,
+        lineHeight: 19,
+    },
+    profileList: {
+        gap: spacing.sm,
+    },
+    profileCard: {
+        borderWidth: 1,
+        borderColor: "rgba(148,163,184,0.28)",
+        borderRadius: radii.lg,
+        padding: spacing.md,
+        backgroundColor: "rgba(255,255,255,0.66)",
+        gap: spacing.sm,
+    },
+    profileCardActive: {
+        borderColor: "rgba(124,58,237,0.34)",
+        backgroundColor: "rgba(124,58,237,0.06)",
+    },
+    profileMain: {
+        gap: 4,
+    },
+    profileTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    profileTitle: {
+        flex: 1,
+        color: colors.text,
+        fontSize: 14,
+        fontWeight: "800",
+    },
+    currentBadge: {
+        borderRadius: radii.pill,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        backgroundColor: "rgba(16,185,129,0.12)",
+    },
+    currentBadgeText: {
+        color: colors.success,
+        fontSize: 10,
+        fontWeight: "800",
+    },
+    profileUrl: {
+        color: colors.text,
+        fontSize: 12,
+    },
+    profileMeta: {
+        color: colors.textSoft,
+        fontSize: 11,
+    },
+    profileActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    profileActionButton: {
+        minHeight: 34,
+        borderRadius: radii.pill,
+        paddingHorizontal: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(124,58,237,0.10)",
+    },
+    profileActionText: {
+        color: colors.primaryDeep,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    profileDeleteButton: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(148,163,184,0.10)",
     },
     disabled: {
         opacity: 0.6,

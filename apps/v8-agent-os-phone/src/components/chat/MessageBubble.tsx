@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -24,6 +24,7 @@ import type { ChatMessage, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillRefer
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
+import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 
@@ -202,6 +203,8 @@ export const MessageBubble = memo(function MessageBubble({
     const isLandscape = width > height;
     const isUser = message.role === "user";
     const [copied, setCopied] = useState(false);
+    const [userMediaOpen, setUserMediaOpen] = useState(false);
+    const [userMediaIndex, setUserMediaIndex] = useState(0);
     const avatarUri = useMemo(
         () => resolveAdminAssetUrl(
             adminBaseUrl,
@@ -227,6 +230,14 @@ export const MessageBubble = memo(function MessageBubble({
     const attachmentImages = useMemo(
         () => (Array.isArray(message.images) ? message.images.map((item) => imageUrl(adminBaseUrl, item)).filter(Boolean) : []),
         [adminBaseUrl, message.images],
+    );
+    const userMediaItems = useMemo<MediaItem[]>(
+        () => attachmentImages.map((url, index) => ({
+            type: "image",
+            src: url,
+            name: `attachment-${index + 1}`,
+        })),
+        [attachmentImages],
     );
     const taskPlanningMode = Boolean(message.metadata?.taskPlanningMode);
     const renderMessageKey = String(message.renderKey || message.id || "").trim();
@@ -474,8 +485,14 @@ export const MessageBubble = memo(function MessageBubble({
 
                             {attachmentImages.length > 0 ? (
                                 <View style={styles.imageRow}>
-                                    {attachmentImages.map((url) => (
-                                        <Pressable key={url} onPress={() => void Linking.openURL(url)}>
+                                    {attachmentImages.map((url, index) => (
+                                        <Pressable
+                                            key={url}
+                                            onPress={() => {
+                                                setUserMediaIndex(index);
+                                                setUserMediaOpen(true);
+                                            }}
+                                        >
                                             <Image source={{ uri: url }} style={styles.inlineImage} />
                                         </Pressable>
                                     ))}
@@ -499,6 +516,12 @@ export const MessageBubble = memo(function MessageBubble({
                         </View>
 
                         <Text style={[styles.timeLabelUser, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp, locale) : ""}</Text>
+                        <MediaViewerLightbox
+                            items={userMediaItems}
+                            initialIndex={userMediaIndex}
+                            isOpen={userMediaOpen}
+                            onClose={() => setUserMediaOpen(false)}
+                        />
                     </View>
 
                     <View style={styles.userAvatarShell}>

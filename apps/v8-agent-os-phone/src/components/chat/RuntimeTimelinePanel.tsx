@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     FlatList,
     Modal,
@@ -54,6 +54,60 @@ function getKindIconName(kind: PhoneRuntimeStageActivity["kind"]): React.Compone
         default:
             return "pulse";
     }
+}
+
+function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
+    const { colors, t, locale } = useUiPrefs();
+    const [index, setIndex] = useState(0);
+
+    useEffect(() => {
+        setIndex(0);
+    }, [activities]);
+
+    useEffect(() => {
+        if (activities.length <= 1) {
+            return undefined;
+        }
+        const timer = setInterval(() => {
+            setIndex((current) => (current + 1) % activities.length);
+        }, 2600);
+        return () => clearInterval(timer);
+    }, [activities.length]);
+
+    if (activities.length === 0) {
+        return null;
+    }
+
+    const active = activities[Math.min(index, activities.length - 1)] || activities[0];
+    const tone = getKindTone(active.kind, colors);
+    const iconName = getKindIconName(active.kind);
+
+    return (
+        <View style={[styles.broadcastCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+            <View style={styles.broadcastHeader}>
+                <View style={styles.broadcastLive}>
+                    <View style={[styles.broadcastDot, { backgroundColor: tone.tint }]} />
+                    <Text style={[styles.broadcastLabel, { color: colors.textMuted }]}>BROADCAST</Text>
+                </View>
+                <Text style={[styles.broadcastCount, { color: colors.textSoft }]}>
+                    {index + 1}/{activities.length}
+                </Text>
+            </View>
+            <View style={styles.broadcastBody}>
+                <View style={[styles.broadcastIcon, { backgroundColor: colors.surface }]}>
+                    <MaterialCommunityIcons name={iconName} size={16} color={tone.tint} />
+                </View>
+                <View style={styles.broadcastTextWrap}>
+                    <Text style={[styles.broadcastTitle, { color: colors.text }]} numberOfLines={1}>
+                        {active.summary || t("运行轨迹正在更新", "Runtime activity is updating")}
+                    </Text>
+                    <Text style={[styles.broadcastSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
+                        {(active.actorLabel || tone.label)} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale)}
+                    </Text>
+                </View>
+            </View>
+        </View>
+    );
 }
 
 function ActivityFeedItem({
@@ -341,6 +395,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                     resetScrollTop();
                                 }
                             }}
+                            ListHeaderComponent={visibleActivities.length > 0 ? <BroadcastRail activities={visibleActivities} /> : undefined}
                             ListEmptyComponent={renderEmptyState}
                         />
                     </View>
@@ -544,6 +599,61 @@ const styles = StyleSheet.create({
     },
     feedGap: {
         height: 12,
+    },
+    broadcastCard: {
+        borderWidth: 1,
+        borderRadius: 22,
+        padding: 12,
+        marginBottom: 12,
+        gap: 10,
+    },
+    broadcastHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+    },
+    broadcastLive: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+    },
+    broadcastDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+    },
+    broadcastLabel: {
+        fontSize: 10,
+        fontWeight: "900",
+        letterSpacing: 1.6,
+    },
+    broadcastCount: {
+        fontSize: 10,
+        fontWeight: "800",
+    },
+    broadcastBody: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    broadcastIcon: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    broadcastTextWrap: {
+        flex: 1,
+        minWidth: 0,
+    },
+    broadcastTitle: {
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    broadcastSubtitle: {
+        marginTop: 2,
+        fontSize: 11,
     },
     feedCard: {
         borderWidth: 1,

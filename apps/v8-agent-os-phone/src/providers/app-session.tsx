@@ -8,6 +8,12 @@ import {
     streamSse,
     streamSseWithXmlHttpRequest,
 } from "@/src/lib/admin-client";
+import {
+    readAdminConnectionProfiles,
+    upsertAdminConnectionProfile,
+    writeActiveAdminConnectionProfileId,
+    writeAdminConnectionProfiles,
+} from "@/src/lib/admin-connection-profiles";
 import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import { signUp as registerPhoneUser } from "@/src/lib/phone-api";
 import type { PhoneUser, RegisterInput } from "@/src/types/admin";
@@ -96,11 +102,15 @@ async function readAuthPayload(response: Response) {
 const SessionContext = React.createContext<SessionContextValue | null>(null);
 
 async function persistSession(baseUrl: string, payload: MobileAuthPayload) {
+    const profiles = await readAdminConnectionProfiles();
+    const { profile, profiles: nextProfiles } = upsertAdminConnectionProfile(profiles, { adminBaseUrl: baseUrl });
     await Promise.all([
         setStoredValue("adminBaseUrl", baseUrl),
         setStoredValue("accessToken", payload.accessToken),
         setStoredValue("refreshToken", payload.refreshToken),
         setStoredValue("user", JSON.stringify(payload.user)),
+        writeAdminConnectionProfiles(nextProfiles),
+        writeActiveAdminConnectionProfileId(profile?.id || null),
     ]);
 }
 

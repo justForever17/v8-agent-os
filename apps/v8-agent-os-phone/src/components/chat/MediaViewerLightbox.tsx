@@ -1,8 +1,10 @@
 import { memo, useEffect, useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Image, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 
+import { saveResponseToCache } from "@/src/lib/file-transfer";
 import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -53,6 +55,44 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
         return null;
     }
 
+    const openMediaMenu = () => {
+        const url = resolvedSrc || current.src;
+        Alert.alert(
+            t("媒体操作", "Media actions"),
+            current.name || url,
+            [
+                {
+                    text: t("保存到缓存", "Save to cache"),
+                    onPress: () => {
+                        void (async () => {
+                            if (!url) {
+                                throw new Error(t("没有可保存的媒体地址", "No media URL is available to save."));
+                            }
+                            const response = await fetch(url);
+                            if (!response.ok) {
+                                throw new Error(`${response.status} ${response.statusText}`);
+                            }
+                            const saved = await saveResponseToCache(response, {
+                                prefix: "media",
+                                filename: current.name,
+                            });
+                            Alert.alert(t("已保存", "Saved"), saved.filename);
+                        })().catch((error) => {
+                            Alert.alert(t("保存失败", "Save failed"), error instanceof Error ? error.message : t("无法保存媒体", "Unable to save media"));
+                        });
+                    },
+                },
+                {
+                    text: t("复制链接", "Copy link"),
+                    onPress: () => {
+                        void Clipboard.setStringAsync(url || "");
+                    },
+                },
+                { text: t("取消", "Cancel"), style: "cancel" },
+            ],
+        );
+    };
+
     return (
         <Modal transparent visible animationType="fade" onRequestClose={onClose}>
             <View style={styles.overlay}>
@@ -62,12 +102,17 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                         {items.length > 1 ? `${clampedCurrentIndex + 1} / ${items.length}` : ""}
                         {current.name ? `  ${current.name}` : ""}
                     </Text>
-                    <Pressable style={styles.iconButton} onPress={onClose}>
-                        <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
-                    </Pressable>
+                    <View style={styles.topActions}>
+                        <Pressable style={styles.iconButton} onPress={openMediaMenu}>
+                            <MaterialCommunityIcons name="dots-vertical" size={22} color="#FFFFFF" />
+                        </Pressable>
+                        <Pressable style={styles.iconButton} onPress={onClose}>
+                            <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
+                        </Pressable>
+                    </View>
                 </View>
 
-                <View style={styles.contentWrap}>
+                <Pressable style={styles.contentWrap} onLongPress={openMediaMenu}>
                     {loading ? (
                         <View style={styles.blockedWrap}>
                             <ActivityIndicator size="small" color={colors.primary} />
@@ -122,7 +167,7 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                             </Text>
                         </View>
                     )}
-                </View>
+                </Pressable>
 
                 {items.length > 1 ? (
                     <>
@@ -191,6 +236,13 @@ const styles = StyleSheet.create({
         fontSize: 13,
         lineHeight: 18,
         fontWeight: "500",
+        flex: 1,
+        marginRight: spacing.sm,
+    },
+    topActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.sm,
     },
     iconButton: {
         width: 40,

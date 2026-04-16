@@ -130,6 +130,8 @@ import {
     shouldApplyRuntimeEventToMessage,
 } from "@v8/session-realtime";
 
+const REPLY_POP_SOUND = require("../../assets/audio/message-pop.mp3");
+
 type RuntimeSummary = {
     status: string;
     latestSeq: number;
@@ -238,6 +240,73 @@ function buildUserMessage(
         artifacts: [],
         metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
+}
+
+function controlTokenForCommand(command: CommandPresetSummary | null | undefined) {
+    const name = String(command?.name || "").trim();
+    return name ? `/${name}` : "";
+}
+
+function controlTokenForSkill(skill: SkillReferenceSummary | null | undefined) {
+    const name = String(skill?.name || "").trim();
+    return name ? `@${name}` : "";
+}
+
+function getLeadingControlTokens(value: string) {
+    const trimmed = value.trimStart();
+    if (!trimmed) {
+        return new Set<string>();
+    }
+    const tokens = new Set<string>();
+    for (const segment of trimmed.split(/\s+/)) {
+        if (!segment.startsWith("/") && !segment.startsWith("@")) {
+            break;
+        }
+        tokens.add(segment);
+    }
+    return tokens;
+}
+
+function stripSelectedControlTokens(value: string, command: CommandPresetSummary | null, skills: SkillReferenceSummary[]) {
+    const selectedTokens = new Set([
+        controlTokenForCommand(command),
+        ...skills.map(controlTokenForSkill),
+    ].filter(Boolean));
+    let rest = value.trimStart();
+    let changed = true;
+    while (changed && rest) {
+        changed = false;
+        for (const token of selectedTokens) {
+            if (rest === token || rest.startsWith(`${token} `) || rest.startsWith(`${token}\n`) || rest.startsWith(`${token}\t`)) {
+                rest = rest.slice(token.length).trimStart();
+                changed = true;
+                break;
+            }
+        }
+    }
+    return rest;
+}
+
+function removeCommandPickerQuery(value: string) {
+    return value.trimStart().startsWith("/") ? "" : value;
+}
+
+function removeSkillPickerQuery(value: string) {
+    return value.replace(/(?:^|\s)@[^\s@]*$/, "").trimStart();
+}
+
+function composeControlTokenInput(
+    body: string,
+    command: CommandPresetSummary | null,
+    skills: SkillReferenceSummary[],
+) {
+    const tokens = [
+        controlTokenForCommand(command),
+        ...skills.map(controlTokenForSkill),
+    ].filter(Boolean);
+    const trimmedBody = stripSelectedControlTokens(body, command, skills).trimStart();
+    const tokenPrefix = tokens.join(" ");
+    return [tokenPrefix, trimmedBody].filter(Boolean).join(" ");
 }
 
 function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): ChatMessage | null {
@@ -1335,8 +1404,11 @@ export default function ChatScreen() {
     const conversationTransitionTokenRef = useRef(0);
     const optimisticSeedConversationIdRef = useRef<string | null>(null);
     const ttsRequestIdRef = useRef(0);
+    const replyPopSeenRef = useRef(new Map<string, string>());
+    const replyPopPlayedRef = useRef(new Set<string>());
     const tRef = useRef(t);
     const ttsPlayer = useAudioPlayer();
+    const replyPopPlayer = useAudioPlayer(REPLY_POP_SOUND);
     const ttsStatus = useAudioPlayerStatus(ttsPlayer);
     const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
     const recorderState = useAudioRecorderState(recorder);
@@ -1424,6 +1496,16 @@ export default function ChatScreen() {
             || String(item.path || "").toLowerCase().includes(skillQuery),
         );
     }, [selectedSkills, skillQuery, skills]);
+    useEffect(() => {
+        const leadingTokens = getLeadingControlTokens(input);
+        setSelectedCommand((current) => {
+            if (!current) {
+                return current;
+            }
+            return leadingTokens.has(controlTokenForCommand(current)) ? current : null;
+        });
+        setSelectedSkills((current) => current.filter((skill) => leadingTokens.has(controlTokenForSkill(skill))));
+    }, [input]);
     const boundProject = useMemo(
         () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
         [projects, scopeBinding?.projectId],
@@ -3749,6 +3831,19 @@ export default function ChatScreen() {
         || projection.runControlState.status === "waiting_approval",
     );
 
+    const playReplyPop = useCallback(() => {
+        if (!voiceEnabled) {
+            return;
+        }
+        try {
+            const player = replyPopPlayer as typeof replyPopPlayer & { seekTo?: (position: number) => void };
+            player.seekTo?.(0);
+            player.play();
+        } catch {
+            // The reply sound is a non-critical affordance; never block chat rendering.
+        }
+    }, [replyPopPlayer, voiceEnabled]);
+
     const hudProcesses = useMemo(
         () => (projection.processes.length > 0 ? projection.processes : processes),
         [processes, projection.processes],
@@ -3757,6 +3852,29 @@ export default function ChatScreen() {
     useEffect(() => {
         activeRunIdRef.current = String(projection.runControlState.runId || "").trim();
     }, [projection.runControlState.runId]);
+
+    useEffect(() => {
+        if (!activeConversationId || !latestProjectedMessage || latestProjectedMessage.role !== "assistant") {
+            return;
+        }
+        const messageId = String(latestProjectedMessage.id || latestProjectedMessage.renderKey || "").trim();
+        const contentLength = String(latestProjectedMessage.content || "").trim().length;
+        if (!messageId || contentLength === 0 || isActiveAssistantStreamPhase(latestProjectedMessage.uiStreamPhase)) {
+            return;
+        }
+        const currentKey = `${messageId}:${contentLength}`;
+        const previousKey = replyPopSeenRef.current.get(activeConversationId);
+        if (!previousKey) {
+            replyPopSeenRef.current.set(activeConversationId, currentKey);
+            return;
+        }
+        if (previousKey === currentKey || replyPopPlayedRef.current.has(messageId)) {
+            return;
+        }
+        replyPopSeenRef.current.set(activeConversationId, currentKey);
+        replyPopPlayedRef.current.add(messageId);
+        playReplyPop();
+    }, [activeConversationId, latestProjectedMessage, playReplyPop]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -3936,7 +4054,7 @@ export default function ChatScreen() {
     ]);
 
     const handleSend = useCallback(async () => {
-        const text = input.trim();
+        const text = stripSelectedControlTokens(input, selectedCommand, selectedSkills).trim();
         if (!text && !selectedCommand && selectedSkills.length === 0 && uploadedFiles.length === 0) {
             return;
         }
@@ -4155,6 +4273,8 @@ export default function ChatScreen() {
             icon: "hand-wave-outline" as const,
             title: getDayGreeting(locale),
             subtitle: t("新对话会先绑定工作区，再创建会话。", "A new conversation binds a workspace before the session is created."),
+            actionLabel: t("开始新对话", "Start a new conversation"),
+            onAction: () => void handleNewConversation(),
         }
         : null;
     const legacyChatEmptyState = activeConversationId && legacyChatUnsupported && projection.projectedMessages.length === 0
@@ -4195,29 +4315,27 @@ export default function ChatScreen() {
         && !["running", "waiting_input", "waiting_approval", "queued", "pending", "starting", "streaming"].includes(runControlStatus);
     const composerRunActive = runControlStatus === "running";
     const composerCanStop = Boolean(composerRunActive && (projection.runControlState.canInterrupt || projection.runControlState.runId));
-    const hasAccessoryTray = Boolean(
-        selectedCommand
-        || selectedSkills.length > 0
-        || uploadedFiles.length > 0,
-    );
     const hasOverlayLayer = Boolean(
         pickerOverlayVisible
         || hudProcesses.length > 0
-        || todosVisible
-        || hasAccessoryTray,
+        || todosVisible,
     );
     const accessoryBottomOffset = bottomLayerHeight > 0 ? bottomLayerHeight + 8 : 144;
-    const hudBottomOffset = accessoryBottomOffset + (hasAccessoryTray ? 50 : 0) + 10;
-    const pickerBottomOffset = accessoryBottomOffset + (hasAccessoryTray ? 12 : 0);
+    const hudBottomOffset = accessoryBottomOffset + 10;
+    const pickerBottomOffset = accessoryBottomOffset;
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
         setSelectedCommand(command);
-        setInput("");
+        setInput((current) => composeControlTokenInput(removeCommandPickerQuery(current), command, selectedSkills));
     };
 
     const handleSelectSkillFromPicker = (skill: SkillReferenceSummary) => {
-        setSelectedSkills((current) => [...current, skill]);
-        setInput("");
+        setSelectedSkills((current) => {
+            const exists = current.some((item) => item.name === skill.name && (item.path || "") === (skill.path || ""));
+            const nextSkills = exists ? current : [...current, skill];
+            setInput((inputValue) => composeControlTokenInput(removeSkillPickerQuery(inputValue), selectedCommand, nextSkills));
+            return nextSkills;
+        });
     };
 
     const overlayDockContent = hasOverlayLayer ? (
@@ -4257,84 +4375,6 @@ export default function ChatScreen() {
                     </View>
                 ) : null}
             </View>
-
-            {hasAccessoryTray ? (
-                <View
-                    pointerEvents="box-none"
-                    style={[
-                        styles.composerAccessoryTray,
-                        {
-                            bottom: accessoryBottomOffset,
-                        },
-                    ]}
-                >
-                    <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        keyboardShouldPersistTaps="always"
-                        contentContainerStyle={styles.composerAccessoryTrayContent}
-                    >
-                        {selectedCommand ? (
-                            <Pressable
-                                style={[
-                                    styles.accessoryChip,
-                                    {
-                                        backgroundColor: palette.accentSoft,
-                                        borderColor: palette.accentSoft,
-                                    },
-                                ]}
-                                onPress={() => setSelectedCommand(null)}
-                            >
-                                <MaterialCommunityIcons name="slash-forward" size={13} color={palette.accent} />
-                                <Text style={[styles.accessoryChipText, { color: palette.accent }]} numberOfLines={1}>
-                                    {selectedCommand.name}
-                                </Text>
-                                <MaterialCommunityIcons name="close" size={14} color={palette.accent} />
-                            </Pressable>
-                        ) : null}
-                        {selectedSkills.map((skill) => (
-                            <Pressable
-                                key={`${skill.name}:${skill.path || ""}`}
-                                style={[
-                                    styles.accessoryChip,
-                                    {
-                                        backgroundColor: palette.primarySoft,
-                                        borderColor: palette.primarySoft,
-                                    },
-                                ]}
-                                onPress={() => setSelectedSkills((current) =>
-                                    current.filter((item) => `${item.name}:${item.path || ""}` !== `${skill.name}:${skill.path || ""}`),
-                                )}
-                            >
-                                <MaterialCommunityIcons name="at" size={13} color={palette.primary} />
-                                <Text style={[styles.accessoryChipText, { color: palette.primaryDeep }]} numberOfLines={1}>
-                                    {skill.name}
-                                </Text>
-                                <MaterialCommunityIcons name="close" size={14} color={palette.primaryDeep} />
-                            </Pressable>
-                        ))}
-                        {uploadedFiles.map((file) => (
-                            <Pressable
-                                key={buildUploadedFileStableKey(file)}
-                                style={[
-                                    styles.accessoryChip,
-                                    {
-                                        backgroundColor: palette.surfaceStrong,
-                                        borderColor: palette.border,
-                                    },
-                                ]}
-                                onPress={() => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
-                            >
-                                <MaterialCommunityIcons name="paperclip" size={13} color={palette.textMuted} />
-                                <Text style={[styles.accessoryChipText, { color: palette.text, maxWidth: 168 }]} numberOfLines={1}>
-                                    {file.name || t("附件", "Attachment")}
-                                </Text>
-                                <MaterialCommunityIcons name="close" size={14} color={palette.textMuted} />
-                            </Pressable>
-                        ))}
-                    </ScrollView>
-                </View>
-            ) : null}
         </View>
     ) : null;
 
@@ -4376,6 +4416,7 @@ export default function ChatScreen() {
                     onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
                     uploadedFiles={uploadedFiles}
                     onRemoveUploadedFile={(file) => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
+                    adminBaseUrl={adminBaseUrl}
                     onPickAttachment={() => void handlePickAttachment()}
                     onToggleRecording={() => void handleToggleRecording()}
                     attachmentBusy={attachmentBusy}

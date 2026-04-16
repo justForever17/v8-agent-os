@@ -7,6 +7,8 @@ const KEYS = {
     refreshToken: "v8.phone.refreshToken",
     user: "v8.phone.user",
     activeConversationId: "v8.phone.activeConversationId",
+    adminConnectionProfiles: "v8.phone.adminConnectionProfiles",
+    activeAdminConnectionProfileId: "v8.phone.activeAdminConnectionProfileId",
     locale: "v8.phone.locale",
     themeMode: "v8.phone.themeMode",
     voiceEnabled: "v8.phone.voiceEnabled",

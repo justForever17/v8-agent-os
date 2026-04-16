@@ -13,7 +13,7 @@ type SurfaceNormalizationOptions = {
 };
 
 const SURFACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/[^\s"'<>\\]+/gi;
-const SURFACE_RELATIVE_URL_PATTERN = /(?:^|[\s("'=])((?:\/)?(?:workspace\/[^\s"'<>\\]+|api\/workspace\/files\/[^\s"'<>\\]+|api\/client\/workspace\/files\/[^\s"'<>\\]+|(?:v1|api(?:\/client)?)\/artifacts\/[^/\s"'<>\\]+\/content(?:\?[^\s"'<>\\]+)?))/gi;
+const SURFACE_RELATIVE_URL_PATTERN = /(?:^|[\s("'=])((?:\/)?(?:workspace\/[^\s"'<>\\]+|api\/workspace\/files\/[^\s"'<>\\]+|api\/client\/workspace\/files\/[^\s"'<>\\]+|api\/workspace\/resource\?[^\s"'<>\\]+|api\/client\/workspace\/resource\?[^\s"'<>\\]+|(?:v1|api(?:\/client)?)\/artifacts\/[^/\s"'<>\\]+\/content(?:\?[^\s"'<>\\]+)?))/gi;
 const WORKSPACE_MEDIA_PATH_PATTERN = /(?:[a-zA-Z]:\\[^\s"'<>`]+|\/?(?:workspace[\\/]|downloaded_media\/|uploads\/)[^\s"'<>`]+)/g;
 const MEDIA_EXTENSION_TO_KIND = new Map<string, "image" | "video" | "audio">([
     [".png", "image"],

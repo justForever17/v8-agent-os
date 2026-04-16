@@ -27,6 +27,14 @@ function normalizeClientSurfacePath(path: string) {
     return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
+function buildVerifiableRequestPath(req: NextRequest) {
+    const searchParams = new URLSearchParams(req.nextUrl.searchParams);
+    searchParams.delete("v8exp");
+    searchParams.delete("v8sig");
+    const query = searchParams.toString();
+    return normalizeClientSurfacePath(`${req.nextUrl.pathname}${query ? `?${query}` : ""}`);
+}
+
 function buildSignature(path: string, exp: string) {
     const secret = resolveInternalSecret();
     if (!secret) {
@@ -70,7 +78,7 @@ export function buildSignedClientSurfaceUrl(
 }
 
 export function verifySignedClientSurfaceRequest(req: NextRequest) {
-    const path = normalizeClientSurfacePath(req.nextUrl.pathname);
+    const path = buildVerifiableRequestPath(req);
     const exp = String(req.nextUrl.searchParams.get("v8exp") || "").trim();
     const sig = String(req.nextUrl.searchParams.get("v8sig") || "").trim().toLowerCase();
     if (!path || !exp || !sig) {

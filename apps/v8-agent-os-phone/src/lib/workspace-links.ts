@@ -5,14 +5,16 @@ const ABSOLUTE_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
 const LOOPBACK_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?(?:\/|$)/i;
 const LOOPBACK_WORKSPACE_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/workspace\/(.+)$/i;
 const LOOPBACK_WORKSPACE_API_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/api\/workspace\/files\/(.+)$/i;
+const LOOPBACK_WORKSPACE_RESOURCE_URL_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/(?:api\/(?:client\/)?workspace\/resource|v1\/workspace\/resource)\?(.+)$/i;
 const RELATIVE_WORKSPACE_PATH_PATTERN = /^\/?workspace\/(.+)$/i;
 const RELATIVE_WORKSPACE_API_PATH_PATTERN = /^\/?api\/workspace\/files\/(.+)$/i;
 const RELATIVE_ADMIN_WORKSPACE_PATH_PATTERN = /^\/?api\/client\/workspace\/files\/(.+)$/i;
+const RELATIVE_WORKSPACE_RESOURCE_PATH_PATTERN = /^\/?api\/(?:client\/)?workspace\/resource\?(.+)$/i;
 const RELATIVE_DOWNLOADED_MEDIA_PATH_PATTERN = /^\/?(downloaded_media\/.+)$/i;
 const RELATIVE_ARTIFACT_CONTENT_PATH_PATTERN = /^\/?(?:v1|api(?:\/client)?)\/artifacts\/[^/]+\/content(?:[?#].*)?$/i;
 const ABSOLUTE_ARTIFACT_CONTENT_URL_PATTERN = /^https?:\/\/.+\/(?:v1|api(?:\/client)?)\/artifacts\/[^/]+\/content(?:[?#].*)?$/i;
-const RELATIVE_ADMIN_MEDIA_PATH_PATTERN = /^\/api\/client\/(?:workspace\/files\/.+|artifacts\/[^/]+\/content(?:[?#].*)?)$/i;
-const RELATIVE_API_MEDIA_PATH_PATTERN = /^\/api\/(?:workspace\/files\/.+|artifacts\/[^/]+\/content(?:[?#].*)?)$/i;
+const RELATIVE_ADMIN_MEDIA_PATH_PATTERN = /^\/api\/client\/(?:workspace\/files\/.+|workspace\/resource\?.+|artifacts\/[^/]+\/content(?:[?#].*)?)$/i;
+const RELATIVE_API_MEDIA_PATH_PATTERN = /^\/api\/(?:workspace\/files\/.+|workspace\/resource\?.+|artifacts\/[^/]+\/content(?:[?#].*)?)$/i;
 const RELATIVE_WORKSPACE_MEDIA_PATH_PATTERN = /^\/workspace\/.+$/i;
 
 function hasSignedSurfaceQuery(value: string) {
@@ -40,6 +42,19 @@ function normalizeWorkspaceSubpath(value: string) {
         .replace(/^api\/workspace\/files\//i, "")
         .replace(/^api\/client\/workspace\/files\//i, "")
         .trim();
+}
+
+function extractWorkspaceRelativePathFromQuery(value: string) {
+    const query = String(value || "").trim().replace(/^[^?]*\?/, "");
+    if (!query) {
+        return "";
+    }
+    const params = new URLSearchParams(query);
+    return normalizeWorkspaceSubpath(
+        params.get("workspace_relative_path")
+        || params.get("workspaceRelativePath")
+        || "",
+    );
 }
 
 export function deriveWorkspaceSubpathFromWindowsPath(rawValue: string) {
@@ -71,6 +86,11 @@ export function resolveWorkspaceSubpathFromMediaCandidate(value?: string | null)
         return normalizeWorkspaceSubpath(loopbackWorkspaceApiMatch[1]);
     }
 
+    const loopbackWorkspaceResourceMatch = raw.match(LOOPBACK_WORKSPACE_RESOURCE_URL_PATTERN);
+    if (loopbackWorkspaceResourceMatch?.[1]) {
+        return extractWorkspaceRelativePathFromQuery(loopbackWorkspaceResourceMatch[1]);
+    }
+
     const relativeWorkspaceMatch = raw.match(RELATIVE_WORKSPACE_PATH_PATTERN);
     if (relativeWorkspaceMatch?.[1]) {
         return normalizeWorkspaceSubpath(relativeWorkspaceMatch[1]);
@@ -84,6 +104,11 @@ export function resolveWorkspaceSubpathFromMediaCandidate(value?: string | null)
     const relativeAdminWorkspaceMatch = raw.match(RELATIVE_ADMIN_WORKSPACE_PATH_PATTERN);
     if (relativeAdminWorkspaceMatch?.[1]) {
         return normalizeWorkspaceSubpath(relativeAdminWorkspaceMatch[1]);
+    }
+
+    const relativeWorkspaceResourceMatch = raw.match(RELATIVE_WORKSPACE_RESOURCE_PATH_PATTERN);
+    if (relativeWorkspaceResourceMatch?.[1]) {
+        return extractWorkspaceRelativePathFromQuery(relativeWorkspaceResourceMatch[1]);
     }
 
     const relativeDownloadedMediaMatch = raw.match(RELATIVE_DOWNLOADED_MEDIA_PATH_PATTERN);
@@ -107,6 +132,10 @@ function isArtifactContentUrl(value: string) {
     return ABSOLUTE_ARTIFACT_CONTENT_URL_PATTERN.test(String(value || "").trim());
 }
 
+function isWorkspaceResourcePath(value: string) {
+    return RELATIVE_WORKSPACE_RESOURCE_PATH_PATTERN.test(String(value || "").trim());
+}
+
 export function normalizeRenderableWorkspaceUrl(adminBaseUrl: string, value?: string | null) {
     const raw = String(value || "").trim();
     if (!raw) {
@@ -115,6 +144,10 @@ export function normalizeRenderableWorkspaceUrl(adminBaseUrl: string, value?: st
 
     if (ABSOLUTE_URL_PATTERN.test(raw)) {
         return raw;
+    }
+
+    if (isWorkspaceResourcePath(raw)) {
+        return resolveAdminAssetUrl(adminBaseUrl, raw.startsWith("/") ? raw : `/${raw}`);
     }
 
     const workspaceSubpath = resolveWorkspaceSubpathFromMediaCandidate(raw);

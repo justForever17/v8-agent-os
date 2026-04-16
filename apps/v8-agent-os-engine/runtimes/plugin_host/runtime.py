@@ -403,7 +403,7 @@ class PluginHostRuntime:
             )
             title = str(asset.get("originalFileName") or candidate.name or f"attachment_{index + 1}").strip() or f"attachment_{index + 1}"
             subtitle = str(asset.get("displaySubtitle") or canonical_path).strip() or canonical_path
-            workspace_path = file_path
+            workspace_path = None if path_plane == "channel_delivery_stage" else file_path
             metadata = {
                 "displayLabel": title,
                 "displaySubtitle": subtitle,
@@ -415,10 +415,16 @@ class PluginHostRuntime:
             }
             workspace_root = str(asset.get("workspaceRoot") or asset.get("workspace_root") or "").strip()
             workspace_relative_path = str(asset.get("workspaceRelativePath") or asset.get("workspace_relative_path") or "").strip()
+            workspace_id = str(asset.get("workspaceId") or asset.get("workspace_id") or "").strip()
+            project_id = str(asset.get("projectId") or asset.get("project_id") or "").strip()
             if workspace_root:
                 metadata["workspaceRoot"] = workspace_root
             if workspace_relative_path:
                 metadata["workspaceRelativePath"] = workspace_relative_path
+            if workspace_id:
+                metadata["workspaceId"] = workspace_id
+            if project_id:
+                metadata["projectId"] = project_id
             artifact_store.record_local_file(
                 file_path=candidate,
                 session_id=session_id,

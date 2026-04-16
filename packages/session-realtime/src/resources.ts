@@ -4,6 +4,8 @@ const LOOPBACK_ORIGIN_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[
 const ABSOLUTE_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
 const ARTIFACT_CONTENT_PATH_PATTERN = /^\/(?:v1|api(?:\/client)?)\/artifacts\/([^/?#]+)\/content(?:[?#].*)?$/i;
 const WORKSPACE_FILE_PATH_PATTERN = /^\/(?:(?:api(?:\/client)?)\/workspace\/files\/|workspace\/)(.+)$/i;
+const WORKSPACE_RESOURCE_PATHNAME_PATTERN = /^\/(?:(?:api(?:\/client)?)\/workspace\/resource|v1\/workspace\/resource)$/i;
+const WORKSPACE_SURFACE_PLANES = new Set(["workspace_download", "workspace_artifact"]);
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -34,28 +36,41 @@ function normalizeWorkspacePath(value: string) {
     .trim();
 }
 
+function normalizeScopedWorkspaceRelativePath(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw || /^[a-z]:[\\/]/i.test(raw) || raw.startsWith("/") || raw.startsWith("\\")) {
+    return "";
+  }
+  const normalized = normalizeWorkspacePath(raw);
+  if (!normalized || normalized === "." || normalized === "..") {
+    return "";
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (!segments.length || segments.some((segment) => segment === "..")) {
+    return "";
+  }
+  return segments.join("/");
+}
+
+function normalizeScopedIdentifier(value: unknown) {
+  const normalized = String(value || "").trim();
+  return normalized || undefined;
+}
+
+function normalizePathPlane(value: unknown) {
+  const normalized = String(value || "").trim();
+  if (!WORKSPACE_SURFACE_PLANES.has(normalized)) {
+    return undefined;
+  }
+  return normalized as Extract<AdminResourceRef["pathPlane"], "workspace_download" | "workspace_artifact">;
+}
+
 function encodeWorkspacePath(workspacePath: string) {
   return normalizeWorkspacePath(workspacePath)
     .split("/")
     .filter(Boolean)
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-}
-
-function extractWorkspacePathFromLocalPath(value: string) {
-  const normalized = String(value || "").trim();
-  if (!normalized) {
-    return "";
-  }
-  const workspaceMarker = normalized.toLowerCase().lastIndexOf("\\workspace\\");
-  if (workspaceMarker >= 0) {
-    return normalizeWorkspacePath(normalized.slice(workspaceMarker + "\\workspace\\".length));
-  }
-  const unixMarker = normalized.toLowerCase().lastIndexOf("/workspace/");
-  if (unixMarker >= 0) {
-    return normalizeWorkspacePath(normalized.slice(unixMarker + "/workspace/".length));
-  }
-  return "";
 }
 
 export function buildAdminArtifactContentPath(artifactId: string) {
@@ -66,6 +81,31 @@ export function buildAdminArtifactContentPath(artifactId: string) {
 export function buildAdminWorkspaceFilePath(workspacePath: string) {
   const encoded = encodeWorkspacePath(workspacePath);
   return encoded ? `/api/client/workspace/files/${encoded}` : "";
+}
+
+export function buildAdminScopedWorkspaceResourcePath(options: {
+  workspaceRelativePath: string;
+  pathPlane: Extract<AdminResourceRef["pathPlane"], "workspace_download" | "workspace_artifact">;
+  workspaceId?: string;
+  projectId?: string;
+}) {
+  const workspaceRelativePath = normalizeScopedWorkspaceRelativePath(options.workspaceRelativePath);
+  const pathPlane = normalizePathPlane(options.pathPlane);
+  if (!workspaceRelativePath || !pathPlane) {
+    return "";
+  }
+  const params = new URLSearchParams();
+  params.set("workspace_relative_path", workspaceRelativePath);
+  params.set("path_plane", pathPlane);
+  const workspaceId = normalizeScopedIdentifier(options.workspaceId);
+  const projectId = normalizeScopedIdentifier(options.projectId);
+  if (workspaceId) {
+    params.set("workspace_id", workspaceId);
+  }
+  if (projectId) {
+    params.set("project_id", projectId);
+  }
+  return `/api/client/workspace/resource?${params.toString()}`;
 }
 
 export function buildAdminArtifactContentRef(
@@ -86,16 +126,32 @@ export function buildAdminArtifactContentRef(
 
 export function buildAdminWorkspaceFileRef(
   workspacePath: string,
-  extras: Omit<AdminResourceRef, "kind" | "workspacePath" | "adminPath"> = {},
+  extras: Omit<AdminResourceRef, "kind" | "workspacePath"> = {},
 ): AdminResourceRef | null {
   const normalizedPath = normalizeWorkspacePath(workspacePath);
   if (!normalizedPath) {
     return null;
   }
+  const workspaceRelativePath = normalizeScopedWorkspaceRelativePath(
+    typeof extras.workspaceRelativePath === "string" ? extras.workspaceRelativePath : normalizedPath,
+  );
+  const pathPlane = normalizePathPlane(extras.pathPlane);
+  const workspaceId = normalizeScopedIdentifier(extras.workspaceId);
+  const projectId = normalizeScopedIdentifier(extras.projectId);
   return {
     kind: "workspace_file",
     workspacePath: normalizedPath,
-    adminPath: buildAdminWorkspaceFilePath(normalizedPath),
+    workspaceRelativePath: workspaceRelativePath || extras.workspaceRelativePath,
+    workspaceId,
+    projectId,
+    adminPath: workspaceRelativePath && pathPlane
+      ? buildAdminScopedWorkspaceResourcePath({
+        workspaceRelativePath,
+        pathPlane,
+        workspaceId,
+        projectId,
+      })
+      : buildAdminWorkspaceFilePath(normalizedPath),
     ...extras,
   };
 }
@@ -130,6 +186,36 @@ function deriveAdminResourceRefFromUrl(value: string): AdminResourceRef | null {
     return buildAdminArtifactContentRef(artifactMatch[1]);
   }
 
+  try {
+    const parsed = new URL(raw.startsWith("/") ? raw : `/${raw}`, "https://v8.invalid");
+    if (WORKSPACE_RESOURCE_PATHNAME_PATTERN.test(parsed.pathname)) {
+      const canonicalSearch = new URLSearchParams(parsed.searchParams);
+      canonicalSearch.delete("v8exp");
+      canonicalSearch.delete("v8sig");
+      const workspaceRelativePath = normalizeScopedWorkspaceRelativePath(
+        canonicalSearch.get("workspace_relative_path") || canonicalSearch.get("workspaceRelativePath") || "",
+      );
+      const pathPlane = normalizePathPlane(
+        canonicalSearch.get("path_plane") || canonicalSearch.get("pathPlane") || "",
+      );
+      if (workspaceRelativePath && pathPlane) {
+        return buildAdminWorkspaceFileRef(workspaceRelativePath, {
+          workspaceRelativePath,
+          workspaceId: normalizeScopedIdentifier(
+            canonicalSearch.get("workspace_id") || canonicalSearch.get("workspaceId"),
+          ),
+          projectId: normalizeScopedIdentifier(
+            canonicalSearch.get("project_id") || canonicalSearch.get("projectId"),
+          ),
+          pathPlane,
+          adminPath: normalizeAdminPath(`${parsed.pathname}${canonicalSearch.toString() ? `?${canonicalSearch.toString()}` : ""}`),
+        });
+      }
+    }
+  } catch {
+    // no-op: fall through to other path heuristics
+  }
+
   const workspaceMatch = raw.match(WORKSPACE_FILE_PATH_PATTERN);
   if (workspaceMatch?.[1]) {
     return buildAdminWorkspaceFileRef(workspaceMatch[1]);
@@ -149,11 +235,6 @@ function deriveAdminResourceRefFromUrl(value: string): AdminResourceRef | null {
     };
   }
 
-  const localWorkspacePath = extractWorkspacePathFromLocalPath(raw);
-  if (localWorkspacePath) {
-    return buildAdminWorkspaceFileRef(localWorkspacePath);
-  }
-
   if (raw.startsWith("/workspace/")) {
     return buildAdminWorkspaceFileRef(raw);
   }
@@ -163,6 +244,59 @@ function deriveAdminResourceRefFromUrl(value: string): AdminResourceRef | null {
   }
 
   return null;
+}
+
+function extractScopedWorkspaceSurfaceFields(record: Record<string, unknown>) {
+  const workspaceRelativePath = normalizeScopedWorkspaceRelativePath(
+    typeof record.workspaceRelativePath === "string"
+      ? record.workspaceRelativePath
+      : typeof record.workspace_relative_path === "string"
+        ? record.workspace_relative_path
+        : typeof record.workspacePath === "string"
+          ? record.workspacePath
+          : typeof record.workspace_path === "string"
+            ? record.workspace_path
+            : "",
+  );
+  const pathPlane = normalizePathPlane(record.pathPlane ?? record.path_plane);
+  const workspaceRoot = typeof record.workspaceRoot === "string"
+    ? record.workspaceRoot
+    : typeof record.workspace_root === "string"
+      ? record.workspace_root
+      : undefined;
+  const workspaceId = normalizeScopedIdentifier(record.workspaceId ?? record.workspace_id);
+  const projectId = normalizeScopedIdentifier(record.projectId ?? record.project_id);
+  if (!workspaceRelativePath || !pathPlane) {
+    return null;
+  }
+  if (!workspaceRoot && !workspaceId && !projectId) {
+    return null;
+  }
+  return {
+    workspaceRelativePath,
+    pathPlane,
+    workspaceRoot,
+    workspaceId,
+    projectId,
+  };
+}
+
+function deriveScopedWorkspaceFileRef(
+  record: Record<string, unknown>,
+  extras: Omit<AdminResourceRef, "kind" | "workspacePath" | "adminPath"> = {},
+) {
+  const scoped = extractScopedWorkspaceSurfaceFields(record);
+  if (!scoped) {
+    return null;
+  }
+  return buildAdminWorkspaceFileRef(scoped.workspaceRelativePath, {
+    ...extras,
+    workspaceRelativePath: scoped.workspaceRelativePath,
+    workspaceRoot: scoped.workspaceRoot,
+    workspaceId: scoped.workspaceId,
+    projectId: scoped.projectId,
+    pathPlane: scoped.pathPlane,
+  });
 }
 
 export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null {
@@ -185,11 +319,27 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
         : typeof record.signed_url === "string"
           ? record.signed_url
           : undefined,
-      artifactId: typeof record.artifactId === "string" ? record.artifactId : undefined,
-      workspacePath: typeof record.workspacePath === "string" ? normalizeWorkspacePath(record.workspacePath) : undefined,
-      workspaceRoot: typeof record.workspaceRoot === "string" ? record.workspaceRoot : undefined,
+      artifactId: typeof record.artifactId === "string"
+        ? record.artifactId
+        : typeof record.artifact_id === "string"
+          ? record.artifact_id
+          : undefined,
+      workspaceId: normalizeScopedIdentifier(record.workspaceId ?? record.workspace_id),
+      projectId: normalizeScopedIdentifier(record.projectId ?? record.project_id),
+      workspacePath: typeof record.workspacePath === "string"
+        ? normalizeWorkspacePath(record.workspacePath)
+        : typeof record.workspace_path === "string"
+          ? normalizeWorkspacePath(record.workspace_path)
+          : undefined,
+      workspaceRoot: typeof record.workspaceRoot === "string"
+        ? record.workspaceRoot
+        : typeof record.workspace_root === "string"
+          ? record.workspace_root
+          : undefined,
       workspaceRelativePath: typeof record.workspaceRelativePath === "string"
-        ? normalizeWorkspacePath(record.workspaceRelativePath)
+        ? normalizeScopedWorkspaceRelativePath(record.workspaceRelativePath)
+        : typeof record.workspace_relative_path === "string"
+          ? normalizeScopedWorkspaceRelativePath(record.workspace_relative_path)
         : undefined,
       url: typeof record.url === "string" ? record.url : undefined,
       mimeType: typeof record.mimeType === "string" ? record.mimeType : undefined,
@@ -203,21 +353,34 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
         : typeof record.surface_visible === "boolean"
           ? record.surface_visible
           : undefined,
-      pathPlane: typeof record.pathPlane === "string"
-        ? record.pathPlane as AdminResourceRef["pathPlane"]
-        : typeof record.path_plane === "string"
-          ? record.path_plane as AdminResourceRef["pathPlane"]
-          : undefined,
+      pathPlane: normalizePathPlane(record.pathPlane ?? record.path_plane)
+        || (typeof record.pathPlane === "string"
+          ? record.pathPlane as AdminResourceRef["pathPlane"]
+          : typeof record.path_plane === "string"
+            ? record.path_plane as AdminResourceRef["pathPlane"]
+            : undefined),
     };
     if (!resourceRef.workspacePath && resourceRef.workspaceRelativePath) {
       resourceRef.workspacePath = resourceRef.workspaceRelativePath;
     }
     if (!resourceRef.adminPath) {
+      if (
+        kind === "workspace_file"
+        && resourceRef.workspaceRelativePath
+        && normalizePathPlane(resourceRef.pathPlane)
+      ) {
+        resourceRef.adminPath = buildAdminScopedWorkspaceResourcePath({
+          workspaceRelativePath: resourceRef.workspaceRelativePath,
+          pathPlane: normalizePathPlane(resourceRef.pathPlane)!,
+          workspaceId: resourceRef.workspaceId,
+          projectId: resourceRef.projectId,
+        });
+      }
       if (kind === "artifact_content" && resourceRef.artifactId) {
         resourceRef.adminPath = buildAdminArtifactContentPath(resourceRef.artifactId);
       }
       if (kind === "workspace_file" && resourceRef.workspacePath) {
-        resourceRef.adminPath = buildAdminWorkspaceFilePath(resourceRef.workspacePath);
+        resourceRef.adminPath = resourceRef.adminPath || buildAdminWorkspaceFilePath(resourceRef.workspacePath);
       }
     }
     return resourceRef;
@@ -231,6 +394,37 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
   const existing = coerceAdminResourceRef(record.resourceRef);
   if (existing) {
     return existing;
+  }
+
+  const scopedWorkspaceRef = deriveScopedWorkspaceFileRef(record, {
+    mimeType: typeof record.mimeType === "string"
+      ? record.mimeType
+      : typeof record.mime_type === "string"
+        ? record.mime_type
+        : undefined,
+    displayLabel: typeof record.displayLabel === "string"
+      ? record.displayLabel
+      : typeof record.title === "string"
+        ? record.title
+        : undefined,
+    displaySubtitle: typeof record.displaySubtitle === "string"
+      ? record.displaySubtitle
+      : typeof record.display_subtitle === "string"
+        ? record.display_subtitle
+        : undefined,
+    sourcePath: typeof record.sourcePath === "string"
+      ? record.sourcePath
+      : typeof record.source_path === "string"
+        ? record.source_path
+        : undefined,
+    surfaceVisible: typeof record.surfaceVisible === "boolean"
+      ? record.surfaceVisible
+      : typeof record.surface_visible === "boolean"
+        ? record.surface_visible
+        : undefined,
+  });
+  if (scopedWorkspaceRef) {
+    return scopedWorkspaceRef;
   }
 
   const artifactId =
@@ -259,83 +453,30 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
         : typeof record.source_path === "string"
           ? record.source_path
           : undefined,
+      workspaceId: normalizeScopedIdentifier(record.workspaceId ?? record.workspace_id),
+      projectId: normalizeScopedIdentifier(record.projectId ?? record.project_id),
       workspaceRoot: typeof record.workspaceRoot === "string"
         ? record.workspaceRoot
         : typeof record.workspace_root === "string"
           ? record.workspace_root
           : undefined,
       workspaceRelativePath: typeof record.workspaceRelativePath === "string"
-        ? normalizeWorkspacePath(record.workspaceRelativePath)
+        ? normalizeScopedWorkspaceRelativePath(record.workspaceRelativePath)
         : typeof record.workspace_relative_path === "string"
-          ? normalizeWorkspacePath(record.workspace_relative_path)
+          ? normalizeScopedWorkspaceRelativePath(record.workspace_relative_path)
           : undefined,
       surfaceVisible: typeof record.surfaceVisible === "boolean"
         ? record.surfaceVisible
         : typeof record.surface_visible === "boolean"
           ? record.surface_visible
           : undefined,
-      pathPlane: typeof record.pathPlane === "string"
-        ? record.pathPlane as AdminResourceRef["pathPlane"]
-        : typeof record.path_plane === "string"
-          ? record.path_plane as AdminResourceRef["pathPlane"]
-          : undefined,
+      pathPlane: normalizePathPlane(record.pathPlane ?? record.path_plane)
+        || (typeof record.pathPlane === "string"
+          ? record.pathPlane as AdminResourceRef["pathPlane"]
+          : typeof record.path_plane === "string"
+            ? record.path_plane as AdminResourceRef["pathPlane"]
+            : undefined),
     });
-  }
-
-  const workspacePath =
-    typeof record.workspacePath === "string"
-      ? record.workspacePath
-      : typeof record.workspace_path === "string"
-        ? record.workspace_path
-        : typeof record.workspaceRelativePath === "string"
-          ? record.workspaceRelativePath
-          : typeof record.workspace_relative_path === "string"
-            ? record.workspace_relative_path
-            : typeof record.canonicalPath === "string"
-              ? record.canonicalPath
-              : typeof record.canonical_path === "string"
-                ? record.canonical_path
-                : "";
-  const workspaceRef = buildAdminWorkspaceFileRef(workspacePath, {
-    mimeType: typeof record.mimeType === "string"
-      ? record.mimeType
-      : typeof record.mime_type === "string"
-        ? record.mime_type
-        : undefined,
-    displayLabel: typeof record.displayLabel === "string"
-      ? record.displayLabel
-      : typeof record.title === "string"
-        ? record.title
-        : undefined,
-    displaySubtitle: typeof record.displaySubtitle === "string" ? record.displaySubtitle : undefined,
-    sourcePath: typeof record.sourcePath === "string"
-      ? record.sourcePath
-      : typeof record.source_path === "string"
-        ? record.source_path
-        : undefined,
-    workspaceRoot: typeof record.workspaceRoot === "string"
-      ? record.workspaceRoot
-      : typeof record.workspace_root === "string"
-        ? record.workspace_root
-        : undefined,
-    workspaceRelativePath: typeof record.workspaceRelativePath === "string"
-      ? normalizeWorkspacePath(record.workspaceRelativePath)
-      : typeof record.workspace_relative_path === "string"
-        ? normalizeWorkspacePath(record.workspace_relative_path)
-        : undefined,
-    surfaceVisible: typeof record.surfaceVisible === "boolean"
-      ? record.surfaceVisible
-      : typeof record.surface_visible === "boolean"
-        ? record.surface_visible
-        : undefined,
-    pathPlane: typeof record.pathPlane === "string"
-      ? record.pathPlane as AdminResourceRef["pathPlane"]
-      : typeof record.path_plane === "string"
-        ? record.path_plane as AdminResourceRef["pathPlane"]
-        : undefined,
-  });
-  if (workspaceRef) {
-    return workspaceRef;
   }
 
   const previewCandidate =
@@ -393,8 +534,15 @@ export function resolveAdminResourceUrl(
   const path = normalized.adminPath
     || (normalized.kind === "artifact_content" && normalized.artifactId
       ? buildAdminArtifactContentPath(normalized.artifactId)
-      : normalized.kind === "workspace_file" && normalized.workspacePath
-        ? buildAdminWorkspaceFilePath(normalized.workspacePath)
+      : normalized.kind === "workspace_file" && normalized.workspaceRelativePath && normalizePathPlane(normalized.pathPlane)
+        ? buildAdminScopedWorkspaceResourcePath({
+          workspaceRelativePath: normalized.workspaceRelativePath,
+          pathPlane: normalizePathPlane(normalized.pathPlane)!,
+          workspaceId: normalized.workspaceId,
+          projectId: normalized.projectId,
+        })
+        : normalized.kind === "workspace_file" && normalized.workspacePath
+          ? buildAdminWorkspaceFilePath(normalized.workspacePath)
         : "");
   if (!path) {
     return "";

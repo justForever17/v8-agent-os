@@ -16,7 +16,7 @@ type InlineToken =
     | { type: "link"; value: string; href: string };
 
 const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)]+)\)/gi;
-const BARE_LINK = /(https?:\/\/[^\s)'"`]+|\/(?:api\/workspace\/files\/[^\s)'"`]+|api\/client\/workspace\/files\/[^\s)'"`]+|workspace\/[^\s)'"`]+)|downloaded_media\/[^\s)'"`]+)/gi;
+const BARE_LINK = /(https?:\/\/[^\s)'"`]+|\/(?:api\/workspace\/files\/[^\s)'"`]+|api\/client\/workspace\/files\/[^\s)'"`]+|api\/(?:client\/)?workspace\/resource\?[^\s)'"`]+|workspace\/[^\s)'"`]+)|downloaded_media\/[^\s)'"`]+)/gi;
 const IMAGE_URL = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i;
 const VIDEO_URL = /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i;
 const AUDIO_URL = /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i;
@@ -56,7 +56,9 @@ function isRenderableHref(value: string) {
         || looksLikeWorkspaceRelativeMediaPath(href)
         || href.startsWith("/workspace/")
         || href.startsWith("/api/workspace/files/")
-        || href.startsWith("/api/client/workspace/files/");
+        || href.startsWith("/api/client/workspace/files/")
+        || href.startsWith("/api/workspace/resource?")
+        || href.startsWith("/api/client/workspace/resource?");
 }
 
 function unwrapInlineCodeToken(value: string) {

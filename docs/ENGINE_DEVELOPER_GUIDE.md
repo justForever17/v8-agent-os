@@ -18,7 +18,7 @@ When you feel a mechanism needs a tweak somewhere, pause and review your reposit
   - Hosts the heartbeat of the entire ecosystem: including handling the foundation `v8-agent-os-engine` (handles memory, invocations, graph states), the logistical data permissions layer `v8-agent-os-admin` (control plane), and the visual layer `v8-agent-os-web`. This is the core scheduling code zone.
 - **`v8-agent-os-site` (Static Narrative Repo)**
   - Does NOT handle runtime logic. Its purpose is the system portal packaging, official public documentation exhibition, and establishing initial cognitive understanding for new users.
-- **`v8-bridge` (OpenClaw Ecosystem Bridge)**
+- **`openclaw-v8-bridge` (OpenClaw Ecosystem Bridge)**
   - V8 system's communication moat facing the OpenClaw plugin ecosystem. Moving one part affects the whole. If you modify tool authorization, Channels management, or the Handoff mechanism, you must ensure it remains Fail-Closed and does not breach defenses.
 
 ## 3. The Developer's Mental Model of this Machine
@@ -50,3 +50,42 @@ By default, you should be bold and commit direct developments, but when encounte
 - Operations involving cross-repository permission or responsibility transfers as mentioned above.
 
 **Stop typing, compose, and discuss the technical proposal.**
+
+## 6. Shared Contract Layer: `packages/session-realtime`
+
+`packages/session-realtime` is not an incidental helper package. It is the shared contract layer consumed by:
+
+1. `apps/v8-agent-os-admin`
+2. `apps/v8-agent-os-web`
+3. `apps/v8-agent-os-phone`
+
+It owns the stable definitions for:
+
+1. authoritative snapshot schema
+2. runtime event taxonomy / normalization
+3. message lifecycle and exact-node patch rules
+4. `AdminResourceRef` / `AdminProcessRef`
+5. CDC store selectors and derived session state
+
+When you modify this package, do not assume the consumers automatically picked up the change. The default discipline is:
+
+1. build `packages/session-realtime`
+2. if consumers rely on a packed tarball, pack it
+3. reinstall/update the consumer dependency
+4. run at least one `admin/web/phone` build or typecheck pass
+
+## 7. Workspace vs. Channel Delivery Planes
+
+The current resource contract distinguishes three different concerns:
+
+1. main workspace
+2. project workspace
+3. OpenClaw channel delivery staging
+
+Rules:
+
+1. Project workspaces are first-class runtime surfaces and may live at arbitrary absolute roots.
+2. Visible project/main workspace files must flow through the scoped workspace resource resolver rather than raw `/workspace/...` guesses.
+3. `plugin_host` inbound downloads belong to the V8 workspace plane.
+4. OpenClaw outbound staging / TTS transcoding under `~/.openclaw/media/outbound/...` belongs to `channel_delivery_stage`.
+5. `channel_delivery_stage` must remain outside the workspace resolver and surface through artifact-content URLs only.

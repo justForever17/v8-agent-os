@@ -4,7 +4,7 @@
 
 - `E:\Projects\v8chat\v8-agent-os`
 - `E:\Projects\v8chat\v8-agent-os-site`
-- `E:\Projects\v8chat\v8-bridge`
+- `E:\Projects\v8chat\openclaw-v8-bridge`
 
 读者：
 
@@ -208,7 +208,7 @@ flowchart LR
 1. 发明新的 runtime 语义
 2. 替代主仓提供事实源
 
-### 4.3 `v8-bridge`
+### 4.3 `openclaw-v8-bridge`
 
 OpenClaw 生态桥接仓。
 
@@ -309,7 +309,9 @@ shared 包位置：
    - drafts/scripts/templates/trust metrics：`runtime-data/rpa`
    - 对外用户文件：workspace output plane
 3. `plugin_host`
-   - tts / inbound-outbound staging / 内部媒体槽位：`runtime-data/plugin_host`
+   - inbound 下载附件：`<resolved_workspace_root>/downloaded_media/plugin_host/...`
+   - OpenClaw 渠道出站暂存 / TTS 转码：`~/.openclaw/media/outbound/v8-agent-os/plugin_host/...`
+   - `channel_delivery_stage` 属于独立 plane，不进入 workspace resolver
    - 对外资源：canonical artifact/resource ref
 4. 下载媒体
    - `download_media_for_vision` 直接落 `<workspace>/downloaded_media`
@@ -324,6 +326,31 @@ shared 包位置：
    - 它写到的是 `runtime-data` 还是 workspace output
 4. 最后看 `admin` / `web` / `phone`
    - 有没有继续展示裸路径，而不是 canonical artifact/resource ref
+
+### 6.5.5 `packages/session-realtime` 的职责与消费纪律
+
+`packages/session-realtime` 不是普通工具包，而是 `admin/web/phone` 共用的 realtime/history/resource contract 层。
+
+它至少统一：
+
+1. `AuthoritativeSessionSnapshot`
+2. runtime event taxonomy / normalizer
+3. message lifecycle / node patch 纪律
+4. `AdminResourceRef` / `AdminProcessRef`
+5. CDC store / selector 语义
+
+修改它时必须默认同时检查：
+
+1. `apps/v8-agent-os-admin`
+2. `apps/v8-agent-os-web`
+3. `apps/v8-agent-os-phone`
+
+如果消费端当前依赖 packed 包 / tarball：
+
+1. 先在 `packages/session-realtime` 执行 `build`
+2. 再 `pack`
+3. 再把消费端更新到新的包
+4. 不能只改源码就假设三端已经自动吃到最新 contract
 
 ### 6.1 你必须熟悉的类型
 

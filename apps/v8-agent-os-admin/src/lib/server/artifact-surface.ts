@@ -1,4 +1,9 @@
 import type { NextRequest } from "next/server";
+import {
+    coerceAdminResourceRef,
+    deriveAdminResourceRefFromArtifactLike,
+    type AdminResourceRef,
+} from "@v8/session-realtime";
 
 import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resource";
 import {
@@ -31,7 +36,7 @@ function resolveClientOrigin(req: NextRequest) {
     return resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: true });
 }
 
-function shouldRewriteToArtifactContent(value: string) {
+function shouldRewriteToSurface(value: string) {
     if (!value) {
         return true;
     }
@@ -41,6 +46,35 @@ function shouldRewriteToArtifactContent(value: string) {
     return !ABSOLUTE_HTTP_URL_PATTERN.test(value);
 }
 
+function normalizeAdminSurfacePath(path: string) {
+    const normalized = stringValue(path);
+    if (!normalized) {
+        return "";
+    }
+    if (normalized.startsWith("/api/client/")) {
+        return normalized.replace(/^\/api\/client\b/i, "/api");
+    }
+    return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, req: NextRequest) {
+    if (!resourceRef || resourceRef.kind === "external_url") {
+        return resourceRef;
+    }
+    const adminPath = stringValue(resourceRef.adminPath);
+    if (!adminPath) {
+        return resourceRef;
+    }
+    const clientOrigin = resolveClientOrigin(req);
+    const signedUrl = clientOrigin
+        ? buildSignedClientSurfaceUrl(adminPath, { publicBaseUrl: clientOrigin })
+        : "";
+    return {
+        ...resourceRef,
+        signedUrl: signedUrl || resourceRef.signedUrl,
+    };
+}
+
 export function normalizeArtifactForAdminSurface(record: unknown, req: NextRequest) {
     if (!record || typeof record !== "object" || Array.isArray(record)) {
         return record;
@@ -48,42 +82,33 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
 
     const next = { ...(record as Record<string, unknown>) };
     const artifactId = artifactIdOf(next);
-    if (!artifactId || !hasLocalBacking(next)) {
+    const derivedResourceRef = attachSignedSurfaceUrl(
+        coerceAdminResourceRef(next.resourceRef) || deriveAdminResourceRefFromArtifactLike(next),
+        req,
+    );
+    if (!derivedResourceRef || (!artifactId && !hasLocalBacking(next))) {
         return next;
     }
 
     const encodedId = encodeURIComponent(artifactId);
     const adminContentPath = `/api/memory/artifacts/${encodedId}/content`;
-    const clientContentPath = `/api/client/artifacts/${encodedId}/content`;
-    const clientOrigin = resolveClientOrigin(req);
-    const signedClientContentUrl = clientOrigin
-        ? buildSignedClientSurfaceUrl(clientContentPath, { publicBaseUrl: clientOrigin })
-        : "";
-    const surfaceContentUrl = signedClientContentUrl || adminContentPath;
+    const adminSurfacePath = derivedResourceRef.kind === "artifact_content"
+        ? adminContentPath
+        : normalizeAdminSurfacePath(stringValue(derivedResourceRef.adminPath));
+    const surfaceContentUrl = adminSurfacePath || adminContentPath;
 
     const previewUrl = stringValue(next.previewUrl) || stringValue(next.preview_url);
     const contentUrl = stringValue(next.contentUrl) || stringValue(next.content_url);
-    if (shouldRewriteToArtifactContent(previewUrl)) {
+    if (shouldRewriteToSurface(previewUrl)) {
         next.previewUrl = surfaceContentUrl;
         next.preview_url = surfaceContentUrl;
     }
-    if (shouldRewriteToArtifactContent(contentUrl)) {
+    if (shouldRewriteToSurface(contentUrl)) {
         next.contentUrl = surfaceContentUrl;
         next.content_url = surfaceContentUrl;
     }
-
-    const existingResourceRef = next.resourceRef && typeof next.resourceRef === "object" && !Array.isArray(next.resourceRef)
-        ? next.resourceRef as Record<string, unknown>
-        : {};
-    next.resourceRef = {
-        ...existingResourceRef,
-        kind: "artifact_content",
-        artifactId,
-        adminPath: clientContentPath,
-        signedUrl: signedClientContentUrl || stringValue(existingResourceRef.signedUrl),
-        previewable: true,
-    };
-    next.hasPreview = true;
+    next.resourceRef = derivedResourceRef;
+    next.hasPreview = Boolean(surfaceContentUrl) && derivedResourceRef.previewable !== false;
     return next;
 }
 

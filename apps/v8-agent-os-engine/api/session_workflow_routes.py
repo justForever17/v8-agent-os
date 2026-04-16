@@ -13,6 +13,7 @@ from core.context_governance import (
 )
 from core.database import db
 from core.multimodal_payload_adapter import normalize_artifact_record
+from core.scoped_workspace_resource import resolve_scoped_workspace_resource
 from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
@@ -347,6 +348,39 @@ async def delete_message(message_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workspace/resource")
+async def get_workspace_resource(
+    workspace_relative_path: str = Query(..., alias="workspace_relative_path"),
+    path_plane: str = Query(..., alias="path_plane"),
+    workspace_id: Optional[str] = Query(None, alias="workspace_id"),
+    project_id: Optional[str] = Query(None, alias="project_id"),
+):
+    try:
+        resolved = resolve_scoped_workspace_resource(
+            workspace_relative_path=workspace_relative_path,
+            path_plane=path_plane,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    response = FileResponse(str(resolved.absolute_path))
+    response.headers["X-V8-Workspace-Relative-Path"] = resolved.workspace_relative_path
+    response.headers["X-V8-Path-Plane"] = resolved.path_plane
+    if resolved.workspace_id:
+        response.headers["X-V8-Workspace-Id"] = resolved.workspace_id
+    if resolved.project_id:
+        response.headers["X-V8-Project-Id"] = resolved.project_id
+    return response
 
 
 @router.get("/sessions/{session_id}/scope")

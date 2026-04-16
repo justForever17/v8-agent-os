@@ -37,10 +37,74 @@ For tasks requiring interception (i.e., destructive system commands, highly sens
 
 ### 2.2 OpenClaw Ecosystem Mount Layer (Plugin Host / Network Supervisor)
 To gracefully accommodate OpenClaw's wide-area network/open protocol plugin clusters and multi-channel synchronization, the Engine assumes secure master-slave isolation and handshakes.
-- **Authentication Handshake Interfaces**: Receives external communications from `v8-bridge`, matches tool verification permissions, and validates Gateway/Channel tokens alongside Handoff Tokens.
+- **Authentication Handshake Interfaces**: Receives external communications from `openclaw-v8-bridge`, matches tool verification permissions, and validates Gateway/Channel tokens alongside Handoff Tokens.
 - **Fail-Closed Principle**: Any out-of-bounds behavior not registered in the internal inventory whitelist or failing validation will be outright rigorously rejected to prevent data contamination.
 
 ## 3. Request and Delivery Style Guidelines
 When writing request bodies or modifying the API:
 - Maintain clear boundaries for events: Do not attempt to bundle all side effects together into a single, coarse-grained, stateless interface submission.
 - Alterations to Artifacts and Workflow Ledgers must strictly synchronize with the system's own message events and the Action Executor lifecycle.
+
+## 4. Scoped Workspace Resource Surface
+
+The Engine no longer treats `main workspace + /workspace/{file_path}` as the universal media surface. The canonical visible-file contract is now a **scoped workspace resource resolver**:
+
+1. Engine: `GET /v1/workspace/resource`
+2. Admin: `GET /api/workspace/resource`
+3. Client: `GET /api/client/workspace/resource`
+
+Fixed query parameters:
+
+1. `workspace_relative_path`
+2. `path_plane`
+3. `workspace_id?`
+4. `project_id?`
+
+Rules:
+
+1. Only `workspace_download` and `workspace_artifact` may enter this resolver.
+2. `workspace_id` / `project_id` must hit an allowlisted binding from the project registry.
+3. Project workspaces may live at arbitrary absolute roots; they are no longer assumed to be nested under the main workspace.
+4. `/workspace/{file_path}` and `/api/client/workspace/files/[...path]` remain **main-workspace-only legacy wrappers**.
+
+## 5. Resource Plane Boundaries
+
+Visible files must be expressed as canonical artifact/resource records instead of raw local paths. The minimum surface fields are:
+
+1. `projectId`
+2. `workspaceId`
+3. `workspaceRoot`
+4. `workspaceRelativePath`
+5. `pathPlane`
+6. `resourceRef`
+7. `signedUrl`
+8. `adminPath`
+
+Current `pathPlane` semantics:
+
+1. `workspace_download`
+2. `workspace_artifact`
+3. `channel_delivery_stage`
+4. `runtime_private`
+
+Important boundary:
+
+1. `plugin_host` inbound downloads belong to the V8 workspace plane and may use the scoped resolver.
+2. OpenClaw outbound staging / TTS transcoding under `~/.openclaw/media/outbound/...` belongs to `channel_delivery_stage`.
+3. `channel_delivery_stage` must stay on artifact-content/signed-artifact surfaces and must not be reinterpreted as `workspace_file`.
+
+## 6. Ask User Runtime Semantics
+
+`ask_user` is no longer a generic approval event for chat surfaces. The authoritative client-facing lifecycle is:
+
+1. `ask_user.requested`
+2. run status = `waiting_input`
+3. client responds through the dedicated ask-user resume API
+4. `ask_user.resolved`
+5. the original run resumes and continues the same assistant canonical row
+
+Before the answer arrives:
+
+1. no final assistant narrative
+2. no completed assistant state
+3. no generic approval card for chat UI

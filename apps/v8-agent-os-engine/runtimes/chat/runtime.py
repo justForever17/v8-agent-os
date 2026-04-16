@@ -11,7 +11,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 from api.models import ChatRequest
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
@@ -29,6 +29,10 @@ from core.graph_stream_watchdog import (
 )
 from core.json_safe import to_jsonable
 from core.realtime_protocol import protocol_connected_event
+from core.scoped_workspace_resource import (
+    build_workspace_resource_ref,
+    resolve_scoped_workspace_resource,
+)
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
 from core.context.workspace import workspace_resolution_service
@@ -505,6 +509,19 @@ class ChatRuntime:
                 )
                 local_path = Path(workspace_dir) / subpath
                 local_files.append(str(local_path.absolute().resolve()))
+            elif "/workspace/resource" in url:
+                parsed = urlparse(url)
+                query = parse_qs(parsed.query or "")
+                try:
+                    resolved = resolve_scoped_workspace_resource(
+                        workspace_relative_path=(query.get("workspace_relative_path") or [""])[0],
+                        path_plane=(query.get("path_plane") or [""])[0],
+                        workspace_id=(query.get("workspace_id") or [None])[0],
+                        project_id=(query.get("project_id") or [None])[0],
+                    )
+                    local_files.append(str(resolved.absolute_path))
+                except Exception:
+                    local_files.append(url)
             else:
                 local_files.append(url)
 
@@ -1400,6 +1417,7 @@ class ChatRuntime:
             text=final_text,
             message_id=message_id,
             profile=profile,
+            request=chat_run.request,
         )
         if not artifact_nodes:
             return
@@ -2478,12 +2496,22 @@ class ChatRuntime:
         text: str,
         message_id: str,
         profile: dict[str, str],
+        request: ChatRequest | None = None,
     ) -> list[dict[str, Any]]:
         raw_text = str(text or "")
         if not raw_text:
             return []
         try:
-            workspace_root = Path(workspace_resolution_service.get_main_workspace_path()).expanduser().resolve()
+            descriptor = workspace_resolution_service.resolve_workspace_descriptor(
+                runtime_kind="chat",
+                session_id=(request.conversation_id or request.session_id) if request else None,
+                explicit_workspace_id=request.workspace_id if request else None,
+                explicit_project_id=request.project_id if request else None,
+                explicit_workspace_path=request.workspace_path if request else None,
+            )
+            workspace_root = Path(
+                str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())
+            ).expanduser().resolve()
         except Exception:
             return []
 
@@ -2506,7 +2534,6 @@ class ChatRuntime:
             seen_relative_paths.add(workspace_path)
             mime_type = mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
             media_kind = self._media_kind_for_mime(mime_type, workspace_path)
-            encoded_workspace_path = "/".join(quote(segment, safe="") for segment in relative_path.parts)
             artifact_id = f"workspace:{uuid.uuid5(uuid.NAMESPACE_URL, workspace_path).hex}"
             artifact = {
                 "id": artifact_id,
@@ -2517,21 +2544,25 @@ class ChatRuntime:
                 "sourcePath": str(resolved_path),
                 "workspacePath": workspace_path,
                 "mimeType": mime_type,
-                "resourceRef": {
-                    "kind": "workspace_file",
-                    "workspacePath": workspace_path,
-                    "workspaceRelativePath": workspace_path,
-                    "adminPath": f"/api/client/workspace/files/{encoded_workspace_path}",
-                    "mimeType": mime_type,
-                    "displayLabel": resolved_path.name,
-                    "previewable": media_kind in {"image", "video", "audio"},
-                    "downloadable": True,
-                    "surfaceVisible": True,
-                    "pathPlane": "workspace_artifact",
-                },
+                "resourceRef": build_workspace_resource_ref(
+                    workspace_relative_path=workspace_path,
+                    path_plane="workspace_artifact",
+                    workspace_root=workspace_root,
+                    workspace_id=str(descriptor.get("workspaceId") or "").strip() or None,
+                    project_id=str(descriptor.get("projectId") or "").strip() or None,
+                    mime_type=mime_type,
+                    display_label=resolved_path.name,
+                    previewable=media_kind in {"image", "video", "audio"},
+                    downloadable=True,
+                    surface_visible=True,
+                ),
                 "metadata": {
                     "source": "assistant_narrative_workspace_path",
                     "workspaceRoot": str(workspace_root),
+                    "workspaceId": str(descriptor.get("workspaceId") or "").strip() or None,
+                    "projectId": str(descriptor.get("projectId") or "").strip() or None,
+                    "workspaceRelativePath": workspace_path,
+                    "pathPlane": "workspace_artifact",
                 },
             }
             nodes.append(
@@ -2586,6 +2617,7 @@ class ChatRuntime:
             text=final_text,
             message_id=message_id,
             profile=profile,
+            request=chat_run.request,
         )
 
         def _replace_narrative(nodes: list[dict[str, Any]], _metadata: dict[str, Any]):

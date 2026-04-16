@@ -4,7 +4,7 @@
 
 - `E:\Projects\v8chat\v8-agent-os`
 - `E:\Projects\v8chat\v8-agent-os-site`
-- `E:\Projects\v8chat\v8-bridge`
+- `E:\Projects\v8chat\openclaw-v8-bridge`
 
 读者：
 
@@ -147,7 +147,7 @@ flowchart TD
 4. `tool_start`
 5. `tool_result`
 6. `artifact_recorded`
-7. `ask_user`
+7. `ask_user.requested`
 8. 模型在工具前后给出的短说明消息
 
 #### 默认进入 runtime HUD / timeline，只有自带可读文本时才进 narrative
@@ -164,6 +164,7 @@ flowchart TD
 10. `run.lane.released`
 11. `run.lane.rejected`
 12. `safety.preflight.blocked`
+13. `ask_user.resolved`
 
 #### 进入 CDC store 与治理摘要，不进 narrative
 
@@ -311,7 +312,14 @@ runtime 私有状态统一进入：
 
 1. `computer_use` trace / report
 2. `rpa` drafts / scripts / templates / trust metrics
-3. `plugin_host` 内部媒体槽位 / tts / attachment staging
+3. `plugin_host` inbound 下载附件：`<resolved_workspace_root>/downloaded_media/plugin_host/...`
+4. OpenClaw 渠道出站暂存 / TTS 转码：`~/.openclaw/media/outbound/v8-agent-os/plugin_host/...`
+
+`channel_delivery_stage` 是独立 plane：
+
+1. 只允许通过 artifact content / signed artifact URL 出现在 surface
+2. 不进入 workspace resolver
+3. 不再伪装成 `workspace_file`
 
 ### 3.5.4 surface resource contract 最小字段
 
@@ -326,12 +334,14 @@ runtime 私有状态统一进入：
 6. `pathPlane`
 7. `resourceRef`
 8. `signedUrl`
+9. `adminPath`
 
 其中 `pathPlane` 固定枚举为：
 
 1. `runtime_private`
 2. `workspace_download`
 3. `workspace_artifact`
+4. `channel_delivery_stage`
 
 ### 3.5.5 禁止项
 
@@ -342,6 +352,31 @@ runtime 私有状态统一进入：
 3. runtime 私有目录路径
 4. 旧 `.v8-agent-os-artifacts/...`
 5. 未规范化的 `/workspace/...` 裸地址
+6. 没有 `workspaceId/projectId/workspaceRoot/workspaceRelativePath/pathPlane` 的裸本地路径猜测
+
+### 3.5.6 scoped workspace resource resolver
+
+从本轮开始，project workspace 进入 canonical resource surface，不再默认要求它位于 main workspace 下。
+
+统一资源入口：
+
+1. Engine：`GET /v1/workspace/resource`
+2. Admin：`GET /api/workspace/resource`
+3. Client：`GET /api/client/workspace/resource`
+
+固定查询参数：
+
+1. `workspace_relative_path`
+2. `path_plane`
+3. `workspace_id?`
+4. `project_id?`
+
+约束：
+
+1. 只允许 `workspace_download` / `workspace_artifact`
+2. 只允许 allowlisted `workspace_id/project_id` 绑定
+3. `project workspace` 可以位于任意绝对路径，不要求嵌套在 main workspace
+4. `/workspace/{file_path}` 与 `/api/client/workspace/files/[...path]` 仅保留为 main workspace legacy wrapper
 
 如果路径命中 legacy residue 或受保护目录：
 

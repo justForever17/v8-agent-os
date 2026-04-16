@@ -461,6 +461,8 @@ export type ChatSubmitResponse = {
     accepted?: boolean;
     session_id?: string;
     conversationId?: string;
+    clientMessageId?: string;
     run_id?: string;
     runId?: string;
+    userMessage?: Record<string, unknown> | null;
 };

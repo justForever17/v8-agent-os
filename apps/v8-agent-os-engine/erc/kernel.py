@@ -106,14 +106,17 @@ class RunHandle:
                 "autoApproved": bool(approval.get("autoApproved")),
             },
         )
+        normalized_approval_kind = str(approval_kind or "").strip().lower()
+        approval_topic = "ask_user.requested" if normalized_approval_kind == "ask_user" else "approval.requested"
         self.emit(
-            "approval.requested",
+            approval_topic,
             approval,
             source=RuntimeSource(plane="engine", component="erc", node="command_service", agent_id=self.descriptor.agent_id),
         )
         if str(approval.get("status") or "").strip().lower() == "pending":
-            self.transition("waiting_approval", reason=approval_kind, node="command_service")
-            run_service.transition_run(self.run_id, status="waiting_approval")
+            waiting_status = "waiting_input" if normalized_approval_kind == "ask_user" else "waiting_approval"
+            self.transition(waiting_status, reason=approval_kind, node="command_service")
+            run_service.transition_run(self.run_id, status=waiting_status)
         else:
             approval_event_payload = {
                 "approval_id": approval["approval_id"],
@@ -122,26 +125,38 @@ class RunHandle:
                 "response": approval.get("response") or {},
                 "policySource": approval.get("policySource"),
             }
-            self.emit(
-                "approval.auto_approved",
-                approval_event_payload,
-                source=RuntimeSource(
-                    plane="engine",
-                    component="erc",
-                    node="command_service",
-                    agent_id=self.descriptor.agent_id,
-                ),
-            )
-            self.emit(
-                "approval.approved",
-                approval_event_payload,
-                source=RuntimeSource(
-                    plane="engine",
-                    component="erc",
-                    node="command_service",
-                    agent_id=self.descriptor.agent_id,
-                ),
-            )
+            if normalized_approval_kind == "ask_user":
+                self.emit(
+                    "ask_user.resolved",
+                    approval_event_payload,
+                    source=RuntimeSource(
+                        plane="engine",
+                        component="erc",
+                        node="command_service",
+                        agent_id=self.descriptor.agent_id,
+                    ),
+                )
+            else:
+                self.emit(
+                    "approval.auto_approved",
+                    approval_event_payload,
+                    source=RuntimeSource(
+                        plane="engine",
+                        component="erc",
+                        node="command_service",
+                        agent_id=self.descriptor.agent_id,
+                    ),
+                )
+                self.emit(
+                    "approval.approved",
+                    approval_event_payload,
+                    source=RuntimeSource(
+                        plane="engine",
+                        component="erc",
+                        node="command_service",
+                        agent_id=self.descriptor.agent_id,
+                    ),
+                )
         return approval
 
 

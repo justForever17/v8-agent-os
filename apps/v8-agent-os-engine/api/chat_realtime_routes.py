@@ -124,13 +124,27 @@ async def chat_submit(request: ChatRequest):
         request.session_id = str(uuid.uuid4())
 
     run_id = request.resume_run_id or f"run_{uuid.uuid4().hex}"
-    _schedule_chat_run(request, transport="submit", run_id=run_id)
+    client_message_id = request.client_message_id or (getattr(request.data, "client_message_id", None) if request.data else None)
+    user_message = None
+    execution_request = request
+    if not request.resume_run_id:
+        chat_run = chat_runtime.prepare_run_context(request, transport="submit", run_id=run_id)
+        user_message = chat_runtime.record_request_inputs(chat_run)
+        if not user_message:
+            user_message = db.get_chat_canonical_message_by_run(
+                session_id=chat_run.session_id,
+                run_id=chat_run.active_run_id,
+                role="user",
+            )
+    _schedule_chat_run(execution_request, transport="submit", run_id=run_id)
     return {
         "accepted": True,
         "session_id": request.session_id,
         "conversationId": request.session_id,
+        "clientMessageId": client_message_id,
         "run_id": run_id,
         "runId": run_id,
+        "userMessage": to_jsonable(user_message) if user_message else None,
     }
 
 

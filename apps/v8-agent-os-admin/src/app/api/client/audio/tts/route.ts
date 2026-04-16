@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
 
-import { fetchClientAdmin } from "@/lib/server/client-proxy";
+import { fetchClientEngine } from "@/lib/server/client-proxy";
 
 export async function POST(req: NextRequest) {
     try {
         const body = await req.text();
-        const response = await fetchClientAdmin(req, "/audio/tts", {
+        const response = await fetchClientEngine(req, "/audio/tts/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body,
@@ -13,7 +13,14 @@ export async function POST(req: NextRequest) {
 
         if (!response.ok || !response.body) {
             const detail = await response.text().catch(() => "");
-            return new Response(detail || "TTS request failed", { status: response.status || 500 });
+            return Response.json(
+                {
+                    error: "TTS request failed",
+                    detail: detail || "Engine TTS stream unavailable",
+                    status: response.status || 500,
+                },
+                { status: response.status || 500 },
+            );
         }
 
         return new Response(response.body, {

@@ -218,20 +218,6 @@ export function resolveRenderableMediaCandidates(
         pushUniqueCandidate(candidates, normalizedCandidate);
     }
 
-    const workspaceCandidates = [
-        resourceRef?.workspacePath,
-        normalizedOptions.workspacePath,
-        normalizedOptions.sourcePath,
-        normalizedOptions.value,
-    ];
-    for (const candidate of workspaceCandidates) {
-        const normalizedCandidate = normalizeRenderableWorkspaceUrl(adminBaseUrl, candidate);
-        if (!normalizedCandidate) {
-            continue;
-        }
-        pushUniqueCandidate(candidates, normalizedCandidate);
-    }
-
     return candidates;
 }
 

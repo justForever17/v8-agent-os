@@ -56,8 +56,13 @@ export function buildSignedClientSurfaceUrl(
     if (options?.absolute === false) {
         return signedPath;
     }
-    const publicBase = resolveReachableClientSurfaceOrigin(String(options?.publicBaseUrl || ""))
-        || resolveReachableAdminPublicBaseUrl();
+    const hasExplicitPublicBaseUrl = Boolean(
+        options && Object.prototype.hasOwnProperty.call(options, "publicBaseUrl"),
+    );
+    const resolvedClientSurfaceOrigin = resolveReachableClientSurfaceOrigin(String(options?.publicBaseUrl || ""));
+    const publicBase = hasExplicitPublicBaseUrl
+        ? resolvedClientSurfaceOrigin
+        : (resolvedClientSurfaceOrigin || resolveReachableAdminPublicBaseUrl());
     if (!publicBase) {
         return "";
     }

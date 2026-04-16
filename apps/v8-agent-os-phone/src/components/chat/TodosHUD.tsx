@@ -104,7 +104,17 @@ export const TodosHUD = memo(function TodosHUD({
 
             {!isCollapsed ? (
                 <CardContent style={styles.content}>
-                    <ScrollView nestedScrollEnabled style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
+                    <ScrollView
+                        nestedScrollEnabled
+                        keyboardShouldPersistTaps="handled"
+                        directionalLockEnabled
+                        overScrollMode="auto"
+                        showsVerticalScrollIndicator={todos.length > 4}
+                        scrollEventThrottle={16}
+                        style={styles.scrollArea}
+                        contentContainerStyle={styles.scrollContent}
+                        onTouchStart={(event) => event.stopPropagation()}
+                    >
                         {todos.map((todo) => {
                             const status = String(todo.status || "pending");
                             const isDone = status === "done";

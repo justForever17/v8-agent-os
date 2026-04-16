@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import type { AdminUserRecord } from "@/lib/users";
-import { resolveAdminApiBaseUrl, resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import {
+    resolveAdminApiBaseUrl,
+    resolveClientSurfaceOriginFromRequest,
+    resolveEngineBaseUrl,
+    resolveInternalSecret,
+} from "@/lib/server/runtime-config";
 import { resolveClientUser, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 
 type ClientContext = {
@@ -93,12 +98,15 @@ export async function fetchClientAdmin(
         throw new Error("Configuration Error");
     }
 
+    const clientSurfaceOrigin = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
+
     return fetch(`${resolveAdminApiBaseUrl()}${targetPath}`, {
         cache: "no-store",
         ...init,
         headers: mergeHeaders(init?.headers, {
             "x-v8-agent-os-secret": internalSecret,
             "x-v8-agent-os-user-email": context.userEmail,
+            ...(clientSurfaceOrigin ? { "x-v8-client-surface-origin": clientSurfaceOrigin } : {}),
         }),
     });
 }
@@ -113,11 +121,14 @@ export async function fetchClientEngine(
         throw new Error("Unauthorized");
     }
 
+    const clientSurfaceOrigin = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
+
     return fetch(`${resolveEngineBaseUrl()}${targetPath}`, {
         cache: "no-store",
         ...init,
         headers: mergeHeaders(init?.headers, {
             "x-v8-agent-os-user-email": context.userEmail,
+            ...(clientSurfaceOrigin ? { "x-v8-client-surface-origin": clientSurfaceOrigin } : {}),
         }),
     });
 }

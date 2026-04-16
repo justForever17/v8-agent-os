@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sessionFanoutHub } from "@/lib/realtime/session-fanout";
-import { resolveEngineBaseUrl, resolveReachableClientSurfaceOriginFromRequest } from "@/lib/server/runtime-config";
+import {
+    resolveClientSurfaceOriginFromRequest,
+    resolveEngineBaseUrl,
+} from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import {
     buildAuthoritativeSnapshotFingerprint,
@@ -38,7 +41,7 @@ export async function GET(
     }
 
     const { id } = await params;
-    const publicBaseUrl = resolveReachableClientSurfaceOriginFromRequest(req.url);
+    const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: true });
     const encoder = new TextEncoder();
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -205,6 +205,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         request = ChatRequest.model_validate(
             {
                 "messages": [{"role": "user", "content": ""}],
+                "clientMessageId": "user-client-1",
                 "fileUrls": ["https://example.test/a.png"],
                 "attachments": [
                     {
@@ -215,12 +216,15 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
                     }
                 ],
                 "data": {
+                    "clientMessageId": "user-client-1",
                     "fileUrls": ["https://example.test/c.png"],
                     "attachments": [{"url": "https://example.test/d.png", "source": "web"}],
                 },
             }
         )
 
+        self.assertEqual(request.client_message_id, "user-client-1")
+        self.assertEqual(request.data.client_message_id, "user-client-1")
         self.assertEqual(request.attachments[0].public_url, "https://example.test/b.png")
         self.assertEqual(request.data.attachments[0].url, "https://example.test/d.png")
         self.assertEqual(request.data.fileUrls, ["https://example.test/c.png"])
@@ -244,6 +248,30 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         )
 
         self.assertEqual([tool.name for tool in selected], ["ask_user"])
+
+    def test_process_message_index_ignores_command_tool_without_command_session(self):
+        snapshot = {
+            "session_id": "session-process",
+            "messages": [
+                {
+                    "id": "assistant-process",
+                    "runId": "run-process",
+                    "nodes": [
+                        {
+                            "id": "assistant-process:tool_call:1",
+                            "kind": "execution",
+                            "executionType": "tool_call",
+                            "toolName": "run_system_command",
+                            "toolCallId": "tool-call-1",
+                            "args": {"command": "dir"},
+                            "result": None,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        self.assertEqual(session_realtime_contract_module._build_process_message_index(snapshot), {})
 
     def test_builder_preserves_stable_node_timeline_and_derived_exports(self):
         fake_db = _FakeCanonicalDb()

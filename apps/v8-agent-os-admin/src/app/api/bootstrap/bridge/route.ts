@@ -4,14 +4,14 @@ import {
     isReachableClientSurfaceOrigin,
     resolveAdminApiBaseUrl,
     resolveAdminPublicBaseUrl,
+    resolveClientSurfaceOriginFromRequest,
     resolveReachableAdminPublicBaseUrl,
-    resolveReachableClientSurfaceOriginFromRequest,
 } from "@/lib/server/runtime-config";
 
 export async function GET(req: NextRequest) {
     const publicAdminBase = resolveAdminPublicBaseUrl();
     const adminBaseUrl = (
-        resolveReachableClientSurfaceOriginFromRequest(req.url)
+        resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false })
         || resolveReachableAdminPublicBaseUrl()
     ).replace(/\/$/, "");
     return NextResponse.json({

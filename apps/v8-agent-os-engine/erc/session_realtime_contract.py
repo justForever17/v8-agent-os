@@ -185,6 +185,7 @@ def _build_process_message_index(snapshot: Dict[str, Any]) -> Dict[str, Dict[str
                         "sessionId": message_session_id or None,
                     }
                 if tool_call_id:
+                    command_session = command_session or {}
                     tool_calls[tool_call_id] = {
                         "toolCallId": tool_call_id,
                         "sourceMessageId": message_id or None,

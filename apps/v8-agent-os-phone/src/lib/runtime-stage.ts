@@ -312,6 +312,9 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
             : {};
         const approvalKind = String(metadata.approvalKind || metadata.approval_kind || "").trim().toLowerCase();
         const interactionKind = String(metadata.interactionKind || metadata.interaction_kind || "").trim().toLowerCase();
+        if (topic === "ask_user.requested") {
+            return "ask_user" as const;
+        }
         if (topic === "approval.requested") {
             if (
                 interactionKind === "ask_user"
@@ -321,6 +324,7 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
             }
             return "approval_request" as const;
         }
+        if (topic === "ask_user.resolved") return "approval_resolved" as const;
         if (topic.startsWith("approval.")) return "approval_resolved" as const;
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
         if (topic.startsWith("context.")) return "context_governance" as const;

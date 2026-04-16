@@ -318,14 +318,16 @@ export function normalizeProcessForRealtimeSurface(raw: unknown): AdminProcessRe
     };
 }
 
-function normalizeContextReference(raw: unknown) {
+function normalizeContextReference(raw: unknown, options?: SurfaceNormalizationOptions) {
     const record = asRecord(raw);
     if (!Object.keys(record).length) {
         return raw;
     }
     return {
         ...record,
-        resourceRef: record.resourceRef ? attachSignedSurfaceUrl(coerceAdminResourceRef(record.resourceRef)) : record.resourceRef,
+        resourceRef: record.resourceRef
+            ? attachSignedSurfaceUrl(coerceAdminResourceRef(record.resourceRef), options)
+            : record.resourceRef,
     };
 }
 
@@ -420,9 +422,13 @@ function normalizeRuntimeTimelineEntry(raw: unknown, options?: SurfaceNormalizat
     }
 
     const metadata = asRecord(record.metadata);
+    const metadataResourceRef = attachSignedSurfaceUrl(
+        coerceAdminResourceRef(metadata.resourceRef || deriveAdminResourceRefFromArtifactLike(metadata)),
+        options,
+    );
     const normalizedMetadata = {
         ...metadata,
-        resourceRef: metadata.resourceRef || deriveAdminResourceRefFromArtifactLike(metadata),
+        resourceRef: metadataResourceRef || metadata.resourceRef || deriveAdminResourceRefFromArtifactLike(metadata),
         content: normalizeSurfaceContent(metadata.content, options),
         message: normalizeSurfaceContent(metadata.message, options),
         summary: normalizeSurfaceContent(metadata.summary, options),
@@ -463,7 +469,7 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
                 .filter(Boolean)
             : record.processes,
         contextReferences: Array.isArray(record.contextReferences)
-            ? record.contextReferences.map((item) => normalizeContextReference(item))
+            ? record.contextReferences.map((item) => normalizeContextReference(item, options))
             : record.contextReferences,
         projection: Object.keys(projection).length ? {
             ...projection,
@@ -482,7 +488,7 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
                     .filter(Boolean)
                 : projection.processes,
             contextReferences: Array.isArray(projection.contextReferences)
-                ? projection.contextReferences.map((item) => normalizeContextReference(item))
+                ? projection.contextReferences.map((item) => normalizeContextReference(item, options))
                 : projection.contextReferences,
         } : record.projection,
         workflowProjection: Object.keys(workflowProjection).length ? {
@@ -511,7 +517,7 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
                     .filter(Boolean)
                 : snapshot.processes,
             contextReferences: Array.isArray(snapshot.contextReferences)
-                ? snapshot.contextReferences.map((item) => normalizeContextReference(item))
+                ? snapshot.contextReferences.map((item) => normalizeContextReference(item, options))
                 : snapshot.contextReferences,
         } : record.snapshot,
     };

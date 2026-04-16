@@ -62,6 +62,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const scopeHint = root.scope_hint ?? root.scopeHint ?? data.scopeHint;
     const scopeMode = root.scope_mode ?? root.scopeMode ?? data.scopeMode ?? "explicit";
     const conversationId = root.session_id || root.conversationId || data.conversationId || crypto.randomUUID();
+    const clientMessageId = root.clientMessageId || root.client_message_id || data.clientMessageId || data.client_message_id;
     const currentContent = toolOutputs?.[0]?.output || messages[messages.length - 1]?.content || "";
     const rootFileUrls = Array.isArray(root.fileUrls) ? root.fileUrls : [];
     const dataFileUrls = Array.isArray(data.fileUrls) ? data.fileUrls : [];
@@ -79,11 +80,13 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
         currentContent: String(currentContent || ""),
         fileUrls,
         attachments: dedupedAttachments,
+        clientMessageId: typeof clientMessageId === "string" ? clientMessageId : undefined,
         provider: typeof provider === "string" ? provider : undefined,
         modelName: typeof modelName === "string" ? modelName : undefined,
         pythonPayload: {
             session_id: String(conversationId),
             conversationId: String(conversationId),
+            clientMessageId: typeof clientMessageId === "string" ? clientMessageId : undefined,
             user_id: userEmail,
             stream: true,
             title: String(currentContent || "").substring(0, 30) || "New Chat",
@@ -108,6 +111,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
             })),
             data: {
                 conversationId: String(conversationId),
+                clientMessageId: typeof clientMessageId === "string" ? clientMessageId : undefined,
                 commandPreset: data.commandPreset,
                 fileUrls,
                 attachments: dedupedAttachments,

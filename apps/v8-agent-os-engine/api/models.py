@@ -63,6 +63,7 @@ class ChatAttachment(BaseModel):
 class ChatRequestData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    client_message_id: Optional[str] = Field(default=None, alias="clientMessageId")
     command_preset: Optional[CommandPresetSelection] = Field(default=None, alias="commandPreset")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
@@ -78,6 +79,7 @@ class ChatRequest(BaseModel):
     stream: Optional[bool] = Field(default=True, description="Whether to stream the response via SSE")
     session_id: Optional[str] = Field(default=None, description="Unique identifier for the session/conversation")
     conversation_id: Optional[str] = Field(default=None, alias="conversationId")
+    client_message_id: Optional[str] = Field(default=None, alias="clientMessageId")
     user_id: Optional[str] = Field(default="anonymous")
     fileUrls: Optional[List[str]] = Field(default=None, description="Local paths or URLs to uploaded files")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")

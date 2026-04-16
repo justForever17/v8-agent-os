@@ -9,7 +9,6 @@ import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
 import { ToolCard, ToolInvocation } from './ToolCard';
 import { GenericToolTraceCard } from './GenericToolTraceCard';
-import { AskUserCard } from './AskUserCard';
 import { ApprovalCard } from './ApprovalCard';
 import { parseContentToBlocks } from '@/lib/chat/content-detector';
 import { isCommandSessionTool } from '@/lib/chat/command-session';
@@ -272,7 +271,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                             : t(lt("系统控制信号", "System control"));
             const question = node.question || node.reason || node.topic || node.status || "";
             if (node.governanceType === "ask_user") {
-                return <AskUserCard question={question} status={node.status} />;
+                return null;
             }
             return (
                 <ApprovalCard

@@ -506,6 +506,23 @@ export async function approvePendingItem(
     });
 }
 
+export async function respondAskUser(
+    authorizedFetch: AuthorizedFetch,
+    interactionId: string,
+    answer: string,
+) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        `/api/client/ask-user/${encodeURIComponent(interactionId)}/respond`,
+        "提交回答失败",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ answer }),
+        },
+    );
+}
+
 export async function dispatchRunCommand(
     authorizedFetch: AuthorizedFetch,
     runId: string,
@@ -555,12 +572,14 @@ export async function submitChatMessage(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+            clientMessageId: options.clientMessageId || undefined,
             messages: [
                 ...options.messages,
                 { role: "user", content: userText },
             ],
             data: {
                 conversationId: options.conversationId || undefined,
+                clientMessageId: options.clientMessageId || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
@@ -717,7 +736,13 @@ export async function requestTextToSpeech(authorizedFetch: AuthorizedFetch, payl
         body: JSON.stringify(payload),
     });
     if (!response.ok) {
-        const detail = await parseTextSafe(response);
+        const errorPayload = await parseJsonSafe<Record<string, unknown>>(response.clone());
+        const detail = String(
+            errorPayload?.detail
+            || errorPayload?.error
+            || await parseTextSafe(response)
+            || "语音合成失败",
+        ).trim();
         throw new Error(detail || "语音合成失败");
     }
     return response;
@@ -726,6 +751,7 @@ export async function requestTextToSpeech(authorizedFetch: AuthorizedFetch, payl
 type SendChatOptions = {
     messages: Array<{ role: string; content: string }>;
     conversationId?: string | null;
+    clientMessageId?: string | null;
     commandPresetName?: string | null;
     skillReferences?: SkillReferenceSummary[];
     fileUrls?: string[];
@@ -743,12 +769,14 @@ export async function sendChatMessageStream(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+            clientMessageId: options.clientMessageId || undefined,
             messages: [
                 ...options.messages,
                 { role: "user", content: userText },
             ],
             data: {
                 conversationId: options.conversationId || undefined,
+                clientMessageId: options.clientMessageId || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,

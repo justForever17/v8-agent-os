@@ -11,10 +11,14 @@
             "id": "abc38cb20d37f2a7",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "software-copyright/01_申请主表信息.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "新标签页"
+              "title": "01_申请主表信息"
             }
           }
         ]

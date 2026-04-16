@@ -312,12 +312,113 @@ def _durable_message_to_transcript_entry(message: Dict[str, Any], index: int) ->
     }
 
 
+def _canonical_message_to_transcript_entry(message: Dict[str, Any], index: int) -> Dict[str, Any] | None:
+    role = str(message.get("role") or "unknown").strip().lower()
+    lines: List[str] = []
+    nodes = [node for node in list(message.get("nodes") or []) if isinstance(node, dict)]
+    has_narrative_node = any(
+        str(node.get("kind") or "").strip().lower() == "narrative" and str(node.get("content") or "").strip()
+        for node in nodes
+    )
+    has_reasoning_node = any(
+        str(node.get("kind") or "").strip().lower() == "execution"
+        and str(node.get("executionType") or node.get("execution_type") or "").strip().lower() == "reasoning"
+        and str(node.get("content") or "").strip()
+        for node in nodes
+    )
+    if not has_narrative_node:
+        _append_if_present(lines, "content", message.get("content_text") or message.get("content"), limit=2400)
+    if not has_reasoning_node:
+        _append_if_present(lines, "reasoning", message.get("reasoning_text"), limit=1600)
+
+    for node in nodes:
+        if not isinstance(node, dict) or _looks_like_todo_update(node):
+            continue
+        kind = str(node.get("kind") or "").strip().lower()
+        if kind == "narrative":
+            _append_if_present(lines, "text", node.get("content"), limit=2400)
+        elif kind == "execution":
+            execution_type = str(node.get("executionType") or node.get("execution_type") or "").strip().lower()
+            if execution_type == "reasoning":
+                _append_if_present(lines, "reasoning", node.get("content"), limit=1600)
+            elif execution_type == "tool_call":
+                tool_name = node.get("toolName") or node.get("tool_name") or "tool"
+                _append_if_present(lines, f"tool_call {tool_name}", node.get("args"), limit=1400)
+            elif execution_type == "tool_result":
+                tool_name = node.get("toolName") or node.get("tool_name") or "tool"
+                _append_if_present(lines, f"tool_result {tool_name}", node.get("result"), limit=1600)
+            elif execution_type == "agent_start":
+                _append_if_present(lines, "agent_start", node.get("agentName") or node.get("agent_id"), limit=300)
+        elif kind == "artifact":
+            artifact = node.get("artifact") if isinstance(node.get("artifact"), dict) else node
+            _append_if_present(lines, "artifact", {
+                "id": artifact.get("artifactId") or artifact.get("id"),
+                "kind": artifact.get("kind"),
+                "title": artifact.get("title") or artifact.get("displayLabel"),
+                "mimeType": artifact.get("mimeType") or artifact.get("mime_type"),
+                "workspaceRelativePath": artifact.get("workspaceRelativePath") or artifact.get("workspace_relative_path"),
+            }, limit=900)
+
+    for artifact in list(message.get("artifacts") or []):
+        if isinstance(artifact, dict):
+            _append_if_present(lines, "artifact", {
+                "id": artifact.get("artifactId") or artifact.get("id"),
+                "kind": artifact.get("kind"),
+                "title": artifact.get("title"),
+                "mimeType": artifact.get("mimeType"),
+                "workspaceRelativePath": artifact.get("workspaceRelativePath"),
+            }, limit=800)
+
+    content = "\n".join(dict.fromkeys(line for line in lines if line.strip())).strip()
+    if not content:
+        return None
+    return {
+        "id": message.get("id") or f"canonical:{index}",
+        "role": role,
+        "content": content,
+        "created_at": message.get("created_at") or message.get("createdAt"),
+        "source": "chat_canonical_messages",
+        "run_id": message.get("run_id") or message.get("runId"),
+    }
+
+
 def _build_canonical_session_transcript(session_id: str, durable_messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     runtime_events = db.get_runtime_events(session_id)
     latest_runtime_seq = db.get_latest_runtime_seq(session_id)
     snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
     snapshot = snapshot_row.get("snapshot") if snapshot_row else None
     snapshot_seq = int(snapshot_row.get("latest_seq") or 0) if snapshot_row else 0
+    source = "chat_canonical_messages"
+
+    entries: List[Dict[str, Any]] = []
+    try:
+        canonical_messages = db.get_chat_canonical_messages(session_id)
+    except Exception as exc:
+        logger.warning(f"[MemoryAgent] Failed to load canonical transcript for {session_id}: {exc}")
+        canonical_messages = []
+
+    for index, message in enumerate(canonical_messages or []):
+        if isinstance(message, dict):
+            entry = _canonical_message_to_transcript_entry(message, index)
+            if entry:
+                entries.append(entry)
+
+    if entries:
+        transcript_hash = _message_hash(entries)
+        semantic_text = "\n".join(f"{entry.get('role', 'unknown').upper()}: {entry.get('content', '')}" for entry in entries).strip()
+        return {
+            "session_id": session_id,
+            "source": source,
+            "entries": entries,
+            "latest_seq": latest_runtime_seq,
+            "durable_message_count": len(durable_messages),
+            "runtime_event_count": len(runtime_events),
+            "user_message_count": sum(1 for entry in entries if entry.get("role") == "user"),
+            "content_length": len(semantic_text),
+            "hash": transcript_hash,
+            "text": semantic_text,
+        }
+
     source = "runtime_snapshot"
 
     if not isinstance(snapshot, dict) or snapshot_seq < latest_runtime_seq:
@@ -331,7 +432,6 @@ def _build_canonical_session_transcript(session_id: str, durable_messages: List[
             logger.warning(f"[MemoryAgent] Failed to build runtime projection transcript for {session_id}: {exc}")
             snapshot = None
 
-    entries: List[Dict[str, Any]] = []
     if isinstance(snapshot, dict) and isinstance(snapshot.get("messages"), list):
         for index, message in enumerate(snapshot.get("messages") or []):
             if isinstance(message, dict):
@@ -465,6 +565,29 @@ def _is_path_like_fact(text: str) -> bool:
     return any(token in normalized for token in (":\\", "/users/", "\\users\\", "~/"))
 
 
+def _is_operational_learning_fact(fact: KnowledgeExtraction) -> bool:
+    text = f"{fact.category} {fact.fact}".lower()
+    return any(
+        token in text
+        for token in (
+            "operational_workflow",
+            "workflow",
+            "computer use",
+            "computer_use",
+            "desktop live",
+            "desktop_live",
+            "tool workflow",
+            "tool usage",
+            "工具流程",
+            "操作流程",
+            "使用流程",
+            "运行约定",
+            "runtime contract",
+            "runtime_contract",
+        )
+    )
+
+
 def _item_key(item: Any, fields: List[str]) -> tuple:
     return tuple(str(getattr(item, field, "") or "").strip() for field in fields)
 
@@ -498,6 +621,12 @@ def _evaluate_knowledge_persistence(fact: KnowledgeExtraction, policy: Dict[str,
     if scope_kind == "global":
         if _is_path_like_fact(fact_text):
             return False, "path_like_global"
+        if durability == "operational" and _is_operational_learning_fact(fact):
+            if int(fact.importance or 0) < int(policy["knowledge_importance_threshold"]):
+                return False, "importance_below_operational_threshold"
+            if float(fact.confidence or 0.0) < float(policy["knowledge_confidence_threshold"]):
+                return False, "confidence_below_operational_threshold"
+            return True, "persisted_operational_workflow"
         if durability != "stable":
             return False, "global_requires_stable"
         if int(fact.importance or 0) < 75:
@@ -894,6 +1023,9 @@ def _append_session_log(
         "extracted_knowledge_count": len(result.knowledge),
         "persisted_preference_count": len(stored_preference_items),
         "persisted_knowledge_count": len(stored_knowledge_items),
+        "persisted_operational_workflow_count": sum(
+            1 for item in stored_knowledge_items if _is_operational_learning_fact(item)
+        ),
         "filtered_preference_count": max(0, len(result.preferences) - len(stored_preference_items)),
         "filtered_knowledge_count": max(0, len(result.knowledge) - len(stored_knowledge_items)),
         "filter_reasons": _filter_reason_summary(
@@ -1294,6 +1426,9 @@ def analyze_session_memory(
         stored_knowledge_items=stored_knowledge_items,
         policy=policy,
     )
+    persisted_operational_workflows = sum(
+        1 for item in stored_knowledge_items if _is_operational_learning_fact(item)
+    )
     filtered_preferences = max(0, len(result.preferences) - len(stored_preference_items))
     filtered_knowledge = max(0, len(result.knowledge) - len(stored_knowledge_items))
     _emit_memory_event(
@@ -1397,6 +1532,7 @@ def analyze_session_memory(
             "extracted_relation_count": len(result.relations),
             "persisted_preference_count": stored_preferences,
             "persisted_knowledge_count": stored_knowledge,
+            "persisted_operational_workflow_count": persisted_operational_workflows,
             "persisted_entity_count": graph_stats["entities"],
             "persisted_relation_count": graph_stats["relations"],
             "filtered_preference_count": filtered_preferences,
@@ -1453,6 +1589,7 @@ def analyze_session_memory(
         "extracted_relation_count": len(result.relations),
         "persisted_preference_count": stored_preferences,
         "persisted_knowledge_count": stored_knowledge,
+        "persisted_operational_workflow_count": persisted_operational_workflows,
         "persisted_entity_count": graph_stats["entities"],
         "persisted_relation_count": graph_stats["relations"],
         "filtered_preference_count": filtered_preferences,

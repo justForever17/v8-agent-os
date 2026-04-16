@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import os
 import re
 import time
@@ -10,6 +11,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 from api.models import ChatRequest
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
@@ -338,6 +340,27 @@ class ChatRuntime:
             "data": event_data,
         }
 
+    def _build_ask_user_request_from_tool_call(
+        self,
+        *,
+        args: dict[str, Any],
+        tool_call_id: str,
+    ) -> dict[str, Any]:
+        question = str(
+            args.get("question")
+            or args.get("prompt")
+            or args.get("message")
+            or "我需要您的输入以继续执行任务。"
+        ).strip() or "我需要您的输入以继续执行任务。"
+        request_payload = dict(args or {})
+        request_payload["question"] = question
+        request_payload["prompt"] = question
+        request_payload["interactionKind"] = "ask_user"
+        request_payload["approvalKind"] = "ask_user"
+        if tool_call_id:
+            request_payload["toolCallId"] = tool_call_id
+        return request_payload
+
     def _build_safety_blocked_event(
         self,
         chat_run: ChatRunContext,
@@ -470,11 +493,12 @@ class ChatRuntime:
         local_files: list[str] = []
         for attachment in attachments:
             url = self._attachment_url(attachment)
-            if "/api/workspace/files/" in url:
-                subpath = url.split("/api/workspace/files/")[-1]
+            if "/api/workspace/files/" in url or "/api/client/workspace/files/" in url:
+                marker = "/api/client/workspace/files/" if "/api/client/workspace/files/" in url else "/api/workspace/files/"
+                subpath = unquote(url.split(marker)[-1].split("?", 1)[0]).replace("/", os.sep).replace("\\", os.sep)
                 workspace_dir = workspace_resolution_service.resolve_workspace_path(
                     runtime_kind="chat",
-                    session_id=request.conversationId or request.session_id,
+                    session_id=request.conversation_id or request.session_id,
                     explicit_workspace_id=request.workspace_id,
                     explicit_project_id=request.project_id,
                     explicit_workspace_path=request.workspace_path,
@@ -782,15 +806,17 @@ class ChatRuntime:
                     "conversation_id": prepared.conversation_id,
                 },
             )
-            run_handle = self.begin_run(
-                session_id=prepared.session_id,
-                conversation_id=prepared.conversation_id,
-                user_id=prepared.user_id,
-                transport=transport,
-                provider=prepared.request.config.provider,
-                model_name=prepared.request.config.model_name,
-                run_id=run_id,
-            )
+            run_handle = self.attach_run(run_id) if run_id and db.get_run_record(run_id) else None
+            if run_handle is None:
+                run_handle = self.begin_run(
+                    session_id=prepared.session_id,
+                    conversation_id=prepared.conversation_id,
+                    user_id=prepared.user_id,
+                    transport=transport,
+                    provider=prepared.request.config.provider,
+                    model_name=prepared.request.config.model_name,
+                    run_id=run_id,
+                )
 
         existing_binding = session_scope_binding_service.get_binding(prepared.session_id)
         scope_result = scope_resolution_service.resolve(
@@ -883,8 +909,9 @@ class ChatRuntime:
                 node="scope_resolution",
             )
 
-    def record_request_inputs(self, chat_run: ChatRunContext) -> None:
+    def record_request_inputs(self, chat_run: ChatRunContext) -> dict[str, Any] | None:
         request = chat_run.request
+        client_message_id = self._request_client_message_id(request)
         metadata = {
             "run_id": chat_run.active_run_id,
             "transport": chat_run.transport,
@@ -896,6 +923,8 @@ class ChatRuntime:
             "scope_source": chat_run.scope_result.binding.scope_source,
             "scope_chain": list(chat_run.scope_result.scope_chain or []),
         }
+        if client_message_id:
+            metadata["clientMessageId"] = client_message_id
         if chat_run.prepared.command_preset_name:
             metadata["commandPreset"] = {
                 "name": chat_run.prepared.command_preset_name,
@@ -906,9 +935,27 @@ class ChatRuntime:
         if chat_run.prepared.skill_references:
             metadata["skillReferences"] = list(chat_run.prepared.skill_references)
 
+        user_input_already_recorded: dict[str, Any] | None = None
         if not chat_run.is_resume_request and request.messages and request.messages[-1].role == "user":
+            if client_message_id:
+                user_input_already_recorded = db.get_chat_canonical_message_by_client_message_id(
+                    session_id=chat_run.session_id,
+                    client_message_id=client_message_id,
+                    role="user",
+                )
+            if not user_input_already_recorded:
+                user_input_already_recorded = db.get_chat_canonical_message_by_run(
+                    session_id=chat_run.session_id,
+                    run_id=chat_run.active_run_id,
+                    role="user",
+                )
+
+        if not chat_run.is_resume_request and request.messages and request.messages[-1].role == "user" and not user_input_already_recorded:
             latest_user = request.messages[-1]
-            user_message_id = str(uuid.uuid4())
+            candidate_message_id = client_message_id or ""
+            if candidate_message_id and db.get_chat_canonical_message(candidate_message_id):
+                candidate_message_id = ""
+            user_message_id = candidate_message_id or str(uuid.uuid4())
             user_node_id = f"{user_message_id}:narrative"
             attachments = [dict(item) for item in list(request.attachments or []) if isinstance(item, dict)]
             attachment_nodes = [
@@ -932,11 +979,17 @@ class ChatRuntime:
                 }
                 for index, attachment in enumerate(attachments)
             ]
+            latest_user_content = latest_user.content or ""
+            if not latest_user_content.strip() and attachment_nodes:
+                latest_user_content = f"已上传 {len(attachment_nodes)} 个文件"
             user_metadata = self._canonical_message_metadata(
                 chat_run,
                 role="user",
                 images=request.fileUrls,
-                extra={"attachments": attachments} if attachments else None,
+                extra={
+                    **({"clientMessageId": client_message_id} if client_message_id else {}),
+                    **({"attachments": attachments} if attachments else {}),
+                } or None,
             )
             user_row = self._create_canonical_message(
                 chat_run,
@@ -948,29 +1001,34 @@ class ChatRuntime:
                         "id": user_node_id,
                         "kind": "narrative",
                         "role": "user",
-                        "content": latest_user.content,
+                        "content": latest_user_content,
                         "timestamp": user_metadata["timestamp"],
                     },
                     *attachment_nodes,
                 ],
                 metadata=user_metadata,
-                content_text=latest_user.content,
+                run_id=chat_run.active_run_id,
+                content_text=latest_user_content,
             )
             db.add_message(
                 msg_id=user_message_id,
                 session_id=chat_run.session_id,
                 role="user",
-                content=latest_user.content,
+                content=latest_user_content,
                 images=request.fileUrls,
-                metadata={**metadata, "attachments": attachments} if attachments else metadata,
+                metadata={
+                    **metadata,
+                    **({"attachments": attachments} if attachments else {}),
+                },
             )
             chat_run.emit_runtime_event(
                 "message.user.recorded",
                 {
                     "message_id": user_message_id,
+                    "clientMessageId": client_message_id or None,
                     "node_id": user_node_id,
                     "transcript_version": int(user_row.get("version") or 1),
-                    "content": latest_user.content,
+                    "content": latest_user_content,
                     "images": request.fileUrls or [],
                     "attachments": attachments,
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
@@ -1014,7 +1072,7 @@ class ChatRuntime:
                 chat_run.active_run_id,
                 inputs={
                     "latest_user_message_id": user_message_id,
-                    "latest_user_content": latest_user.content,
+                    "latest_user_content": latest_user_content,
                     "images": request.fileUrls or [],
                     "attachments": attachments,
                     "transport": chat_run.transport,
@@ -1025,6 +1083,7 @@ class ChatRuntime:
                 },
             )
             chat_run.run_handle.refresh_chat_snapshot()
+            user_input_already_recorded = user_row
 
         if not chat_run.is_resume_request and request.tool_outputs:
             for tool_output in request.tool_outputs:
@@ -1095,6 +1154,8 @@ class ChatRuntime:
                 },
             )
             chat_run.run_handle.refresh_chat_snapshot()
+
+        return user_input_already_recorded
 
     def _recursion_limit(self) -> int:
         ctx_config = storage.get_context_config()
@@ -1179,6 +1240,14 @@ class ChatRuntime:
     def _now_timestamp_ms() -> int:
         return int(time.time() * 1000)
 
+    @staticmethod
+    def _request_client_message_id(request: ChatRequest) -> str:
+        direct = str(getattr(request, "client_message_id", "") or "").strip()
+        if direct:
+            return direct
+        data = getattr(request, "data", None)
+        return str(getattr(data, "client_message_id", "") or "").strip() if data is not None else ""
+
     def _canonical_message_metadata(
         self,
         chat_run: ChatRunContext,
@@ -1246,6 +1315,17 @@ class ChatRuntime:
     def _ensure_assistant_canonical_message(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> str:
         if stream_state.assistant_message_id:
             return stream_state.assistant_message_id
+        existing = db.get_chat_canonical_message_by_run(
+            session_id=chat_run.session_id,
+            run_id=chat_run.active_run_id,
+            role="assistant",
+        )
+        if existing:
+            existing_id = str(existing.get("id") or "").strip()
+            if existing_id:
+                stream_state.assistant_message_id = existing_id
+                stream_state.assistant_transcript_version = int(existing.get("version") or 1)
+                return existing_id
         message_id = str(uuid.uuid4())
         profile = self._get_agent_profile(stream_state.current_agent)
         metadata = self._canonical_message_metadata(
@@ -1302,6 +1382,46 @@ class ChatRuntime:
         )
         stream_state.assistant_transcript_version = mutation.version
         return mutation.node_id or str(node.get("id") or ""), mutation.version
+
+    def _ensure_workspace_media_artifacts_for_message(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        message_id: str,
+    ) -> None:
+        row = db.get_chat_canonical_message(message_id)
+        if not row:
+            return
+        final_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")
+        if not final_text:
+            return
+        profile = self._get_agent_profile(stream_state.current_agent)
+        artifact_nodes = self._workspace_media_artifact_nodes_from_text(
+            text=final_text,
+            message_id=message_id,
+            profile=profile,
+        )
+        if not artifact_nodes:
+            return
+
+        def _append_missing_artifacts(nodes: list[dict[str, Any]], _metadata: dict[str, Any]):
+            existing_node_ids = {str(node.get("id") or "").strip() for node in nodes}
+            missing_nodes = [
+                node
+                for node in artifact_nodes
+                if str(node.get("id") or "").strip() not in existing_node_ids
+            ]
+            if not missing_nodes:
+                return nodes, None
+            return [*nodes, *missing_nodes], missing_nodes[0]["id"]
+
+        mutation = canonical_transcript_builder.mutate_message(
+            message_id,
+            _append_missing_artifacts,
+            state=str(row.get("state") or "streaming"),
+            metadata_updates={"workspaceMediaArtifactsDerived": True},
+        )
+        stream_state.assistant_transcript_version = mutation.version
 
     def _emit_message_targeted_runtime_event(
         self,
@@ -2130,6 +2250,11 @@ class ChatRuntime:
         if kind == "on_tool_start":
             inputs = self._sanitize_tool_input_value(data.get("input", {}))
             tool_call_id = event.get("run_id", "")
+            if str(name or "").strip() == "ask_user":
+                # ask_user 是 LangGraph interrupt 驱动的控制流工具；真正的等待点
+                # 只能由后续 on_chain_stream 里的 __interrupt__ 创建，不能在 tool_start
+                # 阶段伪造成普通审批，否则 resume 会重新进入同一工具并循环卡住。
+                return emitted_events
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             stream_state.active_tool_call_ids.add(active_tool_key)
             tool_start_event = {
@@ -2174,6 +2299,19 @@ class ChatRuntime:
             tool_call_id = event.get("run_id", "")
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             output_str = str(output.content) if hasattr(output, "content") else str(output)
+            if str(name or "").strip() == "ask_user":
+                chat_run.emit_runtime_event(
+                    "ask_user.resolved",
+                    {
+                        "toolCallId": tool_call_id,
+                        "answer": output_str,
+                        "runId": chat_run.active_run_id,
+                    },
+                    agent_id=stream_state.current_agent,
+                    node=stream_state.current_agent,
+                )
+                stream_state.active_tool_call_ids.discard(active_tool_key)
+                return emitted_events
             tool_result_event = {
                 "type": "tool_result",
                 "tool": {"toolCallId": tool_call_id, "toolName": name, "result": output_str},
@@ -2238,6 +2376,7 @@ class ChatRuntime:
         assistant_message_id = stream_state.assistant_message_id
         if not assistant_message_id:
             return
+        self._ensure_workspace_media_artifacts_for_message(chat_run, stream_state, assistant_message_id)
         canonical_transcript_builder.set_message_state(
             assistant_message_id,
             state="completed",
@@ -2316,6 +2455,98 @@ class ChatRuntime:
             return True
         return len(final) >= max(len(current) * 2, 16)
 
+    _WORKSPACE_MEDIA_PATH_PATTERN = re.compile(
+        r"(?P<path>[A-Za-z]:[\\/][^\r\n`\"']+?\.(?:png|jpe?g|gif|webp|bmp|mp4|mov|webm|mkv|mp3|wav|m4a|aac|flac))",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _media_kind_for_mime(mime_type: str, path: str) -> str:
+        lowered_mime = str(mime_type or "").lower()
+        lowered_path = str(path or "").lower()
+        if lowered_mime.startswith("image/") or lowered_path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+            return "image"
+        if lowered_mime.startswith("video/") or lowered_path.endswith((".mp4", ".mov", ".webm", ".mkv")):
+            return "video"
+        if lowered_mime.startswith("audio/") or lowered_path.endswith((".mp3", ".wav", ".m4a", ".aac", ".flac")):
+            return "audio"
+        return "file"
+
+    def _workspace_media_artifact_nodes_from_text(
+        self,
+        *,
+        text: str,
+        message_id: str,
+        profile: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        raw_text = str(text or "")
+        if not raw_text:
+            return []
+        try:
+            workspace_root = Path(workspace_resolution_service.get_main_workspace_path()).expanduser().resolve()
+        except Exception:
+            return []
+
+        nodes: list[dict[str, Any]] = []
+        seen_relative_paths: set[str] = set()
+        for match in self._WORKSPACE_MEDIA_PATH_PATTERN.finditer(raw_text):
+            raw_path = unquote(str(match.group("path") or "").strip().rstrip("，。；;、)）]】"))
+            if not raw_path:
+                continue
+            try:
+                resolved_path = Path(raw_path).expanduser().resolve()
+                relative_path = resolved_path.relative_to(workspace_root)
+            except Exception:
+                continue
+            if not resolved_path.is_file():
+                continue
+            workspace_path = relative_path.as_posix()
+            if not workspace_path or workspace_path in seen_relative_paths:
+                continue
+            seen_relative_paths.add(workspace_path)
+            mime_type = mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
+            media_kind = self._media_kind_for_mime(mime_type, workspace_path)
+            encoded_workspace_path = "/".join(quote(segment, safe="") for segment in relative_path.parts)
+            artifact_id = f"workspace:{uuid.uuid5(uuid.NAMESPACE_URL, workspace_path).hex}"
+            artifact = {
+                "id": artifact_id,
+                "artifactId": artifact_id,
+                "kind": media_kind,
+                "title": resolved_path.name,
+                "displayLabel": resolved_path.name,
+                "sourcePath": str(resolved_path),
+                "workspacePath": workspace_path,
+                "mimeType": mime_type,
+                "resourceRef": {
+                    "kind": "workspace_file",
+                    "workspacePath": workspace_path,
+                    "workspaceRelativePath": workspace_path,
+                    "adminPath": f"/api/client/workspace/files/{encoded_workspace_path}",
+                    "mimeType": mime_type,
+                    "displayLabel": resolved_path.name,
+                    "previewable": media_kind in {"image", "video", "audio"},
+                    "downloadable": True,
+                    "surfaceVisible": True,
+                    "pathPlane": "workspace_artifact",
+                },
+                "metadata": {
+                    "source": "assistant_narrative_workspace_path",
+                    "workspaceRoot": str(workspace_root),
+                },
+            }
+            nodes.append(
+                {
+                    "id": f"{message_id}:artifact:{artifact_id}",
+                    "kind": "artifact",
+                    "artifact": artifact,
+                    "timestamp": self._now_timestamp_ms(),
+                    "agentName": profile["name"],
+                    "agentAvatar": profile["avatar"],
+                    "agentRoleLabel": profile["roleLabel"],
+                }
+            )
+        return nodes
+
     async def reconcile_final_assistant_message(
         self,
         chat_run: ChatRunContext,
@@ -2351,6 +2582,11 @@ class ChatRuntime:
             "agentAvatar": profile["avatar"],
             "agentRoleLabel": profile["roleLabel"],
         }
+        derived_artifact_nodes = self._workspace_media_artifact_nodes_from_text(
+            text=final_text,
+            message_id=message_id,
+            profile=profile,
+        )
 
         def _replace_narrative(nodes: list[dict[str, Any]], _metadata: dict[str, Any]):
             preserved = [
@@ -2361,7 +2597,13 @@ class ChatRuntime:
                     and str(node.get("role") or "").strip() == "assistant"
                 )
             ]
-            return [*preserved, final_node], final_node["id"]
+            existing_node_ids = {str(node.get("id") or "").strip() for node in preserved}
+            append_artifact_nodes = [
+                node
+                for node in derived_artifact_nodes
+                if str(node.get("id") or "").strip() not in existing_node_ids
+            ]
+            return [*preserved, final_node, *append_artifact_nodes], final_node["id"]
 
         mutation = canonical_transcript_builder.mutate_message(
             message_id,
@@ -2426,7 +2668,8 @@ class ChatRuntime:
 
     def finalize_interrupted_run(self, chat_run: ChatRunContext, interrupted_signal: dict[str, Any]) -> list[dict[str, Any]]:
         if interrupted_signal.get("command") == "approval_requested":
-            return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
+            status = "waiting_input" if str(interrupted_signal.get("reason") or "").strip().lower() == "ask_user" else "waiting_approval"
+            return [{"type": "done", "status": status, "run_id": chat_run.active_run_id}]
         if interrupted_signal.get("command") in {"cancel", "interrupt"}:
             try:
                 from core.system_tools.native import _terminate_run_background_commands

@@ -16,7 +16,7 @@ type InlineToken =
     | { type: "link"; value: string; href: string };
 
 const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)]+)\)/gi;
-const BARE_LINK = /(https?:\/\/[^\s)]+|\/(?:api\/workspace\/files\/[^\s)]+|api\/client\/workspace\/files\/[^\s)]+|workspace\/[^\s)]+)|downloaded_media\/[^\s)`]+)/gi;
+const BARE_LINK = /(https?:\/\/[^\s)'"`]+|\/(?:api\/workspace\/files\/[^\s)'"`]+|api\/client\/workspace\/files\/[^\s)'"`]+|workspace\/[^\s)'"`]+)|downloaded_media\/[^\s)'"`]+)/gi;
 const IMAGE_URL = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i;
 const VIDEO_URL = /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i;
 const AUDIO_URL = /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i;
@@ -65,6 +65,14 @@ function unwrapInlineCodeToken(value: string) {
     return match?.[1]?.trim() || normalized;
 }
 
+function cleanHrefCandidate(value: string) {
+    return String(value || "")
+        .trim()
+        .replace(/^[`'"“”‘’]+/, "")
+        .replace(/[，。；、,.;:!?！？`'"“”‘’]+$/g, "")
+        .trim();
+}
+
 function inferMediaKindFromCandidate(value: string) {
     const normalized = String(value || "").trim();
     if (!normalized) {
@@ -73,6 +81,26 @@ function inferMediaKindFromCandidate(value: string) {
     if (IMAGE_URL.test(normalized)) return "image" as const;
     if (VIDEO_URL.test(normalized)) return "video" as const;
     if (AUDIO_URL.test(normalized)) return "audio" as const;
+    return null;
+}
+
+function findEmbeddedMediaHref(value: string) {
+    const normalized = String(value || "");
+    const markdownImage = normalized.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+    const markdownLink = normalized.match(/\[([^\]]*)\]\(([^)]+)\)/);
+    const markdownHref = markdownImage?.[2] || markdownLink?.[2] || "";
+    if (markdownHref) {
+        const href = cleanHrefCandidate(markdownHref);
+        if (isRenderableHref(href) && inferMediaKindFromCandidate(href)) {
+            return { href, label: markdownImage?.[1] || markdownLink?.[1] || undefined };
+        }
+    }
+    for (const match of normalized.matchAll(BARE_LINK)) {
+        const href = cleanHrefCandidate(match[0]);
+        if (isRenderableHref(href) && inferMediaKindFromCandidate(href)) {
+            return { href, label: undefined };
+        }
+    }
     return null;
 }
 
@@ -149,12 +177,15 @@ function resolveMedia(line: string, adminBaseUrl: string) {
 
     const markdownImage = normalizedLine.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
     const markdownLink = normalizedLine.match(/^\[([^\]]*)\]\(([^)]+)\)$/);
+    const embeddedMedia = findEmbeddedMediaHref(normalizedLine);
     const rawHref = markdownImage?.[2]
         || markdownLink?.[2]
-        || (isRenderableHref(normalizedLine) ? normalizedLine : null);
+        || (isRenderableHref(normalizedLine) ? normalizedLine : null)
+        || embeddedMedia?.href
+        || null;
     const candidates = rawHref ? resolveRenderableMediaCandidates(adminBaseUrl, rawHref) : [];
     const href = candidates[0] || null;
-    const label = markdownImage?.[1] || markdownLink?.[1] || undefined;
+    const label = markdownImage?.[1] || markdownLink?.[1] || embeddedMedia?.label || undefined;
     if (!href) return null;
     if (markdownImage) return { kind: "image" as const, href, label, candidates };
     const inferredKind = inferMediaKindFromCandidate(rawHref || href);

@@ -110,3 +110,29 @@ async def reject_pending_approval(approval_id: str, payload: RunCommandPayload):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ask-user/{interaction_id}/respond")
+async def respond_ask_user(interaction_id: str, payload: RunCommandPayload):
+    try:
+        response = dict(payload.response or payload.payload or {})
+        if "answer" not in response and payload.reason:
+            response["answer"] = payload.reason
+        response.setdefault("interactionId", interaction_id)
+        result = runtime_command_router.dispatch_approval_command(
+            RuntimeCommand(
+                topic="approval.approve",
+                approval_id=interaction_id,
+                response=response,
+                payload=dict(payload.payload or {}),
+            )
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Ask-user interaction '{interaction_id}' not found")
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

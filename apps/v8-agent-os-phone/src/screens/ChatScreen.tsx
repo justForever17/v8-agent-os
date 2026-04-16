@@ -86,6 +86,7 @@ import {
     listMusicTracks,
     listSkills,
     requestTextToSpeech,
+    respondAskUser,
     releaseDesktopLiveSession,
     submitChatMessage,
     sendDesktopLiveCandidate,
@@ -224,9 +225,10 @@ function buildUserMessage(
     if (attachments.length > 0) {
         metadata.attachments = attachments;
     }
+    metadata.clientMessageId = `user-${now}`;
 
     return {
-        id: `user-${now}`,
+        id: metadata.clientMessageId as string,
         role: "user",
         content: text || (attachments.length === 1 ? "已上传 1 个文件" : attachments.length > 1 ? `已上传 ${attachments.length} 个文件` : ""),
         timestamp: now,
@@ -235,6 +237,47 @@ function buildUserMessage(
             .filter(Boolean),
         artifacts: [],
         metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    };
+}
+
+function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): ChatMessage | null {
+    if (!raw || typeof raw !== "object") {
+        return null;
+    }
+    const record = raw as Record<string, unknown>;
+    const metadata = record.metadata && typeof record.metadata === "object"
+        ? record.metadata as Record<string, unknown>
+        : {};
+    const clientMessageId = String(
+        record.clientMessageId
+        || record.client_message_id
+        || metadata.clientMessageId
+        || metadata.client_message_id
+        || fallback.metadata?.clientMessageId
+        || fallback.id
+        || ""
+    ).trim();
+    const attachments = Array.isArray(metadata.attachments) ? metadata.attachments as Array<Record<string, unknown>> : [];
+    const images = attachments
+        .map((item) => String(item.publicUrl || item.url || item.workspacePath || "").trim())
+        .filter(Boolean);
+    const nodes = Array.isArray(record.nodes) ? record.nodes as PhoneUiTimelineNode[] : fallback.nodes || [];
+    return {
+        ...fallback,
+        id: String(record.id || fallback.id),
+        role: record.role === "user" ? "user" : fallback.role,
+        runId: String(record.run_id || record.runId || fallback.runId || ""),
+        content: String(record.content_text || record.content || fallback.content || ""),
+        timestamp: fallback.timestamp || Date.now(),
+        nodes,
+        images: images.length > 0 ? images : fallback.images,
+        artifacts: Array.isArray(record.artifacts) ? record.artifacts as ChatArtifact[] : fallback.artifacts,
+        metadata: {
+            ...(fallback.metadata || {}),
+            ...metadata,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            transcriptVersion: Number(record.version || metadata.transcriptVersion || 0) || undefined,
+        },
     };
 }
 
@@ -573,6 +616,7 @@ function findLatestAssistantShellIndex(messages: ChatMessage[], runId?: string) 
                 return index;
             }
         }
+        return -1;
     }
 
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -777,6 +821,10 @@ function buildMessageComparisonKeys(message: ChatMessage) {
     }
 
     const role = String(message.role || "").trim();
+    const clientMessageId = String(message.metadata?.clientMessageId || message.metadata?.client_message_id || "").trim();
+    if (clientMessageId) {
+        keys.add(`client:${role}:${clientMessageId}`);
+    }
     const runId = String(message.runId || message.metadata?.runId || "").trim();
     const normalizedContent = String(message.content || "").trim().replace(/\s+/g, " ");
     if (runId) {
@@ -967,15 +1015,14 @@ function mergeAuthoritativeSnapshotMessages(
         if (!matchingLocal) {
             return snapshotMessage;
         }
+        const matchingLocalId = String(matchingLocal.id || "").trim();
+        if (matchingLocalId) {
+            usedPreservableLocals.add(matchingLocalId);
+        }
         const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
         const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
         if (snapshotCanonical) {
             return snapshotMessage;
-        }
-
-        const matchingLocalId = String(matchingLocal.id || "").trim();
-        if (matchingLocalId) {
-            usedPreservableLocals.add(matchingLocalId);
         }
 
         const localStreamActive = matchingLocal.role === "assistant" && isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase);
@@ -2706,7 +2753,7 @@ export default function ChatScreen() {
                 label: tRef.current("任务已完成", "Task completed"),
                 subtitle: tRef.current("正在整理最终回复与产物。", "Preparing final response and artifacts."),
                 runId: normalized.run_id,
-                createIfMissing: true,
+                createIfMissing: false,
             });
             if (shouldFallbackRefresh) {
                 scheduleRealtimeSnapshotRefresh(
@@ -2803,6 +2850,42 @@ export default function ChatScreen() {
                     ),
                 );
             }
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+            }
+            return;
+        }
+
+        if (normalized.topic === "ask_user.resolved") {
+            setApprovals((current) => current.filter((item) => !isAskUserInteractionApproval(item)));
+            setRuntime((current) => ({
+                ...current,
+                status: "running",
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+                label: tRef.current("继续执行中", "Continuing"),
+            }));
+            patchAssistantTaskShell(todosRef.current, {
+                phase: "tooling",
+                label: tRef.current("继续执行中", "Continuing"),
+                subtitle: tRef.current("已收到你的输入，正在继续任务。", "Your answer was received and the task is continuing."),
+                runId: normalized.run_id,
+                createIfMissing: false,
+            });
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || "chat")) || "chat",
+                    normalized.topic || "ask_user.resolved",
+                    tRef.current("已收到你的输入，继续执行中", "Input received, continuing"),
+                    {
+                        id: normalized.event_id || `ask-user-resolved:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "governance",
+                        timestamp: normalized.ts || Date.now(),
+                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                    },
+                ),
+            );
             if (shouldFallbackRefresh) {
                 scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             }
@@ -3532,7 +3615,15 @@ export default function ChatScreen() {
         if (!approvalId) {
             return;
         }
-        await approvePendingItem(authorizedFetch, approvalId, answer, approve);
+        if (isAskUserInteractionApproval(approval)) {
+            if (!approve) {
+                await approvePendingItem(authorizedFetch, approvalId, answer, false);
+            } else {
+                await respondAskUser(authorizedFetch, approvalId, answer);
+            }
+        } else {
+            await approvePendingItem(authorizedFetch, approvalId, answer, approve);
+        }
         setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
     }, [authorizedFetch]);
 
@@ -3797,6 +3888,8 @@ export default function ChatScreen() {
         const pendingFiles = [...uploadedFiles];
         const effectiveText = text || (pendingFiles.length === 1 ? "已上传 1 个文件" : pendingFiles.length > 1 ? `已上传 ${pendingFiles.length} 个文件` : "");
         let submissionAccepted = false;
+        let optimisticUserMessageId = "";
+        let optimisticAssistantMessageId = "";
         setSending(true);
         try {
             const historyMessages = messagesRef.current
@@ -3817,7 +3910,14 @@ export default function ChatScreen() {
                 taskPlanningMode,
                 files: pendingFiles,
             });
+            const clientMessageId = userMessage.id;
             const assistantPlaceholder = buildAssistantPlaceholder();
+            assistantPlaceholder.metadata = {
+                ...(assistantPlaceholder.metadata || {}),
+                clientMessageId,
+            };
+            optimisticUserMessageId = userMessage.id;
+            optimisticAssistantMessageId = assistantPlaceholder.id;
             if (taskPlanningMode) {
                 assistantPlaceholder.uiStreamPhase = "task_planning";
                 assistantPlaceholder.metadata = {
@@ -3875,6 +3975,7 @@ export default function ChatScreen() {
                 {
                     messages: historyMessages,
                     conversationId: currentConversationId,
+                    clientMessageId,
                     commandPresetName: pendingCommand?.name || null,
                     skillReferences: pendingSkills,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
@@ -3886,6 +3987,22 @@ export default function ChatScreen() {
                 throw new Error(t("消息提交失败", "Unable to submit message"));
             }
             submissionAccepted = true;
+            const acceptedUserMessage = normalizeAcceptedUserMessage(submitResult.userMessage, userMessage);
+            if (acceptedUserMessage) {
+                setMessages((current) => {
+                    const next = normalizeMessagesForState(current.map((message) =>
+                        message.id === userMessage.id ? acceptedUserMessage : message,
+                    ));
+                    realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                        next,
+                        PHONE_STREAM_LIFECYCLE_OPTIONS,
+                    );
+                    lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                    messagesRef.current = next;
+                    messageConversationIdRef.current = currentConversationId;
+                    return next;
+                });
+            }
             setSelectedCommand(null);
             setSelectedSkills([]);
             setUploadedFiles([]);
@@ -3910,6 +4027,11 @@ export default function ChatScreen() {
                     next[targetIndex] = {
                         ...next[targetIndex],
                         runId: submittedRunId,
+                        metadata: {
+                            ...(next[targetIndex].metadata || {}),
+                            runId: submittedRunId,
+                            clientMessageId,
+                        },
                     };
                     messagesRef.current = next;
                     messageConversationIdRef.current = currentConversationId;
@@ -3927,6 +4049,18 @@ export default function ChatScreen() {
                 setSelectedCommand(pendingCommand);
                 setSelectedSkills(pendingSkills);
                 setUploadedFiles(pendingFiles);
+                setMessages((current) => {
+                    const next = normalizeMessagesForState(current.filter((message) =>
+                        message.id !== optimisticAssistantMessageId && message.id !== optimisticUserMessageId,
+                    ));
+                    realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                        next,
+                        PHONE_STREAM_LIFECYCLE_OPTIONS,
+                    );
+                    lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                    messagesRef.current = next;
+                    return next;
+                });
             }
             Alert.alert(t("发送失败", "Send failed"), error instanceof Error ? error.message : t("无法发送消息", "Unable to send message"));
         } finally {
@@ -4054,7 +4188,7 @@ export default function ChatScreen() {
                     </View>
                 ) : null}
                 {todosVisible ? (
-                    <View style={styles.todosOverlayDock} pointerEvents="box-none">
+                    <View style={styles.todosOverlayDock} pointerEvents="auto">
                         <TodosHUD items={projection.todos} shouldAutoHide={todoHudShouldAutoHide} />
                     </View>
                 ) : null}

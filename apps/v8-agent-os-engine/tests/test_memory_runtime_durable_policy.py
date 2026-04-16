@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +10,26 @@ from unittest.mock import patch
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
+
+if "chromadb" not in sys.modules:
+    class _FakeChromaCollection:
+        def upsert(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def delete(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def query(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return {}
+
+    class _FakeChromaClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        def get_or_create_collection(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return _FakeChromaCollection()
+
+    sys.modules["chromadb"] = types.SimpleNamespace(PersistentClient=_FakeChromaClient)
 
 from agents import memory_agent
 from agents.memory_agent import (
@@ -122,6 +143,33 @@ class MemoryDurablePolicyTests(unittest.TestCase):
 
         self.assertEqual(memory_agent._evaluate_knowledge_persistence(fact, POLICY), (True, "persisted"))
         self.assertEqual(memory_agent._evaluate_preference_persistence(pref, POLICY), (True, "persisted"))
+
+    def test_global_operational_workflow_is_allowed_without_stable_durability(self):
+        workflow = KnowledgeExtraction(
+            fact="Computer Use 浏览器任务应先复用已有窗口，再选择 managed Chrome，避免同时打开默认 Edge 和 Chrome。",
+            category="operational_workflow",
+            scope="global",
+            importance=75,
+            confidence=0.82,
+            durability="operational",
+        )
+        path_like = KnowledgeExtraction(
+            fact=r"Computer Use 测试产物位于 C:\Users\sunny\.v8-agent-os\workspace\foo.mp4",
+            category="operational_workflow",
+            scope="global",
+            importance=90,
+            confidence=0.95,
+            durability="operational",
+        )
+
+        self.assertEqual(
+            memory_agent._evaluate_knowledge_persistence(workflow, POLICY),
+            (True, "persisted_operational_workflow"),
+        )
+        self.assertEqual(
+            memory_agent._evaluate_knowledge_persistence(path_like, POLICY),
+            (False, "path_like_global"),
+        )
 
     def test_transient_debug_noise_is_filtered(self):
         fact = KnowledgeExtraction(

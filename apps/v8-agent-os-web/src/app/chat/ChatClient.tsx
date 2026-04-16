@@ -1161,7 +1161,11 @@ export default function ChatClient() {
             });
         }
 
-        if (normalizedEvent.topic === "approval.approved" || normalizedEvent.topic === "approval.rejected") {
+        if (
+            normalizedEvent.topic === "approval.approved"
+            || normalizedEvent.topic === "approval.rejected"
+            || normalizedEvent.topic === "ask_user.resolved"
+        ) {
             clearApprovalState();
         }
 
@@ -1174,6 +1178,8 @@ export default function ChatClient() {
             "run.resumed",
             "run.interrupted",
             "run.retry.requested",
+            "ask_user.requested",
+            "ask_user.resolved",
             "approval.requested",
             "approval.approved",
             "approval.rejected",

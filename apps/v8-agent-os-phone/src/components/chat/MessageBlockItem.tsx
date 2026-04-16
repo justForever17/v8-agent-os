@@ -1,9 +1,8 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { Linking, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { ApprovalCard } from "@/src/components/chat/ApprovalCard";
-import { AskUserCard } from "@/src/components/chat/AskUserCard";
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { MarkdownRenderer } from "@/src/components/chat/MarkdownRenderer";
 import { MermaidRenderer } from "@/src/components/chat/MermaidRenderer";
@@ -56,6 +55,76 @@ function UnresolvedResourceCard({
     );
 }
 
+function artifactDisplayTitle(artifact: Record<string, unknown>) {
+    return String(
+        artifact.displayLabel
+        || artifact.title
+        || artifact.artifactId
+        || artifact.id
+        || "附件"
+    ).trim();
+}
+
+function inferArtifactMediaKind(artifact: Record<string, unknown>, src: string) {
+    const kind = String(artifact.kind || "").trim().toLowerCase();
+    const mimeType = String(artifact.mimeType || artifact.mime_type || "").trim().toLowerCase();
+    const probe = `${kind} ${mimeType} ${src}`.toLowerCase();
+    if (probe.includes("image/") || /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i.test(src)) {
+        return "image" as const;
+    }
+    if (probe.includes("video/") || /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i.test(src)) {
+        return "video" as const;
+    }
+    if (probe.includes("audio/") || /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i.test(src)) {
+        return "audio" as const;
+    }
+    return null;
+}
+
+function sliceByCodePoint(value: string, length: number) {
+    return Array.from(value).slice(0, length).join("");
+}
+
+function useStreamingRevealContent(content: string, enabled: boolean) {
+    const [visibleContent, setVisibleContent] = useState(() => (
+        enabled ? sliceByCodePoint(content, Math.min(Array.from(content).length, 8)) : content
+    ));
+
+    useEffect(() => {
+        if (!enabled) {
+            setVisibleContent(content);
+            return undefined;
+        }
+
+        setVisibleContent((current) => {
+            if (!current || !content.startsWith(current)) {
+                return sliceByCodePoint(content, Math.min(Array.from(content).length, 8));
+            }
+            return current;
+        });
+
+        const timer = setInterval(() => {
+            setVisibleContent((current) => {
+                if (current === content) {
+                    return current;
+                }
+                if (!content.startsWith(current)) {
+                    return content;
+                }
+                const currentLength = Array.from(current).length;
+                const targetLength = Array.from(content).length;
+                const remaining = targetLength - currentLength;
+                const step = Math.max(3, Math.min(14, Math.ceil(remaining / 5)));
+                return sliceByCodePoint(content, Math.min(targetLength, currentLength + step));
+            });
+        }, 26);
+
+        return () => clearInterval(timer);
+    }, [content, enabled]);
+
+    return visibleContent;
+}
+
 export const MessageBlockItem = memo(function MessageBlockItem({
     block,
     node,
@@ -71,11 +140,18 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 }) {
     const { adminBaseUrl } = useAppSession();
     const { colors, t } = useUiPrefs();
+    const blockContent = String(block?.content || "");
+    const revealedBlockContent = useStreamingRevealContent(
+        blockContent,
+        Boolean(block && (block.type === "text" || block.type === "markdown") && (block.isStreaming || isStreaming)),
+    );
 
     if (node?.kind === "governance") {
         const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
         if (node.governanceType === "ask_user") {
-            return <AskUserCard question={node.question || node.reason || node.topic || ""} status={node.status} />;
+            // ask_user 的唯一交互入口是前台阻塞输入组件；消息流里不再放第二个输入卡，
+            // 避免和治理审批卡语义纠缠。
+            return null;
         }
         const title = node.governanceType === "safety_blocked"
             ? t("安全阻断", "Safety blocked")
@@ -104,7 +180,55 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (node?.kind === "artifact") {
-        return null;
+        const artifact = (node.artifact || {}) as Record<string, unknown>;
+        const resourceRef = coerceAdminResourceRef(artifact.resourceRef || null);
+        const rawSrc = String(
+            artifact.previewUrl
+            || artifact.externalUrl
+            || artifact.workspacePath
+            || artifact.sourcePath
+            || artifact.canonicalPath
+            || ""
+        ).trim();
+        const mediaCandidates = resolveRenderableMediaCandidates(adminBaseUrl, {
+            value: rawSrc,
+            resourceRef,
+            previewUrl: typeof artifact.previewUrl === "string" ? artifact.previewUrl : undefined,
+            externalUrl: typeof artifact.externalUrl === "string" ? artifact.externalUrl : undefined,
+            workspacePath: typeof artifact.workspacePath === "string" ? artifact.workspacePath : undefined,
+            sourcePath: typeof artifact.sourcePath === "string" ? artifact.sourcePath : undefined,
+        });
+        const src = mediaCandidates[0] || "";
+        const title = artifactDisplayTitle(artifact);
+        const mediaKind = inferArtifactMediaKind(artifact, src || rawSrc);
+        if (!src) {
+            return (
+                <UnresolvedResourceCard
+                    title={title}
+                    subtitle={String(artifact.displaySubtitle || resourceRef?.displaySubtitle || t("当前附件地址不可达。", "This attachment URL is not reachable."))}
+                />
+            );
+        }
+        if (mediaKind === "image") {
+            return <ImagePreview src={src} alt={title} candidates={mediaCandidates} />;
+        }
+        if (mediaKind === "video" || mediaKind === "audio") {
+            return <MediaPlayer src={src} type={mediaKind} title={title} candidates={mediaCandidates} />;
+        }
+        return (
+            <Card style={styles.executionCard}>
+                <CardContent style={styles.executionContent}>
+                    <Text selectable style={[styles.executionTitle, { color: colors.text }]}>{title}</Text>
+                    <Text
+                        selectable
+                        style={[styles.unresolvedSubtitle, { color: colors.primary }]}
+                        onPress={() => void Linking.openURL(src)}
+                    >
+                        {src}
+                    </Text>
+                </CardContent>
+            </Card>
+        );
     }
 
     if (node?.kind === "execution") {
@@ -268,7 +392,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         );
     }
 
-    return <MarkdownRenderer content={block.content} />;
+    return <MarkdownRenderer content={revealedBlockContent} />;
 });
 
 const styles = StyleSheet.create({

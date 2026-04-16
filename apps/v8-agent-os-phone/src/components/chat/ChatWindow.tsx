@@ -139,6 +139,7 @@ export const ChatWindow = memo(function ChatWindow({
                     ref={scrollRef}
                     style={styles.scroll}
                     scrollEnabled={!scrollLocked}
+                    nestedScrollEnabled
                     keyboardShouldPersistTaps="always"
                     keyboardDismissMode="none"
                     contentContainerStyle={[

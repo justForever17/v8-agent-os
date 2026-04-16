@@ -343,6 +343,7 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
     const assistantActive = !isUser && isLast && isLoading;
+    const assistantEmptyActive = assistantActive && !hasStructuredNodes && fallbackBlocks.length === 0;
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
             phase?: string;
@@ -382,13 +383,19 @@ export const MessageBubble = memo(function MessageBubble({
         setCopied(true);
     };
 
-    const assistantBubbleWidth = voiceOnly
+    const assistantBubbleWidth = assistantEmptyActive
+        ? Math.min(horizontalBubbleLimit, isLandscape ? 286 : 264)
+        : voiceOnly
         ? Math.min(width * 0.72, 300)
         : sharedTextBubbleWidth;
-    const assistantMinWidth = voiceOnly
+    const assistantMinWidth = assistantEmptyActive
+        ? Math.min(horizontalBubbleLimit, isLandscape ? 260 : 238)
+        : voiceOnly
         ? Math.min(width * 0.72, 300)
         : sharedTextBubbleWidth;
-    const assistantColumnWidthStyle = voiceOnly
+    const assistantColumnWidthStyle = assistantEmptyActive
+        ? { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantMinWidth }
+        : voiceOnly
         ? { maxWidth: assistantBubbleWidth, minWidth: assistantMinWidth }
         : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
@@ -547,18 +554,22 @@ export const MessageBubble = memo(function MessageBubble({
                     styles.assistantBubbleShell,
                     voiceOnly && styles.assistantBubbleVoiceOnly,
                     assistantActive && { shadowColor: palette.primaryDeep, shadowOpacity: 0.14, elevation: 4 },
+                    assistantEmptyActive && styles.assistantBubbleShellActiveEmpty,
                 ]}>
                     <View
                         style={[
                             styles.assistantBubbleClip,
+                            assistantEmptyActive && styles.assistantBubbleClipActiveEmpty,
                             {
-                                backgroundColor: assistantBubbleBackground,
+                                backgroundColor: assistantEmptyActive ? `${palette.primary}08` : assistantBubbleBackground,
                                 borderColor: assistantActive ? `${palette.primary}40` : assistantBubbleBorder,
                             },
                         ]}
                     >
-                        <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
-                        <View style={[styles.assistantInner, voiceOnly && styles.assistantInnerVoiceOnly]}>
+                        {!assistantEmptyActive ? (
+                            <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
+                        ) : null}
+                        <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
                             {hasStructuredNodes ? (
                                 renderableNodes.map((node, index) => (
                                     <NodeRenderBoundary
@@ -615,7 +626,7 @@ export const MessageBubble = memo(function MessageBubble({
                                     textColor={palette.text}
                                     mutedColor={palette.textMuted}
                                     label={assistantPhaseLabel || t("工作中", "Working")}
-                                    subtitle={taskProgress?.currentStep || ""}
+                                    subtitle={taskProgress?.currentStep || taskProgress?.subtitle || ""}
                                 />
                             )}
 
@@ -830,6 +841,11 @@ const styles = StyleSheet.create({
         overflow: "visible",
         width: "100%",
     },
+    assistantBubbleShellActiveEmpty: {
+        shadowOpacity: 0.05,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 7 },
+    },
     assistantBubbleVoiceOnly: {
         minWidth: 260,
     },
@@ -839,6 +855,10 @@ const styles = StyleSheet.create({
         borderTopLeftRadius: 9,
         borderWidth: 1,
         width: "100%",
+    },
+    assistantBubbleClipActiveEmpty: {
+        borderRadius: 20,
+        borderTopLeftRadius: 20,
     },
     assistantBubbleSheen: {
         height: 2,
@@ -852,6 +872,10 @@ const styles = StyleSheet.create({
         overflow: "visible",
         width: "100%",
     },
+    assistantInnerActiveEmpty: {
+        paddingHorizontal: 8,
+        paddingVertical: 8,
+    },
     assistantInnerVoiceOnly: {
         paddingTop: 18,
         paddingBottom: 20,
@@ -861,47 +885,47 @@ const styles = StyleSheet.create({
         lineHeight: 21,
     },
     workIndicator: {
-        minHeight: 56,
-        borderRadius: 18,
+        minHeight: 48,
+        borderRadius: 16,
         borderWidth: 1,
         overflow: "hidden",
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 11,
+        gap: 10,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
         position: "relative",
     },
     workIndicatorScan: {
         position: "absolute",
         top: 0,
         bottom: 0,
-        width: 54,
+        width: 44,
         borderRadius: 999,
     },
     workIndicatorOrbWrap: {
-        width: 36,
-        height: 36,
+        width: 32,
+        height: 32,
         alignItems: "center",
         justifyContent: "center",
     },
     workIndicatorPulse: {
         position: "absolute",
-        width: 36,
-        height: 36,
-        borderRadius: 18,
+        width: 32,
+        height: 32,
+        borderRadius: 16,
     },
     workIndicatorOrb: {
-        width: 28,
-        height: 28,
-        borderRadius: 14,
+        width: 24,
+        height: 24,
+        borderRadius: 12,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
     },
     workIndicatorDot: {
-        width: 9,
-        height: 9,
+        width: 7,
+        height: 7,
         borderRadius: 999,
     },
     workIndicatorCopy: {
@@ -910,13 +934,13 @@ const styles = StyleSheet.create({
         gap: 5,
     },
     workIndicatorTitle: {
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: "900",
         letterSpacing: -0.1,
     },
     workIndicatorSubtitle: {
-        fontSize: 11,
-        lineHeight: 16,
+        fontSize: 10,
+        lineHeight: 14,
         fontWeight: "600",
     },
     workIndicatorBars: {

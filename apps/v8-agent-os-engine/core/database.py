@@ -1014,6 +1014,40 @@ class DatabaseManager:
                 return None
             return self._hydrate_chat_canonical_row(dict(row))
 
+    def get_chat_canonical_message_by_client_message_id(
+        self,
+        *,
+        session_id: str,
+        client_message_id: str,
+        role: str = "user",
+    ) -> Optional[Dict[str, Any]]:
+        normalized_client_id = str(client_message_id or "").strip()
+        if not session_id or not normalized_client_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM chat_canonical_messages
+                WHERE session_id = ? AND role = ?
+                ORDER BY ordinal DESC, updated_at DESC
+                ''',
+                (session_id, role),
+            )
+            for row in cursor.fetchall():
+                hydrated = self._hydrate_chat_canonical_row(dict(row))
+                metadata = hydrated.get("metadata") if isinstance(hydrated.get("metadata"), dict) else {}
+                row_client_id = str(
+                    metadata.get("clientMessageId")
+                    or metadata.get("client_message_id")
+                    or hydrated.get("id")
+                    or ""
+                ).strip()
+                if row_client_id == normalized_client_id:
+                    return hydrated
+        return None
+
     def get_chat_canonical_messages(self, session_id: str) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()

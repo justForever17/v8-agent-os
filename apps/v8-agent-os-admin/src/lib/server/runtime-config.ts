@@ -125,12 +125,93 @@ export function resolveReachableClientSurfaceOrigin(candidate: string) {
     return isReachableClientSurfaceOrigin(normalized) ? normalized : "";
 }
 
+function pickForwardedHeaderValue(value: string | null | undefined) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return "";
+    }
+    return normalized.split(",")[0]?.trim() || "";
+}
+
+function normalizeForwardedProtocol(value: string | null | undefined, fallback = "http") {
+    const normalized = pickForwardedHeaderValue(value).toLowerCase();
+    if (normalized === "https" || normalized === "http") {
+        return normalized;
+    }
+    return fallback;
+}
+
 export function resolveReachableClientSurfaceOriginFromRequest(requestUrl: string) {
     try {
         return resolveReachableClientSurfaceOrigin(new URL(String(requestUrl || "")).origin);
     } catch {
         return "";
     }
+}
+
+export function resolveClientSurfaceOriginFromRequest(
+    request:
+        | {
+            headers?: Headers | HeadersInit | null;
+            url?: string | null;
+        }
+        | string,
+    options?: {
+        allowTrustedHeader?: boolean;
+    },
+) {
+    const requestUrl = typeof request === "string"
+        ? request
+        : String(request?.url || "").trim();
+    const fallbackProtocol = (() => {
+        try {
+            const parsed = new URL(String(requestUrl || ""));
+            return parsed.protocol === "https:" ? "https" : "http";
+        } catch {
+            return "http";
+        }
+    })();
+
+    const requestHeaders = typeof request === "string"
+        ? null
+        : new Headers(request?.headers || undefined);
+
+    if (requestHeaders) {
+        if (options?.allowTrustedHeader !== false) {
+            const trustedOrigin = resolveReachableClientSurfaceOrigin(
+                pickForwardedHeaderValue(requestHeaders.get("x-v8-client-surface-origin")),
+            );
+            if (trustedOrigin) {
+                return trustedOrigin;
+            }
+        }
+
+        const forwardedHost = pickForwardedHeaderValue(requestHeaders.get("x-forwarded-host"));
+        if (forwardedHost) {
+            const forwardedProtocol = normalizeForwardedProtocol(
+                requestHeaders.get("x-forwarded-proto"),
+                fallbackProtocol,
+            );
+            const forwardedOrigin = resolveReachableClientSurfaceOrigin(`${forwardedProtocol}://${forwardedHost}`);
+            if (forwardedOrigin) {
+                return forwardedOrigin;
+            }
+        }
+
+        const host = pickForwardedHeaderValue(requestHeaders.get("host"));
+        if (host) {
+            const hostProtocol = normalizeForwardedProtocol(
+                requestHeaders.get("x-forwarded-proto"),
+                fallbackProtocol,
+            );
+            const hostOrigin = resolveReachableClientSurfaceOrigin(`${hostProtocol}://${host}`);
+            if (hostOrigin) {
+                return hostOrigin;
+            }
+        }
+    }
+
+    return resolveReachableClientSurfaceOriginFromRequest(requestUrl);
 }
 
 export function resolveReachableAdminPublicBaseUrl() {

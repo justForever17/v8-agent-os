@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
-import { resolveEngineBaseUrl, resolveReachableClientSurfaceOriginFromRequest } from "@/lib/server/runtime-config";
+import { resolveClientSurfaceOriginFromRequest, resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { normalizeMessageForRealtimeSurface, normalizeProcessForRealtimeSurface, normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
@@ -21,7 +21,7 @@ export async function GET(
     }
 
     const { id } = await params;
-    const publicBaseUrl = resolveReachableClientSurfaceOriginFromRequest(req.url);
+    const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
 
     try {
         const [snapshotResponse, historyResponse] = await Promise.all([

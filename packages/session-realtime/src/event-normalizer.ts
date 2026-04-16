@@ -457,7 +457,7 @@ function resolveTypedEventTargets(type: string, name: string): SessionRuntimeEve
     return null;
   }
   if (name === "ask_user") {
-    return ["message", "hud", "runtime_card"];
+    return ["hud", "runtime_card"];
   }
   if (name === "approval_requested") {
     return ["approval", "hud", "runtime_card"];
@@ -564,6 +564,14 @@ function buildProgressLabel(topic: string, payload: JsonRecord, locale: Normaliz
     return typeof payload.question === "string" && payload.question.trim()
       ? payload.question.trim()
       : tr(locale, "等待用户确认", "Waiting for approval");
+  }
+  if (topic === "ask_user.requested") {
+    return typeof payload.question === "string" && payload.question.trim()
+      ? payload.question.trim()
+      : tr(locale, "等待你的输入", "Waiting for your answer");
+  }
+  if (topic === "ask_user.resolved") {
+    return tr(locale, "已收到你的输入，继续执行", "Answer received, continuing");
   }
   if (topic === "approval.approved") {
     return tr(locale, "审批已通过，继续执行", "Approval granted, continuing");
@@ -880,6 +888,58 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
   const targets = resolveTargets(topic, payload);
   const actorLabel = resolveActorLabel(runtimeId, options.locale);
 
+  if (topic === "ask_user.requested") {
+    const request = asRecord(payload.request);
+    return applySurfaceVisibilityOverrides(withTranscriptTargetFields(withEnvelopeFields({
+      type: "custom_event",
+      name: "ask_user",
+      runtimeId: runtimeId || "chat",
+      scope,
+      visibility,
+      targets: ["hud", "runtime_card"],
+      actorLabel,
+      data: {
+        question:
+          (typeof request.question === "string" && request.question)
+          || (typeof request.prompt === "string" && request.prompt)
+          || tr(options.locale, "我需要您的输入以继续执行任务。", "I need your input to continue the task."),
+        toolCallId:
+          (typeof request.toolCallId === "string" && request.toolCallId)
+          || (typeof payload.approval_id === "string" && payload.approval_id)
+          || "",
+        approvalId: typeof payload.approval_id === "string" ? payload.approval_id : undefined,
+        approvalKind: typeof payload.approval_kind === "string" ? payload.approval_kind : "ask_user",
+        interactionKind:
+          (typeof request.interactionKind === "string" && request.interactionKind)
+          || "ask_user",
+        request,
+        runtimeId: runtimeId || "chat",
+        actorLabel,
+      },
+      source,
+    }, envelope), payload), payload);
+  }
+
+  if (topic === "ask_user.resolved") {
+    return applySurfaceVisibilityOverrides(withTranscriptTargetFields(withEnvelopeFields({
+      type: "custom_event",
+      name: "approval_resolved",
+      runtimeId: runtimeId || "chat",
+      scope,
+      visibility,
+      targets: ["approval", "hud", "runtime_card"],
+      actorLabel,
+      status: typeof payload.status === "string" ? payload.status : "resolved",
+      data: {
+        ...payload,
+        topic,
+        runtimeId: runtimeId || "chat",
+        actorLabel,
+      },
+      source,
+    }, envelope), payload), payload);
+  }
+
   if (topic === "approval.requested") {
     const request = asRecord(payload.request);
     const askUserInteraction = isAskUserPayload(payload);
@@ -889,7 +949,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       runtimeId: runtimeId || (askUserInteraction ? "chat" : "automation"),
       scope,
       visibility,
-      targets: askUserInteraction ? ["message", "hud", "runtime_card"] : ["approval", "hud", "runtime_card"],
+      targets: askUserInteraction ? ["hud", "runtime_card"] : ["approval", "hud", "runtime_card"],
       actorLabel,
       data: {
         question:

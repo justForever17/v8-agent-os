@@ -337,6 +337,9 @@ export function summarizePhoneRuntimeStatus(status: string, t: Translate) {
 }
 
 export function summarizePhoneRuntimeTimelineEntry(entry: PhoneRuntimeTimelineEntry, t: Translate) {
+    if (entry.topic === "ask_user.requested") {
+        return t("等待你的输入", "Waiting for your input");
+    }
     if (entry.topic === "approval.requested") {
         return t("等待用户确认", "Waiting for approval");
     }

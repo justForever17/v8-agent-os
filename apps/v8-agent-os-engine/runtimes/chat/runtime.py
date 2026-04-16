@@ -41,6 +41,7 @@ from erc.chat_canonical_transcript import (
     export_legacy_message_payload,
     validate_canonical_message_invariants,
 )
+from erc.ask_user_tool_result import resolve_ask_user_tool_result_interaction
 from erc.canonical_model_events import LangChainCanonicalModelEventAdapter
 from erc.kernel import erc_kernel
 from erc.models import RuntimeSource
@@ -371,6 +372,26 @@ class ChatRuntime:
         if tool_call_id:
             request_payload["toolCallId"] = tool_call_id
         return request_payload
+
+    def _resolve_ask_user_tool_result_context(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        candidate_tool_call_id: str,
+        output_text: str,
+    ) -> dict[str, Any] | None:
+        interactions = db.list_ask_user_interactions(
+            session_id=chat_run.session_id,
+            run_id=chat_run.active_run_id,
+            status="resolved",
+        )
+        return resolve_ask_user_tool_result_interaction(
+            interactions,
+            pending_interaction_id=stream_state.pending_ask_user_interaction_id,
+            candidate_tool_call_id=candidate_tool_call_id,
+            output_text=output_text,
+        )
 
     def _build_safety_blocked_event(
         self,
@@ -2382,9 +2403,36 @@ class ChatRuntime:
 
         if kind == "on_tool_end":
             output = data.get("output", "")
-            tool_call_id = event.get("run_id", "")
-            active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             output_str = str(output.content) if hasattr(output, "content") else str(output)
+            candidate_tool_call_id = str(
+                getattr(output, "tool_call_id", None)
+                or event.get("run_id", "")
+                or ""
+            ).strip()
+            tool_call_id = candidate_tool_call_id
+            if str(name or "").strip() == "ask_user":
+                interaction = self._resolve_ask_user_tool_result_context(
+                    chat_run,
+                    stream_state,
+                    candidate_tool_call_id=candidate_tool_call_id,
+                    output_text=output_str,
+                )
+                resolved_tool_call_id = str((interaction or {}).get("tool_call_id") or "").strip()
+                if not interaction or not resolved_tool_call_id:
+                    chat_run.emit_runtime_event(
+                        "ask_user.tool_result.unmatched",
+                        {
+                            "candidateToolCallId": candidate_tool_call_id,
+                            "resultPreview": output_str[:200],
+                        },
+                        agent_id=stream_state.current_agent,
+                        node=stream_state.current_agent or "chat_runtime",
+                    )
+                    return emitted_events
+                tool_call_id = resolved_tool_call_id
+                stream_state.pending_ask_user_interaction_id = ""
+                stream_state.pending_ask_user_tool_call_id = ""
+            active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             tool_result_event = {
                 "type": "tool_result",
                 "tool": {"toolCallId": tool_call_id, "toolName": name, "result": output_str},

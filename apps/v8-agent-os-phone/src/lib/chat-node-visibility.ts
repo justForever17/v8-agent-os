@@ -10,10 +10,6 @@ export function isHiddenPhoneTimelineNode(node: PhoneUiTimelineNode | null | und
         return false;
     }
 
-    if (node.kind === "artifact") {
-        return true;
-    }
-
     if (node.kind !== "execution") {
         return false;
     }

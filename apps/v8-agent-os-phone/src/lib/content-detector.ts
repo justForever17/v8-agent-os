@@ -30,7 +30,7 @@ function normalizeMediaTagAttributes(raw: string) {
         .replace(/&#39;/gi, "'");
 }
 
-const INLINE_MEDIA_PATH_REGEX = /`((?:downloaded_media\/[^\s`]+|[a-z]:\\[^\s`]+)\.(?:jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|aac)(?:\?[^\s`]+)?)`|((?:downloaded_media\/[^\s"'<>]+|[a-z]:\\[^\s"'<>]+)\.(?:jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|aac)(?:\?[^\s"'<>]+)?)/gi;
+const INLINE_MEDIA_PATH_REGEX = /`((?:downloaded_media\/[^\s`]+)\.(?:jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|aac)(?:\?[^\s`]+)?)`|((?:downloaded_media\/[^\s"'<>]+)\.(?:jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|aac)(?:\?[^\s"'<>]+)?)/gi;
 
 function inferInlineMediaPathType(raw: string): "image" | "video" | "audio" | null {
     const value = String(raw || "").trim();

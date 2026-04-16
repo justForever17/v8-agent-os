@@ -1,5 +1,6 @@
 import unittest
 
+from erc.ask_user_tool_result import resolve_ask_user_tool_result_interaction
 from core.runtime_projection import project_ask_user_interactions, project_pending_approvals
 
 
@@ -54,6 +55,47 @@ class AskUserProjectionContractTest(unittest.TestCase):
         self.assertEqual(projected[0]["interactionKind"], "ask_user")
         self.assertEqual(projected[0]["toolCallId"], "tool_1")
         self.assertNotIn("approvalId", projected[0])
+
+    def test_resolved_ask_user_result_reuses_original_tool_call_id(self):
+        interaction = resolve_ask_user_tool_result_interaction(
+            [
+                {
+                    "id": "ask_1",
+                    "tool_call_id": "call_original",
+                    "answer_text": "不错哦",
+                    "status": "resolved",
+                }
+            ],
+            candidate_tool_call_id="019d96be-resume-event-id",
+            output_text="不错哦",
+        )
+
+        self.assertIsNotNone(interaction)
+        self.assertEqual(interaction["tool_call_id"], "call_original")
+
+    def test_pending_ask_user_interaction_wins_over_resume_event_id(self):
+        interaction = resolve_ask_user_tool_result_interaction(
+            [
+                {
+                    "id": "ask_old",
+                    "tool_call_id": "call_old",
+                    "answer_text": "旧回答",
+                    "status": "resolved",
+                },
+                {
+                    "id": "ask_current",
+                    "tool_call_id": "call_current",
+                    "answer_text": "当前回答",
+                    "status": "resolved",
+                },
+            ],
+            pending_interaction_id="ask_current",
+            candidate_tool_call_id="019d96be-resume-event-id",
+            output_text="旧回答",
+        )
+
+        self.assertIsNotNone(interaction)
+        self.assertEqual(interaction["tool_call_id"], "call_current")
 
 
 if __name__ == "__main__":

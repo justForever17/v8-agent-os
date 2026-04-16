@@ -73,6 +73,24 @@ export type SessionApprovalView = Record<string, unknown> & {
   request?: Record<string, unknown>;
 };
 
+export type SessionAskUserInteractionView = Record<string, unknown> & {
+  id?: string;
+  interactionId?: string;
+  runId?: string;
+  run_id?: string;
+  sessionId?: string;
+  session_id?: string;
+  assistantMessageId?: string;
+  toolCallId?: string;
+  tool_call_id?: string;
+  status?: string;
+  question?: string;
+  prompt?: string;
+  request?: Record<string, unknown>;
+  answer?: string;
+  answerText?: string;
+};
+
 export type SessionWorkflowView = Record<string, unknown> & {
   rootRunId?: string;
   status?: string;
@@ -200,6 +218,7 @@ export type AuthoritativeSessionView = {
   runtimeStatus: string | null;
   workflow: SessionWorkflowView | null;
   approvals: SessionApprovalView[];
+  askUserInteractions: SessionAskUserInteractionView[];
   controls: SessionControlsView | null;
   recoverable: SessionRecoverableView | null;
   summary: SessionSummaryView | null;
@@ -262,6 +281,7 @@ export function buildAuthoritativeSessionView(store: SessionRealtimeStore): Auth
     runtimeStatus: projection.runtimeStatus,
     workflow: workflow as SessionWorkflowView | null,
     approvals: (projection.approvals as SessionApprovalView[]) || [],
+    askUserInteractions: (projection.askUserInteractions as SessionAskUserInteractionView[]) || [],
     controls: (projection.controls as SessionControlsView | null) || null,
     recoverable: (projection.recoverable as SessionRecoverableView | null) || null,
     summary: (projection.summary as SessionSummaryView | null) || null,

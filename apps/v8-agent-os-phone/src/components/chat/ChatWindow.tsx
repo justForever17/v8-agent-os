@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { isAskUserInteractionApproval, type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
+import { type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
 
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
@@ -18,7 +18,9 @@ import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility"
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ChatMessage, PendingApproval } from "@/src/types/admin";
+import type { AskUserInteraction, ChatMessage, PendingApproval } from "@/src/types/admin";
+
+type ChatPendingInteraction = PendingApproval | AskUserInteraction;
 
 type ChatWindowProps = {
     adminBaseUrl: string;
@@ -33,10 +35,10 @@ type ChatWindowProps = {
     userDisplayName?: string;
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
-    pendingApproval?: PendingApproval | null;
+    pendingApproval?: ChatPendingInteraction | null;
     pendingApprovalCount?: number;
     approvalBusy?: boolean;
-    onResolveApproval?: (approval: PendingApproval, answer: string, approve: boolean) => void | Promise<void>;
+    onResolveApproval?: (approval: ChatPendingInteraction, answer: string, approve: boolean) => void | Promise<void>;
     onOpenApprovalPanel?: () => void;
     isLandscape?: boolean;
     bottomInset?: number;
@@ -47,8 +49,16 @@ type ChatWindowProps = {
     } | null;
 };
 
-function isAskUserApproval(approval: PendingApproval | null | undefined) {
-    return isAskUserInteractionApproval(approval);
+function isAskUserApproval(approval: ChatPendingInteraction | null | undefined) {
+    if (!approval) {
+        return false;
+    }
+    const record = approval as AskUserInteraction & PendingApproval;
+    return Boolean(
+        record.interactionId
+        || record.request?.interactionKind === "ask_user"
+        || record.approval_kind === "ask_user"
+    );
 }
 
 function hasRenderableMessage(message: ChatMessage) {
@@ -257,7 +267,8 @@ export const ChatWindow = memo(function ChatWindow({
                     toolCallId={String(
                         pendingApproval.request?.toolCallId
                         || pendingApproval.id
-                        || pendingApproval.approval_id
+                        || (pendingApproval as AskUserInteraction).interactionId
+                        || (pendingApproval as PendingApproval).approval_id
                         || "",
                     )}
                     busy={approvalBusy}

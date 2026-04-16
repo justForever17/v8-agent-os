@@ -16,12 +16,21 @@ async def list_pending_approvals(
     status: str | None = None,
 ):
     try:
+        approvals = db.list_pending_approvals(
+            session_id=session_id,
+            run_id=run_id,
+            status=status,
+        )
+        filtered = []
+        for approval in approvals:
+            request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+            approval_kind = str(approval.get("approval_kind") or request.get("approvalKind") or request.get("approval_kind") or "").strip().lower()
+            interaction_kind = str(request.get("interactionKind") or request.get("interaction_kind") or approval.get("interaction_kind") or "").strip().lower()
+            if approval_kind == "ask_user" or interaction_kind == "ask_user":
+                continue
+            filtered.append(approval)
         return {
-            "approvals": db.list_pending_approvals(
-                session_id=session_id,
-                run_id=run_id,
-                status=status,
-            )
+            "approvals": filtered
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -119,10 +128,10 @@ async def respond_ask_user(interaction_id: str, payload: RunCommandPayload):
         if "answer" not in response and payload.reason:
             response["answer"] = payload.reason
         response.setdefault("interactionId", interaction_id)
-        result = runtime_command_router.dispatch_approval_command(
+        result = runtime_command_router.dispatch_ask_user_command(
             RuntimeCommand(
-                topic="approval.approve",
-                approval_id=interaction_id,
+                topic="ask_user.respond",
+                interaction_id=interaction_id,
                 response=response,
                 payload=dict(payload.payload or {}),
             )

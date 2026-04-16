@@ -253,24 +253,13 @@ export function mergeRuntimeTimeline(
 function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode {
     const governanceType = (() => {
         const topic = String(entry.topic || "").trim().toLowerCase();
-        const metadata = entry.metadata && typeof entry.metadata === "object"
-            ? entry.metadata as Record<string, unknown>
-            : {};
-        const approvalKind = String(metadata.approvalKind || metadata.approval_kind || "").trim().toLowerCase();
-        const interactionKind = String(metadata.interactionKind || metadata.interaction_kind || "").trim().toLowerCase();
         if (topic === "ask_user.requested") {
             return "ask_user" as const;
         }
         if (topic === "approval.requested") {
-            if (
-                interactionKind === "ask_user"
-                || approvalKind === "ask_user"
-            ) {
-                return "ask_user" as const;
-            }
             return "approval_request" as const;
         }
-        if (topic === "ask_user.resolved") return "approval_resolved" as const;
+        if (topic === "ask_user.resolved") return "ask_user" as const;
         if (topic.startsWith("approval.")) return "approval_resolved" as const;
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
         if (topic.startsWith("context.")) return "context_governance" as const;
@@ -321,7 +310,7 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
                 externalUrl: coerceTimelineString(metadata.externalUrl),
                 sourcePath: coerceTimelineString(metadata.sourcePath),
                 workspacePath: coerceTimelineString(metadata.workspacePath),
-                resourceRef: coerceAdminResourceRef(metadata.resourceRef || metadata.previewUrl || metadata.externalUrl || metadata.sourcePath || metadata.workspacePath),
+                resourceRef: coerceAdminResourceRef(metadata.resourceRef || metadata.previewUrl || metadata.externalUrl),
                 runId: entry.runId,
                 metadata,
             },

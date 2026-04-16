@@ -11,6 +11,7 @@ from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
+    project_ask_user_interactions,
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
@@ -143,6 +144,9 @@ class SnapshotService:
         pending_approvals = project_pending_approvals(
             db.list_pending_approvals(session_id=session_id, status="pending")
         )
+        ask_user_interactions = project_ask_user_interactions(
+            db.list_ask_user_interactions(session_id=session_id, status="pending")
+        )
         runtime_events = db.get_runtime_events(session_id)
         runtime_timeline = project_runtime_timeline_from_events(runtime_events)
         context_governance = extract_latest_context_governance(runtime_events)
@@ -197,6 +201,7 @@ class SnapshotService:
                 "workflow": workflow_view,
                 "workflowProjection": workflow_projection,
                 "approvals": pending_approvals,
+                "askUserInteractions": ask_user_interactions,
                 "controls": controls,
                 "recoverable": build_recoverable_view(workflow_view, controls),
                 "todos": todos,
@@ -238,6 +243,7 @@ class SnapshotService:
             "workflow": workflow_view,
             "workflowProjection": workflow_projection,
             "approvals": pending_approvals,
+            "askUserInteractions": ask_user_interactions,
             "controls": controls,
             "recoverable": build_recoverable_view(workflow_view, controls),
             "todos": todos,

@@ -828,75 +828,9 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             continue
 
         if topic == "approval.requested":
-            request = payload.get("request") or {}
-            interaction_kind = str(
-                request.get("interactionKind")
-                or request.get("interaction_kind")
-                or payload.get("interactionKind")
-                or payload.get("interaction_kind")
-                or ""
-            ).strip().lower()
-            approval_kind = str(
-                payload.get("approval_kind")
-                or payload.get("approvalKind")
-                or ""
-            ).strip().lower()
-            if interaction_kind != "ask_user" and approval_kind != "ask_user":
-                continue
-            assistant = ensure_assistant(event)
-            tool_call_id = (
-                (request.get("toolCallId"))
-                or payload.get("approval_id")
-                or event.get("event_id")
-            )
-            existing = next(
-                (
-                    part
-                    for part in reversed(assistant["parts"])
-                    if part.get("type") == "tool_call" and part.get("toolCallId") == tool_call_id
-                ),
-                None,
-            )
-            if existing is not None:
-                existing["toolName"] = "ask_user"
-                existing["args"] = payload.get("request") or existing.get("args") or {}
-            else:
-                assistant["parts"].append(
-                    {
-                        "type": "tool_call",
-                        "toolCallId": tool_call_id,
-                        "toolName": "ask_user",
-                        "args": request,
-                        **active_agent_profile,
-                    }
-                )
             continue
 
         if topic == "approval.rejected":
-            request = payload.get("request") or {}
-            interaction_kind = str(
-                request.get("interactionKind")
-                or request.get("interaction_kind")
-                or payload.get("interactionKind")
-                or payload.get("interaction_kind")
-                or ""
-            ).strip().lower()
-            approval_kind = str(
-                payload.get("approval_kind")
-                or payload.get("approvalKind")
-                or ""
-            ).strip().lower()
-            if interaction_kind != "ask_user" and approval_kind != "ask_user":
-                continue
-            assistant = ensure_assistant(event)
-            assistant["parts"].append(
-                {
-                    "type": "tool_result",
-                    "toolCallId": payload.get("approval_id") or event.get("event_id"),
-                    "result": payload.get("response") or {"status": topic},
-                    **active_agent_profile,
-                }
-            )
             continue
 
         if topic in {"run.completed", "run.failed", "run.cancelled"}:
@@ -1314,6 +1248,10 @@ def project_pending_approvals(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     projected: List[Dict[str, Any]] = []
     for row in rows:
         request = row.get("request") or {}
+        approval_kind = str(row.get("approval_kind") or request.get("approvalKind") or request.get("approval_kind") or "").strip().lower()
+        interaction_kind = str(request.get("interactionKind") or request.get("interaction_kind") or row.get("interaction_kind") or "").strip().lower()
+        if approval_kind == "ask_user" or interaction_kind == "ask_user":
+            continue
         projected.append(
             {
                 "id": row.get("id"),
@@ -1329,6 +1267,32 @@ def project_pending_approvals(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 "createdAt": row.get("created_at"),
                 "updatedAt": row.get("updated_at"),
                 "expiresAt": row.get("expires_at"),
+            }
+        )
+    return projected
+
+
+def project_ask_user_interactions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    projected: List[Dict[str, Any]] = []
+    for row in rows:
+        request = row.get("request") or {}
+        projected.append(
+            {
+                "id": row.get("id"),
+                "interactionId": row.get("id"),
+                "runId": row.get("run_id"),
+                "sessionId": row.get("session_id"),
+                "assistantMessageId": row.get("assistant_message_id"),
+                "toolCallId": row.get("tool_call_id") or request.get("toolCallId"),
+                "question": row.get("question") or request.get("question") or request.get("prompt"),
+                "prompt": row.get("prompt") or request.get("prompt") or request.get("question"),
+                "status": row.get("status"),
+                "interactionKind": "ask_user",
+                "request": request,
+                "answer": row.get("answer_text"),
+                "answerText": row.get("answer_text"),
+                "createdAt": row.get("created_at"),
+                "resolvedAt": row.get("resolved_at"),
             }
         )
     return projected

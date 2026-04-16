@@ -37,6 +37,7 @@ class RuntimeCommandRouter:
             workflow=payload.get("workflow"),
             workflow_projection=payload.get("workflowProjection"),
             approvals=list(payload.get("approvals") or []),
+            ask_user_interactions=list(payload.get("askUserInteractions") or []),
             controls=payload.get("controls"),
             recoverable=payload.get("recoverable"),
             summary=payload.get("summary"),
@@ -103,6 +104,19 @@ class RuntimeCommandRouter:
             return erc_kernel.reject(approval_id, response=command.response)
         raise ValueError(f"Unsupported approval command topic: {topic}")
 
+    def dispatch_ask_user_command(self, command: RuntimeCommand) -> Optional[Dict[str, Any]]:
+        topic = command.topic if command.topic.startswith("ask_user.") else f"ask_user.{command.topic}"
+        interaction_id = command.interaction_id
+        if not interaction_id:
+            raise ValueError(f"{topic} requires interaction_id")
+
+        if topic == "ask_user.respond":
+            result = erc_kernel.resolve_ask_user_interaction(interaction_id, response=command.response)
+            if result:
+                self._resume_from_ask_user(result.get("interaction") or {}, command.response or {})
+            return result
+        raise ValueError(f"Unsupported ask_user command topic: {topic}")
+
     def _scope_payload_for_session(self, session_id: str) -> Dict[str, Any]:
         binding = session_scope_binding_service.get_binding(session_id)
         if not binding:
@@ -158,6 +172,32 @@ class RuntimeCommandRouter:
         scope_payload = self._scope_payload_for_session(run_record["session_id"])
         resume_value = dict(response or {})
         resume_value.setdefault("approval_id", approval.get("id") or approval.get("approval_id"))
+        return ChatRequest(
+            messages=[],
+            config=self._engine_config_from_run(run_record),
+            session_id=run_record["session_id"],
+            conversation_id=run_record.get("conversation_id") or run_record["session_id"],
+            user_id=run_record.get("user_id") or "anonymous",
+            project_id=scope_payload.get("project_id"),
+            workspace_id=scope_payload.get("workspace_id"),
+            workspace_path=scope_payload.get("workspace_path"),
+            scope_hint=scope_payload.get("scope_hint"),
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
+            resume_run_id=run_record["id"],
+            resume_value=resume_value,
+        )
+
+    def _build_resume_chat_request_from_ask_user(self, interaction: Dict[str, Any], response: Dict[str, Any] | None = None) -> ChatRequest | None:
+        run_record = db.get_run_record(interaction.get("run_id", ""))
+        if not run_record:
+            return None
+        scope_payload = self._scope_payload_for_session(run_record["session_id"])
+        resume_value = dict(response or {})
+        resume_value.setdefault("interactionId", interaction.get("id"))
+        if interaction.get("tool_call_id"):
+            resume_value.setdefault("toolCallId", interaction.get("tool_call_id"))
+        if interaction.get("answer_text"):
+            resume_value.setdefault("answer", interaction.get("answer_text"))
         return ChatRequest(
             messages=[],
             config=self._engine_config_from_run(run_record),
@@ -282,6 +322,13 @@ class RuntimeCommandRouter:
         if self._schedule_chat_run is None:
             return
         resume_request = self._build_resume_chat_request(approval, response)
+        if resume_request:
+            self._schedule_chat_run(resume_request, transport="system_resume")
+
+    def _resume_from_ask_user(self, interaction: Dict[str, Any], response: Dict[str, Any]) -> None:
+        if self._schedule_chat_run is None:
+            return
+        resume_request = self._build_resume_chat_request_from_ask_user(interaction, response)
         if resume_request:
             self._schedule_chat_run(resume_request, transport="system_resume")
 

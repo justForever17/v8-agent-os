@@ -1,7 +1,6 @@
 import {
     coerceAdminProcessRef,
     coerceAdminResourceRef,
-    deriveAdminResourceRefFromArtifactLike,
     type AdminProcessRef,
     type AdminResourceRef,
 } from "@v8/session-realtime";
@@ -14,178 +13,9 @@ type SurfaceNormalizationOptions = {
 
 const SURFACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/[^\s"'<>\\]+/gi;
 const SURFACE_RELATIVE_URL_PATTERN = /(?:^|[\s("'=])((?:\/)?(?:workspace\/[^\s"'<>\\]+|api\/workspace\/files\/[^\s"'<>\\]+|api\/client\/workspace\/files\/[^\s"'<>\\]+|api\/workspace\/resource\?[^\s"'<>\\]+|api\/client\/workspace\/resource\?[^\s"'<>\\]+|(?:v1|api(?:\/client)?)\/artifacts\/[^/\s"'<>\\]+\/content(?:\?[^\s"'<>\\]+)?))/gi;
-const WORKSPACE_MEDIA_PATH_PATTERN = /(?:[a-zA-Z]:\\[^\s"'<>`]+|\/?(?:workspace[\\/]|downloaded_media\/|uploads\/)[^\s"'<>`]+)/g;
-const MEDIA_EXTENSION_TO_KIND = new Map<string, "image" | "video" | "audio">([
-    [".png", "image"],
-    [".jpg", "image"],
-    [".jpeg", "image"],
-    [".gif", "image"],
-    [".webp", "image"],
-    [".bmp", "image"],
-    [".svg", "image"],
-    [".mp4", "video"],
-    [".webm", "video"],
-    [".mov", "video"],
-    [".m4v", "video"],
-    [".mp3", "audio"],
-    [".wav", "audio"],
-    [".m4a", "audio"],
-    [".ogg", "audio"],
-    [".aac", "audio"],
-    [".flac", "audio"],
-]);
-
-function normalizePathCandidate(raw: string) {
-    return String(raw || "")
-        .trim()
-        .replace(/^[`"'([{<]+/, "")
-        .replace(/[`"')\]}>]+$/, "")
-        .replace(/[.,;:!?]+$/, "")
-        .trim();
-}
-
-function inferMediaExtension(value: string) {
-    const normalized = String(value || "").trim().replace(/[?#].*$/, "");
-    const match = normalized.match(/(\.[a-z0-9]+)$/i);
-    return match?.[1]?.toLowerCase() || "";
-}
-
-function inferDerivedMediaKind(value: string) {
-    return MEDIA_EXTENSION_TO_KIND.get(inferMediaExtension(value)) || null;
-}
-
-function inferDerivedMediaMimeType(value: string) {
-    const extension = inferMediaExtension(value);
-    const kind = inferDerivedMediaKind(value);
-    if (!extension || !kind) {
-        return undefined;
-    }
-    const suffix = extension.slice(1).toLowerCase();
-    if (kind === "image" && suffix === "jpg") {
-        return "image/jpeg";
-    }
-    return `${kind}/${suffix}`;
-}
-
-function extractNarrativeMediaPaths(value: unknown) {
-    if (typeof value !== "string" || !value.trim()) {
-        return [];
-    }
-    const matches = value.match(WORKSPACE_MEDIA_PATH_PATTERN) || [];
-    const deduped = new Set<string>();
-    for (const match of matches) {
-        const candidate = normalizePathCandidate(match);
-        if (!candidate || !inferDerivedMediaKind(candidate)) {
-            continue;
-        }
-        const resourceRef = coerceAdminResourceRef(candidate);
-        if (!resourceRef || resourceRef.kind !== "workspace_file") {
-            continue;
-        }
-        deduped.add(candidate);
-    }
-    return Array.from(deduped);
-}
-
-function artifactKey(value: unknown) {
-    const record = asRecord(value);
-    const resourceRef = coerceAdminResourceRef(record.resourceRef);
-    return String(
-        record.id
-        || record.artifactId
-        || resourceRef?.adminPath
-        || resourceRef?.workspacePath
-        || resourceRef?.url
-        || record.previewUrl
-        || record.externalUrl
-        || record.sourcePath
-        || "",
-    ).trim();
-}
-
-function mergeArtifacts(existing: unknown, derived: JsonRecord[], options?: SurfaceNormalizationOptions) {
-    const normalizedExisting = Array.isArray(existing)
-        ? existing.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
-        : [];
-    const seen = new Set(normalizedExisting.map((artifact) => artifactKey(artifact)).filter(Boolean));
-    for (const artifact of derived) {
-        const key = artifactKey(artifact);
-        if (!key || seen.has(key)) {
-            continue;
-        }
-        seen.add(key);
-        normalizedExisting.push(artifact);
-    }
-    return Array.isArray(existing) || normalizedExisting.length > 0 ? normalizedExisting : existing;
-}
-
-function mergeMediaUrls(existing: unknown, derivedArtifacts: JsonRecord[], options?: SurfaceNormalizationOptions) {
-    const values = new Set<string>();
-    if (Array.isArray(existing)) {
-        for (const entry of existing) {
-            const normalized = normalizeSurfaceUrl(entry, options) || String(entry || "").trim();
-            if (normalized) {
-                values.add(normalized);
-            }
-        }
-    }
-    for (const artifact of derivedArtifacts) {
-        const previewUrl = String(artifact.previewUrl || artifact.externalUrl || "").trim();
-        if (previewUrl) {
-            values.add(previewUrl);
-        }
-    }
-    return Array.isArray(existing) || values.size > 0 ? Array.from(values) : existing;
-}
-
-function deriveNarrativeMediaArtifacts(values: unknown[], options?: SurfaceNormalizationOptions) {
-    const derived: JsonRecord[] = [];
-    const seen = new Set<string>();
-    for (const value of values) {
-        for (const rawPath of extractNarrativeMediaPaths(value)) {
-            const kind = inferDerivedMediaKind(rawPath);
-            if (!kind) {
-                continue;
-            }
-            const resourceRef = attachSignedSurfaceUrl(coerceAdminResourceRef(rawPath), options);
-            if (!resourceRef || resourceRef.kind !== "workspace_file") {
-                continue;
-            }
-            const key = String(resourceRef.adminPath || resourceRef.workspacePath || rawPath).trim();
-            if (!key || seen.has(key)) {
-                continue;
-            }
-            seen.add(key);
-            const previewUrl = materializeSurfaceUrl(resourceRef);
-            const workspacePath = String(resourceRef.workspacePath || "").trim();
-            const title = workspacePath.split("/").filter(Boolean).pop() || workspacePath || rawPath;
-            derived.push({
-                id: `workspace-media:${key}`,
-                kind,
-                title,
-                displayLabel: title,
-                displaySubtitle: String(resourceRef.displaySubtitle || "").trim() || undefined,
-                workspacePath: workspacePath || undefined,
-                sourcePath: rawPath,
-                mimeType: inferDerivedMediaMimeType(rawPath),
-                previewUrl,
-                externalUrl: previewUrl,
-                resourceRef,
-                derivedFromNarrative: true,
-            });
-        }
-    }
-    return derived;
-}
 
 function asRecord(value: unknown): JsonRecord {
     return value && typeof value === "object" ? value as JsonRecord : {};
-}
-
-function asRecordArray(value: unknown) {
-    return Array.isArray(value)
-        ? value.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object")
-        : [];
 }
 
 function materializeSurfaceUrl(resourceRef: AdminResourceRef | null) {
@@ -201,6 +31,26 @@ function materializeSurfaceUrl(resourceRef: AdminResourceRef | null) {
     return undefined;
 }
 
+function canonicalResourceRefFromArtifactRecord(record: JsonRecord) {
+    const explicit = coerceAdminResourceRef(record.resourceRef || record.resource_ref);
+    if (explicit) {
+        return explicit;
+    }
+    const artifactId = String(record.artifactId || record.artifact_id || "").trim();
+    if (artifactId) {
+        return coerceAdminResourceRef({
+            kind: "artifact_content",
+            artifactId,
+            mimeType: record.mimeType,
+            displayLabel: record.displayLabel || record.title,
+            displaySubtitle: record.displaySubtitle,
+            surfaceVisible: record.surfaceVisible,
+        });
+    }
+    const externalUrl = String(record.previewUrl || record.preview_url || record.externalUrl || record.external_url || record.url || "").trim();
+    return externalUrl ? coerceAdminResourceRef(externalUrl) : null;
+}
+
 function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, options?: SurfaceNormalizationOptions) {
     if (!resourceRef || resourceRef.kind === "external_url") {
         return resourceRef;
@@ -214,6 +64,7 @@ function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, options?: 
         return {
             ...resourceRef,
             previewable: false,
+            previewBlockedReason: "surface_unreachable",
             displaySubtitle: String(resourceRef.displaySubtitle || "").trim()
                 || "Admin public base 不可达，手机端预览需要可访问的局域网或公网地址。",
         };
@@ -372,7 +223,7 @@ export function normalizeArtifactForRealtimeSurface(raw: unknown, options?: Surf
         return raw;
     }
 
-    const resourceRef = attachSignedSurfaceUrl(deriveAdminResourceRefFromArtifactLike(record), options);
+    const resourceRef = attachSignedSurfaceUrl(canonicalResourceRefFromArtifactRecord(record), options);
     const materializedUrl = materializeSurfaceUrl(resourceRef);
 
     return {
@@ -397,13 +248,14 @@ export function normalizeMessageForRealtimeSurface(raw: unknown, options?: Surfa
         : record.parts;
 
     const normalizedContent = normalizeSurfaceContent(record.content, options);
-    const derivedArtifacts = deriveNarrativeMediaArtifacts([
-        normalizedContent,
-        ...asRecordArray(nodes).map((node) => node.content),
-        ...asRecordArray(parts).flatMap((part) => [part.content, asRecord(part.data).content]),
-    ], options);
-    const artifacts = mergeArtifacts(record.artifacts, derivedArtifacts, options);
-    const images = mergeMediaUrls(record.images, derivedArtifacts, options);
+    const artifacts = Array.isArray(record.artifacts)
+        ? record.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
+        : record.artifacts;
+    const images = Array.isArray(record.images)
+        ? record.images
+            .map((entry) => normalizeSurfaceUrl(entry, options) || String(entry || "").trim())
+            .filter(Boolean)
+        : record.images;
 
     return {
         ...record,
@@ -422,13 +274,10 @@ function normalizeRuntimeTimelineEntry(raw: unknown, options?: SurfaceNormalizat
     }
 
     const metadata = asRecord(record.metadata);
-    const metadataResourceRef = attachSignedSurfaceUrl(
-        coerceAdminResourceRef(metadata.resourceRef || deriveAdminResourceRefFromArtifactLike(metadata)),
-        options,
-    );
+    const metadataResourceRef = attachSignedSurfaceUrl(coerceAdminResourceRef(metadata.resourceRef || metadata.resource_ref), options);
     const normalizedMetadata = {
         ...metadata,
-        resourceRef: metadataResourceRef || metadata.resourceRef || deriveAdminResourceRefFromArtifactLike(metadata),
+        resourceRef: metadataResourceRef || metadata.resourceRef || metadata.resource_ref,
         content: normalizeSurfaceContent(metadata.content, options),
         message: normalizeSurfaceContent(metadata.message, options),
         summary: normalizeSurfaceContent(metadata.summary, options),
@@ -534,21 +383,13 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: 
     const payload = asRecord(rawPayload.payload);
 
     const normalizedContent = normalizeSurfaceContent(record.content, options);
-    const derivedArtifacts = deriveNarrativeMediaArtifacts([
-        normalizedContent,
-        data.content,
-        data.message,
-        payload.content,
-        payload.message,
-    ], options);
-    const derivedArtifact = derivedArtifacts[0];
 
     return {
         ...record,
         content: normalizedContent,
         artifact: record.artifact
             ? normalizeArtifactForRealtimeSurface(record.artifact, options)
-            : derivedArtifact || record.artifact,
+            : record.artifact,
         data: Object.keys(data).length ? {
             ...data,
             content: normalizeSurfaceContent(data.content, options),
@@ -556,7 +397,7 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: 
             summary: normalizeSurfaceContent(data.summary, options),
             artifact: data.artifact
                 ? normalizeArtifactForRealtimeSurface(data.artifact, options)
-                : derivedArtifact || data.artifact,
+                : data.artifact,
             process: data.process ? normalizeProcessForRealtimeSurface(data.process) : data.process,
             processes: Array.isArray(data.processes)
                 ? data.processes.map((item) => normalizeProcessForRealtimeSurface(item)).filter(Boolean)
@@ -575,7 +416,7 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: 
                 summary: normalizeSurfaceContent(payload.summary, options),
                 artifact: payload.artifact
                     ? normalizeArtifactForRealtimeSurface(payload.artifact, options)
-                    : derivedArtifact || payload.artifact,
+                    : payload.artifact,
                 process: payload.process ? normalizeProcessForRealtimeSurface(payload.process) : payload.process,
                 processes: Array.isArray(payload.processes)
                     ? payload.processes.map((item) => normalizeProcessForRealtimeSurface(item)).filter(Boolean)

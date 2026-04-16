@@ -116,6 +116,7 @@ export function createInitialSessionRealtimeState(): SessionRealtimeStore {
 export type SessionRealtimeProjection = {
   todos: ActiveRunScopedTodos | null;
   approvals: Array<Record<string, unknown>>;
+  askUserInteractions: Array<Record<string, unknown>>;
   controls: Record<string, unknown> | null;
   recoverable: unknown;
   runtimeTimeline: Array<Record<string, unknown>>;
@@ -192,6 +193,12 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
         ? (nestedSnapshot.messages as unknown[])
         : undefined,
     approvals: asRecordArray(effectiveProjection.approvals, root.approvals, workflowProjection.approvals),
+    askUserInteractions: asRecordArray(
+      effectiveProjection.askUserInteractions,
+      root.askUserInteractions,
+      nestedSnapshot.askUserInteractions,
+      workflowProjection.askUserInteractions,
+    ),
     controls: asRecord(effectiveProjection.controls || root.controls),
     recoverable: effectiveProjection.recoverable ?? root.recoverable ?? null,
     artifacts: Array.isArray(asRecord(root.snapshot).artifacts)
@@ -293,6 +300,7 @@ export function buildSessionRealtimeProjection(store: SessionRealtimeStore): Ses
   return {
     todos: selectAuthoritativeTodos(store),
     approvals: selectAuthoritativeApprovals(store) as Array<Record<string, unknown>>,
+    askUserInteractions: selectAuthoritativeAskUserInteractions(store) as Array<Record<string, unknown>>,
     controls: selectAuthoritativeControls(store) as Record<string, unknown> | null,
     recoverable: selectAuthoritativeRecoverable(store),
     runtimeTimeline: selectAuthoritativeRuntimeTimeline(store) as Array<Record<string, unknown>>,
@@ -313,6 +321,7 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
   if (!snapshot) return "";
   const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
   const approvals = Array.isArray(snapshot.approvals) ? snapshot.approvals : [];
+  const askUserInteractions = Array.isArray(snapshot.askUserInteractions) ? snapshot.askUserInteractions : [];
   const todos = Array.isArray(snapshot.todos?.items) ? snapshot.todos.items : [];
   const runtimeTimeline = Array.isArray(snapshot.runtimeTimeline) ? snapshot.runtimeTimeline : [];
   const contextGovernance = asRecord(snapshot.contextGovernance);
@@ -350,6 +359,17 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
       String(request.question || request.prompt || "").trim(),
     ].join("¦");
   }).join("¶");
+  const askUserFingerprint = askUserInteractions.map((interaction) => {
+    const item = asRecord(interaction);
+    const request = asRecord(item.request);
+    return [
+      String(item.id || item.interactionId || "").trim(),
+      String(item.run_id || item.runId || "").trim(),
+      String(item.tool_call_id || item.toolCallId || "").trim(),
+      String(item.status || "").trim(),
+      String(item.question || item.prompt || request.question || request.prompt || "").trim(),
+    ].join("¦");
+  }).join("¶");
 
   const runtimeFingerprint = runtimeTimeline.map((event) => {
     const item = asRecord(event);
@@ -365,6 +385,7 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
     String(snapshot.latestSeq || 0),
     messageFingerprint,
     approvalFingerprint,
+    askUserFingerprint,
     todoFingerprint,
     runtimeFingerprint,
     JSON.stringify(contextGovernance),
@@ -550,8 +571,15 @@ export function selectAuthoritativeApprovals(state: SessionRealtimeStore) {
   return Array.isArray(state.snapshot?.approvals) ? state.snapshot.approvals || [] : [];
 }
 
-export function selectAskUserApprovals(state: SessionRealtimeStore) {
+export function selectAuthoritativeAskUserInteractions(state: SessionRealtimeStore) {
+  if (Array.isArray(state.snapshot?.askUserInteractions)) {
+    return state.snapshot.askUserInteractions || [];
+  }
   return selectAuthoritativeApprovals(state).filter((approval) => isAskUserInteractionApproval(approval));
+}
+
+export function selectAskUserApprovals(state: SessionRealtimeStore) {
+  return selectAuthoritativeAskUserInteractions(state);
 }
 
 export function selectGovernanceApprovals(state: SessionRealtimeStore) {

@@ -18,6 +18,7 @@ from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
     build_recoverable_view,
+    project_ask_user_interactions,
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
@@ -89,6 +90,9 @@ def _build_durable_detail_payload(
 ) -> dict:
     workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
     approvals = project_pending_approvals(db.list_pending_approvals(session_id=session_id, status="pending"))
+    ask_user_interactions = project_ask_user_interactions(
+        db.list_ask_user_interactions(session_id=session_id, status="pending")
+    )
     controls = build_projection_controls(workflow_view, approvals)
     runtime_events = list(runtime_events or [])
     lane = session_admission_service.get_lane_view(session_id)
@@ -121,6 +125,7 @@ def _build_durable_detail_payload(
         "workflow": workflow_view,
         "workflowProjection": workflow_projection,
         "approvals": approvals,
+        "askUserInteractions": ask_user_interactions,
         "controls": controls,
         "recoverable": build_recoverable_view(workflow_view, controls),
         "todos": session_runtime.todos,
@@ -269,6 +274,7 @@ async def get_session_messages(session_id: str):
                 "workflow": snapshot_payload.get("workflow"),
                 "workflowProjection": snapshot_payload.get("workflowProjection"),
                 "approvals": snapshot_payload.get("approvals") or [],
+                "askUserInteractions": snapshot_payload.get("askUserInteractions") or [],
                 "controls": snapshot_payload.get("controls") or {},
                 "recoverable": snapshot_payload.get("recoverable") or {},
                 "todos": snapshot_payload.get("todos") or {"items": [], "allCompleted": False},
@@ -289,6 +295,7 @@ async def get_session_messages(session_id: str):
                 "workflow": snapshot_payload.get("workflow"),
                 "workflowProjection": snapshot_payload.get("workflowProjection"),
                 "approvals": snapshot_payload.get("approvals") or [],
+                "askUserInteractions": snapshot_payload.get("askUserInteractions") or [],
                 "controls": snapshot_payload.get("controls") or {},
                 "recoverable": snapshot_payload.get("recoverable") or {},
                 "todos": snapshot_payload.get("todos") or {"items": [], "allCompleted": False},
@@ -568,6 +575,9 @@ async def get_session_history(session_id: str):
         approvals = project_pending_approvals(
             db.list_pending_approvals(session_id=session_id, status="pending")
         )
+        ask_user_interactions = project_ask_user_interactions(
+            db.list_ask_user_interactions(session_id=session_id, status="pending")
+        )
         controls = build_projection_controls(workflow_view, approvals)
         snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
         snapshot = snapshot_payload.get("snapshot")
@@ -590,6 +600,7 @@ async def get_session_history(session_id: str):
             runtime_timeline=project_runtime_timeline_from_events(runtime_events),
             run_record=run_record,
         )
+        detail["askUserInteractions"] = ask_user_interactions
         if snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported"):
             detail["legacyChatUnsupported"] = True
         return detail

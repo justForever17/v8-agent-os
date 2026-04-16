@@ -223,6 +223,26 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS ask_user_interactions (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    assistant_message_id TEXT,
+                    tool_call_id TEXT,
+                    question TEXT,
+                    prompt TEXT,
+                    request_json TEXT NOT NULL,
+                    answer_text TEXT,
+                    status TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE CASCADE,
+                    FOREIGN KEY (assistant_message_id) REFERENCES chat_canonical_messages (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS workflow_ledgers (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -465,6 +485,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_session_id ON session_lane_queue_entries (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_run_id ON session_lane_queue_entries (run_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_approvals_session_id ON pending_approvals (session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_session_id ON ask_user_interactions (session_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_run_id ON ask_user_interactions (run_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_run_records_status ON run_records (status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_workflow_ledgers_session_id ON workflow_ledgers (session_id, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_workflow_ledgers_root_run_id ON workflow_ledgers (root_run_id)')
@@ -1645,6 +1667,95 @@ class DatabaseManager:
                 rows.append(data)
             return rows
 
+    def add_ask_user_interaction(
+        self,
+        *,
+        interaction_id: str,
+        session_id: str,
+        run_id: str,
+        assistant_message_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        question: Optional[str] = None,
+        prompt: Optional[str] = None,
+        request: Optional[Dict[str, Any]] = None,
+        answer_text: Optional[str] = None,
+        status: str = "pending",
+        resolved_at: Optional[str] = None,
+    ) -> None:
+        request_payload = dict(request or {})
+        normalized_question = str(question or request_payload.get("question") or request_payload.get("prompt") or "").strip() or None
+        normalized_prompt = str(prompt or request_payload.get("prompt") or normalized_question or "").strip() or None
+        if normalized_question:
+            request_payload.setdefault("question", normalized_question)
+        if normalized_prompt:
+            request_payload.setdefault("prompt", normalized_prompt)
+        request_payload.setdefault("interactionKind", "ask_user")
+        request_str = json.dumps(request_payload, ensure_ascii=False)
+        normalized_answer = str(answer_text or "").strip() or None
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                INSERT OR REPLACE INTO ask_user_interactions
+                (id, session_id, run_id, assistant_message_id, tool_call_id, question, prompt, request_json, answer_text, status, resolved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    interaction_id,
+                    session_id,
+                    run_id,
+                    assistant_message_id,
+                    tool_call_id,
+                    normalized_question,
+                    normalized_prompt,
+                    request_str,
+                    normalized_answer,
+                    status,
+                    resolved_at,
+                ),
+            )
+            conn.commit()
+
+    def get_ask_user_interaction(self, interaction_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM ask_user_interactions WHERE id = ?', (interaction_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            data["request"] = json.loads(data["request_json"]) if data.get("request_json") else {}
+            return data
+
+    def list_ask_user_interactions(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        query = 'SELECT * FROM ask_user_interactions WHERE 1=1'
+        params: list[Any] = []
+        if session_id:
+            query += ' AND session_id = ?'
+            params.append(session_id)
+        if run_id:
+            query += ' AND run_id = ?'
+            params.append(run_id)
+        if status:
+            query += ' AND status = ?'
+            params.append(status)
+        query += ' ORDER BY created_at DESC'
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = []
+            for row in cursor.fetchall():
+                data = dict(row)
+                data["request"] = json.loads(data["request_json"]) if data.get("request_json") else {}
+                rows.append(data)
+            return rows
+
     def create_workflow_ledger(
         self,
         *,
@@ -1951,6 +2062,34 @@ class DatabaseManager:
             )
             conn.commit()
 
+    def update_ask_user_interaction(
+        self,
+        interaction_id: str,
+        *,
+        status: str,
+        answer_text: Optional[str] = None,
+        request: Optional[Dict[str, Any]] = None,
+        resolved_at: Optional[str] = None,
+    ) -> None:
+        request_str = json.dumps(request, ensure_ascii=False) if request is not None else None
+        normalized_answer = str(answer_text or "").strip() or None
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                UPDATE ask_user_interactions
+                SET status = ?,
+                    request_json = COALESCE(?, request_json),
+                    answer_text = COALESCE(?, answer_text),
+                    resolved_at = CASE
+                        WHEN ? IN ('resolved', 'cancelled') THEN COALESCE(?, CURRENT_TIMESTAMP)
+                        ELSE resolved_at
+                    END
+                WHERE id = ?
+                ''',
+                (status, request_str, normalized_answer, status, resolved_at, interaction_id),
+            )
+            conn.commit()
+
     # --- Telemetry / Usage Operations ---
 
     def add_model_invocation_log(self, record: Dict[str, Any]):
@@ -2069,6 +2208,7 @@ class DatabaseManager:
                 ("messages", "messages"),
                 ("runs", "run_records"),
                 ("approvals", "pending_approvals"),
+                ("ask_user_interactions", "ask_user_interactions"),
                 ("invocations", "model_invocation_logs"),
             ):
                 cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")

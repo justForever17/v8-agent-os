@@ -183,11 +183,9 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         const artifact = (node.artifact || {}) as Record<string, unknown>;
         const resourceRef = coerceAdminResourceRef(artifact.resourceRef || null);
         const rawSrc = String(
-            artifact.previewUrl
+            resourceRef?.signedUrl
+            || artifact.previewUrl
             || artifact.externalUrl
-            || artifact.workspacePath
-            || artifact.sourcePath
-            || artifact.canonicalPath
             || ""
         ).trim();
         const mediaCandidates = resolveRenderableMediaCandidates(adminBaseUrl, {
@@ -195,8 +193,6 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             resourceRef,
             previewUrl: typeof artifact.previewUrl === "string" ? artifact.previewUrl : undefined,
             externalUrl: typeof artifact.externalUrl === "string" ? artifact.externalUrl : undefined,
-            workspacePath: typeof artifact.workspacePath === "string" ? artifact.workspacePath : undefined,
-            sourcePath: typeof artifact.sourcePath === "string" ? artifact.sourcePath : undefined,
         });
         const src = mediaCandidates[0] || "";
         const title = artifactDisplayTitle(artifact);
@@ -205,7 +201,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return (
                 <UnresolvedResourceCard
                     title={title}
-                    subtitle={String(artifact.displaySubtitle || resourceRef?.displaySubtitle || t("当前附件地址不可达。", "This attachment URL is not reachable."))}
+                    subtitle={String(resourceRef?.previewBlockedReason || artifact.previewBlockedReason || artifact.displaySubtitle || resourceRef?.displaySubtitle || t("没有 canonical resourceRef，裸路径仅保留为文本。", "No canonical resourceRef is available; raw paths are text-only."))}
                 />
             );
         }
@@ -281,8 +277,13 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (block.type === "image" || block.type === "video" || block.type === "audio") {
-        const rawSrc = String(block.data?.src || block.content || "").trim();
         const resourceRef = coerceAdminResourceRef(block.data?.resourceRef || null);
+        const rawSrc = String(
+            resourceRef?.signedUrl
+            || block.data?.previewUrl
+            || block.data?.externalUrl
+            || ""
+        ).trim();
         const resourceSubtitle = typeof resourceRef?.displaySubtitle === "string" && resourceRef.displaySubtitle.trim()
             ? resourceRef.displaySubtitle.trim()
             : "";
@@ -291,8 +292,6 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             resourceRef,
             previewUrl: typeof block.data?.previewUrl === "string" ? block.data.previewUrl : undefined,
             externalUrl: typeof block.data?.externalUrl === "string" ? block.data.externalUrl : undefined,
-            workspacePath: typeof block.data?.workspacePath === "string" ? block.data.workspacePath : undefined,
-            sourcePath: typeof block.data?.sourcePath === "string" ? block.data.sourcePath : undefined,
         });
         const src = mediaCandidates[0] || "";
         const title = typeof block.data?.title === "string" ? block.data.title : undefined;
@@ -300,7 +299,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return (
                 <UnresolvedResourceCard
                     title={title || t("媒体资源暂不可预览", "Media preview unavailable")}
-                    subtitle={resourceSubtitle || t("当前资源地址暂不可达，已降级显示该节点。", "The media URL is currently unreachable, so this node has been downgraded instead of disappearing.")}
+                    subtitle={resourceRef?.previewBlockedReason || resourceSubtitle || t("没有 canonical resourceRef，裸路径仅保留为文本。", "No canonical resourceRef is available; raw paths are text-only.")}
                 />
             );
         }

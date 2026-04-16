@@ -61,6 +61,7 @@ export type AdminResourceRef = {
   mimeType?: string;
   displayLabel?: string;
   displaySubtitle?: string;
+  previewBlockedReason?: string;
   previewable?: boolean;
   downloadable?: boolean;
   sourcePath?: string;
@@ -185,6 +186,7 @@ export type AuthoritativeSessionSnapshot = {
   latestSeq?: number;
   messages?: unknown[];
   approvals?: unknown[];
+  askUserInteractions?: unknown[];
   controls?: Record<string, unknown> | null;
   recoverable?: unknown;
   artifacts?: unknown[];

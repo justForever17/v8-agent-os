@@ -86,6 +86,11 @@ export async function GET(
             workflow: snapshotData.workflow || null,
             workflowProjection: snapshotData.workflowProjection || null,
             approvals: Array.isArray(snapshotData.approvals) ? snapshotData.approvals : [],
+            askUserInteractions: Array.isArray(historyRecord.askUserInteractions)
+                ? historyRecord.askUserInteractions
+                : Array.isArray(snapshotData.askUserInteractions)
+                    ? snapshotData.askUserInteractions
+                    : [],
             controls: snapshotData.controls || null,
             recoverable: snapshotData.recoverable || null,
             summary: snapshotData.summary || null,

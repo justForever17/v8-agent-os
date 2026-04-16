@@ -62,6 +62,7 @@ class RuntimeCommand:
     topic: str
     run_id: Optional[str] = None
     approval_id: Optional[str] = None
+    interaction_id: Optional[str] = None
     reason: Optional[str] = None
     response: Dict[str, Any] = field(default_factory=dict)
     payload: Dict[str, Any] = field(default_factory=dict)
@@ -93,6 +94,7 @@ class RuntimeSnapshotPayload:
     workflow: Optional[Dict[str, Any]] = None
     workflow_projection: Optional[Dict[str, Any]] = None
     approvals: List[Dict[str, Any]] = field(default_factory=list)
+    ask_user_interactions: List[Dict[str, Any]] = field(default_factory=list)
     controls: Optional[Dict[str, Any]] = None
     recoverable: Optional[Dict[str, Any]] = None
     summary: Optional[Dict[str, Any]] = None
@@ -115,6 +117,7 @@ class RuntimeSnapshotPayload:
             "workflow": self.workflow,
             "workflowProjection": self.workflow_projection,
             "approvals": list(self.approvals),
+            "askUserInteractions": list(self.ask_user_interactions),
             "controls": self.controls,
             "recoverable": self.recoverable,
             "summary": self.summary,

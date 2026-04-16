@@ -1,10 +1,9 @@
-import type { ChatArtifact, ChatMessage, ChatStreamEvent, PendingApproval } from "@/src/types/admin";
+import type { AskUserInteraction, ChatArtifact, PendingApproval } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     type SessionStreamUiEvent,
     buildSessionStreamUiEvent,
     coerceAdminResourceRef,
-    isAskUserInteractionApproval,
 } from "@v8/session-realtime";
 
 type JsonRecord = Record<string, unknown>;
@@ -35,6 +34,11 @@ function buildArtifact(value: unknown): ChatArtifact | null {
                 : undefined,
         title: typeof record.title === "string" ? record.title : undefined,
         kind: typeof record.kind === "string" ? record.kind : undefined,
+        previewBlockedReason: typeof record.previewBlockedReason === "string"
+            ? record.previewBlockedReason
+            : typeof record.preview_blocked_reason === "string"
+                ? record.preview_blocked_reason
+                : undefined,
         previewUrl: typeof record.previewUrl === "string"
             ? record.previewUrl
             : typeof record.preview_url === "string"
@@ -107,7 +111,7 @@ export function normalizePhoneRealtimeEvent(raw: unknown, locale: LocaleCode = "
 }
 
 export function buildApprovalFromEvent(event: PhoneRealtimeEvent): PendingApproval | null {
-    if (event.type !== "custom_event" || (event.name !== "ask_user" && event.name !== "approval_requested")) {
+    if (event.type !== "custom_event" || event.name !== "approval_requested") {
         return null;
     }
     const approvalId = typeof event.data?.approvalId === "string"
@@ -148,15 +152,47 @@ export function buildApprovalFromEvent(event: PhoneRealtimeEvent): PendingApprov
         approval_kind: approvalKind,
         request,
     };
-    if (event.name === "ask_user" && !candidate.approval_kind) {
-        candidate.approval_kind = "ask_user";
-    }
-    if (event.name === "ask_user" && !request.interactionKind) {
-        request.interactionKind = "ask_user";
-    }
     return {
         ...candidate,
         request,
-        approval_kind: isAskUserInteractionApproval(candidate) ? (candidate.approval_kind || "ask_user") : candidate.approval_kind,
+    };
+}
+
+export function buildAskUserInteractionFromEvent(event: PhoneRealtimeEvent): AskUserInteraction | null {
+    if (event.type !== "custom_event" || event.name !== "ask_user") {
+        return null;
+    }
+    const data = event.data || {};
+    const request = {
+        ...(data.request && typeof data.request === "object" ? data.request as Record<string, unknown> : {}),
+        question: typeof data.question === "string" ? data.question : undefined,
+        prompt: typeof data.prompt === "string" ? data.prompt : undefined,
+        toolCallId: typeof data.toolCallId === "string" ? data.toolCallId : undefined,
+        interactionKind: "ask_user",
+    };
+    const interactionId = typeof data.interactionId === "string"
+        ? data.interactionId
+        : typeof data.id === "string"
+            ? data.id
+            : undefined;
+    return {
+        id: interactionId,
+        interactionId,
+        run_id: typeof event.run_id === "string"
+            ? event.run_id
+            : typeof data.run_id === "string"
+                ? data.run_id
+                : undefined,
+        session_id: typeof event.session_id === "string"
+            ? event.session_id
+            : typeof data.session_id === "string"
+                ? data.session_id
+                : undefined,
+        assistantMessageId: typeof data.assistantMessageId === "string" ? data.assistantMessageId : undefined,
+        toolCallId: typeof data.toolCallId === "string" ? data.toolCallId : undefined,
+        status: typeof data.status === "string" ? data.status : "pending",
+        question: typeof data.question === "string" ? data.question : request.question,
+        prompt: typeof data.prompt === "string" ? data.prompt : request.prompt,
+        request,
     };
 }

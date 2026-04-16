@@ -39,7 +39,6 @@ import {
     deriveMemoryRuntimeInsightFromGovernance,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
-    isAskUserInteractionApproval,
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
@@ -485,14 +484,13 @@ export default function ChatClient() {
         onCustomEvent: (event) => {
             if (event.name === "ask_user") {
                 applyAskUserPendingApproval({
-                    id: event.data.approvalId || "",
+                    id: event.data.interactionId || event.data.id || "",
+                    interactionId: event.data.interactionId || event.data.id || "",
                     run_id: event.run_id || event.data.runId || "",
-                    approval_kind: event.data.approvalKind || "",
                     interactionKind: event.data.interactionKind || "",
                     request: {
                         question: event.data.question,
                         toolCallId: event.data.toolCallId,
-                        approvalKind: event.data.approvalKind,
                         interactionKind: event.data.interactionKind,
                     },
                 });
@@ -525,11 +523,11 @@ export default function ChatClient() {
     );
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
     const askUserPendingProjection = useMemo(
-        () => (sessionProjection?.approvals || []).find((item) => isAskUserInteractionApproval(item)) || null,
-        [sessionProjection?.approvals],
+        () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
+        [sessionProjection?.askUserInteractions],
     );
     const governanceApprovals = useMemo(
-        () => (sessionProjection?.approvals || []).filter((item) => !isAskUserInteractionApproval(item)),
+        () => (sessionProjection?.approvals || []),
         [sessionProjection?.approvals],
     );
     const governancePendingApproval = governanceApprovals[0] || null;
@@ -702,6 +700,7 @@ export default function ChatClient() {
 
     const applyAskUserPendingApproval = useCallback((approval: {
         id?: string;
+        interactionId?: string;
         approval_id?: string;
         run_id?: string;
         runId?: string;
@@ -710,6 +709,7 @@ export default function ChatClient() {
         question?: string;
         prompt?: string;
         toolCallId?: string;
+        status?: string;
         request?: { question?: string; prompt?: string; toolCallId?: string; approvalKind?: string; interactionKind?: string };
     } | null, options?: { openModal?: boolean }) => {
         if (!approval) {
@@ -723,7 +723,7 @@ export default function ChatClient() {
             clearApprovalState({ closeModal: false });
             return;
         }
-        const approvalId = approval.id || approval.approval_id || "";
+        const approvalId = approval.id || approval.interactionId || approval.approval_id || "";
         const question = approval.question || approval.prompt || request.question || request.prompt || "";
         if (!approvalId || !question) {
             clearApprovalState();
@@ -744,7 +744,7 @@ export default function ChatClient() {
     }, [clearApprovalState]);
 
     useEffect(() => {
-        const nextAskUserApprovalId = String(askUserPendingProjection?.id || "").trim();
+        const nextAskUserApprovalId = String(askUserPendingProjection?.id || askUserPendingProjection?.interactionId || "").trim();
         if (!nextAskUserApprovalId) {
             if (askUserApprovalId) {
                 clearApprovalState({ closeModal: true });
@@ -887,10 +887,10 @@ export default function ChatClient() {
         setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detailPayload) || isLegacyChatUnsupportedPayload(projectionPayload));
         const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
         setSessionProjection(projection);
-        if (projection?.approvals?.length) {
-            const askUserApproval = projection.approvals.find((item) => isAskUserInteractionApproval(item)) || null;
-            if (askUserApproval) {
-                applyAskUserPendingApproval(askUserApproval, { openModal: false });
+        if (projection?.askUserInteractions?.length) {
+            const askUserInteraction = projection.askUserInteractions.find((item) => String(item.status || "pending").toLowerCase() === "pending") || null;
+            if (askUserInteraction) {
+                applyAskUserPendingApproval(askUserInteraction, { openModal: false });
             }
         }
 
@@ -1264,7 +1264,16 @@ export default function ChatClient() {
     const handleAskUserSubmit = async (answer: string, approve: boolean) => {
         try {
             if (askUserApprovalId) {
-                await resolveApproval(askUserApprovalId, answer, approve);
+                if (approve) {
+                    const response = await fetch(`/api/ask-user/${encodeURIComponent(askUserApprovalId)}/respond`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ answer, response: { answer } }),
+                    });
+                    if (!response.ok) {
+                        throw new Error(`ask_user respond failed: ${response.status}`);
+                    }
+                }
             } else if (approve) {
                 await sendToolOutput(askUserToolCallId, answer, buildScopePayload(activeConversationId));
             }

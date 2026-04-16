@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from core.database import db
 from erc.command_service import command_service
 from erc.event_bus import event_bus, SessionEventEmitter
 from erc.models import ApprovalRequest, RunDescriptor, RuntimeSource
@@ -86,6 +87,8 @@ class RunHandle:
         request: Dict[str, Any],
         expires_at: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if str(approval_kind or "").strip().lower() == "ask_user":
+            raise ValueError("ask_user must use ask_user_interactions, not pending_approvals")
         approval = command_service.request_approval(
             ApprovalRequest(
                 approval_id=f"approval_{uuid.uuid4().hex}",
@@ -106,17 +109,14 @@ class RunHandle:
                 "autoApproved": bool(approval.get("autoApproved")),
             },
         )
-        normalized_approval_kind = str(approval_kind or "").strip().lower()
-        approval_topic = "ask_user.requested" if normalized_approval_kind == "ask_user" else "approval.requested"
         self.emit(
-            approval_topic,
+            "approval.requested",
             approval,
             source=RuntimeSource(plane="engine", component="erc", node="command_service", agent_id=self.descriptor.agent_id),
         )
         if str(approval.get("status") or "").strip().lower() == "pending":
-            waiting_status = "waiting_input" if normalized_approval_kind == "ask_user" else "waiting_approval"
-            self.transition(waiting_status, reason=approval_kind, node="command_service")
-            run_service.transition_run(self.run_id, status=waiting_status)
+            self.transition("waiting_approval", reason=approval_kind, node="command_service")
+            run_service.transition_run(self.run_id, status="waiting_approval")
         else:
             approval_event_payload = {
                 "approval_id": approval["approval_id"],
@@ -125,39 +125,90 @@ class RunHandle:
                 "response": approval.get("response") or {},
                 "policySource": approval.get("policySource"),
             }
-            if normalized_approval_kind == "ask_user":
-                self.emit(
-                    "ask_user.resolved",
-                    approval_event_payload,
-                    source=RuntimeSource(
-                        plane="engine",
-                        component="erc",
-                        node="command_service",
-                        agent_id=self.descriptor.agent_id,
-                    ),
-                )
-            else:
-                self.emit(
-                    "approval.auto_approved",
-                    approval_event_payload,
-                    source=RuntimeSource(
-                        plane="engine",
-                        component="erc",
-                        node="command_service",
-                        agent_id=self.descriptor.agent_id,
-                    ),
-                )
-                self.emit(
-                    "approval.approved",
-                    approval_event_payload,
-                    source=RuntimeSource(
-                        plane="engine",
-                        component="erc",
-                        node="command_service",
-                        agent_id=self.descriptor.agent_id,
-                    ),
-                )
+            self.emit(
+                "approval.auto_approved",
+                approval_event_payload,
+                source=RuntimeSource(
+                    plane="engine",
+                    component="erc",
+                    node="command_service",
+                    agent_id=self.descriptor.agent_id,
+                ),
+            )
+            self.emit(
+                "approval.approved",
+                approval_event_payload,
+                source=RuntimeSource(
+                    plane="engine",
+                    component="erc",
+                    node="command_service",
+                    agent_id=self.descriptor.agent_id,
+                ),
+            )
         return approval
+
+    def request_ask_user_interaction(
+        self,
+        *,
+        request: Dict[str, Any],
+        assistant_message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        interaction_id = f"ask_{uuid.uuid4().hex}"
+        tool_call_id = str(request.get("toolCallId") or "").strip() or None
+        question = str(request.get("question") or request.get("prompt") or "").strip() or None
+        prompt = str(request.get("prompt") or question or "").strip() or None
+        db.add_ask_user_interaction(
+            interaction_id=interaction_id,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            assistant_message_id=assistant_message_id,
+            tool_call_id=tool_call_id,
+            question=question,
+            prompt=prompt,
+            request=request,
+            status="pending",
+        )
+        interaction = db.get_ask_user_interaction(interaction_id) or {
+            "id": interaction_id,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "assistant_message_id": assistant_message_id,
+            "tool_call_id": tool_call_id,
+            "question": question,
+            "prompt": prompt,
+            "request": dict(request or {}),
+            "status": "pending",
+        }
+        payload = {
+            "id": interaction.get("id"),
+            "interactionId": interaction.get("id"),
+            "session_id": interaction.get("session_id"),
+            "sessionId": interaction.get("session_id"),
+            "run_id": interaction.get("run_id"),
+            "runId": interaction.get("run_id"),
+            "assistant_message_id": interaction.get("assistant_message_id"),
+            "assistantMessageId": interaction.get("assistant_message_id"),
+            "toolCallId": interaction.get("tool_call_id"),
+            "question": interaction.get("question"),
+            "prompt": interaction.get("prompt"),
+            "interactionKind": "ask_user",
+            "status": interaction.get("status") or "pending",
+            "request": interaction.get("request") or {},
+            "createdAt": interaction.get("created_at"),
+        }
+        self.emit(
+            "ask_user.requested",
+            payload,
+            source=RuntimeSource(
+                plane="engine",
+                component="erc",
+                node="command_service",
+                agent_id=self.descriptor.agent_id,
+            ),
+        )
+        self.transition("waiting_input", reason="ask_user", node="command_service")
+        run_service.transition_run(self.run_id, status="waiting_input")
+        return interaction
 
 
 class ExecutionRuntimeCore:
@@ -402,6 +453,51 @@ class ExecutionRuntimeCore:
             metadata={"approval_id": approval_id},
         )
         return {"transition_event": transition_event, "command_event": event, "approval": approval}
+
+    def resolve_ask_user_interaction(
+        self,
+        interaction_id: str,
+        *,
+        response: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        interaction = db.get_ask_user_interaction(interaction_id)
+        if not interaction:
+            return None
+        answer_text = str((response or {}).get("answer") or "").strip() or None
+        db.update_ask_user_interaction(
+            interaction_id,
+            status="resolved",
+            answer_text=answer_text,
+        )
+        interaction = db.get_ask_user_interaction(interaction_id)
+        if not interaction:
+            return None
+        run_record = run_service.get_run(interaction["run_id"])
+        if not run_record:
+            return {"interaction": interaction}
+        emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
+        transition_event = emitter.emit(
+            "run.state.changed",
+            {"from_status": run_record.get("status"), "to_status": "running", "reason": "ask_user_resolved"},
+        )
+        event = emitter.emit(
+            "ask_user.resolved",
+            {
+                "interactionId": interaction_id,
+                "run_id": interaction["run_id"],
+                "toolCallId": interaction.get("tool_call_id"),
+                "answer": answer_text,
+                "response": response or {},
+            },
+        )
+        run_service.transition_run(interaction["run_id"], status="running")
+        workflow_ledger_service.sync_run_status(
+            interaction["run_id"],
+            run_status="running",
+            reason="ask_user_resolved",
+            metadata={"interaction_id": interaction_id},
+        )
+        return {"transition_event": transition_event, "command_event": event, "interaction": interaction}
 
     def reject(self, approval_id: str, *, response: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         approval = command_service.reject(approval_id, response=response)

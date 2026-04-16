@@ -51,7 +51,7 @@ import {
     PHONE_STREAM_LIFECYCLE_OPTIONS,
     type PhoneRealtimeUiEvent,
 } from "@/src/lib/chat-stream-state";
-import { buildApprovalFromEvent, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
+import { buildApprovalFromEvent, buildAskUserInteractionFromEvent, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
 import {
     buildPhoneRuntimeTimelineEntryFromEvent,
     getPhoneRuntimeDescriptor,
@@ -104,6 +104,7 @@ import type {
     ConversationDetail,
     ConversationSummary,
     MusicTrack,
+    AskUserInteraction,
     PendingApproval,
     PhoneUiTimelineNode,
     DesktopLiveStatus,
@@ -122,7 +123,6 @@ import {
     type ContextReferenceItem,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
-    isAskUserInteractionApproval,
     mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
     shouldAuthoritativelyRefreshOnRuntimeEvent,
@@ -1144,6 +1144,27 @@ function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
+function upsertAskUserInteraction(current: AskUserInteraction[], incoming: AskUserInteraction) {
+    const incomingId = String(incoming.id || incoming.interactionId || "").trim();
+    if (!incomingId) {
+        return [incoming, ...current];
+    }
+    const next = [...current];
+    const existingIndex = next.findIndex((item) => String(item.id || item.interactionId || "").trim() === incomingId);
+    if (existingIndex >= 0) {
+        next[existingIndex] = {
+            ...next[existingIndex],
+            ...incoming,
+            request: {
+                ...(next[existingIndex].request || {}),
+                ...(incoming.request || {}),
+            },
+        };
+        return next;
+    }
+    return [incoming, ...next];
+}
+
 function readRealtimeDiagnostics(value: unknown) {
     const record = asRecord(value);
     return asRecord(record._diagnostics);
@@ -1344,6 +1365,7 @@ export default function ChatScreen() {
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+    const [askUserInteractions, setAskUserInteractions] = useState<AskUserInteraction[]>([]);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
     const lastProcessSurfaceAtRef = useRef(0);
@@ -1500,6 +1522,7 @@ export default function ChatScreen() {
         setMessages([]);
         setLegacyChatUnsupported(false);
         setApprovals([]);
+        setAskUserInteractions([]);
         setTodos([]);
         todosRef.current = [];
         applySessionProcessSurface([], { forceClear: true });
@@ -2141,8 +2164,9 @@ export default function ChatScreen() {
         };
         const record = asRecord(payload);
         const nextApprovals = view.approvals as PendingApproval[];
-        const hasAskUserPending = nextApprovals.some((item) => isAskUserInteractionApproval(item));
-        const hasGovernanceApprovalPending = nextApprovals.some((item) => !isAskUserInteractionApproval(item));
+        const nextAskUserInteractions = (Array.isArray(view.askUserInteractions) ? view.askUserInteractions : []) as AskUserInteraction[];
+        const hasAskUserPending = nextAskUserInteractions.some((item) => String(item.status || "pending").toLowerCase() === "pending");
+        const hasGovernanceApprovalPending = nextApprovals.length > 0;
         const nextTodos = view.todos?.items || [];
         const nextRuntimeEvents = view.runtimeTimeline;
         const nextRuntimeStatus = view.runtimeStatus;
@@ -2180,6 +2204,7 @@ export default function ChatScreen() {
         const overlayPatch = buildConversationOverlayPatch(payload as Partial<ConversationDetail>);
 
         setApprovals(nextApprovals);
+        setAskUserInteractions(nextAskUserInteractions);
         setTodos(nextTodos as SessionTodoItem[]);
         todosRef.current = nextTodos as SessionTodoItem[];
         setContextReferences(view.contextReferences || []);
@@ -2803,49 +2828,72 @@ export default function ChatScreen() {
             return;
         }
 
-        if (normalized.name === "ask_user" || normalized.name === "approval_requested") {
-            const approval = buildApprovalFromEvent(normalized);
-            if (approval) {
-                const askUserInteraction = isAskUserInteractionApproval(approval);
-                setApprovals((current) => upsertApproval(current, approval));
+        if (normalized.name === "ask_user") {
+            if (normalized.topic === "ask_user.resolved") {
+                setAskUserInteractions((current) => current.filter((item) => String(item.id || item.interactionId || "") !== String(normalized.data?.interactionId || normalized.data?.id || "")));
                 setRuntime((current) => ({
                     ...current,
-                    status: askUserInteraction ? "waiting_input" : "waiting_approval",
+                    status: "running",
                     latestSeq: normalized.seq || current.latestSeq,
                     runId: normalized.run_id || current.runId,
-                    label: askUserInteraction
-                        ? tRef.current("等待你的输入", "Waiting for your answer")
-                        : tRef.current("等待授权确认", "Waiting for approval"),
+                    label: tRef.current("继续执行中", "Continuing"),
                 }));
                 patchAssistantTaskShell(todosRef.current, {
-                    phase: askUserInteraction ? "waiting_input" : "tooling",
-                    label: askUserInteraction
-                        ? tRef.current("等待你的输入", "Waiting for your answer")
-                        : tRef.current("等待授权确认", "Waiting for approval"),
+                    phase: "tooling",
+                    label: tRef.current("继续执行中", "Continuing"),
+                    subtitle: tRef.current("已收到你的输入，正在继续任务。", "Your answer was received and the task is continuing."),
+                    runId: normalized.run_id,
+                    createIfMissing: false,
+                });
+                appendRuntimeTimeline(
+                    buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || "chat")) || "chat",
+                        normalized.topic || "ask_user.resolved",
+                        tRef.current("已收到你的输入，继续执行中", "Input received, continuing"),
+                        {
+                            id: normalized.event_id || `ask-user-resolved:${normalized.seq || Date.now()}`,
+                            seq: normalized.seq,
+                            kind: "governance",
+                            timestamp: normalized.ts || Date.now(),
+                            actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        },
+                    ),
+                );
+                if (shouldFallbackRefresh) {
+                    scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+                }
+                return;
+            }
+            const interaction = buildAskUserInteractionFromEvent(normalized);
+            if (interaction) {
+                setAskUserInteractions((current) => upsertAskUserInteraction(current, interaction));
+                setRuntime((current) => ({
+                    ...current,
+                    status: "waiting_input",
+                    latestSeq: normalized.seq || current.latestSeq,
+                    runId: normalized.run_id || current.runId,
+                    label: tRef.current("等待你的输入", "Waiting for your answer"),
+                }));
+                patchAssistantTaskShell(todosRef.current, {
+                    phase: "waiting_input",
+                    label: tRef.current("等待你的输入", "Waiting for your answer"),
                     subtitle: typeof normalized.data?.question === "string"
                         ? normalized.data.question
-                        : (askUserInteraction
-                            ? tRef.current("请继续补充必要信息。", "Please provide the requested input.")
-                            : tRef.current("需要你的授权后才能继续。", "Approval is required to continue.")),
+                        : tRef.current("请继续补充必要信息。", "Please provide the requested input."),
                     runId: normalized.run_id,
                     createIfMissing: true,
                 });
                 appendRuntimeTimeline(
                     buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
-                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || (askUserInteraction ? "chat" : "automation"))) || (askUserInteraction ? "chat" : "automation"),
-                        normalized.topic || "approval.requested",
-                        String(
-                            normalized.data?.question
-                            || (askUserInteraction
-                                ? tRef.current("等待你的输入", "Waiting for your answer")
-                                : tRef.current("等待授权确认", "Waiting for approval")),
-                        ),
+                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "chat")) || "chat",
+                        normalized.topic || "ask_user.requested",
+                        String(normalized.data?.question || tRef.current("等待你的输入", "Waiting for your answer")),
                         {
-                            id: normalized.event_id || `${askUserInteraction ? "ask-user" : "approval"}:${normalized.seq || Date.now()}`,
+                            id: normalized.event_id || `ask-user:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
                             timestamp: normalized.ts || Date.now(),
-                            actorLabel: normalized.actorLabel || (askUserInteraction ? tRef.current("智能主管", "Supervisor") : tRef.current("运行调度", "Automation")),
+                            actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
                         },
                     ),
                 );
@@ -2856,36 +2904,44 @@ export default function ChatScreen() {
             return;
         }
 
-        if (normalized.topic === "ask_user.resolved") {
-            setApprovals((current) => current.filter((item) => !isAskUserInteractionApproval(item)));
-            setRuntime((current) => ({
-                ...current,
-                status: "running",
-                latestSeq: normalized.seq || current.latestSeq,
-                runId: normalized.run_id || current.runId,
-                label: tRef.current("继续执行中", "Continuing"),
-            }));
-            patchAssistantTaskShell(todosRef.current, {
-                phase: "tooling",
-                label: tRef.current("继续执行中", "Continuing"),
-                subtitle: tRef.current("已收到你的输入，正在继续任务。", "Your answer was received and the task is continuing."),
-                runId: normalized.run_id,
-                createIfMissing: false,
-            });
-            appendRuntimeTimeline(
-                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
-                    normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || "chat")) || "chat",
-                    normalized.topic || "ask_user.resolved",
-                    tRef.current("已收到你的输入，继续执行中", "Input received, continuing"),
-                    {
-                        id: normalized.event_id || `ask-user-resolved:${normalized.seq || Date.now()}`,
-                        seq: normalized.seq,
-                        kind: "governance",
-                        timestamp: normalized.ts || Date.now(),
-                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
-                    },
-                ),
-            );
+        if (normalized.name === "approval_requested") {
+            const approval = buildApprovalFromEvent(normalized);
+            if (approval) {
+                setApprovals((current) => upsertApproval(current, approval));
+                setRuntime((current) => ({
+                    ...current,
+                    status: "waiting_approval",
+                    latestSeq: normalized.seq || current.latestSeq,
+                    runId: normalized.run_id || current.runId,
+                    label: tRef.current("等待授权确认", "Waiting for approval"),
+                }));
+                patchAssistantTaskShell(todosRef.current, {
+                    phase: "tooling",
+                    label: tRef.current("等待授权确认", "Waiting for approval"),
+                    subtitle: typeof normalized.data?.question === "string"
+                        ? normalized.data.question
+                        : tRef.current("需要你的授权后才能继续。", "Approval is required to continue."),
+                    runId: normalized.run_id,
+                    createIfMissing: true,
+                });
+                appendRuntimeTimeline(
+                    buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                        normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "automation")) || "automation",
+                        normalized.topic || "approval.requested",
+                        String(
+                            normalized.data?.question
+                            || tRef.current("等待授权确认", "Waiting for approval"),
+                        ),
+                        {
+                            id: normalized.event_id || `approval:${normalized.seq || Date.now()}`,
+                            seq: normalized.seq,
+                            kind: "governance",
+                            timestamp: normalized.ts || Date.now(),
+                            actorLabel: normalized.actorLabel || tRef.current("运行调度", "Automation"),
+                        },
+                    ),
+                );
+            }
             if (shouldFallbackRefresh) {
                 scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
             }
@@ -3610,21 +3666,28 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, speakingId, t, ttsPlayer, ttsStatus.playing]);
 
-    const handleApprovalResolve = useCallback(async (approval: PendingApproval, answer: string, approve: boolean) => {
-        const approvalId = approval.id || approval.approval_id;
+    const handleApprovalResolve = useCallback(async (approval: PendingApproval | AskUserInteraction, answer: string, approve: boolean) => {
+        const askInteraction = approval as PendingApproval & AskUserInteraction;
+        const isAskUser = Boolean(
+            askInteraction.interactionId
+            || askInteraction.request?.interactionKind === "ask_user"
+        );
+        const approvalId = isAskUser
+            ? String(askInteraction.id || askInteraction.interactionId || "")
+            : String(approval.id || (approval as PendingApproval).approval_id || "");
         if (!approvalId) {
             return;
         }
-        if (isAskUserInteractionApproval(approval)) {
+        if (isAskUser) {
             if (!approve) {
-                await approvePendingItem(authorizedFetch, approvalId, answer, false);
+                setAskUserInteractions((current) => current.filter((item) => String(item.id || item.interactionId || "") !== approvalId));
             } else {
                 await respondAskUser(authorizedFetch, approvalId, answer);
             }
         } else {
             await approvePendingItem(authorizedFetch, approvalId, answer, approve);
+            setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
         }
-        setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
     }, [authorizedFetch]);
 
     const handleRunCommand = useCallback(async (command: "interrupt" | "retry") => {
@@ -3654,6 +3717,7 @@ export default function ChatScreen() {
             activeConversationId,
             messages,
             approvals,
+            askUserInteractions,
             todos,
             processes,
             contextReferences,
@@ -3665,7 +3729,7 @@ export default function ChatScreen() {
             t,
             locale,
         }),
-        [activeConversationId, approvals, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
+        [activeConversationId, approvals, askUserInteractions, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;

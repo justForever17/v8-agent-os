@@ -212,6 +212,8 @@ class ChatStreamState:
     assistant_transcript_version: int = 0
     narrative_started_model_run_ids: set[str] = field(default_factory=set)
     active_tool_call_ids: set[str] = field(default_factory=set)
+    pending_ask_user_interaction_id: str | None = None
+    pending_ask_user_tool_call_id: str | None = None
 
 
 canonical_transcript_builder = CanonicalTranscriptBuilder()
@@ -324,17 +326,22 @@ class ChatRuntime:
         chat_run: ChatRunContext,
         *,
         request_payload: dict[str, Any],
-        approval: dict[str, Any] | None = None,
+        interaction: dict[str, Any] | None = None,
         governance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        interaction = interaction or {}
         event_data = {
-            "question": request_payload.get("question"),
-            "toolCallId": request_payload.get("toolCallId") or (approval or {}).get("approval_id"),
-            "approvalId": (approval or {}).get("approval_id"),
+            "id": interaction.get("id"),
+            "interactionId": interaction.get("id"),
+            "question": request_payload.get("question") or interaction.get("question"),
+            "prompt": request_payload.get("prompt") or interaction.get("prompt"),
+            "toolCallId": request_payload.get("toolCallId") or interaction.get("tool_call_id"),
             "interactionKind": request_payload.get("interactionKind") or "ask_user",
-            "approvalKind": request_payload.get("approvalKind") or (approval or {}).get("approval_kind"),
+            "status": interaction.get("status") or "pending",
             "request": request_payload,
         }
+        if interaction.get("assistant_message_id"):
+            event_data["assistantMessageId"] = interaction.get("assistant_message_id")
         if governance:
             event_data["governance"] = governance
         return {
@@ -2123,6 +2130,75 @@ class ChatRuntime:
         if kind == "on_chain_stream":
             interrupt_request = self._extract_interrupt_request(data.get("chunk"))
             if interrupt_request:
+                if self._is_ask_user_request(interrupt_request):
+                    assistant_message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+                    tool_call_id = str(interrupt_request.get("toolCallId") or "").strip()
+                    if not tool_call_id:
+                        tool_call_id = f"ask_user:{uuid.uuid4().hex}"
+                        interrupt_request["toolCallId"] = tool_call_id
+                    interaction = chat_run.run_handle.request_ask_user_interaction(
+                        request=interrupt_request,
+                        assistant_message_id=assistant_message_id,
+                    )
+                    tool_call_id = str(interaction.get("tool_call_id") or interrupt_request.get("toolCallId") or tool_call_id).strip()
+                    stream_state.pending_ask_user_interaction_id = str(interaction.get("id") or "")
+                    stream_state.pending_ask_user_tool_call_id = tool_call_id
+                    profile = self._get_agent_profile(stream_state.current_agent)
+                    tool_start_event = {
+                        "type": "tool_start",
+                        "tool": {
+                            "toolCallId": tool_call_id,
+                            "toolName": "ask_user",
+                            "args": interrupt_request,
+                        },
+                        "timestamp": 0,
+                    }
+                    tool_call_node = {
+                        "id": f"{assistant_message_id}:tool_call:{tool_call_id}",
+                        "kind": "execution",
+                        "executionType": "tool_call",
+                        "toolCallId": tool_call_id,
+                        "toolName": "ask_user",
+                        "args": interrupt_request,
+                        "state": "waiting_input",
+                        "timestamp": self._now_timestamp_ms(),
+                        "agentName": profile["name"],
+                        "agentAvatar": profile["avatar"],
+                        "agentRoleLabel": profile["roleLabel"],
+                    }
+                    runtime_event = self._emit_message_targeted_runtime_event(
+                        chat_run,
+                        stream_state,
+                        topic="tool.started",
+                        payload=tool_start_event,
+                        node=tool_call_node,
+                        agent_id=stream_state.current_agent,
+                        runtime_node=stream_state.current_agent,
+                    )
+                    payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+                    if isinstance(payload, dict):
+                        tool_start_event["message_id"] = payload.get("message_id")
+                        tool_start_event["node_id"] = payload.get("node_id")
+                        tool_start_event["transcript_version"] = payload.get("transcript_version")
+                    stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": "ask_user", "args": interrupt_request})
+                    emitted_events.append(tool_start_event)
+                    emitted_events.append(
+                        self._build_ask_user_event(
+                            chat_run,
+                            request_payload=interrupt_request,
+                            interaction=interaction,
+                        )
+                    )
+                    chat_run.run_handle.refresh_chat_snapshot()
+                    stream_state.interrupted_signal = {
+                        "command": "ask_user_requested",
+                        "reason": "ask_user",
+                        "payload": {
+                            "interaction_id": interaction.get("id"),
+                            "tool_call_id": tool_call_id,
+                        },
+                    }
+                    return emitted_events
                 approval_kind = interrupt_request.get("approvalKind") or "human_input_required"
                 approval = chat_run.run_handle.request_approval(
                     approval_kind=approval_kind,
@@ -2132,14 +2208,6 @@ class ChatRuntime:
                     chat_run.run_handle.refresh_chat_snapshot()
                     return emitted_events
                 chat_run.run_handle.refresh_chat_snapshot()
-                if self._is_ask_user_request(interrupt_request):
-                    emitted_events.append(
-                        self._build_ask_user_event(
-                            chat_run,
-                            request_payload=interrupt_request,
-                            approval=approval,
-                        )
-                    )
                 stream_state.interrupted_signal = {
                     "command": "approval_requested",
                     "reason": approval.get("approval_kind") or approval_kind,
@@ -2317,19 +2385,6 @@ class ChatRuntime:
             tool_call_id = event.get("run_id", "")
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             output_str = str(output.content) if hasattr(output, "content") else str(output)
-            if str(name or "").strip() == "ask_user":
-                chat_run.emit_runtime_event(
-                    "ask_user.resolved",
-                    {
-                        "toolCallId": tool_call_id,
-                        "answer": output_str,
-                        "runId": chat_run.active_run_id,
-                    },
-                    agent_id=stream_state.current_agent,
-                    node=stream_state.current_agent,
-                )
-                stream_state.active_tool_call_ids.discard(active_tool_key)
-                return emitted_events
             tool_result_event = {
                 "type": "tool_result",
                 "tool": {"toolCallId": tool_call_id, "toolName": name, "result": output_str},
@@ -2699,6 +2754,8 @@ class ChatRuntime:
         )
 
     def finalize_interrupted_run(self, chat_run: ChatRunContext, interrupted_signal: dict[str, Any]) -> list[dict[str, Any]]:
+        if interrupted_signal.get("command") == "ask_user_requested":
+            return [{"type": "done", "status": "waiting_input", "run_id": chat_run.active_run_id}]
         if interrupted_signal.get("command") == "approval_requested":
             status = "waiting_input" if str(interrupted_signal.get("reason") or "").strip().lower() == "ask_user" else "waiting_approval"
             return [{"type": "done", "status": status, "run_id": chat_run.active_run_id}]
@@ -2727,25 +2784,36 @@ class ChatRuntime:
         run_id = chat_run.active_run_id if chat_run else None
         if chat_run and isinstance(exc, ModelGovernanceInterventionRequired):
             request_payload = exc.to_request_payload()
+            if self._is_ask_user_request(request_payload):
+                assistant_message_id = None
+                try:
+                    stream_state = ChatStreamState()
+                    assistant_message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+                except Exception:
+                    assistant_message_id = None
+                interaction = chat_run.run_handle.request_ask_user_interaction(
+                    request=request_payload,
+                    assistant_message_id=assistant_message_id,
+                )
+                chat_run.run_handle.refresh_chat_snapshot()
+                return [
+                    self._build_ask_user_event(
+                        chat_run,
+                        request_payload=request_payload,
+                        interaction=interaction,
+                        governance={
+                            "message": str(exc),
+                            "details": exc.details,
+                        },
+                    ),
+                    {"type": "done", "status": "waiting_input", "run_id": chat_run.active_run_id},
+                ]
             approval = chat_run.run_handle.request_approval(
                 approval_kind=exc.approval_kind,
                 request=request_payload,
             )
             chat_run.run_handle.refresh_chat_snapshot()
             if str(approval.get("status") or "").strip().lower() == "pending":
-                if self._is_ask_user_request(request_payload):
-                    return [
-                        self._build_ask_user_event(
-                            chat_run,
-                            request_payload=request_payload,
-                            approval=approval,
-                            governance={
-                                "message": str(exc),
-                                "details": exc.details,
-                            },
-                        ),
-                        {"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id},
-                    ]
                 return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
         normalized = normalize_provider_error(exc)
         if chat_run:

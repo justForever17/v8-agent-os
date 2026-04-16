@@ -1,9 +1,8 @@
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
-import type { ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
+import type { AskUserInteraction, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     deriveMemoryRuntimeInsightFromGovernance,
-    isAskUserInteractionApproval,
     normalizeContextGovernanceDigest,
     normalizeContextGovernanceHistory,
     type AdminProcessRef,
@@ -63,9 +62,9 @@ export type PhoneChatProjection = {
     currentRunLabel: string;
     currentStepTitle: string | null;
     historyPreview: string | null;
-    pendingApproval: PendingApproval | null;
+    pendingApproval: PendingApproval | AskUserInteraction | null;
     governancePendingApproval: PendingApproval | null;
-    askUserPendingApproval: PendingApproval | null;
+    askUserPendingApproval: AskUserInteraction | null;
     pendingApprovalCount: number;
     todoCount: number;
     todos: SessionTodoItem[];
@@ -265,7 +264,6 @@ function deriveRunControlState({
     approvals: PendingApproval[];
     processes: AdminProcessRef[];
 }) {
-    const governanceApprovals = approvals.filter((item) => !isAskUserInteractionApproval(item));
     const controls = activeConversation?.controls;
     const authoritativeStatus = normalizeRunStatus(
         activeConversation?.workflowStatus
@@ -281,7 +279,7 @@ function deriveRunControlState({
         || runtime.runId
         || "",
     ).trim() || undefined;
-    const hasPendingApproval = governanceApprovals.length > 0 || Boolean(activeConversation?.hasPendingApproval);
+    const hasPendingApproval = approvals.length > 0 || Boolean(activeConversation?.hasPendingApproval);
     const hasActiveProcess = processes.some((process) => isActiveProcess(process, runIdentity));
     const canInterrupt = Boolean(controls?.canInterrupt || hasActiveProcess);
     const canRetry = Boolean(controls?.canRetry);
@@ -351,6 +349,7 @@ export function buildPhoneChatProjection({
     activeConversationId,
     messages,
     approvals,
+    askUserInteractions,
     todos,
     processes,
     contextReferences,
@@ -366,6 +365,7 @@ export function buildPhoneChatProjection({
     activeConversationId: string | null;
     messages: ChatMessage[];
     approvals: PendingApproval[];
+    askUserInteractions?: AskUserInteraction[];
     todos: SessionTodoItem[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
@@ -404,7 +404,7 @@ export function buildPhoneChatProjection({
     const runtimeStageModel = buildPhoneRuntimeStageModel(messages, {
         ownerRuntime: activeConversation?.ownerRuntime || null,
         status: runtime.status,
-        pendingApproval: approvals.filter((item) => !isAskUserInteractionApproval(item)).length > 0,
+        pendingApproval: approvals.length > 0,
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
         runtimeTimeline,
         memoryInsight,
@@ -425,9 +425,9 @@ export function buildPhoneChatProjection({
     const resolvedRuntimeId = runtimeStageModel.items.some((item) => item.id === selectedRuntimeId)
         ? selectedRuntimeId
         : preferredRuntimeId;
-    const governanceApprovals = approvals.filter((item) => !isAskUserInteractionApproval(item));
-    const askUserPendingApproval = approvals.find((item) => isAskUserInteractionApproval(item)) || null;
-    const governancePendingApproval = governanceApprovals[0] || null;
+    const governanceApprovals = approvals;
+    const askUserPendingApproval = (askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null;
+    const governancePendingApproval = approvals[0] || null;
     const preferredPendingApproval = askUserPendingApproval || governancePendingApproval;
     const runControlState = deriveRunControlState({
         activeConversation,

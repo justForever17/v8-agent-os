@@ -106,6 +106,7 @@ export type ChatArtifact = {
     title?: string;
     displayLabel?: string;
     displaySubtitle?: string;
+    previewBlockedReason?: string;
     kind?: string;
     previewUrl?: string;
     externalUrl?: string;
@@ -194,6 +195,7 @@ export type ArtifactDetail = {
     title?: string;
     displayLabel?: string;
     displaySubtitle?: string;
+    previewBlockedReason?: string;
     sessionId?: string;
     runId?: string;
     messageId?: string;
@@ -301,6 +303,32 @@ export type PendingApproval = {
     };
 };
 
+export type AskUserInteraction = {
+    id?: string;
+    interactionId?: string;
+    runId?: string;
+    run_id?: string;
+    sessionId?: string;
+    session_id?: string;
+    assistantMessageId?: string;
+    toolCallId?: string;
+    tool_call_id?: string;
+    status?: string;
+    question?: string;
+    prompt?: string;
+    createdAt?: string;
+    resolvedAt?: string;
+    request?: {
+        question?: string;
+        prompt?: string;
+        toolCallId?: string;
+        interactionKind?: string;
+        [key: string]: unknown;
+    };
+    answer?: string;
+    answerText?: string;
+};
+
 export type ConversationDetail = {
     id: string;
     messages: ChatMessage[];
@@ -308,6 +336,7 @@ export type ConversationDetail = {
     ledger?: Record<string, unknown>[];
     latestSeq?: number;
     approvals?: PendingApproval[];
+    askUserInteractions?: AskUserInteraction[];
     controls?: SessionHistoryControls;
     recoverable?: boolean | null;
     processes?: AdminProcessRef[];
@@ -349,6 +378,7 @@ export type RealtimeSessionSnapshot = {
     latestSeq?: number;
     messages?: ChatMessage[];
     approvals?: PendingApproval[];
+    askUserInteractions?: AskUserInteraction[];
     todos?: SessionTodoSnapshot;
     runtimeEvents?: Array<Record<string, unknown>>;
     currentRun?: RealtimeRunSnapshot | null;

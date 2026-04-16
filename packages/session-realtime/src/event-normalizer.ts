@@ -391,22 +391,6 @@ function resolveTargets(topic: string, payload: JsonRecord) {
   return resolveMatrixEntry(topic, payload)?.targets || ["runtime_card"];
 }
 
-function normalizeApprovalKind(payload: JsonRecord) {
-  return normalizeString(payload.approval_kind || payload.approvalKind);
-}
-
-function normalizeInteractionKind(payload: JsonRecord) {
-  const request = asRecord(payload.request);
-  return normalizeString(request.interactionKind || request.interaction_kind || payload.interactionKind || payload.interaction_kind);
-}
-
-function isAskUserPayload(payload: JsonRecord) {
-  const approvalKind = normalizeApprovalKind(payload);
-  const interactionKind = normalizeInteractionKind(payload);
-  return interactionKind === "ask_user"
-    || approvalKind === "ask_user";
-}
-
 function normalizeTypedEventType(type: string) {
   if (type === "tool_call") {
     return "tool_start";
@@ -905,12 +889,15 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
           || tr(options.locale, "我需要您的输入以继续执行任务。", "I need your input to continue the task."),
         toolCallId:
           (typeof request.toolCallId === "string" && request.toolCallId)
-          || (typeof payload.approval_id === "string" && payload.approval_id)
+          || (typeof payload.toolCallId === "string" && payload.toolCallId)
           || "",
-        approvalId: typeof payload.approval_id === "string" ? payload.approval_id : undefined,
-        approvalKind: typeof payload.approval_kind === "string" ? payload.approval_kind : "ask_user",
+        interactionId:
+          (typeof payload.interactionId === "string" && payload.interactionId)
+          || (typeof payload.id === "string" && payload.id)
+          || undefined,
         interactionKind:
           (typeof request.interactionKind === "string" && request.interactionKind)
+          || (typeof payload.interactionKind === "string" && payload.interactionKind)
           || "ask_user",
         request,
         runtimeId: runtimeId || "chat",
@@ -923,11 +910,11 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
   if (topic === "ask_user.resolved") {
     return applySurfaceVisibilityOverrides(withTranscriptTargetFields(withEnvelopeFields({
       type: "custom_event",
-      name: "approval_resolved",
+      name: "ask_user",
       runtimeId: runtimeId || "chat",
       scope,
       visibility,
-      targets: ["approval", "hud", "runtime_card"],
+      targets: ["hud", "runtime_card"],
       actorLabel,
       status: typeof payload.status === "string" ? payload.status : "resolved",
       data: {
@@ -942,14 +929,13 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
 
   if (topic === "approval.requested") {
     const request = asRecord(payload.request);
-    const askUserInteraction = isAskUserPayload(payload);
     return applySurfaceVisibilityOverrides(withTranscriptTargetFields(withEnvelopeFields({
       type: "custom_event",
-      name: askUserInteraction ? "ask_user" : "approval_requested",
-      runtimeId: runtimeId || (askUserInteraction ? "chat" : "automation"),
+      name: "approval_requested",
+      runtimeId: runtimeId || "automation",
       scope,
       visibility,
-      targets: askUserInteraction ? ["hud", "runtime_card"] : ["approval", "hud", "runtime_card"],
+      targets: ["approval", "hud", "runtime_card"],
       actorLabel,
       data: {
         question:
@@ -964,7 +950,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
         approvalKind: typeof payload.approval_kind === "string" ? payload.approval_kind : undefined,
         interactionKind: typeof request.interactionKind === "string" ? request.interactionKind : undefined,
         request,
-        runtimeId: runtimeId || (askUserInteraction ? "chat" : "automation"),
+        runtimeId: runtimeId || "automation",
         actorLabel,
       },
       source,

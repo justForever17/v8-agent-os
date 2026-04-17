@@ -17,6 +17,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import {
@@ -267,6 +268,10 @@ function formatVideoDurationLabel(durationSeconds: number) {
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function sanitizeUploadCacheName(value: string) {
+    return value.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "_").replace(/\s+/g, "_").slice(0, 96);
+}
+
 async function readLocalVideoDurationSeconds(uri: string) {
     if (!uri || Platform.OS === "web") {
         return undefined;
@@ -307,6 +312,31 @@ async function readLocalVideoDurationSeconds(uri: string) {
     }
 }
 
+async function normalizeUploadAssetUri(asset: DocumentPicker.DocumentPickerAsset) {
+    const uri = String(asset.uri || "").trim();
+    if (!uri || Platform.OS === "web" || uri.startsWith("file://")) {
+        return asset;
+    }
+    const root = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+    if (!root) {
+        return asset;
+    }
+    const safeName = sanitizeUploadCacheName(asset.name || `upload-${Date.now()}`);
+    const folder = `${root}v8-agent-os/uploads/`;
+    const nonce = Math.random().toString(36).slice(2, 8);
+    const target = `${folder}${Date.now()}-${nonce}-${safeName}`;
+    try {
+        await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
+        await FileSystem.copyAsync({ from: uri, to: target });
+        return {
+            ...asset,
+            uri: target,
+        };
+    } catch {
+        return asset;
+    }
+}
+
 async function buildLocalUploadedFileDraft(
     asset: DocumentPicker.DocumentPickerAsset,
     uploaded: UploadedWorkspaceFile,
@@ -339,6 +369,22 @@ async function buildLocalUploadedFileDraft(
         return draft;
     }
     return draft;
+}
+
+function buildUploadTransportError(asset: DocumentPicker.DocumentPickerAsset, error: unknown) {
+    const rawMessage = error instanceof Error ? String(error.message || "").trim() : "";
+    const lowered = rawMessage.toLowerCase();
+    const label = asset.name ? `“${asset.name}”` : "该文件";
+    if (lowered.includes("network request failed")) {
+        return new Error(`${label} 上传体发送失败，网络请求在发送过程中被中断。`);
+    }
+    if (lowered.includes("failed to fetch") || lowered.includes("fetch failed")) {
+        return new Error(`${label} 上传 transport 失败，请检查当前 Admin 地址、网络链路或视频文件 URI。`);
+    }
+    if (rawMessage.includes("无法连接 Admin")) {
+        return new Error(`${label} 上传 transport 失败：${rawMessage}`);
+    }
+    return error instanceof Error ? error : new Error(`${label} 上传失败`);
 }
 
 function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): ChatMessage | null {
@@ -3667,12 +3713,34 @@ export default function ChatScreen() {
             const uploaded: UploadedWorkspaceFile[] = [];
             for (const [index, asset] of result.assets.entries()) {
                 const localId = `upload:${Date.now()}:${index}:${asset.name || "file"}`;
-                const nextFile = await uploadAttachment(authorizedFetch, {
-                    uri: asset.uri,
-                    name: asset.name,
-                    type: asset.mimeType || "application/octet-stream",
-                });
-                uploaded.push(await buildLocalUploadedFileDraft(asset, nextFile, nextFile.localId || localId));
+                const normalizedAsset = await normalizeUploadAssetUri(asset);
+                const previewDraft = await buildLocalUploadedFileDraft(
+                    normalizedAsset,
+                    {
+                        localId,
+                        name: normalizedAsset.name,
+                        type: normalizedAsset.mimeType || "application/octet-stream",
+                    },
+                    localId,
+                );
+                try {
+                    const nextFile = await uploadAttachment(authorizedFetch, {
+                        uri: normalizedAsset.uri,
+                        name: normalizedAsset.name,
+                        type: normalizedAsset.mimeType || "application/octet-stream",
+                    });
+                    uploaded.push({
+                        ...previewDraft,
+                        ...nextFile,
+                        localId: nextFile.localId || previewDraft.localId || localId,
+                        localUri: previewDraft.localUri,
+                        previewUri: previewDraft.previewUri,
+                        previewKind: previewDraft.previewKind,
+                        durationLabel: previewDraft.durationLabel,
+                    });
+                } catch (error) {
+                    throw buildUploadTransportError(normalizedAsset, error);
+                }
             }
 
             setUploadedFiles((current) => mergeUploadedWorkspaceFiles(current, uploaded));
@@ -3731,21 +3799,20 @@ export default function ChatScreen() {
 
     const handleBodyInputChange = useCallback((next: string) => {
         const leading = next.trimStart();
+        const commandQuery = leading.match(/^\/([^\s]*)$/);
+        const skillQuery = leading.match(/^@([^\s]*)$/);
         if (!input.trim() && !activeQueryMode) {
-            if (!selectedCommand && leading.startsWith("/")) {
+            if (!selectedCommand && commandQuery) {
                 setActiveQueryMode("command");
-                setActiveQueryText(leading.slice(1));
+                setActiveQueryText(commandQuery[1] || "");
                 setInput("");
                 return;
             }
-            if (leading.startsWith("@")) {
-                const query = leading.slice(1);
-                if (!/\s/.test(query)) {
-                    setActiveQueryMode("skill");
-                    setActiveQueryText(query);
-                    setInput("");
-                    return;
-                }
+            if (skillQuery) {
+                setActiveQueryMode("skill");
+                setActiveQueryText(skillQuery[1] || "");
+                setInput("");
+                return;
             }
         }
         setInput(next);
@@ -3763,18 +3830,11 @@ export default function ChatScreen() {
         if (input.trim()) {
             return;
         }
-        setSelectedSkills((current) => {
-            if (current.length === 0) {
-                return current;
-            }
-            return current.slice(0, -1);
-        });
-        setSelectedCommand((current) => {
-            if (selectedSkills.length > 0) {
-                return current;
-            }
-            return current ? null : current;
-        });
+        if (selectedSkills.length > 0) {
+            setSelectedSkills((current) => current.slice(0, -1));
+            return;
+        }
+        setSelectedCommand((current) => (current ? null : current));
     }, [input, selectedSkills.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
@@ -4426,9 +4486,8 @@ export default function ChatScreen() {
                     onSelectSkill={handleSelectSkillFromPicker}
                 />
             ) : null}
-
             <View
-                pointerEvents="box-none"
+                pointerEvents={pickerOverlayVisible ? "none" : "box-none"}
                 style={[
                     styles.hudOverlayStack,
                     {
@@ -5062,7 +5121,7 @@ const styles = StyleSheet.create({
     },
     keyboardOverlayHost: {
         ...StyleSheet.absoluteFillObject,
-        zIndex: 24,
+        zIndex: 34,
     },
     keyboardDockHost: {
         width: "100%",

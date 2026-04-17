@@ -81,32 +81,75 @@ function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[]
     const active = activities[Math.min(index, activities.length - 1)] || activities[0];
     const tone = getKindTone(active.kind, colors);
     const iconName = getKindIconName(active.kind);
+    const queue = activities.slice(0, 3);
 
     return (
-        <View style={[styles.broadcastCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+        <LinearGradient
+            colors={["#151515", "#1F1B17"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.broadcastCard}
+        >
             <View style={styles.broadcastHeader}>
                 <View style={styles.broadcastLive}>
-                    <View style={[styles.broadcastDot, { backgroundColor: tone.tint }]} />
-                    <Text style={[styles.broadcastLabel, { color: colors.textMuted }]}>BROADCAST</Text>
+                    <View style={styles.broadcastDotWrap}>
+                        <View style={styles.broadcastDotPulse} />
+                        <View style={[styles.broadcastDot, { backgroundColor: "#FBBF24" }]} />
+                    </View>
+                    <Text style={styles.broadcastLabel}>BROADCAST</Text>
                 </View>
-                <Text style={[styles.broadcastCount, { color: colors.textSoft }]}>
+                <Text style={styles.broadcastCount}>
                     {index + 1}/{activities.length}
                 </Text>
             </View>
-            <View style={styles.broadcastBody}>
-                <View style={[styles.broadcastIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialCommunityIcons name={iconName} size={16} color={tone.tint} />
+            <View style={styles.broadcastHero}>
+                <View style={styles.broadcastBody}>
+                    <View style={styles.broadcastIcon}>
+                        <MaterialCommunityIcons name={iconName} size={16} color={tone.tint} />
+                    </View>
+                    <View style={styles.broadcastTextWrap}>
+                        <Text style={styles.broadcastTitle} numberOfLines={2}>
+                            {active.summary || t("运行轨迹正在更新", "Runtime activity is updating")}
+                        </Text>
+                        <Text style={styles.broadcastSubtitle} numberOfLines={1}>
+                            {(active.actorLabel || tone.label)} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale)}
+                        </Text>
+                    </View>
                 </View>
-                <View style={styles.broadcastTextWrap}>
-                    <Text style={[styles.broadcastTitle, { color: colors.text }]} numberOfLines={1}>
-                        {active.summary || t("运行轨迹正在更新", "Runtime activity is updating")}
-                    </Text>
-                    <Text style={[styles.broadcastSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
-                        {(active.actorLabel || tone.label)} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale)}
-                    </Text>
-                </View>
+                <Text style={styles.broadcastTopic} numberOfLines={3}>
+                    {active.topic || t("运行轨迹正在持续刷新。你可以继续停留在聊天主界面，细节会在这里循环播报。", "Runtime activity is streaming here while you stay in chat.")}
+                </Text>
             </View>
-        </View>
+            {queue.length > 1 ? (
+                <View style={styles.broadcastQueue}>
+                    {queue.map((item, itemIndex) => {
+                        const itemTone = getKindTone(item.kind, colors);
+                        const itemActive = item.id === active.id || itemIndex === index;
+                        return (
+                            <View
+                                key={item.id}
+                                style={[
+                                    styles.broadcastQueueItem,
+                                    itemActive && styles.broadcastQueueItemActive,
+                                ]}
+                            >
+                                <MaterialCommunityIcons
+                                    name={getKindIconName(item.kind)}
+                                    size={12}
+                                    color={itemTone.tint}
+                                />
+                                <Text style={styles.broadcastQueueText} numberOfLines={1}>
+                                    {item.summary}
+                                </Text>
+                            </View>
+                        );
+                    })}
+                </View>
+            ) : null}
+            <View style={styles.broadcastFooter}>
+                <Text style={styles.broadcastFooterText}>NOW BROADCASTING</Text>
+            </View>
+        </LinearGradient>
     );
 }
 
@@ -340,9 +383,15 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             <ScrollView
                                 ref={runtimeTabsScrollRef}
                                 horizontal
+                                scrollEnabled
+                                nestedScrollEnabled
+                                directionalLockEnabled
                                 showsHorizontalScrollIndicator={false}
+                                keyboardShouldPersistTaps="handled"
                                 overScrollMode="never"
                                 contentContainerStyle={styles.tabsRow}
+                                onStartShouldSetResponderCapture={() => true}
+                                onMoveShouldSetResponderCapture={() => true}
                             >
                                 {items.map((item) => (
                                     <Pressable
@@ -482,13 +531,16 @@ const styles = StyleSheet.create({
         flexGrow: 0,
         flexShrink: 0,
         justifyContent: "center",
+        alignItems: "center",
     },
     tabsRow: {
         flexDirection: "row",
         paddingVertical: 8,
+        paddingHorizontal: 8,
         gap: 6,
         alignItems: "center",
         justifyContent: "center",
+        minWidth: "100%",
     },
     tabButton: {
         width: 32,
@@ -601,21 +653,41 @@ const styles = StyleSheet.create({
         height: 12,
     },
     broadcastCard: {
-        borderWidth: 1,
         borderRadius: 22,
         padding: 12,
         marginBottom: 12,
         gap: 10,
+        shadowColor: "#0F172A",
+        shadowOpacity: 0.18,
+        shadowRadius: 22,
+        shadowOffset: { width: 0, height: 12 },
+        elevation: 8,
     },
     broadcastHeader: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
+        borderBottomWidth: 1,
+        borderBottomColor: "rgba(255,255,255,0.08)",
+        paddingBottom: 8,
     },
     broadcastLive: {
         flexDirection: "row",
         alignItems: "center",
         gap: 7,
+    },
+    broadcastDotWrap: {
+        width: 12,
+        height: 12,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    broadcastDotPulse: {
+        position: "absolute",
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        backgroundColor: "rgba(251,191,36,0.32)",
     },
     broadcastDot: {
         width: 8,
@@ -626,14 +698,24 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: "900",
         letterSpacing: 1.6,
+        color: "#D6D3D1",
     },
     broadcastCount: {
         fontSize: 10,
         fontWeight: "800",
+        color: "#D6D3D1",
+    },
+    broadcastHero: {
+        gap: 10,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(255,255,255,0.04)",
+        padding: 12,
     },
     broadcastBody: {
         flexDirection: "row",
-        alignItems: "center",
+        alignItems: "flex-start",
         gap: 10,
     },
     broadcastIcon: {
@@ -642,6 +724,7 @@ const styles = StyleSheet.create({
         borderRadius: 17,
         alignItems: "center",
         justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.10)",
     },
     broadcastTextWrap: {
         flex: 1,
@@ -650,10 +733,52 @@ const styles = StyleSheet.create({
     broadcastTitle: {
         fontSize: 13,
         fontWeight: "800",
+        color: "#FAFAF9",
     },
     broadcastSubtitle: {
         marginTop: 2,
         fontSize: 11,
+        color: "#A8A29E",
+    },
+    broadcastTopic: {
+        fontSize: 12,
+        lineHeight: 18,
+        color: "#D6D3D1",
+    },
+    broadcastQueue: {
+        gap: 8,
+    },
+    broadcastQueueItem: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        minHeight: 38,
+        borderRadius: 14,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        paddingHorizontal: 10,
+    },
+    broadcastQueueItemActive: {
+        backgroundColor: "rgba(255,255,255,0.10)",
+    },
+    broadcastQueueText: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 12,
+        color: "#E7E5E4",
+    },
+    broadcastFooter: {
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(0,0,0,0.12)",
+        paddingHorizontal: 12,
+        paddingVertical: 9,
+    },
+    broadcastFooterText: {
+        fontSize: 10,
+        fontWeight: "800",
+        letterSpacing: 1.3,
+        color: "#A8A29E",
     },
     feedCard: {
         borderWidth: 1,

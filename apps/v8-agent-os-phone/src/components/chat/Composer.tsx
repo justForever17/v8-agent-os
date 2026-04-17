@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
     Platform,
     Image,
@@ -210,13 +210,15 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
+    const [editorWidth, setEditorWidth] = useState(0);
+    const [inlineRailWidth, setInlineRailWidth] = useState(0);
     const bodyInputRef = useRef<TextInput | null>(null);
     const queryInputRef = useRef<TextInput | null>(null);
     const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
     const canSend = hasPayload && !busy && !isRunning;
     const canAct = stopAvailable || canSend;
-    const hasComposerTokens = Boolean(selectedCommand || selectedSkills.length > 0 || activeQueryMode);
+    const hasInlineRail = Boolean(selectedCommand || selectedSkills.length > 0 || activeQueryMode);
     const actionMode: "send" | "stop" | "busy" = stopAvailable
         ? "stop"
         : (busy || isRunning)
@@ -239,6 +241,17 @@ export const Composer = memo(function Composer({
             WebkitAppearance: "none",
         }
         : null;
+    const maxRailWidth = useMemo(
+        () => Math.max(112, Math.floor((editorWidth || 320) * 0.45)),
+        [editorWidth],
+    );
+    const effectiveRailWidth = hasInlineRail
+        ? Math.min(maxRailWidth, Math.max(70, inlineRailWidth || maxRailWidth))
+        : 0;
+    const bodyPaddingLeft = hasInlineRail ? effectiveRailWidth + 12 : 4;
+    const bodyPlaceholder = activeQueryMode
+        ? ""
+        : t("给 智能主管 发送消息...", "Message Supervisor...");
 
     useEffect(() => {
         const targetRef = activeQueryMode ? queryInputRef : bodyInputRef;
@@ -279,89 +292,110 @@ export const Composer = memo(function Composer({
                                 borderColor: isFocused ? `${colors.primary}2F` : "transparent",
                             },
                         ]}
+                        onLayout={(event) => {
+                            const nextWidth = Math.ceil(event.nativeEvent.layout.width);
+                            if (nextWidth > 0 && nextWidth !== editorWidth) {
+                                setEditorWidth(nextWidth);
+                            }
+                        }}
                     >
-                        {hasComposerTokens ? (
-                            <ScrollView
-                                horizontal
-                                showsHorizontalScrollIndicator={false}
-                                keyboardShouldPersistTaps="always"
-                                overScrollMode="never"
-                                contentContainerStyle={styles.tokenRow}
-                                style={styles.tokenRowScroll}
+                        {hasInlineRail ? (
+                            <View
+                                pointerEvents="box-none"
+                                style={[styles.inlinePrefixRailWrap, { maxWidth: maxRailWidth }]}
                             >
-                                {selectedCommand ? (
+                                <ScrollView
+                                    horizontal
+                                    showsHorizontalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="always"
+                                    overScrollMode="never"
+                                    style={styles.inlinePrefixRailScroll}
+                                    contentContainerStyle={styles.inlinePrefixRailContent}
+                                >
                                     <View
-                                        style={[
-                                            styles.tokenChip,
-                                            {
-                                                backgroundColor: themeMode === "dark" ? "rgba(167,139,250,0.18)" : "rgba(139,92,246,0.12)",
-                                                borderColor: themeMode === "dark" ? "rgba(167,139,250,0.28)" : "rgba(139,92,246,0.22)",
-                                            },
-                                        ]}
+                                        onLayout={(event) => {
+                                            const nextWidth = Math.ceil(event.nativeEvent.layout.width);
+                                            if (nextWidth > 0 && nextWidth !== inlineRailWidth) {
+                                                setInlineRailWidth(nextWidth);
+                                            }
+                                        }}
+                                        style={styles.inlinePrefixRailMeasure}
                                     >
-                                        <MaterialCommunityIcons name="slash-forward" size={12} color={colors.primary} />
-                                        <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
-                                            {selectedCommand.name}
-                                        </Text>
+                                        {selectedCommand ? (
+                                            <View
+                                                style={[
+                                                    styles.tokenChip,
+                                                    {
+                                                        backgroundColor: themeMode === "dark" ? "rgba(167,139,250,0.18)" : "rgba(139,92,246,0.12)",
+                                                        borderColor: themeMode === "dark" ? "rgba(167,139,250,0.28)" : "rgba(139,92,246,0.22)",
+                                                    },
+                                                ]}
+                                            >
+                                                <MaterialCommunityIcons name="slash-forward" size={12} color={colors.primary} />
+                                                <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                                    {selectedCommand.name}
+                                                </Text>
+                                            </View>
+                                        ) : null}
+                                        {selectedSkills.map((skill) => (
+                                            <View
+                                                key={`${skill.name}:${skill.path || ""}`}
+                                                style={[
+                                                    styles.tokenChip,
+                                                    {
+                                                        backgroundColor: themeMode === "dark" ? "rgba(251,191,36,0.16)" : "rgba(251,191,36,0.14)",
+                                                        borderColor: themeMode === "dark" ? "rgba(251,191,36,0.24)" : "rgba(251,191,36,0.22)",
+                                                    },
+                                                ]}
+                                            >
+                                                <MaterialCommunityIcons name="at" size={12} color={colors.warning} />
+                                                <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                                    {skill.name}
+                                                </Text>
+                                            </View>
+                                        ))}
+                                        {activeQueryMode ? (
+                                            <View
+                                                style={[
+                                                    styles.queryChip,
+                                                    {
+                                                        backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.78)",
+                                                        borderColor: `${colors.primary}26`,
+                                                    },
+                                                ]}
+                                            >
+                                                <Text style={[styles.queryPrefix, { color: colors.primary }]}>
+                                                    {activeQueryMode === "command" ? "/" : "@"}
+                                                </Text>
+                                                <TextInput
+                                                    ref={queryInputRef}
+                                                    value={activeQueryText}
+                                                    onChangeText={onChangeQueryText}
+                                                    onFocus={() => setIsFocused(true)}
+                                                    onBlur={() => setIsFocused(false)}
+                                                    onKeyPress={(event) => {
+                                                        if (event.nativeEvent.key === "Backspace" && !activeQueryText) {
+                                                            onQueryBackspace?.();
+                                                        }
+                                                    }}
+                                                    placeholder={activeQueryMode === "command"
+                                                        ? t("搜索命令", "Search command")
+                                                        : t("搜索 Skill", "Search skill")}
+                                                    placeholderTextColor={colors.textSoft}
+                                                    autoCorrect={false}
+                                                    spellCheck={false}
+                                                    autoComplete="off"
+                                                    importantForAutofill="no"
+                                                    selectionColor={colors.primary}
+                                                    cursorColor={colors.accent}
+                                                    returnKeyType="done"
+                                                    style={[styles.queryInput, { color: colors.text }, inputWebStyle]}
+                                                />
+                                            </View>
+                                        ) : null}
                                     </View>
-                                ) : null}
-                                {selectedSkills.map((skill) => (
-                                    <View
-                                        key={`${skill.name}:${skill.path || ""}`}
-                                        style={[
-                                            styles.tokenChip,
-                                            {
-                                                backgroundColor: themeMode === "dark" ? "rgba(251,191,36,0.16)" : "rgba(251,191,36,0.14)",
-                                                borderColor: themeMode === "dark" ? "rgba(251,191,36,0.24)" : "rgba(251,191,36,0.22)",
-                                            },
-                                        ]}
-                                    >
-                                        <MaterialCommunityIcons name="at" size={12} color={colors.warning} />
-                                        <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
-                                            {skill.name}
-                                        </Text>
-                                    </View>
-                                ))}
-                                {activeQueryMode ? (
-                                    <View
-                                        style={[
-                                            styles.queryChip,
-                                            {
-                                                backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.78)",
-                                                borderColor: `${colors.primary}26`,
-                                            },
-                                        ]}
-                                    >
-                                        <Text style={[styles.queryPrefix, { color: colors.primary }]}>
-                                            {activeQueryMode === "command" ? "/" : "@"}
-                                        </Text>
-                                        <TextInput
-                                            ref={queryInputRef}
-                                            value={activeQueryText}
-                                            onChangeText={onChangeQueryText}
-                                            onFocus={() => setIsFocused(true)}
-                                            onBlur={() => setIsFocused(false)}
-                                            onKeyPress={(event) => {
-                                                if (event.nativeEvent.key === "Backspace" && !activeQueryText) {
-                                                    onQueryBackspace?.();
-                                                }
-                                            }}
-                                            placeholder={activeQueryMode === "command"
-                                                ? t("搜索命令", "Search command")
-                                                : t("搜索 Skill", "Search skill")}
-                                            placeholderTextColor={colors.textSoft}
-                                            autoCorrect={false}
-                                            spellCheck={false}
-                                            autoComplete="off"
-                                            importantForAutofill="no"
-                                            selectionColor={colors.primary}
-                                            cursorColor={colors.accent}
-                                            returnKeyType="done"
-                                            style={[styles.queryInput, { color: colors.text }, inputWebStyle]}
-                                        />
-                                    </View>
-                                ) : null}
-                            </ScrollView>
+                                </ScrollView>
+                            </View>
                         ) : null}
                         <TextInput
                             ref={bodyInputRef}
@@ -374,7 +408,7 @@ export const Composer = memo(function Composer({
                                     onBodyBackspace?.();
                                 }
                             }}
-                            placeholder={hasComposerTokens ? "" : t("给 智能主管 发送消息...", "Message Supervisor...")}
+                            placeholder={bodyPlaceholder}
                             placeholderTextColor={colors.textSoft}
                             multiline
                             editable={!activeQueryMode}
@@ -397,8 +431,7 @@ export const Composer = memo(function Composer({
                             textAlignVertical="top"
                             style={[
                                 styles.input,
-                                hasComposerTokens ? styles.inputWithTokens : null,
-                                { color: colors.text },
+                                { color: colors.text, paddingLeft: bodyPaddingLeft },
                                 inputWebStyle,
                             ]}
                         />
@@ -550,6 +583,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         paddingTop: 10,
         paddingBottom: 6,
+        position: "relative",
     },
     input: {
         minHeight: 82,
@@ -573,24 +607,28 @@ const styles = StyleSheet.create({
         borderBottomWidth: 0,
         borderBottomColor: "transparent",
     },
-    inputWithTokens: {
-        minHeight: 54,
-        paddingTop: 6,
+    inlinePrefixRailWrap: {
+        position: "absolute",
+        left: 12,
+        top: 11,
+        zIndex: 3,
+        minWidth: 0,
     },
-    tokenRowScroll: {
-        maxWidth: "100%",
+    inlinePrefixRailScroll: {
         flexGrow: 0,
+        maxWidth: "100%",
     },
-    tokenRow: {
+    inlinePrefixRailContent: {
+        paddingRight: 8,
+    },
+    inlinePrefixRailMeasure: {
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        paddingBottom: 2,
-        paddingRight: 8,
     },
     tokenChip: {
         minHeight: 28,
-        maxWidth: 148,
+        maxWidth: 132,
         paddingHorizontal: 10,
         borderRadius: 14,
         borderWidth: 1,
@@ -604,8 +642,8 @@ const styles = StyleSheet.create({
     },
     queryChip: {
         minHeight: 28,
-        minWidth: 96,
-        maxWidth: 168,
+        minWidth: 68,
+        maxWidth: 126,
         paddingHorizontal: 10,
         borderRadius: 14,
         borderWidth: 1,
@@ -618,8 +656,8 @@ const styles = StyleSheet.create({
         fontWeight: "800",
     },
     queryInput: {
-        minWidth: 52,
-        maxWidth: 132,
+        minWidth: 36,
+        maxWidth: 86,
         paddingVertical: 0,
         paddingHorizontal: 0,
         fontSize: 13,

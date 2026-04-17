@@ -158,17 +158,31 @@ export async function uploadAttachment(
     authorizedFetch: AuthorizedFetch,
     file: { uri: string; name?: string; type?: string },
 ) {
-    const form = new FormData();
-    form.append("file", {
-        uri: file.uri,
-        name: file.name || `upload-${Date.now()}`,
-        type: file.type || "application/octet-stream",
-    } as unknown as Blob);
-    const response = await authorizedFetch("/api/client/upload", {
-        method: "POST",
-        body: form,
-    });
-    return readJsonOrThrow<UploadedWorkspaceFile>(response, "附件上传失败");
+    try {
+        const form = new FormData();
+        form.append("file", {
+            uri: file.uri,
+            name: file.name || `upload-${Date.now()}`,
+            type: file.type || "application/octet-stream",
+        } as unknown as Blob);
+        const response = await authorizedFetch("/api/client/upload", {
+            method: "POST",
+            body: form,
+        });
+        return readJsonOrThrow<UploadedWorkspaceFile>(response, "附件上传失败");
+    } catch (error) {
+        const message = error instanceof Error ? String(error.message || "").trim() : "";
+        const lowered = message.toLowerCase();
+        const label = file.name ? `“${file.name}”` : "附件";
+        const scheme = String(file.uri || "").split(":")[0] || "unknown";
+        if (lowered.includes("network request failed")) {
+            throw new Error(`${label} 上传体发送失败，网络请求在发送过程中被中断。`);
+        }
+        if (lowered.includes("fetch failed") || lowered.includes("failed to fetch")) {
+            throw new Error(`${label} 上传 transport 失败（${scheme}），请检查文件 URI、网络链路或 Admin 上传限制。`);
+        }
+        throw error instanceof Error ? error : new Error(`${label} 上传失败`);
+    }
 }
 
 export async function listProjects(authorizedFetch: AuthorizedFetch) {

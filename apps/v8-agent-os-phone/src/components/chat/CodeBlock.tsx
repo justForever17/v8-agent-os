@@ -1,9 +1,10 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
 
+import { saveTextToUserSelectedFile } from "@/src/lib/file-transfer";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
@@ -15,6 +16,10 @@ type CodeBlockProps = {
     isStreaming?: boolean;
 };
 
+function sanitizeSnippetFilename(value: string) {
+    return value.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "_").replace(/\s+/g, "_").slice(0, 80);
+}
+
 export const CodeBlock = memo(function CodeBlock({
     language = "text",
     value,
@@ -23,6 +28,7 @@ export const CodeBlock = memo(function CodeBlock({
     const { colors } = useUiPrefs();
     const resolvedContent = useMemo(() => String(value ?? content ?? ""), [content, value]);
     const [copied, setCopied] = useState(false);
+    const [saved, setSaved] = useState(false);
     const [previewOpen, setPreviewOpen] = useState(false);
     const normalizedLanguage = String(language || "text").trim().toLowerCase();
     const htmlPreviewable = (normalizedLanguage === "html" || normalizedLanguage === "htm") && resolvedContent.trim().length > 0;
@@ -41,6 +47,29 @@ export const CodeBlock = memo(function CodeBlock({
         }
         await Clipboard.setStringAsync(resolvedContent);
         setCopied(true);
+    };
+
+    const handleSaveHtmlSnippet = async () => {
+        if (!resolvedContent.trim()) {
+            return;
+        }
+        try {
+            const filename = `${sanitizeSnippetFilename(`html-snippet-${Date.now()}`)}.html`;
+            const savedFile = await saveTextToUserSelectedFile(resolvedContent, {
+                filename,
+                mimeType: "text/html",
+            });
+            setSaved(true);
+            Alert.alert(
+                "已下载 HTML",
+                savedFile.userVisible
+                    ? `文件已保存到你选择的系统文件夹：${savedFile.filename}`
+                    : `文件已保存到应用沙盒：${savedFile.uri}`,
+            );
+            setTimeout(() => setSaved(false), 1600);
+        } catch (error) {
+            Alert.alert("下载失败", error instanceof Error ? error.message : "无法保存 HTML 代码块。");
+        }
     };
 
     return (
@@ -85,9 +114,18 @@ export const CodeBlock = memo(function CodeBlock({
                                 <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
                                     HTML 预览
                                 </Text>
-                                <Pressable style={styles.iconButton} onPress={() => setPreviewOpen(false)}>
-                                    <MaterialCommunityIcons name="close" size={18} color={colors.text} />
-                                </Pressable>
+                                <View style={styles.modalActions}>
+                                    <Pressable style={styles.iconButton} onPress={() => void handleSaveHtmlSnippet()}>
+                                        <MaterialCommunityIcons
+                                            name={saved ? "check" : "download"}
+                                            size={18}
+                                            color={saved ? colors.success : colors.text}
+                                        />
+                                    </Pressable>
+                                    <Pressable style={styles.iconButton} onPress={() => setPreviewOpen(false)}>
+                                        <MaterialCommunityIcons name="close" size={18} color={colors.text} />
+                                    </Pressable>
+                                </View>
                             </View>
                             <View style={styles.previewWrap}>
                                 <WebView originWhitelist={["*"]} source={{ html: resolvedContent }} style={styles.previewWebview} />
@@ -180,6 +218,11 @@ const styles = StyleSheet.create({
         fontSize: 14,
         lineHeight: 18,
         fontWeight: "700",
+    },
+    modalActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
     },
     previewWrap: {
         minHeight: 420,

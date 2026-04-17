@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from "react";
 import {
-    Linking,
+    Alert,
     Modal,
     Pressable,
     StyleSheet,
@@ -12,6 +12,7 @@ import { WebView } from "react-native-webview";
 
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
+import { downloadUrlToUserSelectedFile } from "@/src/lib/file-transfer";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export const HTMLFileCard = memo(function HTMLFileCard({
@@ -36,6 +37,23 @@ export const HTMLFileCard = memo(function HTMLFileCard({
 
     const displayFilename = filename || decodeURIComponent(url.split("/").pop()?.split("?")[0] || "document.html");
     const displaySize = filesize || "HTML";
+    const handleDownload = async () => {
+        try {
+            const saved = await downloadUrlToUserSelectedFile(safeUrl, {
+                filename: displayFilename,
+                mimeType: "text/html",
+                prefix: "html",
+            });
+            Alert.alert(
+                t("已下载", "Downloaded"),
+                saved.userVisible
+                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
+                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
+            );
+        } catch (error) {
+            Alert.alert(t("下载失败", "Download failed"), error instanceof Error ? error.message : t("无法保存 HTML 文件", "Unable to save HTML file"));
+        }
+    };
 
     return (
         <>
@@ -56,7 +74,7 @@ export const HTMLFileCard = memo(function HTMLFileCard({
                         <Button variant="ghost" size="icon" onPress={() => setIsOpen(true)}>
                             <MaterialCommunityIcons name="arrow-expand" size={16} color={colors.textMuted} />
                         </Button>
-                        <Button variant="ghost" size="icon" onPress={() => void Linking.openURL(safeUrl)}>
+                        <Button variant="ghost" size="icon" onPress={() => void handleDownload()}>
                             <MaterialCommunityIcons name="download" size={16} color={colors.textMuted} />
                         </Button>
                     </View>
@@ -77,11 +95,8 @@ export const HTMLFileCard = memo(function HTMLFileCard({
                                 </Text>
                             </View>
                             <View style={styles.modalActions}>
-                                <Button variant="outline" size="sm" onPress={() => void Linking.openURL(safeUrl)}>
+                                <Button variant="outline" size="sm" onPress={() => void handleDownload()}>
                                     {t("下载", "Download")}
-                                </Button>
-                                <Button variant="outline" size="sm" onPress={() => void Linking.openURL(safeUrl)}>
-                                    {t("打开", "Open")}
                                 </Button>
                                 <Button variant="ghost" size="icon" onPress={() => setIsOpen(false)}>
                                     <MaterialCommunityIcons name="close" size={18} color={colors.text} />

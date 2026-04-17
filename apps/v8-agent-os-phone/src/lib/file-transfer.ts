@@ -1,5 +1,6 @@
 import * as Linking from "expo-linking";
 import * as FileSystem from "expo-file-system/legacy";
+import { Platform } from "react-native";
 
 function sanitizeName(value: string) {
     return value.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "_").replace(/\s+/g, "_").slice(0, 120);
@@ -37,6 +38,22 @@ function extensionFromContentType(contentType: string) {
     if (normalized.includes("text/plain")) return "txt";
     if (normalized.includes("text/html")) return "html";
     return "bin";
+}
+
+function mimeTypeFromFilename(filename: string, fallback = "application/octet-stream") {
+    const normalized = String(filename || "").toLowerCase();
+    if (normalized.endsWith(".html") || normalized.endsWith(".htm")) return "text/html";
+    if (normalized.endsWith(".pdf")) return "application/pdf";
+    if (normalized.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+    if (normalized.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    if (normalized.endsWith(".glb")) return "model/gltf-binary";
+    if (normalized.endsWith(".gltf")) return "model/gltf+json";
+    if (normalized.endsWith(".json")) return "application/json";
+    if (normalized.endsWith(".txt")) return "text/plain";
+    if (normalized.endsWith(".mp4")) return "video/mp4";
+    if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) return "image/jpeg";
+    if (normalized.endsWith(".png")) return "image/png";
+    return fallback;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
@@ -84,6 +101,81 @@ export async function saveResponseToCache(
         filename: safeName,
         contentType,
     };
+}
+
+async function writeBase64ToUserSelectedFile(base64: string, filename: string, contentType: string) {
+    if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permissions.granted) {
+            throw new Error("未选择保存文件夹");
+        }
+        const uri = await FileSystem.StorageAccessFramework.createFileAsync(
+            permissions.directoryUri,
+            filename,
+            contentType || mimeTypeFromFilename(filename),
+        );
+        await FileSystem.StorageAccessFramework.writeAsStringAsync(uri, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+        });
+        return { uri, filename, contentType, userVisible: true };
+    }
+
+    const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+    if (!root) {
+        throw new Error("当前设备没有可写目录");
+    }
+    const folder = `${root}v8-agent-os/downloads/`;
+    await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
+    const uri = `${folder}${filename}`;
+    await FileSystem.writeAsStringAsync(uri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+    });
+    return { uri, filename, contentType, userVisible: false };
+}
+
+export async function downloadUrlToUserSelectedFile(
+    url: string,
+    options?: { prefix?: string; filename?: string; fallbackExtension?: string; mimeType?: string },
+) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+    }
+    const contentType = options?.mimeType || response.headers.get("Content-Type") || "application/octet-stream";
+    const dispositionName = parseDispositionFilename(response.headers.get("Content-Disposition"));
+    const guessedName = options?.filename
+        || dispositionName
+        || `${options?.prefix || "asset"}-${Date.now()}.${options?.fallbackExtension || extensionFromContentType(contentType)}`;
+    const safeName = sanitizeName(guessedName);
+    const base64 = arrayBufferToBase64(await response.arrayBuffer());
+    return writeBase64ToUserSelectedFile(base64, safeName, contentType || mimeTypeFromFilename(safeName));
+}
+
+export async function saveTextToUserSelectedFile(
+    contents: string,
+    options?: { filename?: string; mimeType?: string },
+) {
+    const filename = sanitizeName(options?.filename || `snippet-${Date.now()}.txt`);
+    const contentType = options?.mimeType || mimeTypeFromFilename(filename, "text/plain");
+    if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permissions.granted) {
+            throw new Error("未选择保存文件夹");
+        }
+        const uri = await FileSystem.StorageAccessFramework.createFileAsync(permissions.directoryUri, filename, contentType);
+        await FileSystem.StorageAccessFramework.writeAsStringAsync(uri, contents);
+        return { uri, filename, contentType, userVisible: true };
+    }
+
+    const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+    if (!root) {
+        throw new Error("当前设备没有可写目录");
+    }
+    const folder = `${root}v8-agent-os/downloads/`;
+    await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
+    const uri = `${folder}${filename}`;
+    await FileSystem.writeAsStringAsync(uri, contents);
+    return { uri, filename, contentType, userVisible: false };
 }
 
 export async function openCachedFile(uri: string) {

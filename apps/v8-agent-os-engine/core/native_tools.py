@@ -112,6 +112,7 @@ from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
+from core.workspace_share import resolve_workspace_file_to_share
 from core.tools.media_downloader import download_media_for_vision
 from core.tools.s3_tools import s3_download_file, s3_list_objects, s3_upload_file
 from core.tools.vision_media_analyzer import vision_media_analyzer
@@ -2520,6 +2521,32 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
         
     except Exception as e:
         return f"Error reading file '{path}': {str(e)}"
+
+
+@tool
+def share_workspace_file(path: str, mode: str = "auto") -> dict[str, Any]:
+    """把当前主工作区或项目工作区内的文件转换成可远程访问的会话分享资源。
+
+    这个工具只做主动分享，不写入 artifact store，也不把文件伪装成运行产物。
+
+    Arguments:
+        path: 当前 workspace/project workspace 内的绝对路径或相对路径。
+        mode: auto、preview 或 download；默认 auto。
+    """
+    try:
+        return resolve_workspace_file_to_share(path, mode)
+    except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
+        return {
+            "ok": False,
+            "error": str(e),
+            "filename": Path(str(path or "")).name if str(path or "").strip() else None,
+            "mode": str(mode or "auto").strip() or "auto",
+            "previewable": False,
+            "downloadable": False,
+            "viewerKind": "download",
+        }
+
 
 @tool
 def write_native_file(
@@ -7972,6 +7999,7 @@ NATIVE_TOOLS = [
     computer_use_click_toolbar_action,
     computer_use_execute_plan,
     read_native_file,
+    share_workspace_file,
     write_native_file,
     grep_search,
     download_media_for_vision,

@@ -5,6 +5,7 @@ from typing import Any, Iterable
 BASELINE_SYSTEM_TOOL_NAMES = {
     "ask_user",
     "read_native_file",
+    "share_workspace_file",
     "write_native_file",
     "grep_search",
     "run_system_command",

@@ -114,6 +114,66 @@ function deriveHistoryPreview(
     return null;
 }
 
+function normalizeRunId(value: unknown) {
+    const normalized = String(value || "").trim();
+    return normalized || undefined;
+}
+
+function getMessageRunId(message: ChatMessage) {
+    return normalizeRunId(message.runId);
+}
+
+function getTimelineEntryMessageId(entry: PhoneRuntimeTimelineEntry) {
+    const metadata = entry.metadata && typeof entry.metadata === "object"
+        ? entry.metadata as Record<string, unknown>
+        : undefined;
+    return String(
+        metadata?.messageId
+        || metadata?.message_id
+        || metadata?.sourceMessageId
+        || metadata?.source_message_id
+        || "",
+    ).trim() || undefined;
+}
+
+function getContextGovernanceRunId(view: ContextGovernanceView | null | undefined) {
+    if (!view) {
+        return undefined;
+    }
+    return normalizeRunId(view.runId || view.run_id);
+}
+
+function resolveLatestRuntimeRunId(
+    messages: ChatMessage[],
+    runtimeTimeline: PhoneRuntimeTimelineEntry[],
+    preferredRunId?: string,
+) {
+    const normalizedPreferredRunId = normalizeRunId(preferredRunId);
+    if (normalizedPreferredRunId) {
+        const preferredExistsInMessages = messages.some((message) => getMessageRunId(message) === normalizedPreferredRunId);
+        const preferredExistsInTimeline = runtimeTimeline.some((entry) => normalizeRunId(entry.runId) === normalizedPreferredRunId);
+        if (preferredExistsInMessages || preferredExistsInTimeline) {
+            return normalizedPreferredRunId;
+        }
+    }
+    if (normalizedPreferredRunId && messages.length === 0 && runtimeTimeline.length === 0) {
+        return normalizedPreferredRunId;
+    }
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const messageRunId = getMessageRunId(messages[index]);
+        if (messageRunId) {
+            return messageRunId;
+        }
+    }
+    for (let index = runtimeTimeline.length - 1; index >= 0; index -= 1) {
+        const entryRunId = normalizeRunId(runtimeTimeline[index]?.runId);
+        if (entryRunId) {
+            return entryRunId;
+        }
+    }
+    return undefined;
+}
+
 function groupSidebarConversations(conversations: ConversationSummary[]) {
     return conversations.reduce<Record<"channels" | "cron" | "hooks" | "web", ConversationSummary[]>>(
         (groups, item) => {
@@ -383,30 +443,65 @@ export function buildPhoneChatProjection({
             .map((message) => String(message.id || "").trim())
             .filter(Boolean),
     );
-    const activeRunId = String(
+    const preferredActiveRunId = String(
         activeConversation?.currentRunId
         || activeConversation?.lastRunId
         || runtime.runId
         || "",
     ).trim() || undefined;
+    const activeRunId = resolveLatestRuntimeRunId(messages, runtimeTimeline, preferredActiveRunId);
     const scopedProcesses = processes.filter((process) => matchesConversationProcess(process, {
         conversationId: activeConversationId,
         runId: activeRunId,
         messageIds: activeMessageIds,
     }));
     const historyPreview = deriveHistoryPreview(messages, activeConversation);
-    const memoryInsight = deriveMemoryRuntimeInsightFromGovernance(
-        contextGovernance || null,
-        contextGovernanceHistory || [],
+    const runtimeScopedMessages = activeRunId
+        ? messages.filter((message) => getMessageRunId(message) === activeRunId)
+        : messages;
+    const runtimeScopedMessageIds = new Set(
+        runtimeScopedMessages
+            .map((message) => String(message.id || "").trim())
+            .filter(Boolean),
     );
-    const governanceDigest = normalizeContextGovernanceDigest(contextGovernance || null);
-    const governanceHistory = normalizeContextGovernanceHistory(contextGovernanceHistory || []);
-    const runtimeStageModel = buildPhoneRuntimeStageModel(messages, {
+    const runtimeScopedTimeline = activeRunId
+        ? runtimeTimeline.filter((entry) => {
+            const entryRunId = normalizeRunId(entry.runId);
+            if (entryRunId) {
+                return entryRunId === activeRunId;
+            }
+            const messageId = getTimelineEntryMessageId(entry);
+            return messageId ? runtimeScopedMessageIds.has(messageId) : false;
+        })
+        : runtimeTimeline;
+    const scopedContextGovernance = (() => {
+        if (!contextGovernance || !activeRunId) {
+            return contextGovernance || null;
+        }
+        const governanceRunId = getContextGovernanceRunId(contextGovernance);
+        if (governanceRunId && governanceRunId !== activeRunId) {
+            return null;
+        }
+        return contextGovernance;
+    })();
+    const scopedContextGovernanceHistory = activeRunId
+        ? (contextGovernanceHistory || []).filter((item) => {
+            const governanceRunId = getContextGovernanceRunId(item);
+            return !governanceRunId || governanceRunId === activeRunId;
+        })
+        : (contextGovernanceHistory || []);
+    const memoryInsight = deriveMemoryRuntimeInsightFromGovernance(
+        scopedContextGovernance,
+        scopedContextGovernanceHistory,
+    );
+    const governanceDigest = normalizeContextGovernanceDigest(scopedContextGovernance);
+    const governanceHistory = normalizeContextGovernanceHistory(scopedContextGovernanceHistory);
+    const runtimeStageModel = buildPhoneRuntimeStageModel(runtimeScopedMessages, {
         ownerRuntime: activeConversation?.ownerRuntime || null,
         status: runtime.status,
         pendingApproval: approvals.length > 0,
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,
-        runtimeTimeline,
+        runtimeTimeline: runtimeScopedTimeline,
         memoryInsight,
         governanceDigest,
         governanceHistory,

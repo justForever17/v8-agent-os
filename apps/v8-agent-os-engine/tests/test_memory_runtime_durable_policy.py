@@ -44,10 +44,14 @@ from runtimes.memory.scope_resolution import ScopeResolutionService
 
 
 POLICY = {
-    "preference_importance_threshold": 70,
-    "preference_confidence_threshold": 0.75,
-    "knowledge_importance_threshold": 60,
-    "knowledge_confidence_threshold": 0.70,
+    "preference_importance_threshold": 65,
+    "preference_confidence_threshold": 0.70,
+    "knowledge_importance_threshold": 55,
+    "knowledge_confidence_threshold": 0.65,
+    "global_knowledge_importance_threshold": 62,
+    "global_knowledge_confidence_threshold": 0.72,
+    "global_operational_importance_threshold": 58,
+    "global_operational_confidence_threshold": 0.68,
 }
 
 
@@ -144,6 +148,21 @@ class MemoryDurablePolicyTests(unittest.TestCase):
         self.assertEqual(memory_agent._evaluate_knowledge_persistence(fact, POLICY), (True, "persisted"))
         self.assertEqual(memory_agent._evaluate_preference_persistence(pref, POLICY), (True, "persisted"))
 
+    def test_single_occurrence_global_fact_can_persist_without_old_hardcoded_bar(self):
+        fact = KnowledgeExtraction(
+            fact="V8 Agent OS 会将当前工作区内且成功资源化的 artifact 尽量转换成远程可访问资源供手机端预览或下载。",
+            category="runtime_contract",
+            scope="global",
+            importance=64,
+            confidence=0.74,
+            durability="stable",
+        )
+
+        self.assertEqual(
+            memory_agent._evaluate_knowledge_persistence(fact, POLICY),
+            (True, "persisted"),
+        )
+
     def test_global_operational_workflow_is_allowed_without_stable_durability(self):
         workflow = KnowledgeExtraction(
             fact="Computer Use 浏览器任务应先复用已有窗口，再选择 managed Chrome，避免同时打开默认 Edge 和 Chrome。",
@@ -169,6 +188,21 @@ class MemoryDurablePolicyTests(unittest.TestCase):
         self.assertEqual(
             memory_agent._evaluate_knowledge_persistence(path_like, POLICY),
             (False, "path_like_global"),
+        )
+
+    def test_global_operational_fact_can_persist_without_being_workflow_named(self):
+        fact = KnowledgeExtraction(
+            fact="V8 Agent OS 将 session-realtime 作为 admin、web、phone 共享 contract 层。",
+            category="architecture",
+            scope="global",
+            importance=60,
+            confidence=0.70,
+            durability="operational",
+        )
+
+        self.assertEqual(
+            memory_agent._evaluate_knowledge_persistence(fact, POLICY),
+            (True, "persisted_global_operational"),
         )
 
     def test_transient_debug_noise_is_filtered(self):

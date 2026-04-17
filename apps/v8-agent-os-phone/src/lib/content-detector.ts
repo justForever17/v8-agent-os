@@ -9,6 +9,7 @@ export type PhoneContentBlockType =
     | "mermaid"
     | "html_snippet"
     | "model-3d"
+    | "file-generic"
     | "file-ppt"
     | "file-html"
     | "file-pdf"
@@ -116,8 +117,15 @@ function tryParseDocumentLinkBlock(content: string) {
         return null;
     }
     const filename = String(markdownMatch?.[1] || href.split("/").pop()?.split("?")[0] || "").trim();
+    let decodedHref = href;
+    try {
+        decodedHref = decodeURIComponent(href);
+    } catch {
+        decodedHref = href;
+    }
+    const probe = `${decodedHref} ${filename}`.trim();
 
-    if (/\.html?(\?.*)?$/i.test(href)) {
+    if (/\.html?(\?.*)?$/i.test(probe)) {
         return {
             type: "file-html" as const,
             content: href,
@@ -128,13 +136,38 @@ function tryParseDocumentLinkBlock(content: string) {
         };
     }
 
-    if (/\.pdf(\?.*)?$/i.test(href)) {
+    if (/\.pdf(?:$|[?&\s])/i.test(probe)) {
         return {
-            type: "file-pdf" as const,
+            type: "file-generic" as const,
             content: href,
             data: {
                 url: href,
                 filename: filename || "document.pdf",
+                viewerKind: "pdf",
+            },
+        };
+    }
+
+    if (/\.(?:ppt|pptx|odp)(?:$|[?&\s])/i.test(probe)) {
+        return {
+            type: "file-generic" as const,
+            content: href,
+            data: {
+                url: href,
+                filename: filename || "presentation.pptx",
+                viewerKind: "ppt",
+            },
+        };
+    }
+
+    if (/\.(?:glb|gltf)(?:$|[?&\s])/i.test(probe)) {
+        return {
+            type: "file-generic" as const,
+            content: href,
+            data: {
+                url: href,
+                filename: filename || "model.glb",
+                viewerKind: "model",
             },
         };
     }

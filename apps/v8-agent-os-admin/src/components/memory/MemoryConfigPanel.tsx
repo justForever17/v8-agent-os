@@ -34,9 +34,56 @@ interface MemoryConfig {
     extraction_enabled?: boolean;
     graph_enabled?: boolean;
     fts_enabled?: boolean;
+    preference_importance_threshold?: number;
+    preference_confidence_threshold?: number;
+    knowledge_importance_threshold?: number;
+    knowledge_confidence_threshold?: number;
+    global_knowledge_importance_threshold?: number;
+    global_knowledge_confidence_threshold?: number;
+    global_operational_importance_threshold?: number;
+    global_operational_confidence_threshold?: number;
     recommended_retrieval_threshold?: number;
     retrieval_threshold_source?: string;
     retrieval_threshold_is_default?: boolean;
+}
+
+interface DurablePolicyDefaults {
+    preference_importance_threshold: number;
+    preference_confidence_threshold: number;
+    knowledge_importance_threshold: number;
+    knowledge_confidence_threshold: number;
+    global_knowledge_importance_threshold: number;
+    global_knowledge_confidence_threshold: number;
+    global_operational_importance_threshold: number;
+    global_operational_confidence_threshold: number;
+}
+
+interface MemoryConfigResponse extends MemoryConfig {
+    durable_policy_defaults?: DurablePolicyDefaults;
+}
+
+const MEMORY_DURABLE_POLICY_DEFAULTS: DurablePolicyDefaults = {
+    preference_importance_threshold: 65,
+    preference_confidence_threshold: 0.7,
+    knowledge_importance_threshold: 55,
+    knowledge_confidence_threshold: 0.65,
+    global_knowledge_importance_threshold: 62,
+    global_knowledge_confidence_threshold: 0.72,
+    global_operational_importance_threshold: 58,
+    global_operational_confidence_threshold: 0.68,
+};
+
+function buildMemoryConfigSavePayload(config: MemoryConfig): MemoryConfig {
+    const {
+        recommended_retrieval_threshold,
+        retrieval_threshold_source,
+        retrieval_threshold_is_default,
+        ...editable
+    } = config;
+    void recommended_retrieval_threshold;
+    void retrieval_threshold_source;
+    void retrieval_threshold_is_default;
+    return editable;
 }
 
 interface RecallPreviewItem {
@@ -72,6 +119,7 @@ interface RecallPreviewResponse {
 export default function MemoryConfigPanel() {
     const t = useT();
     const [config, setConfig] = useState<MemoryConfig>({});
+    const [durableDefaults, setDurableDefaults] = useState<DurablePolicyDefaults>(MEMORY_DURABLE_POLICY_DEFAULTS);
     const [models, setModels] = useState<SysModel[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -90,8 +138,15 @@ export default function MemoryConfigPanel() {
             ]);
             
             if (confRes.ok) {
-                const fetchedConfig = await confRes.json();
-                setConfig(fetchedConfig);
+                const fetchedConfig: MemoryConfigResponse = await confRes.json();
+                const {
+                    durable_policy_defaults,
+                    ...editableConfig
+                } = fetchedConfig;
+                if (durable_policy_defaults) {
+                    setDurableDefaults(durable_policy_defaults);
+                }
+                setConfig(editableConfig);
             }
             if (modRes.ok) setModels(await modRes.json());
         } catch { /* ignore */ }
@@ -131,12 +186,66 @@ export default function MemoryConfigPanel() {
             await fetch("/api/settings/memory-config", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(config),
+                body: JSON.stringify(buildMemoryConfigSavePayload(config)),
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
         } finally { setSaving(false); }
     };
+
+    const renderImportanceSlider = (
+        key: keyof DurablePolicyDefaults,
+        label: string,
+        description: string,
+    ) => (
+        <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+                <Label>{label}</Label>
+                <span className="text-sm font-mono text-muted-foreground">
+                    {Math.round((config[key] as number | undefined) ?? durableDefaults[key])}
+                    <span className="ml-2 text-xs text-muted-foreground/80">
+                        {t(lt("默认", "Default"))} {durableDefaults[key]}
+                    </span>
+                </span>
+            </div>
+            <Slider
+                value={[Math.round((config[key] as number | undefined) ?? durableDefaults[key])]}
+                onValueChange={([v]) => setConfig(prev => ({ ...prev, [key]: v }))}
+                min={0}
+                max={100}
+                step={1}
+                className="w-full"
+            />
+            <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+    );
+
+    const renderConfidenceSlider = (
+        key: keyof DurablePolicyDefaults,
+        label: string,
+        description: string,
+    ) => (
+        <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+                <Label>{label}</Label>
+                <span className="text-sm font-mono text-muted-foreground">
+                    {(((config[key] as number | undefined) ?? durableDefaults[key]) as number).toFixed(2)}
+                    <span className="ml-2 text-xs text-muted-foreground/80">
+                        {t(lt("默认", "Default"))} {durableDefaults[key].toFixed(2)}
+                    </span>
+                </span>
+            </div>
+            <Slider
+                value={[((config[key] as number | undefined) ?? durableDefaults[key]) as number]}
+                onValueChange={([v]) => setConfig(prev => ({ ...prev, [key]: Number(v.toFixed(2)) }))}
+                min={0}
+                max={1}
+                step={0.01}
+                className="w-full"
+            />
+            <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+    );
 
     if (loading) {
         return (
@@ -390,6 +499,99 @@ export default function MemoryConfigPanel() {
                                 </div>
                             </div>
                         ) : null}
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-base">{t(lt("记忆写入门槛", "Durable memory thresholds"))}</CardTitle>
+                    <CardDescription>
+                        {t(
+                            lt(
+                                "这些阈值共同决定偏好、知识条目以及由知识条目驱动的知识图谱是否会被持久化。单次高价值信息也允许写入；重复只作为佐证，不要求每轮都记录。",
+                                "These thresholds decide whether preferences, knowledge items, and the graph relations derived from persisted knowledge are written durably. A single high-value fact can persist; repetition is supporting evidence, not a requirement.",
+                            ),
+                        )}
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                        <div className="space-y-4 rounded-lg border p-4">
+                            <div className="space-y-1">
+                                <h3 className="text-sm font-semibold">{t(lt("偏好写入", "Preference persistence"))}</h3>
+                                <p className="text-xs text-muted-foreground">
+                                    {t(lt("用于控制用户偏好何时能进入长期记忆。", "Controls when user preferences become durable memory."))}
+                                </p>
+                            </div>
+                            {renderImportanceSlider(
+                                "preference_importance_threshold",
+                                t(lt("偏好重要度阈值", "Preference importance threshold")),
+                                t(lt("分数越高越保守；适合只保留真正稳定、值得长期遵循的偏好。", "Higher values are stricter and keep only strong, durable preferences.")),
+                            )}
+                            {renderConfidenceSlider(
+                                "preference_confidence_threshold",
+                                t(lt("偏好置信度阈值", "Preference confidence threshold")),
+                                t(lt("用于限制低把握度的偏好抽取；值越高越克制。", "Filters out low-confidence preference extraction; higher is more conservative.")),
+                            )}
+                        </div>
+
+                        <div className="space-y-4 rounded-lg border p-4">
+                            <div className="space-y-1">
+                                <h3 className="text-sm font-semibold">{t(lt("项目 / 局部知识写入", "Project / scoped knowledge persistence"))}</h3>
+                                <p className="text-xs text-muted-foreground">
+                                    {t(lt("用于 project / channel 等非 global scope 的知识条目。", "Applies to knowledge items in non-global scopes such as project or channel."))}
+                                </p>
+                            </div>
+                            {renderImportanceSlider(
+                                "knowledge_importance_threshold",
+                                t(lt("知识重要度阈值", "Knowledge importance threshold")),
+                                t(lt("分数越高，越倾向过滤掉一般性、边缘性的知识。", "Higher values filter out more marginal or low-impact knowledge.")),
+                            )}
+                            {renderConfidenceSlider(
+                                "knowledge_confidence_threshold",
+                                t(lt("知识置信度阈值", "Knowledge confidence threshold")),
+                                t(lt("控制局部知识是否足够可信后再写入 durable memory。", "Controls whether scoped knowledge is trusted enough to persist durably.")),
+                            )}
+                        </div>
+
+                        <div className="space-y-4 rounded-lg border p-4">
+                            <div className="space-y-1">
+                                <h3 className="text-sm font-semibold">{t(lt("全局稳定知识写入", "Global stable knowledge persistence"))}</h3>
+                                <p className="text-xs text-muted-foreground">
+                                    {t(lt("适用于架构约定、长期规则和全局稳定事实。", "Applies to architecture conventions, long-lived rules, and globally stable facts."))}
+                                </p>
+                            </div>
+                            {renderImportanceSlider(
+                                "global_knowledge_importance_threshold",
+                                t(lt("全局知识重要度阈值", "Global knowledge importance threshold")),
+                                t(lt("提高后会减少进入全局 durable memory 的稳定知识条目。", "Higher values reduce the number of stable facts that make it into global durable memory.")),
+                            )}
+                            {renderConfidenceSlider(
+                                "global_knowledge_confidence_threshold",
+                                t(lt("全局知识置信度阈值", "Global knowledge confidence threshold")),
+                                t(lt("建议保持略高于局部知识阈值，以防把全局规则写得过于激进。", "Usually set slightly above scoped knowledge confidence to avoid over-eager global rules.")),
+                            )}
+                        </div>
+
+                        <div className="space-y-4 rounded-lg border p-4">
+                            <div className="space-y-1">
+                                <h3 className="text-sm font-semibold">{t(lt("全局操作知识写入", "Global operational knowledge persistence"))}</h3>
+                                <p className="text-xs text-muted-foreground">
+                                    {t(lt("适用于可复用操作流程、运行时契约和经验证的工作方式。", "Applies to reusable workflows, runtime contracts, and proven operating practices."))}
+                                </p>
+                            </div>
+                            {renderImportanceSlider(
+                                "global_operational_importance_threshold",
+                                t(lt("全局操作知识重要度阈值", "Global operational importance threshold")),
+                                t(lt("降低后，单次但高价值的操作经验更容易被记住。", "Lower values make one-off but high-value operational learnings easier to retain.")),
+                            )}
+                            {renderConfidenceSlider(
+                                "global_operational_confidence_threshold",
+                                t(lt("全局操作知识置信度阈值", "Global operational confidence threshold")),
+                                t(lt("用于约束是否把某条方法论升级成可复用全局操作记忆。", "Controls whether an operational lesson is strong enough to become reusable global memory.")),
+                            )}
+                        </div>
                     </div>
                 </CardContent>
             </Card>

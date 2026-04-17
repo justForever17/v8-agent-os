@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
 import os
 import re
@@ -213,6 +214,7 @@ class ChatStreamState:
     assistant_transcript_version: int = 0
     narrative_started_model_run_ids: set[str] = field(default_factory=set)
     active_tool_call_ids: set[str] = field(default_factory=set)
+    tool_call_id_by_callback_run_id: dict[str, str] = field(default_factory=dict)
     pending_ask_user_interaction_id: str | None = None
     pending_ask_user_tool_call_id: str | None = None
 
@@ -2050,6 +2052,293 @@ class ChatRuntime:
         sanitized = _sanitize(to_jsonable(value))
         return {} if sanitized is sentinel else sanitized
 
+    @staticmethod
+    def _trim_preview_text(value: str, *, limit: int = 1200) -> tuple[str, bool]:
+        normalized = str(value or "")
+        if len(normalized) <= limit:
+            return normalized, False
+        return normalized[:limit].rstrip(), True
+
+    @staticmethod
+    def _line_count(value: str) -> int:
+        if not value:
+            return 0
+        return len(str(value).splitlines()) or 1
+
+    @classmethod
+    def _coerce_json_like_value(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (dict, list, str, int, float, bool)):
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    try:
+                        return json.loads(stripped)
+                    except Exception:
+                        return value
+            return value
+        return to_jsonable(value)
+
+    @classmethod
+    def _extract_tool_call_id_from_value(cls, value: Any, *, depth: int = 0) -> str:
+        if depth > 3 or value is None:
+            return ""
+        candidate = cls._coerce_json_like_value(value)
+        if isinstance(candidate, dict):
+            direct = str(
+                candidate.get("toolCallId")
+                or candidate.get("tool_call_id")
+                or candidate.get("toolCallID")
+                or ""
+            ).strip()
+            if direct:
+                return direct
+            tool_call = candidate.get("tool_call")
+            if isinstance(tool_call, dict):
+                nested_direct = str(tool_call.get("id") or tool_call.get("toolCallId") or "").strip()
+                if nested_direct:
+                    return nested_direct
+            for nested_key in ("request", "input", "kwargs", "metadata", "additional_kwargs"):
+                nested = candidate.get(nested_key)
+                nested_result = cls._extract_tool_call_id_from_value(nested, depth=depth + 1)
+                if nested_result:
+                    return nested_result
+        return ""
+
+    @classmethod
+    def _compact_tool_display_args(cls, tool_name: str, value: Any) -> Any:
+        sanitized = cls._sanitize_tool_input_value(value)
+        normalized_tool_name = str(tool_name or "").strip().lower()
+        if normalized_tool_name != "ask_user" or not isinstance(sanitized, dict):
+            return sanitized
+
+        compact: dict[str, Any] = {}
+        question = str(sanitized.get("question") or sanitized.get("prompt") or "").strip()
+        if question:
+            compact["question"] = question
+        details = sanitized.get("details")
+        if details not in (None, "", [], {}):
+            compact["details"] = details
+        tool_call_id = str(sanitized.get("toolCallId") or sanitized.get("tool_call_id") or "").strip()
+        if tool_call_id:
+            compact["toolCallId"] = tool_call_id
+        return compact
+
+    @classmethod
+    def _compact_download_media_for_vision_result(cls, value: Any) -> Any:
+        record = cls._coerce_json_like_value(value)
+        if not isinstance(record, dict):
+            return value
+        return {
+            "ok": record.get("ok"),
+            "artifactId": record.get("artifactId") or record.get("primaryArtifactId"),
+            "kind": record.get("kind") or record.get("primaryKind"),
+            "mimeType": record.get("mimeType"),
+            "fileName": record.get("fileName"),
+            "workspacePath": record.get("workspacePath") or record.get("canonicalPath") or record.get("userVisiblePath") or record.get("primaryFile"),
+            "workspaceRelativePath": record.get("workspaceRelativePath"),
+            "message": record.get("message") or record.get("statusMessage") or record.get("error"),
+        }
+
+    @classmethod
+    def _collect_urls_from_result(cls, value: Any, urls: list[str], *, depth: int = 0) -> None:
+        if depth > 4 or value is None:
+            return
+        candidate = cls._coerce_json_like_value(value)
+        if isinstance(candidate, str):
+            for match in re.findall(r"https?://[^\s\"'<>]+", candidate):
+                normalized = str(match).strip()
+                if normalized and normalized not in urls:
+                    urls.append(normalized)
+            return
+        if isinstance(candidate, list):
+            for item in candidate:
+                cls._collect_urls_from_result(item, urls, depth=depth + 1)
+            return
+        if isinstance(candidate, dict):
+            for key in ("url", "image_url", "imageUrl", "previewUrl", "externalUrl"):
+                nested = candidate.get(key)
+                if isinstance(nested, dict):
+                    cls._collect_urls_from_result(nested, urls, depth=depth + 1)
+                elif isinstance(nested, str):
+                    normalized = nested.strip()
+                    if normalized.startswith("http") and normalized not in urls:
+                        urls.append(normalized)
+            for nested in candidate.values():
+                cls._collect_urls_from_result(nested, urls, depth=depth + 1)
+
+    @classmethod
+    def _compact_generate_image_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        urls: list[str] = []
+        cls._collect_urls_from_result(candidate, urls)
+        compact: dict[str, Any] = {}
+        if isinstance(candidate, dict):
+            model = candidate.get("model") or candidate.get("model_name") or candidate.get("providerModel")
+            size = candidate.get("size") or candidate.get("image_size") or candidate.get("aspect_ratio")
+            ok = candidate.get("ok")
+            if ok is not None:
+                compact["ok"] = ok
+            if model:
+                compact["model"] = model
+            if size:
+                compact["size"] = size
+        if urls:
+            compact["imageCount"] = len(urls)
+            compact["urls"] = urls[:4]
+            compact.setdefault("ok", True)
+        if compact:
+            return compact
+        preview = str(candidate or "")
+        trimmed, truncated = cls._trim_preview_text(preview, limit=800)
+        return {"preview": trimmed, "truncated": truncated} if trimmed else value
+
+    @classmethod
+    def _compact_run_system_command_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if isinstance(candidate, dict):
+            if str(candidate.get("kind") or "").strip() == "command_session":
+                compact: dict[str, Any] = {
+                    "kind": "command_session",
+                    "mode": candidate.get("mode"),
+                    "commandId": candidate.get("commandId"),
+                    "sessionId": candidate.get("sessionId"),
+                    "interactive": candidate.get("interactive"),
+                    "profile": candidate.get("profile"),
+                    "runId": candidate.get("runId"),
+                    "reason": candidate.get("reason"),
+                }
+                initial_output = str(candidate.get("initialOutput") or "").strip()
+                if initial_output:
+                    preview, truncated = cls._trim_preview_text(initial_output, limit=800)
+                    compact["stdoutPreview"] = preview
+                    compact["lineCount"] = cls._line_count(initial_output)
+                    if truncated:
+                        compact["truncated"] = True
+                return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+            preview = json.dumps(candidate, ensure_ascii=False)
+            trimmed, truncated = cls._trim_preview_text(preview, limit=1200)
+            return {"status": "ok", "stdoutPreview": trimmed, "lineCount": cls._line_count(trimmed), "truncated": truncated}
+
+        text = str(candidate or "")
+        trimmed, truncated = cls._trim_preview_text(text, limit=1200)
+        status = "error" if trimmed.lower().startswith("error") else "ok"
+        key = "stderrPreview" if status == "error" else "stdoutPreview"
+        return {
+            "status": status,
+            key: trimmed,
+            "lineCount": cls._line_count(text),
+            "truncated": truncated,
+        }
+
+    @classmethod
+    def _compact_share_workspace_file_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        resource_ref = candidate.get("resourceRef") if isinstance(candidate.get("resourceRef"), dict) else {}
+        compact_ref: dict[str, Any] = {}
+        if isinstance(resource_ref, dict):
+            for key in (
+                "kind",
+                "workspaceRelativePath",
+                "workspacePath",
+                "workspaceId",
+                "projectId",
+                "pathPlane",
+                "adminPath",
+                "mimeType",
+                "displayLabel",
+                "previewable",
+                "downloadable",
+            ):
+                val = resource_ref.get(key)
+                if val not in (None, "", [], {}):
+                    compact_ref[key] = val
+        compact: dict[str, Any] = {
+            "ok": candidate.get("ok"),
+            "filename": candidate.get("filename"),
+            "mimeType": candidate.get("mimeType"),
+            "mode": candidate.get("mode"),
+            "url": candidate.get("url"),
+            "previewable": candidate.get("previewable"),
+            "downloadable": candidate.get("downloadable"),
+            "viewerKind": candidate.get("viewerKind"),
+            "workspaceRelativePath": candidate.get("workspaceRelativePath"),
+            "workspaceId": candidate.get("workspaceId"),
+            "projectId": candidate.get("projectId"),
+            "error": candidate.get("error"),
+        }
+        if compact_ref:
+            compact["resourceRef"] = compact_ref
+        return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+    @classmethod
+    def _compact_tool_result_value(cls, tool_name: str, value: Any) -> Any:
+        normalized_tool_name = str(tool_name or "").strip().lower()
+        raw_value = getattr(value, "content", value)
+        jsonable = cls._coerce_json_like_value(to_jsonable(raw_value))
+        if normalized_tool_name == "ask_user":
+            answer = str(jsonable or "").strip()
+            return answer
+        if normalized_tool_name == "download_media_for_vision":
+            return cls._compact_download_media_for_vision_result(jsonable)
+        if normalized_tool_name == "generate_image":
+            return cls._compact_generate_image_result(jsonable)
+        if normalized_tool_name == "run_system_command":
+            return cls._compact_run_system_command_result(jsonable)
+        if normalized_tool_name == "share_workspace_file":
+            return cls._compact_share_workspace_file_result(jsonable)
+        if isinstance(jsonable, str):
+            preview, truncated = cls._trim_preview_text(jsonable, limit=2400)
+            if truncated:
+                return {"preview": preview, "chars": len(jsonable), "truncated": True}
+        return jsonable
+
+    @classmethod
+    def _resolve_tool_call_id_for_start(
+        cls,
+        *,
+        callback_run_id: str,
+        raw_inputs: Any,
+        metadata: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> str:
+        for candidate in (
+            cls._extract_tool_call_id_from_value(raw_inputs),
+            cls._extract_tool_call_id_from_value(metadata),
+            cls._extract_tool_call_id_from_value(data),
+            callback_run_id,
+        ):
+            normalized = str(candidate or "").strip()
+            if normalized:
+                return normalized
+        return ""
+
+    @classmethod
+    def _resolve_tool_call_id_for_end(
+        cls,
+        *,
+        callback_run_id: str,
+        output: Any,
+        metadata: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        stream_state: ChatStreamState,
+    ) -> str:
+        mapped = str(stream_state.tool_call_id_by_callback_run_id.get(callback_run_id) or "").strip()
+        if mapped:
+            return mapped
+        for candidate in (
+            getattr(output, "tool_call_id", None),
+            cls._extract_tool_call_id_from_value(output),
+            cls._extract_tool_call_id_from_value(metadata),
+            cls._extract_tool_call_id_from_value(data),
+            callback_run_id,
+        ):
+            normalized = str(candidate or "").strip()
+            if normalized:
+                return normalized
+        return ""
+
     def _suppress_neighbor_duplicate_delta(
         self,
         stream_state: ChatStreamState,
@@ -2164,13 +2453,14 @@ class ChatRuntime:
                     tool_call_id = str(interaction.get("tool_call_id") or interrupt_request.get("toolCallId") or tool_call_id).strip()
                     stream_state.pending_ask_user_interaction_id = str(interaction.get("id") or "")
                     stream_state.pending_ask_user_tool_call_id = tool_call_id
+                    display_args = self._compact_tool_display_args("ask_user", interrupt_request)
                     profile = self._get_agent_profile(stream_state.current_agent)
                     tool_start_event = {
                         "type": "tool_start",
                         "tool": {
                             "toolCallId": tool_call_id,
                             "toolName": "ask_user",
-                            "args": interrupt_request,
+                            "args": display_args,
                         },
                         "timestamp": 0,
                     }
@@ -2180,7 +2470,7 @@ class ChatRuntime:
                         "executionType": "tool_call",
                         "toolCallId": tool_call_id,
                         "toolName": "ask_user",
-                        "args": interrupt_request,
+                        "args": display_args,
                         "state": "waiting_input",
                         "timestamp": self._now_timestamp_ms(),
                         "agentName": profile["name"],
@@ -2201,7 +2491,7 @@ class ChatRuntime:
                         tool_start_event["message_id"] = payload.get("message_id")
                         tool_start_event["node_id"] = payload.get("node_id")
                         tool_start_event["transcript_version"] = payload.get("transcript_version")
-                    stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": "ask_user", "args": interrupt_request})
+                    stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": "ask_user", "args": display_args})
                     emitted_events.append(tool_start_event)
                     emitted_events.append(
                         self._build_ask_user_event(
@@ -2355,13 +2645,22 @@ class ChatRuntime:
             return emitted_events
 
         if kind == "on_tool_start":
-            inputs = self._sanitize_tool_input_value(data.get("input", {}))
-            tool_call_id = event.get("run_id", "")
+            raw_inputs = data.get("input", {})
+            inputs = self._compact_tool_display_args(name, raw_inputs)
+            callback_run_id = str(event.get("run_id") or "").strip()
+            tool_call_id = self._resolve_tool_call_id_for_start(
+                callback_run_id=callback_run_id,
+                raw_inputs=raw_inputs,
+                metadata=metadata,
+                data=data,
+            )
             if str(name or "").strip() == "ask_user":
                 # ask_user 是 LangGraph interrupt 驱动的控制流工具；真正的等待点
                 # 只能由后续 on_chain_stream 里的 __interrupt__ 创建，不能在 tool_start
                 # 阶段伪造成普通审批，否则 resume 会重新进入同一工具并循环卡住。
                 return emitted_events
+            if callback_run_id and tool_call_id:
+                stream_state.tool_call_id_by_callback_run_id[callback_run_id] = tool_call_id
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             stream_state.active_tool_call_ids.add(active_tool_key)
             tool_start_event = {
@@ -2404,17 +2703,24 @@ class ChatRuntime:
         if kind == "on_tool_end":
             output = data.get("output", "")
             output_str = str(output.content) if hasattr(output, "content") else str(output)
-            candidate_tool_call_id = str(
-                getattr(output, "tool_call_id", None)
-                or event.get("run_id", "")
-                or ""
-            ).strip()
+            callback_run_id = str(event.get("run_id") or "").strip()
+            candidate_tool_call_id = self._resolve_tool_call_id_for_end(
+                callback_run_id=callback_run_id,
+                output=output,
+                metadata=metadata,
+                data=data,
+                stream_state=stream_state,
+            )
             tool_call_id = candidate_tool_call_id
             if str(name or "").strip() == "ask_user":
                 interaction = self._resolve_ask_user_tool_result_context(
                     chat_run,
                     stream_state,
-                    candidate_tool_call_id=candidate_tool_call_id,
+                    candidate_tool_call_id=str(
+                        stream_state.pending_ask_user_tool_call_id
+                        or candidate_tool_call_id
+                        or ""
+                    ).strip(),
                     output_text=output_str,
                 )
                 resolved_tool_call_id = str((interaction or {}).get("tool_call_id") or "").strip()
@@ -2432,10 +2738,29 @@ class ChatRuntime:
                 tool_call_id = resolved_tool_call_id
                 stream_state.pending_ask_user_interaction_id = ""
                 stream_state.pending_ask_user_tool_call_id = ""
+            else:
+                known_active_tool_call = bool(tool_call_id) and (
+                    tool_call_id in stream_state.active_tool_call_ids
+                    or any(str((call or {}).get("id") or "").strip() == tool_call_id for call in list(stream_state.tool_calls_buffer or []))
+                )
+                if not known_active_tool_call:
+                    chat_run.emit_runtime_event(
+                        "tool_result.unmatched",
+                        {
+                            "toolName": name,
+                            "candidateToolCallId": candidate_tool_call_id,
+                            "callbackRunId": callback_run_id,
+                            "resultPreview": output_str[:200],
+                        },
+                        agent_id=stream_state.current_agent,
+                        node=stream_state.current_agent or "chat_runtime",
+                    )
+                    return emitted_events
+            compact_result = self._compact_tool_result_value(str(name or ""), output)
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             tool_result_event = {
                 "type": "tool_result",
-                "tool": {"toolCallId": tool_call_id, "toolName": name, "result": output_str},
+                "tool": {"toolCallId": tool_call_id, "toolName": name, "result": compact_result},
                 "timestamp": 0,
             }
             stream_state.watchdog.note_tool_end(tool_call_id)
@@ -2446,7 +2771,7 @@ class ChatRuntime:
                 "executionType": "tool_result",
                 "toolCallId": tool_call_id,
                 "toolName": name,
-                "result": output_str,
+                "result": compact_result,
                 "timestamp": self._now_timestamp_ms(),
                 "agentName": profile["name"],
                 "agentAvatar": profile["avatar"],
@@ -2467,6 +2792,8 @@ class ChatRuntime:
                 tool_result_event["node_id"] = payload.get("node_id")
                 tool_result_event["transcript_version"] = payload.get("transcript_version")
             stream_state.active_tool_call_ids.discard(active_tool_key)
+            if callback_run_id:
+                stream_state.tool_call_id_by_callback_run_id.pop(callback_run_id, None)
             if not active_tool_key:
                 stream_state.active_tool_call_ids.clear()
             emitted_events.append(tool_result_event)
@@ -2932,6 +3259,7 @@ class ChatRuntime:
             "user_id": chat_run.user_id,
             "project_id": chat_run.scope_result.binding.project_id,
             "workspace_id": chat_run.scope_result.binding.workspace_id,
+            "workspace_path": chat_run.scope_result.binding.workspace_path,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
         }

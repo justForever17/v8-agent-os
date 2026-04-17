@@ -105,6 +105,17 @@ LEGACY_ADMIN_ORIGINS = {
 
 MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED = 0.20
 
+MEMORY_DURABLE_POLICY_DEFAULTS: dict[str, Any] = {
+    "preference_importance_threshold": 65,
+    "preference_confidence_threshold": 0.70,
+    "knowledge_importance_threshold": 55,
+    "knowledge_confidence_threshold": 0.65,
+    "global_knowledge_importance_threshold": 62,
+    "global_knowledge_confidence_threshold": 0.72,
+    "global_operational_importance_threshold": 58,
+    "global_operational_confidence_threshold": 0.68,
+}
+
 
 def _replace_if_exact(value: Any, replacements: Dict[str, str]) -> str:
     normalized = str(value or "").strip().rstrip("/")
@@ -223,10 +234,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "max_recent_days": 1,
         "max_context_tokens": 2000,
         "extraction_enabled": True,
-        "preference_importance_threshold": 70,
-        "preference_confidence_threshold": 0.75,
-        "knowledge_importance_threshold": 60,
-        "knowledge_confidence_threshold": 0.70,
+        **MEMORY_DURABLE_POLICY_DEFAULTS,
         "graph_enabled": True,
         "fts_enabled": True,
     },
@@ -1606,6 +1614,7 @@ class StorageManager:
             "recommendedRetrievalThreshold": MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED,
             "retrievalThresholdSource": "user" if threshold_is_user_defined else "engine_default",
             "retrievalThresholdIsDefault": not threshold_is_user_defined,
+            "durablePolicyDefaults": deepcopy(MEMORY_DURABLE_POLICY_DEFAULTS),
         }
 
     def ensure_memory_runtime_defaults(self) -> Dict[str, Any]:

@@ -20,7 +20,7 @@ from .models import (
 from core.model_control_plane import model_control_plane
 from core.realtime_protocol import format_ndjson
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls
-from core.storage import storage
+from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.workspace_resolution import workspace_resolution_service
 from runtimes.chat.runtime import StreamFilter
 from runtimes.memory.prompts import render_memory_admin_chat_prompt
@@ -118,10 +118,8 @@ async def get_memory_config():
         config.setdefault("max_recent_days", 1)
         config.setdefault("max_context_tokens", 2000)
         config.setdefault("extraction_enabled", True)
-        config.setdefault("preference_importance_threshold", 70)
-        config.setdefault("preference_confidence_threshold", 0.75)
-        config.setdefault("knowledge_importance_threshold", 60)
-        config.setdefault("knowledge_confidence_threshold", 0.70)
+        for key, value in MEMORY_DURABLE_POLICY_DEFAULTS.items():
+            config.setdefault(key, value)
         config.setdefault("graph_enabled", True)
         config.setdefault("fts_enabled", True)
         config["extraction_model"] = _get_role_binding("extraction")
@@ -130,6 +128,7 @@ async def get_memory_config():
         config["recommended_retrieval_threshold"] = metadata["recommendedRetrievalThreshold"]
         config["retrieval_threshold_source"] = metadata["retrievalThresholdSource"]
         config["retrieval_threshold_is_default"] = metadata["retrievalThresholdIsDefault"]
+        config["durable_policy_defaults"] = metadata["durablePolicyDefaults"]
         return config
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -139,6 +138,13 @@ async def get_memory_config():
 async def update_memory_config(config: dict = Body(...)):
     try:
         next_config = dict(config or {})
+        for ui_only_key in (
+            "recommended_retrieval_threshold",
+            "retrieval_threshold_source",
+            "retrieval_threshold_is_default",
+            "durable_policy_defaults",
+        ):
+            next_config.pop(ui_only_key, None)
         if "extraction_model" in next_config:
             extraction_model = str(next_config.get("extraction_model") or "").strip()
             _update_role_binding("extraction", "" if extraction_model.lower() == "none" else extraction_model)
@@ -166,8 +172,10 @@ async def update_memory_config(config: dict = Body(...)):
                 threshold = 0.0
             next_config["retrieval_threshold"] = max(0.0, min(threshold, 1.0))
         for key, default in (
-            ("preference_importance_threshold", 70),
-            ("knowledge_importance_threshold", 60),
+            ("preference_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["preference_importance_threshold"]),
+            ("knowledge_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_importance_threshold"]),
+            ("global_knowledge_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_importance_threshold"]),
+            ("global_operational_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_importance_threshold"]),
         ):
             if key in next_config:
                 try:
@@ -175,8 +183,10 @@ async def update_memory_config(config: dict = Body(...)):
                 except (TypeError, ValueError):
                     next_config[key] = default
         for key, default in (
-            ("preference_confidence_threshold", 0.75),
-            ("knowledge_confidence_threshold", 0.70),
+            ("preference_confidence_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["preference_confidence_threshold"]),
+            ("knowledge_confidence_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_confidence_threshold"]),
+            ("global_knowledge_confidence_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_confidence_threshold"]),
+            ("global_operational_confidence_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_confidence_threshold"]),
         ):
             if key in next_config:
                 try:

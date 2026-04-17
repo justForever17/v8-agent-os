@@ -11,11 +11,8 @@ import { WebView } from "react-native-webview";
 import { Card, CardContent } from "@/src/components/ui/card";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
-function escapeHtml(value: string) {
-    return value
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
+function scriptString(value: string) {
+    return JSON.stringify(value).replace(/<\/script/gi, "<\\/script");
 }
 
 export const MermaidRenderer = memo(function MermaidRenderer({
@@ -28,10 +25,10 @@ export const MermaidRenderer = memo(function MermaidRenderer({
     const [hasError, setHasError] = useState(false);
 
     const html = useMemo(() => {
-        const safeCode = escapeHtml(code);
         const background = themeMode === "dark" ? "#0d1117" : "#ffffff";
         const foreground = themeMode === "dark" ? "#e5e7eb" : "#111827";
         const mermaidTheme = themeMode === "dark" ? "dark" : "default";
+        const sourceLiteral = scriptString(code);
         return `
 <!doctype html>
 <html>
@@ -62,30 +59,71 @@ export const MermaidRenderer = memo(function MermaidRenderer({
         font-size: 12px;
         line-height: 1.6;
       }
+      .error {
+        color: #ef4444;
+      }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   </head>
   <body>
     <div class="wrap">
       <div id="chart" class="chart"></div>
     </div>
     <script>
-      const source = \`${safeCode}\`;
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: "${mermaidTheme}",
-        securityLevel: "loose",
-        fontFamily: "inherit"
-      });
+      const source = ${sourceLiteral};
+      const cdns = [
+        "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
+        "https://unpkg.com/mermaid@11/dist/mermaid.min.js"
+      ];
 
-      mermaid.render("mermaid-chart", source)
-        .then(({ svg }) => {
-          document.getElementById("chart").innerHTML = svg;
-        })
-        .catch((error) => {
-          document.body.innerHTML = "<pre>" + String(error) + "\\n\\n" + source + "</pre>";
-          window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "error" }));
-        });
+      function showError(error) {
+        document.body.innerHTML = "";
+        const pre = document.createElement("pre");
+        pre.className = "error";
+        pre.textContent = String(error || "Mermaid failed to render.") + "\\n\\n" + source;
+        document.body.appendChild(pre);
+        window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "error", message: String(error || "") }));
+      }
+
+      function loadScript(index) {
+        if (index >= cdns.length) {
+          showError("Mermaid runtime failed to load. Please check the phone network or CDN access.");
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = cdns[index];
+        script.onload = render;
+        script.onerror = () => loadScript(index + 1);
+        document.head.appendChild(script);
+      }
+
+      function render() {
+        try {
+          if (!window.mermaid) {
+            showError("Mermaid runtime is unavailable.");
+            return;
+          }
+          window.mermaid.initialize({
+            startOnLoad: false,
+            theme: "${mermaidTheme}",
+            securityLevel: "loose",
+            fontFamily: "inherit"
+          });
+          window.mermaid.render("mermaid-chart-" + Date.now(), source)
+            .then(({ svg }) => {
+              document.getElementById("chart").innerHTML = svg;
+            })
+            .catch(showError);
+        } catch (error) {
+          showError(error);
+        }
+      }
+
+      loadScript(0);
+      setTimeout(() => {
+        if (!document.getElementById("chart").innerHTML.trim() && !document.querySelector("pre.error")) {
+          showError("Mermaid rendering timed out.");
+        }
+      }, 8000);
     </script>
   </body>
 </html>`;

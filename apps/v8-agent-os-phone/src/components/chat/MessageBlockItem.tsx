@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { ApprovalCard } from "@/src/components/chat/ApprovalCard";
@@ -11,6 +11,7 @@ import { ModelViewer } from "@/src/components/chat/ModelViewer";
 import { HTMLFileCard } from "@/src/components/chat/HTMLFileCard";
 import { PDFFileCard } from "@/src/components/chat/PDFFileCard";
 import { PPTCard } from "@/src/components/chat/PPTCard";
+import { DownloadFileCard } from "@/src/components/chat/DownloadFileCard";
 import { ThinkingCard } from "@/src/components/chat/ThinkingCard";
 import { ToolCard } from "@/src/components/chat/ToolCard";
 import { VoiceCard } from "@/src/components/chat/VoiceCard";
@@ -85,10 +86,27 @@ function inferArtifactMediaKind(artifact: Record<string, unknown>, src: string) 
 function inferArtifactDocumentKind(artifact: Record<string, unknown>, src: string) {
     const kind = String(artifact.kind || "").trim().toLowerCase();
     const mimeType = String(artifact.mimeType || artifact.mime_type || "").trim().toLowerCase();
+    const resourceRef = coerceAdminResourceRef(artifact.resourceRef || null);
+    const refMimeType = String(resourceRef?.mimeType || "").trim().toLowerCase();
     const title = artifactDisplayTitle(artifact).toLowerCase();
-    const probe = `${kind} ${mimeType} ${title} ${src}`.toLowerCase();
+    const probe = `${kind} ${mimeType} ${refMimeType} ${title} ${src}`.toLowerCase();
     if (probe.includes("application/pdf") || /\.pdf(\?.*)?$/i.test(src) || /\.pdf$/i.test(title)) {
         return "pdf" as const;
+    }
+    if (
+        probe.includes("powerpoint")
+        || probe.includes("presentation")
+        || /\.(ppt|pptx|odp)(\?.*)?$/i.test(src)
+        || /\.(ppt|pptx|odp)$/i.test(title)
+    ) {
+        return "ppt" as const;
+    }
+    if (
+        probe.includes("model/gltf")
+        || /\.(glb|gltf)(\?.*)?$/i.test(src)
+        || /\.(glb|gltf)$/i.test(title)
+    ) {
+        return "model" as const;
     }
     if (
         probe.includes("text/html")
@@ -99,6 +117,80 @@ function inferArtifactDocumentKind(artifact: Record<string, unknown>, src: strin
         return "html" as const;
     }
     return null;
+}
+
+function inferFileViewerKind(input: {
+    viewerKind?: unknown;
+    mimeType?: unknown;
+    filename?: unknown;
+    url?: unknown;
+}): "pdf" | "ppt" | "model" | "html" | "download" {
+    const explicit = String(input.viewerKind || "").trim().toLowerCase();
+    if (explicit === "pdf" || explicit === "ppt" || explicit === "model" || explicit === "html" || explicit === "download") {
+        return explicit;
+    }
+    const mimeType = String(input.mimeType || "").trim().toLowerCase();
+    const filename = String(input.filename || "").trim().toLowerCase();
+    const url = String(input.url || "").trim().toLowerCase();
+    const probe = `${mimeType} ${filename} ${url}`;
+    if (probe.includes("application/pdf") || /\.pdf(?:$|[?#\s])/i.test(probe)) {
+        return "pdf";
+    }
+    if (probe.includes("powerpoint") || probe.includes("presentation") || /\.(ppt|pptx|odp)(?:$|[?#\s])/i.test(probe)) {
+        return "ppt";
+    }
+    if (probe.includes("model/gltf") || /\.(glb|gltf)(?:$|[?#\s])/i.test(probe)) {
+        return "model";
+    }
+    if (probe.includes("text/html") || probe.includes("application/xhtml+xml") || /\.html?(?:$|[?#\s])/i.test(probe)) {
+        return "html";
+    }
+    return "download";
+}
+
+function inferFilenameFromUrl(url: string, fallback = "file") {
+    const raw = String(url || "").trim();
+    const queryName = (() => {
+        try {
+            const parsed = new URL(raw, "http://v8.local");
+            return parsed.searchParams.get("workspace_relative_path") || parsed.searchParams.get("workspaceRelativePath") || "";
+        } catch {
+            return "";
+        }
+    })();
+    const source = queryName || raw;
+    const tail = source.split(/[\\/]/).filter(Boolean).pop()?.split("?")[0] || fallback;
+    try {
+        return decodeURIComponent(tail) || fallback;
+    } catch {
+        return tail || fallback;
+    }
+}
+
+function isPublicPreviewUrl(url: string) {
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase();
+        if (!/^https?:$/.test(parsed.protocol)) {
+            return false;
+        }
+        if (host === "localhost" || host === "::1" || host.endsWith(".local")) {
+            return false;
+        }
+        if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) {
+            return false;
+        }
+        const private172 = host.match(/^172\.(\d{1,2})\./);
+        if (private172) {
+            const second = Number(private172[1]);
+            if (second >= 16 && second <= 31) {
+                return false;
+            }
+        }
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function sliceByCodePoint(value: string, length: number) {
@@ -165,6 +257,48 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         blockContent,
         Boolean(block && (block.type === "text" || block.type === "markdown") && (block.isStreaming || isStreaming)),
     );
+    const renderFileCard = (
+        url: string,
+        options: {
+            filename?: string;
+            mimeType?: string;
+            viewerKind?: "pdf" | "ppt" | "model" | "html" | "download";
+        } = {},
+    ) => {
+        const resolvedUrl = String(url || "").trim();
+        const filename = options.filename || inferFilenameFromUrl(resolvedUrl);
+        const viewerKind = options.viewerKind || inferFileViewerKind({
+            viewerKind: options.viewerKind,
+            mimeType: options.mimeType,
+            filename,
+            url: resolvedUrl,
+        });
+        if (!resolvedUrl) {
+            return (
+                <UnresolvedResourceCard
+                    title={filename}
+                    subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
+                />
+            );
+        }
+        if (viewerKind === "html") {
+            return <HTMLFileCard url={resolvedUrl} filename={filename} />;
+        }
+        if (viewerKind === "model") {
+            return <ModelViewer src={resolvedUrl} filename={filename} />;
+        }
+        if (viewerKind === "pdf") {
+            return isPublicPreviewUrl(resolvedUrl)
+                ? <PDFFileCard url={resolvedUrl} filename={filename} />
+                : <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType || "application/pdf"} />;
+        }
+        if (viewerKind === "ppt") {
+            return isPublicPreviewUrl(resolvedUrl)
+                ? <PPTCard url={resolvedUrl} filename={filename} />
+                : <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType || "presentation"} />;
+        }
+        return <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType} />;
+    };
 
     if (node?.kind === "governance") {
         const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
@@ -232,25 +366,19 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         if (mediaKind === "video" || mediaKind === "audio") {
             return <MediaPlayer src={src} type={mediaKind} title={title} candidates={mediaCandidates} />;
         }
-        if (documentKind === "pdf") {
-            return <PDFFileCard url={src} filename={title} />;
-        }
-        if (documentKind === "html") {
-            return <HTMLFileCard url={src} filename={title} />;
+        if (documentKind) {
+            return renderFileCard(src, {
+                filename: title,
+                mimeType: String(artifact.mimeType || artifact.mime_type || resourceRef?.mimeType || "").trim() || undefined,
+                viewerKind: documentKind,
+            });
         }
         return (
-            <Card style={styles.executionCard}>
-                <CardContent style={styles.executionContent}>
-                    <Text selectable style={[styles.executionTitle, { color: colors.text }]}>{title}</Text>
-                    <Text
-                        selectable
-                        style={[styles.unresolvedSubtitle, { color: colors.primary }]}
-                        onPress={() => void Linking.openURL(src)}
-                    >
-                        {src}
-                    </Text>
-                </CardContent>
-            </Card>
+            <DownloadFileCard
+                url={src}
+                filename={title}
+                mimeType={String(artifact.mimeType || artifact.mime_type || resourceRef?.mimeType || "").trim() || undefined}
+            />
         );
     }
 
@@ -348,59 +476,50 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         return <CodeBlock language={language} value={block.content} isStreaming={resolvedStreaming} />;
     }
 
+    if (block.type === "file-generic") {
+        const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || block.content || "").trim());
+        return renderFileCard(url, {
+            filename: typeof block.data?.filename === "string" ? block.data.filename : undefined,
+            mimeType: typeof block.data?.mimeType === "string" ? block.data.mimeType : undefined,
+            viewerKind: inferFileViewerKind({
+                viewerKind: block.data?.viewerKind,
+                mimeType: block.data?.mimeType,
+                filename: block.data?.filename,
+                url,
+            }),
+        });
+    }
+
     if (block.type === "file-ppt") {
         const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || "").trim());
-        return url ? (
-            <PPTCard
-                url={url}
-                filename={typeof block.data?.filename === "string" ? block.data.filename : undefined}
-            />
-        ) : (
-            <UnresolvedResourceCard
-                title={t("演示文件暂不可打开", "Presentation unavailable")}
-                subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
-            />
-        );
+        return renderFileCard(url, {
+            filename: typeof block.data?.filename === "string" ? block.data.filename : undefined,
+            viewerKind: "ppt",
+        });
     }
 
     if (block.type === "file-html") {
         const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || "").trim());
-        return url ? (
-            <HTMLFileCard
-                url={url}
-                filename={typeof block.data?.filename === "string" ? block.data.filename : undefined}
-            />
-        ) : (
-            <UnresolvedResourceCard
-                title={t("HTML 文件暂不可打开", "HTML file unavailable")}
-                subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
-            />
-        );
+        return renderFileCard(url, {
+            filename: typeof block.data?.filename === "string" ? block.data.filename : undefined,
+            viewerKind: "html",
+        });
     }
 
     if (block.type === "file-pdf") {
         const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || "").trim());
-        return url ? (
-            <PDFFileCard
-                url={url}
-                filename={typeof block.data?.filename === "string" ? block.data.filename : undefined}
-            />
-        ) : (
-            <UnresolvedResourceCard
-                title={t("PDF 文件暂不可打开", "PDF unavailable")}
-                subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
-            />
-        );
+        return renderFileCard(url, {
+            filename: typeof block.data?.filename === "string" ? block.data.filename : undefined,
+            viewerKind: "pdf",
+        });
     }
 
     if (block.type === "model-3d") {
         const url = resolveRenderableMediaUrl(adminBaseUrl, block.content.trim());
-        return url ? <ModelViewer src={url} /> : (
-            <UnresolvedResourceCard
-                title={t("3D 模型暂不可预览", "3D preview unavailable")}
-                subtitle={t("当前模型资源地址不可达，已保留其余正式回复内容。", "The model URL is unreachable right now, and the rest of the reply remains visible.")}
-            />
-        );
+        return renderFileCard(url, {
+            filename: typeof block.data?.filename === "string" ? block.data.filename : undefined,
+            viewerKind: "model",
+        });
     }
 
     if (block.type === "thinking") {

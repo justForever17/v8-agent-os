@@ -15,7 +15,7 @@ from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from core.system_base import detect_desktop_tools_readiness
-from core.storage import storage
+from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.v8_agent_os_identity import render_system_identity_block
 from core.v8_agent_os_paths import COMPUTER_USE_JSON_PATH, CONFIG_JSON_PATH, V8_AGENT_OS_HOME
 from core.workspace_guard import build_workspace_path_status
@@ -183,6 +183,8 @@ def _save_agents_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_memory_domain() -> dict[str, Any]:
     config = storage.get_memory_config() or {}
+    for key, value in MEMORY_DURABLE_POLICY_DEFAULTS.items():
+        config.setdefault(key, value)
     bindings = _roles_snapshot("extraction", "embedding", "reranker")
     return {
         "domain": "memory",
@@ -195,6 +197,7 @@ def _build_memory_domain() -> dict[str, Any]:
                 "embeddingModel": bindings["embedding"],
                 "rerankerModel": bindings["reranker"],
             },
+            "durablePolicyDefaults": deepcopy(MEMORY_DURABLE_POLICY_DEFAULTS),
         },
         "source": f"{_config_source('memory')} + {_config_source('models')}",
         "savePath": [f"{CONFIG_JSON_PATH}#memory", f"{CONFIG_JSON_PATH}#models"],
@@ -207,6 +210,7 @@ def _build_memory_domain() -> dict[str, Any]:
 def _save_memory_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
     model_bindings = dict(data.pop("modelBindings", {}) or {})
+    data.pop("durablePolicyDefaults", None)
     _update_role_bindings(
         {
             "extraction": model_bindings.get("extractionModel"),

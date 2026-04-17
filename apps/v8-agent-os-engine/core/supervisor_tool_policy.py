@@ -50,6 +50,7 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "computer_use_click_toolbar_action",
     "computer_use_execute_plan",
     "read_native_file",
+    "share_workspace_file",
     "write_native_file",
     "grep_search",
     "download_media_for_vision",

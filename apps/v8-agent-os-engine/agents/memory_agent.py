@@ -25,7 +25,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.exceptions import OutputParserException
 
 from core.database import db
-from core.storage import storage
+from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.memory_router import MemoryRouter
 from core.knowledge_db import knowledge_db
 from core.audit_logger import audit_logger
@@ -151,10 +151,14 @@ def _load_memory_policy() -> Dict[str, Any]:
 
     return {
         "extraction_enabled": bool(memory_config.get("extraction_enabled", True)),
-        "preference_importance_threshold": _as_int("preference_importance_threshold", 70, 0, 100),
-        "preference_confidence_threshold": _as_float("preference_confidence_threshold", 0.75, 0.0, 1.0),
-        "knowledge_importance_threshold": _as_int("knowledge_importance_threshold", 60, 0, 100),
-        "knowledge_confidence_threshold": _as_float("knowledge_confidence_threshold", 0.70, 0.0, 1.0),
+        "preference_importance_threshold": _as_int("preference_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["preference_importance_threshold"]), 0, 100),
+        "preference_confidence_threshold": _as_float("preference_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["preference_confidence_threshold"]), 0.0, 1.0),
+        "knowledge_importance_threshold": _as_int("knowledge_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_importance_threshold"]), 0, 100),
+        "knowledge_confidence_threshold": _as_float("knowledge_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_confidence_threshold"]), 0.0, 1.0),
+        "global_knowledge_importance_threshold": _as_int("global_knowledge_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_importance_threshold"]), 0, 100),
+        "global_knowledge_confidence_threshold": _as_float("global_knowledge_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_confidence_threshold"]), 0.0, 1.0),
+        "global_operational_importance_threshold": _as_int("global_operational_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_importance_threshold"]), 0, 100),
+        "global_operational_confidence_threshold": _as_float("global_operational_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_confidence_threshold"]), 0.0, 1.0),
     }
 
 
@@ -592,14 +596,30 @@ def _item_key(item: Any, fields: List[str]) -> tuple:
     return tuple(str(getattr(item, field, "") or "").strip() for field in fields)
 
 
+def _policy_int(policy: Dict[str, Any], key: str, default: int) -> int:
+    try:
+        value = int(policy.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return value
+
+
+def _policy_float(policy: Dict[str, Any], key: str, default: float) -> float:
+    try:
+        value = float(policy.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return value
+
+
 def _evaluate_preference_persistence(pref: PreferenceExtraction, policy: Dict[str, Any]) -> tuple[bool, str]:
     if _normalize_target_store(pref.target_store, default="preference") != "preference":
         return False, f"target_store_{_normalize_target_store(pref.target_store, default='preference')}"
     if _normalize_durability(pref.durability, default="stable") != "stable":
         return False, f"durability_{_normalize_durability(pref.durability, default='stable')}"
-    if int(pref.importance or 0) < int(policy["preference_importance_threshold"]):
+    if int(pref.importance or 0) < _policy_int(policy, "preference_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["preference_importance_threshold"])):
         return False, "importance_below_threshold"
-    if float(pref.confidence or 0.0) < float(policy["preference_confidence_threshold"]):
+    if float(pref.confidence or 0.0) < _policy_float(policy, "preference_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["preference_confidence_threshold"])):
         return False, "confidence_below_threshold"
     return True, "persisted"
 
@@ -622,24 +642,30 @@ def _evaluate_knowledge_persistence(fact: KnowledgeExtraction, policy: Dict[str,
         if _is_path_like_fact(fact_text):
             return False, "path_like_global"
         if durability == "operational" and _is_operational_learning_fact(fact):
-            if int(fact.importance or 0) < int(policy["knowledge_importance_threshold"]):
+            if int(fact.importance or 0) < _policy_int(policy, "global_operational_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_importance_threshold"])):
                 return False, "importance_below_operational_threshold"
-            if float(fact.confidence or 0.0) < float(policy["knowledge_confidence_threshold"]):
+            if float(fact.confidence or 0.0) < _policy_float(policy, "global_operational_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_confidence_threshold"])):
                 return False, "confidence_below_operational_threshold"
             return True, "persisted_operational_workflow"
+        if durability == "operational":
+            if int(fact.importance or 0) < _policy_int(policy, "global_operational_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_importance_threshold"])):
+                return False, "importance_below_global_operational_threshold"
+            if float(fact.confidence or 0.0) < _policy_float(policy, "global_operational_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_confidence_threshold"])):
+                return False, "confidence_below_global_operational_threshold"
+            return True, "persisted_global_operational"
         if durability != "stable":
-            return False, "global_requires_stable"
-        if int(fact.importance or 0) < 75:
+            return False, "global_requires_stable_or_operational"
+        if int(fact.importance or 0) < _policy_int(policy, "global_knowledge_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_importance_threshold"])):
             return False, "importance_below_global_threshold"
-        if float(fact.confidence or 0.0) < 0.85:
+        if float(fact.confidence or 0.0) < _policy_float(policy, "global_knowledge_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_confidence_threshold"])):
             return False, "confidence_below_global_threshold"
         return True, "persisted"
 
     if durability not in {"stable", "operational"}:
         return False, f"durability_{durability}"
-    if int(fact.importance or 0) < int(policy["knowledge_importance_threshold"]):
+    if int(fact.importance or 0) < _policy_int(policy, "knowledge_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_importance_threshold"])):
         return False, "importance_below_threshold"
-    if float(fact.confidence or 0.0) < float(policy["knowledge_confidence_threshold"]):
+    if float(fact.confidence or 0.0) < _policy_float(policy, "knowledge_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_confidence_threshold"])):
         return False, "confidence_below_threshold"
     return True, "persisted"
 

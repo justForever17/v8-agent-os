@@ -4,7 +4,7 @@ import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 
-import { saveResponseToCache } from "@/src/lib/file-transfer";
+import { downloadUrlToUserSelectedFile } from "@/src/lib/file-transfer";
 import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -62,21 +62,22 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
             current.name || url,
             [
                 {
-                    text: t("保存到缓存", "Save to cache"),
+                    text: t("保存到系统文件夹", "Save to folder"),
                     onPress: () => {
                         void (async () => {
                             if (!url) {
                                 throw new Error(t("没有可保存的媒体地址", "No media URL is available to save."));
                             }
-                            const response = await fetch(url);
-                            if (!response.ok) {
-                                throw new Error(`${response.status} ${response.statusText}`);
-                            }
-                            const saved = await saveResponseToCache(response, {
+                            const saved = await downloadUrlToUserSelectedFile(url, {
                                 prefix: "media",
                                 filename: current.name,
                             });
-                            Alert.alert(t("已保存", "Saved"), saved.filename);
+                            Alert.alert(
+                                t("已保存", "Saved"),
+                                saved.userVisible
+                                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
+                                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
+                            );
                         })().catch((error) => {
                             Alert.alert(t("保存失败", "Save failed"), error instanceof Error ? error.message : t("无法保存媒体", "Unable to save media"));
                         });

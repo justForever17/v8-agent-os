@@ -4,7 +4,6 @@ import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { type AdminProcessRef } from "@v8/session-realtime";
-import Svg, { Path } from "react-native-svg";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -15,7 +14,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
+import { buildPhoneToolExecutionView } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
 import { formatClock } from "@/src/lib/time";
 import { resolveRenderableMediaUrl } from "@/src/lib/workspace-links";
@@ -39,34 +38,6 @@ function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode 
 
 function imageUrl(adminBaseUrl: string, value: string) {
     return resolveRenderableMediaUrl(adminBaseUrl, value);
-}
-
-function BubbleTail({
-    side,
-    fill,
-    stroke,
-}: {
-    side: "left" | "right";
-    fill: string;
-    stroke?: string;
-}) {
-    const isLeft = side === "left";
-    return (
-        <View pointerEvents="none" style={[styles.bubbleTailWrap, isLeft ? styles.bubbleTailWrapLeft : styles.bubbleTailWrapRight]}>
-            <Svg width={18} height={16} viewBox="0 0 18 16">
-                <Path
-                    d={isLeft
-                        ? "M16 1 C10 2 6 4 3.6 8.2 C2.8 9.8 2.1 11.7 1.6 14 C5.8 11.7 9.5 11.1 12.8 10 C15 9 16.2 6.2 16 1 Z"
-                        : "M2 1 C8 2 12 4 14.4 8.2 C15.2 9.8 15.9 11.7 16.4 14 C12.2 11.7 8.5 11.1 5.2 10 C3 9 1.8 6.2 2 1 Z"}
-                    fill={fill}
-                    stroke={stroke}
-                    strokeWidth={stroke ? 1 : 0}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                />
-            </Svg>
-        </View>
-    );
 }
 
 function AssistantWorkIndicator({
@@ -311,19 +282,12 @@ export const MessageBubble = memo(function MessageBubble({
     const rolePillBackground = message.agentType === "supervisor" ? "#FFF7ED" : palette.accentSoft;
     const rolePillBorder = message.agentType === "supervisor" ? "rgba(245,158,11,0.24)" : `${palette.accent}33`;
     const rolePillTextColor = message.agentType === "supervisor" ? "#D97706" : palette.accent;
-    const renderableNodes = useMemo(
-        () => getRenderablePhoneTimelineNodes(message.nodes),
+    const toolExecutionView = useMemo(
+        () => buildPhoneToolExecutionView(message.nodes),
         [message.nodes],
     );
-    const resultNodesByToolCallId = useMemo(() => {
-        const mapping = new Map<string, PhoneUiExecutionNode>();
-        for (const node of message.nodes || []) {
-            if (hasToolCallId(node) && node.executionType === "tool_result") {
-                mapping.set(node.toolCallId.trim(), node);
-            }
-        }
-        return mapping;
-    }, [message.nodes]);
+    const renderableNodes = toolExecutionView.renderableNodes;
+    const resultNodesByToolCallId = toolExecutionView.resultNodesByToolCallId;
     const hasStructuredNodes = renderableNodes.length > 0;
     const fallbackBlocks = useMemo(
         () => (hasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
@@ -531,7 +495,6 @@ export const MessageBubble = memo(function MessageBubble({
 
                                 <Text selectable style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
                             </LinearGradient>
-                            <BubbleTail side="right" fill={palette.accent} />
                         </View>
 
                         <View style={styles.footerRow}>
@@ -690,11 +653,6 @@ export const MessageBubble = memo(function MessageBubble({
 
                         </View>
                     </View>
-                    <BubbleTail
-                        side="left"
-                        fill={assistantEmptyActive ? `${palette.primary}08` : assistantBubbleBackground}
-                        stroke={assistantActive ? `${palette.primary}40` : assistantBubbleBorder}
-                    />
                 </View>
 
                 <View style={styles.footerRow}>
@@ -775,18 +733,6 @@ const styles = StyleSheet.create({
         elevation: 3,
         maxWidth: "100%",
         width: "100%",
-    },
-    bubbleTailWrap: {
-        position: "absolute",
-        top: 14,
-        width: 18,
-        height: 16,
-    },
-    bubbleTailWrapLeft: {
-        left: -12,
-    },
-    bubbleTailWrapRight: {
-        right: -5,
     },
     userMetaRow: {
         flexDirection: "row",

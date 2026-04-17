@@ -327,6 +327,122 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             [{"id": "tool_run_1", "name": "generate_image", "args": {"params": {"prompt": "雷电将军", "size": "1:1"}}}],
         )
 
+    async def test_tool_result_reuses_start_tool_call_id_from_raw_input(self):
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_start",
+                "run_id": "tool_run_callback",
+                "name": "generate_image",
+                "data": {
+                    "input": {
+                        "toolCallId": "call_original",
+                        "params": {"prompt": "雷电将军", "size": "1:1"},
+                    }
+                },
+            },
+        )
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_end",
+                "run_id": "tool_run_callback",
+                "name": "generate_image",
+                "data": {
+                    "output": SimpleNamespace(
+                        content='[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]',
+                        tool_call_id="call_provider_side",
+                    )
+                },
+            },
+        )
+
+        self.assertEqual([event["topic"] for event in self.chat_run.events], ["tool.started", "tool.finished"])
+        self.assertEqual(emitted[0]["tool"]["toolCallId"], "call_original")
+        self.assertEqual(emitted[0]["tool"]["result"]["imageCount"], 1)
+        self.assertEqual(self.stream_state.active_tool_call_ids, set())
+
+    async def test_unmatched_tool_result_skips_orphan_result_card(self):
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_end",
+                "run_id": "orphan_callback_run",
+                "name": "generate_image",
+                "data": {
+                    "output": SimpleNamespace(
+                        content="unexpected result",
+                        tool_call_id="call_orphan",
+                    )
+                },
+            },
+        )
+
+        self.assertEqual(emitted, [])
+        self.assertEqual(self.chat_run.events[-1]["topic"], "tool_result.unmatched")
+
+    async def test_ask_user_interrupt_uses_compact_tool_args(self):
+        self.chat_run.run_handle = SimpleNamespace(
+            request_ask_user_interaction=lambda request, assistant_message_id: {
+                "id": "ask_interaction_1",
+                "tool_call_id": request.get("toolCallId") or "call_ask_user",
+                "assistant_message_id": assistant_message_id,
+                "status": "pending",
+                "question": request.get("question"),
+                "prompt": request.get("prompt"),
+            }
+        )
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_chain_stream",
+                "run_id": "chain_interrupt",
+                "name": "SupervisorGraph",
+                "data": {
+                    "chunk": {
+                        "__interrupt__": [
+                            {
+                                "id": "interrupt_1",
+                                "value": {
+                                    "question": "请告诉我你要重点测试哪部分。",
+                                    "prompt": "请告诉我你要重点测试哪部分。",
+                                    "toolCallId": "call_ask_user",
+                                    "approvalKind": "ask_user",
+                                    "interactionKind": "ask_user",
+                                    "interruptId": "interrupt_1",
+                                },
+                            }
+                        ]
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(emitted[0]["tool"]["toolCallId"], "call_ask_user")
+        self.assertEqual(
+            emitted[0]["tool"]["args"],
+            {
+                "question": "请告诉我你要重点测试哪部分。",
+                "toolCallId": "call_ask_user",
+            },
+        )
+
+    def test_run_system_command_result_is_compacted_to_preview(self):
+        compacted = self.runtime._compact_tool_result_value(
+            "run_system_command",
+            "line 1\n" + ("line 2\n" * 600),
+        )
+
+        self.assertEqual(compacted["status"], "ok")
+        self.assertTrue(compacted["truncated"])
+        self.assertGreater(compacted["lineCount"], 100)
+
 
 if __name__ == "__main__":
     unittest.main()

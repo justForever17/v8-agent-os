@@ -342,12 +342,12 @@ export const MessageBubble = memo(function MessageBubble({
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText;
-    const horizontalBubbleLimit = Math.max(180, width - (isLandscape ? 232 : 134));
+    const horizontalBubbleLimit = Math.max(180, width - (isLandscape ? 220 : 118));
     const sharedTextBubbleWidth = Math.max(
         176,
         Math.min(
             horizontalBubbleLimit,
-            isLandscape ? 360 : 308,
+            isLandscape ? 376 : 324,
         ),
     );
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
@@ -454,7 +454,7 @@ export const MessageBubble = memo(function MessageBubble({
             <View style={styles.userRow}>
                 <View style={styles.userRowInner}>
                     <View style={[styles.userColumn, { width: userColumnWidth, maxWidth: userColumnWidth }]}>
-                        <Text style={[styles.userLabel, { color: palette.textMuted }]} numberOfLines={1}>
+                        <Text style={[styles.userLabel, { color: palette.text }]} numberOfLines={1}>
                             {userDisplayName || t("你", "You")}
                         </Text>
                         <LinearGradient
@@ -502,20 +502,23 @@ export const MessageBubble = memo(function MessageBubble({
                             <Text selectable style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
                         </LinearGradient>
 
-                        <View style={styles.actionRowUser}>
-                            {copyValue ? (
-                                <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => void handleCopy()}>
-                                    <MaterialCommunityIcons name={copied ? "check" : "content-copy"} size={15} color={copied ? palette.success : palette.textSoft} />
-                                </Pressable>
-                            ) : null}
-                            {onDelete ? (
-                                <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => onDelete(message)}>
-                                    <MaterialCommunityIcons name="trash-can-outline" size={15} color={palette.textSoft} />
-                                </Pressable>
-                            ) : null}
+                        <View style={styles.footerRow}>
+                            <Text style={[styles.timeLabel, styles.timeLabelUser, { color: palette.textSoft }]}>
+                                {message.timestamp ? formatClock(message.timestamp, locale) : ""}
+                            </Text>
+                            <View style={styles.footerActions}>
+                                {copyValue ? (
+                                    <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => void handleCopy()}>
+                                        <MaterialCommunityIcons name={copied ? "check" : "content-copy"} size={15} color={copied ? palette.success : palette.textSoft} />
+                                    </Pressable>
+                                ) : null}
+                                {onDelete ? (
+                                    <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => onDelete(message)}>
+                                        <MaterialCommunityIcons name="trash-can-outline" size={15} color={palette.textSoft} />
+                                    </Pressable>
+                                ) : null}
+                            </View>
                         </View>
-
-                        <Text style={[styles.timeLabelUser, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp, locale) : ""}</Text>
                         <MediaViewerLightbox
                             items={userMediaItems}
                             initialIndex={userMediaIndex}
@@ -657,20 +660,23 @@ export const MessageBubble = memo(function MessageBubble({
                     </View>
                 </View>
 
-                <View style={styles.actionRowAssistant}>
-                    {copyValue ? (
-                        <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => void handleCopy()}>
-                            <MaterialCommunityIcons name={copied ? "check" : "content-copy"} size={15} color={copied ? palette.success : palette.textSoft} />
-                        </Pressable>
-                    ) : null}
-                    {onDelete ? (
-                        <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => onDelete(message)}>
-                            <MaterialCommunityIcons name="trash-can-outline" size={15} color={palette.textSoft} />
-                        </Pressable>
-                    ) : null}
+                <View style={styles.footerRow}>
+                    <Text style={[styles.timeLabel, { color: palette.textSoft }]}>
+                        {message.timestamp ? formatClock(message.timestamp, locale) : ""}
+                    </Text>
+                    <View style={styles.footerActions}>
+                        {copyValue ? (
+                            <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => void handleCopy()}>
+                                <MaterialCommunityIcons name={copied ? "check" : "content-copy"} size={15} color={copied ? palette.success : palette.textSoft} />
+                            </Pressable>
+                        ) : null}
+                        {onDelete ? (
+                            <Pressable style={[styles.actionButtonGhost, { backgroundColor: assistantActionSurface, borderColor: palette.border }]} onPress={() => onDelete(message)}>
+                                <MaterialCommunityIcons name="trash-can-outline" size={15} color={palette.textSoft} />
+                            </Pressable>
+                        ) : null}
+                    </View>
                 </View>
-
-                <Text style={[styles.timeLabel, { color: palette.textSoft }]}>{message.timestamp ? formatClock(message.timestamp, locale) : ""}</Text>
             </View>
         </View>
     );
@@ -687,8 +693,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "flex-start",
         justifyContent: "flex-end",
-        gap: 12,
-        paddingLeft: 18,
+        gap: 10,
         minWidth: 0,
         maxWidth: "100%",
         width: "100%",
@@ -708,9 +713,11 @@ const styles = StyleSheet.create({
         alignItems: "flex-end",
     },
     userLabel: {
-        fontSize: 11,
-        fontWeight: "700",
+        fontSize: 14,
+        fontWeight: "900",
+        letterSpacing: -0.2,
         paddingRight: 2,
+        textAlign: "right",
     },
     userBubble: {
         borderRadius: 30,
@@ -755,19 +762,19 @@ const styles = StyleSheet.create({
         minWidth: 0,
         maxWidth: "100%",
     },
-    actionRowUser: {
+    footerRow: {
         flexDirection: "row",
-        justifyContent: "flex-end",
-        gap: 6,
-        paddingRight: 6,
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        paddingHorizontal: 2,
         width: "100%",
         maxWidth: "100%",
-        alignSelf: "flex-end",
     },
     assistantRow: {
         flexDirection: "row",
         alignItems: "flex-start",
-        gap: 12,
+        gap: 10,
         marginBottom: spacing.lg,
         minWidth: 0,
     },
@@ -987,11 +994,11 @@ const styles = StyleSheet.create({
         height: 86,
         borderRadius: 14,
     },
-    actionRowAssistant: {
+    footerActions: {
         flexDirection: "row",
         gap: 6,
         justifyContent: "flex-end",
-        paddingRight: 6,
+        alignItems: "center",
     },
     actionButtonGhost: {
         width: 26,
@@ -1003,10 +1010,10 @@ const styles = StyleSheet.create({
     },
     timeLabel: {
         fontSize: 11,
-        paddingHorizontal: 2,
+        paddingHorizontal: 0,
+        flexShrink: 1,
     },
     timeLabelUser: {
-        fontSize: 11,
-        paddingHorizontal: 2,
+        textAlign: "left",
     },
 });

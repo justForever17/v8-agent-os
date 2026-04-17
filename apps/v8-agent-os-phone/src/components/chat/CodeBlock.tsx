@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { WebView } from "react-native-webview";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -22,6 +23,9 @@ export const CodeBlock = memo(function CodeBlock({
     const { colors } = useUiPrefs();
     const resolvedContent = useMemo(() => String(value ?? content ?? ""), [content, value]);
     const [copied, setCopied] = useState(false);
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const normalizedLanguage = String(language || "text").trim().toLowerCase();
+    const htmlPreviewable = (normalizedLanguage === "html" || normalizedLanguage === "htm") && resolvedContent.trim().length > 0;
 
     useEffect(() => {
         if (!copied) {
@@ -42,25 +46,56 @@ export const CodeBlock = memo(function CodeBlock({
     return (
         <View style={[styles.wrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
             <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-                <Text style={[styles.language, { color: colors.textMuted }]}>{language || "text"}</Text>
-                <Pressable style={styles.copyButton} onPress={() => void handleCopy()}>
-                    <MaterialCommunityIcons
-                        name={copied ? "check" : "content-copy"}
-                        size={14}
-                        color={copied ? colors.success : colors.textMuted}
-                    />
-                    <Text style={[styles.copyLabel, { color: copied ? colors.success : colors.textMuted }]}>
-                        {copied ? "已复制" : "复制"}
-                    </Text>
-                </Pressable>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-                <View style={styles.codeStack}>
-                    <Text selectable style={[styles.text, { color: colors.textMuted }]}>
-                        {resolvedContent || " "}
-                    </Text>
+                <Text style={[styles.language, { color: colors.textMuted }]}>{normalizedLanguage || "text"}</Text>
+                <View style={styles.headerActions}>
+                    {htmlPreviewable ? (
+                        <Pressable style={styles.iconButton} onPress={() => setPreviewOpen(true)}>
+                            <MaterialCommunityIcons name="open-in-new" size={15} color={colors.textMuted} />
+                        </Pressable>
+                    ) : null}
+                    <Pressable style={styles.iconButton} onPress={() => void handleCopy()}>
+                        <MaterialCommunityIcons
+                            name={copied ? "check" : "content-copy"}
+                            size={15}
+                            color={copied ? colors.success : colors.textMuted}
+                        />
+                    </Pressable>
                 </View>
-            </ScrollView>
+            </View>
+            <View style={styles.viewport}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+                    <ScrollView
+                        nestedScrollEnabled
+                        showsVerticalScrollIndicator={false}
+                        style={styles.verticalScroll}
+                        contentContainerStyle={styles.codeStack}
+                    >
+                        <Text selectable style={[styles.text, { color: colors.textMuted }]}>
+                            {resolvedContent || " "}
+                        </Text>
+                    </ScrollView>
+                </ScrollView>
+            </View>
+            {htmlPreviewable ? (
+                <Modal visible={previewOpen} transparent animationType="fade" onRequestClose={() => setPreviewOpen(false)}>
+                    <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
+                        <Pressable style={StyleSheet.absoluteFill} onPress={() => setPreviewOpen(false)} />
+                        <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                            <View style={[styles.modalHeader, { backgroundColor: colors.surfaceStrong, borderBottomColor: colors.border }]}>
+                                <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
+                                    HTML 预览
+                                </Text>
+                                <Pressable style={styles.iconButton} onPress={() => setPreviewOpen(false)}>
+                                    <MaterialCommunityIcons name="close" size={18} color={colors.text} />
+                                </Pressable>
+                            </View>
+                            <View style={styles.previewWrap}>
+                                <WebView originWhitelist={["*"]} source={{ html: resolvedContent }} style={styles.previewWebview} />
+                            </View>
+                        </View>
+                    </View>
+                </Modal>
+            ) : null}
         </View>
     );
 });
@@ -87,19 +122,26 @@ const styles = StyleSheet.create({
         letterSpacing: 0.4,
         textTransform: "lowercase",
     },
-    copyButton: {
+    headerActions: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 5,
-        paddingVertical: 2,
+        gap: 8,
     },
-    copyLabel: {
-        fontSize: 11,
-        lineHeight: 14,
-        fontWeight: "700",
+    iconButton: {
+        width: 28,
+        height: 28,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    viewport: {
+        maxHeight: 236,
     },
     scrollContent: {
         minWidth: "100%",
+    },
+    verticalScroll: {
+        maxHeight: 236,
     },
     codeStack: {
         minWidth: "100%",
@@ -110,5 +152,40 @@ const styles = StyleSheet.create({
         fontSize: 12,
         lineHeight: 19,
         fontFamily: "monospace",
+    },
+    overlay: {
+        flex: 1,
+        justifyContent: "center",
+        paddingHorizontal: 12,
+        paddingVertical: 24,
+    },
+    modalCard: {
+        borderWidth: 1,
+        borderRadius: 22,
+        overflow: "hidden",
+        maxHeight: "90%",
+    },
+    modalHeader: {
+        minHeight: 52,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderBottomWidth: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: spacing.sm,
+    },
+    modalTitle: {
+        flex: 1,
+        fontSize: 14,
+        lineHeight: 18,
+        fontWeight: "700",
+    },
+    previewWrap: {
+        minHeight: 420,
+    },
+    previewWebview: {
+        minHeight: 420,
+        backgroundColor: "transparent",
     },
 });

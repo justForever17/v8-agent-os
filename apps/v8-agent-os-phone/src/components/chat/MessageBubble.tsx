@@ -4,6 +4,7 @@ import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { type AdminProcessRef } from "@v8/session-realtime";
+import Svg, { Path } from "react-native-svg";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -38,6 +39,34 @@ function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode 
 
 function imageUrl(adminBaseUrl: string, value: string) {
     return resolveRenderableMediaUrl(adminBaseUrl, value);
+}
+
+function BubbleTail({
+    side,
+    fill,
+    stroke,
+}: {
+    side: "left" | "right";
+    fill: string;
+    stroke?: string;
+}) {
+    const isLeft = side === "left";
+    return (
+        <View pointerEvents="none" style={[styles.bubbleTailWrap, isLeft ? styles.bubbleTailWrapLeft : styles.bubbleTailWrapRight]}>
+            <Svg width={18} height={16} viewBox="0 0 18 16">
+                <Path
+                    d={isLeft
+                        ? "M16 1 C10 2 6 4 3.6 8.2 C2.8 9.8 2.1 11.7 1.6 14 C5.8 11.7 9.5 11.1 12.8 10 C15 9 16.2 6.2 16 1 Z"
+                        : "M2 1 C8 2 12 4 14.4 8.2 C15.2 9.8 15.9 11.7 16.4 14 C12.2 11.7 8.5 11.1 5.2 10 C3 9 1.8 6.2 2 1 Z"}
+                    fill={fill}
+                    stroke={stroke}
+                    strokeWidth={stroke ? 1 : 0}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                />
+            </Svg>
+        </View>
+    );
 }
 
 function AssistantWorkIndicator({
@@ -342,12 +371,12 @@ export const MessageBubble = memo(function MessageBubble({
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText;
-    const horizontalBubbleLimit = Math.max(180, width - (isLandscape ? 220 : 118));
+    const horizontalBubbleLimit = Math.max(196, width - (isLandscape ? 176 : 76));
     const sharedTextBubbleWidth = Math.max(
         176,
         Math.min(
             horizontalBubbleLimit,
-            isLandscape ? 392 : 336,
+            isLandscape ? 412 : 353,
         ),
     );
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
@@ -457,50 +486,53 @@ export const MessageBubble = memo(function MessageBubble({
                         <Text style={[styles.userLabel, { color: palette.textMuted }]} numberOfLines={1}>
                             {userDisplayName || t("你", "You")}
                         </Text>
-                        <LinearGradient
-                            colors={[palette.primary, palette.accent]}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}
-                            style={[styles.userBubble, { shadowColor: palette.primaryDeep, width: userBubbleWidth, maxWidth: userBubbleWidth }]}
-                        >
-                            {(commandPresetName || skillReferences.length > 0 || taskPlanningMode) && (
-                                <View style={styles.userMetaRow}>
-                                    {commandPresetName ? (
-                                        <View style={styles.userChip}>
-                                            <Text style={styles.userChipText}>/{commandPresetName}</Text>
-                                        </View>
-                                    ) : null}
-                                    {skillReferences.map((skill) => (
-                                        <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
-                                            <Text style={styles.userChipText}>@{skill.name}</Text>
-                                        </View>
-                                    ))}
-                                    {taskPlanningMode ? (
-                                        <View style={styles.userChip}>
-                                            <Text style={styles.userChipText}>任务模式</Text>
-                                        </View>
-                                    ) : null}
-                                </View>
-                            )}
+                        <View style={[styles.userBubbleShell, { width: userBubbleWidth, maxWidth: userBubbleWidth }]}>
+                            <LinearGradient
+                                colors={[palette.primary, palette.accent]}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 1 }}
+                                style={[styles.userBubble, { shadowColor: palette.primaryDeep }]}
+                            >
+                                {(commandPresetName || skillReferences.length > 0 || taskPlanningMode) && (
+                                    <View style={styles.userMetaRow}>
+                                        {commandPresetName ? (
+                                            <View style={styles.userChip}>
+                                                <Text style={styles.userChipText}>/{commandPresetName}</Text>
+                                            </View>
+                                        ) : null}
+                                        {skillReferences.map((skill) => (
+                                            <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
+                                                <Text style={styles.userChipText}>@{skill.name}</Text>
+                                            </View>
+                                        ))}
+                                        {taskPlanningMode ? (
+                                            <View style={styles.userChip}>
+                                                <Text style={styles.userChipText}>任务模式</Text>
+                                            </View>
+                                        ) : null}
+                                    </View>
+                                )}
 
-                            {attachmentImages.length > 0 ? (
-                                <View style={styles.imageRow}>
-                                    {attachmentImages.map((url, index) => (
-                                        <Pressable
-                                            key={url}
-                                            onPress={() => {
-                                                setUserMediaIndex(index);
-                                                setUserMediaOpen(true);
-                                            }}
-                                        >
-                                            <Image source={{ uri: url }} style={styles.inlineImage} />
-                                        </Pressable>
-                                    ))}
-                                </View>
-                            ) : null}
+                                {attachmentImages.length > 0 ? (
+                                    <View style={styles.imageRow}>
+                                        {attachmentImages.map((url, index) => (
+                                            <Pressable
+                                                key={url}
+                                                onPress={() => {
+                                                    setUserMediaIndex(index);
+                                                    setUserMediaOpen(true);
+                                                }}
+                                            >
+                                                <Image source={{ uri: url }} style={styles.inlineImage} />
+                                            </Pressable>
+                                        ))}
+                                    </View>
+                                ) : null}
 
-                            <Text selectable style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
-                        </LinearGradient>
+                                <Text selectable style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
+                            </LinearGradient>
+                            <BubbleTail side="right" fill={palette.accent} />
+                        </View>
 
                         <View style={styles.footerRow}>
                             <Text style={[styles.timeLabel, styles.timeLabelUser, { color: palette.textSoft }]}>
@@ -658,6 +690,11 @@ export const MessageBubble = memo(function MessageBubble({
 
                         </View>
                     </View>
+                    <BubbleTail
+                        side="left"
+                        fill={assistantEmptyActive ? `${palette.primary}08` : assistantBubbleBackground}
+                        stroke={assistantActive ? `${palette.primary}40` : assistantBubbleBorder}
+                    />
                 </View>
 
                 <View style={styles.footerRow}>
@@ -720,9 +757,14 @@ const styles = StyleSheet.create({
         paddingRight: 1,
         textAlign: "right",
     },
+    userBubbleShell: {
+        alignSelf: "flex-end",
+        position: "relative",
+        overflow: "visible",
+    },
     userBubble: {
-        borderRadius: 22,
-        borderTopRightRadius: 9,
+        borderRadius: 18,
+        borderTopRightRadius: 5,
         paddingHorizontal: 17,
         paddingVertical: 15,
         overflow: "hidden",
@@ -733,6 +775,18 @@ const styles = StyleSheet.create({
         elevation: 3,
         maxWidth: "100%",
         width: "100%",
+    },
+    bubbleTailWrap: {
+        position: "absolute",
+        top: 14,
+        width: 18,
+        height: 16,
+    },
+    bubbleTailWrapLeft: {
+        left: -12,
+    },
+    bubbleTailWrapRight: {
+        right: -5,
     },
     userMetaRow: {
         flexDirection: "row",
@@ -863,8 +917,8 @@ const styles = StyleSheet.create({
         letterSpacing: 0.3,
     },
     assistantBubbleShell: {
-        borderRadius: 22,
-        borderTopLeftRadius: 9,
+        borderRadius: 18,
+        borderTopLeftRadius: 5,
         shadowColor: "#0F172A",
         shadowOpacity: 0.08,
         shadowRadius: 20,
@@ -883,8 +937,8 @@ const styles = StyleSheet.create({
     },
     assistantBubbleClip: {
         overflow: "hidden",
-        borderRadius: 22,
-        borderTopLeftRadius: 9,
+        borderRadius: 18,
+        borderTopLeftRadius: 5,
         borderWidth: 1,
         width: "100%",
     },

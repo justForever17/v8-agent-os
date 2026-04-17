@@ -1,3 +1,5 @@
+import "react-native-gesture-handler";
+
 import { Fragment, useEffect } from "react";
 import { Platform } from "react-native";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
@@ -5,6 +7,7 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import "react-native-reanimated";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { AppSessionProvider } from "@/src/providers/app-session";
@@ -68,9 +71,11 @@ export default function RootLayout() {
                     <AppNavigation />
                 </Fragment>
             ) : (
-                <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
-                    <AppNavigation />
-                </KeyboardProvider>
+                <GestureHandlerRootView style={{ flex: 1 }}>
+                    <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
+                        <AppNavigation />
+                    </KeyboardProvider>
+                </GestureHandlerRootView>
             )}
         </UiPrefsProvider>
     );

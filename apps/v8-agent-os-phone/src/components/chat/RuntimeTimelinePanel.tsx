@@ -3,13 +3,13 @@ import {
     FlatList,
     Modal,
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
 
 import { getRuntimeDockIcon } from "@/src/components/chat/RuntimeDock";
 import {
@@ -224,8 +224,10 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
 }) {
     const { colors, themeMode, t, locale } = useUiPrefs();
     const contentScrollRef = useRef<FlatList<PhoneRuntimeStageActivity> | null>(null);
-    const runtimeTabsScrollRef = useRef<ScrollView | null>(null);
+    const runtimeTabsScrollRef = useRef<GestureScrollView | null>(null);
     const shouldForceScrollTopRef = useRef(false);
+    const [tabsContainerWidth, setTabsContainerWidth] = useState(0);
+    const [tabsContentWidth, setTabsContentWidth] = useState(0);
     const effectiveSelectedRuntimeId = useMemo(
         () => (selectedRuntimeId && items.some((item) => item.id === selectedRuntimeId) ? selectedRuntimeId : (items[0]?.id ?? null)),
         [items, selectedRuntimeId],
@@ -239,6 +241,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         ? ["rgba(24,24,27,0.985)", "rgba(15,15,18,0.975)"]
         : ["rgba(255,255,255,0.98)", "rgba(247,244,238,0.97)"];
     const overlayColor = themeMode === "dark" ? "rgba(0,0,0,0.58)" : "rgba(15,23,42,0.38)";
+    const tabsOverflow = tabsContainerWidth > 0 && tabsContentWidth > tabsContainerWidth + 2;
     const visibleActivities = useMemo(() => {
         if (!effectiveSelectedRuntimeId) {
             return [];
@@ -289,6 +292,9 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     }, [effectiveSelectedRuntimeId, items.length, onSelectRuntime, selectedRuntimeId]);
 
     useEffect(() => {
+        if (!tabsOverflow) {
+            return;
+        }
         const selectedIndex = items.findIndex((item) => item.id === effectiveSelectedRuntimeId);
         if (selectedIndex < 0) {
             return;
@@ -298,7 +304,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         requestAnimationFrame(() => {
             runtimeTabsScrollRef.current?.scrollTo({ x: estimatedOffset, animated: true });
         });
-    }, [effectiveSelectedRuntimeId, items]);
+    }, [effectiveSelectedRuntimeId, items, tabsOverflow]);
 
     useEffect(() => {
         if (!visible) {
@@ -379,46 +385,97 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             </Pressable>
                         </View>
 
-                        <View style={styles.tabsWrap}>
-                            <ScrollView
-                                ref={runtimeTabsScrollRef}
-                                horizontal
-                                scrollEnabled
-                                nestedScrollEnabled
-                                directionalLockEnabled
-                                showsHorizontalScrollIndicator={false}
-                                keyboardShouldPersistTaps="handled"
-                                overScrollMode="never"
-                                contentContainerStyle={styles.tabsRow}
-                                onStartShouldSetResponderCapture={() => true}
-                                onMoveShouldSetResponderCapture={() => true}
-                            >
-                                {items.map((item) => (
-                                    <Pressable
-                                        key={item.id}
-                                        style={[
-                                            styles.tabButton,
-                                            { backgroundColor: colors.surfaceStrong, borderColor: colors.border },
-                                            item.id === effectiveSelectedRuntimeId && {
-                                                backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)",
-                                                borderColor: "rgba(245,158,11,0.34)",
-                                                shadowColor: "#F59E0B",
-                                            },
-                                        ]}
-                                        onPress={() => onSelectRuntime(item.id)}
-                                    >
-                                        {(() => {
-                                            const Icon = getRuntimeDockIcon(item.id);
-                                            return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
-                                        })()}
-                                        {item.eventCount > 0 ? (
-                                            <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
-                                                <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
-                                            </View>
-                                        ) : null}
-                                    </Pressable>
-                                ))}
-                            </ScrollView>
+                        <View
+                            style={styles.tabsWrap}
+                            onLayout={(event) => {
+                                const nextWidth = Math.round(event.nativeEvent.layout.width);
+                                if (nextWidth !== tabsContainerWidth) {
+                                    setTabsContainerWidth(nextWidth);
+                                }
+                            }}
+                        >
+                            {tabsOverflow ? (
+                                <GestureScrollView
+                                    ref={runtimeTabsScrollRef}
+                                    horizontal
+                                    scrollEnabled
+                                    nestedScrollEnabled
+                                    directionalLockEnabled
+                                    showsHorizontalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="handled"
+                                    overScrollMode="never"
+                                    scrollEventThrottle={16}
+                                    contentContainerStyle={[styles.tabsRow, styles.tabsRowScrollable]}
+                                    onContentSizeChange={(width) => {
+                                        const nextWidth = Math.round(width);
+                                        if (nextWidth !== tabsContentWidth) {
+                                            setTabsContentWidth(nextWidth);
+                                        }
+                                    }}
+                                >
+                                    {items.map((item) => (
+                                        <Pressable
+                                            key={item.id}
+                                            style={[
+                                                styles.tabButton,
+                                                { backgroundColor: colors.surfaceStrong, borderColor: colors.border },
+                                                item.id === effectiveSelectedRuntimeId && {
+                                                    backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)",
+                                                    borderColor: "rgba(245,158,11,0.34)",
+                                                    shadowColor: "#F59E0B",
+                                                },
+                                            ]}
+                                            onPress={() => onSelectRuntime(item.id)}
+                                        >
+                                            {(() => {
+                                                const Icon = getRuntimeDockIcon(item.id);
+                                                return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
+                                            })()}
+                                            {item.eventCount > 0 ? (
+                                                <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
+                                                    <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
+                                                </View>
+                                            ) : null}
+                                        </Pressable>
+                                    ))}
+                                </GestureScrollView>
+                            ) : (
+                                <View
+                                    style={[styles.tabsRow, styles.tabsRowCentered]}
+                                    onLayout={(event) => {
+                                        const nextWidth = Math.round(event.nativeEvent.layout.width);
+                                        if (nextWidth !== tabsContentWidth) {
+                                            setTabsContentWidth(nextWidth);
+                                        }
+                                    }}
+                                >
+                                    {items.map((item) => (
+                                        <Pressable
+                                            key={item.id}
+                                            style={[
+                                                styles.tabButton,
+                                                { backgroundColor: colors.surfaceStrong, borderColor: colors.border },
+                                                item.id === effectiveSelectedRuntimeId && {
+                                                    backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,247,237,0.96)",
+                                                    borderColor: "rgba(245,158,11,0.34)",
+                                                    shadowColor: "#F59E0B",
+                                                },
+                                            ]}
+                                            onPress={() => onSelectRuntime(item.id)}
+                                        >
+                                            {(() => {
+                                                const Icon = getRuntimeDockIcon(item.id);
+                                                return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
+                                            })()}
+                                            {item.eventCount > 0 ? (
+                                                <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
+                                                    <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
+                                                </View>
+                                            ) : null}
+                                        </Pressable>
+                                    ))}
+                                </View>
+                            )}
                         </View>
 
                         <FlatList
@@ -539,8 +596,13 @@ const styles = StyleSheet.create({
         paddingHorizontal: 8,
         gap: 6,
         alignItems: "center",
+    },
+    tabsRowCentered: {
         justifyContent: "center",
         minWidth: "100%",
+    },
+    tabsRowScrollable: {
+        justifyContent: "flex-start",
     },
     tabButton: {
         width: 32,

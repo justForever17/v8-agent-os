@@ -1,7 +1,8 @@
 import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
+import { Animated, Easing, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Blocks, Bot, Cpu, Database, Globe, RadioTower, Shield, TerminalSquare, Workflow } from "lucide-react-native";
+import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageCard } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -198,7 +199,7 @@ export const RuntimeDock = memo(function RuntimeDock({
 }) {
     const { colors, themeMode } = useUiPrefs();
     const dark = themeMode === "dark";
-    const scrollRef = useRef<ScrollView | null>(null);
+    const scrollRef = useRef<GestureScrollView | null>(null);
     const itemLayoutsRef = useRef<Record<string, { x: number; width: number }>>({});
     const [containerWidth, setContainerWidth] = useState(0);
 
@@ -240,7 +241,7 @@ export const RuntimeDock = memo(function RuntimeDock({
                 }
             }}
         >
-            <ScrollView
+            <GestureScrollView
                 ref={scrollRef}
                 style={styles.scroll}
                 horizontal
@@ -249,7 +250,8 @@ export const RuntimeDock = memo(function RuntimeDock({
                 showsHorizontalScrollIndicator={false}
                 overScrollMode="never"
                 directionalLockEnabled
-                keyboardShouldPersistTaps="always"
+                keyboardShouldPersistTaps="handled"
+                scrollEventThrottle={16}
                 contentContainerStyle={styles.scrollContent}
             >
                 {leadingAccessory ? <View style={styles.leadingAccessory}>{leadingAccessory}</View> : null}
@@ -267,7 +269,7 @@ export const RuntimeDock = memo(function RuntimeDock({
                         />
                     );
                 })}
-            </ScrollView>
+            </GestureScrollView>
         </View>
     );
 });

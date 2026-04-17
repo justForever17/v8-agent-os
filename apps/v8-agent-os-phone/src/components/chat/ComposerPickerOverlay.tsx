@@ -1,6 +1,5 @@
 import { memo, useMemo } from "react";
 import {
-    FlatList,
     Pressable,
     StyleSheet,
     Text,
@@ -8,6 +7,7 @@ import {
     useWindowDimensions,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { FlatList as GestureFlatList } from "react-native-gesture-handler";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -90,58 +90,69 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
         <View
             style={[
                 position === "absolute"
-                    ? [
-                        styles.overlay,
-                        {
-                            left,
-                            right,
-                            bottom,
-                        },
-                    ]
+                    ? styles.overlay
                     : styles.inlineOverlay,
             ]}
-            pointerEvents="auto"
+            pointerEvents={position === "absolute" ? "box-none" : "auto"}
         >
+            {position === "absolute" ? (
+                <Pressable style={StyleSheet.absoluteFill} onPress={() => {}} />
+            ) : null}
             <View
                 style={[
-                    styles.panel,
-                    {
-                        backgroundColor: colors.surfaceStrong,
-                        borderColor: colors.border,
-                        shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
-                    },
+                    position === "absolute"
+                        ? [
+                            styles.panelAnchor,
+                            {
+                                left,
+                                right,
+                                bottom,
+                            },
+                        ]
+                        : styles.inlinePanelAnchor,
                 ]}
-                onStartShouldSetResponderCapture={() => true}
-                onMoveShouldSetResponderCapture={() => true}
+                pointerEvents="box-none"
             >
-                <Text style={[styles.hint, { color: colors.textMuted }]}>
-                    {isCommand
-                        ? t("输入 / 选择命令预设", "Type / to choose a preset")
-                        : t("输入 @ 选择一个或多个 Skill", "Type @ to choose one or more skills")}
-                </Text>
+                <View
+                    style={[
+                        styles.panel,
+                        {
+                            backgroundColor: colors.surfaceStrong,
+                            borderColor: colors.border,
+                            shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
+                        },
+                    ]}
+                    pointerEvents="auto"
+                >
+                    <Text style={[styles.hint, { color: colors.textMuted }]}>
+                        {isCommand
+                            ? t("输入 / 选择命令预设", "Type / to choose a preset")
+                            : t("输入 @ 选择一个或多个 Skill", "Type @ to choose one or more skills")}
+                    </Text>
 
-                <View style={[styles.viewport, { height: viewportHeight }]}>
-                    <FlatList
-                        data={data}
-                        keyExtractor={(item) => isCommand ? item.name : `${item.name}:${item.path || ""}`}
-                        renderItem={isCommand ? renderCommandItem : renderSkillItem}
-                        scrollEnabled
-                        nestedScrollEnabled
-                        persistentScrollbar
-                        keyboardShouldPersistTaps="always"
-                        keyboardDismissMode="none"
-                        showsVerticalScrollIndicator
-                        overScrollMode="never"
-                        removeClippedSubviews={false}
-                        contentContainerStyle={styles.listContent}
-                        ListEmptyComponent={(
-                            <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-                                {isCommand
-                                    ? t("没有匹配的命令预设", "No matching presets")
-                                    : t("没有匹配的 Skill", "No matching skills")}
-                            </Text>
-                        )}
-                    />
+                    <View style={[styles.viewport, { height: viewportHeight }]}>
+                        <GestureFlatList
+                            data={data}
+                            keyExtractor={(item) => isCommand ? item.name : `${item.name}:${item.path || ""}`}
+                            renderItem={isCommand ? renderCommandItem : renderSkillItem}
+                            scrollEnabled
+                            nestedScrollEnabled
+                            persistentScrollbar
+                            keyboardShouldPersistTaps="handled"
+                            keyboardDismissMode="none"
+                            showsVerticalScrollIndicator
+                            overScrollMode="never"
+                            removeClippedSubviews={false}
+                            contentContainerStyle={styles.listContent}
+                            ListEmptyComponent={(
+                                <Text style={[styles.emptyText, { color: colors.textMuted }]}>
+                                    {isCommand
+                                        ? t("没有匹配的命令预设", "No matching presets")
+                                        : t("没有匹配的 Skill", "No matching skills")}
+                                </Text>
+                            )}
+                        />
+                    </View>
                 </View>
             </View>
         </View>
@@ -150,7 +161,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
 
 const styles = StyleSheet.create({
     overlay: {
-        position: "absolute",
+        ...StyleSheet.absoluteFillObject,
         zIndex: 32,
         elevation: 32,
     },
@@ -158,6 +169,12 @@ const styles = StyleSheet.create({
         width: "100%",
         zIndex: 32,
         elevation: 32,
+    },
+    panelAnchor: {
+        position: "absolute",
+    },
+    inlinePanelAnchor: {
+        width: "100%",
     },
     panel: {
         borderRadius: 22,

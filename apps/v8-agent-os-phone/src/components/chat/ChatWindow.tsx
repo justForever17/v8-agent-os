@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
     },
     messagesShell: {
         flex: 1,
-        marginHorizontal: 6,
+        marginHorizontal: 4,
         borderRadius: 28,
         borderWidth: 1,
         overflow: "hidden",
@@ -341,13 +341,13 @@ const styles = StyleSheet.create({
         width: "100%",
         maxWidth: 760,
         alignSelf: "center",
-        paddingHorizontal: 10,
+        paddingHorizontal: 8,
         paddingTop: 8,
         paddingBottom: 180,
     },
     messagesContentLandscape: {
         maxWidth: 860,
-        paddingHorizontal: 16,
+        paddingHorizontal: 14,
         paddingBottom: 148,
     },
     messagesContentEmpty: {

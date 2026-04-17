@@ -9,6 +9,7 @@ import { MermaidRenderer } from "@/src/components/chat/MermaidRenderer";
 import { ImagePreview, MediaPlayer } from "@/src/components/chat/MediaRenderers";
 import { ModelViewer } from "@/src/components/chat/ModelViewer";
 import { HTMLFileCard } from "@/src/components/chat/HTMLFileCard";
+import { PDFFileCard } from "@/src/components/chat/PDFFileCard";
 import { PPTCard } from "@/src/components/chat/PPTCard";
 import { ThinkingCard } from "@/src/components/chat/ThinkingCard";
 import { ToolCard } from "@/src/components/chat/ToolCard";
@@ -77,6 +78,25 @@ function inferArtifactMediaKind(artifact: Record<string, unknown>, src: string) 
     }
     if (probe.includes("audio/") || /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i.test(src)) {
         return "audio" as const;
+    }
+    return null;
+}
+
+function inferArtifactDocumentKind(artifact: Record<string, unknown>, src: string) {
+    const kind = String(artifact.kind || "").trim().toLowerCase();
+    const mimeType = String(artifact.mimeType || artifact.mime_type || "").trim().toLowerCase();
+    const title = artifactDisplayTitle(artifact).toLowerCase();
+    const probe = `${kind} ${mimeType} ${title} ${src}`.toLowerCase();
+    if (probe.includes("application/pdf") || /\.pdf(\?.*)?$/i.test(src) || /\.pdf$/i.test(title)) {
+        return "pdf" as const;
+    }
+    if (
+        probe.includes("text/html")
+        || probe.includes("application/xhtml+xml")
+        || /\.html?(\?.*)?$/i.test(src)
+        || /\.html?$/i.test(title)
+    ) {
+        return "html" as const;
     }
     return null;
 }
@@ -197,6 +217,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         const src = mediaCandidates[0] || "";
         const title = artifactDisplayTitle(artifact);
         const mediaKind = inferArtifactMediaKind(artifact, src || rawSrc);
+        const documentKind = inferArtifactDocumentKind(artifact, src || rawSrc);
         if (!src) {
             return (
                 <UnresolvedResourceCard
@@ -210,6 +231,12 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         }
         if (mediaKind === "video" || mediaKind === "audio") {
             return <MediaPlayer src={src} type={mediaKind} title={title} candidates={mediaCandidates} />;
+        }
+        if (documentKind === "pdf") {
+            return <PDFFileCard url={src} filename={title} />;
+        }
+        if (documentKind === "html") {
+            return <HTMLFileCard url={src} filename={title} />;
         }
         return (
             <Card style={styles.executionCard}>
@@ -346,6 +373,21 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         ) : (
             <UnresolvedResourceCard
                 title={t("HTML 文件暂不可打开", "HTML file unavailable")}
+                subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
+            />
+        );
+    }
+
+    if (block.type === "file-pdf") {
+        const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || "").trim());
+        return url ? (
+            <PDFFileCard
+                url={url}
+                filename={typeof block.data?.filename === "string" ? block.data.filename : undefined}
+            />
+        ) : (
+            <UnresolvedResourceCard
+                title={t("PDF 文件暂不可打开", "PDF unavailable")}
                 subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
             />
         );

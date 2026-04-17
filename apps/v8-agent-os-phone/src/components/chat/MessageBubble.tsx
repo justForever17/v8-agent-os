@@ -347,7 +347,7 @@ export const MessageBubble = memo(function MessageBubble({
         176,
         Math.min(
             horizontalBubbleLimit,
-            isLandscape ? 376 : 324,
+            isLandscape ? 392 : 336,
         ),
     );
     const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
@@ -454,7 +454,7 @@ export const MessageBubble = memo(function MessageBubble({
             <View style={styles.userRow}>
                 <View style={styles.userRowInner}>
                     <View style={[styles.userColumn, { width: userColumnWidth, maxWidth: userColumnWidth }]}>
-                        <Text style={[styles.userLabel, { color: palette.text }]} numberOfLines={1}>
+                        <Text style={[styles.userLabel, { color: palette.textMuted }]} numberOfLines={1}>
                             {userDisplayName || t("你", "You")}
                         </Text>
                         <LinearGradient
@@ -556,7 +556,7 @@ export const MessageBubble = memo(function MessageBubble({
 
             <View style={[styles.assistantColumn, assistantColumnWidthStyle]}>
                 <View style={styles.agentMeta}>
-                    <Text style={[styles.agentName, { color: palette.text }]} numberOfLines={1}>{resolvedAgentName}</Text>
+                    <Text style={[styles.agentName, { color: palette.textMuted }]} numberOfLines={1}>{resolvedAgentName}</Text>
                     {resolvedAgentRoleLabel ? (
                         <View style={[styles.rolePill, { backgroundColor: rolePillBackground, borderColor: rolePillBorder }]}>
                             <Text style={[styles.rolePillText, { color: rolePillTextColor }]}>{resolvedAgentRoleLabel}</Text>
@@ -693,7 +693,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "flex-start",
         justifyContent: "flex-end",
-        gap: 10,
+        gap: 8,
         minWidth: 0,
         maxWidth: "100%",
         width: "100%",
@@ -702,28 +702,29 @@ const styles = StyleSheet.create({
     userColumn: {
         minWidth: 0,
         flexShrink: 1,
-        alignItems: "flex-end",
+        alignItems: "stretch",
         gap: 7,
         maxWidth: "100%",
         overflow: "hidden",
     },
     userAvatarShell: {
-        width: 42,
+        width: 36,
         paddingTop: 2,
         alignItems: "flex-end",
     },
     userLabel: {
-        fontSize: 14,
-        fontWeight: "900",
-        letterSpacing: -0.2,
-        paddingRight: 2,
+        fontSize: 13,
+        lineHeight: 18,
+        fontWeight: "700",
+        letterSpacing: -0.1,
+        paddingRight: 1,
         textAlign: "right",
     },
     userBubble: {
-        borderRadius: 30,
-        borderTopRightRadius: 12,
-        paddingHorizontal: 18,
-        paddingVertical: 16,
+        borderRadius: 22,
+        borderTopRightRadius: 9,
+        paddingHorizontal: 17,
+        paddingVertical: 15,
         overflow: "hidden",
         alignSelf: "flex-end",
         shadowOpacity: 0.16,
@@ -774,12 +775,12 @@ const styles = StyleSheet.create({
     assistantRow: {
         flexDirection: "row",
         alignItems: "flex-start",
-        gap: 10,
+        gap: 8,
         marginBottom: spacing.lg,
         minWidth: 0,
     },
     avatarShell: {
-        width: 42,
+        width: 36,
         paddingTop: 2,
         position: "relative",
     },
@@ -805,9 +806,9 @@ const styles = StyleSheet.create({
         borderRadius: 999,
     },
     avatar: {
-        width: 42,
-        height: 42,
-        borderRadius: 21,
+        width: 36,
+        height: 36,
+        borderRadius: 18,
     },
     avatarFallback: {
         alignItems: "center",
@@ -826,8 +827,8 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 7,
-        paddingLeft: 2,
-        minHeight: 26,
+        paddingLeft: 1,
+        minHeight: 24,
         flexWrap: "wrap",
     },
     streamPill: {
@@ -845,9 +846,10 @@ const styles = StyleSheet.create({
         letterSpacing: 0.2,
     },
     agentName: {
-        fontSize: 14,
-        fontWeight: "900",
-        letterSpacing: -0.2,
+        fontSize: 13,
+        lineHeight: 18,
+        fontWeight: "700",
+        letterSpacing: -0.1,
     },
     rolePill: {
         borderRadius: radii.pill,
@@ -861,7 +863,7 @@ const styles = StyleSheet.create({
         letterSpacing: 0.3,
     },
     assistantBubbleShell: {
-        borderRadius: 24,
+        borderRadius: 22,
         borderTopLeftRadius: 9,
         shadowColor: "#0F172A",
         shadowOpacity: 0.08,
@@ -881,7 +883,7 @@ const styles = StyleSheet.create({
     },
     assistantBubbleClip: {
         overflow: "hidden",
-        borderRadius: 24,
+        borderRadius: 22,
         borderTopLeftRadius: 9,
         borderWidth: 1,
         width: "100%",

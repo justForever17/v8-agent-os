@@ -14,7 +14,7 @@ import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
-export const HTMLFileCard = memo(function HTMLFileCard({
+export const PDFFileCard = memo(function PDFFileCard({
     url,
     filename,
     filesize,
@@ -34,15 +34,20 @@ export const HTMLFileCard = memo(function HTMLFileCard({
         }
     }, [url]);
 
-    const displayFilename = filename || decodeURIComponent(url.split("/").pop()?.split("?")[0] || "document.html");
-    const displaySize = filesize || "HTML";
+    const viewerUrl = useMemo(
+        () => `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(safeUrl)}`,
+        [safeUrl],
+    );
+
+    const displayFilename = filename || decodeURIComponent(url.split("/").pop()?.split("?")[0] || "document.pdf");
+    const displaySize = filesize || "PDF";
 
     return (
         <>
             <Card style={styles.card}>
                 <CardContent style={styles.cardContent}>
-                    <View style={[styles.iconBox, { backgroundColor: "rgba(59,130,246,0.12)" }]}>
-                        <MaterialCommunityIcons name="view-dashboard-outline" size={26} color="#2563EB" />
+                    <View style={[styles.iconBox, { backgroundColor: "rgba(220,38,38,0.12)" }]}>
+                        <MaterialCommunityIcons name="file-pdf-box" size={26} color="#DC2626" />
                     </View>
 
                     <View style={styles.meta}>
@@ -69,8 +74,8 @@ export const HTMLFileCard = memo(function HTMLFileCard({
                     <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                         <View style={[styles.modalHeader, { borderBottomColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
                             <View style={styles.modalTitleWrap}>
-                                <View style={[styles.modalIconBox, { backgroundColor: "rgba(59,130,246,0.12)" }]}>
-                                    <MaterialCommunityIcons name="view-dashboard-outline" size={18} color="#2563EB" />
+                                <View style={[styles.modalIconBox, { backgroundColor: "rgba(220,38,38,0.12)" }]}>
+                                    <MaterialCommunityIcons name="file-pdf-box" size={18} color="#DC2626" />
                                 </View>
                                 <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
                                     {displayFilename}
@@ -80,16 +85,13 @@ export const HTMLFileCard = memo(function HTMLFileCard({
                                 <Button variant="outline" size="sm" onPress={() => void Linking.openURL(safeUrl)}>
                                     {t("下载", "Download")}
                                 </Button>
-                                <Button variant="outline" size="sm" onPress={() => void Linking.openURL(safeUrl)}>
-                                    {t("打开", "Open")}
-                                </Button>
                                 <Button variant="ghost" size="icon" onPress={() => setIsOpen(false)}>
                                     <MaterialCommunityIcons name="close" size={18} color={colors.text} />
                                 </Button>
                             </View>
                         </View>
                         <View style={styles.viewerWrap}>
-                            <WebView source={{ uri: safeUrl }} style={styles.webview} />
+                            <WebView source={{ uri: viewerUrl }} style={styles.webview} />
                         </View>
                     </View>
                 </View>

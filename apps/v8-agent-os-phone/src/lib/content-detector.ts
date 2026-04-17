@@ -11,6 +11,7 @@ export type PhoneContentBlockType =
     | "model-3d"
     | "file-ppt"
     | "file-html"
+    | "file-pdf"
     | "text"
     | "markdown";
 
@@ -99,6 +100,46 @@ function pushPlainTextBlock(blocks: PhoneContentBlock[], content: string, blockI
         type: text.includes("```") ? "markdown" : "text",
         content: text,
     });
+}
+
+function tryParseDocumentLinkBlock(content: string) {
+    const raw = String(content || "").trim();
+    if (!raw) {
+        return null;
+    }
+
+    const markdownMatch = raw.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    const inlineCodeMatch = raw.match(/^`([^`\s]+)`$/);
+    const bareLinkMatch = raw.match(/^(https?:\/\/\S+|\/\S+|downloaded_media\/\S+)$/);
+    const href = String(markdownMatch?.[2] || inlineCodeMatch?.[1] || bareLinkMatch?.[1] || "").trim();
+    if (!href) {
+        return null;
+    }
+    const filename = String(markdownMatch?.[1] || href.split("/").pop()?.split("?")[0] || "").trim();
+
+    if (/\.html?(\?.*)?$/i.test(href)) {
+        return {
+            type: "file-html" as const,
+            content: href,
+            data: {
+                url: href,
+                filename: filename || "document.html",
+            },
+        };
+    }
+
+    if (/\.pdf(\?.*)?$/i.test(href)) {
+        return {
+            type: "file-pdf" as const,
+            content: href,
+            data: {
+                url: href,
+                filename: filename || "document.pdf",
+            },
+        };
+    }
+
+    return null;
 }
 
 function parseInlineMediaTag(raw: string) {
@@ -282,7 +323,26 @@ export function parsePhoneContentBlocks(content: string, isStreaming = false, st
         pushTextBlock(blocks, processedContent.slice(lastIndex), blockIndex);
     }
 
-    return blocks.filter((block) => String(block.content || "").trim());
+    const finalBlocks: PhoneContentBlock[] = [];
+    for (const block of blocks) {
+        if (block.type === "text" || block.type === "markdown") {
+            const parsedDocument = tryParseDocumentLinkBlock(block.content);
+            if (parsedDocument) {
+                finalBlocks.push({
+                    id: `${parsedDocument.type}-${blockIndex.current++}`,
+                    type: parsedDocument.type,
+                    content: parsedDocument.content,
+                    data: parsedDocument.data,
+                });
+                continue;
+            }
+        }
+        if (String(block.content || "").trim()) {
+            finalBlocks.push(block);
+        }
+    }
+
+    return finalBlocks;
 }
 
 export function hasCompleteVoiceBlock(content: string) {

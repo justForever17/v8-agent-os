@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from erc.models import ApprovalRequest
@@ -17,8 +18,99 @@ class CommandService:
         # silently auto-approved by default policy.
         return False
 
+    def _operation_fingerprint(self, request: Dict[str, Any] | None) -> str:
+        if not isinstance(request, dict):
+            return ""
+        return str(
+            request.get("operationFingerprint")
+            or request.get("operation_fingerprint")
+            or ""
+        ).strip()
+
+    def _operation_target_fingerprint(self, request: Dict[str, Any] | None) -> str:
+        if not isinstance(request, dict):
+            return ""
+        return str(
+            request.get("operationTargetFingerprint")
+            or request.get("operation_target_fingerprint")
+            or ""
+        ).strip()
+
+    def _find_existing_pending_approval(self, request: ApprovalRequest) -> Optional[Dict[str, Any]]:
+        fingerprint = self._operation_fingerprint(request.request)
+        target_fingerprint = self._operation_target_fingerprint(request.request)
+        candidates = {fingerprint, target_fingerprint}
+        candidates.discard("")
+        if not candidates:
+            return None
+        from core.database import db
+
+        for approval in db.list_pending_approvals(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            status="pending",
+        ):
+            if str(approval.get("approval_kind") or "") != str(request.approval_kind or ""):
+                continue
+            approval_candidates = {
+                self._operation_fingerprint(approval.get("request")),
+                self._operation_target_fingerprint(approval.get("request")),
+            }
+            approval_candidates.discard("")
+            if candidates.intersection(approval_candidates):
+                return approval
+        return None
+
+    def _remember_approved_operation(self, approval: Dict[str, Any], response: Optional[Dict[str, Any]]) -> None:
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        fingerprint = self._operation_fingerprint(request)
+        run_id = str(approval.get("run_id") or "").strip()
+        if not fingerprint or not run_id:
+            return
+        run_record = run_service.get_run(run_id)
+        if not run_record:
+            return
+        metadata = dict(run_record.get("metadata") or {})
+        operations = metadata.get("approvedSafetyOperations")
+        if not isinstance(operations, list):
+            operations = []
+        operations = [
+            item for item in operations
+            if not (isinstance(item, dict) and str(item.get("fingerprint") or "") == fingerprint)
+        ]
+        operations.append({
+            "fingerprint": fingerprint,
+            "targetFingerprint": self._operation_target_fingerprint(request),
+            "approval_id": approval.get("id") or approval.get("approval_id"),
+            "approval_kind": approval.get("approval_kind"),
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "response": response or approval.get("response") or {},
+            "request": {
+                "riskCode": request.get("riskCode"),
+                "runtimeKind": request.get("runtimeKind"),
+                "toolCallId": request.get("toolCallId"),
+            },
+        })
+        run_service.update_metadata(run_id, {"approvedSafetyOperations": operations[-100:]})
+
     def request_approval(self, request: ApprovalRequest) -> Dict[str, Any]:
         from core.database import db
+
+        existing = self._find_existing_pending_approval(request)
+        if existing:
+            return {
+                "approval_id": existing.get("id") or existing.get("approval_id"),
+                "session_id": existing.get("session_id"),
+                "run_id": existing.get("run_id"),
+                "approval_kind": existing.get("approval_kind"),
+                "status": existing.get("status") or "pending",
+                "request": existing.get("request") or {},
+                "response": existing.get("response"),
+                "expires_at": existing.get("expires_at"),
+                "autoApproved": False,
+                "policySource": "existing_pending",
+                "reusedPendingApproval": True,
+            }
 
         auto_approved = self._should_auto_approve(request.approval_kind)
         status = "approved" if auto_approved else "pending"
@@ -59,6 +151,8 @@ class CommandService:
 
         db.update_pending_approval(approval_id, status="approved", response=response)
         approval = db.get_pending_approval(approval_id)
+        if approval:
+            self._remember_approved_operation(approval, response)
         if approval and approval.get("run_id"):
             self.clear_control_signal(approval["run_id"])
         return approval

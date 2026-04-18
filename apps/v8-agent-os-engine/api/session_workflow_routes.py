@@ -185,7 +185,7 @@ async def get_sessions():
                 "currentStepKey": row.get("currentStepKey"),
                 "currentStepTitle": row.get("currentStepTitle"),
                 "currentStepStatus": row.get("stepStatus"),
-                "updatedAt": row.get("workflowUpdatedAt") or row.get("lastActivityAt"),
+                "updatedAt": row.get("workflowUpdatedAt") or row.get("updated_at"),
             }
             run_record = db.get_run_record(workflow_view.get("rootRunId")) if workflow_view.get("rootRunId") else None
             session_source = _derive_session_source(row, run_record)

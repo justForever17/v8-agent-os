@@ -176,12 +176,13 @@ export async function streamSseWithXmlHttpRequest(options: {
     headers?: Record<string, string>;
     signal?: AbortSignal;
     onEvent: StreamEventHandler;
+    onHeaders?: (headers: Record<string, string>) => void;
 }) {
     if (typeof XMLHttpRequest !== "function") {
         throw buildStreamError("当前环境不支持原生实时事件流");
     }
 
-    const { url, headers, signal, onEvent } = options;
+    const { url, headers, signal, onEvent, onHeaders } = options;
 
     const flushBuffer = (raw: string) => {
         const chunks = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n\n");
@@ -220,6 +221,7 @@ export async function streamSseWithXmlHttpRequest(options: {
         const xhr = new XMLHttpRequest();
         let settled = false;
         let aborted = false;
+        let headersEmitted = false;
         let responseCursor = 0;
         let buffer = "";
 
@@ -253,6 +255,28 @@ export async function streamSseWithXmlHttpRequest(options: {
             buffer = flushBuffer(buffer);
         };
 
+        const emitHeaders = () => {
+            if (headersEmitted || !onHeaders || xhr.readyState < XMLHttpRequest.HEADERS_RECEIVED) {
+                return;
+            }
+            headersEmitted = true;
+            const raw = xhr.getAllResponseHeaders() || "";
+            const normalized: Record<string, string> = {};
+            for (const line of raw.split(/\r?\n/)) {
+                const divider = line.indexOf(":");
+                if (divider <= 0) {
+                    continue;
+                }
+                const key = line.slice(0, divider).trim().toLowerCase();
+                const value = line.slice(divider + 1).trim();
+                if (!key || !value) {
+                    continue;
+                }
+                normalized[key] = value;
+            }
+            onHeaders(normalized);
+        };
+
         const handleAbort = () => {
             aborted = true;
             try {
@@ -279,6 +303,7 @@ export async function streamSseWithXmlHttpRequest(options: {
         }
 
         xhr.onreadystatechange = () => {
+            emitHeaders();
             if (xhr.readyState >= XMLHttpRequest.LOADING) {
                 pumpResponseText();
             }

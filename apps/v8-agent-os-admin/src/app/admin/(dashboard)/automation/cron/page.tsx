@@ -59,6 +59,8 @@ type ScheduleDraft = {
     intervalMinute: string;
 };
 
+const SYSTEM_MEMORY_MAINTENANCE_JOB_ID = "system-memory-maintenance";
+
 const EMPTY_JOB: CronJob = {
     id: "",
     name: "",
@@ -344,6 +346,8 @@ export default function ScheduledTasksPage() {
     }, []);
 
     const jobs = useMemo(() => envelope?.data.jobs ?? [], [envelope?.data.jobs]);
+    const systemMemoryJob = useMemo(() => jobs.find((job) => job.id === SYSTEM_MEMORY_MAINTENANCE_JOB_ID) ?? null, [jobs]);
+    const userJobs = useMemo(() => jobs.filter((job) => job.id !== SYSTEM_MEMORY_MAINTENANCE_JOB_ID), [jobs]);
     const enabledCount = useMemo(() => jobs.filter((job) => job.enabled).length, [jobs]);
     const runByType = useMemo(
         () => ({
@@ -398,6 +402,8 @@ export default function ScheduledTasksPage() {
         setSourceMetadataText(formatJsonField(job.sourceMetadata));
         setDialogOpen(true);
     };
+
+    const editingSystemJob = draftJob.id === SYSTEM_MEMORY_MAINTENANCE_JOB_ID;
 
     const updateSchedule = (patch: Partial<ScheduleDraft>) => {
         setScheduleDraft((current) => {
@@ -495,12 +501,59 @@ export default function ScheduledTasksPage() {
                 ]}
             />
 
-            <ConfigCard title={lt("任务列表", "Task list")} description={lt("查看任务计划和启用状态。", "Review schedules and enablement state.")} variant="list" bodyHeight={420} bodyScroll="auto">
+            {systemMemoryJob ? (
+                <ConfigCard
+                    title={lt("内建维护任务", "Built-in maintenance")}
+                    description={lt("Memory Maintenance 是正式内建能力，负责日记整理、周/月/年摘要补齐与 durable memory 维护。", "Memory Maintenance is a built-in capability for log compaction, summary backfill, and durable memory maintenance.")}
+                >
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <div className="text-sm font-medium text-slate-900">{systemMemoryJob.name}</div>
+                                    <Badge variant="outline">{t(lt("系统内建", "System"))}</Badge>
+                                    <Badge variant={systemMemoryJob.enabled ? "default" : "secondary"}>
+                                        {systemMemoryJob.enabled ? t(lt("已启用", "Enabled")) : t(lt("已停用", "Paused"))}
+                                    </Badge>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-slate-700">
+                                    <Clock3 className="h-3.5 w-3.5 text-amber-600" />
+                                    <span>{describeCronExpression(systemMemoryJob.cron_expression, locale)}</span>
+                                </div>
+                                <div className="text-xs text-slate-500">{t(lt("原始计划：", "Cron:"))}{systemMemoryJob.cron_expression}</div>
+                                <div className="text-xs text-slate-500">
+                                    {t(lt("这张卡不可删除，也不可修改目标/类型，只允许改时间和启停。", "This card cannot be deleted and only exposes enablement and schedule controls."))}
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
+                                    <span className="text-xs text-slate-500">{t(lt("启用", "Enabled"))}</span>
+                                    <Switch
+                                        checked={systemMemoryJob.enabled}
+                                        onCheckedChange={(checked) =>
+                                            void saveJobs(jobs.map((item) => (item.id === systemMemoryJob.id ? { ...item, enabled: checked } : item)))
+                                        }
+                                    />
+                                </div>
+                                <Button variant="outline" size="sm" onClick={() => void handleRunNow(systemMemoryJob.id)}>
+                                    <Play className="mr-2 h-4 w-4" />
+                                    {t(lt("立即运行", "Run now"))}
+                                </Button>
+                                <Button variant="outline" size="sm" onClick={() => openEditDialog(systemMemoryJob)}>
+                                    {t(lt("调整时间", "Adjust schedule"))}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </ConfigCard>
+            ) : null}
+
+            <ConfigCard title={lt("任务列表", "Task list")} description={lt("查看用户自定义任务的计划和启用状态。", "Review user-defined schedules and enablement state.")} variant="list" bodyHeight={420} bodyScroll="auto">
                 <div className="space-y-3">
-                    {jobs.length === 0 ? (
+                    {userJobs.length === 0 ? (
                         <EmptyState title={lt("还没有定时任务", "No cron jobs yet")} description={lt("如果你需要自动执行固定任务，可以从这里开始新建。", "Create your first recurring task here.")} />
                     ) : (
-                        jobs.map((job) => (
+                        userJobs.map((job) => (
                             <div key={job.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
                                 <div className="flex flex-wrap items-start justify-between gap-4">
                                     <div className="min-w-0 space-y-2">
@@ -550,68 +603,74 @@ export default function ScheduledTasksPage() {
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
                     <DialogHeader>
-                        <DialogTitle>{editingJobId ? t(lt("编辑定时任务", "Edit cron job")) : t(lt("新建定时任务", "New cron job"))}</DialogTitle>
-                        <DialogDescription>{t(lt("先选择你能看懂的执行计划，再设置执行方式和目标。只有自定义模式才需要直接填写原始 Cron 表达式。", "Pick a readable schedule first, then set the target and action. Only Custom mode needs a raw cron expression."))}</DialogDescription>
+                        <DialogTitle>{editingSystemJob ? t(lt("调整 Memory Maintenance 时间", "Adjust Memory Maintenance")) : editingJobId ? t(lt("编辑定时任务", "Edit cron job")) : t(lt("新建定时任务", "New cron job"))}</DialogTitle>
+                        <DialogDescription>{editingSystemJob ? t(lt("这是系统内建维护任务。这里只允许调整计划时间和启用状态。", "This is a built-in system task. Only schedule and enablement can be changed here.")) : t(lt("先选择你能看懂的执行计划，再设置执行方式和目标。只有自定义模式才需要直接填写原始 Cron 表达式。", "Pick a readable schedule first, then set the target and action. Only Custom mode needs a raw cron expression."))}</DialogDescription>
                     </DialogHeader>
 
-                    <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2">
-                            <Label>{t(lt("任务名称", "Task name"))}</Label>
-                            <Input value={draftJob.name} onChange={(event) => setDraftJob((current) => ({ ...current, name: event.target.value }))} />
+                    {!editingSystemJob ? (
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <Label>{t(lt("任务名称", "Task name"))}</Label>
+                                <Input value={draftJob.name} onChange={(event) => setDraftJob((current) => ({ ...current, name: event.target.value }))} />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t(lt("执行方式", "Action type"))}</Label>
+                                <Select value={draftJob.action_type} onValueChange={(value: CronJob["action_type"]) => setDraftJob((current) => ({ ...current, action_type: value }))}>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="agent">{t(lt("AutomationRuntime 任务", "Automation task"))}</SelectItem>
+                                        <SelectItem value="command">{t(lt("系统命令", "Command"))}</SelectItem>
+                                        <SelectItem value="python">{t(lt("Python 脚本", "Python"))}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                                <Label>{t(lt("执行目标", "Target"))}</Label>
+                                <Input value={draftJob.action_target} onChange={(event) => setDraftJob((current) => ({ ...current, action_target: event.target.value }))} />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t(lt("Wake 类型", "Wake trigger kind"))}</Label>
+                                <Select value={draftJob.triggerKind || "nudge"} onValueChange={(value) => setDraftJob((current) => ({ ...current, triggerKind: value as NonNullable<CronJob["triggerKind"]> }))}>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="nudge">nudge</SelectItem>
+                                        <SelectItem value="wake">wake</SelectItem>
+                                        <SelectItem value="recovery_wake">recovery_wake</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t(lt("附着策略", "Attach policy"))}</Label>
+                                <Select value={draftJob.attachPolicy || "new_session"} onValueChange={(value) => setDraftJob((current) => ({ ...current, attachPolicy: value as NonNullable<CronJob["attachPolicy"]> }))}>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="new_session">new_session</SelectItem>
+                                        <SelectItem value="attach_session">attach_session</SelectItem>
+                                        <SelectItem value="attach_run">attach_run</SelectItem>
+                                        <SelectItem value="resume_run">resume_run</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                                <Label>{t(lt("唤醒原因", "Wake reason"))}</Label>
+                                <Input value={draftJob.wakeReason || ""} onChange={(event) => setDraftJob((current) => ({ ...current, wakeReason: event.target.value }))} placeholder={t(lt("例如：scheduled_project_checkin", "e.g. scheduled_project_checkin"))} />
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                                <Label>{t(lt("消息模板", "Message"))}</Label>
+                                <Textarea value={draftJob.message || ""} onChange={(event) => setDraftJob((current) => ({ ...current, message: event.target.value }))} className="min-h-[96px]" placeholder={t(lt("没有 binding / anchor 时，这段文本只会作为 nudge。", "Without binding / anchor this text only becomes a nudge."))} />
+                            </div>
                         </div>
-                        <div className="space-y-2">
-                            <Label>{t(lt("执行方式", "Action type"))}</Label>
-                            <Select value={draftJob.action_type} onValueChange={(value: CronJob["action_type"]) => setDraftJob((current) => ({ ...current, action_type: value }))}>
-                                <SelectTrigger>
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="agent">{t(lt("AutomationRuntime 任务", "Automation task"))}</SelectItem>
-                                    <SelectItem value="command">{t(lt("系统命令", "Command"))}</SelectItem>
-                                    <SelectItem value="python">{t(lt("Python 脚本", "Python"))}</SelectItem>
-                                </SelectContent>
-                            </Select>
+                    ) : (
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
+                            {t(lt("Memory Maintenance 的执行目标、类型和参数由系统固定维护。这里仅开放计划时间与启停。", "The built-in Memory Maintenance target, type, and payload are system-managed. Only schedule and enablement are editable here."))}
                         </div>
-                        <div className="space-y-2 md:col-span-2">
-                            <Label>{t(lt("执行目标", "Target"))}</Label>
-                            <Input value={draftJob.action_target} onChange={(event) => setDraftJob((current) => ({ ...current, action_target: event.target.value }))} />
-                        </div>
-                        <div className="space-y-2">
-                            <Label>{t(lt("Wake 类型", "Wake trigger kind"))}</Label>
-                            <Select value={draftJob.triggerKind || "nudge"} onValueChange={(value) => setDraftJob((current) => ({ ...current, triggerKind: value as NonNullable<CronJob["triggerKind"]> }))}>
-                                <SelectTrigger>
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="nudge">nudge</SelectItem>
-                                    <SelectItem value="wake">wake</SelectItem>
-                                    <SelectItem value="recovery_wake">recovery_wake</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        <div className="space-y-2">
-                            <Label>{t(lt("附着策略", "Attach policy"))}</Label>
-                            <Select value={draftJob.attachPolicy || "new_session"} onValueChange={(value) => setDraftJob((current) => ({ ...current, attachPolicy: value as NonNullable<CronJob["attachPolicy"]> }))}>
-                                <SelectTrigger>
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="new_session">new_session</SelectItem>
-                                    <SelectItem value="attach_session">attach_session</SelectItem>
-                                    <SelectItem value="attach_run">attach_run</SelectItem>
-                                    <SelectItem value="resume_run">resume_run</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        <div className="space-y-2 md:col-span-2">
-                            <Label>{t(lt("唤醒原因", "Wake reason"))}</Label>
-                            <Input value={draftJob.wakeReason || ""} onChange={(event) => setDraftJob((current) => ({ ...current, wakeReason: event.target.value }))} placeholder={t(lt("例如：scheduled_project_checkin", "e.g. scheduled_project_checkin"))} />
-                        </div>
-                        <div className="space-y-2 md:col-span-2">
-                            <Label>{t(lt("消息模板", "Message"))}</Label>
-                            <Textarea value={draftJob.message || ""} onChange={(event) => setDraftJob((current) => ({ ...current, message: event.target.value }))} className="min-h-[96px]" placeholder={t(lt("没有 binding / anchor 时，这段文本只会作为 nudge。", "Without binding / anchor this text only becomes a nudge."))} />
-                        </div>
-                    </div>
+                    )}
 
                     <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                         <div className="space-y-1">
@@ -725,6 +784,7 @@ export default function ScheduledTasksPage() {
                         )}
                     </div>
 
+                    {!editingSystemJob ? (
                     <AdvancedSection title={lt("更多选项", "More options")} description={lt("需要手动检查或调整原始 Cron 表达式时，再展开这里。", "Expand only when you need to inspect or override the raw cron expression.")}>
                         <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
                             <div className="space-y-2">
@@ -760,6 +820,7 @@ export default function ScheduledTasksPage() {
                             </div>
                         </div>
                     </AdvancedSection>
+                    ) : null}
 
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
                         <div className="flex items-center justify-between gap-4">

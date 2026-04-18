@@ -22,6 +22,7 @@ from core.v8_agent_os_paths import (
     protected_runtime_paths,
     runtime_private_root,
 )
+from core.memory_maintenance_contract import normalize_cron_config_with_system_job
 
 
 def _default_workspace_path() -> str:
@@ -1826,10 +1827,14 @@ class StorageManager:
 
     # --- Cron Config Accessors ---
     def get_cron_config(self) -> Dict[str, Any]:
-        return self.read_json("cron_config.json")
+        data = self.read_json("cron_config.json")
+        normalized = normalize_cron_config_with_system_job(data)
+        if normalized != data:
+            self.write_json("cron_config.json", normalized)
+        return normalized
         
     def save_cron_config(self, data: Dict[str, Any]):
-        self.write_json("cron_config.json", data)
+        self.write_json("cron_config.json", normalize_cron_config_with_system_job(data))
 
     # --- Automation Runtime Config Accessors ---
     def get_automation_runtime_config(self) -> Dict[str, Any]:

@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from "react";
 import {
+    Alert,
     Pressable,
     StyleSheet,
     Text,
@@ -9,6 +10,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
 
 import { Card, CardContent } from "@/src/components/ui/card";
+import { saveTextToUserSelectedFile } from "@/src/lib/file-transfer";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 function scriptString(value: string) {
@@ -23,6 +25,35 @@ export const MermaidRenderer = memo(function MermaidRenderer({
     const { colors, themeMode, t } = useUiPrefs();
     const [scale, setScale] = useState(1);
     const [hasError, setHasError] = useState(false);
+    const [renderedSvg, setRenderedSvg] = useState("");
+    const [saved, setSaved] = useState(false);
+
+    const handleDownload = async () => {
+        const svg = renderedSvg.trim();
+        const content = svg || code;
+        if (!content.trim()) {
+            return;
+        }
+        const useSvg = Boolean(svg);
+        try {
+            const savedFile = await saveTextToUserSelectedFile(content, {
+                filename: useSvg ? `mermaid-chart-${Date.now()}.svg` : `mermaid-source-${Date.now()}.mmd`,
+                mimeType: useSvg ? "image/svg+xml" : "text/plain",
+            });
+            setSaved(true);
+            Alert.alert(
+                t("已下载图表", "Chart downloaded"),
+                savedFile.shared
+                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${savedFile.filename}`
+                    : savedFile.userVisible
+                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${savedFile.filename}`
+                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${savedFile.uri}`,
+            );
+            setTimeout(() => setSaved(false), 1600);
+        } catch (error) {
+            Alert.alert(t("下载失败", "Download failed"), error instanceof Error ? error.message : t("无法保存 Mermaid 图表", "Unable to save Mermaid chart"));
+        }
+    };
 
     const html = useMemo(() => {
         const background = themeMode === "dark" ? "#0d1117" : "#ffffff";
@@ -111,6 +142,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
           window.mermaid.render("mermaid-chart-" + Date.now(), source)
             .then(({ svg }) => {
               document.getElementById("chart").innerHTML = svg;
+              window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "rendered", svg }));
             })
             .catch(showError);
         } catch (error) {
@@ -134,6 +166,12 @@ export const MermaidRenderer = memo(function MermaidRenderer({
             <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
                 <Text style={[styles.title, { color: colors.textMuted }]}>{t("Mermaid 图表", "Mermaid chart")}</Text>
                 <View style={styles.actions}>
+                    <Pressable
+                        style={[styles.iconButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
+                        onPress={() => void handleDownload()}
+                    >
+                        <MaterialCommunityIcons name={saved ? "check" : "download"} size={16} color={saved ? colors.success : colors.textMuted} />
+                    </Pressable>
                     <Pressable
                         style={[styles.iconButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
                         onPress={() => setScale((value) => Math.max(0.5, Number((value - 0.1).toFixed(2))))}
@@ -160,6 +198,10 @@ export const MermaidRenderer = memo(function MermaidRenderer({
                                 const payload = JSON.parse(String(event.nativeEvent.data || "{}"));
                                 if (payload.type === "error") {
                                     setHasError(true);
+                                    setRenderedSvg("");
+                                } else if (payload.type === "rendered" && typeof payload.svg === "string") {
+                                    setRenderedSvg(payload.svg);
+                                    setHasError(false);
                                 }
                             } catch {
                                 setHasError(true);

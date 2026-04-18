@@ -31,6 +31,9 @@ class MemoryRouter:
         temperature = self.memory_config.get("extraction_temperature")
         if temperature is not None:
             kwargs["temperature"] = temperature
+        kwargs["_role"] = "extraction"
+        kwargs["_request_kind"] = "memory_extraction"
+        kwargs["_capability_class"] = "memory_extraction"
             
         return llm_factory.create_chat_model(extractor_id, **kwargs)
 

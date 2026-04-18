@@ -83,16 +83,18 @@ def resolve_workspace_file_to_share(path: str, mode: str) -> dict[str, Any]:
     effective_mode = normalized_mode
     if normalized_mode == "auto":
         effective_mode = "preview" if viewer_kind != "download" else "download"
+    previewable = viewer_kind != "download" and effective_mode != "download"
+    path_plane = "workspace_artifact" if previewable else "workspace_download"
 
     resource_ref = build_workspace_resource_ref(
         workspace_relative_path=workspace_relative_path,
-        path_plane="workspace_artifact",
+        path_plane=path_plane,
         workspace_root=workspace_root,
         workspace_id=workspace_id,
         project_id=project_id,
         mime_type=mime_type,
         display_label=absolute_path.name,
-        previewable=True,
+        previewable=previewable,
         downloadable=True,
         surface_visible=True,
     )
@@ -104,8 +106,7 @@ def resolve_workspace_file_to_share(path: str, mode: str) -> dict[str, Any]:
         "mimeType": mime_type or "application/octet-stream",
         "mode": effective_mode,
         "url": admin_path,
-        "resourceRef": resource_ref,
-        "previewable": viewer_kind != "download",
+        "previewable": previewable,
         "downloadable": True,
         "viewerKind": viewer_kind,
         "workspaceRelativePath": workspace_relative_path,

@@ -62,7 +62,9 @@ export const CodeBlock = memo(function CodeBlock({
             setSaved(true);
             Alert.alert(
                 "已下载 HTML",
-                savedFile.userVisible
+                savedFile.shared
+                    ? `已打开系统分享/保存到文件面板：${savedFile.filename}`
+                    : savedFile.userVisible
                     ? `文件已保存到你选择的系统文件夹：${savedFile.filename}`
                     : `文件已保存到应用沙盒：${savedFile.uri}`,
             );

@@ -231,7 +231,7 @@ Windows 路径的能力总结很明确：当前优先走结构化语义路径，
 
 | 主张 | 当前实现判断 | 代码/结构依据 | 审计结论 |
 |---|---|---|---|
-| 三大系统共通闭环 `感知 -> 决策 -> 执行 -> 校验` | 当前代码里确实已有 `observe -> act -> verify -> decide` 闭环表述，且 `computer_use` 已纳入 runtime 主线 | `runtimes/computer_use/runtime.py:198`; `docs/ENGINE_API_REFERENCE_ZH.md` 中 `computer_use` 作为当前 runtime 主线 | 部分具备 |
+| 三大系统共通闭环 `感知 -> 决策 -> 执行 -> 校验` | 当前代码里确实已有 `observe -> act -> verify -> decide` 闭环表述，且 `computer_use` 已纳入 runtime 主线 | `runtimes/computer_use/runtime.py:198`; `docs/V8_AGENT_OS_API_REFERENCE_ZH.md` 中 `computer_use` 作为当前 runtime 主线 | 部分具备 |
 | 权限依赖、无障碍与截屏能力是基础 | 能力结构里已经显式区分 accessibility / screenshot / automation 等能力面 | `runtimes/computer_use/drivers/contracts.py`; `runtimes/computer_use/drivers/windows_uia.py` capability summary | 已具备 |
 | 原子化操作集高度标准化 | 高层工具面和 primitive 已存在，click/type/hotkey/scroll/wait 等都被标准化包装 | `core/computer_use_tool_surface.py`; `runtimes/computer_use/runtime.py` primitive/action 主链 | 已具备 |
 | API 优先，GUI 兜底 | 当前更多停留在理念与 route order 口径，真正成熟的 API-first 路径只在少数结构化 UIA 里成立；浏览器并无专用 API 主通道 | `drivers/windows_uia.py:246`; 浏览器无 CDP/DOM 执行主链 | 表述过度 |
@@ -282,4 +282,3 @@ Windows 路径的能力总结很明确：当前优先走结构化语义路径，
 最后的路线判断固定为：
 
 > 当前系统不是“完全不能用”，而是“只在原生桌面基础动作上进入可用区间，离成熟 Computer Use 平台还有明显结构差距”。后续整改如果继续围绕单帧视觉、浏览器坐标点击和输入法偶然成功去打补丁，收益会越来越差；真正值得投入的方向，是浏览器专项控制面、输入治理主链和短序列视觉校验。
-

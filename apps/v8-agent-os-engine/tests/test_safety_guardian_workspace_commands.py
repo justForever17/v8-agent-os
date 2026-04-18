@@ -17,6 +17,24 @@ RUNTIME_CONTEXT = {"workspace_path": WORKSPACE_PATH, "runtime_kind": "chat"}
 
 
 class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
+    def test_workspace_file_write_is_allowed(self):
+        decision = safety_guardian.assess_file_write(
+            r"C:\Users\sunny\.v8-agent-os\workspace\本轮完整消息记录.md",
+            append=False,
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "allow")
+        self.assertEqual(decision.risk_code, "workspace_file_write_allowed")
+
+    def test_v8_config_write_is_reviewed(self):
+        decision = safety_guardian.assess_file_write(
+            r"C:\Users\sunny\.v8-agent-os\config.json",
+            append=False,
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "review")
+        self.assertEqual(decision.risk_code, "protected_config_write")
+
     def test_workspace_dir_search_is_allowed(self):
         decision = safety_guardian.assess_system_command(
             r'dir "C:\Users\sunny\.v8-agent-os\workspace" *.mp4 /s /b',

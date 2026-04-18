@@ -10,7 +10,7 @@ from erc.runtime_context import bind_runtime_context
 
 
 class ShareWorkspaceFileToolTests(unittest.TestCase):
-    def test_share_main_workspace_relative_file_returns_resource_ref(self):
+    def test_share_main_workspace_relative_file_returns_short_surface(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             target = root / "docs" / "demo.pdf"
@@ -29,8 +29,10 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["filename"], "demo.pdf")
             self.assertEqual(result["viewerKind"], "pdf")
-            self.assertEqual(result["resourceRef"]["workspaceRelativePath"], "docs/demo.pdf")
+            self.assertNotIn("resourceRef", result)
+            self.assertEqual(result["workspaceRelativePath"], "docs/demo.pdf")
             self.assertIn("/api/client/workspace/resource?", result["url"])
+            self.assertIn("path_plane=workspace_artifact", result["url"])
 
     def test_share_project_workspace_absolute_file_keeps_scope(self):
         with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as main_dir:
@@ -51,8 +53,31 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             self.assertEqual(result["viewerKind"], "model")
             self.assertEqual(result["workspaceId"], "ws_demo")
             self.assertEqual(result["projectId"], "proj_demo")
-            self.assertIn("workspace_id=ws_demo", result["resourceRef"]["adminPath"])
-            self.assertIn("project_id=proj_demo", result["resourceRef"]["adminPath"])
+            self.assertNotIn("resourceRef", result)
+            self.assertIn("workspace_id=ws_demo", result["url"])
+            self.assertIn("project_id=proj_demo", result["url"])
+
+    def test_share_download_file_uses_workspace_download_plane(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "notes.md"
+            target.write_text("# Notes\n", encoding="utf-8")
+            descriptor = {
+                "workspaceRoot": str(root),
+                "workspaceId": None,
+                "projectId": None,
+            }
+            with patch("core.workspace_share.workspace_resolution_service.resolve_workspace_descriptor", return_value=descriptor), patch(
+                "core.workspace_share.workspace_resolution_service.get_main_workspace_path",
+                return_value=str(root),
+            ), bind_runtime_context(runtime_kind="chat", session_id="sess_demo"):
+                result = resolve_workspace_file_to_share("notes.md", "download")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["filename"], "notes.md")
+            self.assertEqual(result["viewerKind"], "download")
+            self.assertFalse(result["previewable"])
+            self.assertNotIn("resourceRef", result)
+            self.assertIn("path_plane=workspace_download", result["url"])
 
     def test_share_workspace_file_rejects_outside_path(self):
         with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as outside_dir:

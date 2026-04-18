@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional
 
 from core.json_safe import to_jsonable
 from core.multimodal_payload_adapter import normalize_artifact_record
+from core.realtime_protocol import utc_now_iso
+from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 class DatabaseManager:
     """
@@ -587,24 +589,26 @@ class DatabaseManager:
                         current_meta = {}
                 current_meta.update(merged_metadata)
                 meta_str = json.dumps(current_meta, ensure_ascii=False)
+                now_iso = utc_now_iso()
                 if title and title not in ("New Chat", "新对话"):
                     cursor.execute('''
                         UPDATE sessions 
-                        SET updated_at = CURRENT_TIMESTAMP, title = ?, agent_id = COALESCE(?, agent_id), metadata = ?
+                        SET updated_at = ?, title = ?, agent_id = COALESCE(?, agent_id), metadata = ?
                         WHERE id = ?
-                    ''', (title, agent_id, meta_str, session_id))
+                    ''', (now_iso, title, agent_id, meta_str, session_id))
                 else:
                     cursor.execute('''
                         UPDATE sessions 
-                        SET updated_at = CURRENT_TIMESTAMP, metadata = ?
+                        SET updated_at = ?, metadata = ?
                         WHERE id = ?
-                    ''', (meta_str, session_id))
+                    ''', (now_iso, meta_str, session_id))
             else:
                 meta_str = json.dumps(merged_metadata, ensure_ascii=False)
+                now_iso = utc_now_iso()
                 cursor.execute('''
-                    INSERT INTO sessions (id, title, user_id, agent_id, metadata)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (session_id, title, user_id, agent_id, meta_str))
+                    INSERT INTO sessions (id, title, user_id, agent_id, metadata, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (session_id, title, user_id, agent_id, meta_str, now_iso, now_iso))
             conn.commit()
 
     def _is_internal_runtime_title(self, title: str | None) -> bool:
@@ -643,6 +647,8 @@ class DatabaseManager:
             for row in cursor.fetchall():
                 data = dict(row)
                 data["metadata"] = json.loads(data["metadata"]) if data.get("metadata") else {}
+                data["created_at"] = normalize_utc_iso(data.get("created_at")) or data.get("created_at")
+                data["updated_at"] = normalize_utc_iso(data.get("updated_at")) or data.get("updated_at")
 
                 workflow_cursor = conn.cursor()
                 workflow_cursor.execute(
@@ -715,7 +721,7 @@ class DatabaseManager:
                 activity_row = activity_cursor.fetchone()
                 latest_runtime_event_at = activity_row["latest_runtime_event_at"] if activity_row else None
                 if latest_runtime_event_at:
-                    data["latestRuntimeEventAt"] = latest_runtime_event_at
+                    data["latestRuntimeEventAt"] = normalize_utc_iso(latest_runtime_event_at) or latest_runtime_event_at
 
                 message_cursor = conn.cursor()
                 message_cursor.execute(
@@ -729,7 +735,27 @@ class DatabaseManager:
                 message_row = message_cursor.fetchone()
                 latest_message_at = message_row["latest_message_at"] if message_row else None
                 if latest_message_at:
-                    data["latestMessageAt"] = latest_message_at
+                    data["latestMessageAt"] = normalize_utc_iso(latest_message_at) or latest_message_at
+
+                canonical_message_cursor = conn.cursor()
+                canonical_message_cursor.execute(
+                    '''
+                    SELECT MAX(created_at) AS latest_canonical_message_at
+                    FROM chat_canonical_messages
+                    WHERE session_id = ?
+                      AND role IN ('user', 'assistant')
+                      AND (
+                        TRIM(COALESCE(content_text, '')) != ''
+                        OR TRIM(COALESCE(reasoning_text, '')) != ''
+                        OR TRIM(COALESCE(nodes_json, '')) NOT IN ('', '[]', '{}')
+                      )
+                    ''',
+                    (data["id"],),
+                )
+                canonical_message_row = canonical_message_cursor.fetchone()
+                latest_canonical_message_at = canonical_message_row["latest_canonical_message_at"] if canonical_message_row else None
+                if latest_canonical_message_at:
+                    data["latestCanonicalMessageAt"] = normalize_utc_iso(latest_canonical_message_at) or latest_canonical_message_at
 
                 if (
                     self._is_internal_runtime_title(data.get("title"))
@@ -740,23 +766,21 @@ class DatabaseManager:
                     if repaired_title:
                         data["title"] = repaired_title
 
-                latest_activity = max(
-                    [
-                        str(value or "").strip()
-                        for value in (
-                            workflow_updated_at,
-                            latest_runtime_event_at,
-                            latest_message_at,
-                            data.get("updated_at"),
-                        )
-                        if str(value or "").strip()
-                    ],
-                    default="",
+                data["workflowUpdatedAt"] = normalize_utc_iso(workflow_updated_at) or workflow_updated_at
+                data["lastActivityAt"] = latest_utc_iso(
+                    workflow_updated_at,
+                    latest_runtime_event_at,
+                    latest_message_at,
+                    data.get("updated_at"),
                 )
-                data["lastActivityAt"] = latest_activity
+                data["historySortAt"] = latest_utc_iso(
+                    latest_canonical_message_at,
+                    latest_message_at,
+                    data.get("created_at"),
+                )
                 sessions.append(data)
 
-            sessions.sort(key=lambda item: item.get("lastActivityAt") or item.get("updated_at") or "", reverse=True)
+            sessions.sort(key=lambda item: item.get("historySortAt") or item.get("created_at") or "", reverse=True)
             return sessions
             
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -768,6 +792,8 @@ class DatabaseManager:
                 return None
             data = dict(row)
             data["metadata"] = json.loads(data["metadata"]) if data.get("metadata") else {}
+            data["created_at"] = normalize_utc_iso(data.get("created_at")) or data.get("created_at")
+            data["updated_at"] = normalize_utc_iso(data.get("updated_at")) or data.get("updated_at")
             return data
 
     def delete_session(self, session_id: str):
@@ -783,14 +809,15 @@ class DatabaseManager:
         tr_str = json.dumps(tool_results, default=str) if tool_results else None
         img_str = json.dumps(images) if images else None
         meta_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        now_iso = utc_now_iso()
         with self.get_connection() as conn:
             conn.execute('''
-                INSERT INTO messages (id, session_id, role, content, reasoning_content, tool_calls, tool_results, images, metadata_json, agent_id, agent_name, agent_avatar, agent_role_label)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (msg_id, session_id, role, content, reasoning_content, tc_str, tr_str, img_str, meta_str, agent_id, agent_name, agent_avatar, agent_role_label))
+                INSERT INTO messages (id, session_id, role, content, reasoning_content, tool_calls, tool_results, images, metadata_json, agent_id, agent_name, agent_avatar, agent_role_label, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (msg_id, session_id, role, content, reasoning_content, tc_str, tr_str, img_str, meta_str, agent_id, agent_name, agent_avatar, agent_role_label, now_iso))
             
             # Automatically bump session updated_at
-            conn.execute('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (session_id,))
+            conn.execute('UPDATE sessions SET updated_at = ? WHERE id = ?', (now_iso, session_id))
             conn.commit()
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
@@ -914,14 +941,15 @@ class DatabaseManager:
         nodes_str = json.dumps(to_jsonable(nodes or []), ensure_ascii=False)
         artifacts_str = json.dumps(to_jsonable(artifacts or []), ensure_ascii=False)
         metadata_str = json.dumps(to_jsonable(metadata or {}), ensure_ascii=False)
+        now_iso = utc_now_iso()
 
         def _write():
             with self.get_connection() as conn:
                 conn.execute(
                     '''
                     INSERT INTO chat_canonical_messages
-                    (id, session_id, run_id, ordinal, role, state, nodes_json, artifacts_json, content_text, reasoning_text, metadata_json, version, finalized_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    (id, session_id, run_id, ordinal, role, state, nodes_json, artifacts_json, content_text, reasoning_text, metadata_json, version, created_at, updated_at, finalized_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                     ''',
                     (
                         message_id,
@@ -935,10 +963,12 @@ class DatabaseManager:
                         content_text,
                         reasoning_text,
                         metadata_str,
+                        now_iso,
+                        now_iso,
                         finalized_at,
                     ),
                 )
-                conn.execute('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (session_id,))
+                conn.execute('UPDATE sessions SET updated_at = ? WHERE id = ?', (now_iso, session_id))
                 conn.commit()
 
         self._run_write_with_retry(_write)
@@ -966,6 +996,7 @@ class DatabaseManager:
         next_reasoning = existing.get("reasoning_text") if reasoning_text is None else reasoning_text
         next_version = int(existing.get("version") or 0) + 1
         finalized_value = finalized_at if finalized_at is not None else existing.get("finalized_at")
+        now_iso = utc_now_iso()
 
         def _write():
             with self.get_connection() as conn:
@@ -979,7 +1010,7 @@ class DatabaseManager:
                         reasoning_text = ?,
                         metadata_json = ?,
                         version = ?,
-                        updated_at = CURRENT_TIMESTAMP,
+                        updated_at = ?,
                         finalized_at = ?
                     WHERE id = ?
                     ''',
@@ -991,13 +1022,14 @@ class DatabaseManager:
                         next_reasoning,
                         json.dumps(to_jsonable(next_metadata), ensure_ascii=False),
                         next_version,
+                        now_iso,
                         finalized_value,
                         message_id,
                     ),
                 )
                 session_id = str(existing.get("session_id") or "").strip()
                 if session_id:
-                    conn.execute('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (session_id,))
+                    conn.execute('UPDATE sessions SET updated_at = ? WHERE id = ?', (now_iso, session_id))
                 conn.commit()
 
         self._run_write_with_retry(_write)
@@ -1119,13 +1151,14 @@ class DatabaseManager:
         metadata: Optional[dict] = None,
     ):
         meta_str = json.dumps(metadata) if metadata else None
+        started_at = utc_now_iso()
         def _write():
             with self.get_connection() as conn:
                 conn.execute(
                     '''
                     INSERT OR REPLACE INTO run_records
-                    (id, session_id, conversation_id, thread_id, user_id, run_type, status, trigger_source, agent_id, workflow_id, channel_type, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, session_id, conversation_id, thread_id, user_id, run_type, status, trigger_source, agent_id, workflow_id, channel_type, metadata, started_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         run_id,
@@ -1140,6 +1173,7 @@ class DatabaseManager:
                         workflow_id,
                         channel_type,
                         meta_str,
+                        started_at,
                     ),
                 )
                 conn.commit()
@@ -1155,6 +1189,7 @@ class DatabaseManager:
         metadata: Optional[dict] = None,
     ):
         meta_str = json.dumps(metadata) if metadata else None
+        finished_at = utc_now_iso() if status in {"completed", "failed", "cancelled"} else None
         def _write():
             with self.get_connection() as conn:
                 conn.execute(
@@ -1164,12 +1199,12 @@ class DatabaseManager:
                         error_message = COALESCE(?, error_message),
                         metadata = COALESCE(?, metadata),
                         finished_at = CASE
-                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN CURRENT_TIMESTAMP
+                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, finished_at)
                             ELSE finished_at
                         END
                     WHERE id = ?
                     ''',
-                    (status, error_message, meta_str, status, run_id),
+                    (status, error_message, meta_str, status, finished_at, run_id),
                 )
                 conn.commit()
 
@@ -1283,15 +1318,16 @@ class DatabaseManager:
         snapshot: Dict[str, Any],
     ):
         snapshot_str = json.dumps(to_jsonable(snapshot), ensure_ascii=False)
+        created_at = utc_now_iso()
         def _write():
             with self.get_connection() as conn:
                 conn.execute(
                     '''
                     INSERT INTO runtime_snapshots
-                    (id, session_id, run_id, latest_seq, snapshot_type, snapshot_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (id, session_id, run_id, latest_seq, snapshot_type, snapshot_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''',
-                    (snapshot_id, session_id, run_id, latest_seq, snapshot_type, snapshot_str),
+                    (snapshot_id, session_id, run_id, latest_seq, snapshot_type, snapshot_str, created_at),
                 )
                 conn.commit()
 
@@ -1576,6 +1612,7 @@ class DatabaseManager:
         self,
         *,
         session_id: Optional[str] = None,
+        run_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
@@ -1584,6 +1621,9 @@ class DatabaseManager:
         if session_id:
             query += ' AND session_id = ?'
             params.append(session_id)
+        if run_type:
+            query += ' AND run_type = ?'
+            params.append(run_type)
         if status:
             query += ' AND status = ?'
             params.append(status)
@@ -2233,6 +2273,46 @@ class DatabaseManager:
                 ''',
                 (limit,),
             )
+            rows: List[Dict[str, Any]] = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                rows.append(item)
+            return rows
+
+    def list_model_invocations(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        capability_class: Optional[str] = None,
+        request_kind: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        query = 'SELECT * FROM model_invocation_logs WHERE 1=1'
+        params: list[Any] = []
+        if session_id:
+            query += ' AND session_id = ?'
+            params.append(session_id)
+        if run_id:
+            query += ' AND run_id = ?'
+            params.append(run_id)
+        if capability_class:
+            query += ' AND capability_class = ?'
+            params.append(capability_class)
+        if request_kind:
+            query += ' AND request_kind = ?'
+            params.append(request_kind)
+        if status:
+            query += ' AND status = ?'
+            params.append(status)
+        query += ' ORDER BY started_at DESC LIMIT ?'
+        params.append(limit)
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
             rows: List[Dict[str, Any]] = []
             for row in cursor.fetchall():
                 item = dict(row)

@@ -582,7 +582,15 @@ class LLMFactory:
         return final_kwargs
 
     @staticmethod
-    def _attach_telemetry(kwargs: Dict[str, Any], meta: Dict[str, Any], *, model_id: str, role: str = "") -> Dict[str, Any]:
+    def _attach_telemetry(
+        kwargs: Dict[str, Any],
+        meta: Dict[str, Any],
+        *,
+        model_id: str,
+        role: str = "",
+        request_kind: str = "chat",
+        capability_class_override: str = "",
+    ) -> Dict[str, Any]:
         callbacks = list(kwargs.get("callbacks") or [])
         provider_adapter = str(meta.get("provider_adapter") or "").strip() or (
             "gemini"
@@ -602,13 +610,15 @@ class LLMFactory:
         stream_mode = "native" if bool(
             effective_capability_matrix.get("supports_streaming", True)
         ) else "unsupported"
+        callback_capability_class = str(capability_class_override or meta.get("capability_class") or "")
         callbacks.append(
             model_telemetry_service.build_chat_callback(
                 model_id=model_id,
                 provider_id=str(meta.get("provider_id") or meta.get("provider_name") or "unknown"),
                 provider_name=str(meta.get("provider_name") or meta.get("provider_id") or "unknown"),
                 role=role,
-                capability_class=str(meta.get("capability_class") or ""),
+                capability_class=callback_capability_class,
+                request_kind=request_kind,
                 cost_per_input=meta.get("cost_per_input"),
                 cost_per_output=meta.get("cost_per_output"),
                 is_streaming=bool(kwargs.get("streaming")),
@@ -634,11 +644,20 @@ class LLMFactory:
         """
         meta = cls._resolve_model_metadata(model_id)
         role = str(kwargs.pop("_role", "") or "")
+        request_kind = str(kwargs.pop("_request_kind", "") or "chat")
+        capability_class_override = str(kwargs.pop("_capability_class", "") or "")
         
         if not meta.get("is_found"):
             # If the user passed a model completely unregistered, we attempt to initialize it 
             # as OpenAI barebones just in case base_url/api_key are in standard env vars
-            provider_kwargs = cls._attach_telemetry({"model": model_id, **kwargs}, {"provider_id": "openai", "provider_name": "openai"}, model_id=model_id, role=role)
+            provider_kwargs = cls._attach_telemetry(
+                {"model": model_id, **kwargs},
+                {"provider_id": "openai", "provider_name": "openai"},
+                model_id=model_id,
+                role=role,
+                request_kind=request_kind,
+                capability_class_override=capability_class_override,
+            )
             return V8ChatModelAdapter(
                 model_id=model_id,
                 provider_standard="openai",
@@ -664,7 +683,14 @@ class LLMFactory:
         api_standard = str(meta.get("api_standard", "openai")).lower()
         try:
             if api_standard == "anthropic":
-                provider_kwargs = cls._attach_telemetry(cls._build_anthropic_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                provider_kwargs = cls._attach_telemetry(
+                    cls._build_anthropic_kwargs(model_id, meta, **kwargs),
+                    meta,
+                    model_id=model_id,
+                    role=role,
+                    request_kind=request_kind,
+                    capability_class_override=capability_class_override,
+                )
                 builder = lambda: ChatAnthropic(**provider_kwargs)
             elif api_standard in {"google", "gemini"}:
                 if cls._is_gemini_cli_provider(
@@ -672,7 +698,14 @@ class LLMFactory:
                     provider_config=dict(meta.get("provider_record") or {}),
                     oauth_flavor=str(meta.get("oauth_flavor") or ""),
                 ):
-                    provider_kwargs = cls._attach_telemetry(cls._build_gemini_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                    provider_kwargs = cls._attach_telemetry(
+                        cls._build_gemini_kwargs(model_id, meta, **kwargs),
+                        meta,
+                        model_id=model_id,
+                        role=role,
+                        request_kind=request_kind,
+                        capability_class_override=capability_class_override,
+                    )
                     builder = lambda: GeminiCliRuntimeModel(
                         model_id=model_id,
                         meta=meta,
@@ -681,10 +714,24 @@ class LLMFactory:
                 else:
                     if ChatGoogleGenerativeAI is None:
                         raise ImportError("langchain-google-genai is not installed")
-                    provider_kwargs = cls._attach_telemetry(cls._build_gemini_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                    provider_kwargs = cls._attach_telemetry(
+                        cls._build_gemini_kwargs(model_id, meta, **kwargs),
+                        meta,
+                        model_id=model_id,
+                        role=role,
+                        request_kind=request_kind,
+                        capability_class_override=capability_class_override,
+                    )
                     builder = lambda: ChatGoogleGenerativeAI(**provider_kwargs)
             else:
-                provider_kwargs = cls._attach_telemetry(cls._build_openai_kwargs(model_id, meta, **kwargs), meta, model_id=model_id, role=role)
+                provider_kwargs = cls._attach_telemetry(
+                    cls._build_openai_kwargs(model_id, meta, **kwargs),
+                    meta,
+                    model_id=model_id,
+                    role=role,
+                    request_kind=request_kind,
+                    capability_class_override=capability_class_override,
+                )
                 builder = lambda: ChatOpenAI(**provider_kwargs)
             return V8ChatModelAdapter(
                 model_id=model_id,

@@ -5,6 +5,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +101,74 @@ class _FakeResolutionRepo:
 
 
 class MemoryDurablePolicyTests(unittest.TestCase):
+    def test_extract_with_llm_reports_empty_response_instead_of_generic_model_empty(self):
+        class _FakeParser:
+            def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+                pass
+
+            def get_format_instructions(self):  # noqa: ANN201
+                return "{}"
+
+            def invoke(self, value):  # noqa: ANN001, ANN201
+                raise AssertionError("blank output should not reach parser.invoke")
+
+        class _FakeLlm:
+            model_id = "memory-extractor-test"
+
+            def invoke(self, _messages):  # noqa: ANN001, ANN201
+                return SimpleNamespace(content="   ")
+
+        with patch.object(memory_agent, "_get_background_llm", return_value=_FakeLlm()), patch.object(memory_agent, "PydanticOutputParser", _FakeParser):
+            attempt = memory_agent._extract_with_llm(
+                "USER: 你要记住不要使用 emoji",
+                "No prior knowledge retrieved.",
+                resolved_scope="global",
+                scope_chain=["global"],
+            )
+
+        self.assertIsNone(attempt.result)
+        self.assertEqual(attempt.failure_stage, "llm_response_empty")
+        self.assertEqual(attempt.extractor_model, "memory-extractor-test")
+
+    def test_extract_with_llm_reports_repair_parser_failed_when_fixing_parser_still_fails(self):
+        class _FakeParser:
+            def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+                pass
+
+            def get_format_instructions(self):  # noqa: ANN201
+                return "{}"
+
+            def invoke(self, value):  # noqa: ANN001, ANN201
+                raise memory_agent.OutputParserException("json schema mismatch")
+
+        class _FakeFixingParser:
+            def parse(self, value):  # noqa: ANN001, ANN201
+                raise ValueError("repair parser still failed")
+
+        class _FakeOutputFixingParser:
+            @staticmethod
+            def from_llm(parser, llm):  # noqa: ANN001, ANN201
+                return _FakeFixingParser()
+
+        class _FakeLlm:
+            model_id = "memory-extractor-test"
+
+            def invoke(self, _messages):  # noqa: ANN001, ANN201
+                return SimpleNamespace(content='{"summary": "oops"')
+
+        with patch.object(memory_agent, "_get_background_llm", return_value=_FakeLlm()), patch.object(memory_agent, "PydanticOutputParser", _FakeParser), patch.dict(sys.modules, {"langchain.output_parsers": types.SimpleNamespace(OutputFixingParser=_FakeOutputFixingParser)}):
+            attempt = memory_agent._extract_with_llm(
+                "USER: 你要记住不要使用 emoji",
+                "No prior knowledge retrieved.",
+                resolved_scope="global",
+                scope_chain=["global"],
+            )
+
+        self.assertIsNone(attempt.result)
+        self.assertEqual(attempt.failure_stage, "repair_parser_failed")
+        self.assertIn("json schema mismatch", attempt.parser_error_preview)
+        self.assertIn('"summary"', attempt.raw_output_preview)
+
     def test_global_path_like_fact_is_filtered_but_project_operational_path_is_allowed(self):
         global_fact = KnowledgeExtraction(
             fact=r"工作区媒体缓存位于 C:\Users\sunny\.v8-agent-os\workspace\downloaded_media",

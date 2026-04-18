@@ -20,6 +20,7 @@ import {
     type PhoneRuntimeStageCard,
 } from "@/src/lib/runtime-stage";
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 import { type AdminProcessRef } from "@v8/session-realtime";
@@ -58,6 +59,7 @@ function getKindIconName(kind: PhoneRuntimeStageActivity["kind"]): React.Compone
 
 function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
     const { colors, t, locale } = useUiPrefs();
+    const { getEngineNowMs } = useAppSession();
     const [index, setIndex] = useState(0);
 
     useEffect(() => {
@@ -112,7 +114,7 @@ function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[]
                             {active.summary || t("运行轨迹正在更新", "Runtime activity is updating")}
                         </Text>
                         <Text style={styles.broadcastSubtitle} numberOfLines={1}>
-                            {(active.actorLabel || tone.label)} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale)}
+                            {(active.actorLabel || tone.label)} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale, getEngineNowMs())}
                         </Text>
                     </View>
                 </View>
@@ -161,6 +163,7 @@ function ActivityFeedItem({
     processes: AdminProcessRef[];
 }) {
     const { colors, locale } = useUiPrefs();
+    const { getEngineNowMs } = useAppSession();
     const tone = getKindTone(activity.kind, colors);
     const iconName = getKindIconName(activity.kind);
 
@@ -186,7 +189,7 @@ function ActivityFeedItem({
                     </View>
                 ) : null}
                 <Text style={[styles.feedTimeText, { color: colors.textSoft }]}>
-                    {formatPhoneRelativeRuntimeTime(activity.timestamp, locale)}
+                    {formatPhoneRelativeRuntimeTime(activity.timestamp, locale, getEngineNowMs())}
                 </Text>
             </View>
 

@@ -8,6 +8,7 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 export async function GET(req: NextRequest) {
     const userEmail = await resolveAuthorizedUserEmail(req);
@@ -32,7 +33,11 @@ export async function GET(req: NextRequest) {
         const sessions = normalizeAuthoritativeSessionHistoryList(
             Array.isArray(data.sessions) ? data.sessions : [],
         );
-        return NextResponse.json(sessions);
+        return NextResponse.json(sessions, {
+            headers: res.headers.get(ENGINE_NOW_HEADER)
+                ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
+                : undefined,
+        });
     } catch (error) {
         console.error("Error communicating with Python engine:", error);
         return NextResponse.json([]);
@@ -68,6 +73,11 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json(
             normalizeAuthoritativeSessionHistoryRecord(await res.json().catch(() => ({}))),
+            {
+                headers: res.headers.get(ENGINE_NOW_HEADER)
+                    ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
+                    : undefined,
+            },
         );
     } catch (error) {
         console.error("Error creating session in Python engine:", error);

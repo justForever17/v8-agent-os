@@ -6,6 +6,7 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { MusicShelf } from "@/src/components/layout/MusicShelf";
 import { formatRelativeTime } from "@/src/lib/time";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary, MusicTrack } from "@/src/types/admin";
@@ -67,6 +68,7 @@ export function HistoryDrawer({
     const insets = useSafeAreaInsets();
     const { width } = useWindowDimensions();
     const { colors, t, locale } = useUiPrefs();
+    const { getEngineNowMs } = useAppSession();
     const panelWidth = Math.min(width * 0.86, 352);
     const groups = useMemo(() => groupedItems || groupConversations(items), [groupedItems, items]);
     const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({
@@ -213,7 +215,7 @@ export function HistoryDrawer({
                                                                     </Text>
                                                                 ) : null}
                                                                 <Text style={[styles.itemMeta, { color: colors.textMuted }]} numberOfLines={1}>
-                                                                    {formatRelativeTime(item.lastActivityAt || item.updatedAt || item.updated_at || item.createdAt || "", locale)}
+                                                                    {formatRelativeTime(item.historySortAt || item.createdAt || "", locale, getEngineNowMs())}
                                                                 </Text>
                                                             </View>
                                                             <Pressable

@@ -103,6 +103,127 @@ function pushPlainTextBlock(blocks: PhoneContentBlock[], content: string, blockI
     });
 }
 
+function inferFilenameFromDocumentHref(label: string, href: string, fallback: string) {
+    const normalizedLabel = String(label || "").trim();
+    if (normalizedLabel && !/^https?:\/\//i.test(normalizedLabel) && !normalizedLabel.startsWith("/api/")) {
+        return normalizedLabel;
+    }
+    try {
+        const parsed = new URL(href, "http://v8.local");
+        const queryPath = parsed.searchParams.get("workspace_relative_path")
+            || parsed.searchParams.get("workspaceRelativePath")
+            || "";
+        const source = queryPath || parsed.pathname;
+        const tail = source.split(/[\\/]/).filter(Boolean).pop() || fallback;
+        return decodeURIComponent(tail) || fallback;
+    } catch {
+        const tail = href.split(/[\\/]/).filter(Boolean).pop()?.split("?")[0] || fallback;
+        try {
+            return decodeURIComponent(tail) || fallback;
+        } catch {
+            return tail || fallback;
+        }
+    }
+}
+
+function buildDocumentLinkBlock(label: string, href: string) {
+    const normalizedHref = String(href || "").trim();
+    if (!normalizedHref) {
+        return null;
+    }
+    const filename = inferFilenameFromDocumentHref(String(label || ""), normalizedHref, "file");
+    let pathPlane = "";
+    try {
+        const parsed = new URL(normalizedHref, "http://v8.local");
+        pathPlane = String(
+            parsed.searchParams.get("path_plane")
+            || parsed.searchParams.get("pathPlane")
+            || "",
+        ).trim().toLowerCase();
+    } catch {
+        pathPlane = "";
+    }
+    if (pathPlane === "workspace_download") {
+        return {
+            type: "file-generic" as const,
+            content: normalizedHref,
+            data: {
+                url: normalizedHref,
+                filename: filename || "file",
+                viewerKind: "download",
+            },
+        };
+    }
+    let decodedHref = href;
+    try {
+        decodedHref = decodeURIComponent(normalizedHref);
+    } catch {
+        decodedHref = normalizedHref;
+    }
+    const probe = `${decodedHref} ${filename}`.trim();
+
+    if (/\.html?(\?.*)?$/i.test(probe)) {
+        return {
+            type: "file-html" as const,
+            content: normalizedHref,
+            data: {
+                url: normalizedHref,
+                filename: filename || "document.html",
+            },
+        };
+    }
+
+    if (/\.pdf(?:$|[?&\s])/i.test(probe)) {
+        return {
+            type: "file-generic" as const,
+            content: normalizedHref,
+            data: {
+                url: normalizedHref,
+                filename: filename || "document.pdf",
+                viewerKind: "pdf",
+            },
+        };
+    }
+
+    if (/\.(?:ppt|pptx|odp)(?:$|[?&\s])/i.test(probe)) {
+        return {
+            type: "file-generic" as const,
+            content: normalizedHref,
+            data: {
+                url: normalizedHref,
+                filename: filename || "presentation.pptx",
+                viewerKind: "ppt",
+            },
+        };
+    }
+
+    if (/\.(?:glb|gltf)(?:$|[?&\s])/i.test(probe)) {
+        return {
+            type: "file-generic" as const,
+            content: normalizedHref,
+            data: {
+                url: normalizedHref,
+                filename: filename || "model.glb",
+                viewerKind: "model",
+            },
+        };
+    }
+
+    if (/\.(?:md|markdown|txt|json|csv|zip|doc|docx|xls|xlsx|yaml|yml|log)(?:$|[?&\s])/i.test(probe)) {
+        return {
+            type: "file-generic" as const,
+            content: normalizedHref,
+            data: {
+                url: normalizedHref,
+                filename: filename || "file",
+                viewerKind: "download",
+            },
+        };
+    }
+
+    return null;
+}
+
 function tryParseDocumentLinkBlock(content: string) {
     const raw = String(content || "").trim();
     if (!raw) {
@@ -116,63 +237,51 @@ function tryParseDocumentLinkBlock(content: string) {
     if (!href) {
         return null;
     }
-    const filename = String(markdownMatch?.[1] || href.split("/").pop()?.split("?")[0] || "").trim();
-    let decodedHref = href;
-    try {
-        decodedHref = decodeURIComponent(href);
-    } catch {
-        decodedHref = href;
-    }
-    const probe = `${decodedHref} ${filename}`.trim();
+    return buildDocumentLinkBlock(String(markdownMatch?.[1] || ""), href);
+}
 
-    if (/\.html?(\?.*)?$/i.test(probe)) {
-        return {
-            type: "file-html" as const,
-            content: href,
-            data: {
-                url: href,
-                filename: filename || "document.html",
-            },
-        };
+function pushInlineDocumentLinkBlocks(blocks: PhoneContentBlock[], content: string, blockIndex: { current: number }) {
+    const text = String(content || "");
+    if (!text) {
+        return;
     }
 
-    if (/\.pdf(?:$|[?&\s])/i.test(probe)) {
-        return {
-            type: "file-generic" as const,
-            content: href,
-            data: {
-                url: href,
-                filename: filename || "document.pdf",
-                viewerKind: "pdf",
-            },
-        };
+    const markdownLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+    let lastIndex = 0;
+    let foundDocumentLink = false;
+    let match: RegExpExecArray | null;
+
+    while ((match = markdownLinkRegex.exec(text)) !== null) {
+        const startIndex = match.index ?? 0;
+        if (startIndex > 0 && text[startIndex - 1] === "!") {
+            continue;
+        }
+        const documentBlock = buildDocumentLinkBlock(String(match[1] || ""), String(match[2] || ""));
+        if (!documentBlock) {
+            continue;
+        }
+
+        foundDocumentLink = true;
+        if (startIndex > lastIndex) {
+            pushInlineMediaPathBlocks(blocks, text.slice(lastIndex, startIndex), blockIndex);
+        }
+        blocks.push({
+            id: `${documentBlock.type}-${blockIndex.current++}`,
+            type: documentBlock.type,
+            content: documentBlock.content,
+            data: documentBlock.data,
+        });
+        lastIndex = startIndex + match[0].length;
     }
 
-    if (/\.(?:ppt|pptx|odp)(?:$|[?&\s])/i.test(probe)) {
-        return {
-            type: "file-generic" as const,
-            content: href,
-            data: {
-                url: href,
-                filename: filename || "presentation.pptx",
-                viewerKind: "ppt",
-            },
-        };
+    if (!foundDocumentLink) {
+        pushInlineMediaPathBlocks(blocks, text, blockIndex);
+        return;
     }
 
-    if (/\.(?:glb|gltf)(?:$|[?&\s])/i.test(probe)) {
-        return {
-            type: "file-generic" as const,
-            content: href,
-            data: {
-                url: href,
-                filename: filename || "model.glb",
-                viewerKind: "model",
-            },
-        };
+    if (lastIndex < text.length) {
+        pushInlineMediaPathBlocks(blocks, text.slice(lastIndex), blockIndex);
     }
-
-    return null;
 }
 
 function parseInlineMediaTag(raw: string) {
@@ -219,7 +328,7 @@ function pushRenderableTextBlocks(blocks: PhoneContentBlock[], content: string, 
 
     while ((match = mediaTagRegex.exec(text)) !== null) {
         if (match.index > lastIndex) {
-            pushInlineMediaPathBlocks(blocks, text.slice(lastIndex, match.index), blockIndex);
+            pushInlineDocumentLinkBlocks(blocks, text.slice(lastIndex, match.index), blockIndex);
         }
 
         const media = parseInlineMediaTag(match[0]);
@@ -241,7 +350,7 @@ function pushRenderableTextBlocks(blocks: PhoneContentBlock[], content: string, 
     }
 
     if (lastIndex < text.length) {
-        pushInlineMediaPathBlocks(blocks, text.slice(lastIndex), blockIndex);
+        pushInlineDocumentLinkBlocks(blocks, text.slice(lastIndex), blockIndex);
     }
 }
 

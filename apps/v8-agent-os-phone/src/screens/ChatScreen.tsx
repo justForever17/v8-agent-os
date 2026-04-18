@@ -157,13 +157,15 @@ function buildRuntimeTimelineEntry(
         actorLabel?: string;
         status?: string;
         kind?: PhoneRuntimeTimelineEntry["kind"];
+        fallbackNowMs?: number;
     },
 ): PhoneRuntimeTimelineEntry {
+    const fallbackNowMs = typeof options?.fallbackNowMs === "number" ? options.fallbackNowMs : Date.now();
     const timestamp = typeof options?.timestamp === "number"
         ? options.timestamp
         : typeof options?.timestamp === "string"
-            ? Date.parse(options.timestamp) || Date.now()
-            : Date.now();
+            ? Date.parse(options.timestamp) || fallbackNowMs
+            : fallbackNowMs;
     return {
         id: String(options?.id || `${runtimeId}:${topic}:${timestamp}`).trim(),
         seq: Number(options?.seq || 0) || 0,
@@ -214,8 +216,9 @@ function buildUserMessage(
         taskPlanningMode: boolean;
         files: UploadedWorkspaceFile[];
     },
+    nowMs: number,
 ): ChatMessage {
-    const now = Date.now();
+    const now = nowMs;
     const metadata: ChatMessage["metadata"] = {};
     const attachments = buildUploadedFileAttachments(options.files);
     if (options.command) {
@@ -406,16 +409,19 @@ function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): Chat
     ).trim();
     const attachments = Array.isArray(metadata.attachments) ? metadata.attachments as Array<Record<string, unknown>> : [];
     const images = attachments
-        .map((item) => String(item.publicUrl || item.url || item.workspacePath || "").trim())
+        .map((item) => String(item.publicUrl || item.url || "").trim())
         .filter(Boolean);
     const nodes = Array.isArray(record.nodes) ? record.nodes as PhoneUiTimelineNode[] : fallback.nodes || [];
+    const acceptedTimestamp = typeof record.timestamp === "number"
+        ? record.timestamp
+        : Date.parse(String(record.created_at || record.createdAt || record.timestamp || ""));
     return {
         ...fallback,
         id: String(record.id || fallback.id),
         role: record.role === "user" ? "user" : fallback.role,
         runId: String(record.run_id || record.runId || fallback.runId || ""),
         content: String(record.content_text || record.content || fallback.content || ""),
-        timestamp: fallback.timestamp || Date.now(),
+        timestamp: Number.isFinite(acceptedTimestamp) && acceptedTimestamp > 0 ? acceptedTimestamp : fallback.timestamp,
         nodes,
         images: images.length > 0 ? images : fallback.images,
         artifacts: Array.isArray(record.artifacts) ? record.artifacts as ChatArtifact[] : fallback.artifacts,
@@ -758,7 +764,6 @@ function findLatestAssistantShellIndex(messages: ChatMessage[], runId?: string) 
                 return index;
             }
         }
-        return -1;
     }
 
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -1002,11 +1007,18 @@ function buildMessageComparisonKeys(message: ChatMessage) {
 }
 
 function hasRenderableMessagePayload(message: ChatMessage) {
+    const metadata = message.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
     return Boolean(
         String(message.content || "").trim()
         || (Array.isArray(message.images) && message.images.length > 0)
         || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
         || (Array.isArray(message.nodes) && message.nodes.length > 0)
+        || metadata.taskPlanningMode === true
+        || (metadata.commandPreset && typeof metadata.commandPreset === "object")
+        || (Array.isArray(metadata.skillReferences) && metadata.skillReferences.length > 0)
+        || (Array.isArray(metadata.attachments) && metadata.attachments.length > 0)
         || countDefinedAssistantTaskProgressFields(readAssistantTaskProgress(message)) > 0,
     );
 }
@@ -1034,16 +1046,125 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
     if (!message) {
         return 0;
     }
+    const metadata = message.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
     return (
         String(message.content || "").trim().length
         + ((message.nodes || []).length * 120)
         + ((message.artifacts || []).length * 200)
         + ((message.images || []).length * 80)
+        + (metadata.commandPreset ? 40 : 0)
+        + (Array.isArray(metadata.skillReferences) ? metadata.skillReferences.length * 40 : 0)
+        + (Array.isArray(metadata.attachments) ? metadata.attachments.length * 80 : 0)
+        + (metadata.taskPlanningMode === true ? 30 : 0)
     );
 }
 
 function mergeMessageImages(base: string[] = [], incoming: string[] = []) {
     return Array.from(new Set([...base, ...incoming].filter(Boolean)));
+}
+
+function mergeUserStructuredMetadata(
+    snapshotMessage: ChatMessage,
+    matchingLocal: ChatMessage,
+    mergedMessage: ChatMessage,
+) {
+    if (matchingLocal.role !== "user") {
+        return mergedMessage;
+    }
+
+    const localMetadata = matchingLocal.metadata && typeof matchingLocal.metadata === "object"
+        ? matchingLocal.metadata as Record<string, unknown>
+        : {};
+    const snapshotMetadata = snapshotMessage.metadata && typeof snapshotMessage.metadata === "object"
+        ? snapshotMessage.metadata as Record<string, unknown>
+        : {};
+    const preservedMetadata: Record<string, unknown> = {};
+
+    if (!snapshotMetadata.commandPreset && localMetadata.commandPreset) {
+        preservedMetadata.commandPreset = localMetadata.commandPreset;
+    }
+    if (
+        (!Array.isArray(snapshotMetadata.skillReferences) || snapshotMetadata.skillReferences.length === 0)
+        && Array.isArray(localMetadata.skillReferences)
+        && localMetadata.skillReferences.length > 0
+    ) {
+        preservedMetadata.skillReferences = localMetadata.skillReferences;
+    }
+    if (snapshotMetadata.taskPlanningMode !== true && localMetadata.taskPlanningMode === true) {
+        preservedMetadata.taskPlanningMode = true;
+    }
+    if (
+        (!Array.isArray(snapshotMetadata.attachments) || snapshotMetadata.attachments.length === 0)
+        && Array.isArray(localMetadata.attachments)
+        && localMetadata.attachments.length > 0
+    ) {
+        preservedMetadata.attachments = localMetadata.attachments;
+    }
+    if (!snapshotMetadata.clientMessageId && localMetadata.clientMessageId) {
+        preservedMetadata.clientMessageId = localMetadata.clientMessageId;
+    }
+
+    if (Object.keys(preservedMetadata).length === 0) {
+        return mergedMessage;
+    }
+
+    return {
+        ...mergedMessage,
+        metadata: {
+            ...(mergedMessage.metadata || {}),
+            ...preservedMetadata,
+        },
+        images: mergeMessageImages(matchingLocal.images || [], mergedMessage.images || []),
+        artifacts: mergeArtifacts(matchingLocal.artifacts || [], mergedMessage.artifacts || []),
+    };
+}
+
+function shouldPreserveAssistantPlaceholder(
+    snapshotMessage: ChatMessage,
+    matchingLocal: ChatMessage,
+) {
+    if (matchingLocal.role !== "assistant") {
+        return false;
+    }
+    if (!matchingLocal.uiEphemeral && !isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase)) {
+        return false;
+    }
+    const snapshotText = String(snapshotMessage.content || "").trim();
+    const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
+    return !snapshotText && !snapshotHasStructuredState;
+}
+
+function mergeAssistantPlaceholder(
+    snapshotMessage: ChatMessage,
+    matchingLocal: ChatMessage,
+    mergedMessage: ChatMessage,
+) {
+    const localTaskProgress = readAssistantTaskProgress(matchingLocal);
+    const nextMessage: ChatMessage = {
+        ...mergedMessage,
+        runId: matchingLocal.runId || mergedMessage.runId,
+        uiEphemeral: true,
+        uiStreamPhase: matchingLocal.uiStreamPhase || mergedMessage.uiStreamPhase,
+        metadata: {
+            ...(matchingLocal.metadata || {}),
+            ...(mergedMessage.metadata || {}),
+        },
+        images: mergeMessageImages(matchingLocal.images || [], mergedMessage.images || []),
+        artifacts: mergeArtifacts(matchingLocal.artifacts || [], mergedMessage.artifacts || []),
+        nodes: mergeTimelineNodes(mergedMessage.nodes || [], matchingLocal.nodes || []),
+    };
+    if (String(matchingLocal.content || "").trim().length > String(nextMessage.content || "").trim().length) {
+        nextMessage.content = matchingLocal.content;
+    }
+    if (countDefinedAssistantTaskProgressFields(localTaskProgress) > 0) {
+        nextMessage.metadata = {
+            ...(nextMessage.metadata || {}),
+            assistantTaskProgress: localTaskProgress,
+        };
+    }
+    return nextMessage;
 }
 
 function mergeStructuredSnapshotMessages(
@@ -1074,7 +1195,11 @@ function mergeStructuredSnapshotMessages(
         const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
         const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
         if (snapshotCanonical) {
-            return normalizeMessagesForState([snapshotMessage])[0] || snapshotMessage;
+            const canonicalSnapshot = normalizeMessagesForState([snapshotMessage])[0] || snapshotMessage;
+            if (shouldPreserveAssistantPlaceholder(snapshotMessage, matchingLocal)) {
+                return mergeAssistantPlaceholder(snapshotMessage, matchingLocal, canonicalSnapshot);
+            }
+            return mergeUserStructuredMetadata(snapshotMessage, matchingLocal, canonicalSnapshot);
         }
 
         const localHasStructuredState = hasStructuredAssistantPayload(matchingLocal);
@@ -1112,7 +1237,10 @@ function mergeStructuredSnapshotMessages(
             }
         }
 
-        return mergedMessage;
+        if (shouldPreserveAssistantPlaceholder(snapshotMessage, matchingLocal)) {
+            return mergeAssistantPlaceholder(snapshotMessage, matchingLocal, mergedMessage);
+        }
+        return mergeUserStructuredMetadata(snapshotMessage, matchingLocal, mergedMessage);
     }));
 }
 
@@ -1164,7 +1292,10 @@ function mergeAuthoritativeSnapshotMessages(
         const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
         const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
         if (snapshotCanonical) {
-            return snapshotMessage;
+            if (shouldPreserveAssistantPlaceholder(snapshotMessage, matchingLocal)) {
+                return mergeAssistantPlaceholder(snapshotMessage, matchingLocal, snapshotMessage);
+            }
+            return mergeUserStructuredMetadata(snapshotMessage, matchingLocal, snapshotMessage);
         }
 
         const localStreamActive = matchingLocal.role === "assistant" && isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase);
@@ -1246,7 +1377,10 @@ function mergeAuthoritativeSnapshotMessages(
             }
         }
 
-        return mergedMessage;
+        if (shouldPreserveAssistantPlaceholder(snapshotMessage, matchingLocal)) {
+            return mergeAssistantPlaceholder(snapshotMessage, matchingLocal, mergedMessage);
+        }
+        return mergeUserStructuredMetadata(snapshotMessage, matchingLocal, mergedMessage);
     });
 
     const unmatchedOptimisticLocals = preservableLocals.filter((message) => {
@@ -1423,6 +1557,7 @@ export default function ChatScreen() {
         setActiveConversationId,
         authorizedFetch,
         authorizedRealtimeStream,
+        getEngineNowMs,
     } = useAppSession();
     const {
         locale,
@@ -1457,6 +1592,7 @@ export default function ChatScreen() {
     const realtimeSnapshotInflightRef = useRef(false);
     const realtimeSnapshotPendingRef = useRef(false);
     const waitingApprovalRefreshAtRef = useRef(0);
+    const recentlyResolvedApprovalIdsRef = useRef<Set<string>>(new Set());
     const lastMessageFingerprintRef = useRef("");
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
@@ -2336,6 +2472,13 @@ export default function ChatScreen() {
             || nextCurrentRun.completed_at
             || "",
         ).trim() || undefined;
+        const nextHistorySortAt = String(
+            nextSummary.historySortAt
+            || record.historySortAt
+            || nextSummary.createdAt
+            || record.createdAt
+            || "",
+        ).trim() || undefined;
         const nextLastActivityAt = String(
             nextSummary.lastActivityAt
             || record.lastActivityAt
@@ -2394,6 +2537,7 @@ export default function ChatScreen() {
                 const currentConversation = current[index];
                 const merged = mergeSessionHistoryOverlay(currentConversation, {
                     ...overlayPatch,
+                    historySortAt: nextHistorySortAt || currentConversation.historySortAt,
                     lastActivityAt: nextLastActivityAt || undefined,
                     currentRunId: nextRunId,
                     lastRunId: nextLastRunId,
@@ -2612,6 +2756,7 @@ export default function ChatScreen() {
             phoneReceivedAt,
         });
 
+        const nowMs = getEngineNowMs();
         const shouldFallbackRefresh = shouldAuthoritativelyRefreshOnRuntimeEvent(normalized);
         const normalizedToolName = String(
             normalized.tool?.toolName
@@ -2649,7 +2794,7 @@ export default function ChatScreen() {
                     {
                         id: normalized.event_id || `todo:${normalizedToolName}:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
                         status: "running",
                         kind: "progress",
@@ -2692,7 +2837,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `agent:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "handoff",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                         status: "running",
                     },
@@ -2726,7 +2871,7 @@ export default function ChatScreen() {
                     {
                         runId: normalized.run_id,
                         seq: normalized.seq,
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                         status: "running",
                         topic: normalized.topic || "run.reasoning.delta",
@@ -2758,7 +2903,7 @@ export default function ChatScreen() {
                     {
                         runId: normalized.run_id,
                         seq: normalized.seq,
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                         status: "running",
                         topic: normalized.topic || "run.text.delta",
@@ -2801,7 +2946,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `${normalized.type}:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "tool",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                     },
                 ),
@@ -2837,7 +2982,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `task-planning-enabled:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "progress",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
                         status: "running",
                     },
@@ -2877,7 +3022,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `task-planning-decision:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "progress",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
                         status: "completed",
                     },
@@ -2903,7 +3048,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `done:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "progress",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                         status: "completed",
                     },
@@ -2942,7 +3087,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `error:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "progress",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                         status: "failed",
                     },
@@ -2997,7 +3142,7 @@ export default function ChatScreen() {
                             id: normalized.event_id || `ask-user-resolved:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
-                            timestamp: normalized.ts || Date.now(),
+                            timestamp: normalized.ts || nowMs,
                             actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
                         },
                     ),
@@ -3035,7 +3180,7 @@ export default function ChatScreen() {
                             id: normalized.event_id || `ask-user:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
-                            timestamp: normalized.ts || Date.now(),
+                            timestamp: normalized.ts || nowMs,
                             actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
                         },
                     ),
@@ -3050,6 +3195,13 @@ export default function ChatScreen() {
         if (normalized.name === "approval_requested") {
             const approval = buildApprovalFromEvent(normalized);
             if (approval) {
+                const approvalId = String(approval.id || approval.approval_id || "").trim();
+                if (approvalId && recentlyResolvedApprovalIdsRef.current.has(approvalId)) {
+                    if (shouldFallbackRefresh) {
+                        scheduleRealtimeSnapshotRefresh(normalized.session_id || normalized.conversation_id || activeConversationIdRef.current);
+                    }
+                    return;
+                }
                 setApprovals((current) => upsertApproval(current, approval));
                 setRuntime((current) => ({
                     ...current,
@@ -3079,7 +3231,7 @@ export default function ChatScreen() {
                             id: normalized.event_id || `approval:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
-                            timestamp: normalized.ts || Date.now(),
+                            timestamp: normalized.ts || nowMs,
                             actorLabel: normalized.actorLabel || tRef.current("运行调度", "Automation"),
                         },
                     ),
@@ -3116,7 +3268,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `artifact:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "artifact",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                     },
                 ),
@@ -3137,7 +3289,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `runtime:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "progress",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                     },
                 ),
@@ -3164,7 +3316,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `control:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "governance",
-                        timestamp: normalized.ts || Date.now(),
+                        timestamp: normalized.ts || nowMs,
                         actorLabel: normalized.actorLabel,
                     },
                 ),
@@ -3196,7 +3348,7 @@ export default function ChatScreen() {
                     id: normalized.event_id || `runtime:${normalized.seq || Date.now()}`,
                     seq: normalized.seq,
                     kind: "progress",
-                    timestamp: normalized.ts || Date.now(),
+                    timestamp: normalized.ts || nowMs,
                     actorLabel: normalized.actorLabel || (typeof normalized.data?.actorLabel === "string" ? normalized.data.actorLabel : undefined),
                     status: typeof normalized.data?.status === "string" ? normalized.data.status : undefined,
                 },
@@ -3234,6 +3386,7 @@ export default function ChatScreen() {
     }, [
         appendRuntimeTimeline,
         applyRealtimeSnapshotPayload,
+        getEngineNowMs,
         locale,
         patchAssistantTaskShell,
         queueRuntimeMessageEvent,
@@ -3895,6 +4048,10 @@ export default function ChatScreen() {
             }
         } else {
             await approvePendingItem(authorizedFetch, approvalId, answer, approve);
+            recentlyResolvedApprovalIdsRef.current.add(approvalId);
+            setTimeout(() => {
+                recentlyResolvedApprovalIdsRef.current.delete(approvalId);
+            }, 30000);
             setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
         }
     }, [authorizedFetch]);
@@ -4196,6 +4353,8 @@ export default function ChatScreen() {
         const pendingSkills = [...selectedSkills];
         const pendingFiles = [...uploadedFiles];
         const effectiveText = text || (pendingFiles.length === 1 ? "已上传 1 个文件" : pendingFiles.length > 1 ? `已上传 ${pendingFiles.length} 个文件` : "");
+        const engineNowMs = getEngineNowMs();
+        const engineNowIso = new Date(engineNowMs).toISOString();
         let submissionAccepted = false;
         let optimisticUserMessageId = "";
         let optimisticAssistantMessageId = "";
@@ -4218,7 +4377,7 @@ export default function ChatScreen() {
                 skills: pendingSkills,
                 taskPlanningMode,
                 files: pendingFiles,
-            });
+            }, engineNowMs);
             const clientMessageId = userMessage.id;
             const assistantPlaceholder = buildAssistantPlaceholder();
             assistantPlaceholder.metadata = {
@@ -4273,7 +4432,8 @@ export default function ChatScreen() {
                             title: isPlaceholderConversationTitle(conversation.title)
                                 ? (effectiveText.slice(0, 36) || conversation.title || "")
                                 : conversation.title,
-                            updatedAt: new Date().toISOString(),
+                            updatedAt: engineNowIso,
+                            historySortAt: engineNowIso,
                             previewExcerpt: effectiveText.slice(0, 120),
                         }
                         : conversation,
@@ -4382,6 +4542,7 @@ export default function ChatScreen() {
     }, [
         authorizedFetch,
         clearNewConversationIntent,
+        getEngineNowMs,
         input,
         selectedCommand,
         selectedSkills,

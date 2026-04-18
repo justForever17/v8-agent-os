@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+    AlertCircle,
     BookOpen,
     Brain,
     CheckSquare,
@@ -38,6 +39,53 @@ import { lt } from "@/lib/locale";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DashboardData = any;
 
+interface ExtractionRun {
+    runId?: string;
+    sessionId?: string;
+    status?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    triggerSource?: string;
+    extractorModel?: string;
+    extractionFailureStage?: string | null;
+    extractionFailureReason?: string | null;
+    skipReason?: string | null;
+    extractionMode?: string | null;
+    transcriptSource?: string | null;
+    latestSeq?: number | null;
+    rawOutputPreview?: string | null;
+    parserErrorPreview?: string | null;
+    summary?: string | null;
+    resolvedScope?: string | null;
+    effectiveMemoryScope?: string | null;
+    memoryPolicy?: string | null;
+    provenanceClass?: string | null;
+    noPersistedMemoryReason?: string | null;
+    extractedPreferenceCount?: number;
+    extractedKnowledgeCount?: number;
+    persistedPreferenceCount?: number;
+    persistedKnowledgeCount?: number;
+    persistedRelationCount?: number;
+    filterReasons?: Record<string, number>;
+    invocationStatus?: string | null;
+    invocationError?: string | null;
+}
+
+interface MaintenanceRun {
+    runId?: string;
+    status?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    triggerSource?: string;
+    summaryMissingCountBefore?: number;
+    summaryMissingCountAfter?: number;
+    summaryBackfilledCount?: number;
+    summaryStaleCountBefore?: number;
+    summaryStaleCountAfter?: number;
+    touchedRefs?: string[];
+    resultReason?: string | null;
+}
+
 interface KnowledgeItem {
     id: string;
     fact: string;
@@ -47,6 +95,77 @@ interface KnowledgeItem {
 }
 
 const VALID_TABS = new Set(["preferences", "projects", "knowledge", "artifacts", "graph", "agent", "audit", "upload", "config"]);
+
+function formatExtractionOutcome(run: ExtractionRun, t: ReturnType<typeof useT>) {
+    if ((run.status || "").toLowerCase() === "skipped" || run.skipReason) {
+        const labels: Record<string, string> = {
+            duplicate_transcript: t("重复 transcript，已跳过"),
+            duplicate_increment: t("重复增量，已跳过"),
+            no_semantic_content: t("语义内容过短，已跳过"),
+            no_messages: t("无可用消息，已跳过"),
+            no_user_message: t("缺少用户消息，已跳过"),
+        };
+        const skipKey = run.skipReason || run.extractionMode || "";
+        return {
+            title: labels[skipKey] || t("已跳过"),
+            tone: "bg-slate-500/10 text-slate-700 border-slate-500/20",
+            detail: t("这不是 durable policy 太严，而是本轮没有新的可抽取增量，或者内容本身不满足抽取前置条件。"),
+        };
+    }
+    if (run.extractionFailureStage) {
+        const labels: Record<string, string> = {
+            extractor_config_missing: t("抽取器配置缺失"),
+            llm_response_empty: t("模型空响应"),
+            parser_failed: t("结构解析失败"),
+            repair_parser_failed: t("修复解析失败"),
+            llm_invoke_failed: t("模型调用失败"),
+        };
+        return {
+            title: labels[run.extractionFailureStage] || run.extractionFailureStage,
+            tone: "bg-red-500/10 text-red-600 border-red-500/20",
+            detail: run.extractionFailureReason || run.invocationError || t("本轮抽取未成功完成。"),
+        };
+    }
+    if (run.noPersistedMemoryReason === "policy_filtered") {
+        return {
+            title: t("已抽取，但被策略过滤"),
+            tone: "bg-amber-500/10 text-amber-700 border-amber-500/20",
+            detail: t("当前会话抽取到了候选项，但 durable policy 没有允许它们落库。"),
+        };
+    }
+    if ((run.persistedKnowledgeCount || 0) > 0 || (run.persistedPreferenceCount || 0) > 0) {
+        return {
+            title: t("已持久化"),
+            tone: "bg-emerald-500/10 text-emerald-700 border-emerald-500/20",
+            detail: t("本轮 memory extraction 已经成功写入 durable memory。"),
+        };
+    }
+    if ((run.extractedKnowledgeCount || 0) > 0 || (run.extractedPreferenceCount || 0) > 0) {
+        return {
+            title: t("已抽取，等待进一步判断"),
+            tone: "bg-sky-500/10 text-sky-700 border-sky-500/20",
+            detail: t("当前已有候选项，但未形成可持久化写入。"),
+        };
+    }
+    return {
+        title: t("无有效抽取"),
+        tone: "bg-muted text-muted-foreground border-border/60",
+        detail: t("当前会话没有产生可供 durable memory 使用的结构化结果。"),
+    };
+}
+
+function formatRelativeTimestamp(value: string | null | undefined) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString("zh-CN", {
+        hour12: false,
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
 
 export default function MemoryDashboardPage() {
     const { toast } = useToast();
@@ -230,6 +349,12 @@ export default function MemoryDashboardPage() {
         graphRelations: data?.graph?.relations || 0,
     }), [data]);
 
+    const extractionSummary = data?.extractions?.summary || {};
+    const recentExtractions = (data?.extractions?.recent || []) as ExtractionRun[];
+    const memoryMapHealth = data?.memoryMap || {};
+    const maintenanceSummary = data?.maintenance?.summary || {};
+    const recentMaintenanceRuns = (data?.maintenance?.recent || []) as MaintenanceRun[];
+
     if (loading) {
         return (
             <div className="flex h-96 items-center justify-center">
@@ -310,6 +435,211 @@ export default function MemoryDashboardPage() {
                     </CardContent>
                 </Card>
             </div>
+
+            <Card className="border-border/60">
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                        <AlertCircle className="h-5 w-5 text-primary" />
+                        {t("记忆抽取诊断")}
+                    </CardTitle>
+                    <CardDescription>
+                        {t("明确区分抽取失败、模型空响应、解析失败和策略过滤，避免把所有问题都误判成阈值设置。")}
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+                        {[
+                            [t("已完成"), extractionSummary.completed || 0],
+                            [t("已跳过"), extractionSummary.skipped || 0],
+                            [t("已持久化"), extractionSummary.persisted || 0],
+                            [t("策略过滤"), extractionSummary.policyFiltered || 0],
+                            [t("模型空响应"), extractionSummary.llmResponseEmpty || 0],
+                            [t("解析失败"), (extractionSummary.parserFailed || 0) + (extractionSummary.repairParserFailed || 0)],
+                            [t("模型调用失败"), extractionSummary.llmInvokeFailed || 0],
+                            [t("重复 transcript"), extractionSummary.duplicateTranscript || 0],
+                            [t("配置缺失"), extractionSummary.extractorConfigMissing || 0],
+                            [t("短内容跳过"), extractionSummary.noSemanticContent || 0],
+                        ].map(([label, value]) => (
+                            <div key={String(label)} className="rounded-xl border bg-muted/20 p-3">
+                                <p className="text-xs text-muted-foreground">{label}</p>
+                                <p className="mt-2 text-2xl font-semibold">{value}</p>
+                            </div>
+                        ))}
+                    </div>
+
+                    {recentExtractions.length > 0 ? (
+                        <div className="space-y-3">
+                            {recentExtractions.map((run) => {
+                                const outcome = formatExtractionOutcome(run, t);
+                                return (
+                                    <div key={run.runId || `${run.sessionId}-${run.startedAt}`} className="rounded-xl border bg-background p-4">
+                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                            <div className="min-w-0 flex-1 space-y-2">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${outcome.tone}`}>
+                                                        {outcome.title}
+                                                    </span>
+                                                    <span className="font-mono text-xs text-muted-foreground">
+                                                        session {run.sessionId || "—"}
+                                                    </span>
+                                                    <span className="font-mono text-xs text-muted-foreground">
+                                                        run {run.runId || "—"}
+                                                    </span>
+                                                </div>
+                                                <p className="text-sm text-foreground">{outcome.detail}</p>
+                                                {run.summary ? (
+                                                    <p className="rounded-lg bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                                                        {run.summary}
+                                                    </p>
+                                                ) : null}
+                                                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                                    <span>{t("开始")}：{formatRelativeTimestamp(run.startedAt)}</span>
+                                                    <span>{t("完成")}：{formatRelativeTimestamp(run.finishedAt)}</span>
+                                                    <span>{t("模型")}：{run.extractorModel || "—"}</span>
+                                                    <span>{t("scope")}：{run.effectiveMemoryScope || run.resolvedScope || "—"}</span>
+                                                    <span>{t("policy")}：{run.memoryPolicy || "—"}</span>
+                                                    <span>{t("模式")}：{run.extractionMode || "—"}</span>
+                                                    <span>{t("transcript")}：{run.transcriptSource || "—"}</span>
+                                                </div>
+                                                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                                    <span>{t("抽取偏好")}：{run.extractedPreferenceCount || 0}</span>
+                                                    <span>{t("抽取知识")}：{run.extractedKnowledgeCount || 0}</span>
+                                                    <span>{t("持久化偏好")}：{run.persistedPreferenceCount || 0}</span>
+                                                    <span>{t("持久化知识")}：{run.persistedKnowledgeCount || 0}</span>
+                                                    <span>{t("图谱关系")}：{run.persistedRelationCount || 0}</span>
+                                                </div>
+                                                {(run.rawOutputPreview || run.parserErrorPreview || run.invocationError) ? (
+                                                    <div className="grid gap-2 xl:grid-cols-3">
+                                                        {run.rawOutputPreview ? (
+                                                            <div className="rounded-lg border bg-muted/20 p-3">
+                                                                <p className="mb-2 text-xs font-medium text-muted-foreground">{t("模型原始输出预览")}</p>
+                                                                <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{run.rawOutputPreview}</pre>
+                                                            </div>
+                                                        ) : null}
+                                                        {run.parserErrorPreview ? (
+                                                            <div className="rounded-lg border bg-muted/20 p-3">
+                                                                <p className="mb-2 text-xs font-medium text-muted-foreground">{t("解析错误预览")}</p>
+                                                                <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{run.parserErrorPreview}</pre>
+                                                            </div>
+                                                        ) : null}
+                                                        {run.invocationError ? (
+                                                            <div className="rounded-lg border bg-muted/20 p-3">
+                                                                <p className="mb-2 text-xs font-medium text-muted-foreground">{t("模型调用错误")}</p>
+                                                                <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{run.invocationError}</pre>
+                                                            </div>
+                                                        ) : null}
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="rounded-xl border border-dashed bg-muted/20 p-6 text-sm text-muted-foreground">
+                            {t("近期还没有可展示的 memory extraction 运行样本。")}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Card className="border-border/60">
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                        <FolderTree className="h-5 w-5 text-primary" />
+                        {t("记忆地图与维护状态")}
+                    </CardTitle>
+                    <CardDescription>
+                        {t("这里展示 brokered memory map 的摘要健康度，以及最近一次 Memory Maintenance 是否已经补齐缺失的周/月/年摘要。")}
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+                        {[
+                            [t("年节点"), memoryMapHealth?.counts?.year || 0],
+                            [t("月节点"), memoryMapHealth?.counts?.month || 0],
+                            [t("周节点"), memoryMapHealth?.counts?.week || 0],
+                            [t("天节点"), memoryMapHealth?.counts?.day || 0],
+                            [t("缺摘要"), memoryMapHealth?.counts?.missing || 0],
+                            [t("摘要陈旧"), memoryMapHealth?.counts?.stale || 0],
+                            [t("已补齐"), maintenanceSummary.summaryBackfilled || 0],
+                        ].map(([label, value]) => (
+                            <div key={String(label)} className="rounded-xl border bg-muted/20 p-3">
+                                <p className="text-xs text-muted-foreground">{label}</p>
+                                <p className="mt-2 text-2xl font-semibold">{value}</p>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-2">
+                        <div className="rounded-xl border bg-background p-4">
+                            <div className="mb-3 text-sm font-medium">{t("缺失的摘要节点")}</div>
+                            {(memoryMapHealth?.missingRefs || []).length > 0 ? (
+                                <div className="space-y-2">
+                                    {(memoryMapHealth.missingRefs || []).map((ref: string) => (
+                                        <div key={ref} className="rounded-lg bg-muted/30 px-3 py-2 font-mono text-xs text-muted-foreground">
+                                            {ref}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-sm text-muted-foreground">{t("当前没有缺失的 week/month/year summary。")}</div>
+                            )}
+                        </div>
+
+                        <div className="rounded-xl border bg-background p-4">
+                            <div className="mb-3 text-sm font-medium">{t("陈旧的摘要节点")}</div>
+                            {(memoryMapHealth?.staleRefs || []).length > 0 ? (
+                                <div className="space-y-2">
+                                    {(memoryMapHealth.staleRefs || []).map((ref: string) => (
+                                        <div key={ref} className="rounded-lg bg-muted/30 px-3 py-2 font-mono text-xs text-muted-foreground">
+                                            {ref}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-sm text-muted-foreground">{t("当前没有需要重刷的陈旧摘要。")}</div>
+                            )}
+                        </div>
+                    </div>
+
+                    {recentMaintenanceRuns.length > 0 ? (
+                        <div className="space-y-3">
+                            {recentMaintenanceRuns.map((run) => (
+                                <div key={run.runId || `${run.startedAt}`} className="rounded-xl border bg-background p-4">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="rounded-full border border-border/60 px-2.5 py-1 text-xs font-medium">
+                                            {run.status || "unknown"}
+                                        </span>
+                                        <span className="font-mono text-xs text-muted-foreground">run {run.runId || "—"}</span>
+                                        <span className="text-xs text-muted-foreground">{t("开始")}：{formatRelativeTimestamp(run.startedAt)}</span>
+                                        <span className="text-xs text-muted-foreground">{t("完成")}：{formatRelativeTimestamp(run.finishedAt)}</span>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                        <span>{t("缺摘要前")}：{run.summaryMissingCountBefore || 0}</span>
+                                        <span>{t("缺摘要后")}：{run.summaryMissingCountAfter || 0}</span>
+                                        <span>{t("陈旧前")}：{run.summaryStaleCountBefore || 0}</span>
+                                        <span>{t("陈旧后")}：{run.summaryStaleCountAfter || 0}</span>
+                                        <span>{t("补齐数量")}：{run.summaryBackfilledCount || 0}</span>
+                                    </div>
+                                    {(run.touchedRefs || []).length > 0 ? (
+                                        <div className="mt-3 space-y-2">
+                                            {(run.touchedRefs || []).map((ref) => (
+                                                <div key={ref} className="rounded-lg bg-muted/30 px-3 py-2 font-mono text-xs text-muted-foreground">
+                                                    {ref}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-sm text-muted-foreground">{t("还没有 Memory Maintenance 运行记录。")}</div>
+                    )}
+                </CardContent>
+            </Card>
 
             <Tabs value={activeTab} onValueChange={(value) => router.replace(`/admin/memory?tab=${value}`)} className="space-y-4">
                 <TabsList className="flex h-auto flex-wrap gap-2 bg-transparent p-0">

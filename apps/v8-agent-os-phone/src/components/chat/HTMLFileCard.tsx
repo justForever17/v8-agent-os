@@ -13,6 +13,7 @@ import { WebView } from "react-native-webview";
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
 import { downloadUrlToUserSelectedFile } from "@/src/lib/file-transfer";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export const HTMLFileCard = memo(function HTMLFileCard({
@@ -25,6 +26,7 @@ export const HTMLFileCard = memo(function HTMLFileCard({
     filesize?: string;
 }) {
     const { colors, t } = useUiPrefs();
+    const { adminBaseUrl, authorizedFetch } = useAppSession();
     const [isOpen, setIsOpen] = useState(false);
 
     const safeUrl = useMemo(() => {
@@ -43,10 +45,14 @@ export const HTMLFileCard = memo(function HTMLFileCard({
                 filename: displayFilename,
                 mimeType: "text/html",
                 prefix: "html",
+                adminBaseUrl,
+                authorizedFetch,
             });
             Alert.alert(
                 t("已下载", "Downloaded"),
-                saved.userVisible
+                saved.shared
+                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                    : saved.userVisible
                     ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
                     : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
             );

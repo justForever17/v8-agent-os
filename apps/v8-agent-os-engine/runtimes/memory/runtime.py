@@ -55,7 +55,15 @@ class MemoryRuntime:
                 }
             ],
             "metadata": {
-                "managedToolNames": ["memory_recall", "mem_delete", "mem_update", "mem_summary"],
+                "managedToolNames": [
+                    "memory_recall",
+                    "mem_delete",
+                    "mem_update",
+                    "mem_summary",
+                    "memory_map",
+                    "memory_map_expand",
+                    "memory_read_day",
+                ],
             },
         }
 
@@ -177,6 +185,106 @@ class MemoryRuntime:
         graph_stats = knowledge_service.get_graph_stats()
         recent_logs = injection_service.get_recent_logs(days=3)
         health = memory_health_service.check()
+        extraction_runs: List[Dict[str, Any]] = []
+        recent_memory_runs = db.list_run_records(run_type="memory", limit=40)
+        recent_invocations = db.list_model_invocations(
+            capability_class="memory_extraction",
+            request_kind="memory_extraction",
+            limit=60,
+        )
+        invocation_by_run_id = {
+            str(item.get("run_id") or "").strip(): item
+            for item in recent_invocations
+            if str(item.get("run_id") or "").strip()
+        }
+        extraction_summary = {
+            "completed": 0,
+            "skipped": 0,
+            "persisted": 0,
+            "policyFiltered": 0,
+            "llmResponseEmpty": 0,
+            "parserFailed": 0,
+            "repairParserFailed": 0,
+            "llmInvokeFailed": 0,
+            "extractorConfigMissing": 0,
+            "duplicateTranscript": 0,
+            "duplicateIncrement": 0,
+            "noSemanticContent": 0,
+        }
+
+        for run in recent_memory_runs:
+            metadata = run.get("metadata") or {}
+            if str(metadata.get("task_kind") or "").strip().lower() != "session_extraction":
+                continue
+            extraction_meta = metadata.get("memory_extraction") if isinstance(metadata.get("memory_extraction"), dict) else {}
+            no_persisted_reason = str(extraction_meta.get("noPersistedMemoryReason") or "").strip()
+            failure_stage = str(extraction_meta.get("extractionFailureStage") or "").strip()
+            skip_reason = str(extraction_meta.get("skipReason") or "").strip()
+            extraction_mode = str(extraction_meta.get("extractionMode") or "").strip()
+            persisted_knowledge = int(extraction_meta.get("persistedKnowledgeCount") or 0)
+            persisted_preferences = int(extraction_meta.get("persistedPreferenceCount") or 0)
+            invocation = invocation_by_run_id.get(str(run.get("id") or "").strip()) or {}
+
+            if str(run.get("status") or "").strip().lower() == "completed":
+                extraction_summary["completed"] += 1
+            if str(run.get("status") or "").strip().lower() == "skipped":
+                extraction_summary["skipped"] += 1
+            if persisted_knowledge > 0 or persisted_preferences > 0:
+                extraction_summary["persisted"] += 1
+            if no_persisted_reason == "policy_filtered":
+                extraction_summary["policyFiltered"] += 1
+            if skip_reason == "duplicate_transcript" or extraction_mode == "duplicate_transcript":
+                extraction_summary["duplicateTranscript"] += 1
+            if skip_reason == "duplicate_increment" or extraction_mode == "duplicate_increment":
+                extraction_summary["duplicateIncrement"] += 1
+            if skip_reason == "no_semantic_content":
+                extraction_summary["noSemanticContent"] += 1
+            if failure_stage == "llm_response_empty":
+                extraction_summary["llmResponseEmpty"] += 1
+            elif failure_stage == "parser_failed":
+                extraction_summary["parserFailed"] += 1
+            elif failure_stage == "repair_parser_failed":
+                extraction_summary["repairParserFailed"] += 1
+            elif failure_stage == "llm_invoke_failed":
+                extraction_summary["llmInvokeFailed"] += 1
+            elif failure_stage == "extractor_config_missing":
+                extraction_summary["extractorConfigMissing"] += 1
+
+            extraction_runs.append(
+                {
+                    "runId": run.get("id"),
+                    "sessionId": run.get("session_id"),
+                    "status": run.get("status"),
+                    "startedAt": run.get("started_at"),
+                    "finishedAt": run.get("finished_at"),
+                    "triggerSource": run.get("trigger_source"),
+                    "extractorModel": extraction_meta.get("extractorModel") or invocation.get("model_id"),
+                    "extractionFailureStage": failure_stage or None,
+                    "extractionFailureReason": extraction_meta.get("extractionFailureReason"),
+                    "skipReason": skip_reason or None,
+                    "extractionMode": extraction_mode or None,
+                    "transcriptSource": extraction_meta.get("transcriptSource"),
+                    "latestSeq": extraction_meta.get("latestSeq"),
+                    "rawOutputPreview": extraction_meta.get("rawOutputPreview"),
+                    "parserErrorPreview": extraction_meta.get("parserErrorPreview"),
+                    "summary": extraction_meta.get("summary"),
+                    "resolvedScope": extraction_meta.get("resolvedScope"),
+                    "effectiveMemoryScope": extraction_meta.get("effectiveMemoryScope"),
+                    "memoryPolicy": extraction_meta.get("memoryPolicy"),
+                    "provenanceClass": extraction_meta.get("provenanceClass"),
+                    "noPersistedMemoryReason": no_persisted_reason or None,
+                    "extractedPreferenceCount": int(extraction_meta.get("extractedPreferenceCount") or 0),
+                    "extractedKnowledgeCount": int(extraction_meta.get("extractedKnowledgeCount") or 0),
+                    "persistedPreferenceCount": persisted_preferences,
+                    "persistedKnowledgeCount": persisted_knowledge,
+                    "persistedRelationCount": int(extraction_meta.get("persistedRelationCount") or 0),
+                    "filterReasons": extraction_meta.get("filterReasons") or {},
+                    "invocationStatus": invocation.get("status"),
+                    "invocationError": invocation.get("error_message"),
+                }
+            )
+            if len(extraction_runs) >= 12:
+                break
         return {
             "preferences": {
                 "scopes": scopes,
@@ -194,6 +302,12 @@ class MemoryRuntime:
             "graph": graph_stats,
             "recent_logs": recent_logs,
             "health": health,
+            "memoryMap": health.get("memoryMap") or {},
+            "extractions": {
+                "recent": extraction_runs,
+                "summary": extraction_summary,
+            },
+            "maintenance": self._build_maintenance_dashboard(recent_memory_runs),
             "projects": {
                 "count": len(project_registry_service.list_projects()),
             },
@@ -210,6 +324,50 @@ class MemoryRuntime:
                 "policies": ["durable", "daily_summary_only", "skipped"],
             },
         }
+
+    def _build_maintenance_dashboard(self, recent_memory_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        recent_runs: List[Dict[str, Any]] = []
+        summary = {
+            "completed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "summaryMissing": 0,
+            "summaryBackfilled": 0,
+        }
+
+        for run in recent_memory_runs:
+            metadata = run.get("metadata") or {}
+            if str(metadata.get("task_kind") or "").strip().lower() != "maintenance":
+                continue
+            maintenance_meta = metadata.get("memory_maintenance") if isinstance(metadata.get("memory_maintenance"), dict) else {}
+            status = str(run.get("status") or "").strip().lower()
+            if status == "completed":
+                summary["completed"] += 1
+            elif status == "failed":
+                summary["failed"] += 1
+            elif status == "skipped":
+                summary["skipped"] += 1
+            summary["summaryBackfilled"] += int(maintenance_meta.get("summaryBackfilledCount") or 0)
+            summary["summaryMissing"] += int(maintenance_meta.get("summaryMissingCountBefore") or 0)
+            recent_runs.append(
+                {
+                    "runId": run.get("id"),
+                    "status": run.get("status"),
+                    "startedAt": run.get("started_at"),
+                    "finishedAt": run.get("finished_at"),
+                    "triggerSource": run.get("trigger_source"),
+                    "summaryMissingCountBefore": int(maintenance_meta.get("summaryMissingCountBefore") or 0),
+                    "summaryMissingCountAfter": int(maintenance_meta.get("summaryMissingCountAfter") or 0),
+                    "summaryBackfilledCount": int(maintenance_meta.get("summaryBackfilledCount") or 0),
+                    "summaryStaleCountBefore": int(maintenance_meta.get("summaryStaleCountBefore") or 0),
+                    "summaryStaleCountAfter": int(maintenance_meta.get("summaryStaleCountAfter") or 0),
+                    "touchedRefs": maintenance_meta.get("touchedRefs") or [],
+                    "resultReason": maintenance_meta.get("resultReason"),
+                }
+            )
+            if len(recent_runs) >= 8:
+                break
+        return {"summary": summary, "recent": recent_runs}
 
     def list_preferences(self) -> Dict[str, Dict[str, str]]:
         return profile_service.list_preferences()
@@ -351,6 +509,24 @@ class MemoryRuntime:
 
     def read_memory_summary(self, *, tier: str, date_str: Optional[str] = None) -> str:
         return injection_service.read_memory_summary(tier=tier, date_str=date_str)
+
+    def build_memory_map(self, *, anchor_date: Optional[str] = None) -> Dict[str, Any]:
+        return injection_service.build_memory_map(anchor_date=anchor_date)
+
+    def expand_memory_map(self, *, memory_ref: str) -> Dict[str, Any]:
+        return injection_service.expand_memory_map(memory_ref=memory_ref)
+
+    def read_memory_day(self, *, memory_ref_or_date: str) -> str:
+        return injection_service.read_memory_day(memory_ref_or_date=memory_ref_or_date)
+
+    def get_memory_map_health(self) -> Dict[str, Any]:
+        return injection_service.get_memory_map_health()
+
+    def list_summary_targets(self, *, states: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        return injection_service.list_summary_targets(states=states)
+
+    def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
+        return injection_service.get_logs_for_period(tier=tier, dt=dt, scope_chain=scope_chain)
 
     def save_periodic_summary(
         self,

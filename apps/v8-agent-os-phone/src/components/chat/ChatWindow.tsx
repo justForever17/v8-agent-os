@@ -65,6 +65,9 @@ function isAskUserApproval(approval: ChatPendingInteraction | null | undefined) 
 }
 
 function hasRenderableMessage(message: ChatMessage) {
+    const metadata = message.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
     if (message.uiEphemeral || isActiveAssistantStreamPhase(message.uiStreamPhase)) {
         return true;
     }
@@ -72,6 +75,18 @@ function hasRenderableMessage(message: ChatMessage) {
         return true;
     }
     if (Array.isArray(message.images) && message.images.length > 0) {
+        return true;
+    }
+    if (metadata.taskPlanningMode === true) {
+        return true;
+    }
+    if (metadata.commandPreset && typeof metadata.commandPreset === "object") {
+        return true;
+    }
+    if (Array.isArray(metadata.skillReferences) && metadata.skillReferences.length > 0) {
+        return true;
+    }
+    if (Array.isArray(metadata.attachments) && metadata.attachments.length > 0) {
         return true;
     }
     if (hasRenderablePhoneTimelineNodes(message.nodes)) {

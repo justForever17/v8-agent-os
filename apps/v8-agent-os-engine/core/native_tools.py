@@ -177,17 +177,42 @@ def _enforce_safety_decision(
     tool_call_id: str,
     question: str,
 ) -> tuple[bool, str | None]:
+    operation_fingerprint = _safety_operation_fingerprint(decision, tool_call_id=tool_call_id)
+    operation_target_fingerprint = _safety_operation_fingerprint(decision, tool_call_id="", include_tool_call_id=False)
     safety_guardian.log_decision_event(
         action="native_tool_safety",
         decision=decision,
         subject=question,
-        metadata={"toolCallId": tool_call_id},
+        metadata={
+            "toolCallId": tool_call_id,
+            "operationFingerprint": operation_fingerprint,
+            "operationTargetFingerprint": operation_target_fingerprint,
+        },
     )
     if decision.is_allow():
         return True, None
 
     if decision.is_block() or not decision.allow_override:
         return False, f"Safety Guardian 已阻止该操作：{decision.reason}"
+
+    if operation_fingerprint and _is_safety_operation_previously_approved(operation_fingerprint, operation_target_fingerprint):
+        safety_guardian.log_decision_event(
+            action="native_tool_safety_approval_reused",
+            decision=decision,
+            subject=question,
+            metadata={
+                "toolCallId": tool_call_id,
+                "operationFingerprint": operation_fingerprint,
+                "operationTargetFingerprint": operation_target_fingerprint,
+            },
+        )
+        return True, None
+
+    request_payload = decision.to_interrupt_request(question=question, tool_call_id=tool_call_id)
+    if operation_fingerprint:
+        request_payload["operationFingerprint"] = operation_fingerprint
+    if operation_target_fingerprint:
+        request_payload["operationTargetFingerprint"] = operation_target_fingerprint
 
     raise ModelGovernanceInterventionRequired(
         f"Safety Guardian 检测到治理审批请求：{decision.reason}",
@@ -196,9 +221,65 @@ def _enforce_safety_decision(
         details={
             "safety": decision.to_payload(),
             "toolCallId": tool_call_id,
+            "operationFingerprint": operation_fingerprint,
+            "operationTargetFingerprint": operation_target_fingerprint,
         },
-        request_payload=decision.to_interrupt_request(question=question, tool_call_id=tool_call_id),
+        request_payload=request_payload,
     )
+
+
+def _safety_operation_fingerprint(
+    decision: SafetyDecision,
+    *,
+    tool_call_id: str = "",
+    include_tool_call_id: bool = True,
+) -> str:
+    details = decision.details if isinstance(decision.details, dict) else {}
+    runtime_context = details.get("runtime_context") if isinstance(details.get("runtime_context"), dict) else {}
+    target = (
+        details.get("path")
+        or details.get("command")
+        or details.get("url")
+        or details.get("target")
+        or details.get("pid")
+        or ""
+    )
+    payload = {
+        "runId": str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip(),
+        "riskCode": decision.risk_code,
+        "governanceTarget": decision.governance_target,
+        "target": str(target).strip(),
+    }
+    if include_tool_call_id:
+        payload["toolCallId"] = str(tool_call_id or "").strip()
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"safety:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+
+
+def _is_safety_operation_previously_approved(
+    operation_fingerprint: str,
+    operation_target_fingerprint: str = "",
+) -> bool:
+    runtime_context = get_runtime_context()
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    if not run_id:
+        return False
+    run_record = db.get_run_record(run_id)
+    if not run_record:
+        return False
+    operations = (run_record.get("metadata") or {}).get("approvedSafetyOperations")
+    if not isinstance(operations, list):
+        return False
+    candidates = {str(operation_fingerprint or "").strip(), str(operation_target_fingerprint or "").strip()}
+    candidates.discard("")
+    for item in operations:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("fingerprint") or "") in candidates:
+            return True
+        if str(item.get("targetFingerprint") or item.get("operationTargetFingerprint") or "") in candidates:
+            return True
+    return False
 
 # Default text extensions to allow reading if mimetype fails
 TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.json', '.yaml', '.yml', '.csv', '.log', '.sh', '.bat', '.ps1', '.html', '.css', '.js', '.ts', '.tsx', '.jsx'}
@@ -3248,6 +3329,35 @@ def mem_summary(tier: str, date: Optional[str] = None) -> str:
         return _get_memory_runtime().read_memory_summary(tier=tier, date_str=date)
     except Exception as e:
         return f"Error retrieving memory summary: {str(e)}"
+
+
+@tool
+def memory_map(anchor_date: Optional[str] = None) -> str:
+    """Return the brokered memory navigation map. Use this instead of raw filesystem paths."""
+    try:
+        payload = _get_memory_runtime().build_memory_map(anchor_date=anchor_date)
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error building memory map: {str(e)}"
+
+
+@tool
+def memory_map_expand(memory_ref: str) -> str:
+    """Expand a brokered memory map node and return its children."""
+    try:
+        payload = _get_memory_runtime().expand_memory_map(memory_ref=memory_ref)
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error expanding memory map: {str(e)}"
+
+
+@tool
+def memory_read_day(memory_ref_or_date: str) -> str:
+    """Read a single memory day log by brokered memoryRef or YYYY-MM-DD date."""
+    try:
+        return _get_memory_runtime().read_memory_day(memory_ref_or_date=memory_ref_or_date)
+    except Exception as e:
+        return f"Error reading memory day: {str(e)}"
 
 
 @tool
@@ -8022,6 +8132,9 @@ NATIVE_TOOLS = [
     mem_delete,
     mem_update,
     mem_summary,
+    memory_map,
+    memory_map_expand,
+    memory_read_day,
     ask_user,
     write_todos,
     update_todo,

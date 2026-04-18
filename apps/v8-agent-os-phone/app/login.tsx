@@ -17,6 +17,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
+import { readActiveAdminConnectionProfileId, readAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
@@ -55,6 +56,27 @@ export default function LoginScreen() {
         if (defaultWebBaseUrl) {
             setBaseUrl((current) => current || defaultWebBaseUrl);
         }
+    }, [adminBaseUrl, defaultWebBaseUrl]);
+
+    useEffect(() => {
+        if (adminBaseUrl || defaultWebBaseUrl) {
+            return undefined;
+        }
+        let cancelled = false;
+        const hydrateSavedConnection = async () => {
+            const [profiles, activeId] = await Promise.all([
+                readAdminConnectionProfiles(),
+                readActiveAdminConnectionProfileId(),
+            ]);
+            const activeProfile = profiles.find((profile) => profile.id === activeId) || profiles[0];
+            if (!cancelled && activeProfile?.adminBaseUrl) {
+                setBaseUrl((current) => current || activeProfile.adminBaseUrl);
+            }
+        };
+        void hydrateSavedConnection();
+        return () => {
+            cancelled = true;
+        };
     }, [adminBaseUrl, defaultWebBaseUrl]);
 
     const pageTitle = useMemo(

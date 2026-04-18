@@ -31,7 +31,7 @@ V8Chat 的后台核心调度器 (`ActionExecutor`) 支持三种基本类型（�
 
 ### 2. Python 脚本 (Python)
 以安全抽象语法树 (`AST`) 将指定的 Python 源文件加载并在当前 Engine 虚拟环境中执行。
-- **目标示例**：`scripts/cron_nightly_memory_batch.py`
+- **内建任务示例**：`agents.runners.memory_maintenance_job`
 - **使用场景**：比如每天凌晨将当天的分散对话数据提炼、汇总为周期的长期记忆总结。这正是 V8Chat 保障记忆系统不爆炸的基石系统。脚本会被抛入后台协程执行，避免阻塞。
 
 ### 3. Agent 工作流 (Agent)

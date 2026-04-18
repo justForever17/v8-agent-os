@@ -33,7 +33,7 @@ const groupIcons: Record<ConversationGroupKey, keyof typeof MaterialCommunityIco
 };
 
 export default function SessionsScreen() {
-    const { status, activeConversationId, setActiveConversationId, authorizedFetch } = useAppSession();
+    const { status, activeConversationId, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -162,7 +162,7 @@ export default function SessionsScreen() {
                                                             {item.title || t(`会话 ${canonicalSessionId.slice(0, 8)}`, `Conversation ${canonicalSessionId.slice(0, 8)}`)}
                                                         </Text>
                                                         <Text style={styles.itemMeta}>
-                                                            {formatRelativeTime(item.updatedAt || item.createdAt || "", locale)}
+                                                            {formatRelativeTime(item.historySortAt || item.createdAt || "", locale, getEngineNowMs())}
                                                         </Text>
                                                     </View>
                                                     <Pressable onPress={() => void remove(item)} hitSlop={8}>

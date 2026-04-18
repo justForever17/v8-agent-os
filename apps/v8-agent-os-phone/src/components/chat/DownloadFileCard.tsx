@@ -5,6 +5,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
 import { downloadUrlToUserSelectedFile } from "@/src/lib/file-transfer";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export const DownloadFileCard = memo(function DownloadFileCard({
@@ -17,6 +18,7 @@ export const DownloadFileCard = memo(function DownloadFileCard({
     mimeType?: string;
 }) {
     const { colors, t } = useUiPrefs();
+    const { adminBaseUrl, authorizedFetch } = useAppSession();
     const displayFilename = filename || decodeURIComponent(url.split("/").pop()?.split("?")[0] || "file");
     const displayType = mimeType || t("文件", "File");
     const handleDownload = async () => {
@@ -25,10 +27,14 @@ export const DownloadFileCard = memo(function DownloadFileCard({
                 filename: displayFilename,
                 mimeType,
                 prefix: "file",
+                adminBaseUrl,
+                authorizedFetch,
             });
             Alert.alert(
                 t("已下载", "Downloaded"),
-                saved.userVisible
+                saved.shared
+                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                    : saved.userVisible
                     ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
                     : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
             );

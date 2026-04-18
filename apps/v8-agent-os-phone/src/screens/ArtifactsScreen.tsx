@@ -38,7 +38,7 @@ function normalizeParam(value: string | string[] | undefined) {
 }
 
 export default function ArtifactsScreen() {
-    const { status, adminBaseUrl, authorizedFetch } = useAppSession();
+    const { status, adminBaseUrl, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const params = useLocalSearchParams<{ conversationId?: string | string[]; artifactId?: string | string[] }>();
@@ -181,7 +181,7 @@ export default function ArtifactsScreen() {
                                                 </Text>
                                             </View>
                                             <Text style={styles.itemTime}>
-                                                {formatRelativeTime(artifact.createdAt, locale)}
+                                                {formatRelativeTime(artifact.createdAt, locale, getEngineNowMs())}
                                             </Text>
                                         </Pressable>
                                     );

@@ -14,6 +14,7 @@ import {
     writeActiveAdminConnectionProfileId,
     writeAdminConnectionProfiles,
 } from "@/src/lib/admin-connection-profiles";
+import { ENGINE_NOW_HEADER, getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
 import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import { signUp as registerPhoneUser } from "@/src/lib/phone-api";
 import type { PhoneUser, RegisterInput } from "@/src/types/admin";
@@ -45,6 +46,8 @@ type SessionContextValue = {
         onEvent: (eventName: string, payload: unknown) => void,
         signal?: AbortSignal,
     ) => Promise<void>;
+    engineClockOffsetMs: number;
+    getEngineNowMs: () => number;
 };
 
 type MobileAuthPayload = {
@@ -121,6 +124,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [refreshToken, setRefreshToken] = React.useState("");
     const [user, setUser] = React.useState<PhoneUser | null>(null);
     const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
+    const [engineClockOffsetMs, setEngineClockOffsetMs] = React.useState(0);
     const bootStartedAtRef = React.useRef(Date.now());
     const statusRef = React.useRef<SessionStatus>("booting");
 
@@ -361,6 +365,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setRefreshToken("");
         setUser(null);
         setActiveConversationIdState(null);
+        setEngineClockOffsetMs(0);
         setStatus("anonymous");
     }, [adminBaseUrl, refreshToken]);
 
@@ -393,6 +398,16 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
     }, []);
 
+    const syncEngineClockFromHeader = React.useCallback((headerValue?: string | null) => {
+        const nextOffset = toEngineClockOffsetMs(headerValue);
+        if (nextOffset === null) {
+            return;
+        }
+        setEngineClockOffsetMs((current) => (current === nextOffset ? current : nextOffset));
+    }, []);
+
+    const getEngineNowMs = React.useCallback(() => resolveEngineNowMs(engineClockOffsetMs), [engineClockOffsetMs]);
+
     const performAuthorizedRequest = React.useCallback(async (
         path: string,
         init?: RequestInit,
@@ -416,6 +431,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             for (const candidateBaseUrl of candidates) {
                 try {
                     const response = await doFetch(token, candidateBaseUrl);
+                    syncEngineClockFromHeader(response.headers.get(ENGINE_NOW_HEADER));
                     if (candidateBaseUrl !== baseUrl) {
                         setAdminBaseUrlState(candidateBaseUrl);
                         await setStoredValue("adminBaseUrl", candidateBaseUrl);
@@ -442,7 +458,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
         response = await attemptFetch(nextAccessToken);
         return response;
-    }, [accessToken, adminBaseUrl, refreshSession, signOut]);
+    }, [accessToken, adminBaseUrl, refreshSession, signOut, syncEngineClockFromHeader]);
 
     const authorizedFetch = React.useCallback((path: string, init?: RequestInit) => {
         return performAuthorizedRequest(path, init);
@@ -478,6 +494,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                             error.status = response.status;
                             throw error;
                         }
+                        syncEngineClockFromHeader(response.headers.get(ENGINE_NOW_HEADER));
                         await streamSse(response, onEvent);
                     } else {
                         await streamSseWithXmlHttpRequest({
@@ -488,6 +505,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                             },
                             signal,
                             onEvent,
+                            onHeaders: (responseHeaders) => {
+                                syncEngineClockFromHeader(responseHeaders[ENGINE_NOW_HEADER]);
+                            },
                         });
                     }
                     if (candidateBaseUrl !== baseUrl) {
@@ -528,7 +548,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
         const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
         await openStream(nextAccessToken);
-    }, [accessToken, adminBaseUrl, refreshSession, signOut]);
+    }, [accessToken, adminBaseUrl, refreshSession, signOut, syncEngineClockFromHeader]);
 
     const contextValue = React.useMemo<SessionContextValue>(() => ({
         status,
@@ -545,7 +565,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         updateCurrentUser,
         authorizedFetch,
         authorizedRealtimeStream,
-    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, signIn, signUp, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream]);
+        engineClockOffsetMs,
+        getEngineNowMs,
+    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, signIn, signUp, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
 
     return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
 }

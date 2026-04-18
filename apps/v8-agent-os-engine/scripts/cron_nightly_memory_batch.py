@@ -1,8 +1,6 @@
-from scripts.runtime.cron_nightly_memory_batch import run
+from __future__ import annotations
 
+"""Legacy compatibility wrapper for historical nightly memory cron targets."""
 
-__all__ = ["run"]
+from agents.runners.memory_maintenance_job import run
 
-
-if __name__ == "__main__":
-    run()

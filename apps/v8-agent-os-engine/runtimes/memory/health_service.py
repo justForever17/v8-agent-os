@@ -28,6 +28,7 @@ class MemoryHealthService:
             "graphEntities": graph_stats.get("entities", 0),
             "graphRelations": graph_stats.get("relations", 0),
             "recentLogsAvailable": bool(recent_logs.strip()),
+            "memoryMap": memory_store.get_memory_map_health(),
         }
 
 

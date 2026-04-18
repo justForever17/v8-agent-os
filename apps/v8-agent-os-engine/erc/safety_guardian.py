@@ -14,7 +14,7 @@ from uuid import uuid4
 import psutil
 
 from core.storage import storage
-from core.v8_agent_os_paths import protected_runtime_paths
+from core.v8_agent_os_paths import WORKSPACE_HOME, protected_runtime_paths
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
 
@@ -1164,6 +1164,16 @@ class SafetyGuardian:
                 allow_override=False,
             )
 
+        if self._is_user_workspace_write_path(normalized, runtime_context):
+            return self._decision(
+                verdict="allow",
+                reason="workspace_file_write_allowed",
+                risk_code="workspace_file_write_allowed",
+                governance_target="workspace_artifact",
+                posture=posture,
+                details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
+            )
+
         if normalized.suffix.lower() in set(config["fileRules"]["protectedFileExtensions"]) and self._is_under_protected_path(normalized):
             return self._decision(
                 verdict="block",
@@ -2203,6 +2213,16 @@ class SafetyGuardian:
             return None
         return self._normalize_path(str(raw))
 
+    def _workspace_roots_from_context(self, runtime_context: Optional[Dict[str, Any]]) -> list[Path]:
+        roots: list[Path] = []
+        context_root = self._workspace_root_from_context(runtime_context)
+        if context_root is not None:
+            roots.append(context_root)
+        default_root = self._normalize_path(str(WORKSPACE_HOME))
+        if default_root is not None and all(str(default_root).lower() != str(item).lower() for item in roots):
+            roots.append(default_root)
+        return roots
+
     def _is_path_within_root(self, path: Path, root: Path) -> bool:
         normalized_path = self._normalize_path(str(path))
         normalized_root = self._normalize_path(str(root))
@@ -2213,6 +2233,9 @@ class SafetyGuardian:
             return True
         except ValueError:
             return False
+
+    def _is_user_workspace_write_path(self, path: Path, runtime_context: Optional[Dict[str, Any]]) -> bool:
+        return any(self._is_path_within_root(path, root) for root in self._workspace_roots_from_context(runtime_context))
 
     def _is_process_control_command(self, command: str) -> bool:
         lower = str(command or "").strip().lower()

@@ -1005,6 +1005,13 @@ class ChatRuntime:
             user_message_id = candidate_message_id or str(uuid.uuid4())
             user_node_id = f"{user_message_id}:narrative"
             attachments = [dict(item) for item in list(request.attachments or []) if isinstance(item, dict)]
+            user_structured_metadata: dict[str, Any] = {
+                **({"clientMessageId": client_message_id} if client_message_id else {}),
+                **({"commandPreset": dict(metadata["commandPreset"])} if isinstance(metadata.get("commandPreset"), dict) else {}),
+                **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
+                **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
+                **({"attachments": attachments} if attachments else {}),
+            }
             attachment_nodes = [
                 {
                     "id": f"{user_message_id}:artifact:{index}",
@@ -1033,10 +1040,7 @@ class ChatRuntime:
                 chat_run,
                 role="user",
                 images=request.fileUrls,
-                extra={
-                    **({"clientMessageId": client_message_id} if client_message_id else {}),
-                    **({"attachments": attachments} if attachments else {}),
-                } or None,
+                extra=user_structured_metadata or None,
             )
             user_row = self._create_canonical_message(
                 chat_run,
@@ -2235,25 +2239,6 @@ class ChatRuntime:
         candidate = cls._coerce_json_like_value(value)
         if not isinstance(candidate, dict):
             return value
-        resource_ref = candidate.get("resourceRef") if isinstance(candidate.get("resourceRef"), dict) else {}
-        compact_ref: dict[str, Any] = {}
-        if isinstance(resource_ref, dict):
-            for key in (
-                "kind",
-                "workspaceRelativePath",
-                "workspacePath",
-                "workspaceId",
-                "projectId",
-                "pathPlane",
-                "adminPath",
-                "mimeType",
-                "displayLabel",
-                "previewable",
-                "downloadable",
-            ):
-                val = resource_ref.get(key)
-                if val not in (None, "", [], {}):
-                    compact_ref[key] = val
         compact: dict[str, Any] = {
             "ok": candidate.get("ok"),
             "filename": candidate.get("filename"),
@@ -2268,8 +2253,6 @@ class ChatRuntime:
             "projectId": candidate.get("projectId"),
             "error": candidate.get("error"),
         }
-        if compact_ref:
-            compact["resourceRef"] = compact_ref
         return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
 
     @classmethod

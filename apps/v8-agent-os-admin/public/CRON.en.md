@@ -35,7 +35,7 @@ Runs a Python script inside the Engine environment.
 Example:
 
 ```text
-scripts/cron_nightly_memory_batch.py
+agents.runners.memory_maintenance_job
 ```
 
 ### AutomationRuntime task

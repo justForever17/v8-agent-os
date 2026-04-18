@@ -1,0 +1,381 @@
+{
+  "cases": [
+    {
+      "id": "explicit_preference_persists",
+      "sessionId": "fixture-preference",
+      "binding": {
+        "session_id": "fixture-preference",
+        "conversation_id": "fixture-preference",
+        "resolved_scope": "global",
+        "scope_source": "fixture",
+        "status": "active"
+      },
+      "transcript": {
+        "source": "chat_canonical_messages",
+        "latest_seq": 101,
+        "entries": [
+          {
+            "id": "u-pref-1",
+            "role": "user",
+            "content": "请你记住，以后默认不要使用 emoji，也把 os-phone 当作我的主验收面；我希望回复更偏工程化，少一点情绪化措辞。",
+            "created_at": "2026-04-18T01:00:00Z",
+            "source": "canonical"
+          },
+          {
+            "id": "a-pref-1",
+            "role": "assistant",
+            "content": "我会记住这些长期偏好：不用 emoji，优先以 os-phone 作为主验收面，回复保持工程化表达。",
+            "created_at": "2026-04-18T01:00:10Z",
+            "source": "canonical"
+          }
+        ]
+      },
+      "extraction": {
+        "summary": "用户明确要求默认不用 emoji，并把 os-phone 作为主验收面。",
+        "tags": ["preference", "phone", "style"],
+        "preferences": [
+          {
+            "scope": "global",
+            "key": "response_style",
+            "value": "默认不要使用 emoji，回复保持工程化表达，并以 os-phone 作为主验收面。",
+            "importance": 88,
+            "confidence": 0.95,
+            "durability": "stable",
+            "target_store": "preference"
+          }
+        ],
+        "knowledge": [],
+        "entities": [],
+        "relations": []
+      },
+      "expected": {
+        "status": "completed",
+        "persistedPreferenceCount": 1,
+        "persistedKnowledgeCount": 0,
+        "persistedRelationCount": 0,
+        "noPersistedMemoryReason": null
+      }
+    },
+    {
+      "id": "scoped_project_knowledge_persists_and_graph_grows",
+      "sessionId": "fixture-project-knowledge",
+      "binding": {
+        "session_id": "fixture-project-knowledge",
+        "conversation_id": "fixture-project-knowledge",
+        "workspace_id": "workspace-v8-agent-os",
+        "workspace_path": "E:/Projects/v8chat/v8-agent-os",
+        "project_id": "v8-agent-os",
+        "resolved_scope": "project:v8-agent-os",
+        "scope_source": "fixture",
+        "status": "active"
+      },
+      "transcript": {
+        "source": "chat_canonical_messages",
+        "latest_seq": 102,
+        "entries": [
+          {
+            "id": "u-proj-1",
+            "role": "user",
+            "content": "记住这个项目约定：修改 packages/session-realtime 之后，必须先 build，再 pack，然后让 admin、web、phone 三端重新安装或刷新依赖，不能只改源码就假设共享 contract 生效。",
+            "created_at": "2026-04-18T01:10:00Z",
+            "source": "canonical"
+          },
+          {
+            "id": "a-proj-1",
+            "role": "assistant",
+            "content": "收到，这条属于 v8-agent-os 项目的稳定开发纪律，会作为项目知识保留。",
+            "created_at": "2026-04-18T01:10:12Z",
+            "source": "canonical"
+          }
+        ]
+      },
+      "extraction": {
+        "summary": "用户定义了 v8-agent-os 项目的 shared contract 消费纪律。",
+        "tags": ["project", "packages", "contract"],
+        "preferences": [],
+        "knowledge": [
+          {
+            "fact": "修改 packages/session-realtime 后必须先 build、再 pack，并让 admin、web、phone 重新安装或刷新共享 contract。",
+            "category": "development_process",
+            "scope": "project:v8-agent-os",
+            "importance": 82,
+            "confidence": 0.92,
+            "durability": "stable",
+            "target_store": "knowledge"
+          }
+        ],
+        "entities": [
+          {
+            "name": "packages/session-realtime",
+            "type": "package"
+          },
+          {
+            "name": "admin/web/phone",
+            "type": "surface_group"
+          }
+        ],
+        "relations": [
+          {
+            "subject": "packages/session-realtime",
+            "predicate": "REQUIRES_REFRESH_FOR",
+            "object": "admin/web/phone"
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "persistedPreferenceCount": 0,
+        "persistedKnowledgeCount": 1,
+        "persistedRelationCount": 1,
+        "noPersistedMemoryReason": null
+      }
+    },
+    {
+      "id": "global_stable_knowledge_persists",
+      "sessionId": "fixture-global-knowledge",
+      "binding": {
+        "session_id": "fixture-global-knowledge",
+        "conversation_id": "fixture-global-knowledge",
+        "resolved_scope": "global",
+        "scope_source": "fixture",
+        "status": "active"
+      },
+      "transcript": {
+        "source": "chat_canonical_messages",
+        "latest_seq": 103,
+        "entries": [
+          {
+            "id": "u-global-1",
+            "role": "user",
+            "content": "记住全局事实：V8 Agent OS 以 runtime_events 作为运行事件时间线真相，snapshot 和 history 都应该从这条主链派生，而不是由前端自己猜。",
+            "created_at": "2026-04-18T01:20:00Z",
+            "source": "canonical"
+          },
+          {
+            "id": "a-global-1",
+            "role": "assistant",
+            "content": "这是一条全局稳定架构事实，我会按 durable knowledge 处理。",
+            "created_at": "2026-04-18T01:20:10Z",
+            "source": "canonical"
+          }
+        ]
+      },
+      "extraction": {
+        "summary": "用户强调 runtime_events 是 V8 Agent OS 的全局运行事件真相。",
+        "tags": ["global", "runtime", "truth-source"],
+        "preferences": [],
+        "knowledge": [
+          {
+            "fact": "V8 Agent OS 以 runtime_events 作为运行事件时间线真相，snapshot 和 history 都应从它派生。",
+            "category": "architecture",
+            "scope": "global",
+            "importance": 84,
+            "confidence": 0.91,
+            "durability": "stable",
+            "target_store": "knowledge"
+          }
+        ],
+        "entities": [
+          {
+            "name": "runtime_events",
+            "type": "runtime_table"
+          },
+          {
+            "name": "snapshot_and_history",
+            "type": "projection"
+          }
+        ],
+        "relations": [
+          {
+            "subject": "runtime_events",
+            "predicate": "DRIVES",
+            "object": "snapshot_and_history"
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "persistedPreferenceCount": 0,
+        "persistedKnowledgeCount": 1,
+        "persistedRelationCount": 1,
+        "noPersistedMemoryReason": null
+      }
+    },
+    {
+      "id": "global_operational_workflow_persists",
+      "sessionId": "fixture-operational",
+      "binding": {
+        "session_id": "fixture-operational",
+        "conversation_id": "fixture-operational",
+        "resolved_scope": "global",
+        "scope_source": "fixture",
+        "status": "active"
+      },
+      "transcript": {
+        "source": "chat_canonical_messages",
+        "latest_seq": 104,
+        "entries": [
+          {
+            "id": "u-op-1",
+            "role": "user",
+            "content": "把这条全局操作知识记住：处理 Computer Use 浏览器任务时，应先复用已有窗口，再选择 managed Chrome，避免同时唤起默认 Edge 和 Chrome。",
+            "created_at": "2026-04-18T01:30:00Z",
+            "source": "canonical"
+          },
+          {
+            "id": "a-op-1",
+            "role": "assistant",
+            "content": "这条属于可复用的全局操作流程，我会作为 operational workflow 处理。",
+            "created_at": "2026-04-18T01:30:10Z",
+            "source": "canonical"
+          }
+        ]
+      },
+      "extraction": {
+        "summary": "用户提供了一个全局可复用的 Computer Use 浏览器工作流。",
+        "tags": ["operational", "computer-use", "browser"],
+        "preferences": [],
+        "knowledge": [
+          {
+            "fact": "处理 Computer Use 浏览器任务时应先复用已有窗口，再选择 managed Chrome，避免同时唤起默认 Edge 和 Chrome。",
+            "category": "operational_workflow",
+            "scope": "global",
+            "importance": 76,
+            "confidence": 0.83,
+            "durability": "operational",
+            "target_store": "knowledge"
+          }
+        ],
+        "entities": [
+          {
+            "name": "computer_use_browser_workflow",
+            "type": "workflow"
+          }
+        ],
+        "relations": [
+          {
+            "subject": "computer_use_browser_workflow",
+            "predicate": "APPLIES_TO",
+            "object": "managed_chrome_selection"
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "persistedPreferenceCount": 0,
+        "persistedKnowledgeCount": 1,
+        "persistedRelationCount": 1,
+        "noPersistedMemoryReason": null
+      }
+    },
+    {
+      "id": "noise_is_policy_filtered",
+      "sessionId": "fixture-noise",
+      "binding": {
+        "session_id": "fixture-noise",
+        "conversation_id": "fixture-noise",
+        "resolved_scope": "global",
+        "scope_source": "fixture",
+        "status": "active"
+      },
+      "transcript": {
+        "source": "chat_canonical_messages",
+        "latest_seq": 105,
+        "entries": [
+          {
+            "id": "u-noise-1",
+            "role": "user",
+            "content": "这轮只是做一次临时调试验证，刚才连通性测试验证通过。这个信息不用沉淀成长记忆，只要记到当天日志里就够了。",
+            "created_at": "2026-04-18T01:40:00Z",
+            "source": "canonical"
+          },
+          {
+            "id": "a-noise-1",
+            "role": "assistant",
+            "content": "收到，这类一次性调试结果不应写成长记忆。",
+            "created_at": "2026-04-18T01:40:10Z",
+            "source": "canonical"
+          }
+        ]
+      },
+      "extraction": {
+        "summary": "这是一轮临时调试验证，内容应当留在 daily log 而不是 durable memory。",
+        "tags": ["debug", "noise"],
+        "preferences": [],
+        "knowledge": [
+          {
+            "fact": "临时连通性测试验证通过。",
+            "category": "debug",
+            "scope": "global",
+            "importance": 88,
+            "confidence": 0.94,
+            "durability": "stable",
+            "target_store": "knowledge"
+          }
+        ],
+        "entities": [
+          {
+            "name": "temporary_debug_check",
+            "type": "debug_event"
+          }
+        ],
+        "relations": [
+          {
+            "subject": "temporary_debug_check",
+            "predicate": "IS_A",
+            "object": "noise"
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "persistedPreferenceCount": 0,
+        "persistedKnowledgeCount": 0,
+        "persistedRelationCount": 0,
+        "noPersistedMemoryReason": "policy_filtered"
+      }
+    },
+    {
+      "id": "parser_failed_is_not_model_empty",
+      "sessionId": "fixture-parser-failed",
+      "binding": {
+        "session_id": "fixture-parser-failed",
+        "conversation_id": "fixture-parser-failed",
+        "resolved_scope": "global",
+        "scope_source": "fixture",
+        "status": "active"
+      },
+      "transcript": {
+        "source": "chat_canonical_messages",
+        "latest_seq": 106,
+        "entries": [
+          {
+            "id": "u-fail-1",
+            "role": "user",
+            "content": "记住一条长期规则：在安全审批和 ask_user 分离之后，ask_user 不应再进入 pending approvals plane。这轮对话里有明确的架构变更讨论。",
+            "created_at": "2026-04-18T01:50:00Z",
+            "source": "canonical"
+          },
+          {
+            "id": "a-fail-1",
+            "role": "assistant",
+            "content": "我会尝试抽取结构化记忆，但这个 fixture 专门用于验证 parser failed 不会再伪装成 model_empty。",
+            "created_at": "2026-04-18T01:50:10Z",
+            "source": "canonical"
+          }
+        ]
+      },
+      "extractionFailure": {
+        "failureStage": "parser_failed",
+        "failureReason": "LLM 返回了非空文本，但主 parser 无法解析为 MemoryExtractionResult。",
+        "extractorModel": "fixture-memory-extractor",
+        "rawOutputPreview": "{\"summary\":\"ask_user split\",\"knowledge\":\"not-valid-shape\"}",
+        "parserErrorPreview": "Pydantic validation failed for MemoryExtractionResult"
+      },
+      "expected": {
+        "status": "failed",
+        "reason": "parser_failed"
+      }
+    }
+  ]
+}

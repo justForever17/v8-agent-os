@@ -5,6 +5,7 @@ import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realti
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 function asRecord(value: unknown) {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -41,6 +42,8 @@ export async function GET(
                 ? snapshotData.messages
                 : [];
 
+        const engineNow = snapshotRes.headers.get(ENGINE_NOW_HEADER);
+
         return NextResponse.json(applyCanonicalSourceGroup({
             id,
             messages: snapshotMessages,
@@ -57,7 +60,9 @@ export async function GET(
             recoverable: snapshotData.recoverable || null,
             summary: snapshotData.summary || null,
             projection: snapshotData,
-        }));
+        }), {
+            headers: engineNow ? { [ENGINE_NOW_HEADER]: engineNow } : undefined,
+        });
     } catch (error) {
         console.error("Error communicating with Python engine:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

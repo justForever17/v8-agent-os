@@ -15,7 +15,7 @@ import json
 import uuid
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -49,6 +49,7 @@ system_author: justForever17
 SCOPE_PATTERN = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 KV_PATTERN = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$', re.MULTILINE)
 _SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:")
+_DAY_FILENAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 
 class MemoryStore:
@@ -1054,6 +1055,365 @@ class MemoryStore:
             matched.append(snippet)
         return matched[-max_entries_per_day:]
 
+    def _memory_ref(self, kind: str, value: str) -> str:
+        return f"memory://{kind}/{value}"
+
+    def _day_memory_ref(self, dt: date | datetime) -> str:
+        target = dt.date() if isinstance(dt, datetime) else dt
+        return self._memory_ref("day", target.strftime("%Y-%m-%d"))
+
+    def _week_memory_ref(self, year: int, week: int) -> str:
+        return self._memory_ref("week", f"{year}-W{int(week):02d}")
+
+    def _month_memory_ref(self, year: int, month: int) -> str:
+        return self._memory_ref("month", f"{year}-{int(month):02d}")
+
+    def _year_memory_ref(self, year: int) -> str:
+        return self._memory_ref("year", str(year))
+
+    def _parse_memory_ref(self, memory_ref: str) -> tuple[str, str]:
+        raw = str(memory_ref or "").strip()
+        if not raw.startswith("memory://"):
+            raise ValueError(f"Invalid memory ref: {memory_ref}")
+        remainder = raw[len("memory://") :]
+        kind, _, value = remainder.partition("/")
+        if not kind or not value:
+            raise ValueError(f"Invalid memory ref: {memory_ref}")
+        return kind, value
+
+    def _resolve_day_date(self, memory_ref_or_date: str) -> date:
+        raw = str(memory_ref_or_date or "").strip()
+        if raw.startswith("memory://"):
+            kind, value = self._parse_memory_ref(raw)
+            if kind != "day":
+                raise ValueError(f"memory_read_day only accepts day refs, got: {raw}")
+            raw = value
+        return date.fromisoformat(raw)
+
+    def _resolve_summary_target(self, tier: str, dt: date | datetime) -> tuple[str, Path, str]:
+        target = dt.date() if isinstance(dt, datetime) else dt
+        year = target.year
+        month_name = target.strftime("%m_%B").lower()
+        week_num = int(target.strftime("%V"))
+        base_dir = MEMORY_ROOT / "daily" / str(year)
+        if tier == "week":
+            return self._week_memory_ref(year, week_num), base_dir / month_name / f"week_{week_num:02d}" / "summary.md", f"Week {week_num:02d}"
+        if tier == "month":
+            return self._month_memory_ref(year, target.month), base_dir / month_name / "summary.md", target.strftime("%Y-%m")
+        if tier == "year":
+            return self._year_memory_ref(year), base_dir / "summary.md", str(year)
+        raise ValueError(f"Unknown summary tier: {tier}")
+
+    def _read_summary_excerpt_from_text(self, text: str, *, limit: int = 180) -> str | None:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return None
+        compact = re.sub(r"\s+", " ", normalized)
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3].rstrip() + "..."
+
+    def _read_summary_excerpt(self, summary_path: Path) -> str | None:
+        if not summary_path.exists():
+            return None
+        try:
+            return self._read_summary_excerpt_from_text(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _iter_year_dirs(self) -> List[Path]:
+        daily_root = MEMORY_ROOT / "daily"
+        if not daily_root.exists():
+            return []
+        return sorted([item for item in daily_root.iterdir() if item.is_dir() and item.name.isdigit()], key=lambda item: item.name)
+
+    def _iter_month_dirs(self, year_dir: Path) -> List[Path]:
+        return sorted([item for item in year_dir.iterdir() if item.is_dir() and re.match(r"^\d{2}_", item.name)], key=lambda item: item.name)
+
+    def _iter_day_log_paths(self, month_dir: Path) -> List[Path]:
+        return sorted(
+            [
+                item
+                for item in month_dir.rglob("*.md")
+                if item.is_file() and item.name != "summary.md" and _DAY_FILENAME_PATTERN.match(item.name)
+            ],
+            key=lambda item: item.name,
+        )
+
+    def _summary_state(self, *, summary_path: Path, descendant_paths: List[Path]) -> tuple[bool, str]:
+        if not summary_path.exists():
+            return False, "missing"
+        if not descendant_paths:
+            return True, "present"
+        try:
+            summary_mtime = summary_path.stat().st_mtime
+            latest_descendant_mtime = max(path.stat().st_mtime for path in descendant_paths)
+            if latest_descendant_mtime > summary_mtime:
+                return True, "stale"
+        except Exception:
+            pass
+        return True, "present"
+
+    def _build_memory_calendar(self) -> List[Dict[str, Any]]:
+        years: List[Dict[str, Any]] = []
+        for year_dir in self._iter_year_dirs():
+            year_value = int(year_dir.name)
+            month_nodes: List[Dict[str, Any]] = []
+            year_day_paths: List[Path] = []
+            year_latest_day: str | None = None
+
+            for month_dir in self._iter_month_dirs(year_dir):
+                month_part = month_dir.name.split("_", 1)[0]
+                month_value = int(month_part)
+                day_paths = self._iter_day_log_paths(month_dir)
+                year_day_paths.extend(day_paths)
+                latest_month_day = day_paths[-1].stem if day_paths else None
+                if latest_month_day and (year_latest_day is None or latest_month_day > year_latest_day):
+                    year_latest_day = latest_month_day
+
+                week_groups: Dict[str, Dict[str, Any]] = {}
+                day_nodes: List[Dict[str, Any]] = []
+                for day_path in day_paths:
+                    day_date = date.fromisoformat(day_path.stem)
+                    frontmatter_summaries = self._read_daily_frontmatter_summaries(log_path=day_path)
+                    day_node = {
+                        "memoryRef": self._day_memory_ref(day_date),
+                        "kind": "day",
+                        "label": day_date.strftime("%Y-%m-%d"),
+                        "hasSummary": bool(frontmatter_summaries),
+                        "summaryState": "present" if frontmatter_summaries else "missing",
+                        "dayCount": 1,
+                        "latestDay": day_date.strftime("%Y-%m-%d"),
+                        "summaryExcerpt": self._read_summary_excerpt_from_text(frontmatter_summaries[0]) if frontmatter_summaries else None,
+                        "_path": day_path,
+                    }
+                    day_nodes.append(day_node)
+                    week_key = f"{int(day_date.strftime('%V')):02d}"
+                    bucket = week_groups.setdefault(
+                        week_key,
+                        {
+                            "days": [],
+                            "latestDay": None,
+                        },
+                    )
+                    bucket["days"].append(day_node)
+                    if bucket["latestDay"] is None or day_node["latestDay"] > bucket["latestDay"]:
+                        bucket["latestDay"] = day_node["latestDay"]
+
+                week_nodes: List[Dict[str, Any]] = []
+                for week_key in sorted(week_groups.keys()):
+                    bucket = week_groups[week_key]
+                    descendant_paths = [item["_path"] for item in bucket["days"]]
+                    week_summary_path = month_dir / f"week_{week_key}" / "summary.md"
+                    has_summary, summary_state = self._summary_state(summary_path=week_summary_path, descendant_paths=descendant_paths)
+                    week_nodes.append(
+                        {
+                            "memoryRef": self._week_memory_ref(year_value, int(week_key)),
+                            "kind": "week",
+                            "label": f"{year_value}-W{week_key}",
+                            "hasSummary": has_summary,
+                            "summaryState": summary_state,
+                            "dayCount": len(bucket["days"]),
+                            "latestDay": bucket["latestDay"],
+                            "summaryExcerpt": self._read_summary_excerpt(week_summary_path),
+                            "_summary_path": week_summary_path,
+                            "_paths": descendant_paths,
+                            "children": bucket["days"],
+                        }
+                    )
+
+                month_summary_path = month_dir / "summary.md"
+                month_has_summary, month_summary_state = self._summary_state(summary_path=month_summary_path, descendant_paths=day_paths)
+                month_nodes.append(
+                    {
+                        "memoryRef": self._month_memory_ref(year_value, month_value),
+                        "kind": "month",
+                        "label": f"{year_value}-{month_value:02d}",
+                        "hasSummary": month_has_summary,
+                        "summaryState": month_summary_state,
+                        "dayCount": len(day_paths),
+                        "latestDay": latest_month_day,
+                        "summaryExcerpt": self._read_summary_excerpt(month_summary_path),
+                        "_summary_path": month_summary_path,
+                        "_paths": list(day_paths),
+                        "children": week_nodes,
+                    }
+                )
+
+            year_summary_path = year_dir / "summary.md"
+            year_has_summary, year_summary_state = self._summary_state(summary_path=year_summary_path, descendant_paths=year_day_paths)
+            years.append(
+                {
+                    "memoryRef": self._year_memory_ref(year_value),
+                    "kind": "year",
+                    "label": str(year_value),
+                    "hasSummary": year_has_summary,
+                    "summaryState": year_summary_state,
+                    "dayCount": len(year_day_paths),
+                    "latestDay": year_latest_day,
+                    "summaryExcerpt": self._read_summary_excerpt(year_summary_path),
+                    "_summary_path": year_summary_path,
+                    "_paths": list(year_day_paths),
+                    "children": month_nodes,
+                }
+            )
+        return years
+
+    def _shallow_memory_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "memoryRef": node.get("memoryRef"),
+            "kind": node.get("kind"),
+            "label": node.get("label"),
+            "hasSummary": bool(node.get("hasSummary")),
+            "summaryState": node.get("summaryState") or "missing",
+            "dayCount": int(node.get("dayCount") or 0),
+            "latestDay": node.get("latestDay"),
+            "summaryExcerpt": node.get("summaryExcerpt"),
+        }
+
+    def _find_memory_node(self, memory_ref: str) -> Dict[str, Any] | None:
+        def _walk(nodes: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+            for node in nodes:
+                if node.get("memoryRef") == memory_ref:
+                    return node
+                child_match = _walk(node.get("children") or [])
+                if child_match:
+                    return child_match
+            return None
+
+        return _walk(self._build_memory_calendar())
+
+    def build_memory_map(self, anchor_date: Optional[str] = None) -> Dict[str, Any]:
+        anchor = date.fromisoformat(anchor_date) if str(anchor_date or "").strip() else datetime.now().date()
+        years = self._build_memory_calendar()
+        return {
+            "anchorDate": anchor.strftime("%Y-%m-%d"),
+            "currentRefs": {
+                "year": self._year_memory_ref(anchor.year),
+                "month": self._month_memory_ref(anchor.year, anchor.month),
+                "week": self._week_memory_ref(anchor.year, int(anchor.strftime("%V"))),
+                "day": self._day_memory_ref(anchor),
+            },
+            "items": [self._shallow_memory_node(node) for node in years],
+        }
+
+    def expand_memory_map(self, memory_ref: str) -> Dict[str, Any]:
+        node = self._find_memory_node(str(memory_ref or "").strip())
+        if not node:
+            raise ValueError(f"Unknown memory ref: {memory_ref}")
+        return {
+            "memoryRef": node.get("memoryRef"),
+            "kind": node.get("kind"),
+            "label": node.get("label"),
+            "children": [self._shallow_memory_node(child) for child in node.get("children") or []],
+        }
+
+    def read_memory_day(self, memory_ref_or_date: str) -> str:
+        day_date = self._resolve_day_date(memory_ref_or_date)
+        log_path = self._get_daily_log_path(datetime.combine(day_date, datetime.min.time()))
+        memory_ref = self._day_memory_ref(day_date)
+        if log_path.exists():
+            return f"[{day_date.strftime('%Y-%m-%d')}] Ref: {memory_ref}\n{log_path.read_text(encoding='utf-8')}"
+        return f"No daily log found for {day_date.strftime('%Y-%m-%d')} (Ref: {memory_ref})."
+
+    def get_memory_map_health(self) -> Dict[str, Any]:
+        counts = {
+            "year": 0,
+            "month": 0,
+            "week": 0,
+            "day": 0,
+            "present": 0,
+            "missing": 0,
+            "stale": 0,
+        }
+        missing_refs: List[str] = []
+        stale_refs: List[str] = []
+
+        def _walk(nodes: List[Dict[str, Any]]) -> None:
+            for node in nodes:
+                kind = str(node.get("kind") or "")
+                if kind in counts:
+                    counts[kind] += 1
+                state = str(node.get("summaryState") or "missing")
+                if kind in {"year", "month", "week"} and state in {"present", "missing", "stale"}:
+                    counts[state] += 1
+                if kind in {"year", "month", "week"} and state == "missing":
+                    missing_refs.append(str(node.get("memoryRef")))
+                if kind in {"year", "month", "week"} and state == "stale":
+                    stale_refs.append(str(node.get("memoryRef")))
+                _walk(node.get("children") or [])
+
+        roots = self._build_memory_calendar()
+        _walk(roots)
+        return {
+            "counts": counts,
+            "missingRefs": missing_refs[:24],
+            "staleRefs": stale_refs[:24],
+            "hasMissingSummaries": bool(missing_refs),
+            "hasStaleSummaries": bool(stale_refs),
+        }
+
+    def list_summary_targets(self, *, states: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        allowed_states = {str(item).strip() for item in (states or ["missing", "stale"]) if str(item).strip()}
+        targets: List[Dict[str, Any]] = []
+
+        def _walk(nodes: List[Dict[str, Any]]) -> None:
+            for node in nodes:
+                kind = str(node.get("kind") or "")
+                state = str(node.get("summaryState") or "")
+                if kind in {"week", "month", "year"} and state in allowed_states:
+                    latest_day = str(node.get("latestDay") or "").strip()
+                    if latest_day:
+                        targets.append(
+                            {
+                                "memoryRef": node.get("memoryRef"),
+                                "kind": kind,
+                                "summaryState": state,
+                                "latestDay": latest_day,
+                            }
+                        )
+                _walk(node.get("children") or [])
+
+        _walk(self._build_memory_calendar())
+        return targets
+
+    def _period_date_bounds(self, tier: str, dt: datetime) -> tuple[date, date]:
+        target = dt.date()
+        if tier == "week":
+            week_start = target - timedelta(days=target.weekday())
+            week_end = week_start + timedelta(days=6)
+            return week_start, week_end
+        if tier == "month":
+            month_start = target.replace(day=1)
+            if month_start.month == 12:
+                next_month = month_start.replace(year=month_start.year + 1, month=1, day=1)
+            else:
+                next_month = month_start.replace(month=month_start.month + 1, day=1)
+            return month_start, next_month - timedelta(days=1)
+        if tier == "year":
+            year_start = target.replace(month=1, day=1)
+            year_end = target.replace(month=12, day=31)
+            return year_start, year_end
+        raise ValueError(f"Unknown summary tier: {tier}")
+
+    def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
+        target_dt = dt or datetime.now()
+        start_date, end_date = self._period_date_bounds(tier, target_dt)
+        allowed_scopes = [scope for scope in self._normalize_scope_chain(scope_chain=scope_chain) if self._is_valid_scope(scope)]
+        summaries: List[str] = []
+
+        cursor = start_date
+        while cursor <= end_date:
+            log_path = self._get_daily_log_path(datetime.combine(cursor, datetime.min.time()))
+            if log_path.exists():
+                matched_entries = self._read_scoped_daily_entries(log_path=log_path, allowed_scopes=allowed_scopes)
+                if matched_entries:
+                    summaries.append(
+                        f"[{cursor.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(cursor)}\n" + "\n\n".join(matched_entries)
+                    )
+            cursor += timedelta(days=1)
+        return "\n\n".join(summaries).strip()
+
     def get_recent_logs(self, days: int = 1, scope_chain: Optional[List[str]] = None) -> str:
         """获取最近 N 天与 scope 匹配的日志条目摘要。"""
         now = datetime.now()
@@ -1071,7 +1431,7 @@ class MemoryStore:
             if not matched_entries:
                 continue
 
-            entry = f"[{date_check.strftime('%Y-%m-%d')}] Path: {log_path}\n" + "\n\n".join(matched_entries)
+            entry = f"[{date_check.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(date_check)}\n" + "\n\n".join(matched_entries)
             summaries.append(entry.strip())
 
         return "\n\n".join(summaries) if summaries else ""
@@ -1109,7 +1469,7 @@ class MemoryStore:
     ) -> str:
         """
         读取详细日志窗口之前一天的紧凑摘要。
-        仅输出路径与 YAML frontmatter summaries，不回退正文。
+        仅输出 memoryRef 与 YAML frontmatter summaries，不回退正文。
         """
         normalized_chain = self._normalize_scope_chain(scope_chain=scope_chain)
         allowed_scopes = [scope for scope in normalized_chain if self._is_valid_scope(scope)]
@@ -1127,7 +1487,7 @@ class MemoryStore:
         if not matched_entries:
             return ""
 
-        lines = [f"[{date_check.strftime('%Y-%m-%d')}] Path: {log_path}"]
+        lines = [f"[{date_check.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(date_check)}"]
         summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
         if summaries:
             lines.append("Summaries:")
@@ -1141,34 +1501,17 @@ class MemoryStore:
             return ""
 
         now = datetime.now()
-        year = now.strftime("%Y")
-        month_name = now.strftime("%m_%B").lower()
-        week_num = now.strftime("%V")
-        
-        base_dir = MEMORY_ROOT / "daily" / year
         parts = []
-        
-        def _read_summary(path: Path) -> str:
-            content = path.read_text(encoding='utf-8').strip()
-            if len(content) > 500:
-                return content[:500] + "\n...(truncated)"
-            return content
 
-        # Week
-        week_summary = base_dir / month_name / f"week_{week_num}" / "summary.md"
-        if week_summary.exists():
-            parts.append(f"[Week {week_num} Summary] Path: {week_summary}\n{_read_summary(week_summary)}")
-            
-        # Month
-        month_summary = base_dir / month_name / "summary.md"
-        if month_summary.exists():
-            parts.append(f"[Month {now.strftime('%m')} Summary] Path: {month_summary}\n{_read_summary(month_summary)}")
-            
-        # Year
-        year_summary = base_dir / "summary.md"
-        if year_summary.exists():
-            parts.append(f"[Year {year} Summary] Path: {year_summary}\n{_read_summary(year_summary)}")
-            
+        for tier in ("week", "month", "year"):
+            memory_ref, summary_path, label = self._resolve_summary_target(tier, now)
+            if not summary_path.exists():
+                continue
+            content = summary_path.read_text(encoding="utf-8").strip()
+            if len(content) > 500:
+                content = content[:500] + "\n...(truncated)"
+            parts.append(f"[{label} Summary] Ref: {memory_ref}\n{content}")
+
         return "\n\n".join(parts)
         
     def read_memory_summary(self, tier: str, date_str: str = None) -> str:
@@ -1177,36 +1520,15 @@ class MemoryStore:
         date_str 格式必须至少包含对应的粒度，例如 YYYY-MM-DD 或 YYYY-MM，未指定则用当前时间。
         """
         dt = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
-        year = dt.strftime("%Y")
-        month_name = dt.strftime("%m_%B").lower()
-        week_num = dt.strftime("%V")
-        
-        base_dir = MEMORY_ROOT / "daily" / year
-        
         if tier == "day":
-            log_path = self._get_daily_log_path(dt)
-            if log_path.exists():
-                return f"[{log_path.name}]\n{log_path.read_text(encoding='utf-8')}"
-            return f"No daily log found for {dt.strftime('%Y-%m-%d')}."
-            
-        elif tier == "week":
-            summary_path = base_dir / month_name / f"week_{week_num}" / "summary.md"
+            return self.read_memory_day(dt.strftime("%Y-%m-%d"))
+
+        if tier in {"week", "month", "year"}:
+            memory_ref, summary_path, label = self._resolve_summary_target(tier, dt)
             if summary_path.exists():
-                return f"[Week {week_num} Summary]\n{summary_path.read_text(encoding='utf-8')}"
-            return f"No weekly summary found for week {week_num} of {year}."
-            
-        elif tier == "month":
-            summary_path = base_dir / month_name / "summary.md"
-            if summary_path.exists():
-                return f"[Month {dt.strftime('%m')} Summary]\n{summary_path.read_text(encoding='utf-8')}"
-            return f"No monthly summary found for {month_name}."
-            
-        elif tier == "year":
-            summary_path = base_dir / "summary.md"
-            if summary_path.exists():
-                return f"[Year {year} Summary]\n{summary_path.read_text(encoding='utf-8')}"
-            return f"No yearly summary found for {year}."
-            
+                return f"[{label} Summary] Ref: {memory_ref}\n{summary_path.read_text(encoding='utf-8')}"
+            return f"No {tier} summary found for {label} (Ref: {memory_ref})."
+
         return f"Unknown tier: {tier}"
 
     def save_periodic_summary(self, tier: str, content: str, dt: datetime = None):

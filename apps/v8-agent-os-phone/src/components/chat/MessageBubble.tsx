@@ -36,10 +36,6 @@ function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode 
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
 }
 
-function imageUrl(adminBaseUrl: string, value: string) {
-    return resolveRenderableMediaUrl(adminBaseUrl, value);
-}
-
 function AssistantWorkIndicator({
     label,
     subtitle,
@@ -145,6 +141,116 @@ function extractSkillReferences(message: ChatMessage): SkillReferenceSummary[] {
         .filter((item) => item.name || item.path);
 }
 
+type UserAttachmentItem = {
+    key: string;
+    name: string;
+    url: string;
+    mimeType: string;
+    size?: number;
+    kind: "image" | "video" | "file";
+};
+
+function attachmentKind(name: string, mimeType: string): UserAttachmentItem["kind"] {
+    const normalizedName = String(name || "").toLowerCase();
+    const normalizedType = String(mimeType || "").toLowerCase();
+    if (normalizedType.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(normalizedName)) {
+        return "image";
+    }
+    if (normalizedType.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(normalizedName)) {
+        return "video";
+    }
+    return "file";
+}
+
+function fileExtensionLabel(name: string, mimeType: string) {
+    const ext = String(name || "").split(".").pop()?.trim();
+    if (ext && ext !== name) {
+        return ext.slice(0, 5).toUpperCase();
+    }
+    const subtype = String(mimeType || "").split("/").pop()?.trim();
+    return subtype ? subtype.slice(0, 5).toUpperCase() : "FILE";
+}
+
+function formatAttachmentSize(value: unknown) {
+    const size = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(size) || size <= 0) {
+        return "";
+    }
+    if (size < 1024) {
+        return `${Math.round(size)} B`;
+    }
+    if (size < 1024 * 1024) {
+        return `${Math.round(size / 1024)} KB`;
+    }
+    return `${(size / 1024 / 1024).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function extractUserAttachments(message: ChatMessage, adminBaseUrl: string): UserAttachmentItem[] {
+    const metadata = message.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
+    const rawAttachments = Array.isArray(metadata.attachments)
+        ? metadata.attachments.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        : [];
+
+    if (rawAttachments.length > 0) {
+        return rawAttachments
+            .map((item, index) => {
+                const resourceRef = item.resourceRef && typeof item.resourceRef === "object"
+                    ? item.resourceRef as Record<string, unknown>
+                    : null;
+                const previewCandidate = String(
+                    item.signedUrl
+                    || resourceRef?.signedUrl
+                    || item.previewUrl
+                    || item.externalUrl
+                    || item.publicUrl
+                    || item.url
+                    || "",
+                ).trim();
+                const displayPath = String(item.workspacePath || item.path || item.sourcePath || item.source_path || "").trim();
+                const rawNameCandidate = previewCandidate || displayPath;
+                const name = String(item.name || item.filename || rawNameCandidate.split(/[\\/]/).filter(Boolean).pop() || `file-${index + 1}`).trim();
+                const mimeType = String(item.mimeType || item.type || "").trim();
+                const url = previewCandidate
+                    ? (
+                        resolveRenderableMediaUrl(adminBaseUrl, {
+                            value: previewCandidate,
+                            resourceRef: resourceRef as any,
+                            previewUrl: String(item.previewUrl || resourceRef?.previewUrl || "").trim() || undefined,
+                            externalUrl: String(item.externalUrl || resourceRef?.externalUrl || "").trim() || undefined,
+                            workspacePath: displayPath || undefined,
+                            sourcePath: String(item.sourcePath || item.source_path || "").trim() || undefined,
+                        })
+                        || resolveAdminAssetUrl(adminBaseUrl, previewCandidate)
+                    )
+                    : "";
+                return {
+                    key: String(item.id || item.localId || previewCandidate || displayPath || `${name}:${index}`),
+                    name,
+                    url,
+                    mimeType,
+                    size: typeof item.size === "number" ? item.size : Number(item.size) || undefined,
+                    kind: attachmentKind(name, mimeType),
+                };
+            });
+    }
+
+    return (Array.isArray(message.images) ? message.images : [])
+        .map((item, index) => {
+            const rawUrl = String(item || "").trim();
+            const url = rawUrl ? (resolveRenderableMediaUrl(adminBaseUrl, rawUrl) || resolveAdminAssetUrl(adminBaseUrl, rawUrl)) : "";
+            return {
+                key: rawUrl || `image-${index}`,
+                name: rawUrl.split(/[\\/]/).filter(Boolean).pop() || `attachment-${index + 1}`,
+                url,
+                mimeType: "image/*",
+                kind: "image" as const,
+            };
+        })
+        .filter((item) => item.url);
+}
+
 function readIdentityField(message: ChatMessage, keys: string[]) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
@@ -227,17 +333,25 @@ export const MessageBubble = memo(function MessageBubble({
     );
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
-    const attachmentImages = useMemo(
-        () => (Array.isArray(message.images) ? message.images.map((item) => imageUrl(adminBaseUrl, item)).filter(Boolean) : []),
-        [adminBaseUrl, message.images],
+    const userAttachments = useMemo(
+        () => extractUserAttachments(message, adminBaseUrl),
+        [adminBaseUrl, message],
+    );
+    const userMediaAttachments = useMemo(
+        () => userAttachments.filter((item) => (item.kind === "image" || item.kind === "video") && item.url),
+        [userAttachments],
+    );
+    const userFileAttachments = useMemo(
+        () => userAttachments.filter((item) => item.kind === "file" || !item.url),
+        [userAttachments],
     );
     const userMediaItems = useMemo<MediaItem[]>(
-        () => attachmentImages.map((url, index) => ({
-            type: "image",
-            src: url,
-            name: `attachment-${index + 1}`,
+        () => userMediaAttachments.map((item) => ({
+            type: item.kind === "video" ? "video" : "image",
+            src: item.url,
+            name: item.name,
         })),
-        [attachmentImages],
+        [userMediaAttachments],
     );
     const taskPlanningMode = Boolean(message.metadata?.taskPlanningMode);
     const renderMessageKey = String(message.renderKey || message.id || "").trim();
@@ -428,8 +542,17 @@ export const MessageBubble = memo(function MessageBubble({
                 return nodeContent;
             }
         }
+        const metadataLines = [
+            commandPresetName ? `/${commandPresetName}` : "",
+            ...skillReferences.map((skill) => `@${skill.name || skill.path}`),
+            taskPlanningMode ? t("任务模式", "Task mode") : "",
+            ...userAttachments.map((attachment) => attachment.name),
+        ].filter(Boolean);
+        if (metadataLines.length > 0) {
+            return metadataLines.join("\n");
+        }
         return "";
-    }, [message.content, renderableNodes]);
+    }, [commandPresetName, message.content, renderableNodes, skillReferences, taskPlanningMode, t, userAttachments]);
 
     useEffect(() => {
         if (!copied) {
@@ -441,6 +564,13 @@ export const MessageBubble = memo(function MessageBubble({
 
     const userColumnWidth = sharedTextBubbleWidth;
     const userBubbleWidth = sharedTextBubbleWidth;
+    const userContentText = String(message.content || "").trim();
+    const hasUserVisualPayload = Boolean(
+        commandPresetName
+        || skillReferences.length > 0
+        || taskPlanningMode
+        || userAttachments.length > 0,
+    );
 
     if (isUser) {
         return (
@@ -461,39 +591,68 @@ export const MessageBubble = memo(function MessageBubble({
                                     <View style={styles.userMetaRow}>
                                         {commandPresetName ? (
                                             <View style={styles.userChip}>
+                                                <MaterialCommunityIcons name="slash-forward" size={12} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>/{commandPresetName}</Text>
                                             </View>
                                         ) : null}
                                         {skillReferences.map((skill) => (
                                             <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
+                                                <MaterialCommunityIcons name="at" size={12} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>@{skill.name}</Text>
                                             </View>
                                         ))}
                                         {taskPlanningMode ? (
                                             <View style={styles.userChip}>
+                                                <MaterialCommunityIcons name="format-list-checks" size={12} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>任务模式</Text>
                                             </View>
                                         ) : null}
                                     </View>
                                 )}
 
-                                {attachmentImages.length > 0 ? (
+                                {userMediaAttachments.length > 0 ? (
                                     <View style={styles.imageRow}>
-                                        {attachmentImages.map((url, index) => (
+                                        {userMediaAttachments.map((attachment, index) => (
                                             <Pressable
-                                                key={url}
+                                                key={attachment.key}
                                                 onPress={() => {
                                                     setUserMediaIndex(index);
                                                     setUserMediaOpen(true);
                                                 }}
                                             >
-                                                <Image source={{ uri: url }} style={styles.inlineImage} />
+                                                <Image source={{ uri: attachment.url }} style={styles.inlineImage} />
                                             </Pressable>
                                         ))}
                                     </View>
                                 ) : null}
 
-                                <Text selectable style={styles.userText}>{message.content || t("（空消息）", "(Empty message)")}</Text>
+                                {userFileAttachments.length > 0 ? (
+                                    <View style={styles.userFileList}>
+                                        {userFileAttachments.map((attachment) => (
+                                            <View key={attachment.key} style={styles.userFileCard}>
+                                                <View style={styles.userFileIcon}>
+                                                    <Text style={styles.userFileExt} numberOfLines={1}>
+                                                        {fileExtensionLabel(attachment.name, attachment.mimeType)}
+                                                    </Text>
+                                                </View>
+                                                <View style={styles.userFileMeta}>
+                                                    <Text style={styles.userFileName} numberOfLines={1}>
+                                                        {attachment.name}
+                                                    </Text>
+                                                    <Text style={styles.userFileSub} numberOfLines={1}>
+                                                        {formatAttachmentSize(attachment.size) || attachment.mimeType || t("文件", "File")}
+                                                    </Text>
+                                                </View>
+                                            </View>
+                                        ))}
+                                    </View>
+                                ) : null}
+
+                                {userContentText ? (
+                                    <Text selectable style={styles.userText}>{userContentText}</Text>
+                                ) : !hasUserVisualPayload ? (
+                                    <Text selectable style={styles.userText}>{t("（空消息）", "(Empty message)")}</Text>
+                                ) : null}
                             </LinearGradient>
                         </View>
 
@@ -742,12 +901,15 @@ const styles = StyleSheet.create({
         maxWidth: "100%",
     },
     userChip: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
         borderRadius: radii.pill,
         backgroundColor: "rgba(255,255,255,0.18)",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.26)",
-        paddingHorizontal: 10,
-        paddingVertical: 5,
+        paddingHorizontal: 9,
+        paddingVertical: 4,
     },
     userChipText: {
         color: "#FFFFFF",
@@ -995,6 +1157,53 @@ const styles = StyleSheet.create({
         width: 86,
         height: 86,
         borderRadius: 14,
+    },
+    userFileList: {
+        gap: 8,
+        marginBottom: 10,
+    },
+    userFileCard: {
+        minHeight: 48,
+        borderRadius: 14,
+        backgroundColor: "rgba(255,255,255,0.16)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.24)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 9,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+    },
+    userFileIcon: {
+        width: 32,
+        height: 32,
+        borderRadius: 10,
+        backgroundColor: "rgba(255,255,255,0.18)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    userFileExt: {
+        color: "#FFFFFF",
+        fontSize: 8,
+        fontWeight: "900",
+        letterSpacing: 0.2,
+    },
+    userFileMeta: {
+        flex: 1,
+        minWidth: 0,
+        gap: 2,
+    },
+    userFileName: {
+        color: "#FFFFFF",
+        fontSize: 12,
+        lineHeight: 16,
+        fontWeight: "800",
+    },
+    userFileSub: {
+        color: "rgba(255,255,255,0.78)",
+        fontSize: 10,
+        lineHeight: 13,
+        fontWeight: "600",
     },
     footerActions: {
         flexDirection: "row",

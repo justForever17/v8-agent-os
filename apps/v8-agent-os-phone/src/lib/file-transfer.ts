@@ -1,6 +1,8 @@
 import * as Linking from "expo-linking";
 import * as FileSystem from "expo-file-system/legacy";
-import { Platform } from "react-native";
+import { Platform, Share } from "react-native";
+
+type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
 function sanitizeName(value: string) {
     return value.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "_").replace(/\s+/g, "_").slice(0, 120);
@@ -56,6 +58,52 @@ function mimeTypeFromFilename(filename: string, fallback = "application/octet-st
     return fallback;
 }
 
+function normalizeAdminBaseUrl(value?: string | null) {
+    return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function resolveAbsoluteDownloadUrl(rawUrl: string, adminBaseUrl?: string | null) {
+    const raw = String(rawUrl || "").trim();
+    if (!raw) {
+        return "";
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+        return raw;
+    }
+    const base = normalizeAdminBaseUrl(adminBaseUrl);
+    if (base && raw.startsWith("/")) {
+        return `${base}${raw}`;
+    }
+    if (base && !raw.startsWith("/")) {
+        return `${base}/${raw.replace(/^\/+/, "")}`;
+    }
+    return raw;
+}
+
+function extractAuthorizedAdminPath(rawUrl: string, adminBaseUrl?: string | null) {
+    const raw = String(rawUrl || "").trim();
+    if (!raw) {
+        return "";
+    }
+    if (raw.startsWith("/api/")) {
+        return raw;
+    }
+    const base = normalizeAdminBaseUrl(adminBaseUrl);
+    if (!base || !/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+        return "";
+    }
+    try {
+        const parsed = new URL(raw);
+        const admin = new URL(base);
+        if (parsed.origin !== admin.origin || !parsed.pathname.startsWith("/api/")) {
+            return "";
+        }
+        return `${parsed.pathname}${parsed.search}`;
+    } catch {
+        return "";
+    }
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer) {
     const bytes = new Uint8Array(buffer);
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -75,6 +123,14 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
     }
 
     return output;
+}
+
+async function shareLocalFile(uri: string, filename: string) {
+    await Share.share({
+        title: filename,
+        url: uri,
+        message: filename,
+    });
 }
 
 export async function saveResponseToCache(
@@ -117,7 +173,7 @@ async function writeBase64ToUserSelectedFile(base64: string, filename: string, c
         await FileSystem.StorageAccessFramework.writeAsStringAsync(uri, base64, {
             encoding: FileSystem.EncodingType.Base64,
         });
-        return { uri, filename, contentType, userVisible: true };
+        return { uri, filename, contentType, userVisible: true, shared: false };
     }
 
     const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
@@ -130,14 +186,25 @@ async function writeBase64ToUserSelectedFile(base64: string, filename: string, c
     await FileSystem.writeAsStringAsync(uri, base64, {
         encoding: FileSystem.EncodingType.Base64,
     });
-    return { uri, filename, contentType, userVisible: false };
+    await shareLocalFile(uri, filename);
+    return { uri, filename, contentType, userVisible: true, shared: true };
 }
 
 export async function downloadUrlToUserSelectedFile(
     url: string,
-    options?: { prefix?: string; filename?: string; fallbackExtension?: string; mimeType?: string },
+    options?: {
+        prefix?: string;
+        filename?: string;
+        fallbackExtension?: string;
+        mimeType?: string;
+        adminBaseUrl?: string;
+        authorizedFetch?: AuthorizedFetch;
+    },
 ) {
-    const response = await fetch(url);
+    const authorizedPath = extractAuthorizedAdminPath(url, options?.adminBaseUrl);
+    const response = authorizedPath && options?.authorizedFetch
+        ? await options.authorizedFetch(authorizedPath)
+        : await fetch(resolveAbsoluteDownloadUrl(url, options?.adminBaseUrl));
     if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
     }
@@ -164,7 +231,7 @@ export async function saveTextToUserSelectedFile(
         }
         const uri = await FileSystem.StorageAccessFramework.createFileAsync(permissions.directoryUri, filename, contentType);
         await FileSystem.StorageAccessFramework.writeAsStringAsync(uri, contents);
-        return { uri, filename, contentType, userVisible: true };
+        return { uri, filename, contentType, userVisible: true, shared: false };
     }
 
     const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
@@ -175,7 +242,8 @@ export async function saveTextToUserSelectedFile(
     await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
     const uri = `${folder}${filename}`;
     await FileSystem.writeAsStringAsync(uri, contents);
-    return { uri, filename, contentType, userVisible: false };
+    await shareLocalFile(uri, filename);
+    return { uri, filename, contentType, userVisible: true, shared: true };
 }
 
 export async function openCachedFile(uri: string) {

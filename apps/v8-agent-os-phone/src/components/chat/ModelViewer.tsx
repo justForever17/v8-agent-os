@@ -5,6 +5,7 @@ import { WebView } from "react-native-webview";
 
 import { Card } from "@/src/components/ui/card";
 import { downloadUrlToUserSelectedFile } from "@/src/lib/file-transfer";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 function scriptString(value: string) {
@@ -19,6 +20,7 @@ export const ModelViewer = memo(function ModelViewer({
     filename?: string;
 }) {
     const { colors, themeMode, t } = useUiPrefs();
+    const { adminBaseUrl, authorizedFetch } = useAppSession();
     const [previewFailed, setPreviewFailed] = useState(false);
     const background = themeMode === "dark" ? "#0f172a" : "#f8fafc";
     const labelBackground = themeMode === "dark" ? "rgba(15,23,42,0.78)" : "rgba(255,255,255,0.82)";
@@ -31,10 +33,14 @@ export const ModelViewer = memo(function ModelViewer({
                 filename: displayFilename,
                 mimeType: "model/gltf-binary",
                 prefix: "model",
+                adminBaseUrl,
+                authorizedFetch,
             });
             Alert.alert(
                 t("已下载", "Downloaded"),
-                saved.userVisible
+                saved.shared
+                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                    : saved.userVisible
                     ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
                     : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
             );

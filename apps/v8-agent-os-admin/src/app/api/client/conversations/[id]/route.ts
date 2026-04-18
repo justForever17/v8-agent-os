@@ -6,6 +6,7 @@ import { normalizeMessageForRealtimeSurface, normalizeProcessForRealtimeSurface,
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 function asRecord(value: unknown) {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -73,6 +74,8 @@ export async function GET(
             : [];
         const snapshotProcesses = Array.isArray(snapshotData.processes) ? snapshotData.processes : [];
 
+        const engineNow = snapshotResponse.headers.get(ENGINE_NOW_HEADER) || historyResponse.headers.get(ENGINE_NOW_HEADER);
+
         return NextResponse.json(applyCanonicalSourceGroup({
             id,
             messages: detailMessages,
@@ -107,7 +110,9 @@ export async function GET(
                     ? snapshotData.contextGovernanceHistory
                     : [],
             projection: snapshotData,
-        }));
+        }), {
+            headers: engineNow ? { [ENGINE_NOW_HEADER]: engineNow } : undefined,
+        });
     } catch (error) {
         console.error("[Client Conversations] Engine communication failed:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

@@ -43,6 +43,7 @@ from core.runtime.startup_profile import (
     startup_bundle_diagnostics,
     startup_bundle_summary,
 )
+from core.realtime_protocol import utc_now_iso
 from core.storage import storage
 from core.system_base import get_allowed_origins
 from core.workspace_guard import ensure_workspace_auto_create_allowed
@@ -371,6 +372,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def attach_engine_now_header(request, call_next):
+    response = await call_next(request)
+    response.headers["x-v8-engine-now"] = utc_now_iso()
+    return response
 
 # Register API routers
 app.include_router(routes.router, prefix="/v1")

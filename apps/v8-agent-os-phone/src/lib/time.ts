@@ -7,11 +7,12 @@ function isEnglishLocale(locale: LocaleCode | string | null | undefined) {
 export function formatRelativeTime(
     value?: string | number | null,
     locale: LocaleCode = "zh-CN",
+    nowMs = Date.now(),
 ) {
     if (!value) return isEnglishLocale(locale) ? "Just now" : "刚刚";
     const timestamp = typeof value === "number" ? value : Date.parse(value);
     if (Number.isNaN(timestamp)) return isEnglishLocale(locale) ? "Just now" : "刚刚";
-    const delta = Math.max(0, Date.now() - timestamp);
+    const delta = Math.max(0, nowMs - timestamp);
     const minutes = Math.floor(delta / 60000);
     if (minutes < 1) return isEnglishLocale(locale) ? "Just now" : "刚刚";
     if (minutes < 60) return isEnglishLocale(locale) ? `${minutes}m ago` : `${minutes} 分钟前`;

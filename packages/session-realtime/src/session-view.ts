@@ -137,6 +137,7 @@ export type SessionSummaryView = Record<string, unknown> & {
   lastNarrativeExcerpt?: string;
   lastRuntimeSummary?: string;
   lastActivityAt?: string;
+  historySortAt?: string;
   hasDurablePreview?: boolean;
 };
 

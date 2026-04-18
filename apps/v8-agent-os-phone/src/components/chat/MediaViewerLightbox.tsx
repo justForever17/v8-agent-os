@@ -6,6 +6,7 @@ import * as Clipboard from "expo-clipboard";
 
 import { downloadUrlToUserSelectedFile } from "@/src/lib/file-transfer";
 import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
+import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
@@ -28,6 +29,7 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
     onClose: () => void;
 }) {
     const { colors, t } = useUiPrefs();
+    const { adminBaseUrl, authorizedFetch } = useAppSession();
     const [currentIndex, setCurrentIndex] = useState(initialIndex);
     const boundedIndex = Math.min(Math.max(initialIndex, 0), Math.max(items.length - 1, 0));
     const clampedCurrentIndex = Math.min(Math.max(currentIndex, 0), Math.max(items.length - 1, 0));
@@ -71,10 +73,14 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                             const saved = await downloadUrlToUserSelectedFile(url, {
                                 prefix: "media",
                                 filename: current.name,
+                                adminBaseUrl,
+                                authorizedFetch,
                             });
                             Alert.alert(
                                 t("已保存", "Saved"),
-                                saved.userVisible
+                                saved.shared
+                                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                                    : saved.userVisible
                                     ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
                                     : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
                             );

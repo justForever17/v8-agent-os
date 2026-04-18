@@ -14,6 +14,8 @@ type ClientContext = {
     userEmail: string;
 };
 
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
+
 function normalizeClientIdentifier(user: AdminUserRecord) {
     return String(user.email || user.login || "").trim();
 }
@@ -22,6 +24,15 @@ function mergeHeaders(base: HeadersInit | undefined, extra: Record<string, strin
     const headers = new Headers(base || {});
     for (const [key, value] of Object.entries(extra)) {
         headers.set(key, value);
+    }
+    return headers;
+}
+
+function buildPassthroughHeaders(response: Response, extra?: HeadersInit) {
+    const headers = new Headers(extra || {});
+    const engineNow = response.headers.get(ENGINE_NOW_HEADER);
+    if (engineNow) {
+        headers.set(ENGINE_NOW_HEADER, engineNow);
     }
     return headers;
 }
@@ -63,7 +74,10 @@ export async function proxyClientAdminJson(
     try {
         const response = await fetchClientAdmin(req, targetPath, init);
         const payload = await response.json().catch(() => ({}));
-        return NextResponse.json(payload, { status: response.status });
+        return NextResponse.json(payload, {
+            status: response.status,
+            headers: buildPassthroughHeaders(response),
+        });
     } catch (error) {
         return toClientProxyErrorResponse(error, "Backend Service Unavailable");
     }
@@ -77,7 +91,10 @@ export async function proxyClientEngineJson(
     try {
         const response = await fetchClientEngine(req, targetPath, init);
         const payload = await response.json().catch(() => ({}));
-        return NextResponse.json(payload, { status: response.status });
+        return NextResponse.json(payload, {
+            status: response.status,
+            headers: buildPassthroughHeaders(response),
+        });
     } catch (error) {
         return toClientProxyErrorResponse(error, "Engine Service Unavailable");
     }
@@ -155,11 +172,11 @@ export async function proxyClientAdminStream(
 
         return new NextResponse(response.body, {
             status: response.status,
-            headers: {
+            headers: buildPassthroughHeaders(response, {
                 "Content-Type": response.headers.get("Content-Type") || defaultContentType,
                 "Cache-Control": response.headers.get("Cache-Control") || "no-store",
                 "Connection": response.headers.get("Connection") || "keep-alive",
-            },
+            }),
         });
     } catch (error) {
         return toClientProxyErrorResponse(error, "Backend Service Unavailable");

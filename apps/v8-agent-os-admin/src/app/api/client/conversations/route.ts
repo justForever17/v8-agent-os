@@ -8,6 +8,7 @@ import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/cli
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 export async function GET(req: NextRequest) {
     const userEmail = await resolveClientUserEmail(req);
@@ -31,7 +32,11 @@ export async function GET(req: NextRequest) {
         const sessions = normalizeAuthoritativeSessionHistoryList(
             Array.isArray(data.sessions) ? data.sessions : [],
         );
-        return NextResponse.json(sessions);
+        return NextResponse.json(sessions, {
+            headers: response.headers.get(ENGINE_NOW_HEADER)
+                ? { [ENGINE_NOW_HEADER]: response.headers.get(ENGINE_NOW_HEADER)! }
+                : undefined,
+        });
     } catch (error) {
         console.error("[Client Conversations] Engine communication failed:", error);
         return NextResponse.json([]);
@@ -67,6 +72,11 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json(
             normalizeAuthoritativeSessionHistoryRecord(await response.json().catch(() => ({}))),
+            {
+                headers: response.headers.get(ENGINE_NOW_HEADER)
+                    ? { [ENGINE_NOW_HEADER]: response.headers.get(ENGINE_NOW_HEADER)! }
+                    : undefined,
+            },
         );
     } catch (error) {
         console.error("[Client Conversations] Create session failed:", error);

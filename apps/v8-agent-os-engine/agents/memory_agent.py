@@ -17,6 +17,7 @@ Memory Agent — 系统指令驱动的专业记忆维护 Agent
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional, Dict
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from langchain_core.messages import SystemMessage, HumanMessage
 import logging
 import json
@@ -107,12 +108,55 @@ class MemoryExtractionResult(BaseModel):
     entities: List[EntityExtraction] = Field(default_factory=list, description="Extracted entities for the knowledge graph")
     relations: List[RelationExtraction] = Field(default_factory=list, description="Extracted relationships between entities")
 
+
+@dataclass
+class MemoryExtractionAttempt:
+    result: Optional[MemoryExtractionResult] = None
+    failure_stage: str = ""
+    failure_reason: str = ""
+    extractor_model: str = ""
+    raw_output_preview: str = ""
+    parser_error_preview: str = ""
+
 # === 专业工具函数 ===
 
 def _get_background_llm():
     """获取后台 LLM（使用 memory 专用配置）"""
     router = MemoryRouter()
     return router.get_extractor_llm()
+
+
+def _extractor_model_name(llm: Any) -> str:
+    for key in ("model_id", "model_name", "model"):
+        value = getattr(llm, key, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    meta = getattr(llm, "meta", None)
+    if isinstance(meta, dict):
+        for key in ("model_id", "model_name", "model"):
+            value = meta.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _build_extraction_attempt(
+    *,
+    result: Optional[MemoryExtractionResult] = None,
+    failure_stage: str = "",
+    failure_reason: str = "",
+    extractor_model: str = "",
+    raw_output_preview: str = "",
+    parser_error_preview: str = "",
+) -> MemoryExtractionAttempt:
+    return MemoryExtractionAttempt(
+        result=result,
+        failure_stage=failure_stage,
+        failure_reason=str(failure_reason or "").strip(),
+        extractor_model=str(extractor_model or "").strip(),
+        raw_output_preview=_safe_json_excerpt(raw_output_preview, limit=1200),
+        parser_error_preview=_safe_json_excerpt(parser_error_preview, limit=600),
+    )
 
 def _generate_quick_summary(chat_text: str) -> str:
     """快速生成会话一句话摘要，用于预检索历史知识"""
@@ -471,7 +515,7 @@ def _extract_with_llm(
     *,
     resolved_scope: str,
     scope_chain: Optional[List[str]] = None,
-) -> Optional[MemoryExtractionResult]:
+) -> MemoryExtractionAttempt:
     """
     [专业工具] 使用 LLM 和 PydanticOutputParser 从对话中提取结构化知识。
     同时注入预检索到的 Historical Context，以便更新/防重。
@@ -483,7 +527,11 @@ def _extract_with_llm(
         format_instructions = parser.get_format_instructions()
     except Exception as e:
         logger.error(f"[MemoryAgent] No valid extractor configured: {e}")
-        return None
+        return _build_extraction_attempt(
+            failure_stage="extractor_config_missing",
+            failure_reason=str(e),
+        )
+    extractor_model = _extractor_model_name(llm)
     
     system_prompt = _get_extraction_prompt(format_instructions)
     
@@ -500,7 +548,14 @@ def _extract_with_llm(
                 )
             )
         ])
-        str_content = raw_response.content
+        raw_content = getattr(raw_response, "content", "")
+        if isinstance(raw_content, list):
+            str_content = "\n".join(
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in raw_content
+            )
+        else:
+            str_content = str(raw_content or "")
         
         # 兼容 deepseek-reasoner 返回可能包含 <think> 标签的思维链
         if "<think>" in str_content and "</think>" in str_content:
@@ -516,19 +571,62 @@ def _extract_with_llm(
         if len(str_content) > 4000:
             logger.warning("[MemoryAgent] LLM output unusually long, possible repetition bug. Truncating.")
             str_content = str_content[:4000]
+
+        raw_output_preview = _safe_json_excerpt(str_content, limit=1200)
+        if not str_content.strip():
+            return _build_extraction_attempt(
+                failure_stage="llm_response_empty",
+                failure_reason="LLM returned empty content.",
+                extractor_model=extractor_model,
+                raw_output_preview=raw_output_preview,
+            )
             
         try:
             parsed_result = parser.invoke(str_content)
-            return parsed_result
+            return _build_extraction_attempt(
+                result=parsed_result,
+                extractor_model=extractor_model,
+                raw_output_preview=raw_output_preview,
+            )
         except OutputParserException as e:
             logger.warning(f"[MemoryAgent] Output parsing failed: {e}. Attempting auto-fix...")
             from langchain.output_parsers import OutputFixingParser
-            fixing_parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
-            return fixing_parser.parse(str_content)
+            parser_error_preview = _safe_json_excerpt(str(e), limit=600)
+            try:
+                fixing_parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
+                repaired_result = fixing_parser.parse(str_content)
+                return _build_extraction_attempt(
+                    result=repaired_result,
+                    extractor_model=extractor_model,
+                    raw_output_preview=raw_output_preview,
+                    parser_error_preview=parser_error_preview,
+                )
+            except Exception as repair_error:
+                logger.error(f"[MemoryAgent] Output repair failed: {repair_error}")
+                return _build_extraction_attempt(
+                    failure_stage="repair_parser_failed",
+                    failure_reason=str(repair_error),
+                    extractor_model=extractor_model,
+                    raw_output_preview=raw_output_preview,
+                    parser_error_preview=parser_error_preview,
+                )
+        except Exception as e:
+            logger.error(f"[MemoryAgent] Output parsing crashed: {e}")
+            return _build_extraction_attempt(
+                failure_stage="parser_failed",
+                failure_reason=str(e),
+                extractor_model=extractor_model,
+                raw_output_preview=raw_output_preview,
+                parser_error_preview=_safe_json_excerpt(str(e), limit=600),
+            )
             
     except Exception as e:
         logger.error(f"[MemoryAgent] LLM extraction error: {e}")
-        return None
+        return _build_extraction_attempt(
+            failure_stage="llm_invoke_failed",
+            failure_reason=str(e),
+            extractor_model=extractor_model,
+        )
 
 def _build_historical_context(*, quick_summary: str, scope_chain: List[str]) -> str:
     context_sections: List[str] = []
@@ -815,6 +913,16 @@ def _emit_memory_event(
         run_handle.emit(topic, payload)
     except Exception as exc:
         logger.debug(f"[MemoryAgent] Failed to emit runtime event {topic}: {exc}")
+
+
+def _update_run_metadata(run_handle: Any | None, updates: Dict[str, Any]) -> None:
+    run_id = getattr(run_handle, "run_id", None)
+    if not run_id:
+        return
+    try:
+        memory_runtime.update_run_metadata(run_id, updates)
+    except Exception as exc:
+        logger.debug(f"[MemoryAgent] Failed to update run metadata for {run_id}: {exc}")
 
 
 def _stored_preference_key(pref: PreferenceExtraction) -> tuple:
@@ -1119,6 +1227,17 @@ def analyze_session_memory(
     transcript_entries = transcript["entries"]
     if not transcript_entries:
         logger.info(f"[MemoryAgent] No transcript entries for session {session_id}, skipping.")
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "skipped",
+                    "skipReason": "no_messages",
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                }
+            },
+        )
         audit_logger.log(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
@@ -1152,6 +1271,18 @@ def analyze_session_memory(
 
     if int(transcript.get("user_message_count") or 0) <= 0:
         logger.info(f"[MemoryAgent] No user transcript entries for session {session_id}, skipping.")
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "skipped",
+                    "skipReason": "no_user_message",
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                    "entryCount": len(transcript_entries),
+                }
+            },
+        )
         audit_logger.log(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
@@ -1185,6 +1316,18 @@ def analyze_session_memory(
     )
     if not incremental_messages:
         logger.info(f"[MemoryAgent] No incremental messages for session {session_id}, skipping extraction.")
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "skipped",
+                    "skipReason": extraction_mode,
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                    "entryCount": len(transcript_entries),
+                }
+            },
+        )
         audit_logger.log(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
@@ -1226,6 +1369,19 @@ def analyze_session_memory(
     
     if len(chat_history_text.strip()) < 50:
         logger.info(f"[MemoryAgent] Session too short, skipping extraction.")
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "skipped",
+                    "skipReason": "no_semantic_content",
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                    "entryCount": len(incremental_messages),
+                    "contentLength": len(chat_history_text.strip()),
+                }
+            },
+        )
         audit_logger.log(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
@@ -1255,6 +1411,19 @@ def analyze_session_memory(
         }
     
     logger.info(f"[MemoryAgent] === System Command: Analyze Session {session_id[:8]} ===")
+    _update_run_metadata(
+        run_handle,
+        {
+            "memory_extraction": {
+                "status": "running",
+                "transcriptSource": transcript["source"],
+                "latestSeq": transcript["latest_seq"],
+                "entryCount": len(transcript_entries),
+                "incrementalEntryCount": len(incremental_messages),
+                "extractionMode": extraction_mode,
+            }
+        },
+    )
     _emit_memory_event(
         run_handle,
         "memory.session_extraction.started",
@@ -1357,7 +1526,7 @@ def analyze_session_memory(
     
     # 4. LLM 结构化提取
     try:
-        result = _extract_with_llm(
+        extraction_attempt = _extract_with_llm(
             chat_history_text,
             context_text,
             resolved_scope=scope,
@@ -1365,6 +1534,20 @@ def analyze_session_memory(
         )
     except Exception as e:
         logger.warning(f"[MemoryAgent] LLM extraction error: {e}")
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "failed",
+                    "extractionFailureStage": "extractor_error",
+                    "extractionFailureReason": str(e),
+                    "resolvedScope": scope,
+                    "effectiveMemoryScope": effective_memory_scope,
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                }
+            },
+        )
         audit_logger.log(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
@@ -1390,29 +1573,66 @@ def analyze_session_memory(
             "resolved_scope": scope,
         }
         
+    result = extraction_attempt.result
     if result is None:
-        logger.warning(f"[MemoryAgent] LLM failed to return valid extraction.")
+        failure_stage = extraction_attempt.failure_stage or "llm_response_empty"
+        failure_reason = extraction_attempt.failure_reason or "Extractor returned no structured result."
+        logger.warning(f"[MemoryAgent] LLM failed to return valid extraction. stage={failure_stage} reason={failure_reason}")
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "failed",
+                    "extractionFailureStage": failure_stage,
+                    "extractionFailureReason": failure_reason,
+                    "extractorModel": extraction_attempt.extractor_model or None,
+                    "rawOutputPreview": extraction_attempt.raw_output_preview or None,
+                    "parserErrorPreview": extraction_attempt.parser_error_preview or None,
+                    "resolvedScope": scope,
+                    "effectiveMemoryScope": effective_memory_scope,
+                    "memoryPolicy": memory_policy,
+                    "provenanceClass": provenance_class,
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                }
+            },
+        )
         audit_logger.log(
             source_type=source_type,
             action=f"Memory Agent: Session Extraction",
             status="FAILED",
-            details=f"LLM returned invalid/empty extraction for session {session_id[:8]}"
+            details=f"LLM extraction failed for session {session_id[:8]} ({failure_stage}): {failure_reason}"
         )
         _emit_memory_event(
             run_handle,
             "memory.session_extraction.failed",
             {
                 "session_id": session_id,
-                "reason": "model_empty",
+                "reason": failure_stage,
                 "resolved_scope": scope,
+                "effective_memory_scope": effective_memory_scope,
+                "extractionFailureStage": failure_stage,
+                "extractionFailureReason": failure_reason,
+                "extractorModel": extraction_attempt.extractor_model or None,
+                "rawOutputPreview": extraction_attempt.raw_output_preview or None,
+                "parserErrorPreview": extraction_attempt.parser_error_preview or None,
+                "source_runtime": source_runtime,
+                "provenance_class": provenance_class,
+                "memory_policy": memory_policy,
             },
         )
         return {
             "status": "failed",
             "task_kind": "session_extraction",
             "session_id": session_id,
-            "reason": "model_empty",
+            "reason": failure_stage,
             "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
+            "extractionFailureStage": failure_stage,
+            "extractionFailureReason": failure_reason,
+            "extractorModel": extraction_attempt.extractor_model or None,
+            "rawOutputPreview": extraction_attempt.raw_output_preview or None,
+            "parserErrorPreview": extraction_attempt.parser_error_preview or None,
         }
 
     _align_extraction_scopes(result, effective_memory_scope)
@@ -1433,6 +1653,11 @@ def analyze_session_memory(
             "source_runtime": source_runtime,
             "provenance_class": provenance_class,
             "memory_policy": memory_policy,
+            "extractorModel": extraction_attempt.extractor_model or None,
+            "rawOutputPreview": extraction_attempt.raw_output_preview or None,
+            "parserErrorPreview": extraction_attempt.parser_error_preview or None,
+            "extractionFailureStage": None,
+            "extractionFailureReason": None,
         },
     )
        
@@ -1516,6 +1741,11 @@ def analyze_session_memory(
             "source_runtime": source_runtime,
             "provenance_class": provenance_class,
             "memory_policy": memory_policy,
+            "extractorModel": extraction_attempt.extractor_model or None,
+            "rawOutputPreview": extraction_attempt.raw_output_preview or None,
+            "parserErrorPreview": extraction_attempt.parser_error_preview or None,
+            "extractionFailureStage": None,
+            "extractionFailureReason": None,
         },
     )
     
@@ -1538,6 +1768,41 @@ def analyze_session_memory(
         last_content_hash=current_hash,
         last_run_id=getattr(run_handle, "run_id", None),
         last_processed_at=_utc_now_iso(),
+    )
+    _update_run_metadata(
+        run_handle,
+        {
+            "memory_extraction": {
+                "status": "completed",
+                "summary": result.summary,
+                "resolvedScope": scope,
+                "effectiveMemoryScope": effective_memory_scope,
+                "extractorModel": extraction_attempt.extractor_model or None,
+                "rawOutputPreview": extraction_attempt.raw_output_preview or None,
+                "parserErrorPreview": extraction_attempt.parser_error_preview or None,
+                "extractionFailureStage": None,
+                "extractionFailureReason": None,
+                "extractedPreferenceCount": len(result.preferences),
+                "extractedKnowledgeCount": len(result.knowledge),
+                "extractedEntityCount": len(result.entities),
+                "extractedRelationCount": len(result.relations),
+                "persistedPreferenceCount": stored_preferences,
+                "persistedKnowledgeCount": stored_knowledge,
+                "persistedOperationalWorkflowCount": persisted_operational_workflows,
+                "persistedEntityCount": graph_stats["entities"],
+                "persistedRelationCount": graph_stats["relations"],
+                "filteredPreferenceCount": filtered_preferences,
+                "filteredKnowledgeCount": filtered_knowledge,
+                "filterReasons": filter_reasons,
+                "noPersistedMemoryReason": no_persisted_memory_reason or None,
+                "memoryPolicy": memory_policy,
+                "provenanceClass": provenance_class,
+                "sourceRuntime": source_runtime,
+                "transcriptSource": transcript["source"],
+                "latestSeq": transcript["latest_seq"],
+                "extractionMode": extraction_mode,
+            }
+        },
     )
     _emit_memory_event(
         run_handle,
@@ -1656,12 +1921,8 @@ async def generate_periodic_summary(
     )
     
     content = ""
-    if tier == "week":
-        content = memory_runtime.get_recent_logs(days=7, scope_chain=["global"])
-    elif tier == "month":
-        content = memory_runtime.get_recent_logs(days=30, scope_chain=["global"])
-    elif tier == "year":
-        content = memory_runtime.get_recent_logs(days=365, scope_chain=["global"])
+    if tier in {"week", "month", "year"}:
+        content = memory_runtime.get_logs_for_period(tier=tier, dt=dt, scope_chain=["global"])
         
     if not content.strip():
         logger.debug(f"[MemoryAgent] No logs found for {tier}, skipping summary.")

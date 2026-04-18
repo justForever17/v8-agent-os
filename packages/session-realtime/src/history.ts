@@ -44,6 +44,7 @@ export type AuthoritativeSessionHistoryRecord = {
   updated_at?: string;
   startedAt?: string;
   lastActivityAt?: string;
+  historySortAt?: string;
   endedAt?: string;
   status?: string;
   workflowStatus?: string;
@@ -117,6 +118,40 @@ function coerceString(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
+function normalizeUtcTimestamp(value: unknown): string | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const timestamp = Math.abs(value) > 1_000_000_000_000 ? value : value * 1000;
+    return new Date(timestamp).toISOString();
+  }
+  const text = String(value || "").trim();
+  if (!text) {
+    return undefined;
+  }
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    const numeric = Number(text);
+    if (!Number.isFinite(numeric)) {
+      return undefined;
+    }
+    const timestamp = Math.abs(numeric) > 1_000_000_000_000 ? numeric : numeric * 1000;
+    return new Date(timestamp).toISOString();
+  }
+  const sqliteMatch = text.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/);
+  if (sqliteMatch) {
+    const parsed = Date.parse(`${sqliteMatch[1]}T${sqliteMatch[2]}Z`);
+    return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+  }
+  const naiveIsoMatch = text.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  if (naiveIsoMatch && !/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
+    const parsed = Date.parse(`${text}Z`);
+    return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+  }
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+}
+
 function normalizeSourceGroup(value: unknown): SessionHistorySourceGroup | "" {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "web" || normalized === "channels" || normalized === "cron" || normalized === "hooks") {
@@ -172,8 +207,8 @@ function deriveChannelSubdocument(record: Record<string, unknown>, parsedMetadat
 
 function sortHistoryItems(items: AuthoritativeSessionHistoryRecord[]) {
   return [...items].sort((left, right) => {
-    const leftTs = left.lastActivityAt || left.updatedAt || left.updated_at || left.startedAt || left.createdAt || "";
-    const rightTs = right.lastActivityAt || right.updatedAt || right.updated_at || right.startedAt || right.createdAt || "";
+    const leftTs = left.historySortAt || left.createdAt || "";
+    const rightTs = right.historySortAt || right.createdAt || "";
     return rightTs.localeCompare(leftTs);
   });
 }
@@ -198,12 +233,13 @@ export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): Author
     runtimeOwner: coerceString(record.runtimeOwner) || coerceString(record.ownerRuntime),
     ownerRuntime: coerceString(record.ownerRuntime) || coerceString(record.runtimeOwner),
     ownerAgentId: coerceString(record.ownerAgentId),
-    createdAt: coerceString(record.createdAt || record.created_at || record.startedAt),
-    updatedAt: coerceString(record.updatedAt || record.updated_at || record.lastActivityAt),
-    updated_at: coerceString(record.updated_at || record.updatedAt || record.lastActivityAt),
-    startedAt: coerceString(record.startedAt || record.createdAt || record.created_at),
-    lastActivityAt: coerceString(record.lastActivityAt || record.updatedAt || record.updated_at),
-    endedAt: coerceString(record.endedAt),
+    createdAt: normalizeUtcTimestamp(record.createdAt || record.created_at || record.startedAt),
+    updatedAt: normalizeUtcTimestamp(record.updatedAt || record.updated_at),
+    updated_at: normalizeUtcTimestamp(record.updated_at || record.updatedAt),
+    startedAt: normalizeUtcTimestamp(record.startedAt || record.createdAt || record.created_at),
+    lastActivityAt: normalizeUtcTimestamp(record.lastActivityAt || record.updatedAt || record.updated_at),
+    historySortAt: normalizeUtcTimestamp(record.historySortAt || record.createdAt || record.created_at || record.startedAt),
+    endedAt: normalizeUtcTimestamp(record.endedAt),
     status: coerceString(record.status) || coerceString(record.workflowStatus),
     workflowStatus: coerceString(record.workflowStatus) || coerceString(record.status),
     statusLabel: coerceString(record.statusLabel),

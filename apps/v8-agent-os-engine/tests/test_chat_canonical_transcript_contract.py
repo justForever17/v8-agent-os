@@ -4,11 +4,44 @@ import sys
 import unittest
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
+
+if "chromadb" not in sys.modules:
+    class _FakeChromaCollection:
+        def upsert(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def delete(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def query(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return {}
+
+    class _FakeChromaClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        def get_or_create_collection(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return _FakeChromaCollection()
+
+    sys.modules["chromadb"] = SimpleNamespace(PersistentClient=_FakeChromaClient)
+
+if "bs4" not in sys.modules:
+    sys.modules["bs4"] = SimpleNamespace(BeautifulSoup=object)
+
+if "scrapling.core.storage" not in sys.modules:
+    sys.modules["scrapling.core.storage"] = SimpleNamespace(SQLiteStorageSystem=object)
+
+if "scrapling.parser" not in sys.modules:
+    sys.modules["scrapling.parser"] = SimpleNamespace(Selector=object)
+
+if "langgraph.checkpoint.sqlite.aio" not in sys.modules:
+    sys.modules["langgraph.checkpoint.sqlite.aio"] = SimpleNamespace(AsyncSqliteSaver=object)
 
 from api.models import ChatRequest
 from core.computer_use_tool_surface import select_supervisor_native_tools
@@ -19,6 +52,7 @@ from erc.canonical_model_events import LangChainCanonicalModelEventAdapter, cons
 from erc.snapshot_service import SnapshotService
 import erc.snapshot_service as snapshot_service_module
 import erc.session_realtime_contract as session_realtime_contract_module
+import runtimes.chat.runtime as chat_runtime_module
 
 
 class _FakeCanonicalDb:
@@ -124,6 +158,23 @@ class _FakeProcessSurfaceDb:
             "run_id": run_id,
             "role": role,
         }
+
+
+class _FakeRequestInputDb:
+    def __init__(self) -> None:
+        self.legacy_messages: list[dict] = []
+
+    def get_chat_canonical_message_by_client_message_id(self, *, session_id: str, client_message_id: str, role: str = "user"):
+        return None
+
+    def get_chat_canonical_message_by_run(self, *, session_id: str, run_id: str, role: str = "user"):
+        return None
+
+    def get_chat_canonical_message(self, message_id: str):
+        return None
+
+    def add_message(self, **kwargs):
+        self.legacy_messages.append(dict(kwargs))
 
 
 class ChatCanonicalTranscriptContractTests(unittest.TestCase):
@@ -272,6 +323,76 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         }
 
         self.assertEqual(session_realtime_contract_module._build_process_message_index(snapshot), {})
+
+    def test_record_request_inputs_persists_user_structured_metadata_to_canonical_row(self):
+        runtime = chat_runtime_module.ChatRuntime()
+        fake_db = _FakeRequestInputDb()
+        captured: dict[str, dict] = {}
+
+        def _fake_create(_chat_run, **kwargs):
+            row = {
+                "id": kwargs["message_id"],
+                "metadata": dict(kwargs.get("metadata") or {}),
+                "nodes": list(kwargs.get("nodes") or []),
+                "version": 1,
+            }
+            captured["row"] = row
+            return dict(row)
+
+        runtime._create_canonical_message = _fake_create  # type: ignore[method-assign]
+
+        request = ChatRequest.model_validate(
+            {
+                "messages": [{"role": "user", "content": "请执行当前命令"}],
+                "clientMessageId": "user-client-1",
+                "attachments": [
+                    {
+                        "name": "demo.txt",
+                        "url": "https://example.test/demo.txt",
+                        "mimeType": "text/plain",
+                    }
+                ],
+            }
+        )
+        runtime._normalize_request_attachments(request)
+        chat_run = SimpleNamespace(
+            request=request,
+            session_id="session-1",
+            active_run_id="run-1",
+            transport="os_phone",
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-1",
+                    workspace_id="workspace-1",
+                    workspace_path="C:/Users/sunny/.v8-agent-os/workspace",
+                    workflow_id=None,
+                    resolved_scope="project:project-1",
+                    scope_source="session_binding",
+                ),
+                scope_chain=["project:project-1"],
+            ),
+            prepared=SimpleNamespace(
+                command_preset_name="test4",
+                command_preset_hash="hash-123",
+                task_planning_mode=True,
+                skill_references=[{"name": "algorithmic-art", "path": "C:/Users/sunny/.agents/skills/algorithmic-art"}],
+            ),
+            is_resume_request=False,
+            existing_binding=None,
+            emit_runtime_event=lambda *args, **kwargs: None,
+            run_handle=SimpleNamespace(refresh_chat_snapshot=lambda: None),
+        )
+
+        with mock.patch.object(chat_runtime_module, "db", fake_db), mock.patch.object(chat_runtime_module, "workflow_ledger_service", SimpleNamespace(record_step_inputs=lambda *args, **kwargs: None)):
+            row = runtime.record_request_inputs(chat_run)
+
+        self.assertIsNotNone(row)
+        metadata = dict((row or {}).get("metadata") or {})
+        self.assertEqual(metadata.get("clientMessageId"), "user-client-1")
+        self.assertEqual((metadata.get("commandPreset") or {}).get("name"), "test4")
+        self.assertTrue(metadata.get("taskPlanningMode"))
+        self.assertEqual((metadata.get("skillReferences") or [{}])[0].get("name"), "algorithmic-art")
+        self.assertEqual((metadata.get("attachments") or [{}])[0].get("name"), "demo.txt")
 
     def test_builder_preserves_stable_node_timeline_and_derived_exports(self):
         fake_db = _FakeCanonicalDb()

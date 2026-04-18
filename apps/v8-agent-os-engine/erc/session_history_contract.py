@@ -7,6 +7,7 @@ from core.context_governance import (
     extract_latest_context_governance,
 )
 from core.runtime_projection import build_projection_summary
+from core.time_truth import latest_utc_iso, normalize_utc_iso
 from erc.session_realtime_contract import build_context_references, build_processes_snapshot
 
 
@@ -30,10 +31,7 @@ def _coerce_string(value: Any) -> Optional[str]:
 
 
 def _latest_timestamp(*values: Any) -> Optional[str]:
-    candidates = [str(value).strip() for value in values if str(value or "").strip()]
-    if not candidates:
-        return None
-    return max(candidates)
+    return latest_utc_iso(*values)
 
 
 def _derive_scope_tags(metadata: Dict[str, Any], session_row: Dict[str, Any]) -> List[str]:
@@ -172,6 +170,10 @@ def build_session_history_materialized_record(
     workflow_status = _coerce_string(workflow_view.get("status")) or _coerce_string(summary.get("workflowStatus")) or "idle"
     root_run_id = _coerce_string(workflow_view.get("rootRunId"))
     owner_runtime = _coerce_string(workflow_view.get("ownerRuntime")) or _coerce_string(summary.get("ownerRuntime"))
+    created_at = normalize_utc_iso(session_row.get("created_at") or session_row.get("createdAt"))
+    updated_at = normalize_utc_iso(session_row.get("updatedAt") or session_row.get("updated_at"))
+    started_at = normalize_utc_iso(run_record.get("started_at") if run_record else None) or created_at
+    ended_at = normalize_utc_iso(run_record.get("finished_at") if run_record else None)
     last_activity_at = _latest_timestamp(
         summary.get("lastActivityAt"),
         session_row.get("lastActivityAt"),
@@ -184,6 +186,14 @@ def build_session_history_materialized_record(
         run_record.get("finished_at") if run_record else None,
         run_record.get("started_at") if run_record else None,
     )
+    history_sort_at = _latest_timestamp(
+        summary.get("historySortAt"),
+        session_row.get("historySortAt"),
+        session_row.get("latestCanonicalMessageAt"),
+        session_row.get("latestMessageAt"),
+        session_row.get("created_at"),
+        session_row.get("createdAt"),
+    ) or created_at
     channel = _build_channel_history_subdocument(summary)
 
     return {
@@ -195,12 +205,13 @@ def build_session_history_materialized_record(
         "runtimeOwner": owner_runtime,
         "ownerRuntime": owner_runtime,
         "ownerAgentId": _coerce_string(workflow_view.get("ownerAgentId")) or _coerce_string(summary.get("ownerAgentId")),
-        "createdAt": _coerce_string(session_row.get("created_at")) or _coerce_string(session_row.get("createdAt")),
-        "updatedAt": _coerce_string(session_row.get("updatedAt")) or _coerce_string(session_row.get("updated_at")),
-        "updated_at": _coerce_string(session_row.get("updated_at")) or _coerce_string(session_row.get("updatedAt")),
-        "startedAt": _coerce_string(run_record.get("started_at") if run_record else None) or _coerce_string(session_row.get("created_at")) or _coerce_string(session_row.get("createdAt")),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "updated_at": updated_at,
+        "startedAt": started_at,
         "lastActivityAt": last_activity_at,
-        "endedAt": _coerce_string(run_record.get("finished_at") if run_record else None),
+        "historySortAt": history_sort_at,
+        "endedAt": ended_at,
         "status": workflow_status,
         "workflowStatus": workflow_status,
         "statusLabel": _coerce_string(summary.get("statusLabel")),

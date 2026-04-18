@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from agents import memory_agent
 from erc.run_service import run_service
+from erc.runtime_context import bind_runtime_context
 from erc.runtime_stability import runtime_stability_service
 from erc.session_admission_service import session_admission_service
 from core.storage import storage
@@ -30,6 +31,9 @@ class MemoryAgentRunner:
                 **(extra or {}),
             },
         )
+
+    def _maintenance_runtime_session_id(self) -> str:
+        return "memory:maintenance"
 
     def _finalize_run(self, run_handle, *, reason: str, result: Dict[str, Any]) -> Dict[str, Any]:
         memory_runtime.update_run_metadata(
@@ -183,12 +187,20 @@ class MemoryAgentRunner:
         )
 
         try:
-            result = memory_agent.analyze_session_memory(
-                session_id,
+            with bind_runtime_context(
+                runtime_kind="memory",
+                session_id=session_id,
+                run_id=run_handle.run_id,
+                user_id=user_id,
                 trigger_source=trigger_source,
-                run_handle=run_handle,
-                parent_run_id=parent_run_id,
-            )
+                agent_id=self.agent_id,
+            ):
+                result = memory_agent.analyze_session_memory(
+                    session_id,
+                    trigger_source=trigger_source,
+                    run_handle=run_handle,
+                    parent_run_id=parent_run_id,
+                )
         except Exception as exc:
             run_handle.fail(str(exc), node="maintenance_runner")
             raise
@@ -364,5 +376,148 @@ class MemoryAgentRunner:
                 "result": result,
             }
         return self._finalize_run(run_handle, reason=reason, result=result)
+
+    async def run_maintenance(
+        self,
+        *,
+        trigger_source: str = "SYSTEM",
+        run_id: Optional[str] = None,
+        user_id: str = "system",
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        effective_session_id = session_id or self._maintenance_runtime_session_id()
+        run_handle = memory_runtime.begin_run(
+            task_kind="maintenance",
+            trigger_source=trigger_source,
+            session_id=effective_session_id,
+            user_id=user_id,
+            run_id=run_id,
+            metadata={"hiddenFromHistory": True},
+        )
+        self._emit_run_created(run_handle, task_kind="maintenance", trigger_source=trigger_source)
+        lane_policy = runtime_stability_service.session_lane_policy()
+        lane_decision = session_admission_service.acquire(
+            effective_session_id,
+            run_handle.run_id,
+            policy=lane_policy,
+            runtime_kind="memory",
+            metadata={
+                "taskKind": "maintenance",
+                "triggerSource": trigger_source,
+                "hiddenFromHistory": True,
+            },
+        )
+        if not lane_decision.acquired:
+            error_message = (
+                f"Session lane busy: session '{effective_session_id}' is already running "
+                f"'{lane_decision.rejected_by_run_id or lane_decision.active_run_id}'."
+            )
+            run_handle.emit(
+                "run.lane.rejected",
+                {
+                    "policy": lane_decision.policy,
+                    "busy_run_id": lane_decision.rejected_by_run_id or lane_decision.active_run_id,
+                    "session_id": effective_session_id,
+                },
+            )
+            run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+            return {
+                "run_id": run_handle.run_id,
+                "session_id": effective_session_id,
+                "result": {
+                    "status": "rejected",
+                    "task_kind": "maintenance",
+                    "reason": error_message,
+                },
+            }
+        run_service.transition_run(run_handle.run_id, status="running")
+        run_handle.transition("running", reason=trigger_source, node="maintenance_runner")
+        run_handle.emit(
+            "memory.run.started",
+            {
+                "task_kind": "maintenance",
+                "runtime_session_id": effective_session_id,
+            },
+        )
+
+        before_health = memory_runtime.get_memory_map_health()
+        targets = memory_runtime.list_summary_targets(states=["missing", "stale"])
+        touched_refs: list[str] = []
+        summary_backfilled_count = 0
+        failed_targets: list[dict[str, str]] = []
+
+        try:
+            for target in targets:
+                latest_day = str(target.get("latestDay") or "").strip()
+                if not latest_day:
+                    continue
+                tier = str(target.get("kind") or "").strip()
+                memory_ref = str(target.get("memoryRef") or "").strip()
+                result = await memory_agent.generate_periodic_summary(
+                    tier=tier,
+                    target_date=datetime.fromisoformat(latest_day),
+                    trigger_source=trigger_source,
+                    run_handle=run_handle,
+                )
+                if str(result.get("status") or "").strip().lower() == "completed":
+                    summary_backfilled_count += 1
+                    touched_refs.append(memory_ref)
+                    run_handle.emit(
+                        "memory.summary_backfilled",
+                        {
+                            "memory_ref": memory_ref,
+                            "tier": tier,
+                            "latest_day": latest_day,
+                        },
+                    )
+                else:
+                    failed_targets.append(
+                        {
+                            "memoryRef": memory_ref,
+                            "tier": tier,
+                            "reason": str(result.get("reason") or result.get("status") or "unknown"),
+                        }
+                    )
+        except Exception as exc:
+            run_handle.fail(str(exc), node="maintenance_runner")
+            raise
+        finally:
+            try:
+                session_admission_service.release(effective_session_id, run_handle.run_id)
+                run_handle.emit(
+                    "run.lane.released",
+                    {
+                        "policy": lane_decision.policy,
+                        "session_id": effective_session_id,
+                    },
+                )
+            except Exception:
+                pass
+
+        after_health = memory_runtime.get_memory_map_health()
+        maintenance_meta = {
+            "summaryMissingCountBefore": int(((before_health.get("counts") or {}).get("missing")) or 0),
+            "summaryMissingCountAfter": int(((after_health.get("counts") or {}).get("missing")) or 0),
+            "summaryStaleCountBefore": int(((before_health.get("counts") or {}).get("stale")) or 0),
+            "summaryStaleCountAfter": int(((after_health.get("counts") or {}).get("stale")) or 0),
+            "summaryBackfilledCount": summary_backfilled_count,
+            "touchedRefs": touched_refs,
+            "failedTargets": failed_targets,
+            "summaryHealthBefore": before_health,
+            "summaryHealthAfter": after_health,
+        }
+        memory_runtime.update_run_metadata(run_handle.run_id, {"memory_maintenance": maintenance_meta})
+        result = {
+            "status": "completed" if not failed_targets else "partial",
+            "task_kind": "maintenance",
+            "summary_missing_count_before": maintenance_meta["summaryMissingCountBefore"],
+            "summary_missing_count_after": maintenance_meta["summaryMissingCountAfter"],
+            "summary_stale_count_before": maintenance_meta["summaryStaleCountBefore"],
+            "summary_stale_count_after": maintenance_meta["summaryStaleCountAfter"],
+            "summary_backfilled_count": summary_backfilled_count,
+            "touched_refs": touched_refs,
+            "failed_targets": failed_targets,
+        }
+        return self._finalize_run(run_handle, reason="memory_maintenance_completed", result=result)
 
 memory_agent_runner = MemoryAgentRunner()

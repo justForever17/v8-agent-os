@@ -7,6 +7,7 @@ import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/reque
 import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 export async function GET(
     req: NextRequest,
@@ -31,7 +32,12 @@ export async function GET(
             await res.json().catch(() => ({})),
             { publicBaseUrl },
         );
-        return NextResponse.json(data, { status: res.status });
+        return NextResponse.json(data, {
+            status: res.status,
+            headers: res.headers.get(ENGINE_NOW_HEADER)
+                ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
+                : undefined,
+        });
     } catch (error) {
         console.error("[Admin Realtime Snapshot] Engine proxy failed:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

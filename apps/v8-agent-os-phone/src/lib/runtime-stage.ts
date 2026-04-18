@@ -381,9 +381,10 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
 export function formatPhoneRelativeRuntimeTime(
     timestamp?: number,
     locale: LocaleCode = "zh-CN",
+    nowMs = Date.now(),
 ): string {
     if (!timestamp) return rt(locale, "刚刚", "Just now");
-    const diffMs = Date.now() - timestamp;
+    const diffMs = nowMs - timestamp;
     const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
     if (diffMinutes < 1) return rt(locale, "刚刚", "Just now");
     if (diffMinutes < 60) return isEnglishLocale(locale) ? `${diffMinutes}m ago` : `${diffMinutes} 分钟前`;

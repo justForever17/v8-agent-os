@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
     BookOpen,
     Brain,
@@ -16,7 +16,6 @@ import {
     Trash2,
 } from "lucide-react";
 
-import AuditLogsPanel from "@/components/memory/AuditLogsPanel";
 import { ArtifactExplorerPanel } from "@/components/memory/ArtifactExplorerPanel";
 import DocumentUploader from "@/components/memory/DocumentUploader";
 import { EditKnowledgeDialog } from "@/components/memory/EditKnowledgeDialog";
@@ -47,11 +46,12 @@ interface KnowledgeItem {
     [key: string]: unknown;
 }
 
-const VALID_TABS = new Set(["preferences", "projects", "knowledge", "artifacts", "graph", "agent", "audit", "upload", "config", "runtime"]);
+const VALID_TABS = new Set(["preferences", "projects", "knowledge", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
 
 export default function MemoryDashboardPage() {
     const { toast } = useToast();
     const t = useT();
+    const router = useRouter();
     const searchParams = useSearchParams();
     const requestedTab = searchParams.get("tab") || "preferences";
     const activeTab = VALID_TABS.has(requestedTab) ? requestedTab : "preferences";
@@ -112,6 +112,12 @@ export default function MemoryDashboardPage() {
         void loadDashboard();
         void loadKnowledge();
     }, [loadDashboard, loadKnowledge]);
+
+    useEffect(() => {
+        if (requestedTab === "audit") {
+            router.replace("/admin/operations-center?tab=advanced");
+        }
+    }, [requestedTab, router]);
 
     const handleDeleteKnowledge = useCallback(async (id: string) => {
         if (!window.confirm(t("确定要删除这条知识吗？(同时会删除 FTS5 索引)"))) return;
@@ -265,6 +271,14 @@ export default function MemoryDashboardPage() {
     }), [data]);
 
     if (loading) {
+        return (
+            <div className="flex h-96 items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin" />
+            </div>
+        );
+    }
+
+    if (requestedTab === "audit") {
         return (
             <div className="flex h-96 items-center justify-center">
                 <Loader2 className="h-8 w-8 animate-spin" />
@@ -572,10 +586,6 @@ export default function MemoryDashboardPage() {
 
                 <TabsContent value="agent" className="space-y-4">
                     {activeTab === "agent" ? <MemoryAgentChat /> : null}
-                </TabsContent>
-
-                <TabsContent value="audit" className="min-h-0 space-y-4">
-                    {activeTab === "audit" ? <AuditLogsPanel /> : null}
                 </TabsContent>
 
                 <TabsContent value="upload" className="space-y-4">

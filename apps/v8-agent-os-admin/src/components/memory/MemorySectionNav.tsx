@@ -13,7 +13,6 @@ export type MemorySectionKey =
     | "artifacts"
     | "graph"
     | "agent"
-    | "audit"
     | "upload"
     | "config"
     | "runtime";
@@ -25,7 +24,6 @@ const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: 
     { key: "artifacts", href: "/admin/memory?tab=artifacts", label: "Artifacts" },
     { key: "graph", href: "/admin/memory?tab=graph", label: lt("知识图谱", "Graph") },
     { key: "agent", href: "/admin/memory?tab=agent", label: lt("记忆助手", "Memory agent") },
-    { key: "audit", href: "/admin/memory?tab=audit", label: lt("系统日志", "Logs") },
     { key: "upload", href: "/admin/memory?tab=upload", label: lt("文档上传", "Upload") },
     { key: "config", href: "/admin/memory?tab=config", label: lt("配置", "Config") },
     { key: "runtime", href: "/admin/memory?tab=runtime", label: lt("运行诊断", "Runtime diagnostics") },

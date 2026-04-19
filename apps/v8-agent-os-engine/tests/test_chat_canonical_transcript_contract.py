@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sys
 import unittest
+import importlib.machinery
 from pathlib import Path
 from unittest import mock
 from types import SimpleNamespace
+from types import ModuleType
 
 
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
@@ -32,16 +34,28 @@ if "chromadb" not in sys.modules:
     sys.modules["chromadb"] = SimpleNamespace(PersistentClient=_FakeChromaClient)
 
 if "bs4" not in sys.modules:
-    sys.modules["bs4"] = SimpleNamespace(BeautifulSoup=object)
+    fake_bs4 = ModuleType("bs4")
+    fake_bs4.BeautifulSoup = object
+    fake_bs4.__spec__ = importlib.machinery.ModuleSpec("bs4", loader=None)
+    sys.modules["bs4"] = fake_bs4
 
 if "scrapling.core.storage" not in sys.modules:
-    sys.modules["scrapling.core.storage"] = SimpleNamespace(SQLiteStorageSystem=object)
+    fake_scrapling_storage = ModuleType("scrapling.core.storage")
+    fake_scrapling_storage.SQLiteStorageSystem = object
+    fake_scrapling_storage.__spec__ = importlib.machinery.ModuleSpec("scrapling.core.storage", loader=None)
+    sys.modules["scrapling.core.storage"] = fake_scrapling_storage
 
 if "scrapling.parser" not in sys.modules:
-    sys.modules["scrapling.parser"] = SimpleNamespace(Selector=object)
+    fake_scrapling_parser = ModuleType("scrapling.parser")
+    fake_scrapling_parser.Selector = object
+    fake_scrapling_parser.__spec__ = importlib.machinery.ModuleSpec("scrapling.parser", loader=None)
+    sys.modules["scrapling.parser"] = fake_scrapling_parser
 
 if "langgraph.checkpoint.sqlite.aio" not in sys.modules:
-    sys.modules["langgraph.checkpoint.sqlite.aio"] = SimpleNamespace(AsyncSqliteSaver=object)
+    fake_langgraph_aio = ModuleType("langgraph.checkpoint.sqlite.aio")
+    fake_langgraph_aio.AsyncSqliteSaver = object
+    fake_langgraph_aio.__spec__ = importlib.machinery.ModuleSpec("langgraph.checkpoint.sqlite.aio", loader=None)
+    sys.modules["langgraph.checkpoint.sqlite.aio"] = fake_langgraph_aio
 
 from api.models import ChatRequest
 from core.computer_use_tool_surface import select_supervisor_native_tools

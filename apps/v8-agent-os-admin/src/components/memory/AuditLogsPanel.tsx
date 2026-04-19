@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatLocalDateTime } from "@/lib/time";
 import { useT } from "@/components/providers/LocaleProvider";
+import { lt } from "@/lib/locale";
 
 interface AuditLog {
     id: string;
@@ -39,6 +40,7 @@ export default function AuditLogsPanel() {
     // Auto-refresh
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [countdown, setCountdown] = useState(POLL_INTERVAL_MS / 1000);
+    const [clearing, setClearing] = useState(false);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -140,6 +142,40 @@ export default function AuditLogsPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRefresh]);
 
+    const handleClearLogs = useCallback(async () => {
+        const sourceLabel = sourceType === "ALL" ? t(lt("全部来源", "all sources")) : sourceType;
+        const statusLabel = statusFilter === "ALL" ? t(lt("全部状态", "all statuses")) : statusFilter;
+        if (!window.confirm(
+            t(
+                lt(
+                    `确定要清理当前筛选下的运行日志吗？来源：${sourceLabel}，状态：${statusLabel}。`,
+                    `Clear run logs for the current filter? Source: ${sourceLabel}, Status: ${statusLabel}.`,
+                ),
+            ),
+        )) {
+            return;
+        }
+        setClearing(true);
+        try {
+            const params = new URLSearchParams();
+            if (sourceType !== "ALL") params.append("source_type", sourceType);
+            if (statusFilter !== "ALL") params.append("status", statusFilter);
+            const suffix = params.toString() ? `?${params.toString()}` : "";
+            const res = await fetch(`/api/audit/logs${suffix}`, { method: "DELETE" });
+            if (!res.ok) {
+                throw new Error(`Clear logs failed: ${res.status}`);
+            }
+            prevLogIdsRef.current = new Set();
+            setNewLogIds(new Set());
+            setSelectedLog(null);
+            await fetchLogs(false);
+        } catch (err) {
+            console.error("Failed to clear audit logs", err);
+        } finally {
+            setClearing(false);
+        }
+    }, [fetchLogs, sourceType, statusFilter, t]);
+
     const getStatusBadge = (status: string) => {
         const s = status.toUpperCase();
         if (s === "SUCCESS" || s === "COMPLETED") return <Badge variant="outline" className="text-green-500 bg-green-500/10 border-green-500/20">{s}</Badge>;
@@ -169,6 +205,10 @@ export default function AuditLogsPanel() {
                     </CardDescription>
                 </div>
                 <div className="flex items-center gap-4">
+                    <Button variant="destructive" size="sm" onClick={() => void handleClearLogs()} disabled={loading || clearing}>
+                        {clearing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                        {t(lt("清理日志", "Clear logs"))}
+                    </Button>
                     <div className="flex items-center gap-2">
                         <Switch
                             id="auto-refresh"
@@ -193,10 +233,10 @@ export default function AuditLogsPanel() {
                                 <SelectValue placeholder={t("触发来源")} />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="ALL">{t("全部来源 (All)")}</SelectItem>
-                                <SelectItem value="CRON">{t("定时任务")}</SelectItem>
-                                <SelectItem value="HOOK">{t("动作钩子")}</SelectItem>
-                                <SelectItem value="SYSTEM">{t("系统动作")}</SelectItem>
+                                <SelectItem value="ALL">{t(lt("全部来源 (All)", "All sources"))}</SelectItem>
+                                <SelectItem value="CRON">{t(lt("定时任务", "Cron jobs"))}</SelectItem>
+                                <SelectItem value="HOOK">{t(lt("动作钩子", "Hooks"))}</SelectItem>
+                                <SelectItem value="SYSTEM">{t(lt("系统动作", "System actions"))}</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -206,10 +246,10 @@ export default function AuditLogsPanel() {
                                 <SelectValue placeholder={t("执行状态")} />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="ALL">{t("全部状态 (All)")}</SelectItem>
-                                <SelectItem value="SUCCESS">{t("成功")}</SelectItem>
-                                <SelectItem value="FAILED">{t("失败")}</SelectItem>
-                                <SelectItem value="SKIPPED">{t("跳过")}</SelectItem>
+                                <SelectItem value="ALL">{t(lt("全部状态 (All)", "All statuses"))}</SelectItem>
+                                <SelectItem value="SUCCESS">{t(lt("成功", "Success"))}</SelectItem>
+                                <SelectItem value="FAILED">{t(lt("失败", "Failed"))}</SelectItem>
+                                <SelectItem value="SKIPPED">{t(lt("跳过", "Skipped"))}</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>

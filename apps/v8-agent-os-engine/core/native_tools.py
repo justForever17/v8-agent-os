@@ -642,6 +642,35 @@ def _desktop_route_app_stale_reason(
     return None
 
 
+def _desktop_route_task_mismatch_reason(
+    *,
+    desktop_route: dict[str, Any],
+    goal: str | None,
+    target: str | None,
+) -> str | None:
+    normalized_goal = _desktop_route_normalize_token(goal)
+    route_goal = _desktop_route_normalize_token(desktop_route.get("goal"))
+    if normalized_goal and route_goal and normalized_goal != route_goal:
+        return "当前任务目标与已绑定的桌面路由不一致，请重新调用 computer_use_resolve_execution_route。"
+
+    normalized_target = _desktop_route_normalize_token(target)
+    route_target = _desktop_route_normalize_token(desktop_route.get("target"))
+    if normalized_target and route_target and normalized_target != route_target:
+        return "当前任务 target 与已绑定的桌面路由不一致，请重新调用 computer_use_resolve_execution_route。"
+    return None
+
+
+def _desktop_route_executable_draft_id(desktop_route: dict[str, Any] | None) -> str | None:
+    route_payload = dict(desktop_route or {})
+    direct_draft_id = str(route_payload.get("recommendedDraftId") or "").strip()
+    if direct_draft_id:
+        return direct_draft_id
+    recommended_match = dict(route_payload.get("recommendedMatch") or {})
+    source = dict(recommended_match.get("source") or {})
+    source_draft_id = str(source.get("draftId") or "").strip()
+    return source_draft_id or None
+
+
 def _desktop_route_gate(
     *,
     state: dict[str, Any] | None,
@@ -1967,6 +1996,170 @@ def _computer_use_attach_plan_contract_summary(
     payload["environmentSignalSummary"] = dict(contract_summary.get("environmentSignalSummary") or {})
     payload["contractSummary"] = contract_summary
     return payload
+
+
+def _computer_use_execute_task_step_samples(step_contracts: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for step in list(step_contracts or [])[: max(1, limit)]:
+        if not isinstance(step, dict):
+            continue
+        samples.append(
+            {
+                "index": step.get("index"),
+                "action": step.get("action"),
+                "status": step.get("status"),
+                "summary": step.get("summary"),
+                "recommendedNextAction": step.get("recommendedNextAction"),
+            }
+        )
+    return samples
+
+
+def _computer_use_execute_task_next_action(
+    *,
+    ok: bool,
+    requires_human_attention: bool,
+    step_contracts: list[dict[str, Any]] | None = None,
+) -> str:
+    for step in list(step_contracts or []):
+        if not isinstance(step, dict):
+            continue
+        recommended = str(step.get("recommendedNextAction") or "").strip()
+        if recommended and str(step.get("status") or "").strip().lower() != "completed":
+            return recommended
+    if ok:
+        return "observe_scene_verify"
+    if requires_human_attention:
+        return "request_human_attention"
+    return "resolve_route_then_retry"
+
+
+def _computer_use_execute_task_compact_computer_use_result(
+    *,
+    payload: dict[str, Any],
+    execution_ready_mode: str,
+    goal: str,
+    app_hint: str | None,
+    target_hint: str | None,
+    resolved_app: dict[str, Any] | None,
+    success_criteria: str | None,
+) -> dict[str, Any]:
+    execution_summary = dict(payload.get("executionSummary") or {})
+    contract_summary = dict(payload.get("contractSummary") or {})
+    step_contracts = [
+        dict(item)
+        for item in list(contract_summary.get("steps") or [])
+        if isinstance(item, dict)
+    ]
+    ok = bool(payload.get("ok"))
+    blocked_steps = int(execution_summary.get("blockedSteps") or 0)
+    update_requested_steps = int(execution_summary.get("updateRequestedSteps") or 0)
+    failed_steps = int(execution_summary.get("failedSteps") or 0)
+    requires_human_attention = blocked_steps > 0 or update_requested_steps > 0
+    requires_retry = not ok and not requires_human_attention
+    summary = "已通过 ComputerUseRuntime 任务执行链完成桌面任务。"
+    if not ok:
+        summary = "ComputerUseRuntime 已完成本轮任务尝试，但当前结果仍需复查或重试。"
+    return {
+        "ok": ok,
+        "executionReadyMode": execution_ready_mode,
+        "executedBy": "computer_use",
+        "summary": summary,
+        "verification": {
+            "passed": ok,
+            "status": "completed" if ok else ("review_required" if requires_human_attention else "retry_required"),
+            "successCriteria": str(success_criteria or "").strip() or None,
+            "executionSummary": execution_summary,
+            "visualSignalSummary": dict(payload.get("visualSignalSummary") or {}),
+            "timingSignalSummary": dict(payload.get("timingSignalSummary") or {}),
+            "environmentSignalSummary": dict(payload.get("environmentSignalSummary") or {}),
+        },
+        "evidence": {
+            "goal": goal,
+            "app": {
+                "requested": app_hint,
+                "resolved": (resolved_app or {}).get("displayName") or (resolved_app or {}).get("appId"),
+                "appId": (resolved_app or {}).get("appId"),
+            },
+            "target": target_hint,
+            "stepSamples": _computer_use_execute_task_step_samples(step_contracts),
+        },
+        "recommendedNextAction": _computer_use_execute_task_next_action(
+            ok=ok,
+            requires_human_attention=requires_human_attention,
+            step_contracts=step_contracts,
+        ),
+        "requiresRetry": requires_retry,
+        "requiresHumanAttention": requires_human_attention,
+    }
+
+
+def _computer_use_execute_task_compact_rpa_result(
+    *,
+    raw_result: dict[str, Any],
+    execution_ready_mode: str,
+    goal: str,
+    app_hint: str | None,
+    target_hint: str | None,
+    resolved_app: dict[str, Any] | None,
+    success_criteria: str | None,
+) -> dict[str, Any]:
+    status = str(raw_result.get("status") or "").strip() or "unknown"
+    fallback = dict(raw_result.get("fallback") or {})
+    template_policy = dict(raw_result.get("templateExecutionPolicy") or {})
+    prepared = dict(raw_result.get("prepared") or {})
+    script = dict(raw_result.get("script") or prepared.get("script") or {})
+    review_required = status in {"review_required", "blocked"}
+    ok = status in {"completed", "completed_with_fallback"}
+    executed_by = "hybrid" if execution_ready_mode == "hybrid_mode" or status == "completed_with_fallback" else "rpa"
+    summary = "已通过 RPA 复用链执行桌面任务。"
+    if executed_by == "hybrid" and ok:
+        summary = "已通过 RPA 骨架执行，并在需要时由 ComputerUseRuntime 做局部修补与恢复。"
+    elif not ok and review_required:
+        summary = "RPA 执行链返回了需要人工处理的结果。"
+    elif not ok:
+        summary = "RPA 执行链未满足当前任务目标，需要重新路由或重试。"
+    return {
+        "ok": ok,
+        "executionReadyMode": execution_ready_mode,
+        "executedBy": executed_by,
+        "summary": summary,
+        "verification": {
+            "passed": ok,
+            "status": status,
+            "successCriteria": str(success_criteria or "").strip() or None,
+            "reviewRequired": review_required,
+            "templateExecutionPolicy": {
+                "executionPath": template_policy.get("executionPath"),
+                "requiresHumanReview": template_policy.get("requiresHumanReview"),
+                "trustStatus": template_policy.get("trustStatus"),
+            },
+            "fallbackUsed": bool(fallback),
+        },
+        "evidence": {
+            "goal": goal,
+            "app": {
+                "requested": app_hint,
+                "resolved": (resolved_app or {}).get("displayName") or (resolved_app or {}).get("appId"),
+                "appId": (resolved_app or {}).get("appId") or script.get("appId") or prepared.get("appId"),
+            },
+            "target": target_hint,
+            "scriptId": raw_result.get("scriptId") or prepared.get("scriptId"),
+            "scriptName": script.get("name") or prepared.get("scriptName"),
+            "fallback": {
+                "mode": fallback.get("mode"),
+                "recoveredStepCount": fallback.get("recoveredStepCount"),
+                "fallbackStepId": fallback.get("fallbackStepId"),
+            } if fallback else None,
+        },
+        "recommendedNextAction": (
+            "observe_scene_verify"
+            if ok
+            else ("request_human_attention" if review_required else "resolve_route_then_retry")
+        ),
+        "requiresRetry": not ok and not review_required,
+        "requiresHumanAttention": review_required,
+    }
 
 
 def _computer_use_compact_memory_list(
@@ -6574,6 +6767,146 @@ def computer_use_resolve_execution_route(
 
 
 @tool
+def computer_use_execute_task(
+    goal: str = "",
+    *,
+    app: Optional[str] = None,
+    target: Optional[str] = None,
+    successCriteria: Optional[str] = None,
+    variablesJson: Optional[str] = None,
+    maxSteps: int = 5,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> str:
+    """在 route 之后，用统一的任务级 broker 执行桌面任务，并返回紧凑的验证摘要。"""
+    app_query = str(app or "").strip() or None
+    target_hint = str(target or "").strip() or None
+    route_goal = str(goal or "").strip()
+    resolved_app = _computer_use_resolve_app(app_query)
+    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+        state=state,
+        tool_name="computer_use_execute_task",
+        app_query=app_query,
+        resolved_app=resolved_app,
+    )
+    if not gate_allowed:
+        return gate_failure or "Error: 桌面执行路由校验失败。"
+
+    desktop_route = dict(desktop_route or {})
+    mismatch_reason = _desktop_route_task_mismatch_reason(
+        desktop_route=desktop_route,
+        goal=route_goal,
+        target=target_hint,
+    )
+    if mismatch_reason:
+        return _desktop_route_gate_failure_response(
+            gate_error_code="ROUTE_MISMATCH",
+            summary=mismatch_reason,
+            desktop_route=desktop_route,
+            recommended_next_tool="computer_use_resolve_execution_route",
+        )
+
+    effective_goal = route_goal or str(desktop_route.get("goal") or "").strip()
+    if not effective_goal:
+        return "Error: goal 不能为空，且当前桌面路由也未绑定 goal。"
+
+    effective_target = target_hint or str(desktop_route.get("target") or "").strip() or None
+    execution_ready_mode = str(desktop_route.get("executionReadyMode") or "").strip() or "learn_mode"
+    effective_app_id = (
+        str((resolved_app or {}).get("appId") or "").strip()
+        or str(desktop_route.get("appId") or "").strip()
+        or None
+    )
+    effective_max_steps = max(1, min(int(maxSteps or 5), 8))
+    success_criteria = str(successCriteria or "").strip() or None
+
+    try:
+        variables = _computer_use_parse_variables_json(variablesJson)
+        runtime_context = get_runtime_context()
+        if execution_ready_mode in {"reuse_mode", "hybrid_mode"}:
+            draft_id = _desktop_route_executable_draft_id(desktop_route)
+            if not draft_id:
+                return _desktop_route_gate_failure_response(
+                    gate_error_code="STALE_ROUTE_CONTEXT",
+                    summary="当前桌面路由缺少可执行的 RPA 骨架，请重新调用 computer_use_resolve_execution_route。",
+                    desktop_route=desktop_route,
+                    recommended_next_tool="computer_use_resolve_execution_route",
+                )
+            raw_result = _get_rpa_runtime().run_draft(
+                script_id=draft_id,
+                variables=variables,
+                session_id=runtime_context.get("session_id"),
+                run_id=runtime_context.get("run_id"),
+                user_id=runtime_context.get("user_id") or "anonymous",
+                project_id=runtime_context.get("project_id"),
+                workspace_id=runtime_context.get("workspace_id"),
+                workspace_path=runtime_context.get("workspace_path"),
+                trigger_source="computer_use_execute_task",
+            )
+            payload = _computer_use_execute_task_compact_rpa_result(
+                raw_result=dict(raw_result or {}),
+                execution_ready_mode=execution_ready_mode,
+                goal=effective_goal,
+                app_hint=app_query,
+                target_hint=effective_target,
+                resolved_app=resolved_app,
+                success_criteria=success_criteria,
+            )
+        else:
+            planner_goal = effective_goal
+            if effective_target:
+                planner_goal = f"{planner_goal}\nTarget: {effective_target}"
+            if success_criteria:
+                planner_goal = f"{planner_goal}\nSuccess criteria: {success_criteria}"
+            planning = _get_computer_use_runtime().plan(
+                **_computer_use_runtime_kwargs(planner_goal),
+                app_id=effective_app_id,
+                max_steps=effective_max_steps,
+                include_screenshot=False,
+            )
+            planned_steps = list(((planning.get("planner") or {}).get("steps")) or [])
+            if not planned_steps:
+                return "Error: ComputerUseRuntime planner 没有生成任何可执行步骤。"
+            allowed, error_message = _guard_computer_use_steps(
+                steps=planned_steps,
+                tool_call_id=tool_call_id,
+            )
+            if not allowed:
+                return error_message or "Safety Guardian 已阻止 planner 生成的桌面动作。"
+            execution = _get_computer_use_runtime().execute_plan(
+                **_computer_use_runtime_kwargs(planner_goal),
+                steps=planned_steps,
+                continue_on_error=False,
+                max_steps=effective_max_steps,
+            )
+            execution_payload = _computer_use_attach_plan_contract_summary(
+                payload={
+                    **planning,
+                    "execution": execution,
+                },
+                action="execute_task",
+                goal=effective_goal,
+            )
+            payload = _computer_use_execute_task_compact_computer_use_result(
+                payload=execution_payload,
+                execution_ready_mode=execution_ready_mode,
+                goal=effective_goal,
+                app_hint=app_query,
+                target_hint=effective_target,
+                resolved_app=resolved_app,
+                success_criteria=success_criteria,
+            )
+
+        return _desktop_route_merge_into_response(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            desktop_route=desktop_route,
+            route_gate_applied=isinstance(state, dict),
+        )
+    except Exception as e:
+        return f"Error executing desktop task via broker: {e}"
+
+
+@tool
 def computer_use_launch_app(
     app: str,
     *,
@@ -8081,6 +8414,7 @@ NATIVE_TOOLS = [
     computer_use_lookup_muscle_memory,
     computer_use_list_muscle_memories,
     computer_use_resolve_execution_route,
+    computer_use_execute_task,
     computer_use_launch_app,
     computer_use_ensure_window,
     computer_use_observe_scene,

@@ -2842,6 +2842,32 @@ class DatabaseManager:
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
+    def clear_audit_logs(self, *, source_type: str = None, status: str = None) -> Dict[str, Any]:
+        query = 'DELETE FROM system_audit_log WHERE 1=1'
+        params = []
+        if source_type:
+            query += ' AND source_type = ?'
+            params.append(source_type)
+        if status:
+            query += ' AND status = ?'
+            params.append(status)
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                query.replace('DELETE FROM system_audit_log', 'SELECT COUNT(*) AS count FROM system_audit_log', 1),
+                params,
+            )
+            row = cursor.fetchone()
+            deleted_count = int(row["count"]) if row else 0
+            cursor.execute(query, params)
+            conn.commit()
+            return {
+                "deleted": deleted_count,
+                "source_type": source_type,
+                "status": status,
+            }
+
 # Singleton Instantiation
 import os
 from core.v8_agent_os_paths import STATE_DB_PATH

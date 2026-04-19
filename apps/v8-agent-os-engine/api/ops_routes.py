@@ -140,6 +140,16 @@ async def get_audit_logs(limit: int = 100, offset: int = 0, source_type: str = N
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/audit/logs")
+async def clear_audit_logs(source_type: str = None, status: str = None):
+    try:
+        from core.database import db
+
+        return db.clear_audit_logs(source_type=source_type, status=status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/memory/upload")
 async def upload_memory_docs(
     files: list[UploadFile] = File(...),

@@ -48,16 +48,7 @@ def _route_high_level_tool(
     app_hint: str | None,
     target_hint: str | None,
 ) -> str | None:
-    executable_draft_id = _route_executable_draft_id(route)
-    if mode in {"reuse_mode", "hybrid_mode"}:
-        if executable_draft_id:
-            return "rpa_run_draft"
-        return None
-    if app_hint:
-        return "computer_use_launch_app"
-    if target_hint:
-        return "computer_use_observe_scene"
-    return "computer_use_observe_scene"
+    return "computer_use_execute_task"
 
 
 def _route_next_action_summary(
@@ -238,12 +229,11 @@ def build_compact_execution_route(
         target_hint=target_hint,
     )
     recommended_tool = next_action.get("tool")
-    recommended_tool_input = None
-    if recommended_draft_id:
-        recommended_tool = "rpa_run_draft"
-        recommended_tool_input = {
-            "script_id": recommended_draft_id,
-        }
+    recommended_tool_input = {
+        "goal": goal,
+        "app": app_hint,
+        "target": target_hint,
+    }
     return {
         "ok": True,
         "action": action,

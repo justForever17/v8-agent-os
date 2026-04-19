@@ -6,11 +6,11 @@
 
 ## 结论
 
-当前 `supervisor` 可调用的工具面**偏重**，还不是一个足够轻的“纯编排器”。
+当前 `supervisor` 可调用的工具面仍然**偏重**，但桌面执行面已经从“动作级直连”收口成“查询 + route + 任务级 broker”。
 
-这次按当前本机真实配置采样后，`supervisor` 一共挂了 **58 个直接可调用工具**。即使 memory 已经收口到 5 个必要工具，整体面仍然很宽，主要压力来自：
+这次按当前本机真实配置采样后，`supervisor` 一共挂了 **45 个直接可调用工具**。即使 memory 已经收口到 5 个必要工具、desktop 已经收口到 5 个 active computer-use 入口，整体面仍然不算轻，主要压力来自：
 
-- `computer_use`：18 个
+- `computer_use`：5 个
 - `baseline_system`：15 个
 - `plugin_host(OpenClaw/Lark)`：6 个
 - `memory`：5 个
@@ -37,7 +37,13 @@
    - `mem_delete`
 
 2. `ComputerUseRuntime`
-   - 通过整套 `computer_use_*` 工具直接进入桌面观察、点击、输入、滚动、热键、拖拽等执行面。
+   - 通过最小 desktop broker 工具面进入桌面执行：
+   - `computer_use_list_apps`
+   - `computer_use_desktop_capabilities`
+   - `computer_use_resolve_execution_route`
+   - `computer_use_observe_scene`
+   - `computer_use_execute_task`
+   - 其中真正的动作编排、窗口绑定、三帧验证与恢复判断继续在 runtime 内部完成。
 
 3. `RPARuntime`
    - 通过：
@@ -102,7 +108,7 @@
 
 ### 仍然偏重的部分
 
-- `computer_use` 工具数量非常大，几乎是一整套可直接操作桌面的执行面
+- `computer_use` 虽然已经收口到 5 个入口，但 baseline system / plugin host 仍会让 supervisor 的总选择压力偏大
 - baseline system tools 仍然太多，supervisor 还在直接背：
   - 文件读写
   - grep
@@ -117,14 +123,14 @@
 
 ### 总数
 
-- 直接可调用工具总数：`58`
+- 直接可调用工具总数：`45`
 
 ### 分组统计
 
 - `orchestration`：`3`
 - `baseline_system`：`15`
 - `rpa`：`3`
-- `computer_use`：`18`
+- `computer_use`：`5`
 - `web`：`4`
 - `network_supervisor`：`1`
 - `storage`：`3`
@@ -166,23 +172,10 @@
 #### computer_use
 
 - `computer_use_list_apps`
-- `computer_use_list_primitives`
 - `computer_use_desktop_capabilities`
-- `computer_use_lookup_muscle_memory`
-- `computer_use_list_muscle_memories`
 - `computer_use_resolve_execution_route`
-- `computer_use_launch_app`
-- `computer_use_ensure_window`
 - `computer_use_observe_scene`
-- `computer_use_click_target`
-- `computer_use_input_text`
-- `computer_use_paste_text`
-- `computer_use_paste_files`
-- `computer_use_right_click_target`
-- `computer_use_hover_target`
-- `computer_use_send_hotkey`
-- `computer_use_scroll_view`
-- `computer_use_drag_pointer`
+- `computer_use_execute_task`
 
 #### web
 
@@ -355,23 +348,10 @@ Supervisor 不需要记住所有模块 prompt 细节。你应该优先根据下�
 - rpa_run_draft: 通过RPARuntime运行已有的RPA草稿脚本。
 - rpa_run_existing_flow: 无需进行跟踪编译，即可通过RPARuntime运行现有的.robot流程。
 - computer_use_list_apps: 以适合Supervisor的方式列出桌面应用程序。
-- computer_use_list_primitives: 列出向Supervisor和ComputerUseRuntime开放的标准桌面原语。
 - computer_use_desktop_capabilities: 以精简格式返回当前桌面驱动程序/运行时的功能汇总
-- computer_use_lookup_muscle_memory: 进入计算机使用学习模式前，查阅可复用的桌面操作肌肉记忆相关内容。
-- computer_use_list_muscle_memories: 以易于人工阅读、且对管理端安全的格式，列出已有的桌面操作习惯模板/快捷操作模板
 - computer_use_resolve_execution_route: 确定桌面任务是应复用肌肉记忆、采用混合模式运行，还是进入学习模式。
-- computer_use_launch_app: 以最少参数启动桌面应用程序。
-- computer_use_ensure_window: 在执行下一步操作前，确保桌面窗口已绑定并获得焦点。
 - computer_use_observe_scene: 以简洁、便于管理员查看的形式呈现当前桌面画面
-- computer_use_click_target: 点击带有内置验证与拦截功能的语义化桌面目标对象
-- computer_use_input_text: 使用尽可能简洁的界面向桌面目标输入文本。
-- computer_use_paste_text: 通过剪贴板优先桌面输入粘贴文本，内置焦点确认与校验功能。
-- computer_use_paste_files: 通过剪贴板文件负载将文件粘贴到桌面目标位置，可选择附带文本内容。
-- computer_use_right_click_target: 右键单击桌面目标，其保护语义与单击目标一致。
-- computer_use_hover_target: 将鼠标悬停在桌面目标上，同时保留验证、取证及拦截语义。
-- computer_use_send_hotkey: 发送桌面热键，并附带精简验证与凭证输出。
-- computer_use_scroll_view: 在自带验证与凭证的桌面视图中滚动
-- computer_use_drag_pointer: 通过内置校验与拦截功能，从一个点拖动到另一个点
+- computer_use_execute_task: 在 route 之后，用统一的任务级 broker 执行桌面任务，并返回紧凑的验证摘要。
 - read_native_file: 读取主机文件系统中文本文件的内容。
 - share_workspace_file: 把当前主工作区或项目工作区内的文件转换成可远程访问的会话分享资源。
 - write_native_file: 将文本内容写入或追加到主机文件系统中的本地文件。

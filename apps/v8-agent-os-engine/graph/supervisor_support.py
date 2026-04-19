@@ -40,7 +40,7 @@ def create_agent(
     model: Optional[str] = None,
 ) -> str:
     """
-    创建一个新的专业子 Agent，并持久化到本地配置中，供后续对话轮次或编排流程继续复用。
+    Create a specialized sub-agent and persist it for reuse in later turns or orchestration flows.
     """
     explicit_tools = list(tools or [])
     tool_mode = "explicit" if explicit_tools else "contextual_auto"

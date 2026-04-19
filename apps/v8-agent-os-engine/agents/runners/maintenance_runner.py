@@ -445,6 +445,8 @@ class MemoryAgentRunner:
         touched_refs: list[str] = []
         summary_backfilled_count = 0
         failed_targets: list[dict[str, str]] = []
+        legacy_summary_touched_refs: list[str] = []
+        legacy_summary_backfilled_count = 0
 
         try:
             for target in targets:
@@ -478,6 +480,13 @@ class MemoryAgentRunner:
                             "reason": str(result.get("reason") or result.get("status") or "unknown"),
                         }
                     )
+            backfill_result = memory_runtime.backfill_periodic_summaries() or {}
+            legacy_summary_touched_refs = [
+                str(item).strip()
+                for item in list(backfill_result.get("touchedRefs") or [])
+                if str(item).strip()
+            ]
+            legacy_summary_backfilled_count = int(backfill_result.get("updatedCount") or 0)
         except Exception as exc:
             run_handle.fail(str(exc), node="maintenance_runner")
             raise
@@ -502,6 +511,8 @@ class MemoryAgentRunner:
             "summaryStaleCountAfter": int(((after_health.get("counts") or {}).get("stale")) or 0),
             "summaryBackfilledCount": summary_backfilled_count,
             "touchedRefs": touched_refs,
+            "legacySummaryBackfilledCount": legacy_summary_backfilled_count,
+            "legacySummaryTouchedRefs": legacy_summary_touched_refs,
             "failedTargets": failed_targets,
             "summaryHealthBefore": before_health,
             "summaryHealthAfter": after_health,
@@ -515,7 +526,9 @@ class MemoryAgentRunner:
             "summary_stale_count_before": maintenance_meta["summaryStaleCountBefore"],
             "summary_stale_count_after": maintenance_meta["summaryStaleCountAfter"],
             "summary_backfilled_count": summary_backfilled_count,
+            "legacy_summary_backfilled_count": legacy_summary_backfilled_count,
             "touched_refs": touched_refs,
+            "legacy_summary_touched_refs": legacy_summary_touched_refs,
             "failed_targets": failed_targets,
         }
         return self._finalize_run(run_handle, reason="memory_maintenance_completed", result=result)

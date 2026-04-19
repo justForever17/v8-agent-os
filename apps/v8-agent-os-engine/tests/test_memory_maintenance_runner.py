@@ -73,15 +73,20 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
             "agents.runners.maintenance_runner.memory_agent.generate_periodic_summary",
             side_effect=_fake_generate_periodic_summary,
         ), patch(
+            "agents.runners.maintenance_runner.memory_runtime.backfill_periodic_summaries",
+            return_value={"updatedCount": 1, "touchedRefs": ["memory://year/2026"]},
+        ), patch(
             "agents.runners.maintenance_runner.memory_runtime.update_run_metadata",
             side_effect=_capture_update,
         ):
             result = asyncio.run(memory_agent_runner.run_maintenance(trigger_source="CRON"))
 
         self.assertEqual(result["result"]["summary_backfilled_count"], 2)
+        self.assertEqual(result["result"]["legacy_summary_backfilled_count"], 1)
         maintenance_updates = [item for item in update_calls if "memory_maintenance" in item]
         self.assertTrue(maintenance_updates)
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["summaryBackfilledCount"], 2)
+        self.assertEqual(maintenance_updates[0]["memory_maintenance"]["legacySummaryBackfilledCount"], 1)
         self.assertEqual(
             maintenance_updates[0]["memory_maintenance"]["touchedRefs"],
             ["memory://week/2026-W16", "memory://month/2026-04"],

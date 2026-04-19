@@ -119,6 +119,17 @@ class SkillLoader:
         skill_root = cls._normalize_path(item.get("skillRoot") or item.get("path"))
         instruction_path = cls._normalize_path(item.get("instructionPath"))
         source_type = str(item.get("sourceType") or "global").strip() or "global"
+        skill_root_path = Path(skill_root) if skill_root else None
+
+        def _cached_or_live_dir(key: str, folder_name: str) -> str:
+            cached = cls._normalize_path(item.get(key))
+            if cached:
+                return cached
+            if skill_root_path is None:
+                return ""
+            candidate = skill_root_path / folder_name
+            return cls._normalize_path(candidate) if candidate.exists() else ""
+
         skill_id = str(item.get("skillId") or "").strip() or cls._stable_skill_id(
             source_type=source_type,
             root_path=skill_root,
@@ -126,6 +137,7 @@ class SkillLoader:
         )
         if not skill_id or not skill_name:
             return None
+        cached_available_files = list(item.get("availableFiles") or [])
         return {
             "skillId": skill_id,
             "name": skill_name,
@@ -136,11 +148,13 @@ class SkillLoader:
             "skillName": skill_name,
             "skillRoot": skill_root,
             "instructionPath": instruction_path,
-            "referencesDir": cls._normalize_path(item.get("referencesDir")),
-            "scriptsDir": cls._normalize_path(item.get("scriptsDir")),
-            "assetsDir": cls._normalize_path(item.get("assetsDir")),
-            "templatesDir": cls._normalize_path(item.get("templatesDir")),
-            "availableFiles": list(item.get("availableFiles") or []),
+            "referencesDir": _cached_or_live_dir("referencesDir", "references"),
+            "scriptsDir": _cached_or_live_dir("scriptsDir", "scripts"),
+            "assetsDir": _cached_or_live_dir("assetsDir", "assets"),
+            "templatesDir": _cached_or_live_dir("templatesDir", "templates"),
+            "examplesDir": _cached_or_live_dir("examplesDir", "examples"),
+            "availableFiles": cached_available_files
+            or (cls._summarize_skill_structure(skill_root_path) if skill_root_path else []),
             "sourceType": source_type,
             "visibility": str(item.get("visibility") or "global").strip() or "global",
             "workspacePath": cls._normalize_path(item.get("workspacePath")),
@@ -396,6 +410,7 @@ class SkillLoader:
             "scriptsDir": cls._normalize_path(skill_root / "scripts") if (skill_root / "scripts").exists() else "",
             "assetsDir": cls._normalize_path(skill_root / "assets") if (skill_root / "assets").exists() else "",
             "templatesDir": cls._normalize_path(skill_root / "templates") if (skill_root / "templates").exists() else "",
+            "examplesDir": cls._normalize_path(skill_root / "examples") if (skill_root / "examples").exists() else "",
             "availableFiles": cls._summarize_skill_structure(skill_root),
             "sourceType": source_type,
             "visibility": str(descriptor.get("visibility") or "global").strip() or "global",
@@ -977,7 +992,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
         pass
 
     available_files = list(skill.get("availableFiles") or [])
-    structure = "\n".join(f"- {item}" for item in available_files[:64]) if available_files else "- (no extra references/scripts/assets/templates found)"
+    structure = "\n".join(f"- {item}" for item in available_files[:64]) if available_files else "- (no extra references/scripts/assets/templates/examples found)"
     return (
         f"{safety_banner}"
         f"=== SKILL ENTRYPOINTS ===\n"
@@ -994,6 +1009,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
         f"Scripts Dir: {skill.get('scriptsDir') or ''}\n"
         f"Assets Dir: {skill.get('assetsDir') or ''}\n"
         f"Templates Dir: {skill.get('templatesDir') or ''}\n"
+        f"Examples Dir: {skill.get('examplesDir') or ''}\n"
         f"Directory Structure:\n{structure}\n\n"
         f"按当前 skill 的要求去做。\n\n"
         f"=== INSTRUCTIONS ===\n{skill['instructions']}"

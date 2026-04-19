@@ -9,16 +9,12 @@ BASELINE_SYSTEM_TOOL_NAMES = {
     "write_native_file",
     "grep_search",
     "run_system_command",
-    "read_background_output",
-    "send_background_input",
-    "terminate_background_command",
+    "command_session_broker",
     "download_media_for_vision",
     "vision_media_analyzer",
-    "web_fetch",
+    "web_broker",
     "http_request",
-    "s3_upload_file",
-    "s3_list_objects",
-    "s3_download_file",
+    "s3_broker",
 }
 
 

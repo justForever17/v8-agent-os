@@ -134,17 +134,47 @@ def render_memory_admin_chat_prompt() -> str:
     )
 
 
-def render_periodic_summary_prompt(*, tier: str, content: str) -> str:
+def render_periodic_summary_prompt(
+    *,
+    tier: str,
+    content: str,
+    format_instructions: str | None = None,
+) -> str:
+    body_guidance = {
+        "week": (
+            "Write 2-4 short markdown sections. Emphasize weekly continuity, notable decisions, "
+            "preference shifts, and durable knowledge worth carrying forward."
+        ),
+        "month": (
+            "Write 1-3 short markdown sections. Focus on cross-week trends, milestones, and ongoing "
+            "issues. Do not repeat daily流水账."
+        ),
+        "year": (
+            "Write 1-2 very short markdown sections. Focus on stable long-term patterns, recurring "
+            "preferences, and major system changes. Do not restate monthly detail."
+        ),
+    }.get(
+        tier,
+        "Write a concise markdown recap with only the most durable continuity signals.",
+    )
+    structured_output = format_instructions or (
+        'Return a JSON object with keys "summary" and "body". '
+        '"summary" must be a single concise continuity summary sentence or short paragraph. '
+        '"body" must be concise markdown without YAML frontmatter.'
+    )
     return (
         "You are the long-term memory synthesizer module for V8 Agent OS.\n"
         "Below are scoped recent memory logs and lower-level summaries for the given period.\n"
-        "Write a high-signal, timeline-oriented recap that helps the supervisor restore continuity without polluting unrelated scopes.\n\n"
+        "Produce a compact, high-signal recap that helps the supervisor restore continuity without "
+        "polluting unrelated scopes.\n\n"
         "INSTRUCTIONS:\n"
         "1. Focus on durable changes, achievements, preference shifts, and important knowledge points.\n"
-        "2. Avoid repeating raw log lines.\n"
-        "3. Prefer concise markdown with clear headers.\n"
-        "4. If the material is thin, keep the summary short instead of inventing detail.\n\n"
+        "2. Avoid repeating raw log lines or copying the source text.\n"
+        "3. The summary must be more important than the body. Keep the body compact.\n"
+        f"4. {body_guidance}\n"
+        "5. Do NOT output YAML frontmatter, document titles, or fenced code blocks.\n"
+        "6. If the material is thin, keep both fields short instead of inventing detail.\n\n"
         f"PERIOD: {tier}\n\n"
         f"RAW LOGS:\n{content}\n\n"
-        "Output ONLY the markdown summary text."
+        f"FORMAT:\n{structured_output}\n"
     )

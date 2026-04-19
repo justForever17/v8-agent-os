@@ -7,6 +7,7 @@ import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
 import {
     isBackgroundCommandTraceTool,
+    isCommandSessionStartTool,
 } from "@/src/lib/chat/command-session";
 import { isHiddenPhoneTimelineNode } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks, type PhoneContentBlock } from "@/src/lib/content-detector";
@@ -257,12 +258,18 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         const hasResult = toolInvocation.state === "result"
             || executionNode.executionType === "tool_result"
             || mergedResultNode?.executionType === "tool_result";
+        const isLinkedRunningCommandSession = isProcessStillRunning(matchedProcess)
+            && isCommandSessionStartTool(toolInvocation.toolName, toolInvocation.args, toolInvocation.result);
+
+        if (isLinkedRunningCommandSession) {
+            return <ToolCard toolInvocation={{ ...toolInvocation, state: "call" }} hideResult />;
+        }
 
         if (!hasResult && isProcessStillRunning(matchedProcess)) {
             return <ToolCard toolInvocation={toolInvocation} hideResult />;
         }
 
-        if (isBackgroundCommandTraceTool(toolInvocation.toolName)) {
+        if (isBackgroundCommandTraceTool(toolInvocation.toolName, toolInvocation.args, toolInvocation.result)) {
             return <GenericToolTraceCard toolInvocation={toolInvocation} />;
         }
 

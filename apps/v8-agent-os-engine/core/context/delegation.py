@@ -44,6 +44,7 @@ def _normalize_skill_entries(values: Iterable[Any] | None) -> list[dict[str, Any
                 "scriptsDir": str(value.get("scriptsDir") or "").strip(),
                 "assetsDir": str(value.get("assetsDir") or "").strip(),
                 "templatesDir": str(value.get("templatesDir") or "").strip(),
+                "examplesDir": str(value.get("examplesDir") or "").strip(),
                 "availableFiles": [
                     str(item).strip()
                     for item in list(value.get("availableFiles") or [])

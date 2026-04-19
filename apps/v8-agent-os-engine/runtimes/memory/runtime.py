@@ -533,10 +533,13 @@ class MemoryRuntime:
         self,
         *,
         tier: str,
-        content: str,
+        payload: dict,
         dt: Optional[datetime] = None,
     ) -> None:
-        injection_service.save_periodic_summary(tier=tier, content=content, dt=dt)
+        injection_service.save_periodic_summary(tier=tier, payload=payload, dt=dt)
+
+    def backfill_periodic_summaries(self) -> dict:
+        return injection_service.backfill_periodic_summaries()
 
     def append_daily_log(self, *, content: str, tags: Optional[List[str]] = None) -> None:
         injection_service.append_daily_log(content=content, tags=tags)

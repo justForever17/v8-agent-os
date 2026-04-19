@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import routes
 from core.runtime.health import inspect_engine_runtime
 from core.models.provider_compatibility import install_provider_compatibility_patches
+from core.time_truth import utc_now_iso
 from core.runtime.startup_profile import (
     build_installation_snapshot,
     disabled_reason_summary,

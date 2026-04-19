@@ -43,6 +43,10 @@ def normalize_utc_iso(value: Any) -> Optional[str]:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def latest_utc_iso(*values: Any) -> Optional[str]:
     latest: Optional[datetime] = None
     for value in values:

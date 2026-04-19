@@ -45,7 +45,14 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "read_audit_log",
     "read_background_output",
     "send_background_input",
+    "s3_upload_file",
+    "s3_list_objects",
+    "s3_download_file",
     "terminate_background_command",
+    "web_fetch",
+    "web_read",
+    "web_extract",
+    "web_search",
     "write_native_file",
 }
 

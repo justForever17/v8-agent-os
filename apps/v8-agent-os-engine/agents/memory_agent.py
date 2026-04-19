@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from typing import Any, List, Optional, Dict
 from datetime import datetime, timezone
 from dataclasses import dataclass
+import re
 from langchain_core.messages import SystemMessage, HumanMessage
 import logging
 import json
@@ -26,6 +27,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.exceptions import OutputParserException
 
 from core.database import db
+from core.llm_chat_adapter import _extract_json_payload
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.memory_router import MemoryRouter
 from core.knowledge_db import knowledge_db
@@ -107,6 +109,11 @@ class MemoryExtractionResult(BaseModel):
     knowledge: List[KnowledgeExtraction] = Field(default_factory=list, description="Extracted non-transient semantic facts")
     entities: List[EntityExtraction] = Field(default_factory=list, description="Extracted entities for the knowledge graph")
     relations: List[RelationExtraction] = Field(default_factory=list, description="Extracted relationships between entities")
+
+
+class PeriodicSummaryPayload(BaseModel):
+    summary: str = Field(description="A concise continuity summary for this period")
+    body: str = Field(default="", description="Compact markdown body for the period summary file")
 
 
 @dataclass
@@ -627,6 +634,75 @@ def _extract_with_llm(
             failure_reason=str(e),
             extractor_model=extractor_model,
         )
+
+
+async def _synthesize_periodic_summary_payload(*, tier: str, content: str) -> PeriodicSummaryPayload:
+    llm = _get_background_llm()
+    parser = PydanticOutputParser(pydantic_object=PeriodicSummaryPayload)
+    prompt = render_periodic_summary_prompt(
+        tier=tier,
+        content=content,
+        format_instructions=parser.get_format_instructions(),
+    )
+    response = await llm.ainvoke(prompt)
+    raw_content = getattr(response, "content", "")
+    if isinstance(raw_content, list):
+        text_content = "\n".join(
+            item.get("text", "") if isinstance(item, dict) else str(item)
+            for item in raw_content
+        )
+    else:
+        text_content = str(raw_content or "")
+    if "<think>" in text_content and "</think>" in text_content:
+        text_content = text_content.split("</think>")[-1].strip()
+    try:
+        payload = _extract_json_payload(text_content)
+        return PeriodicSummaryPayload.model_validate(payload)
+    except Exception:
+        pass
+    fenced_match = re.search(r"```(?:json)?(.*?)```", text_content, re.DOTALL)
+    if fenced_match:
+        text_content = fenced_match.group(1).strip()
+    raw_output_preview = _safe_json_excerpt(text_content, limit=1200)
+    try:
+        return parser.invoke(text_content)
+    except OutputParserException as exc:
+        logger.warning(f"[MemoryAgent] Periodic summary parsing failed: {exc}. Attempting auto-fix...")
+        from langchain.output_parsers import OutputFixingParser
+
+        try:
+            fixing_parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
+            return fixing_parser.parse(text_content)
+        except Exception as repair_error:
+            raise RuntimeError(
+                f"Periodic summary parsing failed after repair. raw={raw_output_preview} error={repair_error}"
+            ) from repair_error
+
+
+def _normalize_periodic_summary_payload(*, tier: str, payload: PeriodicSummaryPayload) -> Dict[str, str]:
+    summary = " ".join(str(payload.summary or "").split()).strip()
+    body = str(payload.body or "").strip()
+    if body.startswith("---"):
+        header_match = re.match(r'^---\n.*?\n---\s*', body, flags=re.DOTALL)
+        if header_match:
+            body = body[header_match.end():].strip()
+    body = re.sub(r"^#\s+.+?$", "", body, flags=re.MULTILINE).strip()
+    body_limits = {
+        "week": 1600,
+        "month": 1100,
+        "year": 800,
+    }
+    body_limit = body_limits.get(tier, 1200)
+    if len(body) > body_limit:
+        body = body[: body_limit - 3].rstrip() + "..."
+    if not summary:
+        fallback = body or ""
+        compact = re.sub(r"\s+", " ", fallback).strip()
+        summary = compact[:177].rstrip() + "..." if len(compact) > 180 else compact
+    return {
+        "summary": summary,
+        "body": body,
+    }
 
 def _build_historical_context(*, quick_summary: str, scope_chain: List[str]) -> str:
     context_sections: List[str] = []
@@ -1949,13 +2025,11 @@ async def generate_periodic_summary(
             "reason": "no_logs_found",
         }
         
-    prompt = render_periodic_summary_prompt(tier=tier, content=content)
-    
     try:
-        llm = MemoryRouter().get_extractor_llm()
-        response = await llm.ainvoke(prompt)
-        
-        memory_runtime.save_periodic_summary(tier=tier, content=response.content, dt=dt)
+        payload = await _synthesize_periodic_summary_payload(tier=tier, content=content)
+        normalized_payload = _normalize_periodic_summary_payload(tier=tier, payload=payload)
+
+        memory_runtime.save_periodic_summary(tier=tier, payload=normalized_payload, dt=dt)
         logger.info(f"[MemoryAgent] Successfully generated and saved {tier} summary.")
         _emit_memory_event(
             run_handle,
@@ -1963,7 +2037,8 @@ async def generate_periodic_summary(
             {
                 "tier": tier,
                 "target_date": dt.isoformat(),
-                "content_length": len(response.content or ""),
+                "content_length": len(normalized_payload["body"] or ""),
+                "summary_length": len(normalized_payload["summary"] or ""),
             },
         )
         audit_logger.log(
@@ -1977,7 +2052,8 @@ async def generate_periodic_summary(
             "task_kind": "periodic_summary",
             "tier": tier,
             "target_date": dt.isoformat(),
-            "content_length": len(response.content or ""),
+            "content_length": len(normalized_payload["body"] or ""),
+            "summary_length": len(normalized_payload["summary"] or ""),
         }
     except Exception as e:
         logger.error(f"[MemoryAgent] Failed to generate {tier} summary: {e}")

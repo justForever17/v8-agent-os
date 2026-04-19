@@ -46,8 +46,11 @@ class InjectionService:
     def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
         return memory_store.get_logs_for_period(tier=tier, dt=dt, scope_chain=scope_chain)
 
-    def save_periodic_summary(self, *, tier: str, content: str, dt: Optional[datetime] = None) -> None:
-        memory_store.save_periodic_summary(tier=tier, content=content, dt=dt)
+    def save_periodic_summary(self, *, tier: str, payload: dict, dt: Optional[datetime] = None) -> None:
+        memory_store.save_periodic_summary(tier=tier, payload=payload, dt=dt)
+
+    def backfill_periodic_summaries(self) -> dict:
+        return memory_store.backfill_periodic_summaries()
 
     def append_daily_log(self, *, content: str, tags: Optional[List[str]] = None) -> None:
         memory_store.append_daily_log(content=content, tags=tags)

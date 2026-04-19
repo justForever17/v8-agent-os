@@ -90,6 +90,15 @@ class PluginHostToolRegistry:
             catalog = plugin_host_service.list_bridge_tools(limit=48)
         except Exception:
             return tools
+        bridge_ready = bool(catalog.get("bridgeReady"))
+        inventory_source = str(catalog.get("toolInventorySource") or "").strip() or None
+        inventory_health = str(catalog.get("toolInventoryHealth") or "").strip() or None
+        inventory_freshness = str(catalog.get("toolInventoryFreshness") or "").strip() or None
+        managed_channels = [
+            str(item).strip()
+            for item in list(catalog.get("managedChannels") or [])
+            if str(item).strip()
+        ]
         tool_entries = list(catalog.get("exposure") or catalog.get("inventory") or catalog.get("tools") or [])
         for tool_def in tool_entries:
             if not isinstance(tool_def, dict):
@@ -122,6 +131,11 @@ class PluginHostToolRegistry:
                     "canonicalName": canonical_name,
                     "rawName": raw_tool_name,
                     "source": str(tool_def.get("source") or "").strip() or None,
+                    "bridgeReady": bridge_ready,
+                    "toolInventorySource": inventory_source,
+                    "toolInventoryHealth": inventory_health,
+                    "toolInventoryFreshness": inventory_freshness,
+                    "managedChannels": managed_channels,
                 }
             )
             tool = StructuredTool.from_function(

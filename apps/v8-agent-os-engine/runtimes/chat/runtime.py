@@ -2112,20 +2112,173 @@ class ChatRuntime:
     def _compact_tool_display_args(cls, tool_name: str, value: Any) -> Any:
         sanitized = cls._sanitize_tool_input_value(value)
         normalized_tool_name = str(tool_name or "").strip().lower()
-        if normalized_tool_name != "ask_user" or not isinstance(sanitized, dict):
+        if not isinstance(sanitized, dict):
             return sanitized
 
-        compact: dict[str, Any] = {}
-        question = str(sanitized.get("question") or sanitized.get("prompt") or "").strip()
-        if question:
-            compact["question"] = question
-        details = sanitized.get("details")
-        if details not in (None, "", [], {}):
-            compact["details"] = details
-        tool_call_id = str(sanitized.get("toolCallId") or sanitized.get("tool_call_id") or "").strip()
-        if tool_call_id:
-            compact["toolCallId"] = tool_call_id
-        return compact
+        if normalized_tool_name == "ask_user":
+            compact: dict[str, Any] = {}
+            question = str(sanitized.get("question") or sanitized.get("prompt") or "").strip()
+            if question:
+                compact["question"] = question
+            details = sanitized.get("details")
+            if details not in (None, "", [], {}):
+                compact["details"] = details
+            tool_call_id = str(sanitized.get("toolCallId") or sanitized.get("tool_call_id") or "").strip()
+            if tool_call_id:
+                compact["toolCallId"] = tool_call_id
+            return compact
+
+        if normalized_tool_name == "run_system_command":
+            compact = {
+                "command": sanitized.get("command"),
+                "mode": sanitized.get("mode"),
+                "profile": sanitized.get("profile"),
+            }
+            return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+        if normalized_tool_name == "command_session_broker":
+            compact = {
+                "mode": sanitized.get("mode"),
+                "command": sanitized.get("command"),
+                "commandId": sanitized.get("commandId") or sanitized.get("command_id"),
+                "sessionId": sanitized.get("sessionId") or sanitized.get("session_id"),
+                "profile": sanitized.get("profile"),
+            }
+            input_text = str(sanitized.get("inputText") or sanitized.get("input_text") or "").strip()
+            if input_text:
+                preview, truncated = cls._trim_preview_text(input_text, limit=200)
+                compact["inputPreview"] = preview
+                if truncated:
+                    compact["inputTruncated"] = True
+            if sanitized.get("debug") is True:
+                compact["debug"] = True
+            return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+        if normalized_tool_name == "web_broker":
+            compact = {
+                "mode": sanitized.get("mode"),
+                "target": sanitized.get("target"),
+                "extract": sanitized.get("extract"),
+                "searchEngine": sanitized.get("search_engine") or sanitized.get("searchEngine"),
+                "fetchMode": sanitized.get("fetch_mode") or sanitized.get("fetchMode"),
+                "limit": sanitized.get("limit"),
+            }
+            if sanitized.get("adaptive") is True:
+                compact["adaptive"] = True
+            if sanitized.get("debug") is True:
+                compact["debug"] = True
+            return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+        if normalized_tool_name == "s3_broker":
+            compact = {
+                "mode": sanitized.get("mode"),
+                "filePath": sanitized.get("file_path") or sanitized.get("filePath"),
+                "key": sanitized.get("key"),
+                "prefix": sanitized.get("prefix"),
+                "destinationPath": sanitized.get("destination_path") or sanitized.get("destinationPath"),
+                "limit": sanitized.get("limit"),
+            }
+            return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+        return sanitized
+
+    @classmethod
+    def _compact_command_session_broker_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        compact: dict[str, Any] = {
+            "ok": candidate.get("ok"),
+            "mode": candidate.get("mode"),
+            "kind": candidate.get("kind"),
+            "sessionId": candidate.get("sessionId"),
+            "commandId": candidate.get("commandId"),
+            "summary": candidate.get("summary"),
+            "recommendedNextAction": candidate.get("recommendedNextAction"),
+            "state": candidate.get("state"),
+            "interactive": candidate.get("interactive"),
+            "profile": candidate.get("profile"),
+            "reason": candidate.get("reason"),
+            "awaitingInput": candidate.get("awaitingInput"),
+            "hasMore": candidate.get("hasMore"),
+            "terminated": candidate.get("terminated"),
+            "returnCode": candidate.get("returnCode"),
+            "runId": candidate.get("runId"),
+            "linkedProcess": candidate.get("linkedProcess"),
+            "error": candidate.get("error"),
+        }
+        for key in ("initialPreview", "deltaText", "acceptedInputPreview", "finalPreview"):
+            preview = str(candidate.get(key) or "").strip()
+            if not preview:
+                continue
+            trimmed, truncated = cls._trim_preview_text(preview, limit=800)
+            compact[key] = trimmed
+            if truncated:
+                compact[f"{key}Truncated"] = True
+        if isinstance(candidate.get("debug"), dict) and candidate.get("debug"):
+            compact["debug"] = candidate.get("debug")
+        return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+    @classmethod
+    def _compact_web_broker_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        compact: dict[str, Any] = {
+            "ok": candidate.get("ok"),
+            "mode": candidate.get("mode"),
+            "summary": candidate.get("summary"),
+            "url": candidate.get("url"),
+            "finalUrl": candidate.get("finalUrl"),
+            "query": candidate.get("query"),
+            "provider": candidate.get("provider"),
+            "title": candidate.get("title"),
+            "resultCount": candidate.get("resultCount"),
+            "warnings": candidate.get("warnings"),
+            "error": candidate.get("error"),
+        }
+        if isinstance(candidate.get("results"), list):
+            compact["results"] = list(candidate.get("results") or [])[:5]
+        for key in ("text", "textPreview"):
+            text = str(candidate.get(key) or "").strip()
+            if not text:
+                continue
+            trimmed, truncated = cls._trim_preview_text(text, limit=1400)
+            compact[key] = trimmed
+            if truncated:
+                compact[f"{key}Truncated"] = True
+        for key in ("links", "media", "metadata", "extract", "analysisHints", "visionCandidates"):
+            payload = candidate.get(key)
+            if payload not in (None, "", [], {}):
+                compact[key] = payload
+        if isinstance(candidate.get("debug"), dict) and candidate.get("debug"):
+            compact["debug"] = candidate.get("debug")
+        return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+    @classmethod
+    def _compact_s3_broker_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        compact: dict[str, Any] = {
+            "ok": candidate.get("ok"),
+            "mode": candidate.get("mode"),
+            "summary": candidate.get("summary"),
+            "bucket": candidate.get("bucket"),
+            "key": candidate.get("key"),
+            "url": candidate.get("url"),
+            "contentType": candidate.get("contentType"),
+            "size": candidate.get("size"),
+            "prefix": candidate.get("prefix"),
+            "count": candidate.get("count"),
+            "destinationPath": candidate.get("destinationPath"),
+            "downloaded": candidate.get("downloaded"),
+            "error": candidate.get("error"),
+            "code": candidate.get("code"),
+        }
+        if isinstance(candidate.get("objects"), list):
+            compact["objects"] = list(candidate.get("objects") or [])[:8]
+        return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
 
     @classmethod
     def _compact_download_media_for_vision_result(cls, value: Any) -> Any:
@@ -2200,6 +2353,17 @@ class ChatRuntime:
     def _compact_run_system_command_result(cls, value: Any) -> Any:
         candidate = cls._coerce_json_like_value(value)
         if isinstance(candidate, dict):
+            if str(candidate.get("kind") or "").strip() == "command_session_redirect":
+                compact: dict[str, Any] = {
+                    "kind": "command_session_redirect",
+                    "mode": candidate.get("mode"),
+                    "summary": candidate.get("summary"),
+                    "reason": candidate.get("reason"),
+                }
+                redirect = candidate.get("redirect")
+                if isinstance(redirect, dict) and redirect:
+                    compact["redirect"] = redirect
+                return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
             if str(candidate.get("kind") or "").strip() == "command_session":
                 compact: dict[str, Any] = {
                     "kind": "command_session",
@@ -2269,6 +2433,12 @@ class ChatRuntime:
             return cls._compact_generate_image_result(jsonable)
         if normalized_tool_name == "run_system_command":
             return cls._compact_run_system_command_result(jsonable)
+        if normalized_tool_name == "command_session_broker":
+            return cls._compact_command_session_broker_result(jsonable)
+        if normalized_tool_name == "web_broker":
+            return cls._compact_web_broker_result(jsonable)
+        if normalized_tool_name == "s3_broker":
+            return cls._compact_s3_broker_result(jsonable)
         if normalized_tool_name == "share_workspace_file":
             return cls._compact_share_workspace_file_result(jsonable)
         if isinstance(jsonable, str):

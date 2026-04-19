@@ -142,11 +142,12 @@ def _extract_command_session_payload(result: Any) -> Dict[str, Any] | None:
     if payload:
         mode = _string(payload.get("mode")).lower()
         command_id = _string(payload.get("commandId")) or _string(payload.get("sessionId"))
-        if mode == "session" and command_id:
+        if mode in {"session", "start"} and command_id:
             return {
                 "commandId": command_id,
                 "sessionId": _string(payload.get("sessionId")) or command_id,
                 "runId": _string(payload.get("runId")) or None,
+                "mode": mode,
             }
 
     if isinstance(result, str):
@@ -174,7 +175,7 @@ def _build_process_message_index(snapshot: Dict[str, Any]) -> Dict[str, Dict[str
                 continue
             execution_type = _string(node.get("executionType"))
             tool_name = _string(node.get("toolName"))
-            if execution_type == "tool_call" and tool_name in {"run_system_command", "start_background_command"}:
+            if execution_type == "tool_call" and tool_name in {"run_system_command", "start_background_command", "command_session_broker"}:
                 tool_call_id = _string(node.get("toolCallId"))
                 command_session = _extract_command_session_payload(node.get("result"))
                 if command_session and command_session.get("commandId"):
@@ -196,6 +197,8 @@ def _build_process_message_index(snapshot: Dict[str, Any]) -> Dict[str, Dict[str
                 command_session = _extract_command_session_payload(node.get("result"))
                 command_id = _string((command_session or {}).get("commandId"))
                 if not command_id:
+                    continue
+                if _string((command_session or {}).get("mode")) not in {"session", "start"}:
                     continue
                 tool_call_id = _string(node.get("toolCallId"))
                 link = dict(tool_calls.get(tool_call_id) or {})
@@ -294,7 +297,7 @@ def build_context_references(snapshot: Dict[str, Any]) -> list[Dict[str, Any]]:
     messages = _as_record_list(snapshot.get("messages"))
     file_tools = {"read_file", "view_file", "replace_file_content", "multi_replace_file_content", "write_to_file"}
     search_tools = {"find_by_name", "grep_search", "list_dir"}
-    web_tools = {"search_web", "read_url_content", "web_fetch", "web_read", "web_extract"}
+    web_tools = {"search_web", "read_url_content", "web_broker", "web_fetch", "web_read", "web_extract"}
 
     for message in messages:
         if _string(message.get("role")) != "assistant":

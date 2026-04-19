@@ -294,12 +294,15 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual(request.data.attachments[0].url, "https://example.test/d.png")
         self.assertEqual(request.data.fileUrls, ["https://example.test/c.png"])
 
-    def test_baseline_tools_expose_s3_and_hide_list_native_directory(self):
+    def test_baseline_tools_expose_brokered_web_and_s3_and_hide_legacy_family_variants(self):
         self.assertIn("ask_user", BASELINE_SYSTEM_TOOL_NAMES)
         self.assertNotIn("list_native_directory", BASELINE_SYSTEM_TOOL_NAMES)
-        self.assertIn("s3_upload_file", BASELINE_SYSTEM_TOOL_NAMES)
-        self.assertIn("s3_list_objects", BASELINE_SYSTEM_TOOL_NAMES)
-        self.assertIn("s3_download_file", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("command_session_broker", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("web_broker", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("s3_broker", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertNotIn("web_fetch", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertNotIn("s3_upload_file", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertNotIn("read_background_output", BASELINE_SYSTEM_TOOL_NAMES)
 
     def test_ask_user_survives_supervisor_default_tool_filter(self):
         class _Tool:
@@ -338,6 +341,54 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
             ["memory_recall", "memory_read_day", "memory_map_expand", "mem_update", "mem_delete"],
         )
 
+    def test_supervisor_prefers_web_and_s3_brokers_over_legacy_family_variants(self):
+        class _Tool:
+            def __init__(self, name: str):
+                self.name = name
+
+        selected = select_supervisor_native_tools(
+            filtered_native_tools=[
+                _Tool("web_broker"),
+                _Tool("web_fetch"),
+                _Tool("web_read"),
+                _Tool("web_extract"),
+                _Tool("web_search"),
+                _Tool("s3_broker"),
+                _Tool("s3_upload_file"),
+                _Tool("s3_list_objects"),
+                _Tool("s3_download_file"),
+            ],
+            supervisor_allowed_tools=None,
+            config_allowed_tools=None,
+        )
+
+        self.assertEqual(
+            [tool.name for tool in selected],
+            ["web_broker", "s3_broker"],
+        )
+
+    def test_supervisor_prefers_command_session_broker_over_legacy_background_trio(self):
+        class _Tool:
+            def __init__(self, name: str):
+                self.name = name
+
+        selected = select_supervisor_native_tools(
+            filtered_native_tools=[
+                _Tool("run_system_command"),
+                _Tool("command_session_broker"),
+                _Tool("read_background_output"),
+                _Tool("send_background_input"),
+                _Tool("terminate_background_command"),
+            ],
+            supervisor_allowed_tools=None,
+            config_allowed_tools=None,
+        )
+
+        self.assertEqual(
+            [tool.name for tool in selected],
+            ["run_system_command", "command_session_broker"],
+        )
+
     def test_process_message_index_ignores_command_tool_without_command_session(self):
         snapshot = {
             "session_id": "session-process",
@@ -361,6 +412,66 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         }
 
         self.assertEqual(session_realtime_contract_module._build_process_message_index(snapshot), {})
+
+    def test_process_message_index_uses_command_session_broker_start_and_ignores_observe_followups(self):
+        snapshot = {
+            "session_id": "session-process",
+            "messages": [
+                {
+                    "id": "assistant-process",
+                    "runId": "run-process",
+                    "nodes": [
+                        {
+                            "id": "assistant-process:tool_call:start",
+                            "kind": "execution",
+                            "executionType": "tool_call",
+                            "toolName": "command_session_broker",
+                            "toolCallId": "tool-call-start",
+                            "args": {"mode": "start", "command": "npm run dev"},
+                        },
+                        {
+                            "id": "assistant-process:tool_result:start",
+                            "kind": "execution",
+                            "executionType": "tool_result",
+                            "toolName": "command_session_broker",
+                            "toolCallId": "tool-call-start",
+                            "result": {
+                                "kind": "command_session",
+                                "mode": "start",
+                                "commandId": "cmd-1",
+                                "sessionId": "cmd-1",
+                                "runId": "run-process",
+                            },
+                        },
+                        {
+                            "id": "assistant-process:tool_call:observe",
+                            "kind": "execution",
+                            "executionType": "tool_call",
+                            "toolName": "command_session_broker",
+                            "toolCallId": "tool-call-observe",
+                            "args": {"mode": "observe", "sessionId": "cmd-1"},
+                        },
+                        {
+                            "id": "assistant-process:tool_result:observe",
+                            "kind": "execution",
+                            "executionType": "tool_result",
+                            "toolName": "command_session_broker",
+                            "toolCallId": "tool-call-observe",
+                            "result": {
+                                "kind": "command_session",
+                                "mode": "observe",
+                                "commandId": "cmd-1",
+                                "sessionId": "cmd-1",
+                                "runId": "run-process",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        mapping = session_realtime_contract_module._build_process_message_index(snapshot)
+        self.assertEqual(mapping["cmd-1"]["toolCallId"], "tool-call-start")
 
     def test_record_request_inputs_persists_user_structured_metadata_to_canonical_row(self):
         runtime = chat_runtime_module.ChatRuntime()

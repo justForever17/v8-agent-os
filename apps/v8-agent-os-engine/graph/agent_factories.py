@@ -1,4 +1,3 @@
-import datetime
 import hashlib
 import logging
 import platform
@@ -21,6 +20,7 @@ from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.storage import storage
 from core.system_tools.baseline import select_baseline_system_tool_names
+from core.time_truth import utc_now_iso
 from core.workspace_guard import build_workspace_path_status
 from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
@@ -318,7 +318,7 @@ def build_agent_node(
 
             workspace_path = _resolved_workspace_prompt_path()
             os_name = platform.system()
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            current_time = utc_now_iso()
             env_context = (
                 f"<environment>\n"
                 f"OS: {os_name}\n"
@@ -414,12 +414,13 @@ def build_agent_node(
                     f"{env_context}{active_plan_context}{route_bundle.prompt_addition}\n\n"
                     "[Interactive CLI Rule]\n"
                     "If you need to use an interactive CLI or REPL (examples: qwen, python REPL, node REPL, powershell, bash, cmd), NEVER use sync mode.\n"
-                    "You MUST use `run_system_command` with `mode=session`, then inspect with `read_background_output`, send replies with `send_background_input`, and clean up with `terminate_background_command`.\n"
-                    "For known AI CLIs, `run_system_command(mode=session)` may automatically enable the `chat_cli` profile so that `read_background_output` returns only the latest semantic delta instead of replaying the whole accumulated screen.\n"
+                    "You MUST use `command_session_broker(mode=start)` for long-running or interactive terminal sessions.\n"
+                    "After a session starts, use `command_session_broker(mode=observe|input|terminate)` to inspect, continue, and finish it.\n"
+                    "For known AI CLIs, the broker may automatically enable the `chat_cli` profile so that observe returns only the latest semantic delta instead of replaying the whole accumulated screen.\n"
                     "For `interactive + tty + terminal_screen` sessions, treat `screenSnapshot`, `observationState`, `awaitingInput`, and `status` as the primary truth.\n"
-                    "If `read_background_output` reports that the CLI still has more reply to emit, keep polling or use `wait(seconds, note)` before polling again; do NOT assume the model stalled just because it did not replay the full transcript.\n"
+                    "If observe reports that the CLI still has more reply to emit, keep polling or use `wait(seconds, note)` before polling again; do NOT assume the model stalled just because it did not replay the full transcript.\n"
                     "If the prompt/input box is already rendered and `awaitingInput=true`, the CLI is ready for dialogue even if MCP/debug banners are still visible.\n"
-                    "When sending input, treat a rendered prompt as ready immediately. `send_background_input` accepts both actual newlines and common escaped sequences like `\\n` to represent Enter.\n"
+                    "When sending input, treat a rendered prompt as ready immediately. The broker accepts both actual newlines and common escaped sequences like `\\n` to represent Enter.\n"
                     "NEVER conclude that the CLI has stalled or produced no reply solely because appended text is empty; full-screen TUIs often redraw the screen in place.\n"
                     "If observation indicates `render_stalled`, report that V8 has not yet confirmed a new reply from the terminal observation chain instead of claiming the CLI definitely failed to answer.\n"
                     "If `encodingState` indicates mojibake or undecodable text, report that the terminal text is currently distorted instead of interpreting the corrupted content as a real answer.\n"

@@ -115,6 +115,12 @@ async def get_memory_config():
         config.setdefault("recall_top_k", 3)
         config.setdefault("retrieval_threshold", metadata["recommendedRetrievalThreshold"])
         config.setdefault("passive_injection_enabled", True)
+        config.setdefault("passive_context_profile", "balanced")
+        config.setdefault("passive_summary_enabled", True)
+        config.setdefault("passive_memory_map_enabled", True)
+        config.setdefault("passive_recent_activity_teaser_enabled", True)
+        config.setdefault("passive_recent_activity_teaser_limit", 2)
+        config.setdefault("passive_memory_map_node_limit", 4)
         config.setdefault("max_recent_days", 1)
         config.setdefault("max_context_tokens", 2000)
         config.setdefault("extraction_enabled", True)
@@ -160,6 +166,9 @@ async def update_memory_config(config: dict = Body(...)):
         if "recall_strategy" in next_config:
             recall_strategy = str(next_config.get("recall_strategy") or "balanced").strip().lower()
             next_config["recall_strategy"] = recall_strategy if recall_strategy in {"balanced", "semantic", "keyword"} else "balanced"
+        if "passive_context_profile" in next_config:
+            profile = str(next_config.get("passive_context_profile") or "balanced").strip().lower()
+            next_config["passive_context_profile"] = profile if profile in {"light", "balanced", "detailed"} else "balanced"
         if "recall_top_k" in next_config:
             try:
                 next_config["recall_top_k"] = max(1, min(int(next_config.get("recall_top_k") or 3), 10))
@@ -172,6 +181,8 @@ async def update_memory_config(config: dict = Body(...)):
                 threshold = 0.0
             next_config["retrieval_threshold"] = max(0.0, min(threshold, 1.0))
         for key, default in (
+            ("passive_recent_activity_teaser_limit", 2),
+            ("passive_memory_map_node_limit", 4),
             ("preference_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["preference_importance_threshold"]),
             ("knowledge_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["knowledge_importance_threshold"]),
             ("global_knowledge_importance_threshold", MEMORY_DURABLE_POLICY_DEFAULTS["global_knowledge_importance_threshold"]),
@@ -179,7 +190,9 @@ async def update_memory_config(config: dict = Body(...)):
         ):
             if key in next_config:
                 try:
-                    next_config[key] = max(0, min(int(next_config.get(key) or default), 100))
+                    upper_bound = 12 if key == "passive_recent_activity_teaser_limit" else 12 if key == "passive_memory_map_node_limit" else 100
+                    lower_bound = 1 if key in {"passive_recent_activity_teaser_limit", "passive_memory_map_node_limit"} else 0
+                    next_config[key] = max(lower_bound, min(int(next_config.get(key) or default), upper_bound))
                 except (TypeError, ValueError):
                     next_config[key] = default
         for key, default in (

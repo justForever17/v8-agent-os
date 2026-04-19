@@ -978,17 +978,257 @@ class MemoryStore:
 
     def _render_frontmatter(self, metadata: Dict[str, Any]) -> str:
         lines = ["---"]
-        for key in ("type", "date"):
-            value = metadata.get(key)
-            if value is not None:
-                lines.append(f'{key}: "{value}"' if key == "date" else f"{key}: {value}")
-        for key in ("tags", "summaries"):
-            values = [str(item).strip() for item in list(metadata.get(key) or []) if str(item).strip()]
+
+        scalar_key_order = (
+            "type",
+            "tier",
+            "date",
+            "periodStart",
+            "periodEnd",
+            "summary",
+            "missingChildrenCount",
+            "presentChildrenCount",
+        )
+        list_key_order = (
+            "tags",
+            "children",
+            "coverage",
+            "summaries",
+        )
+
+        emitted_keys: set[str] = set()
+
+        def _render_scalar(key: str, value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, bool):
+                lines.append(f"{key}: {'true' if value else 'false'}")
+                return
+            if isinstance(value, (int, float)):
+                lines.append(f"{key}: {value}")
+                return
+            rendered = json.dumps(str(value), ensure_ascii=False)
+            lines.append(f"{key}: {rendered}")
+
+        def _render_list(key: str, values: Any) -> None:
+            normalized = [str(item).strip() for item in list(values or []) if str(item).strip()]
             lines.append(f"{key}:")
-            for item in values:
-                lines.append(f'  - "{item.replace(chr(34), "")}"')
+            for item in normalized:
+                lines.append(f"  - {json.dumps(item, ensure_ascii=False)}")
+
+        for key in scalar_key_order:
+            if key in metadata:
+                _render_scalar(key, metadata.get(key))
+                emitted_keys.add(key)
+
+        for key in list_key_order:
+            if key in metadata:
+                _render_list(key, metadata.get(key))
+                emitted_keys.add(key)
+
+        for key in sorted(metadata.keys()):
+            if key in emitted_keys:
+                continue
+            value = metadata.get(key)
+            if isinstance(value, list):
+                _render_list(key, value)
+            else:
+                _render_scalar(key, value)
         lines.append("---\n")
         return "\n".join(lines)
+
+    def _read_frontmatter(self, path: Path) -> tuple[Dict[str, Any], str]:
+        if not path.exists():
+            return {}, ""
+        return self._split_frontmatter(path.read_text(encoding="utf-8"))
+
+    def _summary_date_value(self, *, tier: str, dt: date | datetime) -> str:
+        target = dt.date() if isinstance(dt, datetime) else dt
+        if tier == "week":
+            return f"{target.year}-W{int(target.strftime('%V')):02d}"
+        if tier == "month":
+            return target.strftime("%Y-%m")
+        if tier == "year":
+            return str(target.year)
+        raise ValueError(f"Unknown summary tier: {tier}")
+
+    def _has_memory_content(self, path: Path) -> bool:
+        if not path.exists():
+            return False
+        if path.is_file():
+            return bool(path.stat().st_size)
+        if (path / "summary.md").exists():
+            return True
+        try:
+            return any(item.is_file() and _DAY_FILENAME_PATTERN.match(item.name) for item in path.rglob("*.md"))
+        except Exception:
+            return False
+
+    def _extract_primary_summary(self, metadata: Dict[str, Any]) -> str:
+        summary = self._normalize_summary_text(metadata.get("summary"))
+        if summary:
+            return summary
+        for item in list(metadata.get("summaries") or []):
+            value = self._normalize_summary_text(item)
+            if value:
+                return value
+        return ""
+
+    def _normalize_summary_text(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        text = text.replace("**", "").replace("__", "").replace("*", "")
+        text = re.sub(r"^\s*[-#>]+\s*", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _extract_summary_candidate_from_body(self, body: str) -> str:
+        normalized = str(body or "").strip()
+        if not normalized:
+            return ""
+        without_headings = "\n".join(
+            line for line in normalized.splitlines() if not re.match(r"^\s*#+\s+", line)
+        ).strip()
+        paragraphs = [segment.strip() for segment in re.split(r"\n\s*\n", without_headings) if segment.strip()]
+        for paragraph in paragraphs:
+            compact = re.sub(r"^\s*[-*]\s*", "", paragraph, flags=re.MULTILINE)
+            excerpt = self._read_summary_excerpt_from_text(self._normalize_summary_text(compact), limit=180)
+            if excerpt:
+                return excerpt
+        return self._read_summary_excerpt_from_text(self._normalize_summary_text(normalized), limit=180) or ""
+
+    def _read_summary_coverage(self, metadata: Dict[str, Any], *, limit: int = 3) -> List[str]:
+        coverage = [str(item).strip() for item in list(metadata.get("coverage") or []) if str(item).strip()]
+        if len(coverage) <= limit:
+            return coverage
+        return [*coverage[:limit], f"...({len(coverage) - limit} more)"]
+
+    def _build_periodic_summary_metadata(
+        self,
+        *,
+        tier: str,
+        dt: date | datetime,
+        summary: str,
+    ) -> Dict[str, Any]:
+        target = dt.date() if isinstance(dt, datetime) else dt
+        start_date, end_date = self._period_date_bounds(tier, datetime.combine(target, datetime.min.time()))
+        date_value = self._summary_date_value(tier=tier, dt=target)
+        tags: List[str] = []
+        children: List[str] = []
+        coverage: List[str] = []
+        present_children_count = 0
+        missing_children_count = 0
+
+        if tier == "week":
+            cursor = start_date
+            while cursor <= end_date:
+                log_path = self._get_daily_log_path(datetime.combine(cursor, datetime.min.time()))
+                label = cursor.strftime("%Y-%m-%d")
+                has_record = log_path.exists()
+                coverage.append(f"{label}: {'有记录' if has_record else '未产生记录'}")
+                if has_record:
+                    tags.append(label)
+                    children.append(self._day_memory_ref(cursor))
+                    present_children_count += 1
+                else:
+                    missing_children_count += 1
+                cursor += timedelta(days=1)
+        elif tier == "month":
+            current = start_date
+            week_status: Dict[str, bool] = {}
+            while current <= end_date:
+                week_label = f"{current.year}-W{int(current.strftime('%V')):02d}"
+                has_record = self._get_daily_log_path(datetime.combine(current, datetime.min.time())).exists()
+                week_status[week_label] = bool(week_status.get(week_label)) or has_record
+                current += timedelta(days=1)
+            for week_label, has_record in week_status.items():
+                coverage.append(f"{week_label}: {'有记录' if has_record else '未产生记录'}")
+                if has_record:
+                    tags.append(week_label)
+                    children.append(self._memory_ref("week", week_label))
+                    present_children_count += 1
+                else:
+                    missing_children_count += 1
+        elif tier == "year":
+            year_dir = MEMORY_ROOT / "daily" / str(target.year)
+            month_dirs = {item.name.split("_", 1)[0]: item for item in self._iter_month_dirs(year_dir)} if year_dir.exists() else {}
+            for month in range(1, 13):
+                month_label = f"{target.year}-{month:02d}"
+                month_dir = month_dirs.get(f"{month:02d}")
+                has_record = self._has_memory_content(month_dir) if month_dir else False
+                coverage.append(f"{month_label}: {'有记录' if has_record else '未产生记录'}")
+                if has_record:
+                    tags.append(month_label)
+                    children.append(self._month_memory_ref(target.year, month))
+                    present_children_count += 1
+                else:
+                    missing_children_count += 1
+        else:
+            raise ValueError(f"Unknown summary tier: {tier}")
+
+        return {
+            "type": "periodic_summary",
+            "tier": tier,
+            "date": date_value,
+            "periodStart": start_date.strftime("%Y-%m-%d"),
+            "periodEnd": end_date.strftime("%Y-%m-%d"),
+            "summary": str(summary or "").strip(),
+            "tags": tags,
+            "children": children,
+            "coverage": coverage,
+            "missingChildrenCount": missing_children_count,
+            "presentChildrenCount": present_children_count,
+        }
+
+    def _is_complete_periodic_summary_metadata(
+        self,
+        *,
+        tier: str,
+        dt: date | datetime,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        if str(metadata.get("type") or "").strip() != "periodic_summary":
+            return False
+        if str(metadata.get("tier") or "").strip() != tier:
+            return False
+        if str(metadata.get("date") or "").strip() != self._summary_date_value(tier=tier, dt=dt):
+            return False
+        required_scalars = (
+            "periodStart",
+            "periodEnd",
+            "summary",
+            "missingChildrenCount",
+            "presentChildrenCount",
+        )
+        for key in required_scalars:
+            if metadata.get(key) in {None, ""}:
+                return False
+        for key in ("tags", "children", "coverage"):
+            if key not in metadata or not isinstance(metadata.get(key), list):
+                return False
+        return True
+
+    def _render_periodic_summary_document(
+        self,
+        *,
+        tier: str,
+        dt: date | datetime,
+        summary: str,
+        body: str,
+    ) -> str:
+        metadata = self._build_periodic_summary_metadata(
+            tier=tier,
+            dt=dt,
+            summary=summary,
+        )
+        rendered = self._render_frontmatter(metadata)
+        normalized_body = str(body or "").strip()
+        if normalized_body:
+            rendered += normalized_body.rstrip() + "\n"
+        return rendered
 
     def append_daily_log_with_yaml(
         self,
@@ -1117,7 +1357,11 @@ class MemoryStore:
         if not summary_path.exists():
             return None
         try:
-            return self._read_summary_excerpt_from_text(summary_path.read_text(encoding="utf-8"))
+            metadata, body = self._read_frontmatter(summary_path)
+            primary_summary = self._extract_primary_summary(metadata)
+            if primary_summary:
+                return self._read_summary_excerpt_from_text(primary_summary)
+            return self._read_summary_excerpt_from_text(body)
         except Exception:
             return None
 
@@ -1316,7 +1560,71 @@ class MemoryStore:
             return f"[{day_date.strftime('%Y-%m-%d')}] Ref: {memory_ref}\n{log_path.read_text(encoding='utf-8')}"
         return f"No daily log found for {day_date.strftime('%Y-%m-%d')} (Ref: {memory_ref})."
 
-    def _format_memory_map_for_injection(self, anchor_date: Optional[str] = None) -> str:
+    def _resolve_passive_context_options(self, *, memory_config: dict[str, Any]) -> dict[str, Any]:
+        profile = str(memory_config.get("passive_context_profile") or "balanced").strip().lower() or "balanced"
+        if profile not in {"light", "balanced", "detailed"}:
+            profile = "balanced"
+
+        defaults_by_profile = {
+            "light": {
+                "summaryEnabled": True,
+                "memoryMapEnabled": True,
+                "recentActivityTeaserEnabled": False,
+                "recentActivityTeaserLimit": 1,
+                "memoryMapNodeLimit": 3,
+            },
+            "balanced": {
+                "summaryEnabled": True,
+                "memoryMapEnabled": True,
+                "recentActivityTeaserEnabled": True,
+                "recentActivityTeaserLimit": 2,
+                "memoryMapNodeLimit": 4,
+            },
+            "detailed": {
+                "summaryEnabled": True,
+                "memoryMapEnabled": True,
+                "recentActivityTeaserEnabled": True,
+                "recentActivityTeaserLimit": 4,
+                "memoryMapNodeLimit": 6,
+            },
+        }
+        defaults = defaults_by_profile[profile]
+
+        def _resolve_bool(key: str, fallback: bool) -> bool:
+            raw = memory_config.get(key)
+            if raw is None:
+                return fallback
+            return bool(raw)
+
+        def _resolve_int(key: str, fallback: int, minimum: int, maximum: int) -> int:
+            try:
+                return max(minimum, min(int(memory_config.get(key) or fallback), maximum))
+            except (TypeError, ValueError):
+                return fallback
+
+        return {
+            "profile": profile,
+            "summaryEnabled": _resolve_bool("passive_summary_enabled", defaults["summaryEnabled"]),
+            "memoryMapEnabled": _resolve_bool("passive_memory_map_enabled", defaults["memoryMapEnabled"]),
+            "recentActivityTeaserEnabled": _resolve_bool(
+                "passive_recent_activity_teaser_enabled",
+                defaults["recentActivityTeaserEnabled"],
+            ),
+            "recentActivityTeaserLimit": _resolve_int(
+                "passive_recent_activity_teaser_limit",
+                defaults["recentActivityTeaserLimit"],
+                1,
+                12,
+            ),
+            "memoryMapNodeLimit": _resolve_int(
+                "passive_memory_map_node_limit",
+                defaults["memoryMapNodeLimit"],
+                1,
+                12,
+            ),
+        }
+
+    def _format_memory_map_for_injection(self, anchor_date: Optional[str] = None, *, node_limit: int = 4) -> str:
         memory_map = self.build_memory_map(anchor_date=anchor_date)
         current_refs = dict(memory_map.get("currentRefs") or {})
         current_items: list[str] = []
@@ -1339,7 +1647,7 @@ class MemoryStore:
             current_items.append(line)
 
         available_years: list[str] = []
-        for item in list(memory_map.get("items") or []):
+        for item in list(memory_map.get("items") or [])[: max(1, node_limit)]:
             memory_ref = str(item.get("memoryRef") or "").strip()
             if not memory_ref:
                 continue
@@ -1362,6 +1670,79 @@ class MemoryStore:
         parts.append("")
         parts.append("Use memory_map_expand(memoryRef) to drill down. Use memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need an exact daily log.")
         return "\n".join(parts).strip()
+
+    def _build_memory_summary_for_injection(
+        self,
+        *,
+        detailed_days: int,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        segments: List[str] = []
+        hierarchical = self.get_hierarchical_summaries(scope_chain=scope_chain)
+        if hierarchical:
+            segments.append(hierarchical)
+        prior_summary = self.get_prior_window_memory_summary(
+            detailed_days=detailed_days,
+            scope_chain=scope_chain,
+        )
+        if prior_summary:
+            segments.append(prior_summary)
+        return "\n\n".join(segment for segment in segments if str(segment or "").strip()).strip()
+
+    def _extract_entry_summary_line(self, entry: str) -> str:
+        text = str(entry or "").strip()
+        if not text:
+            return ""
+        summary_match = re.search(r"^summary:\s*(.+)$", text, flags=re.MULTILINE)
+        if summary_match:
+            return str(summary_match.group(1) or "").strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in lines:
+            if line.startswith("### "):
+                continue
+            if ":" in line:
+                continue
+            return line
+        return lines[-1] if lines else ""
+
+    def _build_recent_activity_teaser(
+        self,
+        *,
+        days: int = 1,
+        scope_chain: Optional[List[str]] = None,
+        max_items: int = 2,
+    ) -> str:
+        now = datetime.now()
+        allowed_scopes = [scope for scope in self._normalize_scope_chain(scope_chain=scope_chain) if self._is_valid_scope(scope)]
+        items: List[str] = []
+
+        for i in range(max(1, days)):
+            date_check = now - timedelta(days=i)
+            log_path = self._get_daily_log_path(date_check)
+            if not log_path.exists():
+                continue
+
+            matched_entries = self._read_scoped_daily_entries(
+                log_path=log_path,
+                allowed_scopes=allowed_scopes,
+                max_entries_per_day=1,
+            )
+            if not matched_entries:
+                continue
+
+            summary_line = self._extract_entry_summary_line(matched_entries[-1])
+            frontmatter_summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
+            fallback_line = frontmatter_summaries[0] if frontmatter_summaries else ""
+            teaser = summary_line or fallback_line
+            if not teaser:
+                continue
+            if len(teaser) > 140:
+                teaser = teaser[:140] + "..."
+            items.append(f"- [{date_check.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(date_check)} | {teaser}")
+            if len(items) >= max(1, max_items):
+                break
+
+        return "\n".join(items).strip()
 
     def get_memory_map_health(self) -> Dict[str, Any]:
         counts = {
@@ -1554,10 +1935,20 @@ class MemoryStore:
             memory_ref, summary_path, label = self._resolve_summary_target(tier, now)
             if not summary_path.exists():
                 continue
-            content = summary_path.read_text(encoding="utf-8").strip()
-            if len(content) > 500:
-                content = content[:500] + "\n...(truncated)"
-            parts.append(f"[{label} Summary] Ref: {memory_ref}\n{content}")
+            metadata, body = self._read_frontmatter(summary_path)
+            summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
+            coverage_lines = self._read_summary_coverage(metadata, limit=2)
+            lines = [f"[{label} Summary] Ref: {memory_ref}"]
+            if summary_text:
+                lines.append(f"Summary: {summary_text}")
+            if coverage_lines:
+                lines.append("Coverage:")
+                lines.extend(f"- {item}" for item in coverage_lines)
+            elif body.strip():
+                fallback_excerpt = self._read_summary_excerpt_from_text(body, limit=220)
+                if fallback_excerpt:
+                    lines.append(fallback_excerpt)
+            parts.append("\n".join(lines).strip())
 
         return "\n\n".join(parts)
         
@@ -1578,27 +1969,112 @@ class MemoryStore:
 
         return f"Unknown tier: {tier}"
 
-    def save_periodic_summary(self, tier: str, content: str, dt: datetime = None):
+    def save_periodic_summary(self, tier: str, payload: Dict[str, Any], dt: datetime = None):
         """保存更高层级的聚合摘要"""
         dt = dt or datetime.now()
         year = dt.strftime("%Y")
         month_name = dt.strftime("%m_%B").lower()
-        week_num = dt.strftime("%V")
+        week_num = int(dt.strftime("%V"))
         
         base_dir = MEMORY_ROOT / "daily" / year
         
         if tier == "week":
-            path = base_dir / month_name / f"week_{week_num}" / "summary.md"
+            path = base_dir / month_name / f"week_{week_num:02d}" / "summary.md"
         elif tier == "month":
             path = base_dir / month_name / "summary.md"
         elif tier == "year":
             path = base_dir / "summary.md"
         else:
             raise ValueError(f"Unknown summary tier: {tier}")
-            
+
+        payload = dict(payload or {})
+        summary = str(payload.get("summary") or "").strip()
+        body = str(payload.get("body") or "").strip()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_text(
+            self._render_periodic_summary_document(
+                tier=tier,
+                dt=dt,
+                summary=summary,
+                body=body,
+            ),
+            encoding="utf-8",
+        )
         logger.info(f"[MemoryStore] Saved {tier} memory summary to {path}")
+
+    def _backfill_periodic_summary_file(self, *, tier: str, dt: date | datetime, summary_path: Path) -> bool:
+        metadata, body = self._read_frontmatter(summary_path)
+        if self._is_complete_periodic_summary_metadata(tier=tier, dt=dt, metadata=metadata):
+            return False
+        summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
+        summary_path.write_text(
+            self._render_periodic_summary_document(
+                tier=tier,
+                dt=dt,
+                summary=summary_text,
+                body=body,
+            ),
+            encoding="utf-8",
+        )
+        logger.info(f"[MemoryStore] Backfilled {tier} memory summary frontmatter at {summary_path}")
+        return True
+
+    def backfill_periodic_summaries(self) -> Dict[str, Any]:
+        touched_refs: List[str] = []
+        for year_dir in self._iter_year_dirs():
+            year_value = int(year_dir.name)
+            year_summary_path = year_dir / "summary.md"
+            if year_summary_path.exists() and self._backfill_periodic_summary_file(
+                tier="year",
+                dt=date(year_value, 1, 1),
+                summary_path=year_summary_path,
+            ):
+                touched_refs.append(self._year_memory_ref(year_value))
+
+            for month_dir in self._iter_month_dirs(year_dir):
+                month_value = int(month_dir.name.split("_", 1)[0])
+                month_summary_path = month_dir / "summary.md"
+                if month_summary_path.exists() and self._backfill_periodic_summary_file(
+                    tier="month",
+                    dt=date(year_value, month_value, 1),
+                    summary_path=month_summary_path,
+                ):
+                    touched_refs.append(self._month_memory_ref(year_value, month_value))
+
+                week_dirs = sorted(
+                    [item for item in month_dir.iterdir() if item.is_dir() and re.match(r"^week_\d{2}$", item.name)],
+                    key=lambda item: item.name,
+                )
+                for week_dir in week_dirs:
+                    week_summary_path = week_dir / "summary.md"
+                    if not week_summary_path.exists():
+                        continue
+                    day_paths = sorted(
+                        [
+                            item
+                            for item in week_dir.iterdir()
+                            if item.is_file() and _DAY_FILENAME_PATTERN.match(item.name)
+                        ],
+                        key=lambda item: item.name,
+                    )
+                    if day_paths:
+                        anchor_date = date.fromisoformat(day_paths[-1].stem)
+                    else:
+                        week_value = int(week_dir.name.split("_", 1)[1])
+                        try:
+                            anchor_date = date.fromisocalendar(year_value, week_value, 7)
+                        except ValueError:
+                            anchor_date = date(year_value, month_value, 1)
+                    if self._backfill_periodic_summary_file(
+                        tier="week",
+                        dt=anchor_date,
+                        summary_path=week_summary_path,
+                    ):
+                        touched_refs.append(self._week_memory_ref(anchor_date.year, int(anchor_date.strftime("%V"))))
+        return {
+            "updatedCount": len(touched_refs),
+            "touchedRefs": touched_refs,
+        }
 
     # ==========================================
     # Session 初始化（三层注入组装）
@@ -1621,8 +2097,9 @@ class MemoryStore:
         except (TypeError, ValueError):
             max_context_tokens = 2000
 
+        passive_context_options = self._resolve_passive_context_options(memory_config=memory_config)
         parts = []
-        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, historical summaries, and recent activity logs.")
+        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, navigation refs, and compact recent activity hints.")
 
         # --- Layer 1: 用户画像 ---
         normalized_chain = self._normalize_scope_chain(scope=scope, scope_chain=scope_chain)
@@ -1637,16 +2114,24 @@ class MemoryStore:
                 "[/USER PROFILE]"
             )
             
-        # --- Layer 2: 宏观层级记忆 (年/月/周) ---
-        hierarchical = self.get_hierarchical_summaries(scope_chain=normalized_chain)
-        if hierarchical:
+        # --- Layer 2: 摘要主层 ---
+        if passive_context_options["summaryEnabled"]:
+            summary_text = self._build_memory_summary_for_injection(
+                detailed_days=max_recent_days,
+                scope_chain=normalized_chain,
+            )
+        else:
+            summary_text = ""
+        if summary_text:
             parts.append(
-                "[HIERARCHICAL MEMORY SUMMARIES]\n"
-                f"{hierarchical}\n"
-                "[/HIERARCHICAL MEMORY SUMMARIES]"
+                "[MEMORY SUMMARY]\n"
+                f"{summary_text}\n"
+                "[/MEMORY SUMMARY]"
             )
 
-        memory_map_text = self._format_memory_map_for_injection()
+        memory_map_text = self._format_memory_map_for_injection(
+            node_limit=passive_context_options["memoryMapNodeLimit"],
+        ) if passive_context_options["memoryMapEnabled"] else ""
         if memory_map_text:
             parts.append(
                 "[MEMORY MAP]\n"
@@ -1654,24 +2139,18 @@ class MemoryStore:
                 "[/MEMORY MAP]"
             )
 
-        # --- Layer 3: 近期上下文 (包含 YAML frontmatter) ---
-        recent = self.get_recent_logs(days=max_recent_days, scope_chain=normalized_chain)
-        if recent:
-            parts.append(
-                f"[RECENT ACTIVITY LOGS (Detailed Window: Last {max_recent_days} days)]\n"
-                f"{recent}\n"
-                "[/RECENT ACTIVITY LOGS]"
-            )
-
-        prior_summary = self.get_prior_window_memory_summary(
-            detailed_days=max_recent_days,
+        # --- Layer 3: 精简近期提示 ---
+        recent_teaser = self._build_recent_activity_teaser(
+            days=max_recent_days,
             scope_chain=normalized_chain,
-        )
-        if prior_summary:
+            max_items=passive_context_options["recentActivityTeaserLimit"],
+        ) if passive_context_options["recentActivityTeaserEnabled"] else ""
+        if recent_teaser:
             parts.append(
-                "[PRIOR MEMORY SUMMARY BEFORE DETAILED WINDOW]\n"
-                f"{prior_summary}\n"
-                "[/PRIOR MEMORY SUMMARY BEFORE DETAILED WINDOW]"
+                f"[RECENT ACTIVITY TEASER]\n"
+                f"{recent_teaser}\n"
+                "Use memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need the exact daily log.\n"
+                "[/RECENT ACTIVITY TEASER]"
             )
 
         rendered_parts: List[str] = []

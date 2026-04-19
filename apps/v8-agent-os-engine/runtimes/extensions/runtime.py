@@ -59,6 +59,33 @@ _SKILL_RERANK_POOL_FLOOR = 10
 _MCP_RERANK_POOL_FLOOR = 12
 _PLUGIN_HOST_RERANK_POOL_FLOOR = 12
 _PLUGIN_HOST_BOUND_CAP = 24
+_PLUGIN_HOST_LIVE_INVENTORY_SOURCES = {"gateway_rpc", "plugin_source_scan", "durable_cache"}
+_PLUGIN_HOST_QUERY_HINTS = {
+    "openclaw",
+    "pluginhost",
+    "plugin_host",
+    "plugin-host",
+    "plugin host",
+    "channel",
+    "channels",
+    "bridge",
+    "gateway",
+    "feishu",
+    "lark",
+    "wechat",
+    "weixin",
+    "slack",
+    "discord",
+    "telegram",
+    "line",
+    "teams",
+    "whatsapp",
+    "飞书",
+    "微信",
+    "插件宿主",
+    "桥接",
+    "渠道",
+}
 _CROSS_RUNTIME_ESCAPE_TOKENS = {
     "blocker",
     "blocked",
@@ -149,13 +176,18 @@ def _truncate(text: str, limit: int = 100) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
+def _single_line_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
 def _tool_name(tool_ref: Any) -> str:
     return getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")).strip()
 
 
 def _tool_description(tool_ref: Any) -> str:
     raw = getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")) or ""
-    return str(raw).strip().splitlines()[0]
+    lines = str(raw).strip().splitlines()
+    return lines[0] if lines else ""
 
 
 def _is_mcp_tool(tool_ref: Any) -> bool:
@@ -182,6 +214,7 @@ def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
     return {
         "skillId": str(skill.get("skillId") or "").strip(),
         "skillName": str(skill.get("skillName") or skill.get("name") or skill.get("folder") or "").strip(),
+        "description": str(skill.get("description") or "").strip(),
         "skillRoot": str(skill.get("skillRoot") or skill.get("path") or "").strip(),
         "instructionPath": str(skill.get("instructionPath") or "").strip(),
         "sourceType": str(skill.get("sourceType") or "").strip(),
@@ -194,6 +227,7 @@ def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
         "scriptsDir": str(skill.get("scriptsDir") or "").strip(),
         "assetsDir": str(skill.get("assetsDir") or "").strip(),
         "templatesDir": str(skill.get("templatesDir") or "").strip(),
+        "examplesDir": str(skill.get("examplesDir") or "").strip(),
         "availableFiles": [
             str(item).strip()
             for item in list(skill.get("availableFiles") or [])
@@ -246,6 +280,68 @@ def _plugin_host_tool_raw_name(tool_ref: Any) -> str:
 def _plugin_host_tool_identity(tool_ref: Any) -> str:
     metadata = getattr(tool_ref, "metadata", None) or {}
     return str(metadata.get("canonicalName") or _tool_name(tool_ref)).strip()
+
+
+def _plugin_host_tool_managed_channels(tool_ref: Any) -> list[str]:
+    metadata = getattr(tool_ref, "metadata", None) or {}
+    return [
+        str(item).strip().lower()
+        for item in list(metadata.get("managedChannels") or [])
+        if str(item).strip()
+    ]
+
+
+def _plugin_host_tool_inventory_ready(tool_ref: Any) -> bool:
+    metadata = getattr(tool_ref, "metadata", None) or {}
+    if not bool(metadata.get("bridgeReady")):
+        return False
+    inventory_source = str(metadata.get("toolInventorySource") or "").strip().lower()
+    if inventory_source not in _PLUGIN_HOST_LIVE_INVENTORY_SOURCES:
+        return False
+    inventory_health = str(metadata.get("toolInventoryHealth") or "").strip().lower()
+    if inventory_health and inventory_health != "healthy":
+        return False
+    return True
+
+
+def _query_mentions_plugin_host_surface(*, user_query: str, plugin_host_tools: list[Any]) -> bool:
+    query_text = str(user_query or "").strip().lower()
+    if not query_text:
+        return False
+    if any(hint in query_text for hint in _PLUGIN_HOST_QUERY_HINTS):
+        return True
+
+    derived_hints: set[str] = set()
+    for tool in plugin_host_tools:
+        metadata = getattr(tool, "metadata", None) or {}
+        for value in (
+            metadata.get("pluginId"),
+            metadata.get("canonicalName"),
+            metadata.get("rawName"),
+        ):
+            normalized = str(value or "").strip().lower()
+            if not normalized:
+                continue
+            derived_hints.add(normalized)
+            derived_hints.update(part for part in re.split(r"[^a-z0-9\u4e00-\u9fff]+", normalized) if len(part) >= 2)
+        derived_hints.update(_plugin_host_tool_managed_channels(tool))
+    return any(hint and hint in query_text for hint in derived_hints)
+
+
+def _should_expose_plugin_host_tools(
+    *,
+    user_query: str,
+    plugin_host_tools: list[Any],
+    context_payload: dict[str, Any],
+) -> bool:
+    if not plugin_host_tools:
+        return False
+    if not any(_plugin_host_tool_inventory_ready(tool) for tool in plugin_host_tools):
+        return False
+    runtime_kind = str(context_payload.get("runtime_kind") or "").strip().lower()
+    if runtime_kind in {"plugin_host", "channel"}:
+        return True
+    return _query_mentions_plugin_host_surface(user_query=user_query, plugin_host_tools=plugin_host_tools)
 
 
 def _mcp_tool_server_name(tool_ref: Any) -> str:
@@ -486,6 +582,7 @@ class ExtensionsRuntimeService:
                     "scriptsDir": str(entry.get("scriptsDir") or "").strip(),
                     "assetsDir": str(entry.get("assetsDir") or "").strip(),
                     "templatesDir": str(entry.get("templatesDir") or "").strip(),
+                    "examplesDir": str(entry.get("examplesDir") or "").strip(),
                     "availableFiles": list(entry.get("availableFiles") or []),
                 }
             )
@@ -1150,6 +1247,7 @@ class ExtensionsRuntimeService:
         plugin_host_limit: int = 8,
     ) -> ExtensionRouteBundle:
         query_tokens = _tokenize(user_query)
+        context_payload = self._resolve_event_context()
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
         effective_skill_limit = min(max(skill_limit + (2 if cross_runtime_escape else 0), skill_limit), 10)
         effective_mcp_limit = min(max(mcp_limit + (2 if cross_runtime_escape else 0), mcp_limit), 12)
@@ -1189,8 +1287,17 @@ class ExtensionsRuntimeService:
         selected_skills = list(skill_pool[:effective_skill_limit])
 
         mcp_tools = [tool for tool in available_tools if _is_mcp_tool(tool)]
-        plugin_host_tools = [tool for tool in available_tools if _is_plugin_host_tool(tool)]
+        raw_plugin_host_tools = [tool for tool in available_tools if _is_plugin_host_tool(tool)]
         base_tools = [tool for tool in available_tools if not _is_mcp_tool(tool) and not _is_plugin_host_tool(tool)]
+        plugin_host_tools = (
+            raw_plugin_host_tools
+            if _should_expose_plugin_host_tools(
+                user_query=user_query,
+                plugin_host_tools=raw_plugin_host_tools,
+                context_payload=context_payload,
+            )
+            else []
+        )
         mcp_server_map: dict[str, list[Any]] = {}
         for tool in mcp_tools:
             server_name = _mcp_tool_server_name(tool)
@@ -1474,6 +1581,12 @@ class ExtensionsRuntimeService:
         selected_skill_ids = [str(item.get("skillId") or "").strip() for item in selected_skills if str(item.get("skillId") or "").strip()]
         selected_skill_names = [str(item.get("name") or item.get("folder") or "") for item in selected_skills]
         selected_skill_entries = [_skill_entry_payload(item) for item in selected_skills]
+        skill_name_counts: dict[str, int] = {}
+        for item in skill_entries:
+            normalized_skill_name = str(item.get("skillName") or item.get("name") or item.get("folder") or "").strip().lower()
+            if not normalized_skill_name:
+                continue
+            skill_name_counts[normalized_skill_name] = skill_name_counts.get(normalized_skill_name, 0) + 1
         exposed_mcp_tool_names = [_tool_name(tool) for tool in selected_mcp_tools]
         selected_mcp_servers = [
             _mcp_server_payload(server_key, mcp_server_map.get(server_key, []))
@@ -1499,28 +1612,14 @@ class ExtensionsRuntimeService:
             lines.append("- 当前命中的 Skills 目录入口：")
             for entry in selected_skill_entries[:effective_skill_limit]:
                 source_label = str(entry.get("sourceType") or "global").strip() or "global"
+                normalized_entry_name = str(entry.get("skillName") or "").strip().lower()
+                has_duplicate_skill_name = skill_name_counts.get(normalized_entry_name, 0) > 1
                 lines.append(f"  - {entry.get('skillName') or 'unknown'} [{source_label}]")
-                if entry.get("skillId"):
-                    lines.append(f"    - Skill ID: {entry.get('skillId')}")
-                if entry.get("skillRoot"):
+                lines.append(
+                    f"    - Skill description: {_truncate(_single_line_text(entry.get('description') or '') or '暂无说明。', 180)}"
+                )
+                if has_duplicate_skill_name and entry.get("skillRoot"):
                     lines.append(f"    - Root: {entry.get('skillRoot')}")
-                if entry.get("workspacePath"):
-                    lines.append(f"    - Workspace: {entry.get('workspacePath')}")
-                if entry.get("projectId"):
-                    lines.append(f"    - Project ID: {entry.get('projectId')}")
-                if entry.get("instructionPath"):
-                    lines.append(f"    - Instruction: {entry.get('instructionPath')}")
-                if entry.get("referencesDir"):
-                    lines.append(f"    - References: {entry.get('referencesDir')}")
-                if entry.get("scriptsDir"):
-                    lines.append(f"    - Scripts: {entry.get('scriptsDir')}")
-                if entry.get("assetsDir"):
-                    lines.append(f"    - Assets: {entry.get('assetsDir')}")
-                if entry.get("templatesDir"):
-                    lines.append(f"    - Templates: {entry.get('templatesDir')}")
-                for item in list(entry.get("availableFiles") or [])[:10]:
-                    lines.append(f"    - {item}")
-            lines.append("  - 按当前 skill 的要求去做。")
         if exposed_mcp_tool_names:
             lines.append("- 当前暴露给本轮的 MCP servers（选中 server 后暴露完整工具树）：")
             for server in selected_mcp_servers:
@@ -1528,13 +1627,18 @@ class ExtensionsRuntimeService:
             lines.append("- 当前暴露给本轮的 MCP 工具：")
             for tool in selected_mcp_tools:
                 server_name = _mcp_tool_server_name(tool)
-                lines.append(f"  - {_tool_name(tool)} ({server_name}): {_truncate(_tool_description(tool), 80)}")
+                lines.append(
+                    f"  - {_tool_name(tool)} ({server_name}): {_truncate(_tool_description(tool) or '暂无说明。', 80)}"
+                )
         if exposed_plugin_host_tool_names:
             lines.append("- 当前暴露给本轮的 OpenClaw 工具：")
             for tool in selected_plugin_host_tools[:effective_plugin_host_limit]:
                 metadata = getattr(tool, "metadata", None) or {}
                 plugin_id = str(metadata.get("pluginId") or "").strip() or "gateway"
-                lines.append(f"  - {str(metadata.get('canonicalName') or _tool_name(tool)).strip()} ({plugin_id}): {_truncate(_tool_description(tool), 80)}")
+                lines.append(
+                    f"  - {str(metadata.get('canonicalName') or _tool_name(tool)).strip()} ({plugin_id}): "
+                    f"{_truncate(_tool_description(tool) or '暂无说明。', 80)}"
+                )
         lines.append("[/Extensions Runtime]")
 
         return ExtensionRouteBundle(

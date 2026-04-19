@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,22 @@ def upload_file_to_s3(file_path: str | Path, *, key: str | None = None, prefix: 
     }
 
 
+def _render_s3_broker_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _render_s3_broker_error(mode: str, error: str, *, code: str | None = None) -> str:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "mode": mode,
+        "summary": error,
+        "error": error,
+    }
+    if code:
+        payload["code"] = code
+    return _render_s3_broker_payload(payload)
+
+
 @tool
 def s3_upload_file(file_path: str, key: str = "", prefix: str = "v8chat") -> str:
     """Upload a local workspace file to the configured S3-compatible bucket and return its public URL."""
@@ -103,3 +120,106 @@ def s3_download_file(key: str, destination_path: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     _client(config).download_file(str(config.get("bucket")), key.lstrip("/"), str(target))
     return f"S3 下载完成：{key} -> {target}"
+
+
+@tool
+def s3_broker(
+    mode: str = "list",
+    file_path: str = "",
+    key: str = "",
+    prefix: str = "v8chat",
+    destination_path: str = "",
+    limit: int = 50,
+) -> str:
+    """Unified S3 broker for upload, list, and download operations with a compact JSON contract."""
+    normalized_mode = str(mode or "list").strip().lower()
+    try:
+        if normalized_mode == "upload":
+            normalized_file_path = str(file_path or "").strip()
+            if not normalized_file_path:
+                return _render_s3_broker_error(normalized_mode, "s3_broker(mode=upload) 需要提供 file_path。", code="missing_file_path")
+            resolved_prefix = str(prefix or "v8chat").strip() or "v8chat"
+            result = upload_file_to_s3(
+                normalized_file_path,
+                key=str(key or "").strip() or None,
+                prefix=resolved_prefix,
+            )
+            return _render_s3_broker_payload(
+                {
+                    "ok": True,
+                    "mode": normalized_mode,
+                    "summary": f"已上传 {Path(normalized_file_path).name} 到 S3。",
+                    "bucket": result.get("bucket"),
+                    "key": result.get("key"),
+                    "url": result.get("url"),
+                    "contentType": result.get("contentType"),
+                    "size": result.get("size"),
+                }
+            )
+
+        if normalized_mode == "list":
+            config = _s3_config()
+            resolved_prefix = str(prefix or "").strip()
+            max_keys = max(1, min(int(limit or 50), 200))
+            response = _client(config).list_objects_v2(
+                Bucket=str(config.get("bucket")),
+                Prefix=resolved_prefix,
+                MaxKeys=max_keys,
+            )
+            objects = list(response.get("Contents") or [])
+            return _render_s3_broker_payload(
+                {
+                    "ok": True,
+                    "mode": normalized_mode,
+                    "summary": (
+                        f"prefix={resolved_prefix or '/'} 下找到 {len(objects)} 个对象。"
+                        if objects
+                        else f"prefix={resolved_prefix or '/'} 下没有对象。"
+                    ),
+                    "bucket": config.get("bucket"),
+                    "prefix": resolved_prefix,
+                    "count": len(objects),
+                    "objects": [
+                        {
+                            "key": str(item.get("Key") or ""),
+                            "size": int(item.get("Size") or 0),
+                            "url": _public_url(config, str(item.get("Key") or "")),
+                        }
+                        for item in objects
+                    ],
+                }
+            )
+
+        if normalized_mode == "download":
+            normalized_key = str(key or "").strip()
+            normalized_destination = str(destination_path or "").strip()
+            if not normalized_key:
+                return _render_s3_broker_error(normalized_mode, "s3_broker(mode=download) 需要提供 key。", code="missing_key")
+            if not normalized_destination:
+                return _render_s3_broker_error(
+                    normalized_mode,
+                    "s3_broker(mode=download) 需要提供 destination_path。",
+                    code="missing_destination_path",
+                )
+            config = _s3_config()
+            target = Path(normalized_destination).expanduser()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _client(config).download_file(str(config.get("bucket")), normalized_key.lstrip("/"), str(target))
+            return _render_s3_broker_payload(
+                {
+                    "ok": True,
+                    "mode": normalized_mode,
+                    "summary": f"已下载 {normalized_key}。",
+                    "bucket": config.get("bucket"),
+                    "key": normalized_key,
+                    "destinationPath": str(target),
+                    "downloaded": True,
+                }
+            )
+        return _render_s3_broker_error(
+            normalized_mode,
+            f"Unsupported s3_broker mode: {normalized_mode}",
+            code="unsupported_mode",
+        )
+    except Exception as exc:
+        return _render_s3_broker_error(normalized_mode, str(exc), code="s3_operation_failed")

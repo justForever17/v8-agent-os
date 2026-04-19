@@ -29,6 +29,12 @@ interface MemoryConfig {
     recall_top_k?: number;
     retrieval_threshold?: number;
     passive_injection_enabled?: boolean;
+    passive_context_profile?: string;
+    passive_summary_enabled?: boolean;
+    passive_memory_map_enabled?: boolean;
+    passive_recent_activity_teaser_enabled?: boolean;
+    passive_recent_activity_teaser_limit?: number;
+    passive_memory_map_node_limit?: number;
     max_recent_days?: number;
     max_context_tokens?: number;
     extraction_enabled?: boolean;
@@ -124,6 +130,7 @@ export default function MemoryConfigPanel() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [showAdvancedContextSettings, setShowAdvancedContextSettings] = useState(false);
     const [recallQuery, setRecallQuery] = useState("");
     const [recallPreviewLoading, setRecallPreviewLoading] = useState(false);
     const [recallPreviewError, setRecallPreviewError] = useState<string | null>(null);
@@ -602,8 +609,8 @@ export default function MemoryConfigPanel() {
                 <CardDescription>
                     {t(
                         lt(
-                                "控制详细日志注入窗口（映射 memory.max_recent_days）；窗口外的前一日记忆会自动降级为 summaries + path。",
-                                "Controls the detailed log injection window (maps to memory.max_recent_days); the prior day outside that window is automatically reduced to summaries + path.",
+                                "控制被动记忆注入的主摘要、记忆地图与近期 teaser 形态；精确日志继续通过 memory_read_day 主动下钻。",
+                                "Controls the passive memory injection shape for summary, memory map, and recent teaser; exact day logs still come from memory_read_day when needed.",
                             ),
                         )}
                     </CardDescription>
@@ -612,14 +619,37 @@ export default function MemoryConfigPanel() {
                     <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs leading-6 text-muted-foreground">
                         {t(
                             lt(
-                                "长期记忆 scope 现只保留 global、project:{id} 与 channel:{type}:{remote_id}。workspace/workflow/app 不再作为长期记忆域；日志与审计会额外记录 effectiveMemoryScope、provenanceClass 和 memoryPolicy。",
-                                "Long-term memory scopes are now limited to global, project:{id}, and channel:{type}:{remote_id}. Workspace/workflow/app no longer count as durable memory scopes; logs and audits also record effectiveMemoryScope, provenanceClass, and memoryPolicy.",
+                                "长期记忆 scope 现只保留 global、project:{id} 与 channel:{type}:{remote_id}。窗口外的历史会降级为 summary + memoryRef，而不是继续把完整日志被动塞进 prompt。",
+                                "Durable memory scopes are now limited to global, project:{id}, and channel:{type}:{remote_id}. Older history outside the active window is reduced to summary + memoryRef instead of full logs in the passive prompt.",
                             ),
                         )}
                     </div>
+                    <div className="space-y-1.5">
+                        <Label>{t(lt("被动注入档位", "Passive injection profile"))}</Label>
+                        <Select
+                            value={config.passive_context_profile ?? "balanced"}
+                            onValueChange={(value) => setConfig(prev => ({ ...prev, passive_context_profile: value }))}
+                        >
+                            <SelectTrigger className="w-full">
+                                <SelectValue placeholder={t(lt("选择一个注入档位", "Choose an injection profile"))} />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="light">{t(lt("轻量", "Light"))}</SelectItem>
+                                <SelectItem value="balanced">{t(lt("平衡", "Balanced"))}</SelectItem>
+                                <SelectItem value="detailed">{t(lt("详细", "Detailed"))}</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                            {config.passive_context_profile === "light"
+                                ? t(lt("默认保留摘要主层与记忆地图，尽量减少近期日志 teaser。", "Keeps summary + memory map by default and minimizes recent teaser injection."))
+                                : config.passive_context_profile === "detailed"
+                                    ? t(lt("默认保留摘要、地图与更宽松的近期 teaser，更适合强上下文任务。", "Keeps summary, memory map, and a wider recent teaser for context-heavy tasks."))
+                                    : t(lt("默认保留摘要主层、记忆地图与短日志 teaser，作为推荐平衡档。", "Keeps summary, memory map, and a short recent teaser as the recommended balanced profile."))}
+                        </p>
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                            <Label>{t(lt("详细日志天数", "Detailed log days"))}</Label>
+                            <Label>{t(lt("teaser 来源天数", "Teaser source days"))}</Label>
                             <Input
                                 type="number"
                                 value={config.max_recent_days ?? 1}
@@ -637,6 +667,76 @@ export default function MemoryConfigPanel() {
                             />
                         </div>
                     </div>
+                    <div className="flex justify-end">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowAdvancedContextSettings(prev => !prev)}
+                        >
+                            {showAdvancedContextSettings
+                                ? t(lt("收起高级注入开关", "Hide advanced injection settings"))
+                                : t(lt("展开高级注入开关", "Show advanced injection settings"))}
+                        </Button>
+                    </div>
+                    {showAdvancedContextSettings ? (
+                        <div className="space-y-4 rounded-lg border p-4">
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                                <div className="flex items-center justify-between rounded-lg border p-3">
+                                    <div className="space-y-1">
+                                        <Label>{t(lt("摘要主层", "Summary layer"))}</Label>
+                                        <p className="text-xs text-muted-foreground">{t(lt("控制 MEMORY SUMMARY 是否进入被动上下文。", "Controls whether MEMORY SUMMARY enters passive context."))}</p>
+                                    </div>
+                                    <Switch
+                                        checked={config.passive_summary_enabled ?? true}
+                                        onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_summary_enabled: checked }))}
+                                    />
+                                </div>
+                                <div className="flex items-center justify-between rounded-lg border p-3">
+                                    <div className="space-y-1">
+                                        <Label>{t(lt("记忆地图", "Memory map"))}</Label>
+                                        <p className="text-xs text-muted-foreground">{t(lt("控制 MEMORY MAP 是否作为导航辅助层注入。", "Controls whether MEMORY MAP is injected as the auxiliary navigation layer."))}</p>
+                                    </div>
+                                    <Switch
+                                        checked={config.passive_memory_map_enabled ?? true}
+                                        onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_memory_map_enabled: checked }))}
+                                    />
+                                </div>
+                                <div className="flex items-center justify-between rounded-lg border p-3">
+                                    <div className="space-y-1">
+                                        <Label>{t(lt("近期 teaser", "Recent teaser"))}</Label>
+                                        <p className="text-xs text-muted-foreground">{t(lt("控制 RECENT ACTIVITY TEASER 是否进入被动上下文。", "Controls whether RECENT ACTIVITY TEASER enters passive context."))}</p>
+                                    </div>
+                                    <Switch
+                                        checked={config.passive_recent_activity_teaser_enabled ?? true}
+                                        onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_recent_activity_teaser_enabled: checked }))}
+                                    />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1.5">
+                                    <Label>{t(lt("teaser 条目上限", "Teaser item limit"))}</Label>
+                                    <Input
+                                        type="number"
+                                        value={config.passive_recent_activity_teaser_limit ?? 2}
+                                        onChange={(e) => setConfig(prev => ({ ...prev, passive_recent_activity_teaser_limit: Number(e.target.value) }))}
+                                        min={1}
+                                        max={12}
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label>{t(lt("记忆地图节点上限", "Memory map node limit"))}</Label>
+                                    <Input
+                                        type="number"
+                                        value={config.passive_memory_map_node_limit ?? 4}
+                                        onChange={(e) => setConfig(prev => ({ ...prev, passive_memory_map_node_limit: Number(e.target.value) }))}
+                                        min={1}
+                                        max={12}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    ) : null}
                 </CardContent>
             </Card>
 

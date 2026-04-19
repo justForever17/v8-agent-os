@@ -114,9 +114,9 @@ from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
 from core.workspace_share import resolve_workspace_file_to_share
 from core.tools.media_downloader import download_media_for_vision
-from core.tools.s3_tools import s3_download_file, s3_list_objects, s3_upload_file
+from core.tools.s3_tools import s3_broker, s3_download_file, s3_list_objects, s3_upload_file
 from core.tools.vision_media_analyzer import vision_media_analyzer
-from core.tools.web_fetcher import web_extract, web_fetch, web_read, web_search
+from core.tools.web_fetcher import web_broker, web_extract, web_fetch, web_read, web_search
 from runtimes.computer_use.verification_contract import (
     build_evidence_summary_payload,
     build_environment_signal_summary_payload,
@@ -2696,9 +2696,8 @@ def execute_system_command(
         if interactive_reason:
             return (
                 f"Error: {interactive_reason}\n"
-                "请改用 `run_system_command` 并设置 `mode=session` 启动它，随后配合 "
-                "`read_background_output`、`send_background_input` 和 "
-                "`terminate_background_command` 完成交互与收尾。"
+                "请改用 `command_session_broker(mode=start)` 启动命令会话；"
+                "后续观察、继续输入和终止都统一走 `command_session_broker`。"
             )
 
         runtime_context = get_runtime_context()
@@ -2799,13 +2798,13 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
 
 @tool
 def share_workspace_file(path: str, mode: str = "auto") -> dict[str, Any]:
-    """把当前主工作区或项目工作区内的文件转换成可远程访问的会话分享资源。
+    """Share a file from the current main/project workspace as a remote session resource for preview or download.
 
-    这个工具只做主动分享，不写入 artifact store，也不把文件伪装成运行产物。
+    This tool performs explicit sharing only. It does not write to the artifact store and does not pretend the file is a runtime-generated artifact.
 
     Arguments:
-        path: 当前 workspace/project workspace 内的绝对路径或相对路径。
-        mode: auto、preview 或 download；默认 auto。
+        path: Absolute or relative path inside the current workspace/project workspace.
+        mode: auto, preview, or download. Defaults to auto.
     """
     try:
         return resolve_workspace_file_to_share(path, mode)
@@ -3075,15 +3074,15 @@ def http_request(
 
 @tool
 def wait(seconds: int, note: str = "") -> str:
-    """短时阻塞等待若干秒，并带着备注继续后续步骤。
+    """Pause briefly for a bounded number of seconds, then continue with an optional reminder note.
 
-    适用于：
-    - 异步任务已提交，短时间后再检查状态
-    - 大型依赖安装、服务启动、文件生成等需要短睡眠的场景
+    Good for:
+    - Re-checking a just-submitted async task after a short delay
+    - Giving installs, service startup, or file generation a short stabilization window
 
-    不适用于：
-    - 无限等待
-    - 长驻后台任务管理
+    Not for:
+    - Unbounded waiting
+    - Managing long-running background processes
 
     Arguments:
         seconds (int): Number of seconds to wait. Must be between 1 and 120.
@@ -5425,13 +5424,13 @@ def run_system_command(
 
     mode=auto:
     - 短命令/非交互命令直接同步执行并返回结果
-    - 交互式或长驻命令自动切到 session 模式并返回 commandId
+    - 交互式或长驻命令返回 redirect，要求使用 command_session_broker(mode=start)
 
     mode=sync:
     - 强制同步执行，适合短命令
 
     mode=session:
-    - 强制后台/交互模式，返回 commandId
+    - 兼容模式：强制后台/交互模式，建议新调用改用 command_session_broker(mode=start)
 
     profile:
     - auto: 自动识别 shell / chat_cli
@@ -5451,7 +5450,26 @@ def run_system_command(
     prefer_session = interactive_reason is not None or session_reason is not None
     effective_mode = normalized_mode
     if normalized_mode == "auto":
-        effective_mode = "session" if prefer_session else "sync"
+        if prefer_session:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "mode": "auto",
+                    "kind": "command_session_redirect",
+                    "summary": "检测到命令更适合命令会话 broker。",
+                    "reason": interactive_reason or session_reason or "命令更适合后台会话模式",
+                    "redirect": {
+                        "tool": "command_session_broker",
+                        "args": {
+                            "mode": "start",
+                            "command": command,
+                            "profile": normalized_profile,
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            )
+        effective_mode = "sync"
 
     if effective_mode == "sync":
         return execute_system_command.func(command=command, tool_call_id=tool_call_id)
@@ -5478,6 +5496,452 @@ def run_system_command(
             return f"Error starting session command: {exc}"
 
     return "Error: 未能解析命令执行模式。"
+
+
+def _resolve_command_session_process(
+    *,
+    command_id: str = "",
+    session_id: str = "",
+) -> tuple[str, Any | None]:
+    _prune_stale_background_processes()
+    normalized = str(command_id or session_id or "").strip()
+    if not normalized:
+        return "", None
+    return normalized, _bg_processes.get(normalized)
+
+
+def _command_session_state_from_status(status: dict[str, Any]) -> str:
+    is_running = bool(status.get("is_running"))
+    if is_running:
+        if bool(status.get("awaiting_input")):
+            return "awaiting_input"
+        observation_state = str(status.get("observation_state") or "").strip().lower()
+        if observation_state == "render_stalled":
+            return "render_stalled"
+        return "running"
+    return_code = status.get("return_code")
+    return "failed" if return_code not in (None, 0, "0") else "completed"
+
+
+def _command_session_summary_for_state(
+    *,
+    mode: str,
+    state: str,
+    interactive: bool,
+    delta_text: str = "",
+    terminated: bool = False,
+) -> str:
+    if mode == "start":
+        return "已启动交互式命令会话。" if interactive else "已启动后台命令会话。"
+    if mode == "terminate":
+        return "命令会话已终止。" if terminated else "命令会话终止请求已发送。"
+    if delta_text:
+        if state == "awaiting_input":
+            return "终端有新增输出，当前已等待输入。"
+        return "终端有新增输出。"
+    if state == "awaiting_input":
+        return "终端当前等待输入。"
+    if state == "render_stalled":
+        return "终端有原始数据，但屏幕尚未稳定刷新。"
+    if state == "completed":
+        return "命令会话已完成。"
+    if state == "failed":
+        return "命令会话已异常结束。"
+    return "命令会话仍在运行。"
+
+
+def _command_session_recommended_next_action(
+    *,
+    mode: str,
+    state: str,
+    awaiting_input: bool,
+    has_more: bool,
+) -> str:
+    if mode == "terminate" or state in {"completed", "failed"}:
+        return "none"
+    if awaiting_input:
+        return "input"
+    if has_more or state in {"running", "render_stalled"}:
+        return "observe"
+    return "wait_then_observe"
+
+
+def _command_session_preview_text(value: str, *, limit: int = 1200) -> tuple[str, bool]:
+    normalized = str(value or "").strip()
+    if len(normalized) <= limit:
+        return normalized, False
+    return normalized[:limit].rstrip(), True
+
+
+def _command_session_debug_payload(
+    *,
+    status: dict[str, Any],
+    screen_preview: str = "",
+    raw_frame_preview: str = "",
+    delta_text: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": status,
+    }
+    if screen_preview:
+        payload["screenPreview"] = screen_preview
+    if raw_frame_preview:
+        payload["rawFramePreview"] = raw_frame_preview
+    if delta_text:
+        payload["deltaPreview"] = delta_text
+    return payload
+
+
+def _command_session_payload(
+    *,
+    mode: str,
+    session_id: str,
+    command_id: str,
+    summary: str,
+    recommended_next_action: str,
+    ok: bool = True,
+    **extra: Any,
+) -> str:
+    payload: dict[str, Any] = {
+        "ok": ok,
+        "mode": mode,
+        "kind": "command_session",
+        "sessionId": session_id,
+        "commandId": command_id,
+        "summary": summary,
+        "recommendedNextAction": recommended_next_action,
+    }
+    payload.update(extra)
+    return json.dumps(
+        {key: value for key, value in payload.items() if value not in (None, "", [], {})},
+        ensure_ascii=False,
+    )
+
+
+@tool
+def command_session_broker(
+    mode: str = "observe",
+    command: str = "",
+    session_id: str = "",
+    command_id: str = "",
+    input_text: str = "",
+    profile: str = "auto",
+    debug: bool = False,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    """Unified command-session broker for long-running or interactive CLI work: start, observe, input, or terminate a session with compact JSON by default.
+
+    Modes:
+    - start: launch a long-running or interactive command session
+    - observe: read the latest delta and detect whether input is needed
+    - input: send input into the active session
+    - terminate: stop the session
+
+    Usage guidance:
+    - Keep using run_system_command for short synchronous commands
+    - Use command_session_broker for long-running tasks, interactive CLIs, REPLs, and server/dev processes
+    - Add debug=true only when you need screen/raw/status diagnostics
+    """
+    normalized_mode = str(mode or "observe").strip().lower()
+    if normalized_mode not in {"start", "observe", "input", "terminate"}:
+        return _command_session_payload(
+            mode=normalized_mode or "unknown",
+            session_id="",
+            command_id="",
+            ok=False,
+            summary=f"Unsupported command_session_broker mode: {normalized_mode}",
+            recommended_next_action="none",
+            error=f"Unsupported command_session_broker mode: {normalized_mode}",
+        )
+
+    try:
+        if normalized_mode == "start":
+            normalized_command = str(command or "").strip()
+            if not normalized_command:
+                return _command_session_payload(
+                    mode=normalized_mode,
+                    session_id="",
+                    command_id="",
+                    ok=False,
+                    summary="command_session_broker(mode=start) 需要提供 command。",
+                    recommended_next_action="none",
+                    error="missing_command",
+                )
+            try:
+                normalized_profile = _normalize_background_command_profile(profile)
+            except ValueError as exc:
+                return _command_session_payload(
+                    mode=normalized_mode,
+                    session_id="",
+                    command_id="",
+                    ok=False,
+                    summary=str(exc),
+                    recommended_next_action="none",
+                    error="invalid_profile",
+                )
+            launched = _launch_background_command(
+                normalized_command,
+                tool_call_id=tool_call_id,
+                profile=normalized_profile,
+            )
+            status = dict(launched.get("status") or {})
+            state = _command_session_state_from_status(status)
+            initial_preview, initial_truncated = _command_session_preview_text(
+                str(launched.get("initialOutput") or "").strip()
+            )
+            debug_payload = None
+            if debug:
+                debug_payload = _command_session_debug_payload(
+                    status=status,
+                    screen_preview=str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
+                    raw_frame_preview=str(status.get("last_raw_frame_preview") or "").strip(),
+                    delta_text=initial_preview,
+                )
+            return _command_session_payload(
+                mode=normalized_mode,
+                session_id=str(launched.get("commandId") or ""),
+                command_id=str(launched.get("commandId") or ""),
+                summary=_command_session_summary_for_state(
+                    mode=normalized_mode,
+                    state=state,
+                    interactive=bool(launched.get("interactive")),
+                    delta_text=initial_preview,
+                ),
+                recommended_next_action=_command_session_recommended_next_action(
+                    mode=normalized_mode,
+                    state=state,
+                    awaiting_input=bool(status.get("awaiting_input")),
+                    has_more=bool(launched.get("interactive")),
+                ),
+                interactive=bool(launched.get("interactive")),
+                profile=launched.get("profile"),
+                reason=launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
+                awaitingInput=bool(status.get("awaiting_input")),
+                state=state,
+                initialPreview=initial_preview or None,
+                initialPreviewTruncated=initial_truncated if initial_preview else None,
+                linkedProcess={
+                    "processId": str(launched.get("commandId") or ""),
+                    "commandId": str(launched.get("commandId") or ""),
+                    "sessionId": str(launched.get("commandId") or ""),
+                    "chatSessionId": launched.get("sessionId"),
+                    "runId": launched.get("runId"),
+                },
+                runId=launched.get("runId"),
+                debug=debug_payload,
+            )
+
+        resolved_session_id, bg_proc = _resolve_command_session_process(
+            command_id=command_id,
+            session_id=session_id,
+        )
+        if not resolved_session_id or bg_proc is None:
+            return _command_session_payload(
+                mode=normalized_mode,
+                session_id=resolved_session_id,
+                command_id=resolved_session_id,
+                ok=False,
+                summary="未找到对应的命令会话。",
+                recommended_next_action="start",
+                error="session_not_found",
+            )
+
+        if normalized_mode == "observe":
+            new_output = bg_proc.get_new_output()
+            status = bg_proc.status_snapshot()
+            screen_changed = bool(bg_proc.has_unreported_screen_change())
+            raw_changed = bool(bg_proc.has_unreported_raw_frame_change())
+            delta_text = str(new_output or "").strip()
+            has_more = False
+            if bg_proc.profile == "chat_cli":
+                semantic_state = bg_proc._update_chat_cli_semantic_state(
+                    status=status,
+                    appended_output=new_output,
+                    screen_changed=screen_changed,
+                    raw_changed=raw_changed,
+                )
+                delta_text = str(semantic_state.get("delta_text") or "").strip()
+                has_more = bool(semantic_state.get("has_more"))
+            else:
+                has_more = bool(bg_proc.is_running and (screen_changed or raw_changed or delta_text) and not status.get("awaiting_input"))
+            if screen_changed:
+                bg_proc.mark_screen_reported()
+            if raw_changed:
+                bg_proc.mark_raw_frame_reported()
+            state = _command_session_state_from_status(status)
+            delta_preview, delta_truncated = _command_session_preview_text(delta_text)
+            screen_preview = str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip()
+            raw_frame_preview = str(status.get("last_raw_frame_preview") or "").strip()
+            debug_payload = None
+            if debug:
+                debug_payload = _command_session_debug_payload(
+                    status=status,
+                    screen_preview=screen_preview,
+                    raw_frame_preview=raw_frame_preview,
+                    delta_text=delta_preview,
+                )
+            return _command_session_payload(
+                mode=normalized_mode,
+                session_id=resolved_session_id,
+                command_id=resolved_session_id,
+                summary=_command_session_summary_for_state(
+                    mode=normalized_mode,
+                    state=state,
+                    interactive=bool(status.get("interactive")),
+                    delta_text=delta_preview,
+                ),
+                recommended_next_action=_command_session_recommended_next_action(
+                    mode=normalized_mode,
+                    state=state,
+                    awaiting_input=bool(status.get("awaiting_input")),
+                    has_more=has_more,
+                ),
+                state=state,
+                deltaText=delta_preview or None,
+                deltaTruncated=delta_truncated if delta_preview else None,
+                awaitingInput=bool(status.get("awaiting_input")),
+                hasMore=has_more,
+                returnCode=status.get("return_code"),
+                debug=debug_payload,
+            )
+
+        if normalized_mode == "input":
+            if not bg_proc.is_running:
+                status = bg_proc.status_snapshot()
+                return _command_session_payload(
+                    mode=normalized_mode,
+                    session_id=resolved_session_id,
+                    command_id=resolved_session_id,
+                    ok=False,
+                    summary="命令会话已经结束，无法继续输入。",
+                    recommended_next_action="none",
+                    state=_command_session_state_from_status(status),
+                    returnCode=status.get("return_code"),
+                    error="session_not_running",
+                )
+            normalized_input = _decode_background_input_escapes(input_text)
+            if not normalized_input:
+                return _command_session_payload(
+                    mode=normalized_mode,
+                    session_id=resolved_session_id,
+                    command_id=resolved_session_id,
+                    ok=False,
+                    summary="command_session_broker(mode=input) 需要提供 input_text。",
+                    recommended_next_action="none",
+                    error="missing_input_text",
+                )
+            previous_status = bg_proc.status_snapshot()
+            previous_screen_version = int(previous_status.get("screen_version") or 0)
+            previous_raw_frame_version = int(previous_status.get("raw_frame_version") or 0)
+            bg_proc.discard_pending_output()
+            bg_proc._prepare_chat_cli_for_input(normalized_input, status_before=previous_status)
+            bg_proc.write_input(normalized_input)
+            time.sleep(0.5)
+            new_output = bg_proc.get_new_output()
+            status = bg_proc.status_snapshot()
+            screen_changed = int(status.get("screen_version") or 0) > previous_screen_version
+            raw_changed = int(status.get("raw_frame_version") or 0) > previous_raw_frame_version
+            delta_text = str(new_output or "").strip()
+            has_more = False
+            if bg_proc.profile == "chat_cli":
+                semantic_state = bg_proc._update_chat_cli_semantic_state(
+                    status=status,
+                    appended_output=new_output,
+                    screen_changed=screen_changed,
+                    raw_changed=raw_changed,
+                )
+                delta_text = str(semantic_state.get("delta_text") or "").strip()
+                has_more = bool(semantic_state.get("has_more"))
+            else:
+                has_more = bool(bg_proc.is_running and (screen_changed or raw_changed or delta_text) and not status.get("awaiting_input"))
+            if screen_changed:
+                bg_proc.mark_screen_reported()
+            if raw_changed:
+                bg_proc.mark_raw_frame_reported()
+            state = _command_session_state_from_status(status)
+            delta_preview, delta_truncated = _command_session_preview_text(delta_text)
+            input_preview, input_truncated = _command_session_preview_text(normalized_input, limit=200)
+            debug_payload = None
+            if debug:
+                debug_payload = _command_session_debug_payload(
+                    status=status,
+                    screen_preview=str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
+                    raw_frame_preview=str(status.get("last_raw_frame_preview") or "").strip(),
+                    delta_text=delta_preview,
+                )
+            return _command_session_payload(
+                mode=normalized_mode,
+                session_id=resolved_session_id,
+                command_id=resolved_session_id,
+                summary=_command_session_summary_for_state(
+                    mode=normalized_mode,
+                    state=state,
+                    interactive=bool(status.get("interactive")),
+                    delta_text=delta_preview,
+                ).replace("终端", "已发送输入后终端", 1),
+                recommended_next_action=_command_session_recommended_next_action(
+                    mode=normalized_mode,
+                    state=state,
+                    awaiting_input=bool(status.get("awaiting_input")),
+                    has_more=has_more,
+                ),
+                state=state,
+                acceptedInputPreview=input_preview,
+                acceptedInputTruncated=input_truncated if input_preview else None,
+                deltaText=delta_preview or None,
+                deltaTruncated=delta_truncated if delta_preview else None,
+                awaitingInput=bool(status.get("awaiting_input")),
+                hasMore=has_more,
+                returnCode=status.get("return_code"),
+                debug=debug_payload,
+            )
+
+        status_before = bg_proc.status_snapshot()
+        bg_proc.terminate()
+        time.sleep(0.15)
+        final_output = bg_proc.get_new_output()
+        status = bg_proc.status_snapshot()
+        _bg_processes.pop(resolved_session_id, None)
+        final_preview, final_truncated = _command_session_preview_text(str(final_output or "").strip())
+        debug_payload = None
+        if debug:
+            debug_payload = _command_session_debug_payload(
+                status=status or status_before,
+                screen_preview=str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
+                raw_frame_preview=str(status.get("last_raw_frame_preview") or "").strip(),
+                delta_text=final_preview,
+            )
+        return _command_session_payload(
+            mode=normalized_mode,
+            session_id=resolved_session_id,
+            command_id=resolved_session_id,
+            summary=_command_session_summary_for_state(
+                mode=normalized_mode,
+                state="completed",
+                interactive=bool(status.get("interactive")),
+                delta_text=final_preview,
+                terminated=True,
+            ),
+            recommended_next_action="none",
+            terminated=True,
+            state=_command_session_state_from_status(status),
+            returnCode=status.get("return_code"),
+            finalPreview=final_preview or None,
+            finalPreviewTruncated=final_truncated if final_preview else None,
+            debug=debug_payload,
+        )
+    except Exception as exc:
+        _raise_runtime_governance_exception_if_needed(exc)
+        normalized_session = str(command_id or session_id or "").strip()
+        return _command_session_payload(
+            mode=normalized_mode,
+            session_id=normalized_session,
+            command_id=normalized_session,
+            ok=False,
+            summary=str(exc),
+            recommended_next_action="none",
+            error=str(exc),
+        )
 
 
 def _build_terminal_status_tool_view(status: dict) -> dict:
@@ -6778,7 +7242,7 @@ def computer_use_execute_task(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """在 route 之后，用统一的任务级 broker 执行桌面任务，并返回紧凑的验证摘要。"""
+    """Execute a route-approved desktop task through the unified task-level broker and return a compact verification summary."""
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     route_goal = str(goal or "").strip()
@@ -8384,7 +8848,7 @@ async def delegate_network_task(
     workspace_path: Optional[str] = None,
     scope_hint: Optional[str] = None,
 ) -> str:
-    """向受信任的远端 V8 节点显式委派任务，并等待最终结果返回。"""
+    """Explicitly delegate a task to a trusted remote V8 node and wait for the final result."""
     from runtimes.network_supervisor.service import network_supervisor_service
 
     result = await network_supervisor_service.delegate_task(
@@ -8402,6 +8866,7 @@ async def delegate_network_task(
 # Export all tools for easier binding
 NATIVE_TOOLS = [
     run_system_command,
+    command_session_broker,
     read_background_output,
     send_background_input,
     terminate_background_command,
@@ -8447,12 +8912,14 @@ NATIVE_TOOLS = [
     write_native_file,
     grep_search,
     download_media_for_vision,
+    web_broker,
     web_fetch,
     web_read,
     web_extract,
     web_search,
     delegate_network_task,
     http_request,
+    s3_broker,
     s3_upload_file,
     s3_list_objects,
     s3_download_file,

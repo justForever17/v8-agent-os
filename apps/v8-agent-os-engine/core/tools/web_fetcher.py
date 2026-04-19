@@ -1137,6 +1137,128 @@ def _render_error_payload(
     )
 
 
+def _trim_broker_text(value: Any, *, limit: int = 2400) -> tuple[str, bool]:
+    normalized = _safe_text(value)
+    if len(normalized) <= limit:
+        return normalized, False
+    return normalized[:limit].rstrip(), True
+
+
+def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str, debug: bool) -> dict[str, Any]:
+    ok = bool(payload.get("ok"))
+    resolved_mode = requested_mode
+    if requested_mode == "fetch":
+        if "query" in payload or "results" in payload:
+            resolved_mode = "search"
+        elif "extract" in payload:
+            resolved_mode = "extract"
+        else:
+            resolved_mode = "read"
+
+    compact: dict[str, Any] = {
+        "ok": payload.get("ok"),
+        "mode": resolved_mode,
+    }
+    debug_payload: dict[str, Any] = {}
+
+    if ok:
+        if resolved_mode == "search":
+            query = _safe_text(payload.get("query"))
+            provider = _safe_text(payload.get("provider"))
+            results = payload.get("results") if isinstance(payload.get("results"), list) else []
+            compact.update(
+                {
+                    "summary": f"搜索到 {len(results)} 条结果。" if results else "没有找到可用结果。",
+                    "query": query,
+                    "provider": provider or None,
+                    "resultCount": payload.get("resultCount") if payload.get("resultCount") is not None else len(results),
+                    "results": results,
+                }
+            )
+        else:
+            final_url = payload.get("finalUrl") or payload.get("url")
+            title = _safe_text(payload.get("title"))
+            text = payload.get("text")
+            text_preview, text_truncated = _trim_broker_text(text, limit=2200) if text not in (None, "") else ("", False)
+            compact.update(
+                {
+                    "summary": title or ("网页提取完成。" if resolved_mode == "extract" else "网页读取完成。"),
+                    "url": payload.get("url"),
+                    "finalUrl": final_url,
+                    "title": title or None,
+                }
+            )
+            if text_preview:
+                if text_truncated:
+                    compact["textPreview"] = text_preview
+                    compact["textTruncated"] = True
+                else:
+                    compact["text"] = text_preview
+            if resolved_mode == "extract":
+                compact["extract"] = payload.get("extract")
+                if "links" in payload:
+                    compact["links"] = payload.get("links")
+                if "media" in payload:
+                    compact["media"] = payload.get("media")
+                if "metadata" in payload:
+                    compact["metadata"] = payload.get("metadata")
+            else:
+                if "links" in payload:
+                    compact["links"] = payload.get("links")
+                if "media" in payload:
+                    compact["media"] = payload.get("media")
+        analysis_hints = payload.get("analysisHints")
+        if analysis_hints not in (None, "", [], {}):
+            compact["analysisHints"] = analysis_hints
+        vision_candidates = payload.get("visionCandidates")
+        if vision_candidates not in (None, "", [], {}):
+            compact["visionCandidates"] = vision_candidates
+        warnings = payload.get("warnings")
+        if isinstance(warnings, list) and warnings:
+            compact["warnings"] = warnings
+    else:
+        compact.update(
+            {
+                "summary": _safe_text(payload.get("error")) or "Web broker 执行失败。",
+                "error": payload.get("error"),
+            }
+        )
+        if payload.get("blocked") is not None:
+            compact["blocked"] = payload.get("blocked")
+        if payload.get("url") not in (None, ""):
+            compact["url"] = payload.get("url")
+        if payload.get("query") not in (None, ""):
+            compact["query"] = payload.get("query")
+
+    for key in (
+        "requestedMode",
+        "refererMode",
+        "refererUrl",
+        "fetchMode",
+        "tlsStrategy",
+        "caBundlePath",
+        "proxyBypassUsed",
+        "attemptedModes",
+        "availableModes",
+        "adaptiveSignals",
+        "selectorSignals",
+        "requestedProvider",
+        "attemptedProviders",
+        "searchUrl",
+        "status",
+        "fallbackUsed",
+        "visionRecommended",
+    ):
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            debug_payload[key] = value
+
+    if debug and debug_payload:
+        compact["debug"] = debug_payload
+
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+
 def _looks_like_url(value: str) -> bool:
     normalized = _safe_text(value).lower()
     return normalized.startswith("http://") or normalized.startswith("https://")
@@ -1488,3 +1610,71 @@ def web_fetch(
         ensure_ascii=False,
         indent=2,
     )
+
+
+@tool
+def web_broker(
+    target: str,
+    mode: str = "fetch",
+    extract: WebExtractMode = "article",
+    search_engine: WebSearchEngine = "auto",
+    fetch_mode: WebFetchMode = "auto",
+    headless: bool = True,
+    referer_mode: WebRefererMode = "none",
+    referer_url: str = "",
+    adaptive: bool = False,
+    adaptive_id: str = "",
+    adaptive_threshold: int = 70,
+    limit: int = 5,
+    debug: bool = False,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    """Unified web broker for public-web work: search finds results, fetch auto-routes URL vs query, read returns cleaned page text, and extract returns structured article/links/metadata/media output; add debug=true only for transport diagnostics.
+
+    mode:
+    - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search
+    - read: read a single page and return compact text/title/link results
+    - extract: 抽取结构化内容，适合 article / links / metadata / media
+    - search: 公开搜索，返回搜索结果列表
+
+    debug:
+    - 默认 false，只返回对 agent 真正有价值的精简结果
+    - true 时把 transport / TLS / fallback / selector 等调试字段放进 debug 子对象
+    """
+    normalized_mode = str(mode or "fetch").strip().lower()
+    if normalized_mode not in {"fetch", "read", "extract", "search"}:
+        return json.dumps(
+            {
+                "ok": False,
+                "mode": normalized_mode,
+                "summary": f"Unsupported web_broker mode: {normalized_mode}",
+                "error": f"Unsupported web_broker mode: {normalized_mode}",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    intent = "auto" if normalized_mode == "fetch" else normalized_mode
+    raw_result = web_fetch.func(
+        target=target,
+        intent=intent,
+        extract=extract,
+        search_engine=search_engine,
+        mode=fetch_mode,
+        headless=headless,
+        referer_mode=referer_mode,
+        referer_url=referer_url,
+        adaptive=adaptive,
+        adaptive_id=adaptive_id,
+        adaptive_threshold=adaptive_threshold,
+        limit=limit,
+        tool_call_id=tool_call_id,
+    )
+    try:
+        parsed = json.loads(raw_result)
+    except Exception:
+        return raw_result
+    if not isinstance(parsed, dict):
+        return raw_result
+    compact = _compact_web_broker_payload(parsed, requested_mode=normalized_mode, debug=bool(debug))
+    return json.dumps(compact, ensure_ascii=False, indent=2)

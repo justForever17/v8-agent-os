@@ -212,6 +212,156 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             ["remotion-video", "seedance2-api", "llm-video"],
         )
 
+    def test_extensions_runtime_prompt_includes_skill_description_and_hides_root_when_skill_is_unique(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:67cb9ebfa7543040",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "女娲造人：输入人名或模糊需求，自动深度调研并生成可运行的人物 Skill。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "skillRoot": "C:/skills/huashu-nuwa",
+                "instructionPath": "C:/skills/huashu-nuwa/SKILL.md",
+                "sourceType": "global",
+                "visibility": "global",
+                "referencesDir": "C:/skills/huashu-nuwa/references",
+                "scriptsDir": "C:/skills/huashu-nuwa/scripts",
+                "examplesDir": "C:/skills/huashu-nuwa/examples",
+                "availableFiles": [
+                    "references/",
+                    "references/extraction-framework.md",
+                    "scripts/",
+                    "scripts/merge_research.py",
+                ],
+            }
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="我想用 huashu-nuwa 造一个人物 skill",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.candidate_summary["skillEntries"][0]["description"], skills[0]["description"])
+        self.assertIn("Skill description: 女娲造人：输入人名或模糊需求", bundle.prompt_addition)
+        self.assertNotIn("Root: C:/skills/huashu-nuwa", bundle.prompt_addition)
+        self.assertNotIn("Skill ID: global:67cb9ebfa7543040", bundle.prompt_addition)
+        self.assertNotIn("Instruction: C:/skills/huashu-nuwa/SKILL.md", bundle.prompt_addition)
+        self.assertNotIn("Examples: C:/skills/huashu-nuwa/examples", bundle.prompt_addition)
+        self.assertNotIn("按当前 skill 的要求去做。", bundle.prompt_addition)
+        self.assertNotIn("references/extraction-framework.md", bundle.prompt_addition)
+        self.assertNotIn("scripts/merge_research.py", bundle.prompt_addition)
+
+    def test_extensions_runtime_prompt_shows_root_when_duplicate_skill_names_exist(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:67cb9ebfa7543040",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "global version",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "skillRoot": "C:/skills/huashu-nuwa",
+                "instructionPath": "C:/skills/huashu-nuwa/SKILL.md",
+                "sourceType": "global",
+                "visibility": "global",
+            },
+            {
+                "skillId": "scoped:67cb9ebfa7543041",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "scoped version",
+                "path": "D:/project/.agents/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "skillRoot": "D:/project/.agents/skills/huashu-nuwa",
+                "instructionPath": "D:/project/.agents/skills/huashu-nuwa/SKILL.md",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="我想用 huashu-nuwa 造一个人物 skill",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertIn("Root: C:/skills/huashu-nuwa", bundle.prompt_addition)
+        self.assertIn("Root: D:/project/.agents/skills/huashu-nuwa", bundle.prompt_addition)
+
+    def test_extensions_runtime_prompt_uses_explicit_placeholder_for_blank_mcp_description(self):
+        service = ExtensionsRuntimeService()
+        tools = [_FakeTool("query-docs", "", "context7")]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="查 Context7 文档",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=2,
+                plugin_host_limit=0,
+            )
+
+        self.assertIn("当前暴露给本轮的 MCP 工具：", bundle.prompt_addition)
+        self.assertIn("query-docs (context7): 暂无说明。", bundle.prompt_addition)
+
 
 if __name__ == "__main__":
     unittest.main()

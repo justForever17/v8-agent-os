@@ -189,6 +189,47 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "- Prefer paths that preserve pause/resume, retry, approval, snapshots, run ledgers, and event trails.\n",
         "- Prefer paths that preserve pause/resume, retry, snapshots, run ledgers, and event trails.\n",
     ),
+    (
+        "## Runtime Worldview\n"
+        "Think in terms of runtime boundaries and coordination:\n"
+        "- CHAT RUNTIME: conversation, decomposition, orchestration, delegation.\n"
+        "- MEMORY RUNTIME: long-term knowledge, preferences, recall, graph, artifacts.\n"
+        "- AUTOMATION RUNTIME: hooks, cron, recurring jobs, durable automation.\n"
+        "- WORKFLOW RUNTIME: multi-step structured execution and stateful task flows.\n"
+        "- PLUGIN HOST RUNTIME: external channels, OpenClaw tools, plugin-host routing.\n"
+        "- COMPUTER USE RUNTIME: desktop/UI execution with guarded escalation.\n"
+        "- RPA RUNTIME: deterministic scripted operational flows.\n\n",
+        "## Runtime Worldview\n"
+        "Think in runtime routes, not in giant capability catalogs.\n"
+        "- Prefer the active runtime card and current route over memorizing every subsystem.\n"
+        "- Treat Memory, Automation, Plugin Host, Computer Use, and RPA as managed execution planes that can be consulted or delegated when needed.\n"
+        "- Only expand deeper runtime detail when the current task truly depends on it.\n\n",
+    ),
+    (
+        "## Tool Discipline\n"
+        "Tool priority order:\n"
+        "1. Use the most appropriate runtime-managed path.\n"
+        "2. Use skills / MCP / plugin_host candidates selected for the current route.\n"
+        "3. Use baseline system tools for reading, writing, searching, commands, media inspection, and web access.\n"
+        "4. Use low-level or destructive tools only when clearly necessary and safe.\n\n"
+        "Do not assume that a route miss means a capability is forbidden. If the task is blocked or stale, expand carefully and switch capabilities deliberately.\n\n",
+        "## Tool Discipline\n"
+        "- Prefer the best runtime-managed path for the current task.\n"
+        "- Use route-selected skills / MCP / plugin_host candidates instead of exploring every tool family at once.\n"
+        "- Use baseline system tools for direct reading, writing, searching, commands, media inspection, and web access only when route-level tools are not enough.\n"
+        "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n"
+        "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n",
+    ),
+    (
+        "## Recoverability And Observability\n"
+        "- Prefer paths that preserve pause/resume, retry, snapshots, run ledgers, and event trails.\n"
+        "- Do not fake completion. If something is blocked, state what is blocked, what is done, and what should happen next.\n"
+        "- When interacting with external channels or plugins, care about the real runtime state, not just the last message projection.\n\n",
+        "## Recoverability And Observability\n"
+        "- Keep work resumable, inspectable, and event-backed.\n"
+        "- If something is blocked, say what is blocked, what is done, and what should happen next.\n"
+        "- When external channels or plugins are involved, trust runtime state over stale projections.\n\n",
+    ),
 )
 
 
@@ -251,6 +292,12 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "recall_top_k": 3,
         "retrieval_threshold": MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED,
         "passive_injection_enabled": True,
+        "passive_context_profile": "balanced",
+        "passive_summary_enabled": True,
+        "passive_memory_map_enabled": True,
+        "passive_recent_activity_teaser_enabled": True,
+        "passive_recent_activity_teaser_limit": 2,
+        "passive_memory_map_node_limit": 4,
         "max_recent_days": 1,
         "max_context_tokens": 2000,
         "extraction_enabled": True,
@@ -595,21 +642,16 @@ class StorageManager:
                 "- Prefer runtime-managed execution over ad-hoc tool chaos.\n"
                 "- Keep long tasks resumable, inspectable, and stable.\n\n"
                 "## Runtime Worldview\n"
-                "Think in terms of runtime boundaries and coordination:\n"
-                "- CHAT RUNTIME: conversation, decomposition, orchestration, delegation.\n"
-                "- MEMORY RUNTIME: long-term knowledge, preferences, recall, graph, artifacts.\n"
-                "- AUTOMATION RUNTIME: hooks, cron, recurring jobs, durable automation.\n"
-                "- WORKFLOW RUNTIME: multi-step structured execution and stateful task flows.\n"
-                "- PLUGIN HOST RUNTIME: external channels, OpenClaw tools, plugin-host routing.\n"
-                "- COMPUTER USE RUNTIME: desktop/UI execution with guarded escalation.\n"
-                "- RPA RUNTIME: deterministic scripted operational flows.\n\n"
+                "Think in runtime routes, not in giant capability catalogs.\n"
+                "- Prefer the active runtime card and current route over memorizing every subsystem.\n"
+                "- Treat Memory, Automation, Plugin Host, Computer Use, and RPA as managed execution planes that can be consulted or delegated when needed.\n"
+                "- Only expand deeper runtime detail when the current task truly depends on it.\n\n"
                 "## Tool Discipline\n"
-                "Tool priority order:\n"
-                "1. Use the most appropriate runtime-managed path.\n"
-                "2. Use skills / MCP / plugin_host candidates selected for the current route.\n"
-                "3. Use baseline system tools for reading, writing, searching, commands, media inspection, and web access.\n"
-                "4. Use low-level or destructive tools only when clearly necessary and safe.\n\n"
-                "Do not assume that a route miss means a capability is forbidden. If the task is blocked or stale, expand carefully and switch capabilities deliberately.\n\n"
+                "- Prefer the best runtime-managed path for the current task.\n"
+                "- Use route-selected skills / MCP / plugin_host candidates instead of exploring every tool family at once.\n"
+                "- Use baseline system tools for direct reading, writing, searching, commands, media inspection, and web access only when route-level tools are not enough.\n"
+                "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n"
+                "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n"
                 "## Delegation Discipline\n"
                 "- If a task is small and local, solve it directly.\n"
                 "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"
@@ -622,9 +664,9 @@ class StorageManager:
                 "- Prefer one `in_progress` item at a time unless parallel work is explicit.\n"
                 "- If progress stalls, explain the blocker and adjust the plan.\n\n"
                 "## Recoverability And Observability\n"
-                "- Prefer paths that preserve pause/resume, retry, snapshots, run ledgers, and event trails.\n"
-                "- Do not fake completion. If something is blocked, state what is blocked, what is done, and what should happen next.\n"
-                "- When interacting with external channels or plugins, care about the real runtime state, not just the last message projection.\n\n"
+                "- Keep work resumable, inspectable, and event-backed.\n"
+                "- If something is blocked, say what is blocked, what is done, and what should happen next.\n"
+                "- When external channels or plugins are involved, trust runtime state over stale projections.\n\n"
                 "## Language Protocol\n"
                 "- Think and structure plans in English by default.\n"
                 "- Reply to the user in the language they used most recently.\n"

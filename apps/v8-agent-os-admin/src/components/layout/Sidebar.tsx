@@ -30,7 +30,7 @@ export function Sidebar() {
     const t = useT();
 
     return (
-        <aside className="hidden h-screen w-80 shrink-0 overflow-hidden border-r border-slate-200 bg-[#f7fafc] lg:flex lg:flex-col">
+        <aside className="hidden h-full min-h-0 w-80 shrink-0 overflow-hidden border-r border-slate-200 bg-[#f7fafc] lg:flex lg:flex-col">
             <div className="border-b border-slate-200 px-6 py-5">
                 <div className="flex items-center gap-3">
                     <div className="relative h-11 w-11 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
@@ -53,7 +53,7 @@ export function Sidebar() {
                 </div>
             </div>
 
-            <div className="min-w-0 flex-1 overflow-y-auto">
+            <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">
                 <div className="w-full min-w-0 space-y-6 px-4 py-5 pr-5">
                     {ADMIN_NAV_GROUPS.map((group) => {
                         const active = isGroupActive(pathname, group.items.map((item) => item.href));

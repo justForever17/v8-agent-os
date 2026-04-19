@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "software-copyright/01_申请主表信息.md",
+                "file": "supervisor/SUPERVISOR_TOOL_SURFACE_AND_PROMPT_SNAPSHOT_2026-04-19.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "01_申请主表信息"
+              "title": "SUPERVISOR_TOOL_SURFACE_AND_PROMPT_SNAPSHOT_2026-04-19"
             }
           }
         ]
@@ -185,6 +185,7 @@
   },
   "active": "abc38cb20d37f2a7",
   "lastOpenFiles": [
+    "software-copyright/01_申请主表信息.md",
     "project-scope/PROJECT_SCOPE_REMEDIATION_PLAN_ZH.md",
     "ENGINE_API_REFERENCE.md",
     "computer/SUPERVISOR_RPA_COMPUTER_USE_BOUNDARY_REDESIGN_ZH.md"

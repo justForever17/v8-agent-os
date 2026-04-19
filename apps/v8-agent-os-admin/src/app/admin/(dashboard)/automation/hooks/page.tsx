@@ -30,8 +30,7 @@ import {
   Trash2,
   BookOpen
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { DocumentationGuideDialog } from "@/components/admin-shell/DocumentationGuideDialog";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 
@@ -451,69 +450,12 @@ export default function HooksPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isGuideOpen} onOpenChange={setIsGuideOpen}>
-        <DialogContent className="max-h-[80vh] sm:max-w-[700px] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{t(lt("钩子使用说明", "Hook guide"))}</DialogTitle>
-          </DialogHeader>
-          <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h1: ({ ...props }) => (
-                  <h1 className="mt-6 mb-4 text-2xl font-bold" {...props} />
-                ),
-                h2: ({ ...props }) => (
-                  <h2 className="mt-5 mb-3 text-xl font-semibold border-b pb-2" {...props} />
-                ),
-                h3: ({ ...props }) => (
-                  <h3 className="mt-4 mb-2 text-lg font-medium" {...props} />
-                ),
-                p: ({ ...props }) => (
-                  <p className="mb-4 leading-relaxed text-muted-foreground" {...props} />
-                ),
-                ul: ({ ...props }) => (
-                  <ul className="mb-4 ml-6 list-disc space-y-1" {...props} />
-                ),
-                ol: ({ ...props }) => (
-                  <ol className="mb-4 ml-6 list-decimal space-y-1" {...props} />
-                ),
-                li: ({ ...props }) => (
-                  <li className="text-muted-foreground" {...props} />
-                ),
-                strong: ({ ...props }) => (
-                  <strong className="font-semibold text-foreground" {...props} />
-                ),
-                blockquote: ({ ...props }) => (
-                  <blockquote
-                    className="my-4 border-l-4 border-primary pl-4 italic text-muted-foreground bg-muted p-2 rounded-r-md"
-                    {...props}
-                  />
-                ),
-                code: ({ className, children, ...props }) => {
-                  const match = /language-(\w+)/.exec(className || "");
-                  return match ? (
-                    <pre className="my-4 overflow-x-auto rounded-md bg-muted p-4 block">
-                      <code className={className} {...props}>
-                        {children}
-                      </code>
-                    </pre>
-                  ) : (
-                    <code
-                      className="rounded bg-muted px-[0.3rem] py-[0.2rem] font-mono text-sm text-primary"
-                      {...props}
-                    >
-                      {children}
-                    </code>
-                  );
-                },
-              }}
-            >
-              {docContent}
-            </ReactMarkdown>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <DocumentationGuideDialog
+        open={isGuideOpen}
+        onOpenChange={setIsGuideOpen}
+        title={t(lt("钩子使用说明", "Hook guide"))}
+        content={docContent}
+      />
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {hooks.map((hook) => (

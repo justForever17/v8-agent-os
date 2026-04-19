@@ -180,6 +180,25 @@ def _maybe_migrate_legacy_local_config(payload: Dict[str, Any]) -> Dict[str, Any
     return payload
 
 
+_STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (
+        "- Keep long tasks resumable, inspectable, and approval-safe.\n",
+        "- Keep long tasks resumable, inspectable, and stable.\n",
+    ),
+    (
+        "- Prefer paths that preserve pause/resume, retry, approval, snapshots, run ledgers, and event trails.\n",
+        "- Prefer paths that preserve pause/resume, retry, snapshots, run ledgers, and event trails.\n",
+    ),
+)
+
+
+def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
+    normalized = str(content or "")
+    for source, target in _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS:
+        normalized = normalized.replace(source, target)
+    return normalized
+
+
 STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "models": {
         "version": 2,
@@ -574,7 +593,7 @@ class StorageManager:
                 "## Primary Goal\n"
                 "- Solve user tasks with the smallest stable plan that still preserves recoverability.\n"
                 "- Prefer runtime-managed execution over ad-hoc tool chaos.\n"
-                "- Keep long tasks resumable, inspectable, and approval-safe.\n\n"
+                "- Keep long tasks resumable, inspectable, and stable.\n\n"
                 "## Runtime Worldview\n"
                 "Think in terms of runtime boundaries and coordination:\n"
                 "- CHAT RUNTIME: conversation, decomposition, orchestration, delegation.\n"
@@ -603,7 +622,7 @@ class StorageManager:
                 "- Prefer one `in_progress` item at a time unless parallel work is explicit.\n"
                 "- If progress stalls, explain the blocker and adjust the plan.\n\n"
                 "## Recoverability And Observability\n"
-                "- Prefer paths that preserve pause/resume, retry, approval, snapshots, run ledgers, and event trails.\n"
+                "- Prefer paths that preserve pause/resume, retry, snapshots, run ledgers, and event trails.\n"
                 "- Do not fake completion. If something is blocked, state what is blocked, what is done, and what should happen next.\n"
                 "- When interacting with external channels or plugins, care about the real runtime state, not just the last message projection.\n\n"
                 "## Language Protocol\n"
@@ -629,10 +648,28 @@ class StorageManager:
             except PermissionError:
                 continue
 
+        self._sanitize_stock_supervisor_prompt_file()
         self._ensure_config_json_exists()
         self._migrate_computer_use_storage()
         self._ensure_plugin_json_exists()
         self._migrate_legacy_structured_files()
+
+    def _sanitize_stock_supervisor_prompt_file(self):
+        filepath = self.base_dir / "V8_AGENT_OS.md"
+        if not filepath.exists():
+            return
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except (OSError, PermissionError):
+            return
+        sanitized = _sanitize_stock_supervisor_prompt_text(content)
+        if sanitized == content:
+            return
+        try:
+            with open(filepath, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(sanitized)
+        except (OSError, PermissionError):
+            return
 
     def _default_system_base_config(self) -> dict[str, Any]:
         engine_base_url = _normalize_http_base_url(

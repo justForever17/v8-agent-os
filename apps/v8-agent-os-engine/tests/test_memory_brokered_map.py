@@ -78,6 +78,9 @@ class MemoryBrokeredMapTests(unittest.TestCase):
 
                 with patch.object(storage, "get_memory_config", return_value={"max_recent_days": 1, "max_context_tokens": 4000}):
                     context = store.build_session_context(user_query="总结一下最近记忆")
+                self.assertIn("[MEMORY MAP]", context)
+                self.assertIn("Ref: memory://year/2026", context)
+                self.assertIn("memory_map_expand(memoryRef)", context)
                 self.assertIn("Ref: memory://day/2026-04-18", context)
                 self.assertIn("Ref: memory://week/2026-W16", context)
                 self.assertNotIn(str(memory_root), context)

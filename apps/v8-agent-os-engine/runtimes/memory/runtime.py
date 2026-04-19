@@ -59,8 +59,6 @@ class MemoryRuntime:
                     "memory_recall",
                     "mem_delete",
                     "mem_update",
-                    "mem_summary",
-                    "memory_map",
                     "memory_map_expand",
                     "memory_read_day",
                 ],
@@ -324,6 +322,9 @@ class MemoryRuntime:
                 "policies": ["durable", "daily_summary_only", "skipped"],
             },
         }
+
+    def clear_diagnostics(self) -> Dict[str, Any]:
+        return db.clear_memory_runtime_diagnostics()
 
     def _build_maintenance_dashboard(self, recent_memory_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         recent_runs: List[Dict[str, Any]] = []

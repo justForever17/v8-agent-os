@@ -1640,6 +1640,64 @@ class DatabaseManager:
                 rows.append(data)
             return rows
 
+    def clear_memory_runtime_diagnostics(self) -> Dict[str, int]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            target_task_kinds = ("session_extraction", "maintenance", "periodic_summary")
+            placeholders = ",".join("?" for _ in target_task_kinds)
+            run_filter = f"""
+                run_type = 'memory'
+                AND COALESCE(json_extract(metadata, '$.task_kind'), '') IN ({placeholders})
+            """
+            cursor.execute(
+                f"SELECT COUNT(*) AS count FROM run_records WHERE {run_filter}",
+                target_task_kinds,
+            )
+            row = cursor.fetchone()
+            run_count = int(row["count"]) if row else 0
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM model_invocation_logs
+                WHERE run_id IN (SELECT id FROM run_records WHERE {run_filter})
+                   OR capability_class = 'memory_extraction'
+                   OR request_kind = 'memory_extraction'
+                """,
+                target_task_kinds,
+            )
+            row = cursor.fetchone()
+            invocation_count = int(row["count"]) if row else 0
+            cursor.execute(
+                f"DELETE FROM runtime_events WHERE run_id IN (SELECT id FROM run_records WHERE {run_filter})",
+                target_task_kinds,
+            )
+            deleted_events = cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
+            cursor.execute(
+                f"DELETE FROM runtime_snapshots WHERE run_id IN (SELECT id FROM run_records WHERE {run_filter})",
+                target_task_kinds,
+            )
+            deleted_snapshots = cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
+            cursor.execute(
+                f"""
+                DELETE FROM model_invocation_logs
+                WHERE run_id IN (SELECT id FROM run_records WHERE {run_filter})
+                   OR capability_class = 'memory_extraction'
+                   OR request_kind = 'memory_extraction'
+                """,
+                target_task_kinds,
+            )
+            cursor.execute(
+                f"DELETE FROM run_records WHERE {run_filter}",
+                target_task_kinds,
+            )
+            conn.commit()
+            return {
+                "deletedRuns": run_count,
+                "deletedInvocations": invocation_count,
+                "deletedRuntimeEvents": deleted_events,
+                "deletedRuntimeSnapshots": deleted_snapshots,
+            }
+
     def add_pending_approval(
         self,
         approval_id: str,

@@ -464,12 +464,8 @@ def build_supervisor_system_content(
         except Exception as e:
             logger.warning("Failed to resolve chat type for dynamic injection: %s", e)
 
-    approval_directive = (
-        "\n\n[Human Collaboration Rule]\n"
-        "If you cannot proceed safely without explicit user input, approval, missing credentials, or a concrete confirmation, "
-        "do not guess and do not fabricate a result. "
-        "Clearly explain what confirmation, credential, or parameter is missing. "
-        "For irreversible or sensitive work, prefer runtime-managed approval and handoff flows instead of trying to continue blindly.\n"
+    runtime_guidance = (
+        "\n\n[Execution Hints]\n"
         "When `web_fetch` returns little text but includes media, analysisHints, or visionCandidates, "
         "prefer using vision_media_analyzer with the candidate sourceUrl instead of forcing a pure text summary.\n"
         "When a platform media page hides the real media source, or the URL likely requires browser cookies/session handling, "
@@ -488,7 +484,7 @@ def build_supervisor_system_content(
         f"{available_tools_context}\n"
         f"{todos_context}{memory_context}\n\n"
         f"{workspace_rules_context}"
-        f"{env_context}{approval_directive}\n"
+        f"{env_context}{runtime_guidance}\n"
         f"{extension_prompt_addition}{group_moderation_directive}"
     )
 

@@ -1316,6 +1316,53 @@ class MemoryStore:
             return f"[{day_date.strftime('%Y-%m-%d')}] Ref: {memory_ref}\n{log_path.read_text(encoding='utf-8')}"
         return f"No daily log found for {day_date.strftime('%Y-%m-%d')} (Ref: {memory_ref})."
 
+    def _format_memory_map_for_injection(self, anchor_date: Optional[str] = None) -> str:
+        memory_map = self.build_memory_map(anchor_date=anchor_date)
+        current_refs = dict(memory_map.get("currentRefs") or {})
+        current_items: list[str] = []
+        for kind in ("year", "month", "week", "day"):
+            memory_ref = str(current_refs.get(kind) or "").strip()
+            if not memory_ref:
+                continue
+            node = self._find_memory_node(memory_ref) or {}
+            summary_state = str(node.get("summaryState") or ("present" if node.get("hasSummary") else "missing")).strip()
+            latest_day = str(node.get("latestDay") or "").strip()
+            excerpt = str(node.get("summaryExcerpt") or "").strip()
+            line = f"- [{kind}] {str(node.get('label') or memory_ref)} | Ref: {memory_ref}"
+            if summary_state:
+                line += f" | summary={summary_state}"
+            if latest_day:
+                line += f" | latestDay={latest_day}"
+            if excerpt:
+                clipped = excerpt[:120] + "..." if len(excerpt) > 120 else excerpt
+                line += f" | excerpt={clipped}"
+            current_items.append(line)
+
+        available_years: list[str] = []
+        for item in list(memory_map.get("items") or []):
+            memory_ref = str(item.get("memoryRef") or "").strip()
+            if not memory_ref:
+                continue
+            summary_state = str(item.get("summaryState") or "missing").strip()
+            latest_day = str(item.get("latestDay") or "").strip()
+            line = f"- [{str(item.get('kind') or 'year')}] {str(item.get('label') or memory_ref)} | Ref: {memory_ref} | summary={summary_state}"
+            if latest_day:
+                line += f" | latestDay={latest_day}"
+            available_years.append(line)
+
+        parts = ["Current focus refs:"]
+        if current_items:
+            parts.extend(current_items)
+        else:
+            parts.append("- No current memory refs available.")
+        if available_years:
+            parts.append("")
+            parts.append("Available top-level memory nodes:")
+            parts.extend(available_years)
+        parts.append("")
+        parts.append("Use memory_map_expand(memoryRef) to drill down. Use memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need an exact daily log.")
+        return "\n".join(parts).strip()
+
     def get_memory_map_health(self) -> Dict[str, Any]:
         counts = {
             "year": 0,
@@ -1598,7 +1645,15 @@ class MemoryStore:
                 f"{hierarchical}\n"
                 "[/HIERARCHICAL MEMORY SUMMARIES]"
             )
-        
+
+        memory_map_text = self._format_memory_map_for_injection()
+        if memory_map_text:
+            parts.append(
+                "[MEMORY MAP]\n"
+                f"{memory_map_text}\n"
+                "[/MEMORY MAP]"
+            )
+
         # --- Layer 3: 近期上下文 (包含 YAML frontmatter) ---
         recent = self.get_recent_logs(days=max_recent_days, scope_chain=normalized_chain)
         if recent:

@@ -68,8 +68,6 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "memory_recall",
     "mem_delete",
     "mem_update",
-    "mem_summary",
-    "memory_map",
     "memory_map_expand",
     "memory_read_day",
     "ask_user",

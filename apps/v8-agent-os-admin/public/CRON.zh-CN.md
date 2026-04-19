@@ -9,15 +9,15 @@ Cron 属于 **Automation Runtime** 的正式能力，用来让系统在后台按
 - 定时触发 Automation Runtime 工作流
 - 在无人值守时维持系统级后台维护
 
-## 当前推荐做法
+## 常见工作方式
 
-### 1. 优先使用表单计划
+### 优先使用表单计划
 
 如果你只需要“每天”“工作日”“每周”“每月”或“每隔几小时”运行，优先使用页面里的计划表单，不需要手写 Cron 表达式。
 
 只有在这些预设不够用时，才切换到自定义表达式。
 
-### 2. 把长流程交给 Automation Runtime
+### 把长流程交给 Automation Runtime
 
 如果任务本质上是一个运行时流程，而不是单条 shell 命令，优先选择：
 
@@ -29,7 +29,7 @@ Cron 属于 **Automation Runtime** 的正式能力，用来让系统在后台按
 - 代理工作流
 - 需要保留 run/session 语义的处理
 
-### 3. Memory Maintenance 已经是内建能力
+### 使用内建的 Memory Maintenance
 
 页面顶部的 **Memory Maintenance** 是系统内建任务，不再是教学示例。
 
@@ -47,6 +47,13 @@ Cron 属于 **Automation Runtime** 的正式能力，用来让系统在后台按
 - 不可修改目标、类型和核心参数
 
 不需要再配置旧的 nightly memory Python 脚本。
+
+## 什么时候优先用内建任务
+
+- 需要整理 daily log、补齐周/月/年摘要时
+- 需要维护 durable preference / knowledge / graph 时
+- 需要后台定期做记忆清理和补齐时
+- 不想再维护旧脚本入口时
 
 ## 执行方式怎么选
 
@@ -82,6 +89,14 @@ node dist/index.js
 agents.runners.memory_maintenance_job
 ```
 
+## 目标怎么填
+
+- AutomationRuntime 任务：填系统中的自动化入口
+- 系统命令：填可直接执行的命令
+- Python 模块：填 Engine Python 环境里可导入的模块路径
+
+如果本质是运行时流程，优先不要退回 shell 命令。
+
 ## 什么时候需要 targetBinding / recoveryAnchor
 
 如果你希望任务以显式 wake 方式进入某个目标，而不是普通 nudge，就需要设置：
@@ -91,7 +106,7 @@ agents.runners.memory_maintenance_job
 
 如果不提供，系统会把很多触发降级成普通 nudge。
 
-## 使用建议
+## 常见建议
 
 - 高风险任务先降低频率，再观察日志
 - 长耗时任务不要设置得过于频繁
@@ -99,7 +114,7 @@ agents.runners.memory_maintenance_job
 - 先验证一次“立即运行”，再长期启用
 - 优先让任务进入统一 runtime 主链，而不是散落在临时脚本里
 
-## 排查方向
+## 出问题时先看什么
 
 - 计划时间是否正确
 - 执行目标是否能独立运行

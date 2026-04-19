@@ -247,6 +247,14 @@ async def get_memory_dashboard():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/memory/dashboard")
+async def clear_memory_dashboard_diagnostics():
+    try:
+        return memory_runtime.clear_diagnostics()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/memory/graph/entity/{entity}")
 async def get_graph_entity(entity: str):
     try:

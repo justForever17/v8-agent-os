@@ -300,6 +300,30 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
 
         self.assertEqual([tool.name for tool in selected], ["ask_user"])
 
+    def test_supervisor_memory_tool_surface_is_minimal_and_keeps_precise_day_read(self):
+        class _Tool:
+            def __init__(self, name: str):
+                self.name = name
+
+        selected = select_supervisor_native_tools(
+            filtered_native_tools=[
+                _Tool("memory_recall"),
+                _Tool("memory_read_day"),
+                _Tool("memory_map_expand"),
+                _Tool("mem_update"),
+                _Tool("mem_delete"),
+                _Tool("memory_map"),
+                _Tool("mem_summary"),
+            ],
+            supervisor_allowed_tools=None,
+            config_allowed_tools=None,
+        )
+
+        self.assertEqual(
+            [tool.name for tool in selected],
+            ["memory_recall", "memory_read_day", "memory_map_expand", "mem_update", "mem_delete"],
+        )
+
     def test_process_message_index_ignores_command_tool_without_command_session(self):
         snapshot = {
             "session_id": "session-process",

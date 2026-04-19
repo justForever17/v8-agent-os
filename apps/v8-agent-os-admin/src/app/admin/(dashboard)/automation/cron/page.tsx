@@ -2,13 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, Clock3, Loader2, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdvancedSection } from "@/components/admin-shell/AdvancedSection";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
+import { DocumentationGuideDialog } from "@/components/admin-shell/DocumentationGuideDialog";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { EmptyState } from "@/components/admin-shell/EmptyState";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
@@ -843,17 +842,13 @@ export default function ScheduledTasksPage() {
                 </DialogContent>
             </Dialog>
 
-            <Dialog open={guideOpen} onOpenChange={setGuideOpen}>
-                <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-[700px]">
-                    <DialogHeader>
-                        <DialogTitle>{t(lt("定时任务使用说明", "Cron guide"))}</DialogTitle>
-                        <DialogDescription>{t(lt("这里说明如何设置计划、目标和立即运行方式。", "This guide explains scheduling, targets, and manual runs."))}</DialogDescription>
-                    </DialogHeader>
-                    <div className="prose prose-sm max-w-none dark:prose-invert">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{docContent}</ReactMarkdown>
-                    </div>
-                </DialogContent>
-            </Dialog>
+            <DocumentationGuideDialog
+                open={guideOpen}
+                onOpenChange={setGuideOpen}
+                title={t(lt("定时任务使用说明", "Cron guide"))}
+                description={t(lt("这里说明如何设置计划、目标和立即运行方式。", "This guide explains scheduling, targets, and manual runs."))}
+                content={docContent}
+            />
         </AdminPageShell>
     );
 }

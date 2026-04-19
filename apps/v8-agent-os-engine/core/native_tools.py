@@ -3471,38 +3471,44 @@ def memory_recall(query: str, limit: int = 5) -> str:
 
 @tool
 def mem_delete(fact_id: str) -> str:
-    """Delete a completely false or severely outdated knowledge item from memory by its ID. 
-    This performs a deep cascade delete across the filesystem, Vector Store, and Knowledge Graph.
-    
-    Arguments:
-        fact_id (str): The unique ID of the fact to delete (e.g. "fact-a1b2c3d4").
+    """Compatibility wrapper for deleting a memory item by ID.
+
+    Prefer `mem_update(..., mode=\"delete\")` in supervisor-facing flows.
     """
-    try:
-        success = _get_memory_runtime().delete_knowledge(fact_id=fact_id)
-        if success:
-            return f"✓ Completely purged '{fact_id}' from memory."
-        else:
-            return f"Error: Knowledge item '{fact_id}' not found."
-    except Exception as e:
-        return f"Error deleting from memory: {str(e)}"
+    return mem_update(fact_id=fact_id, mode="delete")
 
 @tool
-def mem_update(fact_id: str, new_content: str) -> str:
-    """Update an existing knowledge item to correct erroneous information or append new context.
-    This replaces the text of the existing fact across all storage layers.
-    
+def mem_update(fact_id: str, mode: str = "update", new_content: Optional[str] = None) -> str:
+    """Update or delete an existing knowledge item by ID.
+    Use mode=\"update\" to replace incorrect content, or mode=\"delete\" to remove a completely false or obsolete item.
+
     Arguments:
-        fact_id (str): The unique ID of the fact to update (e.g. "fact-a1b2c3d4").
-        new_content (str): The full corrected text for this memory item.
+        fact_id (str): The unique ID of the fact to modify (e.g. "fact-a1b2c3d4").
+        mode (str): Either "update" or "delete".
+        new_content (str, optional): The full corrected text when mode="update".
     """
+    normalized_mode = str(mode or "update").strip().lower()
     try:
-        success = _get_memory_runtime().update_knowledge(fact_id=fact_id, new_fact=new_content)
+        if normalized_mode == "delete":
+            success = _get_memory_runtime().delete_knowledge(fact_id=fact_id)
+            if success:
+                return f"✓ Deleted '{fact_id}' from memory."
+            return f"Error: Knowledge item '{fact_id}' not found."
+
+        if normalized_mode != "update":
+            return "Error: mode must be either 'update' or 'delete'."
+
+        normalized_content = str(new_content or "").strip()
+        if not normalized_content:
+            return "Error: new_content is required when mode='update'."
+
+        success = _get_memory_runtime().update_knowledge(fact_id=fact_id, new_fact=normalized_content)
         if success:
             return f"✓ Updated '{fact_id}' with new content."
-        else:
-            return f"Error: Knowledge item '{fact_id}' not found."
+        return f"Error: Knowledge item '{fact_id}' not found."
     except Exception as e:
-        return f"Error updating memory: {str(e)}"
+        action = "deleting" if normalized_mode == "delete" else "updating"
+        return f"Error {action} memory: {str(e)}"
 
 
         

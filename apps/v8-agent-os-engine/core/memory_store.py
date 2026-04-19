@@ -1100,8 +1100,10 @@ class MemoryStore:
                 return excerpt
         return self._read_summary_excerpt_from_text(self._normalize_summary_text(normalized), limit=180) or ""
 
-    def _read_summary_coverage(self, metadata: Dict[str, Any], *, limit: int = 3) -> List[str]:
+    def _read_summary_coverage(self, metadata: Dict[str, Any], *, limit: int | None = None) -> List[str]:
         coverage = [str(item).strip() for item in list(metadata.get("coverage") or []) if str(item).strip()]
+        if limit is None or limit <= 0:
+            return coverage
         if len(coverage) <= limit:
             return coverage
         return [*coverage[:limit], f"...({len(coverage) - limit} more)"]
@@ -1937,7 +1939,7 @@ class MemoryStore:
                 continue
             metadata, body = self._read_frontmatter(summary_path)
             summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
-            coverage_lines = self._read_summary_coverage(metadata, limit=2)
+            coverage_lines = self._read_summary_coverage(metadata, limit=None)
             lines = [f"[{label} Summary] Ref: {memory_ref}"]
             if summary_text:
                 lines.append(f"Summary: {summary_text}")

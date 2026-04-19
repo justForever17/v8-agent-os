@@ -49,7 +49,6 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "manage_hook",
     "read_audit_log",
     "memory_recall",
-    "mem_delete",
     "mem_update",
     "memory_map_expand",
     "memory_read_day",

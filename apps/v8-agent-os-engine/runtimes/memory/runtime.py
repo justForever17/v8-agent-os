@@ -57,7 +57,6 @@ class MemoryRuntime:
             "metadata": {
                 "managedToolNames": [
                     "memory_recall",
-                    "mem_delete",
                     "mem_update",
                     "memory_map_expand",
                     "memory_read_day",

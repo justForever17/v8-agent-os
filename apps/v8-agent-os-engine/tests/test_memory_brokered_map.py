@@ -140,6 +140,10 @@ class MemoryBrokeredMapTests(unittest.TestCase):
                 hierarchical = store.get_hierarchical_summaries(scope_chain=["global"])
                 self.assertIn("Summary: 本周完成 memory 结构化摘要收口，并稳定了多处 runtime 行为。", hierarchical)
                 self.assertIn("Coverage:", hierarchical)
+                self.assertIn("- 2026-04-13: 未产生记录", hierarchical)
+                self.assertIn("- 2026-04-14: 有记录", hierarchical)
+                self.assertIn("- 2026-04-19: 未产生记录", hierarchical)
+                self.assertNotIn("...(5 more)", hierarchical)
 
     def test_backfill_periodic_summaries_rewrites_legacy_summary_files_idempotently(self):
         with tempfile.TemporaryDirectory() as temp_dir:

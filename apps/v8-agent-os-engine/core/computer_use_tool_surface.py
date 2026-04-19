@@ -41,6 +41,7 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "manage_hook",
     "manage_process",
     "memory_map",
+    "mem_delete",
     "mem_summary",
     "read_audit_log",
     "read_background_output",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from typing import Any, Iterable, Mapping, Tuple
@@ -19,6 +20,8 @@ REASONING_KEYS = (
 SIGNATURE_KEYS = ("thoughtSignature", "thought_signature")
 TEXT_BLOCK_TYPES = {"text", "output_text", "plain_text"}
 REASONING_BLOCK_TYPES = {"reasoning", "reasoning_content", "thinking", "thought"}
+V8_CANONICAL_TOOL_CALL_PREFIX = "call_v8_"
+_TOOL_SCOPE_KEY = "v8_tool_scope_key"
 
 
 def extract_text_and_reasoning(message: Any) -> Tuple[str, str]:
@@ -68,12 +71,19 @@ def ensure_reasoning_content(message: Any) -> Any:
     return message
 
 
-def normalize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+def normalize_tool_calls(
+    tool_calls: Any,
+    *,
+    provider_standard: str | None = None,
+    message_scope_key: str | None = None,
+) -> list[dict[str, Any]]:
     if not tool_calls:
         return []
 
     normalized: list[dict[str, Any]] = []
     iterable = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+    effective_provider_standard = _normalize_provider_standard(provider_standard)
+    effective_scope_key = str(message_scope_key or "").strip() or f"scope_{uuid.uuid4().hex}"
     for raw_entry in iterable:
         entry = _normalize_tool_call_entry(raw_entry)
         if not entry:
@@ -81,23 +91,43 @@ def normalize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
 
         if _is_fragment_tool_call(entry) and normalized:
             normalized[-1]["args"] = _merge_tool_args(normalized[-1].get("args"), entry.get("args"))
+            if entry.get("providerToolCallId") and not normalized[-1].get("providerToolCallId"):
+                normalized[-1]["providerToolCallId"] = entry.get("providerToolCallId")
+            if entry.get("providerStandard") and not normalized[-1].get("providerStandard"):
+                normalized[-1]["providerStandard"] = entry.get("providerStandard")
             continue
 
-        if not entry.get("id"):
-            entry["id"] = f"call_{uuid.uuid4().hex[:12]}"
-        normalized.append(entry)
+        normalized.append(
+            _bind_canonical_tool_call_entry(
+                entry,
+                provider_standard=effective_provider_standard,
+                ordinal=len(normalized),
+                message_scope_key=effective_scope_key,
+            )
+        )
 
     return normalized
 
 
-def sanitize_model_tool_calls(response: Any) -> Any:
-    tool_calls = normalize_tool_calls(_read_field(response, "tool_calls"))
+def sanitize_model_tool_calls(response: Any, *, provider_standard: str | None = None) -> Any:
+    effective_provider_standard = _resolve_provider_standard(response, provider_standard)
+    message_scope_key = _ensure_message_tool_scope_key(response)
+    tool_calls = normalize_tool_calls(
+        _read_field(response, "tool_calls"),
+        provider_standard=effective_provider_standard,
+        message_scope_key=message_scope_key,
+    )
     if tool_calls and hasattr(response, "tool_calls"):
         response.tool_calls = tool_calls
 
     additional_kwargs = _read_field(response, "additional_kwargs")
     if isinstance(additional_kwargs, dict) and additional_kwargs.get("tool_calls"):
-        additional_kwargs["tool_calls"] = normalize_tool_calls(additional_kwargs.get("tool_calls"))
+        additional_kwargs["tool_calls"] = normalize_tool_calls(
+            additional_kwargs.get("tool_calls"),
+            provider_standard=effective_provider_standard,
+            message_scope_key=message_scope_key,
+        )
+        additional_kwargs[_TOOL_SCOPE_KEY] = message_scope_key
         if hasattr(response, "additional_kwargs"):
             response.additional_kwargs = additional_kwargs
 
@@ -221,6 +251,11 @@ def _normalize_tool_call_entry(entry: Any) -> dict[str, Any] | None:
         or _read_field(entry, "tool_name")
         or ""
     )
+    explicit_provider_tool_call_id = (
+        _read_field(entry, "providerToolCallId")
+        or _read_field(entry, "provider_tool_call_id")
+        or ""
+    )
     tool_id = (
         _read_field(entry, "id")
         or _read_field(entry, "tool_call_id")
@@ -235,7 +270,152 @@ def _normalize_tool_call_entry(entry: Any) -> dict[str, Any] | None:
         or {}
     )
     parsed_args = _parse_tool_args(args)
-    return {"name": name, "id": tool_id, "args": parsed_args}
+    canonical_tool_call_id = ""
+    if is_v8_canonical_tool_call_id(tool_id):
+        canonical_tool_call_id = str(tool_id).strip()
+    provider_tool_call_id = str(explicit_provider_tool_call_id or "").strip()
+    if not provider_tool_call_id and tool_id and not canonical_tool_call_id:
+        provider_tool_call_id = str(tool_id).strip()
+    provider_standard = (
+        _read_field(entry, "providerStandard")
+        or _read_field(entry, "provider_standard")
+        or function_payload.get("providerStandard")
+        or function_payload.get("provider_standard")
+        or ""
+    )
+    ordinal = _read_field(entry, "ordinal")
+    return {
+        "name": name,
+        "id": canonical_tool_call_id,
+        "providerToolCallId": provider_tool_call_id,
+        "providerStandard": provider_standard,
+        "ordinal": ordinal,
+        "args": parsed_args,
+    }
+
+
+def _bind_canonical_tool_call_entry(
+    entry: Mapping[str, Any],
+    *,
+    provider_standard: str,
+    ordinal: int,
+    message_scope_key: str,
+) -> dict[str, Any]:
+    tool_name = str(entry.get("name") or "").strip()
+    provider_tool_call_id = str(entry.get("providerToolCallId") or "").strip()
+    canonical_tool_call_id = str(entry.get("id") or "").strip()
+    resolved_provider_standard = _normalize_provider_standard(
+        entry.get("providerStandard") or provider_standard
+    )
+    resolved_ordinal = _coerce_tool_call_ordinal(entry.get("ordinal"), fallback=ordinal)
+    if not canonical_tool_call_id:
+        canonical_tool_call_id = _build_v8_canonical_tool_call_id(
+            provider_standard=resolved_provider_standard,
+            provider_tool_call_id=provider_tool_call_id,
+            tool_name=tool_name,
+            ordinal=resolved_ordinal,
+            message_scope_key=message_scope_key,
+            args=entry.get("args"),
+        )
+    normalized = {
+        "id": canonical_tool_call_id,
+        "name": tool_name,
+        "args": entry.get("args"),
+        "providerStandard": resolved_provider_standard,
+        "ordinal": resolved_ordinal,
+    }
+    if provider_tool_call_id:
+        normalized["providerToolCallId"] = provider_tool_call_id
+    return normalized
+
+
+def _build_v8_canonical_tool_call_id(
+    *,
+    provider_standard: str,
+    provider_tool_call_id: str,
+    tool_name: str,
+    ordinal: int,
+    message_scope_key: str,
+    args: Any,
+) -> str:
+    seed = {
+        "messageScopeKey": str(message_scope_key or "").strip(),
+        "providerStandard": _normalize_provider_standard(provider_standard),
+        "providerToolCallId": str(provider_tool_call_id or "").strip(),
+        "toolName": str(tool_name or "").strip(),
+        "ordinal": int(ordinal),
+    }
+    if not seed["providerToolCallId"]:
+        seed["argsDigest"] = _stable_value_digest(args)
+    digest = hashlib.sha1(
+        json.dumps(seed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"{V8_CANONICAL_TOOL_CALL_PREFIX}{digest}"
+
+
+def _stable_value_digest(value: Any) -> str:
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        rendered = str(value)
+    return hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:16]
+
+
+def _coerce_tool_call_ordinal(value: Any, *, fallback: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(fallback)
+
+
+def _normalize_provider_standard(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"google", "google_genai"}:
+        return "gemini"
+    return normalized or "openai"
+
+
+def _resolve_provider_standard(response: Any, explicit: str | None = None) -> str:
+    if explicit:
+        return _normalize_provider_standard(explicit)
+    for container_name in ("response_metadata", "additional_kwargs"):
+        container = _read_field(response, container_name)
+        if isinstance(container, Mapping):
+            for key in ("v8_provider_standard", "providerStandard", "provider_standard"):
+                candidate = container.get(key)
+                if candidate:
+                    return _normalize_provider_standard(candidate)
+    return "openai"
+
+
+def _ensure_message_tool_scope_key(response: Any) -> str:
+    existing = _read_existing_message_tool_scope_key(response)
+    if existing:
+        return existing
+    fallback_message_id = str(_read_field(response, "id") or "").strip()
+    scope_key = fallback_message_id or f"scope_{uuid.uuid4().hex}"
+    additional_kwargs = dict(_read_field(response, "additional_kwargs") or {})
+    additional_kwargs[_TOOL_SCOPE_KEY] = scope_key
+    if hasattr(response, "additional_kwargs"):
+        response.additional_kwargs = additional_kwargs
+    elif isinstance(response, dict):
+        response["additional_kwargs"] = additional_kwargs
+    return scope_key
+
+
+def _read_existing_message_tool_scope_key(response: Any) -> str:
+    for container_name in ("additional_kwargs", "response_metadata"):
+        container = _read_field(response, container_name)
+        if isinstance(container, Mapping):
+            candidate = str(container.get(_TOOL_SCOPE_KEY) or "").strip()
+            if candidate:
+                return candidate
+    return ""
+
+
+def is_v8_canonical_tool_call_id(value: Any) -> bool:
+    normalized = str(value or "").strip()
+    return bool(normalized and normalized.startswith(V8_CANONICAL_TOOL_CALL_PREFIX))
 
 
 def _parse_tool_args(args: Any) -> Any:

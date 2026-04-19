@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from api.models import ChatRequest
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
 from core.chat_output_extractor import extract_text_and_reasoning
+from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.models.provider_compatibility import normalize_provider_error
@@ -215,6 +216,8 @@ class ChatStreamState:
     narrative_started_model_run_ids: set[str] = field(default_factory=set)
     active_tool_call_ids: set[str] = field(default_factory=set)
     tool_call_id_by_callback_run_id: dict[str, str] = field(default_factory=dict)
+    provider_tool_call_id_to_tool_call_id: dict[str, str] = field(default_factory=dict)
+    tool_call_shadow_by_tool_call_id: dict[str, dict[str, str]] = field(default_factory=dict)
     pending_ask_user_interaction_id: str | None = None
     pending_ask_user_tool_call_id: str | None = None
 
@@ -2109,6 +2112,87 @@ class ChatRuntime:
         return ""
 
     @classmethod
+    def _extract_provider_tool_call_id_from_value(cls, value: Any, *, depth: int = 0) -> str:
+        if depth > 3 or value is None:
+            return ""
+        candidate = cls._coerce_json_like_value(value)
+        if isinstance(candidate, dict):
+            direct = str(
+                candidate.get("providerToolCallId")
+                or candidate.get("provider_tool_call_id")
+                or ""
+            ).strip()
+            if direct:
+                return direct
+            tool_call = candidate.get("tool_call")
+            if isinstance(tool_call, dict):
+                nested_direct = str(
+                    tool_call.get("providerToolCallId")
+                    or tool_call.get("provider_tool_call_id")
+                    or ""
+                ).strip()
+                if nested_direct:
+                    return nested_direct
+            for nested_key in ("request", "input", "kwargs", "metadata", "additional_kwargs"):
+                nested = candidate.get(nested_key)
+                nested_result = cls._extract_provider_tool_call_id_from_value(nested, depth=depth + 1)
+                if nested_result:
+                    return nested_result
+        return ""
+
+    @classmethod
+    def _extract_provider_standard_from_value(cls, value: Any, *, depth: int = 0) -> str:
+        if depth > 3 or value is None:
+            return ""
+        candidate = cls._coerce_json_like_value(value)
+        if isinstance(candidate, dict):
+            direct = str(
+                candidate.get("providerStandard")
+                or candidate.get("provider_standard")
+                or ""
+            ).strip().lower()
+            if direct:
+                return direct
+            tool_call = candidate.get("tool_call")
+            if isinstance(tool_call, dict):
+                nested_direct = str(
+                    tool_call.get("providerStandard")
+                    or tool_call.get("provider_standard")
+                    or ""
+                ).strip().lower()
+                if nested_direct:
+                    return nested_direct
+            for nested_key in ("request", "input", "kwargs", "metadata", "additional_kwargs"):
+                nested = candidate.get(nested_key)
+                nested_result = cls._extract_provider_standard_from_value(nested, depth=depth + 1)
+                if nested_result:
+                    return nested_result
+        return ""
+
+    @classmethod
+    def _extract_canonical_tool_call_id_from_value(cls, value: Any, *, depth: int = 0) -> str:
+        candidate = cls._extract_tool_call_id_from_value(value, depth=depth)
+        return candidate if is_v8_canonical_tool_call_id(candidate) else ""
+
+    @classmethod
+    def _resolve_known_active_tool_call_id(
+        cls,
+        candidate: Any,
+        *,
+        stream_state: ChatStreamState,
+    ) -> str:
+        normalized = str(candidate or "").strip()
+        if not normalized:
+            return ""
+        if is_v8_canonical_tool_call_id(normalized):
+            return normalized
+        if normalized in stream_state.active_tool_call_ids:
+            return normalized
+        if any(str((call or {}).get("id") or "").strip() == normalized for call in list(stream_state.tool_calls_buffer or [])):
+            return normalized
+        return ""
+
+    @classmethod
     def _compact_tool_display_args(cls, tool_name: str, value: Any) -> Any:
         sanitized = cls._sanitize_tool_input_value(value)
         normalized_tool_name = str(tool_name or "").strip().lower()
@@ -2468,6 +2552,30 @@ class ChatRuntime:
         return ""
 
     @classmethod
+    def _resolve_provider_shadow_for_start(
+        cls,
+        *,
+        raw_inputs: Any,
+        metadata: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        provider_tool_call_id = ""
+        provider_standard = ""
+        for candidate in (raw_inputs, metadata, data):
+            if not provider_tool_call_id:
+                provider_tool_call_id = cls._extract_provider_tool_call_id_from_value(candidate)
+            if not provider_standard:
+                provider_standard = cls._extract_provider_standard_from_value(candidate)
+            if provider_tool_call_id and provider_standard:
+                break
+        result: dict[str, str] = {}
+        if provider_tool_call_id:
+            result["providerToolCallId"] = provider_tool_call_id
+        if provider_standard:
+            result["providerStandard"] = provider_standard
+        return result
+
+    @classmethod
     def _resolve_tool_call_id_for_end(
         cls,
         *,
@@ -2481,15 +2589,28 @@ class ChatRuntime:
         if mapped:
             return mapped
         for candidate in (
-            getattr(output, "tool_call_id", None),
-            cls._extract_tool_call_id_from_value(output),
-            cls._extract_tool_call_id_from_value(metadata),
-            cls._extract_tool_call_id_from_value(data),
-            callback_run_id,
+            cls._resolve_known_active_tool_call_id(
+                getattr(output, "tool_call_id", None),
+                stream_state=stream_state,
+            ),
+            cls._extract_canonical_tool_call_id_from_value(output),
+            cls._extract_canonical_tool_call_id_from_value(metadata),
+            cls._extract_canonical_tool_call_id_from_value(data),
         ):
             normalized = str(candidate or "").strip()
             if normalized:
                 return normalized
+        for provider_candidate in (
+            cls._extract_provider_tool_call_id_from_value(output),
+            cls._extract_provider_tool_call_id_from_value(metadata),
+            cls._extract_provider_tool_call_id_from_value(data),
+        ):
+            normalized_provider = str(provider_candidate or "").strip()
+            if not normalized_provider:
+                continue
+            canonical = str(stream_state.provider_tool_call_id_to_tool_call_id.get(normalized_provider) or "").strip()
+            if canonical:
+                return canonical
         return ""
 
     def _suppress_neighbor_duplicate_delta(
@@ -2597,7 +2718,7 @@ class ChatRuntime:
                     assistant_message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
                     tool_call_id = str(interrupt_request.get("toolCallId") or "").strip()
                     if not tool_call_id:
-                        tool_call_id = f"ask_user:{uuid.uuid4().hex}"
+                        tool_call_id = f"{V8_CANONICAL_TOOL_CALL_PREFIX}ask_{uuid.uuid4().hex[:20]}"
                         interrupt_request["toolCallId"] = tool_call_id
                     interaction = chat_run.run_handle.request_ask_user_interaction(
                         request=interrupt_request,
@@ -2807,6 +2928,11 @@ class ChatRuntime:
                 metadata=metadata,
                 data=data,
             )
+            provider_shadow = self._resolve_provider_shadow_for_start(
+                raw_inputs=raw_inputs,
+                metadata=metadata,
+                data=data,
+            )
             if str(name or "").strip() == "ask_user":
                 # ask_user 是 LangGraph interrupt 驱动的控制流工具；真正的等待点
                 # 只能由后续 on_chain_stream 里的 __interrupt__ 创建，不能在 tool_start
@@ -2814,11 +2940,21 @@ class ChatRuntime:
                 return emitted_events
             if callback_run_id and tool_call_id:
                 stream_state.tool_call_id_by_callback_run_id[callback_run_id] = tool_call_id
+            provider_tool_call_id = str(provider_shadow.get("providerToolCallId") or "").strip()
+            if provider_tool_call_id and tool_call_id:
+                stream_state.provider_tool_call_id_to_tool_call_id[provider_tool_call_id] = tool_call_id
+            if tool_call_id and provider_shadow:
+                stream_state.tool_call_shadow_by_tool_call_id[tool_call_id] = dict(provider_shadow)
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             stream_state.active_tool_call_ids.add(active_tool_key)
             tool_start_event = {
                 "type": "tool_start",
-                "tool": {"toolCallId": tool_call_id, "toolName": name, "args": inputs},
+                "tool": {
+                    "toolCallId": tool_call_id,
+                    "toolName": name,
+                    "args": inputs,
+                    **provider_shadow,
+                },
                 "timestamp": 0,
             }
             profile = self._get_agent_profile(stream_state.current_agent)
@@ -2833,6 +2969,7 @@ class ChatRuntime:
                 "agentName": profile["name"],
                 "agentAvatar": profile["avatar"],
                 "agentRoleLabel": profile["roleLabel"],
+                **provider_shadow,
             }
             runtime_event = self._emit_message_targeted_runtime_event(
                 chat_run,
@@ -2849,7 +2986,14 @@ class ChatRuntime:
                 tool_start_event["node_id"] = payload.get("node_id")
                 tool_start_event["transcript_version"] = payload.get("transcript_version")
             stream_state.watchdog.note_tool_start(tool_call_id)
-            stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": name, "args": inputs})
+            stream_state.tool_calls_buffer.append(
+                {
+                    "id": tool_call_id,
+                    "name": name,
+                    "args": inputs,
+                    **provider_shadow,
+                }
+            )
             emitted_events.append(tool_start_event)
             return emitted_events
 
@@ -2911,9 +3055,15 @@ class ChatRuntime:
                     return emitted_events
             compact_result = self._compact_tool_result_value(str(name or ""), output)
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
+            provider_shadow = dict(stream_state.tool_call_shadow_by_tool_call_id.get(tool_call_id) or {})
             tool_result_event = {
                 "type": "tool_result",
-                "tool": {"toolCallId": tool_call_id, "toolName": name, "result": compact_result},
+                "tool": {
+                    "toolCallId": tool_call_id,
+                    "toolName": name,
+                    "result": compact_result,
+                    **provider_shadow,
+                },
                 "timestamp": 0,
             }
             stream_state.watchdog.note_tool_end(tool_call_id)
@@ -2929,6 +3079,7 @@ class ChatRuntime:
                 "agentName": profile["name"],
                 "agentAvatar": profile["avatar"],
                 "agentRoleLabel": profile["roleLabel"],
+                **provider_shadow,
             }
             runtime_event = self._emit_message_targeted_runtime_event(
                 chat_run,

@@ -21,6 +21,7 @@ class FakeChatRun:
         self.active_run_id = None
         self.session_id = f"session_test_{uuid.uuid4().hex}"
         self.transport = "chat"
+        self.request = SimpleNamespace(attachments=[], messages=[])
         binding = SimpleNamespace(
             project_id=None,
             workspace_id=None,
@@ -30,6 +31,7 @@ class FakeChatRun:
         )
         self.scope_result = SimpleNamespace(binding=binding, scope_chain=["global"])
         self.events: list[dict] = []
+        self.run_handle = SimpleNamespace(refresh_chat_snapshot=lambda: None)
 
     def emit_runtime_event(self, topic: str, payload: dict, **kwargs):
         event = {"topic": topic, "payload": payload, **kwargs}
@@ -365,6 +367,50 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitted[0]["tool"]["result"]["imageCount"], 1)
         self.assertEqual(self.stream_state.active_tool_call_ids, set())
 
+    async def test_tool_result_maps_provider_shadow_back_to_canonical_tool_call_id(self):
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_start",
+                "run_id": "tool_run_start",
+                "name": "web_broker",
+                "data": {
+                    "input": {
+                        "toolCallId": "call_v8_test_tool",
+                        "providerToolCallId": "provider_tool_call_1",
+                        "providerStandard": "openai",
+                        "mode": "search",
+                        "target": "V8 Agent OS",
+                    }
+                },
+            },
+        )
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_end",
+                "run_id": "tool_run_end",
+                "name": "web_broker",
+                "data": {
+                    "output": {
+                        "providerToolCallId": "provider_tool_call_1",
+                        "ok": True,
+                        "summary": "search completed",
+                        "mode": "search",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual([event["topic"] for event in self.chat_run.events], ["tool.started", "tool.finished"])
+        self.assertEqual(emitted[0]["tool"]["toolCallId"], "call_v8_test_tool")
+        self.assertEqual(emitted[0]["tool"]["providerToolCallId"], "provider_tool_call_1")
+        self.assertEqual(emitted[0]["tool"]["providerStandard"], "openai")
+        self.assertEqual(self.stream_state.active_tool_call_ids, set())
+
     async def test_unmatched_tool_result_skips_orphan_result_card(self):
         emitted = await self.runtime.handle_stream_event(
             self.chat_run,
@@ -394,7 +440,8 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
                 "status": "pending",
                 "question": request.get("question"),
                 "prompt": request.get("prompt"),
-            }
+            },
+            refresh_chat_snapshot=lambda: None,
         )
 
         emitted = await self.runtime.handle_stream_event(
@@ -429,7 +476,6 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             emitted[0]["tool"]["args"],
             {
                 "question": "请告诉我你要重点测试哪部分。",
-                "toolCallId": "call_ask_user",
             },
         )
 

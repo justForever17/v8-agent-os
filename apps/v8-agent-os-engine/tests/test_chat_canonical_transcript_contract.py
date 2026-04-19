@@ -338,7 +338,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
 
         self.assertEqual(
             [tool.name for tool in selected],
-            ["memory_recall", "memory_read_day", "memory_map_expand", "mem_update", "mem_delete"],
+            ["memory_recall", "memory_read_day", "memory_map_expand", "mem_update"],
         )
 
     def test_supervisor_prefers_web_and_s3_brokers_over_legacy_family_variants(self):

@@ -341,7 +341,7 @@ class V8ChatModelAdapter(BaseChatModel):
         return None
 
     def _decorate_message(self, message: Any, *, tool_mode: str | None = None, structured_mode: str | None = None) -> Any:
-        normalized = sanitize_model_tool_calls(message)
+        normalized = sanitize_model_tool_calls(message, provider_standard=self.provider_standard)
         response_metadata = dict(getattr(normalized, "response_metadata", {}) or {})
         response_metadata.setdefault("v8_provider_adapter", self.provider_adapter())
         response_metadata.setdefault("v8_model_id", self.model_id)
@@ -373,7 +373,10 @@ class V8ChatModelAdapter(BaseChatModel):
         arguments = payload.get("arguments") or payload.get("args") or {}
         ai_message = AIMessage(
             content="",
-            tool_calls=normalize_tool_calls([{"name": tool_name, "args": arguments}]),
+            tool_calls=normalize_tool_calls(
+                [{"name": tool_name, "args": arguments}],
+                provider_standard=self.provider_standard,
+            ),
             additional_kwargs={"tool_emulated": True},
         )
         return self._decorate_message(ai_message, tool_mode="prompt_emulated")
@@ -390,7 +393,10 @@ class V8ChatModelAdapter(BaseChatModel):
         if hasattr(response, "content"):
             content = getattr(response, "content", "")
             additional_kwargs = dict(getattr(response, "additional_kwargs", {}) or {})
-            tool_calls = normalize_tool_calls(getattr(response, "tool_calls", None))
+            tool_calls = normalize_tool_calls(
+                getattr(response, "tool_calls", None),
+                provider_standard=self.provider_standard,
+            )
             coerced = AIMessage(
                 content=content,
                 additional_kwargs=additional_kwargs,

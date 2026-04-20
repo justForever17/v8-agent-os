@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Terminal, Upload, Wrench } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
@@ -335,6 +336,54 @@ function StatPill({ label, value }: {
     return (<div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
             <div className="text-xs text-slate-500">{label}</div>
             <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
+        </div>);
+}
+function PolicyToggleCard({ title, description, checked, onCheckedChange, children }: {
+    title: string;
+    description: string;
+    checked: boolean;
+    onCheckedChange: (checked: boolean) => void;
+    children?: ReactNode;
+}) {
+    return (<div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+            <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                    <div className="text-sm font-semibold text-slate-900">{title}</div>
+                    <div className="text-xs leading-5 text-slate-500">{description}</div>
+                </div>
+                <Switch checked={checked} onCheckedChange={onCheckedChange}/>
+            </div>
+            {children}
+        </div>);
+}
+function SliderField({ label, value, min, max, step = 1, disabled, onValueChange, formatter, hint }: {
+    label: string;
+    value: number;
+    min: number;
+    max: number;
+    step?: number;
+    disabled?: boolean;
+    onValueChange: (value: number) => void;
+    formatter?: (value: number) => string;
+    hint?: string;
+}) {
+    return (<div className={`space-y-3 ${disabled ? "opacity-50" : ""}`}>
+            <div className="flex items-center justify-between gap-3">
+                <Label>{label}</Label>
+                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+                    {formatter ? formatter(value) : value}
+                </span>
+            </div>
+            <Slider value={[value]} min={min} max={max} step={step} disabled={disabled} onValueChange={([next]) => {
+            if (typeof next === "number" && Number.isFinite(next)) {
+                onValueChange(next);
+            }
+        }}/>
+            <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>{min}</span>
+                <span>{max}</span>
+            </div>
+            {hint ? <div className="text-xs leading-5 text-slate-500">{hint}</div> : null}
         </div>);
 }
 function previewMcpServerTools(server: ExtensionPreviewMcpServer): Array<{
@@ -803,6 +852,12 @@ export default function ExtensionsPage() {
     const silkVersion = String(health.silk?.version || health.runtime?.silk?.version || "").trim();
     const silkRoot = String(health.silk?.toolRoot || health.runtime?.silk?.toolRoot || "").trim();
     const dependencyPolicy = catalog.skillDependencyPolicy || health.skillDependencyPolicy || {};
+    const skillsPolicyBadge = skillsStage1Enabled
+        ? (skillsLlmEnabled ? `${skillsStage1TopK} → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : `${skillsStage1TopK}`)
+        : (skillsLlmEnabled ? `full → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : (isZh ? "full inventory" : "full inventory"));
+    const mcpPolicyBadge = mcpStage1Enabled
+        ? (mcpLlmEnabled ? `${mcpStage1TopK} → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : `${mcpStage1TopK}`)
+        : (mcpLlmEnabled ? `full → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : (isZh ? "full inventory" : "full inventory"));
     return (<AdminPageShell>
             <AdminPageHeader title={"app.admin.dashboard.extensions.page.k5b035c36"} description={"app.admin.dashboard.extensions.page.k042a5a79"} actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} label={t("app.admin.dashboard.extensions.page.kcc06e009")}/>
@@ -834,7 +889,7 @@ export default function ExtensionsPage() {
         })} tone={silkAvailable ? "success" : "warning"}/>
 
             <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"}>
-                <div className="grid gap-6 xl:grid-cols-[1.2fr,1fr]">
+                <div className="space-y-5">
                     <div className="space-y-5">
                         <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                             <div className="space-y-1">
@@ -863,109 +918,78 @@ export default function ExtensionsPage() {
                         </div>
 
                         <div className="grid gap-4 xl:grid-cols-2">
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                                <div className="text-sm font-semibold text-slate-900">{isZh ? "Skills 两层预筛" : "Skills two-stage prefilter"}</div>
-                                <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{isZh ? "第 1 层高召回 shortlist" : "Stage 1 high-recall shortlist"}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{isZh ? "关闭后，Skills 会跳过 Stage 1，直接进入 Stage 2 LLM 精排或直接暴露全量 inventory。" : "When disabled, Skills skip stage 1 and go straight to stage 2 rerank or expose the full inventory."}</div>
-                                    </div>
-                                    <Switch checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-900">{isZh ? "Skills 两层预筛" : "Skills two-stage prefilter"}</div>
+                                    <Badge variant="outline">{skillsPolicyBadge}</Badge>
+                                </div>
+                                <PolicyToggleCard title={isZh ? "第 1 层高召回 shortlist" : "Stage 1 high-recall shortlist"} description={isZh ? "关闭后，Skills 会跳过 Stage 1，直接进入 Stage 2 LLM 精排或直接暴露全量 inventory。" : "When disabled, Skills skip stage 1 and go straight to stage 2 rerank or expose the full inventory."} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { stage1Enabled: checked }),
-        })}/>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{isZh ? "第 1 层 shortlist Top" : "Stage 1 shortlist top"}</Label>
-                                    <Input type="number" min={1} max={100} value={String(skillsStage1TopK)} disabled={!skillsStage1Enabled} onChange={(event) => updateConfig({
+        })}>
+                                    <SliderField label={isZh ? "第 1 层 shortlist Top" : "Stage 1 shortlist top"} value={skillsStage1TopK} min={1} max={100} disabled={!skillsStage1Enabled} onValueChange={(value) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
-                stage1TopK: clampRange(Number(event.target.value || 20), 1, 100),
+                stage1TopK: clampRange(value, 1, 100),
             }),
-        })}/>
-                                </div>
-                                <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{isZh ? "第 2 层 LLM 精排" : "Stage 2 LLM rerank"}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{isZh ? "开启后，Skills 先经过高召回 shortlist，再交给 LLM 从候选中精排。" : "When enabled, Skills go through high-recall shortlist first, then LLM rerank."}</div>
-                                    </div>
-                                    <Switch checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
+        })} hint={isZh ? "第 1 层只负责高召回，不直接决定最终暴露。" : "Stage 1 is recall-oriented and does not directly determine the final exposure."}/>
+                                </PolicyToggleCard>
+                                <PolicyToggleCard title={isZh ? "第 2 层 LLM 精排" : "Stage 2 LLM rerank"} description={isZh ? "开启后，Skills 会在 shortlist 或全量 inventory 上做最终精排。" : "When enabled, Skills perform a final rerank over the shortlist or the full inventory."} checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { llmEnabled: checked }),
-        })}/>
-                                </div>
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label>{isZh ? "第 2 层最终暴露 Top" : "Stage 2 exposed top"}</Label>
-                                        <Input type="number" min={1} max={50} value={String(skillsStage2TopK)} disabled={!skillsLlmEnabled} onChange={(event) => updateConfig({
+        })}>
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <SliderField label={isZh ? "最终暴露 Top" : "Final exposed top"} value={skillsStage2TopK} min={1} max={50} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
-                stage2TopK: clampRange(Number(event.target.value || 5), 1, 50),
+                stage2TopK: clampRange(value, 1, 50),
+            }),
+        })}/>
+                                        <SliderField label={isZh ? "LLM 超时（秒）" : "LLM timeout (s)"} value={skillsLlmTimeoutSeconds} min={5} max={10} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
+            prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
+                llmTimeoutSeconds: clampRange(value, 5, 10),
             }),
         })}/>
                                     </div>
-                                    <div className="space-y-2">
-                                        <Label>{isZh ? "第 2 层 LLM 超时（秒）" : "Stage 2 LLM timeout (s)"}</Label>
-                                        <Input type="number" min={5} max={10} value={String(skillsLlmTimeoutSeconds)} disabled={!skillsLlmEnabled} onChange={(event) => updateConfig({
-            prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
-                llmTimeoutSeconds: clampRange(Number(event.target.value || 5), 5, 10),
-            }),
-        })}/>
-                                    </div>
-                                </div>
+                                </PolicyToggleCard>
                             </div>
 
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                                <div className="text-sm font-semibold text-slate-900">{isZh ? "MCP 两层预筛" : "MCP two-stage prefilter"}</div>
-                                <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{isZh ? "第 1 层高召回 shortlist" : "Stage 1 high-recall shortlist"}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{isZh ? "关闭后，MCP 会跳过 Stage 1，直接进入 Stage 2 LLM 精排或直接暴露全量 inventory。" : "When disabled, MCP skips stage 1 and goes straight to stage 2 rerank or exposes the full inventory."}</div>
-                                    </div>
-                                    <Switch checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-900">{isZh ? "MCP 两层预筛" : "MCP two-stage prefilter"}</div>
+                                    <Badge variant="outline">{mcpPolicyBadge}</Badge>
+                                </div>
+                                <PolicyToggleCard title={isZh ? "第 1 层高召回 shortlist" : "Stage 1 high-recall shortlist"} description={isZh ? "关闭后，MCP 会跳过 Stage 1，直接进入 Stage 2 LLM 精排或直接暴露全量 inventory。" : "When disabled, MCP skips stage 1 and goes straight to stage 2 rerank or exposes the full inventory."} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { stage1Enabled: checked }),
-        })}/>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{isZh ? "第 1 层 shortlist Top" : "Stage 1 shortlist top"}</Label>
-                                    <Input type="number" min={1} max={100} value={String(mcpStage1TopK)} disabled={!mcpStage1Enabled} onChange={(event) => updateConfig({
+        })}>
+                                    <SliderField label={isZh ? "第 1 层 shortlist Top" : "Stage 1 shortlist top"} value={mcpStage1TopK} min={1} max={100} disabled={!mcpStage1Enabled} onValueChange={(value) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
-                stage1TopK: clampRange(Number(event.target.value || 20), 1, 100),
+                stage1TopK: clampRange(value, 1, 100),
             }),
-        })}/>
-                                </div>
-                                <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{isZh ? "第 2 层 LLM 精排" : "Stage 2 LLM rerank"}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{isZh ? "开启后，MCP server 先 shortlist，再交给 LLM 做 server 级选择。" : "When enabled, MCP servers go through shortlist first, then LLM rerank at server level."}</div>
-                                    </div>
-                                    <Switch checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
+        })} hint={isZh ? "MCP 第 1 层以 server 级高召回为主。" : "Stage 1 for MCP is a high-recall shortlist at the server level."}/>
+                                </PolicyToggleCard>
+                                <PolicyToggleCard title={isZh ? "第 2 层 LLM 精排" : "Stage 2 LLM rerank"} description={isZh ? "开启后，MCP 会在 shortlist 或全量 inventory 上做 server 级精排。" : "When enabled, MCP performs a server-level rerank over the shortlist or the full inventory."} checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { llmEnabled: checked }),
-        })}/>
-                                </div>
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label>{isZh ? "第 2 层最终暴露 Top" : "Stage 2 exposed top"}</Label>
-                                        <Input type="number" min={1} max={50} value={String(mcpStage2TopK)} disabled={!mcpLlmEnabled} onChange={(event) => updateConfig({
+        })}>
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <SliderField label={isZh ? "最终暴露 Top" : "Final exposed top"} value={mcpStage2TopK} min={1} max={50} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
             prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
-                stage2TopK: clampRange(Number(event.target.value || 2), 1, 50),
+                stage2TopK: clampRange(value, 1, 50),
+            }),
+        })}/>
+                                        <SliderField label={isZh ? "LLM 超时（秒）" : "LLM timeout (s)"} value={mcpLlmTimeoutSeconds} min={5} max={10} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
+            prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
+                llmTimeoutSeconds: clampRange(value, 5, 10),
             }),
         })}/>
                                     </div>
-                                    <div className="space-y-2">
-                                        <Label>{isZh ? "第 2 层 LLM 超时（秒）" : "Stage 2 LLM timeout (s)"}</Label>
-                                        <Input type="number" min={5} max={10} value={String(mcpLlmTimeoutSeconds)} disabled={!mcpLlmEnabled} onChange={(event) => updateConfig({
-            prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
-                llmTimeoutSeconds: clampRange(Number(event.target.value || 5), 5, 10),
-            }),
-        })}/>
-                                    </div>
-                                </div>
+                                </PolicyToggleCard>
                             </div>
                         </div>
                     </div>
 
                     <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm text-slate-600">
+                        <div className="text-sm font-semibold text-slate-900">{isZh ? "当前策略" : "Current policy"}</div>
                         <div className="flex items-center justify-between gap-3"><span>{t("app.admin.dashboard.extensions.page.k626da329")}</span><Badge variant={prefilterEnabled ? "default" : "secondary"}>{prefilterEnabled ? t("app.admin.dashboard.extensions.page.kdb6c0cc1") : t("app.admin.dashboard.extensions.page.k12b31ba6")}</Badge></div>
                         <div className="flex items-center justify-between gap-3"><span>{t("app.admin.dashboard.extensions.page.k154a393b")}</span><Badge variant="outline">{prefilterModel || t("app.admin.dashboard.extensions.page.k54745147")}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{isZh ? "Skills 策略" : "Skills policy"}</span><Badge variant="outline">{skillsStage1Enabled ? (skillsLlmEnabled ? `${skillsStage1TopK} → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : `${skillsStage1TopK}`) : (skillsLlmEnabled ? `full → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : (isZh ? "full inventory" : "full inventory"))}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{isZh ? "MCP 策略" : "MCP policy"}</span><Badge variant="outline">{mcpStage1Enabled ? (mcpLlmEnabled ? `${mcpStage1TopK} → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : `${mcpStage1TopK}`) : (mcpLlmEnabled ? `full → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : (isZh ? "full inventory" : "full inventory"))}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{isZh ? "Skills 策略" : "Skills policy"}</span><Badge variant="outline">{skillsPolicyBadge}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{isZh ? "MCP 策略" : "MCP policy"}</span><Badge variant="outline">{mcpPolicyBadge}</Badge></div>
                         <div className="flex items-center justify-between gap-3"><span>{isZh ? "PluginHost 参与条件" : "PluginHost gating"}</span><Badge variant="outline">{isZh ? "仅 bridge ready 时加入" : "Only when bridge is ready"}</Badge></div>
                         <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs leading-6 text-slate-500">
                             {isZh
@@ -1027,107 +1051,57 @@ export default function ExtensionsPage() {
                         </div>) : null}
 
                     {previewResult ? (<div className="grid gap-6 xl:grid-cols-2">
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/80 p-4">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div className="text-sm font-semibold text-slate-900">{isZh ? "Skills 第 1 层 shortlist" : "Skills stage 1 shortlist"}</div>
-                                        <Badge variant="outline">{previewCounts?.skillStage1ShortlistCount ?? previewSkillStage1Entries.length}</Badge>
-                                    </div>
-                                    {!previewSkillsStage1Enabled ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                            {isZh ? "Stage 1 已关闭，本轮未生成 shortlist。" : "Stage 1 is disabled, so no shortlist was produced for this query."}
-                                        </div>) : previewSkillStage1Entries.length === 0 ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                            {isZh ? "当前 query 没有命中任何 Skills shortlist。" : "The current query did not produce any Skills shortlist hits."}
-                                        </div>) : (<div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
-                                            {previewSkillStage1Entries.map((skill) => (<div key={`stage1:${skill.skillId || skill.instructionPath || skill.skillRoot || skill.skillName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                                    <div className="flex flex-wrap items-center gap-2">
-                                                        <PackageCheck className="h-4 w-4 text-emerald-600"/>
-                                                        <div className="text-sm font-semibold text-slate-900">{skill.skillName || "unknown"}</div>
-                                                        <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
-                                                        {skill.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k43e1d513")}</Badge> : null}
-                                                    </div>
-                                                    {skill.instructionPath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{skill.instructionPath}</div> : null}
-                                                </div>))}
-                                        </div>)}
+                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-900">{isZh ? "Skills 最终暴露列表" : "Skills final exposed list"}</div>
+                                    <Badge variant="outline">{previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length}</Badge>
                                 </div>
-
-                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/80 p-4">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div className="text-sm font-semibold text-slate-900">{isZh ? "Skills 最终暴露列表" : "Skills final exposed list"}</div>
-                                        <Badge variant="outline">{previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length}</Badge>
-                                    </div>
-                                    {previewSkillFinalEntries.length === 0 ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                            {isZh ? "当前没有暴露给 supervisor 的 Skills。" : "No Skills are currently exposed to the supervisor."}
-                                        </div>) : (<div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
-                                            {previewSkillFinalEntries.map((skill) => (<div key={`final:${skill.skillId || skill.instructionPath || skill.skillRoot || skill.skillName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                                    <div className="flex flex-wrap items-center gap-2">
-                                                        <PackageCheck className="h-4 w-4 text-emerald-600"/>
-                                                        <div className="text-sm font-semibold text-slate-900">{skill.skillName || "unknown"}</div>
-                                                        <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
-                                                        {skill.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k43e1d513")}</Badge> : null}
-                                                    </div>
-                                                    {skill.skillId ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">id: {skill.skillId}</div> : null}
-                                                    {skill.workspacePath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{skill.workspacePath}</div> : null}
-                                                    {skill.projectId ? <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
-                                                    {skill.instructionPath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{skill.instructionPath}</div> : null}
-                                                </div>))}
-                                        </div>)}
-                                </div>
+                                {previewSkillFinalEntries.length === 0 ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
+                                        {isZh ? "当前没有暴露给 supervisor 的 Skills。" : "No Skills are currently exposed to the supervisor."}
+                                    </div>) : (<div className="max-h-[42rem] space-y-3 overflow-y-auto pr-1">
+                                        {previewSkillFinalEntries.map((skill) => (<div key={`final:${skill.skillId || skill.instructionPath || skill.skillRoot || skill.skillName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <PackageCheck className="h-4 w-4 text-emerald-600"/>
+                                                    <div className="text-sm font-semibold text-slate-900">{skill.skillName || "unknown"}</div>
+                                                    <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
+                                                    {skill.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k43e1d513")}</Badge> : null}
+                                                </div>
+                                                {skill.skillId ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">id: {skill.skillId}</div> : null}
+                                                {skill.workspacePath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{skill.workspacePath}</div> : null}
+                                                {skill.projectId ? <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
+                                                {skill.instructionPath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{skill.instructionPath}</div> : null}
+                                            </div>))}
+                                    </div>)}
                             </div>
 
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/80 p-4">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div className="text-sm font-semibold text-slate-900">{isZh ? "MCP 第 1 层 shortlist" : "MCP stage 1 shortlist"}</div>
-                                        <Badge variant="outline">{previewCounts?.mcpStage1ShortlistCount ?? previewMcpStage1Servers.length}</Badge>
-                                    </div>
-                                    {!previewMcpStage1Enabled ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                            {isZh ? "Stage 1 已关闭，本轮未生成 MCP shortlist。" : "Stage 1 is disabled, so no MCP shortlist was produced for this query."}
-                                        </div>) : previewMcpStage1Servers.length === 0 ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                            {isZh ? "当前 query 没有命中任何 MCP server shortlist。" : "The current query did not produce any MCP shortlist hits."}
-                                        </div>) : (<div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
-                                            {previewMcpStage1Servers.map((server) => (<div key={`stage1:${server.serverKey || server.familyKey || server.serverName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                                    <div className="flex flex-wrap items-center gap-2">
-                                                        <Server className="h-4 w-4 text-sky-600"/>
-                                                        <div className="text-sm font-semibold text-slate-900">{server.serverName || server.title}</div>
-                                                        <Badge variant="secondary">server</Badge>
-                                                        <Badge variant="outline">{t("app.admin.dashboard.extensions.page.kb1d8ed4b", {
+                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-900">{isZh ? "MCP 最终暴露列表" : "MCP final exposed list"}</div>
+                                    <Badge variant="outline">{previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length}</Badge>
+                                </div>
+                                {previewMcpFinalServers.length === 0 ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
+                                        {isZh ? "当前没有暴露给 supervisor 的 MCP servers。" : "No MCP servers are currently exposed to the supervisor."}
+                                    </div>) : (<div className="max-h-[42rem] space-y-3 overflow-y-auto pr-1">
+                                        {previewMcpFinalServers.map((server) => (<div key={`final:${server.serverKey || server.familyKey || server.serverName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Server className="h-4 w-4 text-sky-600"/>
+                                                    <div className="text-sm font-semibold text-slate-900">{server.serverName || server.title}</div>
+                                                    <Badge variant="secondary">server</Badge>
+                                                    <Badge variant="outline">{t("app.admin.dashboard.extensions.page.kb1d8ed4b", {
                     server_toolCount: server.toolCount
                 })}</Badge>
-                                                    </div>
-                                                    {(server.descriptions || []).length > 0 ? <div className="mt-2 text-xs leading-6 text-slate-500">{(server.descriptions || []).slice(0, 3).join(" / ")}</div> : null}
-                                                </div>))}
-                                        </div>)}
-                                </div>
-
-                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/80 p-4">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div className="text-sm font-semibold text-slate-900">{isZh ? "MCP 最终暴露列表" : "MCP final exposed list"}</div>
-                                        <Badge variant="outline">{previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length}</Badge>
-                                    </div>
-                                    {previewMcpFinalServers.length === 0 ? (<div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                            {isZh ? "当前没有暴露给 supervisor 的 MCP servers。" : "No MCP servers are currently exposed to the supervisor."}
-                                        </div>) : (<div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
-                                            {previewMcpFinalServers.map((server) => (<div key={`final:${server.serverKey || server.familyKey || server.serverName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                                    <div className="flex flex-wrap items-center gap-2">
-                                                        <Server className="h-4 w-4 text-sky-600"/>
-                                                        <div className="text-sm font-semibold text-slate-900">{server.serverName || server.title}</div>
-                                                        <Badge variant="secondary">server</Badge>
-                                                        <Badge variant="outline">{t("app.admin.dashboard.extensions.page.kb1d8ed4b", {
-                    server_toolCount: server.toolCount
-                })}</Badge>
-                                                    </div>
-                                                    {(server.descriptions || []).length > 0 ? (<div className="mt-2 text-xs leading-6 text-slate-500">
-                                                            {(server.descriptions || []).slice(0, 3).join(" / ")}
-                                                        </div>) : null}
-                                                    <div className="mt-3 space-y-2">
-                                                        {previewMcpServerTools(server).map((tool) => (<div key={`${server.serverKey || server.familyKey || server.serverName}:${tool.name}`} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-                                                                <div className="font-mono text-xs font-semibold text-slate-800">{tool.name}</div>
-                                                                {tool.description ? <div className="mt-1 text-xs leading-5 text-slate-500">{tool.description}</div> : null}
-                                                            </div>))}
-                                                    </div>
-                                                </div>))}
-                                        </div>)}
-                                </div>
+                                                </div>
+                                                {(server.descriptions || []).length > 0 ? (<div className="mt-2 text-xs leading-6 text-slate-500">
+                                                        {(server.descriptions || []).slice(0, 3).join(" / ")}
+                                                    </div>) : null}
+                                                <div className="mt-3 space-y-2">
+                                                    {previewMcpServerTools(server).map((tool) => (<div key={`${server.serverKey || server.familyKey || server.serverName}:${tool.name}`} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                                                            <div className="font-mono text-xs font-semibold text-slate-800">{tool.name}</div>
+                                                            {tool.description ? <div className="mt-1 text-xs leading-5 text-slate-500">{tool.description}</div> : null}
+                                                        </div>))}
+                                                </div>
+                                            </div>))}
+                                    </div>)}
                             </div>
                         </div>) : (<div className="space-y-3">
                             <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-6 text-sm leading-6 text-slate-500">

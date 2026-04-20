@@ -21,7 +21,7 @@ export const MediaPlayer = memo(function MediaPlayer({
     candidates?: string[];
 }) {
     const { colors, t } = useUiPrefs();
-    const displayTitle = title || src.split("/").pop()?.split("?")[0] || t("媒体文件", "Media file");
+    const displayTitle = title || src.split("/").pop()?.split("?")[0] || t("src.components.chat.mediarenderers.media_file");
     const {
         candidateSources,
         resolvedSrc,
@@ -44,8 +44,8 @@ export const MediaPlayer = memo(function MediaPlayer({
                         <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                         <Text style={[styles.blockedText, { color: colors.textMuted }]}>
                             {previewBlocked
-                                ? t("当前音频预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。", "The audio preview URL still points to localhost, which is unreachable from the phone. Use a reachable Admin URL and try again.")
-                                : (error || t("当前音频内容暂不可达。", "The audio content is currently unavailable."))}
+                                ? t("src.components.chat.mediarenderers.the_audio_preview_url_still_points_to_localhost_which_is_unreachable_from_the_phone_use_a_reachable_admin_url_and_try_again")
+                                : (error || t("src.components.chat.mediarenderers.the_audio_content_is_currently_unavailable"))}
                         </Text>
                     </View>
                 </View>
@@ -59,7 +59,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                 <View style={styles.audioBody}>
                     <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                     <Text style={[styles.audioSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
-                        {t("点击打开音频", "Tap to open audio")}
+                        {t("src.components.chat.mediarenderers.tap_to_open_audio")}
                     </Text>
                 </View>
                 <Pressable onPress={() => void Linking.openURL(resolvedSrc)} style={styles.openButton}>
@@ -76,7 +76,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                     <ActivityIndicator size="small" color={colors.primary} />
                     <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                     <Text style={[styles.blockedText, { color: colors.textMuted }]}>
-                        {t("正在准备媒体内容…", "Preparing media content...")}
+                        {t("src.components.chat.mediarenderers.preparing_media_content")}
                     </Text>
                 </View>
             </View>
@@ -90,7 +90,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                     <MaterialCommunityIcons name="video-off-outline" size={28} color={colors.warning} />
                     <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                     <Text style={[styles.blockedText, { color: colors.textMuted }]}>
-                        {t("当前视频预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。", "The preview URL still points to localhost, which is unreachable from the phone. Use a reachable Admin URL and try again.")}
+                        {t("src.components.chat.mediarenderers.the_preview_url_still_points_to_localhost_which_is_unreachable_from_the_phone_use_a_reachable_admin_url_and_try_again")}
                     </Text>
                 </View>
             </View>
@@ -104,7 +104,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                     <MaterialCommunityIcons name="video-off-outline" size={28} color={colors.warning} />
                     <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                     <Text style={[styles.blockedText, { color: colors.textMuted }]}>
-                        {error || t("当前媒体内容暂不可达。", "The media content is currently unavailable.")}
+                        {error || t("src.components.chat.mediarenderers.the_media_content_is_currently_unavailable")}
                     </Text>
                 </View>
             </View>
@@ -162,7 +162,7 @@ export const ImagePreview = memo(function ImagePreview({
                 <View style={styles.loadingWrap}>
                     <ActivityIndicator size="small" color={colors.primary} />
                     <Text style={[styles.audioSubtitle, { color: colors.textMuted }]}>
-                        {t("正在准备图片内容…", "Preparing image content...")}
+                        {t("src.components.chat.mediarenderers.preparing_image_content")}
                     </Text>
                 </View>
             </View>
@@ -176,8 +176,8 @@ export const ImagePreview = memo(function ImagePreview({
                     <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.warning} />
                     <Text style={[styles.audioSubtitle, { color: colors.textMuted }]}>
                         {previewBlocked
-                            ? t("当前图片预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。", "The image preview URL still points to localhost, which is unreachable from the phone. Use a reachable Admin URL and try again.")
-                            : (error || t("当前图片内容暂不可达。", "The image content is currently unavailable."))}
+                            ? t("src.components.chat.mediarenderers.the_image_preview_url_still_points_to_localhost_which_is_unreachable_from_the_phone_use_a_reachable_admin_url_and_try_again")
+                            : (error || t("src.components.chat.mediarenderers.the_image_content_is_currently_unavailable"))}
                     </Text>
                 </View>
             </View>

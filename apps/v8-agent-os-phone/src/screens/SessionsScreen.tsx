@@ -54,7 +54,7 @@ export default function SessionsScreen() {
         try {
             setConversations(await listConversations(authorizedFetch));
         } catch (error) {
-            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法加载会话列表", "Unable to load the conversation list"));
+            Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_load_the_conversation_list"));
         } finally {
             setRefreshing(false);
         }
@@ -72,7 +72,7 @@ export default function SessionsScreen() {
             await setActiveConversationId(null);
             router.push("/chat?new=1" as Href);
         } catch (error) {
-            Alert.alert(t("创建失败", "Create failed"), error instanceof Error ? error.message : t("无法创建新会话", "Unable to create a new conversation"));
+            Alert.alert(t("src.screens.sessionsscreen.create_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_create_a_new_conversation"));
         } finally {
             setBusy(false);
         }
@@ -80,10 +80,10 @@ export default function SessionsScreen() {
 
     const remove = async (item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
-        Alert.alert(t("删除会话", "Delete conversation"), t("确定删除这个会话吗？", "Delete this conversation?"), [
-            { text: t("取消", "Cancel"), style: "cancel" },
+        Alert.alert(t("src.screens.chatscreen.delete_conversation"), t("src.screens.chatscreen.delete_this_conversation"), [
+            { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
             {
-                text: t("删除", "Delete"),
+                text: t("src.screens.chatscreen.delete"),
                 style: "destructive",
                 onPress: async () => {
                     try {
@@ -93,7 +93,7 @@ export default function SessionsScreen() {
                         }
                         await load();
                     } catch (error) {
-                        Alert.alert(t("删除失败", "Delete failed"), error instanceof Error ? error.message : t("无法删除会话", "Unable to delete the conversation"));
+                        Alert.alert(t("src.screens.chatscreen.delete_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_delete_the_conversation"));
                     }
                 },
             },
@@ -101,7 +101,7 @@ export default function SessionsScreen() {
     };
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在同步会话列表…", "Syncing conversations...")} />;
+        return <LoadingScreen label={t("src.screens.sessionsscreen.syncing_conversations")} />;
     }
 
     if (status === "anonymous") {
@@ -124,11 +124,11 @@ export default function SessionsScreen() {
                 >
                     <Pressable style={[styles.newButton, busy && styles.disabled]} onPress={() => void createNew()}>
                         <MaterialCommunityIcons name="plus" size={18} color="#FFFFFF" />
-                        <Text style={styles.newButtonText}>{t("新建对话", "New chat")}</Text>
+                        <Text style={styles.newButtonText}>{t("src.screens.sessionsscreen.new_chat")}</Text>
                     </Pressable>
 
                     {conversations.length === 0 ? (
-                        <Text style={styles.emptyBody}>{t("当前没有会话", "There are no conversations yet.")}</Text>
+                        <Text style={styles.emptyBody}>{t("src.screens.sessionsscreen.there_are_no_conversations_yet")}</Text>
                     ) : null}
 
                     {conversationGroupOrder
@@ -159,7 +159,7 @@ export default function SessionsScreen() {
                                                     <View style={[styles.itemDot, active && styles.itemDotActive]} />
                                                     <View style={styles.itemBody}>
                                                         <Text style={styles.itemTitle} numberOfLines={1}>
-                                                            {item.title || t(`会话 ${canonicalSessionId.slice(0, 8)}`, `Conversation ${canonicalSessionId.slice(0, 8)}`)}
+                                                            {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
                                                         </Text>
                                                         <Text style={styles.itemMeta}>
                                                             {formatRelativeTime(item.historySortAt || item.createdAt || "", locale, getEngineNowMs())}

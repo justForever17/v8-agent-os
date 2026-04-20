@@ -3,7 +3,6 @@
 import Link from "next/link";
 
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 
 export type MemorySectionKey =
@@ -17,16 +16,16 @@ export type MemorySectionKey =
     | "config"
     | "runtime";
 
-const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: ReturnType<typeof lt> | string }> = [
-    { key: "preferences", href: "/admin/memory?tab=preferences", label: lt("偏好管理", "Preferences") },
-    { key: "projects", href: "/admin/memory?tab=projects", label: lt("项目注册表", "Project registry") },
-    { key: "knowledge", href: "/admin/memory?tab=knowledge", label: lt("知识库", "Knowledge") },
+const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: string }> = [
+    { key: "preferences", href: "/admin/memory?tab=preferences", label: "components.memory.MemorySectionNav.k79d67bc6" },
+    { key: "projects", href: "/admin/memory?tab=projects", label: "components.memory.MemorySectionNav.k4758acb9" },
+    { key: "knowledge", href: "/admin/memory?tab=knowledge", label: "components.memory.MemorySectionNav.k4a8a8d88" },
     { key: "artifacts", href: "/admin/memory?tab=artifacts", label: "Artifacts" },
-    { key: "graph", href: "/admin/memory?tab=graph", label: lt("知识图谱", "Graph") },
-    { key: "agent", href: "/admin/memory?tab=agent", label: lt("记忆助手", "Memory agent") },
-    { key: "upload", href: "/admin/memory?tab=upload", label: lt("文档上传", "Upload") },
-    { key: "config", href: "/admin/memory?tab=config", label: lt("配置", "Config") },
-    { key: "runtime", href: "/admin/memory?tab=runtime", label: lt("运行诊断", "Runtime diagnostics") },
+    { key: "graph", href: "/admin/memory?tab=graph", label: "components.memory.MemorySectionNav.k7fe6a3d0" },
+    { key: "agent", href: "/admin/memory?tab=agent", label: "components.memory.MemorySectionNav.k24f221bf" },
+    { key: "upload", href: "/admin/memory?tab=upload", label: "components.memory.MemorySectionNav.kdad82071" },
+    { key: "config", href: "/admin/memory?tab=config", label: "components.memory.MemorySectionNav.k0e1a1cef" },
+    { key: "runtime", href: "/admin/memory?tab=runtime", label: "components.memory.MemorySectionNav.kc9691c8b" },
 ];
 
 export default function MemorySectionNav({ activeKey }: { activeKey: MemorySectionKey }) {

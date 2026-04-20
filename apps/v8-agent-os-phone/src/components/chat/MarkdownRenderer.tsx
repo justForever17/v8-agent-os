@@ -71,7 +71,7 @@ function cleanHrefCandidate(value: string) {
     return String(value || "")
         .trim()
         .replace(/^[`'"“”‘’]+/, "")
-        .replace(/[，。；、,.;:!?！？`'"“”‘’]+$/g, "")
+        .replace(/[\uFF0C\u3002\uFF1B\u3001,.;:!?\uFF01\uFF1F`'"\u201C\u201D\u2018\u2019]+$/g, "")
         .trim();
 }
 

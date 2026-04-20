@@ -122,15 +122,15 @@ export const VoiceCard = memo(function VoiceCard({
                     <View style={styles.body}>
                         <Text style={[styles.title, { color: colors.text }]}>
                             {speaking
-                                ? t("正在播放语音", "Playing voice")
+                                ? t("src.components.chat.voicecard.playing_voice")
                                 : hasPlayed
-                                    ? t("语音片段", "Voice clip")
-                                    : t("点击播放语音", "Tap to play voice")}
+                                    ? t("src.components.chat.voicecard.voice_clip")
+                                    : t("src.components.chat.voicecard.tap_to_play_voice")}
                         </Text>
                         {speaking ? (
                             <>
                                 <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-                                    {t("播放中…", "Playing…")}
+                                    {t("src.components.chat.voicecard.playing")}
                                 </Text>
                                 <View style={styles.waveRow}>
                                     {wave.map((value, index) => (

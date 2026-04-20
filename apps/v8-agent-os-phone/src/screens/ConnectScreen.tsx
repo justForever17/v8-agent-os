@@ -100,7 +100,7 @@ export default function ConnectScreen() {
                 }
             } catch (error) {
                 if (!cancelled) {
-                    Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法读取连接摘要", "Unable to load the connection summary"));
+                    Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.connectscreen.unable_to_load_the_connection_summary"));
                 }
             } finally {
                 if (!cancelled) {
@@ -115,7 +115,7 @@ export default function ConnectScreen() {
     }, [adminBaseUrl, authorizedFetch, status, t]);
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在读取连接信息…", "Loading connection details...")} />;
+        return <LoadingScreen label={t("src.screens.connectscreen.loading_connection_details")} />;
     }
 
     if (status === "anonymous") {
@@ -125,11 +125,11 @@ export default function ConnectScreen() {
     const saveAndReconnect = async () => {
         const nextUrl = draftBaseUrl.trim();
         if (!nextUrl) {
-            Alert.alert(t("保存失败", "Save failed"), t("请先填写可访问的 Admin 地址", "Please enter a reachable Admin URL first."));
+            Alert.alert(t("src.components.chat.mediaviewerlightbox.save_failed"), t("src.screens.connectscreen.please_enter_a_reachable_admin_url_first"));
             return;
         }
         if (nextUrl === adminBaseUrl) {
-            Alert.alert(t("无需切换", "No change needed"), t("当前手机端已经连接到这个 Admin 地址。", "Phone is already connected to this Admin URL."));
+            Alert.alert(t("src.screens.connectscreen.no_change_needed"), t("src.screens.connectscreen.phone_is_already_connected_to_this_admin_url"));
             return;
         }
         setBusy(true);
@@ -145,7 +145,7 @@ export default function ConnectScreen() {
             await signOut();
             router.replace("/login");
         } catch (error) {
-            Alert.alert(t("切换失败", "Switch failed"), error instanceof Error ? error.message : t("无法切换连接地址", "Unable to switch the connection URL."));
+            Alert.alert(t("src.screens.connectscreen.switch_failed"), error instanceof Error ? error.message : t("src.screens.connectscreen.unable_to_switch_the_connection_url"));
         } finally {
             setBusy(false);
         }
@@ -157,7 +157,7 @@ export default function ConnectScreen() {
         }
         setDraftBaseUrl(profile.adminBaseUrl);
         if (profile.adminBaseUrl === adminBaseUrl) {
-            Alert.alert(t("已经连接", "Already connected"), t("当前手机端已经连接到这个对象。", "Phone is already connected to this target."));
+            Alert.alert(t("src.screens.connectscreen.already_connected"), t("src.screens.connectscreen.phone_is_already_connected_to_this_target"));
             return;
         }
         setBusy(true);
@@ -177,7 +177,7 @@ export default function ConnectScreen() {
             await signOut();
             router.replace("/login");
         } catch (error) {
-            Alert.alert(t("重连失败", "Reconnect failed"), error instanceof Error ? error.message : t("无法切换连接对象", "Unable to switch connection target"));
+            Alert.alert(t("src.screens.connectscreen.reconnect_failed"), error instanceof Error ? error.message : t("src.screens.connectscreen.unable_to_switch_connection_target"));
         } finally {
             setBusy(false);
         }
@@ -207,38 +207,38 @@ export default function ConnectScreen() {
                 <ScrollView contentContainerStyle={styles.content}>
                     <GlassCard>
                         <View style={styles.sectionTitleRow}>
-                            <Text style={styles.sectionTitle}>{t("当前连接", "Current connection")}</Text>
+                            <Text style={styles.sectionTitle}>{t("src.screens.connectscreen.current_connection")}</Text>
                             {refreshing ? <ActivityIndicator color={colors.primary} size="small" /> : null}
                         </View>
                         <View style={styles.summaryRow}>
                             <Text style={styles.summaryLabel}>Admin</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.adminBaseUrl || adminBaseUrl || t("未连接", "Not connected")}</Text>
+                            <Text style={styles.summaryValue}>{summary?.connection?.adminBaseUrl || adminBaseUrl || t("src.screens.connectscreen.not_connected")}</Text>
                         </View>
                         <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("Bridge 模式", "Bridge mode")}</Text>
+                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.bridge_mode")}</Text>
                             <Text style={styles.summaryValue}>{summary?.connection?.bridgeMode || "unknown"}</Text>
                         </View>
                         <View style={styles.summaryRow}>
                             <Text style={styles.summaryLabel}>Engine</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.engineBaseUrl || t("未知", "Unknown")}</Text>
+                            <Text style={styles.summaryValue}>{summary?.connection?.engineBaseUrl || t("src.screens.artifactsscreen.unknown")}</Text>
                         </View>
                         <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("桌面桥接", "Desktop bridge")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.desktopLiveBridgeBaseUrl || t("未启用", "Disabled")}</Text>
+                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.desktop_bridge")}</Text>
+                            <Text style={styles.summaryValue}>{summary?.connection?.desktopLiveBridgeBaseUrl || t("src.screens.connectscreen.disabled")}</Text>
                         </View>
                         <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("连通性", "Reachability")}</Text>
+                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.reachability")}</Text>
                             <Text style={[styles.summaryValue, summary?.connection?.reachable ? styles.okText : styles.warnText]}>
-                                {summary?.connection?.reachable ? t("已连接", "Reachable") : t("未验证", "Unverified")}
+                                {summary?.connection?.reachable ? t("src.screens.connectscreen.reachable") : t("src.screens.connectscreen.unverified")}
                             </Text>
                         </View>
                         <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("当前用户", "Current user")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.user?.name || user?.name || user?.login || t("未知用户", "Unknown user")}</Text>
+                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.current_user")}</Text>
+                            <Text style={styles.summaryValue}>{summary?.user?.name || user?.name || user?.login || t("src.screens.connectscreen.unknown_user")}</Text>
                         </View>
                         <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("邮箱", "Email")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.user?.email || user?.email || t("未提供邮箱", "No email provided")}</Text>
+                            <Text style={styles.summaryLabel}>{t("app.login.email")}</Text>
+                            <Text style={styles.summaryValue}>{summary?.user?.email || user?.email || t("src.screens.connectscreen.no_email_provided")}</Text>
                         </View>
                         {projects.length > 0 ? (
                             <View style={styles.projectInlineList}>
@@ -246,14 +246,14 @@ export default function ConnectScreen() {
                                     <View key={project.id || project.slug || project.name} style={styles.projectInlineChip}>
                                         <MaterialCommunityIcons name="briefcase-outline" size={14} color={colors.primaryDeep} />
                                         <Text style={styles.projectInlineText} numberOfLines={1}>
-                                            {project.name || project.slug || project.id || t("未命名项目", "Untitled project")}
+                                            {project.name || project.slug || project.id || t("src.screens.connectscreen.untitled_project")}
                                         </Text>
                                     </View>
                                 ))}
                             </View>
                         ) : null}
 
-                        <Text style={styles.sectionTitle}>{t("切换管理台", "Switch admin")}</Text>
+                        <Text style={styles.sectionTitle}>{t("src.screens.connectscreen.switch_admin")}</Text>
                         <TextInput
                             value={draftBaseUrl}
                             onChangeText={setDraftBaseUrl}
@@ -264,20 +264,20 @@ export default function ConnectScreen() {
                             style={styles.input}
                         />
                         <Pressable style={[styles.primaryButton, busy && styles.disabled]} onPress={() => void saveAndReconnect()}>
-                            <Text style={styles.primaryButtonText}>{busy ? t("切换中…", "Switching...") : t("保存并重新登录", "Save and sign in again")}</Text>
+                            <Text style={styles.primaryButtonText}>{busy ? t("src.screens.connectscreen.switching") : t("src.screens.connectscreen.save_and_sign_in_again")}</Text>
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
                         <View style={styles.sectionTitleRow}>
-                            <Text style={styles.sectionTitle}>{t("曾连接过", "Saved targets")}</Text>
+                            <Text style={styles.sectionTitle}>{t("src.screens.connectscreen.saved_targets")}</Text>
                             <Pressable style={styles.refreshProfilesButton} onPress={() => void refreshProfiles()}>
                                 <MaterialCommunityIcons name="refresh" size={15} color={colors.textSoft} />
                             </Pressable>
                         </View>
                         {profiles.length === 0 ? (
                             <Text style={styles.emptyProfilesText}>
-                                {t("保存并登录过的 Admin 会出现在这里。", "Admin targets you have signed into will appear here.")}
+                                {t("src.screens.connectscreen.admin_targets_you_have_signed_into_will_appear_here")}
                             </Text>
                         ) : (
                             <View style={styles.profileList}>
@@ -292,7 +292,7 @@ export default function ConnectScreen() {
                                                     </Text>
                                                     {active ? (
                                                         <View style={styles.currentBadge}>
-                                                            <Text style={styles.currentBadgeText}>{t("当前", "Current")}</Text>
+                                                            <Text style={styles.currentBadgeText}>{t("src.screens.connectscreen.current")}</Text>
                                                         </View>
                                                     ) : null}
                                                 </View>
@@ -300,14 +300,14 @@ export default function ConnectScreen() {
                                                 <Text style={styles.profileMeta} numberOfLines={1}>
                                                     {[
                                                         profile.bridgeMode || "",
-                                                        profile.reachable === true ? t("已验证", "Reachable") : profile.reachable === false ? t("未连通", "Unreachable") : "",
+                                                        profile.reachable === true ? t("src.screens.connectscreen.reachable_2") : profile.reachable === false ? t("src.screens.connectscreen.unreachable") : "",
                                                         profile.lastUsedAt ? new Date(profile.lastUsedAt).toLocaleString() : "",
                                                     ].filter(Boolean).join(" · ")}
                                                 </Text>
                                             </View>
                                             <View style={styles.profileActions}>
                                                 <Pressable style={styles.profileActionButton} onPress={() => void reconnectProfile(profile)} disabled={busy}>
-                                                    <Text style={styles.profileActionText}>{t("重连", "Reconnect")}</Text>
+                                                    <Text style={styles.profileActionText}>{t("src.screens.connectscreen.reconnect")}</Text>
                                                 </Pressable>
                                                 <Pressable style={styles.profileDeleteButton} onPress={() => void deleteProfile(profile)} disabled={busy}>
                                                     <MaterialCommunityIcons name="trash-can-outline" size={16} color={colors.textSoft} />

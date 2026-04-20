@@ -95,18 +95,18 @@ type SafetyData = {
 const PRESET_OPTIONS = [
     {
         key: "dedicated_runtime_host",
-        title: "dedicated_runtime_host（推荐）",
-        description: "默认把正常依赖安装、正常 API 写操作和声明式 skill 依赖降到 audit，只有系统破坏、凭证外传、下载执行等链路才上升到 review / block。",
+        title:"app.admin.dashboard.safety.control.page.k5970446a",
+        description:"app.admin.dashboard.safety.control.page.k4b26c5fc",
     },
     {
         key: "developer_mixed_host",
         title: "developer_mixed_host",
-        description: "适用于混有私人日常使用的开发机；对浏览器资料、secret 读取和某些外部变更动作更严格。",
+        description:"app.admin.dashboard.safety.control.page.k6a2115f2",
     },
     {
         key: "locked_down_sensitive",
         title: "locked_down_sensitive",
-        description: "临时敏感姿态：在开发机基线上进一步收紧敏感 payload、computer_use 热键和配置写入。",
+        description:"app.admin.dashboard.safety.control.page.k24c3f9e9",
     },
 ] as const;
 
@@ -293,8 +293,8 @@ export default function SafetyControlPage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title="安全控制"
-                description="当前 Safety Guardian 按机器姿态、治理目标和执行面统一治理。默认是声明审计优先、行为驱动 review / block，而不是把所有 normal skill 或所有 POST 请求一刀切成高风险。"
+                title="app.admin.dashboard.safety.control.page.k8f467cf5"
+                description="app.admin.dashboard.safety.control.page.k65868ff2"
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
@@ -312,7 +312,7 @@ export default function SafetyControlPage() {
                         { label: "Machine Posture", value: summary.posture },
                         { label: "Audit / Review / Block", value: `${summary.auditCount} / ${summary.reviewCount} / ${summary.blockCount}` },
                         {
-                            label: "Skill Verdict 分布",
+                            label:"app.admin.dashboard.safety.control.page.k87b50116",
                             value: `audit ${Number(summary.skillDistribution.audit || 0)} · review ${Number(summary.skillDistribution.review || 0)} · block ${Number(summary.skillDistribution.block || 0)}`,
                         },
                         { label: "Safety Review Model", value: summary.reviewModel },
@@ -525,7 +525,7 @@ export default function SafetyControlPage() {
                     </CardContent>
                 </Card>
 
-                <AdvancedSection title="高级规则编辑器" defaultOpen={false}>
+                <AdvancedSection title="app.admin.dashboard.safety.control.page.k4f8c7149" defaultOpen={false}>
                     <SafetyGuardianPanel />
                 </AdvancedSection>
 

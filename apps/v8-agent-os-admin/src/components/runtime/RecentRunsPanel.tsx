@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useRuntimeOpsData, formatWhen, RUN_LABELS } from "@/components/runtime/use-runtime-ops";
-import { lt } from "@/lib/locale";
 
 type RecentRunsPanelProps = {
     hook?: ReturnType<typeof useRuntimeOpsData>;
@@ -35,16 +34,16 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
         const normalized = String(status || "queued").trim();
         const fallback = RUN_LABELS[normalized] || normalized;
         const bilingual: Record<string, string> = {
-            queued: t(lt("排队中", "Queued")),
-            running: t(lt("执行中", "Running")),
-            waiting_approval: t(lt("等待审批", "Waiting approval")),
-            waiting_input: t(lt("等待输入", "Waiting input")),
-            paused: t(lt("已暂停", "Paused")),
-            completed: t(lt("已完成", "Completed")),
-            failed: t(lt("失败", "Failed")),
-            cancelled: t(lt("已取消", "Cancelled")),
+            queued: t("components.runtime.RecentRunsPanel.ke747f100"),
+            running: t("components.runtime.RecentRunsPanel.kdcbd23f1"),
+            waiting_approval: t("components.runtime.RecentRunsPanel.kda3e1195"),
+            waiting_input: t("components.runtime.RecentRunsPanel.k870efabb"),
+            paused: t("components.runtime.RecentRunsPanel.kfe6e9598"),
+            completed: t("components.runtime.RecentRunsPanel.kc69483d7"),
+            failed: t("components.runtime.RecentRunsPanel.kb83c391f"),
+            cancelled: t("components.runtime.RecentRunsPanel.kd2634488"),
         };
-        return bilingual[normalized] || fallback;
+        return bilingual[normalized] || t(fallback);
     };
 
     return (
@@ -52,18 +51,18 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
             <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                     <PauseCircle className="h-5 w-5 text-primary" />
-                    {t(lt("最近运行", "Recent runs"))}
+                    {t("components.runtime.RecentRunsPanel.k1a586b06")}
                 </CardTitle>
                 <CardDescription>
-                    {t(lt("这里展示最近进入 ERC 的运行记录，可直接中断正在执行的 run，或对失败/暂停态发起重试。", "This panel shows recent ERC runs. You can interrupt active runs or retry failed and paused ones directly here."))}
+                    {t("components.runtime.RecentRunsPanel.k70753915")}
                 </CardDescription>
             </CardHeader>
             <CardContent className="flex-1 space-y-3 overflow-y-auto pr-1">
                 {visibleRuns.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
                         {focusRunId || focusSessionId
-                            ? t(lt("当前过滤条件下没有运行记录。可能该 run 已归档、列表窗口过短，或会话已经结束。", "No runs match the current filter. The run may be archived, outside the current window, or already finished."))
-                            : t(lt("还没有运行记录。等下一次聊天、定时任务或审批恢复后，这里就会开始积累。", "No run records yet. They will start appearing after the next chat, automation, or approval-driven recovery."))}
+                            ? t("components.runtime.RecentRunsPanel.k46bcc8f3")
+                            : t("components.runtime.RecentRunsPanel.k196619f5")}
                     </div>
                 ) : visibleRuns.map((run) => {
                     const interruptBusy = busyKey === `interrupt:${run.id}`;
@@ -94,21 +93,21 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                             </div>
                             <div className="mt-3 space-y-1 text-sm text-muted-foreground">
                                 <div>Run ID: <span className="text-foreground/90">{run.id}</span></div>
-                                <div>{t(lt("会话", "Session"))}: <span className="text-foreground/90">{run.session_id || "-"}</span></div>
-                                {taskName ? <div>{t(lt("任务", "Task"))}: <span className="text-foreground/90">{taskName}</span></div> : null}
-                                {actionTarget ? <div>{t(lt("目标", "Target"))}: <span className="text-foreground/90 break-all">{actionTarget}</span></div> : null}
-                                <div>{t(lt("开始于", "Started"))}: <span className="text-foreground/90">{formatWhen(run.started_at || run.created_at)}</span></div>
+                                <div>{t("components.runtime.RecentRunsPanel.kdd2c7128")}: <span className="text-foreground/90">{run.session_id || "-"}</span></div>
+                                {taskName ? <div>{t("components.runtime.RecentRunsPanel.k6dc0ee58")}: <span className="text-foreground/90">{taskName}</span></div> : null}
+                                {actionTarget ? <div>{t("components.runtime.RecentRunsPanel.kbad18df9")}: <span className="text-foreground/90 break-all">{actionTarget}</span></div> : null}
+                                <div>{t("components.runtime.RecentRunsPanel.kc585d274")}: <span className="text-foreground/90">{formatWhen(run.started_at || run.created_at)}</span></div>
                             </div>
                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                                 <Button asChild type="button" variant="ghost" size="sm" className="h-8 rounded-xl px-3">
                                     <Link href={`/admin/operations-center?tab=runs&focusRun=${encodeURIComponent(run.id)}`}>
-                                        {t(lt("定位当前 Run", "Locate this run"))}
+                                        {t("components.runtime.RecentRunsPanel.k9e801c45")}
                                     </Link>
                                 </Button>
                                 {run.session_id ? (
                                     <Button asChild type="button" variant="ghost" size="sm" className="h-8 rounded-xl px-3">
                                         <Link href={`/admin/operations-center?tab=approvals&focusSession=${encodeURIComponent(run.session_id)}`}>
-                                            {t(lt("查看该会话确认", "View session approvals"))}
+                                            {t("components.runtime.RecentRunsPanel.k26c87004")}
                                         </Link>
                                     </Button>
                                 ) : null}
@@ -122,7 +121,7 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                                         onClick={() => void dispatchRunCommand(run.id, "interrupt")}
                                     >
                                         <PauseCircle className="mr-2 h-4 w-4" />
-                                        {interruptBusy ? t(lt("中断中...", "Interrupting...")) : t(lt("中断", "Interrupt"))}
+                                        {interruptBusy ? t("components.runtime.RecentRunsPanel.k31af3bc0") : t("components.runtime.RecentRunsPanel.k3d99c2cd")}
                                     </Button>
                                 )}
                                 {["paused", "failed", "cancelled", "waiting_input"].includes(status) && (
@@ -133,7 +132,7 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                                         onClick={() => void dispatchRunCommand(run.id, "retry")}
                                     >
                                         <RotateCcw className="mr-2 h-4 w-4" />
-                                        {retryBusy ? t(lt("重试中...", "Retrying...")) : t(lt("重试", "Retry"))}
+                                        {retryBusy ? t("components.runtime.RecentRunsPanel.kcd92b799") : t("components.runtime.RecentRunsPanel.k3a3e39b1")}
                                     </Button>
                                 )}
                             </div>

@@ -126,8 +126,8 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                 >
                     <Text style={[styles.hint, { color: colors.textMuted }]}>
                         {isCommand
-                            ? t("输入 / 选择命令预设", "Type / to choose a preset")
-                            : t("输入 @ 选择一个或多个 Skill", "Type @ to choose one or more skills")}
+                            ? t("src.components.chat.composerpickeroverlay.type_to_choose_a_preset")
+                            : t("src.components.chat.composerpickeroverlay.type_to_choose_one_or_more_skills")}
                     </Text>
 
                     <View style={[styles.viewport, { height: viewportHeight }]}>
@@ -147,8 +147,8 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                             ListEmptyComponent={(
                                 <Text style={[styles.emptyText, { color: colors.textMuted }]}>
                                     {isCommand
-                                        ? t("没有匹配的命令预设", "No matching presets")
-                                        : t("没有匹配的 Skill", "No matching skills")}
+                                        ? t("src.components.chat.composerpickeroverlay.no_matching_presets")
+                                        : t("src.components.chat.composerpickeroverlay.no_matching_skills")}
                                 </Text>
                             )}
                         />

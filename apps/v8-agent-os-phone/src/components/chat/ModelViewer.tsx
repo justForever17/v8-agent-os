@@ -37,15 +37,15 @@ export const ModelViewer = memo(function ModelViewer({
                 authorizedFetch,
             });
             Alert.alert(
-                t("已下载", "Downloaded"),
+                t("src.components.chat.downloadfilecard.downloaded"),
                 saved.shared
-                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                    ? `${t("src.components.chat.downloadfilecard.opened_the_system_share_save_to_files_sheet")}：${saved.filename}`
                     : saved.userVisible
-                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
-                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
+                    ? `${t("src.components.chat.downloadfilecard.saved_to_the_folder_you_selected")}：${saved.filename}`
+                    : `${t("src.components.chat.downloadfilecard.saved_to_app_sandbox")}：${saved.uri}`,
             );
         } catch (error) {
-            Alert.alert(t("下载失败", "Download failed"), error instanceof Error ? error.message : t("无法保存 3D 文件", "Unable to save 3D file"));
+            Alert.alert(t("src.components.chat.downloadfilecard.download_failed"), error instanceof Error ? error.message : t("src.components.chat.modelviewer.unable_to_save_3d_file"));
         }
     };
     const html = `
@@ -146,23 +146,23 @@ export const ModelViewer = memo(function ModelViewer({
                     <View style={[styles.failedOverlay, { backgroundColor: labelBackground }]}>
                         <MaterialCommunityIcons name="cube-off-outline" size={22} color={colors.warning} />
                         <Text style={[styles.failedTitle, { color: labelText }]}>
-                            {t("3D 预览暂不可用", "3D preview unavailable")}
+                            {t("src.components.chat.modelviewer.3d_preview_unavailable")}
                         </Text>
                         <Text style={[styles.failedText, { color: labelText }]}>
-                            {t("可能是模型地址、手机网络或 model-viewer 运行时不可达；下载仍可使用。", "The model URL, phone network, or model-viewer runtime may be unavailable. Download still works.")}
+                            {t("src.components.chat.modelviewer.the_model_url_phone_network_or_model_viewer_runtime_may_be_unavailable_download_still_works")}
                         </Text>
                     </View>
                 ) : null}
                 <View style={[styles.label, { backgroundColor: labelBackground, borderColor: colors.border }]}>
                     <MaterialCommunityIcons name="cube-outline" size={12} color={labelText} />
                     <Text style={[styles.labelText, { color: labelText }]} numberOfLines={1}>
-                        {displayFilename || t("3D 预览", "3D preview")}
+                        {displayFilename || t("src.components.chat.modelviewer.3d_preview")}
                     </Text>
                 </View>
                 <View style={[styles.downloadWrap, { backgroundColor: labelBackground, borderColor: colors.border }]}>
                     <Pressable
                         accessibilityRole="button"
-                        accessibilityLabel={t("下载 3D 文件", "Download 3D file")}
+                        accessibilityLabel={t("src.components.chat.modelviewer.download_3d_file")}
                         hitSlop={8}
                         onPress={() => void handleDownload()}
                         style={styles.downloadButton}

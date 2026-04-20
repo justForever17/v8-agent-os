@@ -42,16 +42,16 @@ export const MermaidRenderer = memo(function MermaidRenderer({
             });
             setSaved(true);
             Alert.alert(
-                t("已下载图表", "Chart downloaded"),
+                t("src.components.chat.mermaidrenderer.chart_downloaded"),
                 savedFile.shared
-                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${savedFile.filename}`
+                    ? `${t("src.components.chat.downloadfilecard.opened_the_system_share_save_to_files_sheet")}：${savedFile.filename}`
                     : savedFile.userVisible
-                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${savedFile.filename}`
-                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${savedFile.uri}`,
+                    ? `${t("src.components.chat.downloadfilecard.saved_to_the_folder_you_selected")}：${savedFile.filename}`
+                    : `${t("src.components.chat.downloadfilecard.saved_to_app_sandbox")}：${savedFile.uri}`,
             );
             setTimeout(() => setSaved(false), 1600);
         } catch (error) {
-            Alert.alert(t("下载失败", "Download failed"), error instanceof Error ? error.message : t("无法保存 Mermaid 图表", "Unable to save Mermaid chart"));
+            Alert.alert(t("src.components.chat.downloadfilecard.download_failed"), error instanceof Error ? error.message : t("src.components.chat.mermaidrenderer.unable_to_save_mermaid_chart"));
         }
     };
 
@@ -164,7 +164,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
     return (
         <Card style={styles.card}>
             <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
-                <Text style={[styles.title, { color: colors.textMuted }]}>{t("Mermaid 图表", "Mermaid chart")}</Text>
+                <Text style={[styles.title, { color: colors.textMuted }]}>{t("src.components.chat.mermaidrenderer.mermaid_chart")}</Text>
                 <View style={styles.actions}>
                     <Pressable
                         style={[styles.iconButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
@@ -212,7 +212,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
                 {hasError ? (
                     <View style={[styles.errorBox, { borderColor: colors.danger, backgroundColor: `${colors.danger}14` }]}>
                         <Text style={[styles.errorTitle, { color: colors.danger }]}>
-                            {t("图表渲染失败，已回退到原始内容。", "Chart rendering failed and fell back to raw content.")}
+                            {t("src.components.chat.mermaidrenderer.chart_rendering_failed_and_fell_back_to_raw_content")}
                         </Text>
                         <Text style={[styles.errorCode, { color: colors.textMuted }]}>{code}</Text>
                     </View>

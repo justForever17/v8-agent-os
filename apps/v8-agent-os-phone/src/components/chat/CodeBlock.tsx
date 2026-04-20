@@ -25,7 +25,7 @@ export const CodeBlock = memo(function CodeBlock({
     value,
     content,
 }: CodeBlockProps) {
-    const { colors } = useUiPrefs();
+    const { colors, t } = useUiPrefs();
     const resolvedContent = useMemo(() => String(value ?? content ?? ""), [content, value]);
     const [copied, setCopied] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -61,16 +61,19 @@ export const CodeBlock = memo(function CodeBlock({
             });
             setSaved(true);
             Alert.alert(
-                "已下载 HTML",
+                t("src.components.chat.codeblock.html_downloaded"),
                 savedFile.shared
-                    ? `已打开系统分享/保存到文件面板：${savedFile.filename}`
+                    ? t("src.components.chat.codeblock.shared_to_system_panel", { filename: savedFile.filename })
                     : savedFile.userVisible
-                    ? `文件已保存到你选择的系统文件夹：${savedFile.filename}`
-                    : `文件已保存到应用沙盒：${savedFile.uri}`,
+                    ? t("src.components.chat.codeblock.saved_to_user_folder", { filename: savedFile.filename })
+                    : t("src.components.chat.codeblock.saved_to_app_sandbox", { uri: savedFile.uri }),
             );
             setTimeout(() => setSaved(false), 1600);
         } catch (error) {
-            Alert.alert("下载失败", error instanceof Error ? error.message : "无法保存 HTML 代码块。");
+            Alert.alert(
+                t("src.components.chat.codeblock.download_failed"),
+                error instanceof Error ? error.message : t("src.components.chat.codeblock.unable_to_save_html_block"),
+            );
         }
     };
 
@@ -114,7 +117,7 @@ export const CodeBlock = memo(function CodeBlock({
                         <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                             <View style={[styles.modalHeader, { backgroundColor: colors.surfaceStrong, borderBottomColor: colors.border }]}>
                                 <Text style={[styles.modalTitle, { color: colors.text }]} numberOfLines={1}>
-                                    HTML 预览
+                                    {t("src.components.chat.codeblock.html_preview")}
                                 </Text>
                                 <View style={styles.modalActions}>
                                     <Pressable style={styles.iconButton} onPress={() => void handleSaveHtmlSnippet()}>

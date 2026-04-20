@@ -2,8 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useT } from "@/components/providers/LocaleProvider";
-import { LocalizedText } from "@/lib/locale";
+import { useResolveText } from "@/components/providers/LocaleProvider";
 
 export function ConfigCard({
     title,
@@ -16,8 +15,8 @@ export function ConfigCard({
     className,
     contentClassName,
 }: {
-    title: LocalizedText | string;
-    description?: LocalizedText | string;
+    title: string;
+    description?: string;
     children: React.ReactNode;
     footer?: React.ReactNode;
     variant?: "summary" | "list" | "editor";
@@ -26,7 +25,7 @@ export function ConfigCard({
     className?: string;
     contentClassName?: string;
 }) {
-    const t = useT();
+    const resolveText = useResolveText();
 
     const resolvedHeightClass =
         bodyHeight === "auto"
@@ -47,8 +46,8 @@ export function ConfigCard({
     return (
         <Card className={cn("min-h-0 rounded-2xl border-slate-200 bg-white shadow-sm", className)}>
             <CardHeader className="space-y-2">
-                <CardTitle className="text-lg text-slate-900">{t(title)}</CardTitle>
-                {description ? <CardDescription className="text-sm leading-6 text-slate-600">{t(description)}</CardDescription> : null}
+                <CardTitle className="text-lg text-slate-900">{resolveText(title)}</CardTitle>
+                {description ? <CardDescription className="text-sm leading-6 text-slate-600">{resolveText(description)}</CardDescription> : null}
             </CardHeader>
             <CardContent className="min-h-0 space-y-4 overflow-hidden">
                 <div className={cn("min-h-0", resolvedHeightClass, resolvedScrollClass, contentClassName)}>

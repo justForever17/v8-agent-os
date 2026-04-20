@@ -10,7 +10,6 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 type AdminLoginScreenProps = {
     bootstrapMode: boolean;
@@ -38,13 +37,13 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
             });
 
             if (result?.error) {
-                setError(t(lt("登录失败，请检查登录名和密码", "Sign-in failed. Check your login and password.")));
+                setError(t("components.admin.AdminLoginScreen.k4a5737fe"));
                 return;
             }
 
             window.location.href = "/admin";
         } catch {
-            setError(t(lt("发生错误，请稍后重试", "Something went wrong. Please try again.")));
+            setError(t("components.admin.AdminLoginScreen.k8d313aaf"));
         } finally {
             setIsLoading(false);
         }
@@ -53,7 +52,7 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
     const handleBootstrap = async (event: React.FormEvent) => {
         event.preventDefault();
         if (password !== confirmPassword) {
-            setError(t(lt("两次输入的密码不一致", "The passwords do not match.")));
+            setError(t("components.admin.AdminLoginScreen.kc494ae80"));
             return;
         }
 
@@ -67,7 +66,7 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(String(data.error || t(lt("首次设置失败", "Initial setup failed."))));
+                throw new Error(String(data.error || t("components.admin.AdminLoginScreen.k3407cd6e")));
             }
 
             const result = await signIn("credentials", {
@@ -76,12 +75,12 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                 redirect: false,
             });
             if (result?.error) {
-                throw new Error(t(lt("管理员创建成功，但自动登录失败", "The admin account was created, but automatic sign-in failed.")));
+                throw new Error(t("components.admin.AdminLoginScreen.k1b4fc451"));
             }
 
             window.location.href = "/admin";
         } catch (err) {
-            setError(err instanceof Error ? err.message : t(lt("首次设置失败", "Initial setup failed.")));
+            setError(err instanceof Error ? err.message : t("components.admin.AdminLoginScreen.k3407cd6e"));
         } finally {
             setIsLoading(false);
         }
@@ -93,13 +92,13 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                 <CardHeader className="space-y-2 text-center">
                     <CardTitle className="text-2xl font-bold tracking-tight">
                         {bootstrapMode
-                            ? t(lt("首次设置管理台", "Set up admin console"))
-                            : t(lt("管理员登录", "Admin sign in"))}
+                            ? t("components.admin.AdminLoginScreen.k15bbd23b")
+                            : t("components.admin.AdminLoginScreen.k7fb1b1d9")}
                     </CardTitle>
                     <CardDescription>
                         {bootstrapMode
-                            ? t(lt("先设置管理员登录名和密码，再进入配置页。", "Create the admin login first, then enter the console."))
-                            : t(lt("请输入管理员登录名和密码。", "Enter your admin login and password."))}
+                            ? t("components.admin.AdminLoginScreen.k9da1e463")
+                            : t("components.admin.AdminLoginScreen.ke6914745")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -110,7 +109,7 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                             </Alert>
                         ) : null}
                         <div className="space-y-2">
-                            <Label htmlFor="login">{t(lt("登录名", "Login"))}</Label>
+                            <Label htmlFor="login">{t("components.admin.AdminLoginScreen.k27ba7ff8")}</Label>
                             <div className="relative">
                                 <UserCircle2 className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                                 <Input
@@ -118,8 +117,8 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                                     type="text"
                                     autoComplete="username"
                                     placeholder={bootstrapMode
-                                        ? t(lt("例如：admin", "Example: admin"))
-                                        : t(lt("输入登录名", "Enter your login"))}
+                                        ? t("components.admin.AdminLoginScreen.ka7b7cd19")
+                                        : t("components.admin.AdminLoginScreen.k2f2f47d8")}
                                     className="pl-9"
                                     value={login}
                                     onChange={(event) => setLogin(event.target.value)}
@@ -130,12 +129,12 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                         </div>
                         {bootstrapMode ? (
                             <div className="space-y-2">
-                                <Label htmlFor="name">{t(lt("昵称", "Display name"))}</Label>
+                                <Label htmlFor="name">{t("components.admin.AdminLoginScreen.k59737457")}</Label>
                                 <Input
                                     id="name"
                                     type="text"
                                     autoComplete="name"
-                                    placeholder={t(lt("例如：管理员", "Example: Admin"))}
+                                    placeholder={t("components.admin.AdminLoginScreen.kbf45db26")}
                                     value={name}
                                     onChange={(event) => setName(event.target.value)}
                                     required
@@ -145,7 +144,7 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                         ) : null}
                         <div className="space-y-2">
                             <Label htmlFor="password">
-                                {bootstrapMode ? t(lt("设置密码", "Set password")) : t(lt("密码", "Password"))}
+                                {bootstrapMode ? t("components.admin.AdminLoginScreen.kc88150fa") : t("components.admin.AdminLoginScreen.ka3779233")}
                             </Label>
                             <div className="relative">
                                 <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -163,7 +162,7 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                         </div>
                         {bootstrapMode ? (
                             <div className="space-y-2">
-                                <Label htmlFor="confirmPassword">{t(lt("确认密码", "Confirm password"))}</Label>
+                                <Label htmlFor="confirmPassword">{t("components.admin.AdminLoginScreen.k641b208a")}</Label>
                                 <Input
                                     id="confirmPassword"
                                     type="password"
@@ -179,17 +178,17 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                             {isLoading ? (
                                 <>
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    {bootstrapMode ? t(lt("设置中...", "Setting up...")) : t(lt("登录中...", "Signing in..."))}
+                                    {bootstrapMode ? t("components.admin.AdminLoginScreen.kdc92690a") : t("components.admin.AdminLoginScreen.k057cb3cb")}
                                 </>
-                            ) : bootstrapMode ? t(lt("完成首次设置", "Finish setup")) : t(lt("登录", "Sign in"))}
+                            ) : bootstrapMode ? t("components.admin.AdminLoginScreen.kea4c62a1") : t("components.admin.AdminLoginScreen.k97aefe66")}
                         </Button>
                     </form>
                 </CardContent>
                 <CardFooter className="justify-center">
                     <p className="text-xs text-muted-foreground">
                         {bootstrapMode
-                            ? t(lt("完成后会自动进入管理台。", "You'll enter the admin console automatically after setup."))
-                            : t(lt("仅限授权人员访问。", "Authorized access only."))}
+                            ? t("components.admin.AdminLoginScreen.k5fe1be7e")
+                            : t("components.admin.AdminLoginScreen.kcf04987c")}
                     </p>
                 </CardFooter>
             </Card>

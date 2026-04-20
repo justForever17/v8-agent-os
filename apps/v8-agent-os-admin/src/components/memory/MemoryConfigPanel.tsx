@@ -1,5 +1,4 @@
 "use client";
-
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,16 +9,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Loader2, Save } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
-
 interface SysModel {
     id: string;
     modelId: string;
     name: string;
     type: string;
-    provider: { name: string; icon?: string };
+    provider: {
+        name: string;
+        icon?: string;
+    };
 }
-
 interface MemoryConfig {
     extraction_model?: string;
     extraction_temperature?: number;
@@ -52,7 +51,6 @@ interface MemoryConfig {
     retrieval_threshold_source?: string;
     retrieval_threshold_is_default?: boolean;
 }
-
 interface DurablePolicyDefaults {
     preference_importance_threshold: number;
     preference_confidence_threshold: number;
@@ -63,11 +61,9 @@ interface DurablePolicyDefaults {
     global_operational_importance_threshold: number;
     global_operational_confidence_threshold: number;
 }
-
 interface MemoryConfigResponse extends MemoryConfig {
     durable_policy_defaults?: DurablePolicyDefaults;
 }
-
 const MEMORY_DURABLE_POLICY_DEFAULTS: DurablePolicyDefaults = {
     preference_importance_threshold: 65,
     preference_confidence_threshold: 0.7,
@@ -78,20 +74,13 @@ const MEMORY_DURABLE_POLICY_DEFAULTS: DurablePolicyDefaults = {
     global_operational_importance_threshold: 58,
     global_operational_confidence_threshold: 0.68,
 };
-
 function buildMemoryConfigSavePayload(config: MemoryConfig): MemoryConfig {
-    const {
-        recommended_retrieval_threshold,
-        retrieval_threshold_source,
-        retrieval_threshold_is_default,
-        ...editable
-    } = config;
+    const { recommended_retrieval_threshold, retrieval_threshold_source, retrieval_threshold_is_default, ...editable } = config;
     void recommended_retrieval_threshold;
     void retrieval_threshold_source;
     void retrieval_threshold_is_default;
     return editable;
 }
-
 interface RecallPreviewItem {
     id: string;
     fact: string;
@@ -103,7 +92,6 @@ interface RecallPreviewItem {
     accepted?: boolean;
     reject_reason?: string;
 }
-
 interface RecallPreviewResponse {
     query?: string;
     threshold_snapshot?: number;
@@ -121,7 +109,6 @@ interface RecallPreviewResponse {
     };
     items?: RecallPreviewItem[];
 }
-
 export default function MemoryConfigPanel() {
     const t = useT();
     const [config, setConfig] = useState<MemoryConfig>({});
@@ -135,7 +122,6 @@ export default function MemoryConfigPanel() {
     const [recallPreviewLoading, setRecallPreviewLoading] = useState(false);
     const [recallPreviewError, setRecallPreviewError] = useState<string | null>(null);
     const [recallPreview, setRecallPreview] = useState<RecallPreviewResponse | null>(null);
-
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
@@ -143,30 +129,28 @@ export default function MemoryConfigPanel() {
                 fetch("/api/settings/memory-config"),
                 fetch("/api/models")
             ]);
-            
             if (confRes.ok) {
                 const fetchedConfig: MemoryConfigResponse = await confRes.json();
-                const {
-                    durable_policy_defaults,
-                    ...editableConfig
-                } = fetchedConfig;
+                const { durable_policy_defaults, ...editableConfig } = fetchedConfig;
                 if (durable_policy_defaults) {
                     setDurableDefaults(durable_policy_defaults);
                 }
                 setConfig(editableConfig);
             }
-            if (modRes.ok) setModels(await modRes.json());
-        } catch { /* ignore */ }
-        finally { setLoading(false); }
+            if (modRes.ok)
+                setModels(await modRes.json());
+        }
+        catch { /* ignore */ }
+        finally {
+            setLoading(false);
+        }
     }, []);
-
     useEffect(() => { loadData(); }, [loadData]);
-
     const handleRecallPreview = useCallback(async () => {
         const normalizedQuery = recallQuery.trim();
         if (!normalizedQuery) {
             setRecallPreview(null);
-            setRecallPreviewError("请先输入一条要诊断的查询。");
+            setRecallPreviewError(t("components.memory.MemoryConfigPanel.recallPreview.emptyQuery"));
             return;
         }
         setRecallPreviewLoading(true);
@@ -179,14 +163,15 @@ export default function MemoryConfigPanel() {
                 throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
             }
             setRecallPreview(payload);
-        } catch (error) {
+        }
+        catch (error) {
             setRecallPreview(null);
             setRecallPreviewError(error instanceof Error ? error.message : String(error));
-        } finally {
+        }
+        finally {
             setRecallPreviewLoading(false);
         }
     }, [recallQuery]);
-
     const handleSave = async () => {
         setSaving(true);
         try {
@@ -197,407 +182,283 @@ export default function MemoryConfigPanel() {
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } finally { setSaving(false); }
+        }
+        finally {
+            setSaving(false);
+        }
     };
-
-    const renderImportanceSlider = (
-        key: keyof DurablePolicyDefaults,
-        label: string,
-        description: string,
-    ) => (
-        <div className="space-y-2">
+    const renderImportanceSlider = (key: keyof DurablePolicyDefaults, label: string, description: string) => (<div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
                 <Label>{label}</Label>
                 <span className="text-sm font-mono text-muted-foreground">
                     {Math.round((config[key] as number | undefined) ?? durableDefaults[key])}
                     <span className="ml-2 text-xs text-muted-foreground/80">
-                        {t(lt("默认", "Default"))} {durableDefaults[key]}
+                        {t("components.memory.MemoryConfigPanel.k5e4b837d")} {durableDefaults[key]}
                     </span>
                 </span>
             </div>
-            <Slider
-                value={[Math.round((config[key] as number | undefined) ?? durableDefaults[key])]}
-                onValueChange={([v]) => setConfig(prev => ({ ...prev, [key]: v }))}
-                min={0}
-                max={100}
-                step={1}
-                className="w-full"
-            />
+            <Slider value={[Math.round((config[key] as number | undefined) ?? durableDefaults[key])]} onValueChange={([v]) => setConfig(prev => ({ ...prev, [key]: v }))} min={0} max={100} step={1} className="w-full"/>
             <p className="text-xs text-muted-foreground">{description}</p>
-        </div>
-    );
-
-    const renderConfidenceSlider = (
-        key: keyof DurablePolicyDefaults,
-        label: string,
-        description: string,
-    ) => (
-        <div className="space-y-2">
+        </div>);
+    const renderConfidenceSlider = (key: keyof DurablePolicyDefaults, label: string, description: string) => (<div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
                 <Label>{label}</Label>
                 <span className="text-sm font-mono text-muted-foreground">
                     {(((config[key] as number | undefined) ?? durableDefaults[key]) as number).toFixed(2)}
                     <span className="ml-2 text-xs text-muted-foreground/80">
-                        {t(lt("默认", "Default"))} {durableDefaults[key].toFixed(2)}
+                        {t("components.memory.MemoryConfigPanel.k5e4b837d")} {durableDefaults[key].toFixed(2)}
                     </span>
                 </span>
             </div>
-            <Slider
-                value={[((config[key] as number | undefined) ?? durableDefaults[key]) as number]}
-                onValueChange={([v]) => setConfig(prev => ({ ...prev, [key]: Number(v.toFixed(2)) }))}
-                min={0}
-                max={1}
-                step={0.01}
-                className="w-full"
-            />
+            <Slider value={[((config[key] as number | undefined) ?? durableDefaults[key]) as number]} onValueChange={([v]) => setConfig(prev => ({ ...prev, [key]: Number(v.toFixed(2)) }))} min={0} max={1} step={0.01} className="w-full"/>
             <p className="text-xs text-muted-foreground">{description}</p>
-        </div>
-    );
-
+        </div>);
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-48">
-                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-            </div>
-        );
+        return (<div className="flex items-center justify-center h-48">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground"/>
+            </div>);
     }
-
     const llmModels = models.filter(m => ['TEXT', 'MULTIMODAL', 'chat', 'LLM'].includes(m.type.toUpperCase() || 'LLM'));
     const embedModels = models.filter(m => ['EMBEDDING'].includes(m.type.toUpperCase()));
     const rerankModels = models.filter(m => ['RERANK'].includes(m.type.toUpperCase()));
-
-    return (
-        <div className="space-y-4">
+    return (<div className="space-y-4">
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t("模型绑定")}</CardTitle>
-                    <CardDescription>{t("记忆提取、Embedding 与 Rerank 都从这里指定，并最终写回统一的 models.json 事实源。")}</CardDescription>
+                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k92cabc30")}</CardTitle>
+                    <CardDescription>{t("components.memory.MemoryConfigPanel.k6b835e95")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="space-y-1.5">
-                        <Label>{t("抽取模型 (LLM)")}</Label>
-                        <Select
-                            value={config.extraction_model || ""}
-                            onValueChange={(val) => setConfig(prev => ({ ...prev, extraction_model: val }))}
-                        >
+                        <Label>{t("components.memory.MemoryConfigPanel.k3fced67a")}</Label>
+                        <Select value={config.extraction_model || ""} onValueChange={(val) => setConfig(prev => ({ ...prev, extraction_model: val }))}>
                             <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t("请选择语言模型以进行实体与偏好抽取")} />
+                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k92ef9586")}/>
                             </SelectTrigger>
                             <SelectContent>
-                                {llmModels.map(m => (
-                                    <SelectItem key={m.id} value={m.id}>
+                                {llmModels.map(m => (<SelectItem key={m.id} value={m.id}>
                                         {m.name || m.id} ({m.provider?.name})
-                                    </SelectItem>
-                                ))}
+                                    </SelectItem>))}
                             </SelectContent>
                         </Select>
-                        <p className="text-xs text-muted-foreground">{t("用于读取对话记录并萃取出知识图谱实体、用户偏好的基础模型。")}</p>
+                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.ke4b6e27a")}</p>
                     </div>
 
                     <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                            <Label>{t("抽取温度 (Temperature)")}</Label>
+                            <Label>{t("components.memory.MemoryConfigPanel.kd147e797")}</Label>
                             <span className="text-sm font-mono text-muted-foreground">
                                 {(config.extraction_temperature ?? 0.3).toFixed(2)}
                             </span>
                         </div>
-                        <Slider
-                            value={[config.extraction_temperature ?? 0.3]}
-                            onValueChange={([v]) => setConfig(prev => ({ ...prev, extraction_temperature: v }))}
-                            min={0} max={1} step={0.05}
-                            className="w-full"
-                        />
-                        <p className="text-xs text-muted-foreground">{t("低值（0~0.3）使提取结果更稳定，高值更有创意")}</p>
+                        <Slider value={[config.extraction_temperature ?? 0.3]} onValueChange={([v]) => setConfig(prev => ({ ...prev, extraction_temperature: v }))} min={0} max={1} step={0.05} className="w-full"/>
+                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k16320e48")}</p>
                     </div>
 
                     <div className="space-y-1.5">
-                        <Label>{t("嵌入模型 (Embedding)")}</Label>
-                        <Select
-                            value={config.embedding_model || ""}
-                            onValueChange={(val) => setConfig(prev => ({ ...prev, embedding_model: val }))}
-                        >
+                        <Label>{t("components.memory.MemoryConfigPanel.k20b56b59")}</Label>
+                        <Select value={config.embedding_model || ""} onValueChange={(val) => setConfig(prev => ({ ...prev, embedding_model: val }))}>
                             <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t("请选择向量嵌入模型")} />
+                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k32d0f545")}/>
                             </SelectTrigger>
                             <SelectContent>
-                                {embedModels.map(m => (
-                                    <SelectItem key={m.id} value={m.id}>
+                                {embedModels.map(m => (<SelectItem key={m.id} value={m.id}>
                                         {m.name || m.id} ({m.provider?.name})
-                                    </SelectItem>
-                                ))}
+                                    </SelectItem>))}
                             </SelectContent>
                         </Select>
-                        <p className="text-xs text-muted-foreground">{t("用于生成用户查询和记忆条目的向量特征，支持语义相似度检索。")}</p>
+                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k2c0de4e9")}</p>
                     </div>
 
                     <div className="space-y-1.5">
-                        <Label>{t("全局检索重排模型")}</Label>
-                        <Select
-                            value={config.reranker_model || ""}
-                            onValueChange={(val) => setConfig(prev => ({ ...prev, reranker_model: val }))}
-                        >
+                        <Label>{t("components.memory.MemoryConfigPanel.k8476c9a1")}</Label>
+                        <Select value={config.reranker_model || ""} onValueChange={(val) => setConfig(prev => ({ ...prev, reranker_model: val }))}>
                             <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t("请选择重排序模型（可选）")} />
+                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k5dd610de")}/>
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="none">{t("无 (None)")}</SelectItem>
-                                {rerankModels.map(m => (
-                                    <SelectItem key={m.id} value={m.id}>
+                                <SelectItem value="none">{t("components.memory.MemoryConfigPanel.k2bc5c99c")}</SelectItem>
+                                {rerankModels.map(m => (<SelectItem key={m.id} value={m.id}>
                                         {m.name || m.id} ({m.provider?.name})
-                                    </SelectItem>
-                                ))}
+                                    </SelectItem>))}
                             </SelectContent>
                         </Select>
-                        <p className="text-xs text-muted-foreground">{t("主要服务 memory / RAG 的二阶段精排；若扩展生态或桌面候选没有单独指定，也会回退使用这里的全局重排模型。")}</p>
+                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.kfc781832")}</p>
                     </div>
                 </CardContent>
             </Card>
 
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t("RAG 检索协同")}</CardTitle>
-                    <CardDescription>{t("控制 recall 的召回方式、Top-K、阈值和被动注入行为，让模型绑定和检索策略一起生效。")}</CardDescription>
+                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k81935040")}</CardTitle>
+                    <CardDescription>{t("components.memory.MemoryConfigPanel.k2014a965")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                            <Label>{t("Recall 策略")}</Label>
-                            <Select
-                                value={config.recall_strategy || "balanced"}
-                                onValueChange={(val) => setConfig(prev => ({ ...prev, recall_strategy: val }))}
-                            >
+                            <Label>{t("components.memory.MemoryConfigPanel.ke7c165e2")}</Label>
+                            <Select value={config.recall_strategy || "balanced"} onValueChange={(val) => setConfig(prev => ({ ...prev, recall_strategy: val }))}>
                                 <SelectTrigger className="w-full">
-                                    <SelectValue placeholder={t("请选择 recall 策略")} />
+                                    <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k605cbf3e")}/>
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="balanced">{t("平衡混合检索")}</SelectItem>
-                                    <SelectItem value="semantic">{t("语义优先")}</SelectItem>
-                                    <SelectItem value="keyword">{t("关键词优先")}</SelectItem>
+                                    <SelectItem value="balanced">{t("components.memory.MemoryConfigPanel.k4caf35c0")}</SelectItem>
+                                    <SelectItem value="semantic">{t("components.memory.MemoryConfigPanel.k49c8bf94")}</SelectItem>
+                                    <SelectItem value="keyword">{t("components.memory.MemoryConfigPanel.ke56e6800")}</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
                         <div className="space-y-1.5">
                             <Label>{t("Recall Top-K")}</Label>
-                            <Input
-                                type="number"
-                                value={config.recall_top_k ?? 3}
-                                onChange={(e) => setConfig(prev => ({ ...prev, recall_top_k: Number(e.target.value) }))}
-                                min={1}
-                                max={10}
-                            />
+                            <Input type="number" value={config.recall_top_k ?? 3} onChange={(e) => setConfig(prev => ({ ...prev, recall_top_k: Number(e.target.value) }))} min={1} max={10}/>
                         </div>
                     </div>
 
                     <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                            <Label>{t("检索阈值")}</Label>
+                            <Label>{t("components.memory.MemoryConfigPanel.k01b7cb9e")}</Label>
                             <span className="text-sm font-mono text-muted-foreground">
                                 {(config.retrieval_threshold ?? 0).toFixed(2)}
                             </span>
                         </div>
-                        <Slider
-                            value={[config.retrieval_threshold ?? 0]}
-                            onValueChange={([v]) => setConfig(prev => ({ ...prev, retrieval_threshold: v }))}
-                            min={0}
-                            max={1}
-                            step={0.05}
-                            className="w-full"
-                        />
-                        <p className="text-xs text-muted-foreground">{t("用于过滤低相关度 recall 结果。值越高，注入内容越克制。")}</p>
+                        <Slider value={[config.retrieval_threshold ?? 0]} onValueChange={([v]) => setConfig(prev => ({ ...prev, retrieval_threshold: v }))} min={0} max={1} step={0.05} className="w-full"/>
+                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k57fafa03")}</p>
                         <p className="text-xs text-muted-foreground">
                             {config.retrieval_threshold_source === "user"
-                                ? t("当前值来自你的手动配置。")
-                                : t(`当前值来自 engine 推荐默认值 ${(config.recommended_retrieval_threshold ?? 0.2).toFixed(2)}；只有缺省时才会自动写入。`)}
+            ? t("components.memory.MemoryConfigPanel.ke60351be")
+            : t("components.memory.MemoryConfigPanel.retrievalThreshold.recommendedDefault", {
+                threshold: (config.recommended_retrieval_threshold ?? 0.2).toFixed(2),
+            })}
                         </p>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                         <div className="flex items-center justify-between rounded-lg border p-3">
                             <div className="space-y-1">
-                                <Label>{t("被动注入 RAG")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("允许主理人在高相关度时静默注入相关记忆结果。")}</p>
+                                <Label>{t("components.memory.MemoryConfigPanel.k034122e3")}</Label>
+                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k4346976f")}</p>
                             </div>
-                            <Switch
-                                checked={config.passive_injection_enabled ?? true}
-                                onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_injection_enabled: checked }))}
-                            />
+                            <Switch checked={config.passive_injection_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_injection_enabled: checked }))}/>
                         </div>
                         <div className="flex items-center justify-between rounded-lg border p-3">
                             <div className="space-y-1">
-                                <Label>{t("图谱扩展")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("在 recall 里追加知识图谱的一跳上下文，适合关系型问题。")}</p>
+                                <Label>{t("components.memory.MemoryConfigPanel.k2fda3796")}</Label>
+                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k77cf7080")}</p>
                             </div>
-                            <Switch
-                                checked={config.graph_enabled ?? true}
-                                onCheckedChange={(checked) => setConfig(prev => ({ ...prev, graph_enabled: checked }))}
-                            />
+                            <Switch checked={config.graph_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, graph_enabled: checked }))}/>
                         </div>
                         <div className="flex items-center justify-between rounded-lg border p-3">
                             <div className="space-y-1">
-                                <Label>{t("FTS 关键词检索")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("为 recall 增加全文搜索命中，适合精确关键词和文件名。")}</p>
+                                <Label>{t("components.memory.MemoryConfigPanel.k1b7acecd")}</Label>
+                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.kd8da426a")}</p>
                             </div>
-                            <Switch
-                                checked={config.fts_enabled ?? true}
-                                onCheckedChange={(checked) => setConfig(prev => ({ ...prev, fts_enabled: checked }))}
-                            />
+                            <Switch checked={config.fts_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, fts_enabled: checked }))}/>
                         </div>
                         <div className="flex items-center justify-between rounded-lg border p-3">
                             <div className="space-y-1">
-                                <Label>{t("会话后自动提取")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("控制 Memory Agent 是否在会话完成后自动提取偏好和知识。")}</p>
+                                <Label>{t("components.memory.MemoryConfigPanel.k70809028")}</Label>
+                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k60bfdf7d")}</p>
                             </div>
-                            <Switch
-                                checked={config.extraction_enabled ?? true}
-                                onCheckedChange={(checked) => setConfig(prev => ({ ...prev, extraction_enabled: checked }))}
-                            />
+                            <Switch checked={config.extraction_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, extraction_enabled: checked }))}/>
                         </div>
                     </div>
 
                     <div className="space-y-3 rounded-lg border p-4">
                         <div className="space-y-1">
-                            <Label>{t("Recall 预览 / 诊断")}</Label>
+                            <Label>{t("components.memory.MemoryConfigPanel.k24b3561d")}</Label>
                             <p className="text-xs text-muted-foreground">
-                                {t("这里调用真实 unified recall，而不是 FTS-only 搜索，可直接看到阈值过滤、graph 扩展和最终入选结果。")}
+                                {t("components.memory.MemoryConfigPanel.k868ec385")}
                             </p>
                         </div>
                         <div className="flex gap-2">
-                            <Input
-                                value={recallQuery}
-                                onChange={(e) => setRecallQuery(e.target.value)}
-                                placeholder={t("输入一条要诊断的查询，例如：为什么记忆和RAG会命中不相关内容")}
-                            />
+                            <Input value={recallQuery} onChange={(e) => setRecallQuery(e.target.value)} placeholder={t("components.memory.MemoryConfigPanel.ka33b5be2")}/>
                             <Button onClick={handleRecallPreview} disabled={recallPreviewLoading}>
-                                {recallPreviewLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t("预览")}
+                                {recallPreviewLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : t("components.memory.MemoryConfigPanel.ke1192063")}
                             </Button>
                         </div>
-                        {recallPreviewError ? (
-                            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        {recallPreviewError ? (<div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                                 {recallPreviewError}
-                            </div>
-                        ) : null}
-                        {recallPreview ? (
-                            <div className="space-y-3">
+                            </div>) : null}
+                        {recallPreview ? (<div className="space-y-3">
                                 <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground md:grid-cols-2">
-                                    <div>{t("阈值快照")}: {(recallPreview.threshold_snapshot ?? 0).toFixed(2)}</div>
-                                    <div>{t("实际过滤地板")}: {(recallPreview.effective_acceptance_threshold ?? 0).toFixed(2)}</div>
-                                    <div>{t("阈值来源")}: {recallPreview.threshold_source === "user" ? t("用户手动配置") : t("engine 推荐默认值")}</div>
-                                    <div>{t("策略")}: {recallPreview.diagnostics?.recall_strategy || "balanced"}</div>
-                                    <div>{t("Graph 扩展")}: {recallPreview.diagnostics?.graph_allowed ? t("已启用") : (recallPreview.diagnostics?.graph_reject_reason || t("未启用"))}</div>
+                                    <div>{t("components.memory.MemoryConfigPanel.k834a3e94")}: {(recallPreview.threshold_snapshot ?? 0).toFixed(2)}</div>
+                                    <div>{t("components.memory.MemoryConfigPanel.k37780c01")}: {(recallPreview.effective_acceptance_threshold ?? 0).toFixed(2)}</div>
+                                    <div>{t("components.memory.MemoryConfigPanel.k23555f99")}: {recallPreview.threshold_source === "user" ? t("components.memory.MemoryConfigPanel.k68b26cc9") : t("components.memory.MemoryConfigPanel.k99035a27")}</div>
+                                    <div>{t("components.memory.MemoryConfigPanel.k501e6a4b")}: {recallPreview.diagnostics?.recall_strategy || "balanced"}</div>
+                                    <div>{t("components.memory.MemoryConfigPanel.kc52ea7d5")}: {recallPreview.diagnostics?.graph_allowed ? t("components.memory.MemoryConfigPanel.k6cccddd7") : (recallPreview.diagnostics?.graph_reject_reason || t("components.memory.MemoryConfigPanel.k2634a52d"))}</div>
                                 </div>
                                 <div className="max-h-72 space-y-2 overflow-auto rounded-md border p-3">
-                                    {(recallPreview.items || []).length ? (
-                                        recallPreview.items?.map((item) => (
-                                            <div key={item.id} className="rounded-md border p-3 text-sm">
+                                    {(recallPreview.items || []).length ? (recallPreview.items?.map((item) => (<div key={item.id} className="rounded-md border p-3 text-sm">
                                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                                     <span>{item.source || "unknown"}</span>
                                                     <span>{item.scope || "global"}</span>
                                                     <span>{item.category || "general"}</span>
                                                     <span>{t("raw")} {(item.raw_relevance_score ?? 0).toFixed(4)}</span>
                                                     <span>{t("final")} {(item.final_relevance_score ?? 0).toFixed(4)}</span>
-                                                    <span>{item.accepted ? t("已入选") : t(`已拒绝${item.reject_reason ? ` (${item.reject_reason})` : ""}`)}</span>
+                                                    <span>{item.accepted
+                                                        ? t("components.memory.MemoryConfigPanel.k05278b16")
+                                                        : item.reject_reason
+                                                            ? t("components.memory.MemoryConfigPanel.recallPreview.rejectedWithReason", { reason: item.reject_reason })
+                                                            : t("components.memory.MemoryConfigPanel.recallPreview.rejected")}</span>
                                                 </div>
                                                 <p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.fact}</p>
-                                            </div>
-                                        ))
-                                    ) : (
-                                        <div className="text-xs text-muted-foreground">{t("当前查询没有通过阈值的 recall 结果。")}</div>
-                                    )}
+                                            </div>))) : (<div className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k7282aa62")}</div>)}
                                 </div>
-                            </div>
-                        ) : null}
+                            </div>) : null}
                     </div>
                 </CardContent>
             </Card>
 
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t(lt("记忆写入门槛", "Durable memory thresholds"))}</CardTitle>
+                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k4a2f7fd5")}</CardTitle>
                     <CardDescription>
-                        {t(
-                            lt(
-                                "这些阈值共同决定偏好、知识条目以及由知识条目驱动的知识图谱是否会被持久化。单次高价值信息也允许写入；重复只作为佐证，不要求每轮都记录。",
-                                "These thresholds decide whether preferences, knowledge items, and the graph relations derived from persisted knowledge are written durably. A single high-value fact can persist; repetition is supporting evidence, not a requirement.",
-                            ),
-                        )}
+                        {t("components.memory.MemoryConfigPanel.k93c31269")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                         <div className="space-y-4 rounded-lg border p-4">
                             <div className="space-y-1">
-                                <h3 className="text-sm font-semibold">{t(lt("偏好写入", "Preference persistence"))}</h3>
+                                <h3 className="text-sm font-semibold">{t("components.memory.MemoryConfigPanel.k13814d19")}</h3>
                                 <p className="text-xs text-muted-foreground">
-                                    {t(lt("用于控制用户偏好何时能进入长期记忆。", "Controls when user preferences become durable memory."))}
+                                    {t("components.memory.MemoryConfigPanel.k194d6f93")}
                                 </p>
                             </div>
-                            {renderImportanceSlider(
-                                "preference_importance_threshold",
-                                t(lt("偏好重要度阈值", "Preference importance threshold")),
-                                t(lt("分数越高越保守；适合只保留真正稳定、值得长期遵循的偏好。", "Higher values are stricter and keep only strong, durable preferences.")),
-                            )}
-                            {renderConfidenceSlider(
-                                "preference_confidence_threshold",
-                                t(lt("偏好置信度阈值", "Preference confidence threshold")),
-                                t(lt("用于限制低把握度的偏好抽取；值越高越克制。", "Filters out low-confidence preference extraction; higher is more conservative.")),
-                            )}
+                            {renderImportanceSlider("preference_importance_threshold", t("components.memory.MemoryConfigPanel.k28a3a8a2"), t("components.memory.MemoryConfigPanel.kd98a6548"))}
+                            {renderConfidenceSlider("preference_confidence_threshold", t("components.memory.MemoryConfigPanel.k2f476541"), t("components.memory.MemoryConfigPanel.ke96288d4"))}
                         </div>
 
                         <div className="space-y-4 rounded-lg border p-4">
                             <div className="space-y-1">
-                                <h3 className="text-sm font-semibold">{t(lt("项目 / 局部知识写入", "Project / scoped knowledge persistence"))}</h3>
+                                <h3 className="text-sm font-semibold">{t("components.memory.MemoryConfigPanel.k055bce93")}</h3>
                                 <p className="text-xs text-muted-foreground">
-                                    {t(lt("用于 project / channel 等非 global scope 的知识条目。", "Applies to knowledge items in non-global scopes such as project or channel."))}
+                                    {t("components.memory.MemoryConfigPanel.kfff873a0")}
                                 </p>
                             </div>
-                            {renderImportanceSlider(
-                                "knowledge_importance_threshold",
-                                t(lt("知识重要度阈值", "Knowledge importance threshold")),
-                                t(lt("分数越高，越倾向过滤掉一般性、边缘性的知识。", "Higher values filter out more marginal or low-impact knowledge.")),
-                            )}
-                            {renderConfidenceSlider(
-                                "knowledge_confidence_threshold",
-                                t(lt("知识置信度阈值", "Knowledge confidence threshold")),
-                                t(lt("控制局部知识是否足够可信后再写入 durable memory。", "Controls whether scoped knowledge is trusted enough to persist durably.")),
-                            )}
+                            {renderImportanceSlider("knowledge_importance_threshold", t("components.memory.MemoryConfigPanel.k54bff4ae"), t("components.memory.MemoryConfigPanel.k3401ec31"))}
+                            {renderConfidenceSlider("knowledge_confidence_threshold", t("components.memory.MemoryConfigPanel.k6a1e5fd9"), t("components.memory.MemoryConfigPanel.kbc8fb8f0"))}
                         </div>
 
                         <div className="space-y-4 rounded-lg border p-4">
                             <div className="space-y-1">
-                                <h3 className="text-sm font-semibold">{t(lt("全局稳定知识写入", "Global stable knowledge persistence"))}</h3>
+                                <h3 className="text-sm font-semibold">{t("components.memory.MemoryConfigPanel.k2bb10277")}</h3>
                                 <p className="text-xs text-muted-foreground">
-                                    {t(lt("适用于架构约定、长期规则和全局稳定事实。", "Applies to architecture conventions, long-lived rules, and globally stable facts."))}
+                                    {t("components.memory.MemoryConfigPanel.kf3bf6006")}
                                 </p>
                             </div>
-                            {renderImportanceSlider(
-                                "global_knowledge_importance_threshold",
-                                t(lt("全局知识重要度阈值", "Global knowledge importance threshold")),
-                                t(lt("提高后会减少进入全局 durable memory 的稳定知识条目。", "Higher values reduce the number of stable facts that make it into global durable memory.")),
-                            )}
-                            {renderConfidenceSlider(
-                                "global_knowledge_confidence_threshold",
-                                t(lt("全局知识置信度阈值", "Global knowledge confidence threshold")),
-                                t(lt("建议保持略高于局部知识阈值，以防把全局规则写得过于激进。", "Usually set slightly above scoped knowledge confidence to avoid over-eager global rules.")),
-                            )}
+                            {renderImportanceSlider("global_knowledge_importance_threshold", t("components.memory.MemoryConfigPanel.kc251c0a0"), t("components.memory.MemoryConfigPanel.kf6e4c5df"))}
+                            {renderConfidenceSlider("global_knowledge_confidence_threshold", t("components.memory.MemoryConfigPanel.k245dddf5"), t("components.memory.MemoryConfigPanel.k360c01ec"))}
                         </div>
 
                         <div className="space-y-4 rounded-lg border p-4">
                             <div className="space-y-1">
-                                <h3 className="text-sm font-semibold">{t(lt("全局操作知识写入", "Global operational knowledge persistence"))}</h3>
+                                <h3 className="text-sm font-semibold">{t("components.memory.MemoryConfigPanel.k8eafb2f4")}</h3>
                                 <p className="text-xs text-muted-foreground">
-                                    {t(lt("适用于可复用操作流程、运行时契约和经验证的工作方式。", "Applies to reusable workflows, runtime contracts, and proven operating practices."))}
+                                    {t("components.memory.MemoryConfigPanel.k507998d7")}
                                 </p>
                             </div>
-                            {renderImportanceSlider(
-                                "global_operational_importance_threshold",
-                                t(lt("全局操作知识重要度阈值", "Global operational importance threshold")),
-                                t(lt("降低后，单次但高价值的操作经验更容易被记住。", "Lower values make one-off but high-value operational learnings easier to retain.")),
-                            )}
-                            {renderConfidenceSlider(
-                                "global_operational_confidence_threshold",
-                                t(lt("全局操作知识置信度阈值", "Global operational confidence threshold")),
-                                t(lt("用于约束是否把某条方法论升级成可复用全局操作记忆。", "Controls whether an operational lesson is strong enough to become reusable global memory.")),
-                            )}
+                            {renderImportanceSlider("global_operational_importance_threshold", t("components.memory.MemoryConfigPanel.k9ced832d"), t("components.memory.MemoryConfigPanel.kd2b2f0db"))}
+                            {renderConfidenceSlider("global_operational_confidence_threshold", t("components.memory.MemoryConfigPanel.k8c7fa58e"), t("components.memory.MemoryConfigPanel.k5c76a920"))}
                         </div>
                     </div>
                 </CardContent>
@@ -605,148 +466,95 @@ export default function MemoryConfigPanel() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t(lt("上下文窗口", "Context window"))}</CardTitle>
+                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k20e21cd2")}</CardTitle>
                 <CardDescription>
-                    {t(
-                        lt(
-                                "控制被动记忆注入的主摘要、记忆地图与近期 teaser 形态；精确日志继续通过 memory_read_day 主动下钻。",
-                                "Controls the passive memory injection shape for summary, memory map, and recent teaser; exact day logs still come from memory_read_day when needed.",
-                            ),
-                        )}
+                    {t("components.memory.MemoryConfigPanel.k918c5973")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs leading-6 text-muted-foreground">
-                        {t(
-                            lt(
-                                "长期记忆 scope 现只保留 global、project:{id} 与 channel:{type}:{remote_id}。窗口外的历史会降级为 summary + memoryRef，而不是继续把完整日志被动塞进 prompt。",
-                                "Durable memory scopes are now limited to global, project:{id}, and channel:{type}:{remote_id}. Older history outside the active window is reduced to summary + memoryRef instead of full logs in the passive prompt.",
-                            ),
-                        )}
+                        {t("components.memory.MemoryConfigPanel.kb9fe428e")}
                     </div>
                     <div className="space-y-1.5">
-                        <Label>{t(lt("被动注入档位", "Passive injection profile"))}</Label>
-                        <Select
-                            value={config.passive_context_profile ?? "balanced"}
-                            onValueChange={(value) => setConfig(prev => ({ ...prev, passive_context_profile: value }))}
-                        >
+                        <Label>{t("components.memory.MemoryConfigPanel.k4948bac2")}</Label>
+                        <Select value={config.passive_context_profile ?? "balanced"} onValueChange={(value) => setConfig(prev => ({ ...prev, passive_context_profile: value }))}>
                             <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t(lt("选择一个注入档位", "Choose an injection profile"))} />
+                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k0bc78b0f")}/>
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="light">{t(lt("轻量", "Light"))}</SelectItem>
-                                <SelectItem value="balanced">{t(lt("平衡", "Balanced"))}</SelectItem>
-                                <SelectItem value="detailed">{t(lt("详细", "Detailed"))}</SelectItem>
+                                <SelectItem value="light">{t("components.memory.MemoryConfigPanel.kf6d4fc8c")}</SelectItem>
+                                <SelectItem value="balanced">{t("components.memory.MemoryConfigPanel.k0f34dd0d")}</SelectItem>
+                                <SelectItem value="detailed">{t("components.memory.MemoryConfigPanel.kc837fba0")}</SelectItem>
                             </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
                             {config.passive_context_profile === "light"
-                                ? t(lt("默认保留摘要主层与记忆地图，尽量减少近期日志 teaser。", "Keeps summary + memory map by default and minimizes recent teaser injection."))
-                                : config.passive_context_profile === "detailed"
-                                    ? t(lt("默认保留摘要、地图与更宽松的近期 teaser，更适合强上下文任务。", "Keeps summary, memory map, and a wider recent teaser for context-heavy tasks."))
-                                    : t(lt("默认保留摘要主层、记忆地图与短日志 teaser，作为推荐平衡档。", "Keeps summary, memory map, and a short recent teaser as the recommended balanced profile."))}
+            ? t("components.memory.MemoryConfigPanel.k6c54d9f2")
+            : config.passive_context_profile === "detailed"
+                ? t("components.memory.MemoryConfigPanel.k06f07893")
+                : t("components.memory.MemoryConfigPanel.k4a975a64")}
                         </p>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                            <Label>{t(lt("teaser 来源天数", "Teaser source days"))}</Label>
-                            <Input
-                                type="number"
-                                value={config.max_recent_days ?? 1}
-                                onChange={(e) => setConfig(prev => ({ ...prev, max_recent_days: Number(e.target.value) }))}
-                                min={1} max={14}
-                            />
+                            <Label>{t("components.memory.MemoryConfigPanel.kc04a35ed")}</Label>
+                            <Input type="number" value={config.max_recent_days ?? 1} onChange={(e) => setConfig(prev => ({ ...prev, max_recent_days: Number(e.target.value) }))} min={1} max={14}/>
                         </div>
                         <div className="space-y-1.5">
-                            <Label>{t("最大上下文 Token")}</Label>
-                            <Input
-                                type="number"
-                                value={config.max_context_tokens ?? 2000}
-                                onChange={(e) => setConfig(prev => ({ ...prev, max_context_tokens: Number(e.target.value) }))}
-                                min={500} max={8000} step={100}
-                            />
+                            <Label>{t("components.memory.MemoryConfigPanel.k48033213")}</Label>
+                            <Input type="number" value={config.max_context_tokens ?? 2000} onChange={(e) => setConfig(prev => ({ ...prev, max_context_tokens: Number(e.target.value) }))} min={500} max={8000} step={100}/>
                         </div>
                     </div>
                     <div className="flex justify-end">
-                        <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setShowAdvancedContextSettings(prev => !prev)}
-                        >
+                        <Button type="button" variant="outline" size="sm" onClick={() => setShowAdvancedContextSettings(prev => !prev)}>
                             {showAdvancedContextSettings
-                                ? t(lt("收起高级注入开关", "Hide advanced injection settings"))
-                                : t(lt("展开高级注入开关", "Show advanced injection settings"))}
+            ? t("components.memory.MemoryConfigPanel.k3d91ba2e")
+            : t("components.memory.MemoryConfigPanel.kb9e394ac")}
                         </Button>
                     </div>
-                    {showAdvancedContextSettings ? (
-                        <div className="space-y-4 rounded-lg border p-4">
+                    {showAdvancedContextSettings ? (<div className="space-y-4 rounded-lg border p-4">
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                                 <div className="flex items-center justify-between rounded-lg border p-3">
                                     <div className="space-y-1">
-                                        <Label>{t(lt("摘要主层", "Summary layer"))}</Label>
-                                        <p className="text-xs text-muted-foreground">{t(lt("控制 MEMORY SUMMARY 是否进入被动上下文。", "Controls whether MEMORY SUMMARY enters passive context."))}</p>
+                                        <Label>{t("components.memory.MemoryConfigPanel.k3d2ee76a")}</Label>
+                                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k36c29574")}</p>
                                     </div>
-                                    <Switch
-                                        checked={config.passive_summary_enabled ?? true}
-                                        onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_summary_enabled: checked }))}
-                                    />
+                                    <Switch checked={config.passive_summary_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_summary_enabled: checked }))}/>
                                 </div>
                                 <div className="flex items-center justify-between rounded-lg border p-3">
                                     <div className="space-y-1">
-                                        <Label>{t(lt("记忆地图", "Memory map"))}</Label>
-                                        <p className="text-xs text-muted-foreground">{t(lt("控制 MEMORY MAP 是否作为导航辅助层注入。", "Controls whether MEMORY MAP is injected as the auxiliary navigation layer."))}</p>
+                                        <Label>{t("components.memory.MemoryConfigPanel.ka8377e16")}</Label>
+                                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k1551bd08")}</p>
                                     </div>
-                                    <Switch
-                                        checked={config.passive_memory_map_enabled ?? true}
-                                        onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_memory_map_enabled: checked }))}
-                                    />
+                                    <Switch checked={config.passive_memory_map_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_memory_map_enabled: checked }))}/>
                                 </div>
                                 <div className="flex items-center justify-between rounded-lg border p-3">
                                     <div className="space-y-1">
-                                        <Label>{t(lt("近期 teaser", "Recent teaser"))}</Label>
-                                        <p className="text-xs text-muted-foreground">{t(lt("控制 RECENT ACTIVITY TEASER 是否进入被动上下文。", "Controls whether RECENT ACTIVITY TEASER enters passive context."))}</p>
+                                        <Label>{t("components.memory.MemoryConfigPanel.k924f6ae8")}</Label>
+                                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k84ef5137")}</p>
                                     </div>
-                                    <Switch
-                                        checked={config.passive_recent_activity_teaser_enabled ?? true}
-                                        onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_recent_activity_teaser_enabled: checked }))}
-                                    />
+                                    <Switch checked={config.passive_recent_activity_teaser_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, passive_recent_activity_teaser_enabled: checked }))}/>
                                 </div>
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">
-                                    <Label>{t(lt("teaser 条目上限", "Teaser item limit"))}</Label>
-                                    <Input
-                                        type="number"
-                                        value={config.passive_recent_activity_teaser_limit ?? 2}
-                                        onChange={(e) => setConfig(prev => ({ ...prev, passive_recent_activity_teaser_limit: Number(e.target.value) }))}
-                                        min={1}
-                                        max={12}
-                                    />
+                                    <Label>{t("components.memory.MemoryConfigPanel.k30ffc3e7")}</Label>
+                                    <Input type="number" value={config.passive_recent_activity_teaser_limit ?? 2} onChange={(e) => setConfig(prev => ({ ...prev, passive_recent_activity_teaser_limit: Number(e.target.value) }))} min={1} max={12}/>
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>{t(lt("记忆地图节点上限", "Memory map node limit"))}</Label>
-                                    <Input
-                                        type="number"
-                                        value={config.passive_memory_map_node_limit ?? 4}
-                                        onChange={(e) => setConfig(prev => ({ ...prev, passive_memory_map_node_limit: Number(e.target.value) }))}
-                                        min={1}
-                                        max={12}
-                                    />
+                                    <Label>{t("components.memory.MemoryConfigPanel.ke1aa629a")}</Label>
+                                    <Input type="number" value={config.passive_memory_map_node_limit ?? 4} onChange={(e) => setConfig(prev => ({ ...prev, passive_memory_map_node_limit: Number(e.target.value) }))} min={1} max={12}/>
                                 </div>
                             </div>
-                        </div>
-                    ) : null}
+                        </div>) : null}
                 </CardContent>
             </Card>
 
             <div className="flex justify-end">
                 <Button onClick={handleSave} disabled={saving}>
-                    {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-                    {saved ? t(lt("✓ 已保存", "✓ Saved")) : t("保存配置")}
+                    {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Save className="w-4 h-4 mr-2"/>}
+                    {saved ? t("components.memory.MemoryConfigPanel.k8b7fa48e") : t("components.memory.MemoryConfigPanel.kaf9b5430")}
                 </Button>
             </div>
-        </div>
-    );
+        </div>);
 }
-

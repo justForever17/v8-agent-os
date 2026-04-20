@@ -8,7 +8,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 export function AdminPasswordGate() {
     const t = useT();
@@ -22,11 +21,11 @@ export function AdminPasswordGate() {
 
     const handleSubmit = async () => {
         if (!newPassword || newPassword.length < 6) {
-            setError(t(lt("新密码至少需要 6 位", "Your new password must be at least 6 characters.")));
+            setError(t("components.admin.AdminPasswordGate.k0809b07d"));
             return;
         }
         if (newPassword !== confirmPassword) {
-            setError(t(lt("两次输入的密码不一致", "The passwords do not match.")));
+            setError(t("components.admin.AdminPasswordGate.kc494ae80"));
             return;
         }
 
@@ -43,14 +42,14 @@ export function AdminPasswordGate() {
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(String(data.error || t(lt("密码更新失败", "Password update failed."))));
+                throw new Error(String(data.error || t("components.admin.AdminPasswordGate.k726c977b")));
             }
             setNewPassword("");
             setConfirmPassword("");
             await update({ mustChangePassword: false });
             window.location.reload();
         } catch (err) {
-            setError(err instanceof Error ? err.message : t(lt("密码更新失败", "Password update failed.")));
+            setError(err instanceof Error ? err.message : t("components.admin.AdminPasswordGate.k726c977b"));
         } finally {
             setSaving(false);
         }
@@ -65,14 +64,14 @@ export function AdminPasswordGate() {
                 className="sm:max-w-md"
             >
                 <DialogHeader>
-                    <DialogTitle>{t(lt("请先修改管理员密码", "Update the admin password first"))}</DialogTitle>
+                    <DialogTitle>{t("components.admin.AdminPasswordGate.ked311bc6")}</DialogTitle>
                     <DialogDescription>
-                        {t(lt("先完成密码更新，再继续使用后台配置页。", "Finish updating the password before continuing to the admin console."))}
+                        {t("components.admin.AdminPasswordGate.kfabd25c5")}
                     </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-2">
                     <div className="space-y-2">
-                        <Label htmlFor="admin-new-password">{t(lt("新密码", "New password"))}</Label>
+                        <Label htmlFor="admin-new-password">{t("components.admin.AdminPasswordGate.kda6842bf")}</Label>
                         <Input
                             id="admin-new-password"
                             type="password"
@@ -82,7 +81,7 @@ export function AdminPasswordGate() {
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label htmlFor="admin-confirm-password">{t(lt("确认密码", "Confirm password"))}</Label>
+                        <Label htmlFor="admin-confirm-password">{t("components.admin.AdminPasswordGate.k641b208a")}</Label>
                         <Input
                             id="admin-confirm-password"
                             type="password"
@@ -95,7 +94,7 @@ export function AdminPasswordGate() {
                 </div>
                 <DialogFooter>
                     <Button onClick={() => void handleSubmit()} disabled={saving}>
-                        {saving ? t(lt("保存中...", "Saving...")) : t(lt("保存并进入后台", "Save and continue"))}
+                        {saving ? t("components.admin.AdminPasswordGate.kc225e8a3") : t("components.admin.AdminPasswordGate.k74f40a86")}
                     </Button>
                 </DialogFooter>
             </DialogContent>

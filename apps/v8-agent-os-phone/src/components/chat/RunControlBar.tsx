@@ -17,7 +17,7 @@ type SlotTone = {
     dot: string;
     surface: string;
     border: string;
-    stateLabel: { zh: string; en: string };
+    stateLabel: string;
 };
 
 function toneForStatus(status: string, colors: ReturnType<typeof useUiPrefs>["colors"]): SlotTone {
@@ -27,21 +27,21 @@ function toneForStatus(status: string, colors: ReturnType<typeof useUiPrefs>["co
                 dot: colors.success,
                 surface: "rgba(16,185,129,0.10)",
                 border: "rgba(16,185,129,0.18)",
-                stateLabel: { zh: "运行中", en: "Running" },
+                stateLabel: "shared.runtime_status.running",
             };
         case "waiting_approval":
             return {
                 dot: colors.warning,
                 surface: "rgba(245,158,11,0.10)",
                 border: "rgba(245,158,11,0.18)",
-                stateLabel: { zh: "等待审批", en: "Waiting approval" },
+                stateLabel: "shared.runtime_status.waiting_approval",
             };
         case "waiting_input":
             return {
                 dot: colors.warning,
                 surface: "rgba(245,158,11,0.10)",
                 border: "rgba(245,158,11,0.18)",
-                stateLabel: { zh: "等待输入", en: "Waiting input" },
+                stateLabel: "shared.runtime_status.waiting_input",
             };
         case "failed":
         case "cancelled":
@@ -50,7 +50,7 @@ function toneForStatus(status: string, colors: ReturnType<typeof useUiPrefs>["co
                 dot: colors.danger,
                 surface: "rgba(244,63,94,0.10)",
                 border: "rgba(244,63,94,0.18)",
-                stateLabel: { zh: "失败", en: "Failed" },
+                stateLabel: "shared.runtime_status.failed",
             };
         case "queued":
         case "completed":
@@ -59,7 +59,7 @@ function toneForStatus(status: string, colors: ReturnType<typeof useUiPrefs>["co
                 dot: colors.textSoft,
                 surface: "rgba(120,113,108,0.10)",
                 border: "rgba(120,113,108,0.16)",
-                stateLabel: { zh: "空闲", en: "Idle" },
+                stateLabel: "shared.runtime_status.idle",
             };
     }
 }
@@ -138,12 +138,12 @@ export function RunControlBar({
                 ? onInterrupt
                 : undefined;
     const actionLabel = stateMode === "warning"
-        ? t("打开审批", "Open approvals")
+        ? t("src.components.chat.runcontrolbar.open_approvals")
         : stateMode === "danger"
-            ? (canResume ? t("恢复运行", "Resume run") : t("重试运行", "Retry run"))
+            ? (canResume ? t("src.components.chat.runcontrolbar.resume_run") : t("src.components.chat.runcontrolbar.retry_run"))
             : stateMode === "success"
-                ? t("中断运行", "Interrupt run")
-                : t("当前无可执行动作", "No action available");
+                ? t("src.components.chat.runcontrolbar.interrupt_run")
+                : t("src.components.chat.runcontrolbar.no_action_available");
     const actionDisabled = !actionPress || busy || stateMode === "idle";
     const motion = useSharedValue(0);
     const highlightState = normalizedStatus === "running" || normalizedStatus === "waiting_approval";
@@ -172,11 +172,11 @@ export function RunControlBar({
     return (
         <View
             style={[styles.wrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
-            accessibilityLabel={runId ? `${t("运行控制", "Run controls")} ${runId}` : t("运行控制", "Run controls")}
+            accessibilityLabel={runId ? `${t("src.components.chat.runcontrolbar.run_controls")} ${runId}` : t("src.components.chat.runcontrolbar.run_controls")}
         >
             <View
                 accessibilityRole="image"
-                accessibilityLabel={t(tone.stateLabel.zh, tone.stateLabel.en)}
+                accessibilityLabel={t(tone.stateLabel)}
                 style={[
                     styles.iconSlot,
                     {

@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { Settings, Power, Trash2 } from "lucide-react";
 import type { ProviderOverview } from "@/components/models/control-plane-types";
 
@@ -25,17 +24,17 @@ interface ProviderCardProps {
     onToggle: (id: string, enabled: boolean) => void;
 }
 
-function getStatusLabel(status: string | undefined, t: (value: string | { "zh-CN": string; en: string }) => string) {
-    if (status === "healthy") return t(lt("健康", "Healthy"));
-    if (status === "attention") return t(lt("需关注", "Attention"));
-    if (status === "disabled") return t(lt("停用", "Disabled"));
-    return t(lt("未知", "Unknown"));
+function getStatusLabel(status: string | undefined, t: (value: string) => string) {
+    if (status === "healthy") return t("components.models.ProviderCard.k57c1ee90");
+    if (status === "attention") return t("components.models.ProviderCard.ke8a492aa");
+    if (status === "disabled") return t("components.models.ProviderCard.k31ff46bd");
+    return t("components.models.ProviderCard.k76ebff7c");
 }
 
-function getLocalVisionLabel(status: string | undefined, t: (value: string | { "zh-CN": string; en: string }) => string) {
-    if (status === "supported") return t(lt("本地视觉可用", "Local vision ready"));
-    if (status === "unsupported") return t(lt("本地视觉不可用", "Local vision unavailable"));
-    if (status === "unknown") return t(lt("未探测到本地视觉能力", "Local vision not detected"));
+function getLocalVisionLabel(status: string | undefined, t: (value: string) => string) {
+    if (status === "supported") return t("components.models.ProviderCard.k4c03d4f0");
+    if (status === "unsupported") return t("components.models.ProviderCard.k9ef4d508");
+    if (status === "unknown") return t("components.models.ProviderCard.k82f3edf9");
     return "";
 }
 
@@ -60,18 +59,18 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
             </CardHeader>
             <CardContent className="flex h-[calc(100%-4.5rem)] flex-col">
                 <div className="mb-4 min-h-[2.75rem] text-xs text-muted-foreground line-clamp-2">
-                    {health?.reason || provider.description || t("暂无说明。")}
+                    {health?.reason || provider.description || t("components.models.ProviderCard.k86e9a787")}
                 </div>
                 <div className="mt-auto flex items-start justify-between gap-3">
                     <div className="space-y-1 text-xs font-medium">
-                        <div>{provider.models.length} {t(lt("个模型", "models"))}</div>
+                        <div>{provider.models.length} {t("components.models.ProviderCard.k5503fbe2")}</div>
                         {health && (
                             <>
                                 <div className="text-muted-foreground">
-                                    {health.assignedRoles.length} {t(lt("个绑定", "bindings"))} · {t(lt("已启用", "Enabled"))} {health.enabledModels}/{health.models}
+                                    {health.assignedRoles.length} {t("components.models.ProviderCard.k5295e7fe")} · {t("components.models.ProviderCard.kdb6c0cc1")} {health.enabledModels}/{health.models}
                                 </div>
                                 <div className="text-muted-foreground">
-                                    {health.events} {t(lt("次事件", "events"))} · {t(lt("错误率", "Error rate"))} {Math.round(health.errorRate * 100)}% · {Math.round(health.avgLatencyMs)}ms
+                                    {health.events} {t("components.models.ProviderCard.kd457901c")} · {t("components.models.ProviderCard.k30f11e61")} {Math.round(health.errorRate * 100)}% · {Math.round(health.avgLatencyMs)}ms
                                 </div>
                                 {localVisionLabel ? (
                                     <div className="line-clamp-1 text-muted-foreground">

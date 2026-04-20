@@ -381,7 +381,7 @@ export const MessageBubble = memo(function MessageBubble({
         "login",
         "name",
     ])
-        || t("智能主管", "Supervisor");
+        || t("src.components.chat.messagebubble.supervisor");
     const isSupervisorLike = message.agentType === "supervisor" || message.role === "assistant";
     const resolvedAgentRoleLabel = readIdentityField(message, [
         "agentRoleLabel",
@@ -392,7 +392,7 @@ export const MessageBubble = memo(function MessageBubble({
         "identity_label",
         "agentTitle",
         "agent_title",
-    ]) || (isSupervisorLike ? t("主理人", "Lead") : "");
+    ]) || (isSupervisorLike ? t("src.components.chat.messagebubble.lead") : "");
     const rolePillBackground = message.agentType === "supervisor" ? "#FFF7ED" : palette.accentSoft;
     const rolePillBorder = message.agentType === "supervisor" ? "rgba(245,158,11,0.24)" : `${palette.accent}33`;
     const rolePillTextColor = message.agentType === "supervisor" ? "#D97706" : palette.accent;
@@ -473,23 +473,23 @@ export const MessageBubble = memo(function MessageBubble({
         }
         : null;
     const assistantPhaseLabel = taskProgress?.label || (streamPhase === "placeholder"
-        ? t("正在理解…", "Thinking…")
+        ? t("src.components.chat.messagebubble.thinking")
         : streamPhase === "task_planning"
-            ? t("正在推进任务…", "Advancing task…")
+            ? t("src.components.chat.messagebubble.advancing_task")
             : streamPhase === "tooling"
-                ? t("正在调用工具…", "Using tools…")
+                ? t("src.components.chat.messagebubble.using_tools")
                 : streamPhase === "artifact_ready"
-                    ? t("产物已就绪…", "Artifact ready…")
+                    ? t("src.components.chat.messagebubble.artifact_ready")
                     : streamPhase === "waiting_input"
-                        ? t("等待你的输入…", "Waiting for your input…")
+                        ? t("src.components.chat.messagebubble.waiting_for_your_input")
         : streamPhase === "agent_started"
-            ? t("开始执行…", "Starting…")
+            ? t("src.components.chat.messagebubble.starting")
             : streamPhase === "streaming"
-                ? t("正在输出…", "Streaming…")
+                ? t("src.components.chat.messagebubble.streaming")
                 : streamPhase === "settling"
-                    ? t("即将完成…", "Finishing…")
+                    ? t("src.components.chat.messagebubble.finishing")
                     : streamPhase === "error"
-                        ? t("执行异常", "Stream error")
+                        ? t("src.components.chat.messagebubble.stream_error")
                         : "");
     const showAssistantPhasePill = Boolean(assistantPhaseLabel) && !assistantActive;
 
@@ -545,7 +545,7 @@ export const MessageBubble = memo(function MessageBubble({
         const metadataLines = [
             commandPresetName ? `/${commandPresetName}` : "",
             ...skillReferences.map((skill) => `@${skill.name || skill.path}`),
-            taskPlanningMode ? t("任务模式", "Task mode") : "",
+            taskPlanningMode ? t("src.components.chat.messagebubble.task_mode") : "",
             ...userAttachments.map((attachment) => attachment.name),
         ].filter(Boolean);
         if (metadataLines.length > 0) {
@@ -578,7 +578,7 @@ export const MessageBubble = memo(function MessageBubble({
                 <View style={styles.userRowInner}>
                     <View style={[styles.userColumn, { width: userColumnWidth, maxWidth: userColumnWidth }]}>
                         <Text style={[styles.userLabel, { color: palette.textMuted }]} numberOfLines={1}>
-                            {userDisplayName || t("你", "You")}
+                            {userDisplayName || t("src.components.chat.messagebubble.you")}
                         </Text>
                         <View style={[styles.userBubbleShell, { width: userBubbleWidth, maxWidth: userBubbleWidth }]}>
                             <LinearGradient
@@ -604,7 +604,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         {taskPlanningMode ? (
                                             <View style={styles.userChip}>
                                                 <MaterialCommunityIcons name="format-list-checks" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>任务模式</Text>
+                                                <Text style={styles.userChipText}>{t("src.components.chat.messagebubble.task_mode")}</Text>
                                             </View>
                                         ) : null}
                                     </View>
@@ -640,7 +640,7 @@ export const MessageBubble = memo(function MessageBubble({
                                                         {attachment.name}
                                                     </Text>
                                                     <Text style={styles.userFileSub} numberOfLines={1}>
-                                                        {formatAttachmentSize(attachment.size) || attachment.mimeType || t("文件", "File")}
+                                                        {formatAttachmentSize(attachment.size) || attachment.mimeType || t("src.components.chat.downloadfilecard.file")}
                                                     </Text>
                                                 </View>
                                             </View>
@@ -651,7 +651,7 @@ export const MessageBubble = memo(function MessageBubble({
                                 {userContentText ? (
                                     <Text selectable style={styles.userText}>{userContentText}</Text>
                                 ) : !hasUserVisualPayload ? (
-                                    <Text selectable style={styles.userText}>{t("（空消息）", "(Empty message)")}</Text>
+                                    <Text selectable style={styles.userText}>{t("src.components.chat.messagebubble.empty_message")}</Text>
                                 ) : null}
                             </LinearGradient>
                         </View>
@@ -754,8 +754,8 @@ export const MessageBubble = memo(function MessageBubble({
                                 renderableNodes.map((node, index) => (
                                     <NodeRenderBoundary
                                         key={node.id || `${messageIdentity}:node:${index}`}
-                                        title={t("节点渲染失败", "Node render failed")}
-                                        description={t("这条子节点已降级显示，不影响整条正式回复。", "This node has been downgraded so the rest of the reply remains visible.")}
+                                        title={t("src.components.chat.messagebubble.node_render_failed")}
+                                        description={t("src.components.chat.messagebubble.this_node_has_been_downgraded_so_the_rest_of_the_reply_remains_visible")}
                                         borderColor={palette.border}
                                         backgroundColor={palette.surface}
                                         titleColor={palette.text}
@@ -783,8 +783,8 @@ export const MessageBubble = memo(function MessageBubble({
                                     return (
                                         <NodeRenderBoundary
                                             key={block.id}
-                                            title={t("内容渲染失败", "Content render failed")}
-                                            description={t("这段内容已降级显示，不影响整条正式回复。", "This content block has been downgraded so the rest of the reply remains visible.")}
+                                            title={t("src.components.chat.messagebubble.content_render_failed")}
+                                            description={t("src.components.chat.messagebubble.this_content_block_has_been_downgraded_so_the_rest_of_the_reply_remains_visible")}
                                             borderColor={palette.border}
                                             backgroundColor={palette.surface}
                                             titleColor={palette.text}
@@ -805,7 +805,7 @@ export const MessageBubble = memo(function MessageBubble({
                                     primaryColor={palette.primary}
                                     textColor={palette.text}
                                     mutedColor={palette.textMuted}
-                                    label={assistantPhaseLabel || t("工作中", "Working")}
+                                    label={assistantPhaseLabel || t("src.components.chat.messagebubble.working")}
                                     subtitle={taskProgress?.currentStep || taskProgress?.subtitle || ""}
                                 />
                             )}

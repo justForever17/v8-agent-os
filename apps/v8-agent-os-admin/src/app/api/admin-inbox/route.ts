@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { LOCALE_COOKIE_NAME, lt, pickLocalizedText, resolveInitialLocale } from "@/lib/locale";
+import { createTranslator, LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
 
 type InboxItem = {
@@ -116,7 +116,7 @@ export async function GET(req: NextRequest) {
 
     try {
         const locale = resolveInitialLocale(req.cookies.get(LOCALE_COOKIE_NAME)?.value, req.headers.get("accept-language"));
-        const text = (zh: string, en: string) => pickLocalizedText(locale, lt(zh, en));
+        const t = createTranslator(locale);
         const [approvalsResult, runsResult, healthResult, pluginHostResult] = await Promise.all([
             proxyEngineJsonSafe<{ approvals?: unknown[] }>("/approvals?status=pending"),
             proxyEngineJsonSafe<{ runs?: Array<{ status?: string }> }>("/runs?limit=12"),
@@ -145,8 +145,10 @@ export async function GET(req: NextRequest) {
         if (summary.pendingApprovals > 0) {
             pushItem(items, {
                 id: "pending-approvals",
-                title: text("待处理确认", "Pending approvals"),
-                summary: text(`${summary.pendingApprovals} 项运行等待人工确认`, `${summary.pendingApprovals} runs are waiting for review`),
+                title: t("app.api.adminInbox.pendingApprovals.title"),
+                summary: t("app.api.adminInbox.pendingApprovals.summary", {
+                    count: summary.pendingApprovals,
+                }),
                 severity: "warning",
                 href: "/admin/operations-center?tab=approvals",
                 source: "operations-center",
@@ -156,11 +158,11 @@ export async function GET(req: NextRequest) {
         if (summary.health?.memory?.interpreterDrift) {
             pushItem(items, {
                 id: "memory-interpreter-drift",
-                title: text("记忆环境漂移", "Memory drift"),
-                summary: text(
-                    `当前解释器 ${summary.health.memory.interpreterPath || "unknown"} 与期望环境 ${summary.health.memory.expectedInterpreterPath || "Engine .venv"} 不一致`,
-                    `Interpreter ${summary.health.memory.interpreterPath || "unknown"} does not match ${summary.health.memory.expectedInterpreterPath || "Engine .venv"}`,
-                ),
+                title: t("app.api.adminInbox.memoryInterpreterDrift.title"),
+                summary: t("app.api.adminInbox.memoryInterpreterDrift.summary", {
+                    current: summary.health.memory.interpreterPath || "unknown",
+                    expected: summary.health.memory.expectedInterpreterPath || "Engine .venv",
+                }),
                 severity: "error",
                 href: "/admin/operations-center",
                 source: "operations-center",
@@ -168,8 +170,8 @@ export async function GET(req: NextRequest) {
         } else if (summary.health?.memory?.mode === "fts5_only_degraded") {
             pushItem(items, {
                 id: "memory-degraded",
-                title: text("记忆后端降级", "Memory degraded"),
-                summary: text("当前记忆链路已退化为 FTS5-only，请检查向量后端和解释器环境", "Memory has fallen back to FTS5-only. Check vector backend and interpreter state."),
+                title: t("app.api.adminInbox.memoryDegraded.title"),
+                summary: t("app.api.adminInbox.memoryDegraded.summary"),
                 severity: "warning",
                 href: "/admin/operations-center",
                 source: "operations-center",
@@ -181,8 +183,8 @@ export async function GET(req: NextRequest) {
         if (summary.health?.mcp?.executionImpacted) {
             pushItem(items, {
                 id: "mcp-exec-impacted",
-                title: text("Extensions / MCP 异常", "Extensions / MCP issue"),
-                summary: text("至少有一个扩展连接问题已影响执行链路", "At least one extension connection issue is affecting execution."),
+                title: t("app.api.adminInbox.mcpExecImpacted.title"),
+                summary: t("app.api.adminInbox.mcpExecImpacted.summary"),
                 severity: "error",
                 href: "/admin/operations-center",
                 source: "operations-center",
@@ -190,8 +192,10 @@ export async function GET(req: NextRequest) {
         } else if (degradedServers.length > 0 || streamableIssues.length > 0) {
             pushItem(items, {
                 id: "mcp-connectivity-warning",
-                title: text("Extensions / MCP 波动", "Extensions / MCP drift"),
-                summary: text(`检测到 ${degradedServers.length + streamableIssues.length} 条异常连接或漂移记录`, `${degradedServers.length + streamableIssues.length} degraded or drifting connections detected`),
+                title: t("app.api.adminInbox.mcpConnectivity.title"),
+                summary: t("app.api.adminInbox.mcpConnectivity.summary", {
+                    count: degradedServers.length + streamableIssues.length,
+                }),
                 severity: "warning",
                 href: "/admin/operations-center",
                 source: "operations-center",
@@ -205,12 +209,14 @@ export async function GET(req: NextRequest) {
         ) {
             pushItem(items, {
                 id: "plugin-host-bridge-warning",
-                title: text("Plugin Host 桥接异常", "Plugin Host bridge issue"),
+                title: t("app.api.adminInbox.pluginHostBridge.title"),
                 summary: pluginSnapshot.hostSurface?.handoffDrift
-                    ? text("最近观测到 handoff 漂移，请检查桥接与渠道 claim 状态", "Recent handoff drift detected. Check bridge and channel claim state.")
+                    ? t("app.api.adminInbox.pluginHostBridge.handoffDrift")
                     : pluginSnapshot.hostSurface?.bridgeReady === false
-                        ? text(`Bridge 当前未就绪 (${pluginSnapshot.hostSurface?.bridgePluginId || "unknown"})`, `Bridge is not ready (${pluginSnapshot.hostSurface?.bridgePluginId || "unknown"})`)
-                        : text("Handoff 当前未就绪，请检查 OpenClaw 插件桥状态", "Handoff is not ready. Check the OpenClaw bridge."),
+                        ? t("app.api.adminInbox.pluginHostBridge.bridgeNotReady", {
+                            plugin_id: pluginSnapshot.hostSurface?.bridgePluginId || "unknown",
+                        })
+                        : t("app.api.adminInbox.pluginHostBridge.handoffNotReady"),
                 severity: pluginSnapshot.hostSurface?.bridgeReady === false ? "error" : "warning",
                 href: "/admin/plugin-host",
                 source: "plugin-host",
@@ -223,10 +229,12 @@ export async function GET(req: NextRequest) {
         if (pluginSnapshot.hostSurface?.pluginsAllowConfigured === false || pluginTrustWarnings.length > 0) {
             pushItem(items, {
                 id: "plugin-host-trust-warning",
-                title: text("Plugin Host trust 漂浮", "Plugin Host trust drift"),
+                title: t("app.api.adminInbox.pluginHostTrust.title"),
                 summary: pluginSnapshot.hostSurface?.pluginsAllowConfigured === false
-                    ? text("OpenClaw plugins.allow 当前为空，bridge 与渠道插件仍处于漂浮态", "OpenClaw plugins.allow is empty, so bridge and channel plugins are still drifting.")
-                    : text(`检测到 ${pluginTrustWarnings.length} 条 bridge / channel provenance 风险`, `${pluginTrustWarnings.length} bridge / channel provenance warnings detected.`),
+                    ? t("app.api.adminInbox.pluginHostTrust.allowEmpty")
+                    : t("app.api.adminInbox.pluginHostTrust.provenanceWarning", {
+                        count: pluginTrustWarnings.length,
+                    }),
                 severity: "warning",
                 href: "/admin/plugin-host",
                 source: "plugin-host",
@@ -245,8 +253,8 @@ export async function GET(req: NextRequest) {
         if (containsAuthIssue(authSignals)) {
             pushItem(items, {
                 id: "authorization-needed",
-                title: text("需要授权", "Authorization needed"),
-                summary: text("当前检测到鉴权或密钥相关异常，请检查渠道、模型或插件凭据", "Auth or credential issues detected. Check channel, model, or plugin credentials."),
+                title: t("app.api.adminInbox.authorizationNeeded.title"),
+                summary: t("app.api.adminInbox.authorizationNeeded.summary"),
                 severity: "warning",
                 href: "/admin/plugin-host",
                 source: "plugin-host",
@@ -256,8 +264,8 @@ export async function GET(req: NextRequest) {
         if (!items.length && runItems.some((run) => ["paused", "failed", "waiting_input"].includes(run.status || ""))) {
             pushItem(items, {
                 id: "recoverable-runs",
-                title: text("有待恢复运行", "Recoverable runs"),
-                summary: text("系统中存在可恢复或待补充输入的运行", "Some runs can resume or still need additional input."),
+                title: t("app.api.adminInbox.recoverableRuns.title"),
+                summary: t("app.api.adminInbox.recoverableRuns.summary"),
                 severity: "info",
                 href: "/admin/operations-center?tab=runs",
                 source: "operations-center",
@@ -273,11 +281,8 @@ export async function GET(req: NextRequest) {
         if (!items.length && endpointErrors.length > 0) {
             pushItem(items, {
                 id: "admin-inbox-degraded",
-                title: text("消息摘要暂时降级", "Inbox temporarily degraded"),
-                summary: text(
-                    "部分运行态摘要暂时不可用，界面会继续自动重试。",
-                    "Some runtime summaries are temporarily unavailable. The UI will keep retrying.",
-                ),
+                title: t("app.api.adminInbox.degraded.title"),
+                summary: t("app.api.adminInbox.degraded.summary"),
                 severity: "info",
                 href: "/admin/operations-center",
                 source: "admin",

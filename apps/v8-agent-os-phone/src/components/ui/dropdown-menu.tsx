@@ -51,7 +51,7 @@ export const DropdownMenuTrigger = forwardRef<View, PressableProps>(function Dro
     const context = useContext(DropdownMenuContext);
     const localRef = useRef<View | null>(null);
     if (!context) {
-        throw new Error("DropdownMenuTrigger 必须放在 DropdownMenu 内使用");
+        throw new Error("DropdownMenuTrigger must be used within DropdownMenu");
     }
 
     return (

@@ -1,6 +1,7 @@
 import * as Linking from "expo-linking";
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform, Share } from "react-native";
+import { translateCurrent } from "@/src/lib/locale";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -143,7 +144,7 @@ export async function saveResponseToCache(
     const safeName = sanitizeName(guessedName);
     const root = FileSystem.cacheDirectory || FileSystem.documentDirectory;
     if (!root) {
-        throw new Error("当前设备没有可写缓存目录");
+        throw new Error(translateCurrent("src.lib.file_transfer.text"));
     }
     const folder = `${root}v8-agent-os/`;
     await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
@@ -163,7 +164,7 @@ async function writeBase64ToUserSelectedFile(base64: string, filename: string, c
     if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
         const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
         if (!permissions.granted) {
-            throw new Error("未选择保存文件夹");
+            throw new Error(translateCurrent("src.lib.file_transfer.text_2"));
         }
         const uri = await FileSystem.StorageAccessFramework.createFileAsync(
             permissions.directoryUri,
@@ -178,7 +179,7 @@ async function writeBase64ToUserSelectedFile(base64: string, filename: string, c
 
     const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
     if (!root) {
-        throw new Error("当前设备没有可写目录");
+        throw new Error(translateCurrent("src.lib.file_transfer.text_3"));
     }
     const folder = `${root}v8-agent-os/downloads/`;
     await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
@@ -227,7 +228,7 @@ export async function saveTextToUserSelectedFile(
     if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
         const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
         if (!permissions.granted) {
-            throw new Error("未选择保存文件夹");
+            throw new Error(translateCurrent("src.lib.file_transfer.text_2"));
         }
         const uri = await FileSystem.StorageAccessFramework.createFileAsync(permissions.directoryUri, filename, contentType);
         await FileSystem.StorageAccessFramework.writeAsStringAsync(uri, contents);
@@ -236,7 +237,7 @@ export async function saveTextToUserSelectedFile(
 
     const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
     if (!root) {
-        throw new Error("当前设备没有可写目录");
+        throw new Error(translateCurrent("src.lib.file_transfer.text_3"));
     }
     const folder = `${root}v8-agent-os/downloads/`;
     await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
@@ -250,7 +251,7 @@ export async function openCachedFile(uri: string) {
     try {
         const canOpen = await Linking.canOpenURL(uri);
         if (!canOpen) {
-            throw new Error("当前设备无法直接打开这个文件");
+            throw new Error(translateCurrent("src.lib.file_transfer.text_6"));
         }
         await Linking.openURL(uri);
         return true;

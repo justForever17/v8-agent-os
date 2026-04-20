@@ -8,9 +8,6 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { lt } from "@/lib/locale";
-
-type LocalizedKey = string | { "zh-CN": string; en: string };
 
 interface ModelCardV2Props {
     model: {
@@ -36,19 +33,19 @@ interface ModelCardV2Props {
     onDelete: (model: ModelCardV2Props["model"]) => void;
 }
 
-const ROLE_LABELS: Record<string, LocalizedKey> = {
-    default: lt("默认聊天", "Default chat"),
-    supervisor: lt("主理人", "Lead"),
-    summary: lt("摘要", "Summary"),
-    extraction: lt("记忆提取", "Extraction"),
-    vision: lt("视觉", "Vision"),
-    embedding: lt("向量", "Embedding"),
-    reranker: lt("重排", "Rerank"),
-    channel: lt("渠道", "Channel"),
-    automation: lt("自动化", "Automation"),
-    computer_use_planner: lt("CU 规划", "CU planner"),
-    computer_use_visual_judge: lt("CU 裁判", "CU judge"),
-    rpa_discovery: lt("RPA 摸索", "RPA scout"),
+const ROLE_LABELS: Record<string, string> = {
+    default: "components.models.ModelCardV2.k868c5c5c",
+    supervisor: "components.models.ModelCardV2.kf45c6152",
+    summary: "components.models.ModelCardV2.k10c3fca6",
+    extraction: "components.models.ModelCardV2.k97945aa9",
+    vision: "components.models.ModelCardV2.k8e018918",
+    embedding: "components.models.ModelCardV2.kc1798b61",
+    reranker: "components.models.ModelCardV2.k81ac6b74",
+    channel: "components.models.ModelCardV2.k28e95b3a",
+    automation: "components.models.ModelCardV2.k890adc88",
+    computer_use_planner: "components.models.ModelCardV2.k5cee5c2b",
+    computer_use_visual_judge: "components.models.ModelCardV2.ke3c7666e",
+    rpa_discovery: "components.models.ModelCardV2.k526071af",
 };
 
 function FadeOverflowRow({ children }: { children: ReactNode }) {
@@ -96,7 +93,7 @@ export function ModelCardV2({
                             {isDefault && (
                                 <Badge className="h-5 shrink-0 border-none bg-primary/20 text-[10px] text-primary hover:bg-primary/30">
                                     <Star className="mr-1 h-3 w-3 fill-primary" />
-                                    {t(lt("全局默认", "Default"))}
+                                    {t("components.models.ModelCardV2.k6509c658")}
                                 </Badge>
                             )}
                         </div>
@@ -119,17 +116,17 @@ export function ModelCardV2({
                         <div className="mt-2 min-h-[2.5rem] space-y-1 text-xs text-muted-foreground">
                             <span className="max-w-[150px] truncate rounded bg-muted px-1 font-mono" title={model.modelId}>{model.modelId}</span>
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                <span className="max-w-[120px] truncate" title={model.provider?.name}>{model.provider?.name || t("未知供应商")}</span>
+                                <span className="max-w-[120px] truncate" title={model.provider?.name}>{model.provider?.name || t("components.models.ModelCardV2.k4f162e67")}</span>
                                 {typeof model.contextWindow === "number" && (
                                     <>
                                         <span className="shrink-0">·</span>
-                                        <span className="shrink-0">{Math.round(model.contextWindow / 1000)}k {t(lt("上下文", "ctx"))}</span>
+                                        <span className="shrink-0">{Math.round(model.contextWindow / 1000)}k {t("components.models.ModelCardV2.k964eeced")}</span>
                                     </>
                                 )}
                                 {typeof model.maxTokens === "number" && (
                                     <>
                                         <span className="shrink-0">·</span>
-                                        <span className="shrink-0">{model.maxTokens} {t(lt("最大输出", "max"))}</span>
+                                        <span className="shrink-0">{model.maxTokens} {t("components.models.ModelCardV2.k5f48d369")}</span>
                                     </>
                                 )}
                                 {typeof model.temperature === "number" && (
@@ -177,10 +174,10 @@ export function ModelCardV2({
                                     )}
                                     <span className="truncate">
                                         {currentStatus === "success"
-                                            ? `${t(lt("连接成功", "Connected"))}${statusMessage ? ` · ${statusMessage}` : ""}`
+                                            ? `${t("components.models.ModelCardV2.k40bd808e")}${statusMessage ? ` · ${statusMessage}` : ""}`
                                             : currentStatus === "error"
-                                                ? `${t(lt("连接失败", "Failed"))}${statusMessage ? ` · ${statusMessage}` : ""}`
-                                                : `${t(lt("测试连接中", "Testing"))}${statusMessage ? ` · ${statusMessage}` : ""}`}
+                                                ? `${t("components.models.ModelCardV2.k7f8e6bd9")}${statusMessage ? ` · ${statusMessage}` : ""}`
+                                                : `${t("components.models.ModelCardV2.kc9e37984")}${statusMessage ? ` · ${statusMessage}` : ""}`}
                                     </span>
                                 </div>
                             ) : null}
@@ -198,23 +195,23 @@ export function ModelCardV2({
                             onClick={async () => {
                                 await onTestConnection(model.modelId);
                             }}
-                            title={testing ? t(lt("测试中...", "Testing...")) : t(lt("测试连接", "Test connection"))}
+                            title={testing ? t("components.models.ModelCardV2.k60eba059") : t("components.models.ModelCardV2.kdf48b898")}
                         >
                             <PlugZap className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
                         </Button>
                     )}
                     {!isDefault && onSetDefault && (
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => onSetDefault(model.modelId)} title={t(lt("设为默认", "Set default"))}>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => onSetDefault(model.modelId)} title={t("components.models.ModelCardV2.ka96c553d")}>
                             <Star className="h-4 w-4" />
                         </Button>
                     )}
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t(lt("复制模型 ID", "Copy model ID"))}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t("components.models.ModelCardV2.ke0b2f296")}>
                         <Copy className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(model)} title={t(lt("编辑", "Edit"))}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(model)} title={t("components.models.ModelCardV2.k75997619")}>
                         <Edit2 className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" onClick={() => onDelete(model)} title={t(lt("删除", "Delete"))}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" onClick={() => onDelete(model)} title={t("components.models.ModelCardV2.k626f35dc")}>
                         <Trash2 className="h-4 w-4" />
                     </Button>
                 </div>

@@ -1,5 +1,6 @@
 import React from "react";
 import { Platform } from "react-native";
+import { translateCurrent } from "@/src/lib/locale";
 
 import {
     buildAdminApiUrl,
@@ -287,7 +288,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
     const signIn = React.useCallback(async ({ adminBaseUrl: nextBaseUrl, login, password }: LoginInput) => {
         const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(nextBaseUrl);
-        let lastError = "登录失败";
+        let lastError = translateCurrent("src.providers.app_session.text");
 
         for (const candidateBaseUrl of candidateBaseUrls) {
             try {
@@ -303,7 +304,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
                 const payload = await readAuthPayload(response);
                 if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload.user) {
-                    lastError = payload?.error || "登录失败";
+                    lastError = payload?.error || translateCurrent("src.providers.app_session.text");
                     continue;
                 }
 
@@ -315,7 +316,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 await persistSession(candidateBaseUrl, payload);
                 return;
             } catch (error) {
-                lastError = error instanceof Error ? error.message : "登录失败";
+                lastError = error instanceof Error ? error.message : translateCurrent("src.providers.app_session.text");
             }
         }
 
@@ -324,7 +325,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
     const signUp = React.useCallback(async (input: RegisterInput) => {
         const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(input.adminBaseUrl);
-        let lastError = "注册失败";
+        let lastError = translateCurrent("src.providers.app_session.text_4");
 
         for (const candidateBaseUrl of candidateBaseUrls) {
             try {
@@ -340,7 +341,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 await persistSession(candidateBaseUrl, payload);
                 return;
             } catch (error) {
-                lastError = error instanceof Error ? error.message : "注册失败";
+                lastError = error instanceof Error ? error.message : translateCurrent("src.providers.app_session.text_4");
             }
         }
 
@@ -414,7 +415,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     ) => {
         const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
         if (!baseUrl || !accessToken) {
-            throw new Error("当前尚未连接到 Admin");
+            throw new Error(translateCurrent("src.providers.app_session.admin"));
         }
 
         const doFetch = async (token: string, targetBaseUrl: string) =>
@@ -441,7 +442,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                     lastError = error;
                 }
             }
-            throw lastError instanceof Error ? new Error(`无法连接 Admin：${baseUrl}`) : new Error("无法连接 Admin");
+            throw lastError instanceof Error
+                ? new Error(translateCurrent("src.providers.app_session.unable_to_reach_admin", { baseUrl }))
+                : new Error(translateCurrent("src.providers.app_session.admin_2"));
         };
 
         let response = await attemptFetch(accessToken);
@@ -452,7 +455,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         const refreshed = await refreshSession();
         if (!refreshed) {
             await signOut();
-            throw new Error("登录状态已失效，请重新登录");
+            throw new Error(translateCurrent("src.providers.app_session.text_6"));
         }
 
         const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
@@ -471,7 +474,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     ) => {
         const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
         if (!baseUrl || !accessToken) {
-            throw new Error("当前尚未连接到 Admin");
+            throw new Error(translateCurrent("src.providers.app_session.admin"));
         }
 
         const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
@@ -490,7 +493,11 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                             signal,
                         });
                         if (!response.ok) {
-                            const error = new Error(`连接实时流失败（${response.status}）`) as Error & { status?: number };
+                            const error = new Error(
+                                translateCurrent("src.lib.admin_client.realtime_stream_failed_with_status", {
+                                    status: response.status,
+                                }),
+                            ) as Error & { status?: number };
                             error.status = response.status;
                             throw error;
                         }
@@ -525,7 +532,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                     }
                 }
             }
-            throw lastError instanceof Error ? lastError : new Error(`无法连接 Admin：${baseUrl}`);
+            throw lastError instanceof Error
+                ? lastError
+                : new Error(translateCurrent("src.providers.app_session.unable_to_reach_admin", { baseUrl }));
         };
 
         try {
@@ -536,14 +545,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 ? Number((error as { status?: number }).status || 0)
                 : 0;
             if (status !== 401) {
-                throw error instanceof Error ? error : new Error("实时流连接失败");
+                throw error instanceof Error ? error : new Error(translateCurrent("src.providers.app_session.text_7"));
             }
         }
 
         const refreshed = await refreshSession();
         if (!refreshed) {
             await signOut();
-            throw new Error("登录状态已失效，请重新登录");
+            throw new Error(translateCurrent("src.providers.app_session.text_6"));
         }
 
         const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
@@ -575,7 +584,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 export function useAppSession() {
     const context = React.useContext(SessionContext);
     if (!context) {
-        throw new Error("useAppSession 必须在 AppSessionProvider 内使用");
+        throw new Error("useAppSession must be used within AppSessionProvider");
     }
     return context;
 }

@@ -1,7 +1,6 @@
 import { AlertCircle, CheckCircle2, Info } from "lucide-react";
 
-import { useT } from "@/components/providers/LocaleProvider";
-import { LocalizedText } from "@/lib/locale";
+import { useResolveText } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
 
 const toneMap = {
@@ -24,11 +23,11 @@ export function StatusNotice({
     description,
     tone = "info",
 }: {
-    title: LocalizedText | string;
-    description?: LocalizedText | string;
+    title: string;
+    description?: string;
     tone?: keyof typeof toneMap;
 }) {
-    const t = useT();
+    const resolveText = useResolveText();
     const Icon = toneMap[tone].icon;
 
     return (
@@ -36,8 +35,8 @@ export function StatusNotice({
             <div className="flex items-start gap-3">
                 <Icon className="mt-0.5 h-4 w-4 shrink-0" />
                 <div className="space-y-1">
-                    <div className="text-sm font-medium">{t(title)}</div>
-                    {description ? <div className="text-xs leading-5 opacity-90">{t(description)}</div> : null}
+                    <div className="text-sm font-medium">{resolveText(title)}</div>
+                    {description ? <div className="text-xs leading-5 opacity-90">{resolveText(description)}</div> : null}
                 </div>
             </div>
         </div>

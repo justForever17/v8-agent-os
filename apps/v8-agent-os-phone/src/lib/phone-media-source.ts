@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { translateCurrent } from "@/src/lib/locale";
 
 import {
     isPhonePreviewBlockedByLoopback,
@@ -53,7 +54,9 @@ export function usePreparedPhoneMediaSource({
         if (!rawCandidate) {
             setResolvedSrc("");
             setLoading(false);
-            setError(title ? `${title} 暂不可达` : "当前媒体内容暂不可达。");
+            setError(title
+                ? translateCurrent("src.lib.phone_media_source.temporarily_unreachable_with_title", { title })
+                : translateCurrent("src.lib.phone_media_source.temporarily_unreachable"));
             return () => {
                 cancelled = true;
             };
@@ -62,7 +65,7 @@ export function usePreparedPhoneMediaSource({
         if (previewBlocked) {
             setResolvedSrc("");
             setLoading(false);
-            setError("当前预览地址仍是本机回环地址，手机端无法直接访问。请改用可达的 Admin 地址后重试。");
+            setError(translateCurrent("src.lib.phone_media_source.admin"));
             return () => {
                 cancelled = true;
             };

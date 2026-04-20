@@ -25,11 +25,11 @@ export function SourceMetaRow({
         <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
             <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
-                    {t("配置来源")}
+                    {t("components.admin.shell.SourceMetaRow.k155ede7a")}
                 </Badge>
                 <span className="text-sm text-slate-700">{source}</span>
                 <Badge variant={reloadRequired ? "secondary" : "outline"} className="ml-auto">
-                    {reloadRequired ? t("保存后建议重载") : t("保存后立即生效")}
+                    {reloadRequired ? t("components.admin.shell.SourceMetaRow.kc33ab52a") : t("components.admin.shell.SourceMetaRow.k0df8cfdd")}
                 </Badge>
             </div>
             <div className="mt-3 space-y-1">

@@ -49,7 +49,7 @@ export const TooltipTrigger = forwardRef<View, PressableProps>(function TooltipT
     const context = useContext(TooltipContext);
     const localRef = useRef<View | null>(null);
     if (!context) {
-        throw new Error("TooltipTrigger 必须放在 Tooltip 内使用");
+        throw new Error("TooltipTrigger must be used within Tooltip");
     }
 
     return (

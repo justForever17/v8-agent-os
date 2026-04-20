@@ -8,6 +8,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
+    "validate:i18n": "node ./scripts/validate-i18n.mjs",
+    "lint": "npm run typecheck && npm run validate:i18n",
     "doctor": "npx expo-doctor",
     "export:android": "expo export --platform android --output-dir dist-android"
   },

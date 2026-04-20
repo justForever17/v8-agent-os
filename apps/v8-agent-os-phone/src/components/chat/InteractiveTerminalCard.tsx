@@ -299,7 +299,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
         [process.commandId, process.processId],
     );
     const title = useMemo(
-        () => String(process.title || process.commandPreview || shortId || t("后台进程", "Background process")).trim(),
+        () => String(process.title || process.commandPreview || shortId || t("src.components.chat.interactiveterminalcard.background_process")).trim(),
         [process.commandPreview, process.title, shortId, t],
     );
     const inputEnabled = Boolean(process.canInput) && isRunning;
@@ -310,7 +310,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             return "";
         }
         const note = String(process.encodingNotes || "").trim();
-        return note || t("终端编码异常，内容可能失真。", "Terminal encoding looks abnormal, content may be distorted.");
+        return note || t("src.components.chat.interactiveterminalcard.terminal_encoding_looks_abnormal_content_may_be_distorted");
     }, [process.encodingNotes, process.encodingState, t]);
 
     return (
@@ -340,7 +340,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                             ]}
                         />
                         <Text style={[styles.statusText, { color: colors.textMuted }]}>
-                            {isRunning ? t("运行中", "Running") : t("已结束", "Stopped")}
+                            {isRunning ? t("src.components.chat.interactiveterminalcard.running") : t("src.components.chat.interactiveterminalcard.stopped")}
                         </Text>
                     </View>
                 </View>
@@ -348,7 +348,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                 <View style={styles.headerActions}>
                     {canTerminate ? (
                         <Button variant="destructive" size="sm" onPress={handleTerminate}>
-                            {t("停止", "Stop")}
+                            {t("src.components.chat.interactiveterminalcard.stop")}
                         </Button>
                     ) : null}
                     <Animated.View style={{ transform: [{ rotate: chevronRotation }] }}>
@@ -375,7 +375,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                             onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
                         >
                             <Text style={styles.terminalText}>
-                                {terminalOutput || t("等待命令输出…", "Waiting for terminal output...")}
+                                {terminalOutput || t("src.components.chat.interactiveterminalcard.waiting_for_terminal_output")}
                             </Text>
                         </ScrollView>
                     </View>
@@ -384,7 +384,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                         <Input
                             value={inputText}
                             onChangeText={setInputText}
-                            placeholder={t("向后台命令发送输入", "Send input to background command")}
+                            placeholder={t("src.components.chat.interactiveterminalcard.send_input_to_background_command")}
                             editable={inputEnabled && !sendingInput}
                             style={styles.input}
                             onSubmitEditing={() => void handleSendInput()}
@@ -396,7 +396,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                             disabled={!inputEnabled || sendingInput || !inputText.trim()}
                             loading={sendingInput}
                         >
-                            {t("发送", "Send")}
+                            {t("src.components.chat.interactiveterminalcard.send")}
                         </Button>
                     </View>
                 </CardContent>

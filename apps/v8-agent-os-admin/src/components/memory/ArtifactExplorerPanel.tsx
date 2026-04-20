@@ -11,7 +11,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "file";
 
@@ -99,18 +98,18 @@ export function ArtifactExplorerPanel() {
     const [kindFilter, setKindFilter] = useState<ArtifactKind>("all");
 
     const artifactLabel = useCallback(
-        (artifact: ArtifactRecord) => artifact.displayLabel || artifact.title || getArtifactId(artifact) || t(lt("未命名产物", "Unnamed artifact")),
+        (artifact: ArtifactRecord) => artifact.displayLabel || artifact.title || getArtifactId(artifact) || t("components.memory.ArtifactExplorerPanel.kd43de6cf"),
         [t],
     );
 
     const artifactSubtitle = useCallback(
-        (artifact: ArtifactRecord) => artifact.displaySubtitle || getArtifactSource(artifact) || getArtifactPreview(artifact) || t(lt("暂无路径信息", "No path yet")),
+        (artifact: ArtifactRecord) => artifact.displaySubtitle || getArtifactSource(artifact) || getArtifactPreview(artifact) || t("components.memory.ArtifactExplorerPanel.k968c6ea6"),
         [t],
     );
 
     const formatDateTime = useCallback(
         (value?: string) => {
-            if (!value) return t(lt("未知时间", "Unknown time"));
+            if (!value) return t("components.memory.ArtifactExplorerPanel.k2be56351");
             const date = new Date(value);
             if (Number.isNaN(date.getTime())) return value;
             return date.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
@@ -123,14 +122,14 @@ export function ArtifactExplorerPanel() {
     const artifactKindLabel = useCallback(
         (kind: ArtifactKind) =>
             kind === "image"
-                ? t("图片")
+                ? t("components.memory.ArtifactExplorerPanel.k05527bea")
                 : kind === "video"
-                    ? t("视频")
+                    ? t("components.memory.ArtifactExplorerPanel.k7512b41f")
                     : kind === "audio"
-                        ? t("音频")
+                        ? t("components.memory.ArtifactExplorerPanel.kaeef0707")
                         : kind === "document"
-                            ? t("文档")
-                            : t("文件"),
+                            ? t("components.memory.ArtifactExplorerPanel.k5fc5a6ad")
+                            : t("components.memory.ArtifactExplorerPanel.ka9205a18"),
         [t],
     );
 
@@ -154,8 +153,8 @@ export function ArtifactExplorerPanel() {
         } catch (error) {
             console.error("Failed to load artifacts:", error);
             toast({
-                title: t("Artifact Explorer 加载失败"),
-                description: t("未能读取当前运行中的多模态产物。"),
+                title: t("components.memory.ArtifactExplorerPanel.k81ef3416"),
+                description: t("components.memory.ArtifactExplorerPanel.k56ba1833"),
                 variant: "destructive",
             });
         } finally {
@@ -178,8 +177,8 @@ export function ArtifactExplorerPanel() {
                 setSelectedArtifact(fallback);
             }
             toast({
-                title: t("Artifact 详情加载失败"),
-                description: t("当前先展示已缓存信息，你可以稍后重试。"),
+                title: t("components.memory.ArtifactExplorerPanel.k115ce913"),
+                description: t("components.memory.ArtifactExplorerPanel.k52473537"),
                 variant: "destructive",
             });
         } finally {
@@ -244,11 +243,11 @@ export function ArtifactExplorerPanel() {
                         </span>
                         <Button variant="outline" size="sm" onClick={() => void loadArtifacts()}>
                             <RefreshCw className="mr-2 h-4 w-4" />
-                            {t("刷新")}
+                            {t("components.memory.ArtifactExplorerPanel.k876e8c06")}
                         </Button>
                     </CardTitle>
                     <CardDescription>
-                        {t("查看运行中产生的图片、视频、音频、文档和文件挂载记录。")}
+                        {t("components.memory.ArtifactExplorerPanel.k6626b67e")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -257,7 +256,7 @@ export function ArtifactExplorerPanel() {
                             <CardContent className="p-4">
                                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Artifacts</p>
                                 <p className="mt-3 text-2xl font-semibold">{artifactStats.all}</p>
-                                <p className="mt-1 text-xs text-muted-foreground">{t("统一挂载层总量")}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kb6803e57")}</p>
                             </CardContent>
                         </Card>
                         {ARTIFACT_KINDS.map((kind) => {
@@ -271,11 +270,11 @@ export function ArtifactExplorerPanel() {
                                         </div>
                                         <p className="mt-3 text-2xl font-semibold">{artifactStats[kind]}</p>
                                         <p className="mt-1 text-xs text-muted-foreground">
-                                            {kind === "image" ? t("图片与截图") :
-                                                kind === "video" ? t("视频与录屏") :
-                                                    kind === "audio" ? t("音频与语音") :
-                                                        kind === "document" ? t("文档与结构化材料") :
-                                                            t("其它二进制文件")}
+                                            {kind === "image" ? t("components.memory.ArtifactExplorerPanel.k83dd3d0f") :
+                                                kind === "video" ? t("components.memory.ArtifactExplorerPanel.kd0d9a483") :
+                                                    kind === "audio" ? t("components.memory.ArtifactExplorerPanel.k05f8fe1a") :
+                                                        kind === "document" ? t("components.memory.ArtifactExplorerPanel.k4b4dd70e") :
+                                                            t("components.memory.ArtifactExplorerPanel.k57ee4cb3")}
                                         </p>
                                     </CardContent>
                                 </Card>
@@ -289,21 +288,21 @@ export function ArtifactExplorerPanel() {
                             <Input
                                 value={query}
                                 onChange={(event) => setQuery(event.target.value)}
-                                placeholder={t("搜索标题、artifactId、sessionId、路径...")}
+                                placeholder={t("components.memory.ArtifactExplorerPanel.k7df1ad7e")}
                                 className="pl-9"
                             />
                         </div>
                         <Select value={kindFilter} onValueChange={(value) => setKindFilter(value as ArtifactKind)}>
                             <SelectTrigger className="w-full lg:w-[220px]">
-                                <SelectValue placeholder={t("筛选类型")} />
+                                <SelectValue placeholder={t("components.memory.ArtifactExplorerPanel.k990c7dbc")} />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="all">{t("全部类型")}</SelectItem>
-                                <SelectItem value="image">{t("图片")}</SelectItem>
-                                <SelectItem value="video">{t("视频")}</SelectItem>
-                                <SelectItem value="audio">{t("音频")}</SelectItem>
-                                <SelectItem value="document">{t("文档")}</SelectItem>
-                                <SelectItem value="file">{t("文件")}</SelectItem>
+                                <SelectItem value="all">{t("components.memory.ArtifactExplorerPanel.k174a15d1")}</SelectItem>
+                                <SelectItem value="image">{t("components.memory.ArtifactExplorerPanel.k05527bea")}</SelectItem>
+                                <SelectItem value="video">{t("components.memory.ArtifactExplorerPanel.k7512b41f")}</SelectItem>
+                                <SelectItem value="audio">{t("components.memory.ArtifactExplorerPanel.kaeef0707")}</SelectItem>
+                                <SelectItem value="document">{t("components.memory.ArtifactExplorerPanel.k5fc5a6ad")}</SelectItem>
+                                <SelectItem value="file">{t("components.memory.ArtifactExplorerPanel.ka9205a18")}</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -314,11 +313,11 @@ export function ArtifactExplorerPanel() {
                                 {loading ? (
                                     <div className="col-span-full flex h-40 items-center justify-center text-sm text-muted-foreground">
                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        {t("Artifact Explorer 加载中...")}
+                                        {t("components.memory.ArtifactExplorerPanel.k0b1aab26")}
                                     </div>
                                 ) : filteredArtifacts.length === 0 ? (
                                     <div className="col-span-full rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-                                        {t("当前没有命中的 artifact。等图片/视频/文档进入运行链后，这里会自动出现。")}
+                                        {t("components.memory.ArtifactExplorerPanel.ka6179a25")}
                                     </div>
                                 ) : (
                                     filteredArtifacts.map((artifact) => {
@@ -349,7 +348,7 @@ export function ArtifactExplorerPanel() {
                                                         <div className="flex flex-wrap items-center gap-2">
                                                             <p className="truncate font-semibold">{artifactLabel(artifact)}</p>
                                                             <Badge variant="secondary">{artifactKindLabel(kind)}</Badge>
-                                                            {artifact.hasPreview ? <Badge variant="outline">{t(lt("预览", "Preview"))}</Badge> : null}
+                                                            {artifact.hasPreview ? <Badge variant="outline">{t("components.memory.ArtifactExplorerPanel.k76932896")}</Badge> : null}
                                                         </div>
                                                         <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
                                                             {artifactSubtitle(artifact)}
@@ -381,13 +380,13 @@ export function ArtifactExplorerPanel() {
                                     {t("Artifact Detail")}
                                 </CardTitle>
                                 <CardDescription>
-                                    {selectedArtifact ? t("查看当前选中 artifact 的完整路径、元数据和预览。") : t("点击左侧卡片查看详情。")}
+                                    {selectedArtifact ? t("components.memory.ArtifactExplorerPanel.kd499c13e") : t("components.memory.ArtifactExplorerPanel.kb404a309")}
                                 </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 {!selectedArtifact ? (
                                     <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-                                        {t("请选择左侧 artifact 卡片。")}
+                                        {t("components.memory.ArtifactExplorerPanel.k4664887c")}
                                     </div>
                                 ) : (
                                     <>
@@ -406,7 +405,7 @@ export function ArtifactExplorerPanel() {
                                                 <Badge variant="secondary">{getArtifactMime(selectedArtifact)}</Badge>
                                                 {(selectedArtifact.sessionId || selectedArtifact.session_id) ? (
                                                     <Badge variant="outline">
-                                                        {t(lt("会话", "Session"))} {selectedArtifact.sessionId || selectedArtifact.session_id}
+                                                        {t("components.memory.ArtifactExplorerPanel.kdd2c7128")} {selectedArtifact.sessionId || selectedArtifact.session_id}
                                                     </Badge>
                                                 ) : null}
                                             </div>
@@ -433,11 +432,11 @@ export function ArtifactExplorerPanel() {
 
                                         <div className="space-y-3 rounded-2xl border bg-muted/15 p-4 text-sm">
                                             <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("创建时间")}</p>
+                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kc52804de")}</p>
                                                 <p className="mt-1 text-xs text-foreground/90">{formatDateTime(getArtifactCreatedAt(selectedArtifact))}</p>
                                             </div>
                                             <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t(lt("会话", "Session"))}</p>
+                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kdd2c7128")}</p>
                                                 <p className="mt-1 font-mono text-xs text-foreground/90">{selectedArtifact.sessionId || selectedArtifact.session_id || "—"}</p>
                                             </div>
                                             <div>
@@ -445,19 +444,19 @@ export function ArtifactExplorerPanel() {
                                                 <p className="mt-1 font-mono text-xs text-foreground/90">{selectedArtifact.runId || selectedArtifact.run_id || "—"}</p>
                                             </div>
                                             <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t(lt("消息", "Message"))}</p>
+                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.k1f8c06c1")}</p>
                                                 <p className="mt-1 font-mono text-xs text-foreground/90">{selectedArtifact.messageId || selectedArtifact.message_id || "—"}</p>
                                             </div>
                                             <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t(lt("工作区", "Workspace"))}</p>
+                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kea7f822f")}</p>
                                                 <p className="mt-1 break-all text-xs text-foreground/90">{selectedArtifact.workspacePath || selectedArtifact.workspace_path || "—"}</p>
                                             </div>
                                             <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t(lt("来源", "Source"))}</p>
+                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.ke7139376")}</p>
                                                 <p className="mt-1 break-all text-xs text-foreground/90">{selectedArtifact.sourcePath || selectedArtifact.source_path || "—"}</p>
                                             </div>
                                             <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t(lt("预览链接", "Preview URL"))}</p>
+                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.k711160a4")}</p>
                                                 {selectedPreview ? (
                                                     <a
                                                         href={selectedPreview}
@@ -468,13 +467,13 @@ export function ArtifactExplorerPanel() {
                                                         {selectedPreview}
                                                     </a>
                                                 ) : (
-                                                    <p className="mt-1 text-xs text-foreground/90">{t("暂无预览链接")}</p>
+                                                    <p className="mt-1 text-xs text-foreground/90">{t("components.memory.ArtifactExplorerPanel.k52e119f3")}</p>
                                                 )}
                                             </div>
                                         </div>
 
                                         <div className="rounded-2xl border bg-card/60 p-4">
-                                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t(lt("元数据", "Metadata"))}</p>
+                                            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.k545ca57f")}</p>
                                             <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all text-xs leading-6 text-foreground/85">
                                                 {JSON.stringify(selectedArtifact.metadata || {}, null, 2)}
                                             </pre>

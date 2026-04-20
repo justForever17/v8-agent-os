@@ -248,7 +248,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
             : undefined;
         const toolInvocation = buildToolInvocation(
             executionNode,
-            t("工具调用", "Tool call"),
+            t("src.components.chat.contentdispatcher.tool_call"),
             mergedResultNode,
             buildCompletedProcessFallback(matchedProcess),
         );
@@ -341,7 +341,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
                         {executionNode.topic && !String(executionNode.topic).startsWith("extension.")
                             ? `[${executionNode.topic}] `
                             : ""}
-                        {executionNode.label || t("运行中…", "Running...")}
+                        {executionNode.label || t("src.components.chat.contentdispatcher.running")}
                     </Text>
                 </View>
             );

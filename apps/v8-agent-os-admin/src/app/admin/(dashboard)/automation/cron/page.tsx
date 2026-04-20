@@ -21,8 +21,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { createTranslator, type TranslationKey } from "@/lib/locale";
 import { cn } from "@/lib/utils";
-import { lt } from "@/lib/locale";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 
 type CronJob = {
@@ -76,33 +76,33 @@ function formatJsonField(value: Record<string, unknown> | undefined) {
     return value && Object.keys(value).length ? JSON.stringify(value, null, 2) : "{}";
 }
 
-function parseJsonField(label: string, value: string) {
+function parseJsonField(label: string, value: string, locale: "zh-CN" | "en") {
     const raw = String(value || "").trim();
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`${label} 需要是合法 JSON 对象`);
+        throw new Error(createTranslator(locale)("app.admin.dashboard.automation.cron.page.jsonObjectError", { label }));
     }
     return parsed as Record<string, unknown>;
 }
 
-const WEEKDAY_OPTIONS = [
-    { value: "1", label: lt("周一", "Mon") },
-    { value: "2", label: lt("周二", "Tue") },
-    { value: "3", label: lt("周三", "Wed") },
-    { value: "4", label: lt("周四", "Thu") },
-    { value: "5", label: lt("周五", "Fri") },
-    { value: "6", label: lt("周六", "Sat") },
-    { value: "0", label: lt("周日", "Sun") },
+const WEEKDAY_OPTIONS: Array<{ value: string; label: TranslationKey }> = [
+    { value: "1", label: "app.admin.dashboard.automation.cron.page.k0d8cba58" },
+    { value: "2", label: "app.admin.dashboard.automation.cron.page.kd806530b" },
+    { value: "3", label: "app.admin.dashboard.automation.cron.page.ke9e74b84" },
+    { value: "4", label: "app.admin.dashboard.automation.cron.page.k6278c51a" },
+    { value: "5", label: "app.admin.dashboard.automation.cron.page.k04f84132" },
+    { value: "6", label: "app.admin.dashboard.automation.cron.page.k8d68250f" },
+    { value: "0", label: "app.admin.dashboard.automation.cron.page.k49ab3e95" },
 ];
 
 const SCHEDULE_MODE_OPTIONS: Array<{ key: ScheduleMode; title: string; description: string }> = [
-    { key: "daily", title: "每天", description: "每天固定时间执行。" },
-    { key: "weekdays", title: "工作日", description: "周一到周五固定时间执行。" },
-    { key: "weekly", title: "每周", description: "每周指定星期和时间执行。" },
-    { key: "monthly", title: "每月", description: "每月指定日期和时间执行。" },
-    { key: "every-hours", title: "每隔几小时", description: "按固定小时间隔循环执行。" },
-    { key: "custom", title: "自定义", description: "手动填写原始 Cron 表达式。" },
+    { key: "daily", title:"app.admin.dashboard.automation.cron.page.kac5b4596", description:"app.admin.dashboard.automation.cron.page.k5cc19d17" },
+    { key: "weekdays", title:"app.admin.dashboard.automation.cron.page.k219c2e16", description:"app.admin.dashboard.automation.cron.page.kce6bf459" },
+    { key: "weekly", title:"app.admin.dashboard.automation.cron.page.k09eb5821", description:"app.admin.dashboard.automation.cron.page.kf16717e0" },
+    { key: "monthly", title:"app.admin.dashboard.automation.cron.page.kff901c39", description:"app.admin.dashboard.automation.cron.page.kbc363802" },
+    { key: "every-hours", title:"app.admin.dashboard.automation.cron.page.k1729d794", description:"app.admin.dashboard.automation.cron.page.k403a2e40" },
+    { key: "custom", title:"app.admin.dashboard.automation.cron.page.k96aba461", description:"app.admin.dashboard.automation.cron.page.k9d25db3f" },
 ];
 
 function normalizeWeekday(value: string) {
@@ -242,55 +242,65 @@ function buildCronExpression(schedule: ScheduleDraft) {
 }
 
 function localizeScheduleModeTitle(key: ScheduleMode) {
-    const map: Record<ScheduleMode, ReturnType<typeof lt>> = {
-        daily: lt("每天", "Daily"),
-        weekdays: lt("工作日", "Weekdays"),
-        weekly: lt("每周", "Weekly"),
-        monthly: lt("每月", "Monthly"),
-        "every-hours": lt("每隔几小时", "Every few hours"),
-        custom: lt("自定义", "Custom"),
+    const map: Record<ScheduleMode, TranslationKey> = {
+        daily: "app.admin.dashboard.automation.cron.page.k93e62975",
+        weekdays: "app.admin.dashboard.automation.cron.page.kecf22654",
+        weekly: "app.admin.dashboard.automation.cron.page.k33d4a492",
+        monthly: "app.admin.dashboard.automation.cron.page.k17d269ce",
+        "every-hours": "app.admin.dashboard.automation.cron.page.k297d66b3",
+        custom: "app.admin.dashboard.automation.cron.page.kf1007633",
     };
     return map[key];
 }
 
 function localizeScheduleModeDescription(key: ScheduleMode) {
-    const map: Record<ScheduleMode, ReturnType<typeof lt>> = {
-        daily: lt("每天固定时间执行。", "Run at the same time every day."),
-        weekdays: lt("周一到周五固定时间执行。", "Run on weekdays at a fixed time."),
-        weekly: lt("每周指定星期和时间执行。", "Run weekly on a chosen day and time."),
-        monthly: lt("每月指定日期和时间执行。", "Run monthly on a chosen day and time."),
-        "every-hours": lt("按固定小时间隔循环执行。", "Run on a fixed hourly interval."),
-        custom: lt("手动填写原始 Cron 表达式。", "Enter a raw cron expression manually."),
+    const map: Record<ScheduleMode, TranslationKey> = {
+        daily: "app.admin.dashboard.automation.cron.page.kd5e45744",
+        weekdays: "app.admin.dashboard.automation.cron.page.k8e4d0fe4",
+        weekly: "app.admin.dashboard.automation.cron.page.k251ad1cd",
+        monthly: "app.admin.dashboard.automation.cron.page.ka9b022a8",
+        "every-hours": "app.admin.dashboard.automation.cron.page.k38462880",
+        custom: "app.admin.dashboard.automation.cron.page.k43d4fe20",
     };
     return map[key];
 }
 
 function describeCronExpression(expression: string, locale: "zh-CN" | "en") {
+    const t = createTranslator(locale);
     const schedule = parseCronExpression(expression);
     if (schedule.mode === "custom") {
-        return locale === "en" ? "Custom schedule" : "自定义计划";
+        return t(localizeScheduleModeTitle("custom"));
     }
     if (schedule.mode === "every-hours") {
         const hours = clampCronNumber(schedule.intervalHours, 1, 23, 4);
         const minute = clampCronNumber(schedule.intervalMinute, 0, 59, 0);
-        return locale === "en"
-            ? minute === 0 ? `Every ${hours}h` : `Every ${hours}h at :${String(minute).padStart(2, "0")}`
-            : minute === 0 ? `每隔 ${hours} 小时` : `每隔 ${hours} 小时的第 ${minute} 分`;
+        return minute === 0
+            ? t("app.admin.dashboard.automation.cron.page.schedule.everyHours", { hours })
+            : t("app.admin.dashboard.automation.cron.page.schedule.everyHoursAtMinute", {
+                  hours,
+                  minute: String(minute).padStart(2, "0"),
+              });
     }
     if (schedule.mode === "daily") {
-        return locale === "en" ? `Daily ${normalizeTimeInput(schedule.time)}` : `每天 ${normalizeTimeInput(schedule.time)}`;
+        return t("app.admin.dashboard.automation.cron.page.schedule.daily", {
+            time: normalizeTimeInput(schedule.time),
+        });
     }
     if (schedule.mode === "weekdays") {
-        return locale === "en" ? `Weekdays ${normalizeTimeInput(schedule.time)}` : `工作日 ${normalizeTimeInput(schedule.time)}`;
+        return t("app.admin.dashboard.automation.cron.page.schedule.weekdays", {
+            time: normalizeTimeInput(schedule.time),
+        });
     }
     if (schedule.mode === "weekly") {
-        const weekday = WEEKDAY_OPTIONS.find((item) => item.value === normalizeWeekday(schedule.weekday))?.label[locale] || (locale === "en" ? "Weekly" : "每周");
+        const weekdayLabel = WEEKDAY_OPTIONS.find((item) => item.value === normalizeWeekday(schedule.weekday))?.label;
+        const weekday = weekdayLabel ? t(weekdayLabel) : t(localizeScheduleModeTitle("weekly"));
         return `${weekday} ${normalizeTimeInput(schedule.time)}`;
     }
     if (schedule.mode === "monthly") {
-        return locale === "en"
-            ? `Monthly ${clampCronNumber(schedule.dayOfMonth, 1, 31, 1)} @ ${normalizeTimeInput(schedule.time)}`
-            : `每月 ${clampCronNumber(schedule.dayOfMonth, 1, 31, 1)} 日 ${normalizeTimeInput(schedule.time)}`;
+        return t("app.admin.dashboard.automation.cron.page.schedule.monthly", {
+            day: clampCronNumber(schedule.dayOfMonth, 1, 31, 1),
+            time: normalizeTimeInput(schedule.time),
+        });
     }
     return expression;
 }
@@ -422,17 +432,17 @@ export default function ScheduledTasksPage() {
         let sourceMetadata: Record<string, unknown> = {};
         try {
             payload = JSON.parse(payloadText || "{}");
-            targetBinding = parseJsonField("targetBinding", targetBindingText);
-            recoveryAnchor = parseJsonField("recoveryAnchor", recoveryAnchorText);
-            sourceMetadata = parseJsonField("sourceMetadata", sourceMetadataText);
+            targetBinding = parseJsonField("targetBinding", targetBindingText, locale);
+            recoveryAnchor = parseJsonField("recoveryAnchor", recoveryAnchorText, locale);
+            sourceMetadata = parseJsonField("sourceMetadata", sourceMetadataText, locale);
         } catch {
-            setScheduleError(t(lt("附加参数与 Wake ingress 字段都需要是合法的 JSON 对象。", "Payload and wake ingress fields must be valid JSON objects.")));
+            setScheduleError(t("app.admin.dashboard.automation.cron.page.kc59d91af"));
             return;
         }
 
         const nextCronExpression = buildCronExpression(scheduleDraft);
         if (!nextCronExpression) {
-            setScheduleError(t(lt("请先填写有效的执行计划。", "Enter a valid schedule first.")));
+            setScheduleError(t("app.admin.dashboard.automation.cron.page.k401320bb"));
             return;
         }
 
@@ -470,22 +480,22 @@ export default function ScheduledTasksPage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title={lt("定时任务", "Cron")}
-                description={lt("管理定时计划、执行目标和启用状态。", "Manage recurring schedules, targets, and enablement state.")}
+                title={"app.admin.dashboard.automation.cron.page.k8164146c"}
+                description={"app.admin.dashboard.automation.cron.page.k4d4e7760"}
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
                         <Button variant="secondary" onClick={() => void loadDocumentation()}>
                             <BookOpen className="mr-2 h-4 w-4" />
-                            {t(lt("配置教学", "Guide"))}
+                            {t("app.admin.dashboard.automation.cron.page.k2a0649a2")}
                         </Button>
                         <Button variant="outline" onClick={() => void loadData()} disabled={saving}>
                             <RefreshCw className="mr-2 h-4 w-4" />
-                            {t(lt("重新读取", "Reload"))}
+                            {t("app.admin.dashboard.automation.cron.page.k286cb634")}
                         </Button>
                         <Button onClick={openNewDialog}>
                             <Plus className="mr-2 h-4 w-4" />
-                            {t(lt("新建任务", "New task"))}
+                            {t("app.admin.dashboard.automation.cron.page.ked33bd58")}
                         </Button>
                     </div>
                 }
@@ -493,40 +503,40 @@ export default function ScheduledTasksPage() {
 
             <DomainSummaryStrip
                 items={[
-                    { label: lt("任务总数", "Tasks"), value: jobs.length, description: lt("当前已保存的定时任务数量。", "Saved cron jobs.") },
-                    { label: lt("已启用", "Enabled"), value: enabledCount, description: lt("会按计划自动执行的任务数量。", "Jobs that will run automatically.") },
-                    { label: lt("AutomationRuntime 任务", "Automation runs"), value: runByType.agent, description: lt("会进入 AutomationRuntime 执行链的任务数。", "Jobs that execute through AutomationRuntime.") },
-                    { label: lt("脚本任务", "Script jobs"), value: runByType.command + runByType.python, description: lt("命令或脚本执行任务数。", "Command and Python jobs.") },
+                    { label: "app.admin.dashboard.automation.cron.page.k4aad49cf", value: jobs.length, description: "app.admin.dashboard.automation.cron.page.k940f50d5" },
+                    { label: "app.admin.dashboard.automation.cron.page.kdb6c0cc1", value: enabledCount, description: "app.admin.dashboard.automation.cron.page.k0172371d" },
+                    { label: "app.admin.dashboard.automation.cron.page.k32c6dff4", value: runByType.agent, description: "app.admin.dashboard.automation.cron.page.k95a43d4f" },
+                    { label: "app.admin.dashboard.automation.cron.page.k0f0a35ef", value: runByType.command + runByType.python, description: "app.admin.dashboard.automation.cron.page.k5fdd739b" },
                 ]}
             />
 
             {systemMemoryJob ? (
                 <ConfigCard
-                    title={lt("内建维护任务", "Built-in maintenance")}
-                    description={lt("Memory Maintenance 是正式内建能力，负责日记整理、周/月/年摘要补齐与 durable memory 维护。", "Memory Maintenance is a built-in capability for log compaction, summary backfill, and durable memory maintenance.")}
+                    title={"app.admin.dashboard.automation.cron.page.kd7925760"}
+                    description={"app.admin.dashboard.automation.cron.page.k984a406e"}
                 >
                     <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
                         <div className="flex flex-wrap items-start justify-between gap-4">
                             <div className="space-y-2">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <div className="text-sm font-medium text-slate-900">{systemMemoryJob.name}</div>
-                                    <Badge variant="outline">{t(lt("系统内建", "System"))}</Badge>
+                                    <Badge variant="outline">{t("app.admin.dashboard.automation.cron.page.k06ce54e5")}</Badge>
                                     <Badge variant={systemMemoryJob.enabled ? "default" : "secondary"}>
-                                        {systemMemoryJob.enabled ? t(lt("已启用", "Enabled")) : t(lt("已停用", "Paused"))}
+                                        {systemMemoryJob.enabled ? t("app.admin.dashboard.automation.cron.page.kdb6c0cc1") : t("app.admin.dashboard.automation.cron.page.k6f76d7f7")}
                                     </Badge>
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-slate-700">
                                     <Clock3 className="h-3.5 w-3.5 text-amber-600" />
                                     <span>{describeCronExpression(systemMemoryJob.cron_expression, locale)}</span>
                                 </div>
-                                <div className="text-xs text-slate-500">{t(lt("原始计划：", "Cron:"))}{systemMemoryJob.cron_expression}</div>
+                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.kbaf14523")}{systemMemoryJob.cron_expression}</div>
                                 <div className="text-xs text-slate-500">
-                                    {t(lt("这张卡不可删除，也不可修改目标/类型，只允许改时间和启停。", "This card cannot be deleted and only exposes enablement and schedule controls."))}
+                                    {t("app.admin.dashboard.automation.cron.page.k99d6f83e")}
                                 </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                                    <span className="text-xs text-slate-500">{t(lt("启用", "Enabled"))}</span>
+                                    <span className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.k37f0aa42")}</span>
                                     <Switch
                                         checked={systemMemoryJob.enabled}
                                         onCheckedChange={(checked) =>
@@ -536,10 +546,10 @@ export default function ScheduledTasksPage() {
                                 </div>
                                 <Button variant="outline" size="sm" onClick={() => void handleRunNow(systemMemoryJob.id)}>
                                     <Play className="mr-2 h-4 w-4" />
-                                    {t(lt("立即运行", "Run now"))}
+                                    {t("app.admin.dashboard.automation.cron.page.k95433853")}
                                 </Button>
                                 <Button variant="outline" size="sm" onClick={() => openEditDialog(systemMemoryJob)}>
-                                    {t(lt("调整时间", "Adjust schedule"))}
+                                    {t("app.admin.dashboard.automation.cron.page.kac76654b")}
                                 </Button>
                             </div>
                         </div>
@@ -547,10 +557,10 @@ export default function ScheduledTasksPage() {
                 </ConfigCard>
             ) : null}
 
-            <ConfigCard title={lt("任务列表", "Task list")} description={lt("查看用户自定义任务的计划和启用状态。", "Review user-defined schedules and enablement state.")} variant="list" bodyHeight={420} bodyScroll="auto">
+            <ConfigCard title={"app.admin.dashboard.automation.cron.page.k6ba7f7f9"} description={"app.admin.dashboard.automation.cron.page.k635517f8"} variant="list" bodyHeight={420} bodyScroll="auto">
                 <div className="space-y-3">
                     {userJobs.length === 0 ? (
-                        <EmptyState title={lt("还没有定时任务", "No cron jobs yet")} description={lt("如果你需要自动执行固定任务，可以从这里开始新建。", "Create your first recurring task here.")} />
+                        <EmptyState title={"app.admin.dashboard.automation.cron.page.k6d0a6b60"} description={"app.admin.dashboard.automation.cron.page.k63b00f03"} />
                     ) : (
                         userJobs.map((job) => (
                             <div key={job.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
@@ -560,31 +570,31 @@ export default function ScheduledTasksPage() {
                                             <div className="text-sm font-medium text-slate-900">{job.name}</div>
                                             <Badge variant="outline">{job.action_type}</Badge>
                                             <Badge variant="outline">{job.triggerKind || "nudge"}</Badge>
-                                            <Badge variant={job.enabled ? "default" : "secondary"}>{job.enabled ? t(lt("已启用", "Enabled")) : t(lt("已停用", "Paused"))}</Badge>
+                                            <Badge variant={job.enabled ? "default" : "secondary"}>{job.enabled ? t("app.admin.dashboard.automation.cron.page.kdb6c0cc1") : t("app.admin.dashboard.automation.cron.page.k6f76d7f7")}</Badge>
                                         </div>
                                         <div className="flex items-center gap-2 text-xs text-slate-700">
                                             <Clock3 className="h-3.5 w-3.5 text-sky-600" />
                                             <span>{describeCronExpression(job.cron_expression, locale)}</span>
                                         </div>
-                                        <div className="text-xs text-slate-500">{t(lt("原始计划：", "Cron:"))}{job.cron_expression}</div>
-                                        <div className="break-all text-xs text-slate-500">{t(lt("执行目标：", "Target:"))}{job.action_target}</div>
+                                        <div className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.kbaf14523")}{job.cron_expression}</div>
+                                        <div className="break-all text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.k09308472")}{job.action_target}</div>
                                         <div className="text-xs text-slate-500">
                                             {job.targetBinding || job.recoveryAnchor
-                                                ? t(lt("已配置显式 targetBinding / recoveryAnchor。", "Explicit targetBinding / recoveryAnchor configured."))
-                                                : t(lt("未提供 binding，运行时会自动降级为 nudge。", "No binding provided; runtime will degrade this trigger to nudge."))}
+                                                ? t("app.admin.dashboard.automation.cron.page.k8b8fc65a")
+                                                : t("app.admin.dashboard.automation.cron.page.k4a2c0d63")}
                                         </div>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
                                         <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                                            <span className="text-xs text-slate-500">{t(lt("启用", "Enabled"))}</span>
+                                            <span className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.k37f0aa42")}</span>
                                             <Switch checked={job.enabled} onCheckedChange={(checked) => void saveJobs(jobs.map((item) => (item.id === job.id ? { ...item, enabled: checked } : item)))} />
                                         </div>
                                         <Button variant="outline" size="sm" onClick={() => void handleRunNow(job.id)}>
                                             <Play className="mr-2 h-4 w-4" />
-                                            {t(lt("立即运行", "Run now"))}
+                                            {t("app.admin.dashboard.automation.cron.page.k95433853")}
                                         </Button>
                                         <Button variant="outline" size="sm" onClick={() => openEditDialog(job)}>
-                                            {t(lt("编辑", "Edit"))}
+                                            {t("app.admin.dashboard.automation.cron.page.k75997619")}
                                         </Button>
                                         <Button variant="ghost" size="icon" className="text-slate-500 hover:text-rose-600" onClick={() => void saveJobs(jobs.filter((item) => item.id !== job.id))}>
                                             <Trash2 className="h-4 w-4" />
@@ -602,35 +612,35 @@ export default function ScheduledTasksPage() {
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
                     <DialogHeader>
-                        <DialogTitle>{editingSystemJob ? t(lt("调整 Memory Maintenance 时间", "Adjust Memory Maintenance")) : editingJobId ? t(lt("编辑定时任务", "Edit cron job")) : t(lt("新建定时任务", "New cron job"))}</DialogTitle>
-                        <DialogDescription>{editingSystemJob ? t(lt("这是系统内建维护任务。这里只允许调整计划时间和启用状态。", "This is a built-in system task. Only schedule and enablement can be changed here.")) : t(lt("先选择你能看懂的执行计划，再设置执行方式和目标。只有自定义模式才需要直接填写原始 Cron 表达式。", "Pick a readable schedule first, then set the target and action. Only Custom mode needs a raw cron expression."))}</DialogDescription>
+                        <DialogTitle>{editingSystemJob ? t("app.admin.dashboard.automation.cron.page.kaae8613d") : editingJobId ? t("app.admin.dashboard.automation.cron.page.kc3e9f297") : t("app.admin.dashboard.automation.cron.page.k366be36d")}</DialogTitle>
+                        <DialogDescription>{editingSystemJob ? t("app.admin.dashboard.automation.cron.page.k7803dec3") : t("app.admin.dashboard.automation.cron.page.kcb323c39")}</DialogDescription>
                     </DialogHeader>
 
                     {!editingSystemJob ? (
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
-                                <Label>{t(lt("任务名称", "Task name"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.ka1c166dc")}</Label>
                                 <Input value={draftJob.name} onChange={(event) => setDraftJob((current) => ({ ...current, name: event.target.value }))} />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("执行方式", "Action type"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k89647d74")}</Label>
                                 <Select value={draftJob.action_type} onValueChange={(value: CronJob["action_type"]) => setDraftJob((current) => ({ ...current, action_type: value }))}>
                                     <SelectTrigger>
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="agent">{t(lt("AutomationRuntime 任务", "Automation task"))}</SelectItem>
-                                        <SelectItem value="command">{t(lt("系统命令", "Command"))}</SelectItem>
-                                        <SelectItem value="python">{t(lt("Python 脚本", "Python"))}</SelectItem>
+                                        <SelectItem value="agent">{t("app.admin.dashboard.automation.cron.page.k7c6312bb")}</SelectItem>
+                                        <SelectItem value="command">{t("app.admin.dashboard.automation.cron.page.k5924d6b5")}</SelectItem>
+                                        <SelectItem value="python">{t("app.admin.dashboard.automation.cron.page.ke83fbd7a")}</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
                             <div className="space-y-2 md:col-span-2">
-                                <Label>{t(lt("执行目标", "Target"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.kab44591a")}</Label>
                                 <Input value={draftJob.action_target} onChange={(event) => setDraftJob((current) => ({ ...current, action_target: event.target.value }))} />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("Wake 类型", "Wake trigger kind"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k01313cef")}</Label>
                                 <Select value={draftJob.triggerKind || "nudge"} onValueChange={(value) => setDraftJob((current) => ({ ...current, triggerKind: value as NonNullable<CronJob["triggerKind"]> }))}>
                                     <SelectTrigger>
                                         <SelectValue />
@@ -643,7 +653,7 @@ export default function ScheduledTasksPage() {
                                 </Select>
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("附着策略", "Attach policy"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.ka1c2596c")}</Label>
                                 <Select value={draftJob.attachPolicy || "new_session"} onValueChange={(value) => setDraftJob((current) => ({ ...current, attachPolicy: value as NonNullable<CronJob["attachPolicy"]> }))}>
                                     <SelectTrigger>
                                         <SelectValue />
@@ -657,24 +667,24 @@ export default function ScheduledTasksPage() {
                                 </Select>
                             </div>
                             <div className="space-y-2 md:col-span-2">
-                                <Label>{t(lt("唤醒原因", "Wake reason"))}</Label>
-                                <Input value={draftJob.wakeReason || ""} onChange={(event) => setDraftJob((current) => ({ ...current, wakeReason: event.target.value }))} placeholder={t(lt("例如：scheduled_project_checkin", "e.g. scheduled_project_checkin"))} />
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k4a33217d")}</Label>
+                                <Input value={draftJob.wakeReason || ""} onChange={(event) => setDraftJob((current) => ({ ...current, wakeReason: event.target.value }))} placeholder={t("app.admin.dashboard.automation.cron.page.ka6afa838")} />
                             </div>
                             <div className="space-y-2 md:col-span-2">
-                                <Label>{t(lt("消息模板", "Message"))}</Label>
-                                <Textarea value={draftJob.message || ""} onChange={(event) => setDraftJob((current) => ({ ...current, message: event.target.value }))} className="min-h-[96px]" placeholder={t(lt("没有 binding / anchor 时，这段文本只会作为 nudge。", "Without binding / anchor this text only becomes a nudge."))} />
+                                <Label>{t("app.admin.dashboard.automation.cron.page.kebf5a38b")}</Label>
+                                <Textarea value={draftJob.message || ""} onChange={(event) => setDraftJob((current) => ({ ...current, message: event.target.value }))} className="min-h-[96px]" placeholder={t("app.admin.dashboard.automation.cron.page.k629dfe37")} />
                             </div>
                         </div>
                     ) : (
                         <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                            {t(lt("Memory Maintenance 的执行目标、类型和参数由系统固定维护。这里仅开放计划时间与启停。", "The built-in Memory Maintenance target, type, and payload are system-managed. Only schedule and enablement are editable here."))}
+                            {t("app.admin.dashboard.automation.cron.page.kc4bdc198")}
                         </div>
                     )}
 
                     <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                         <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{t(lt("执行计划", "Schedule"))}</div>
-                            <div className="text-xs leading-5 text-slate-500">{t(lt("选择最接近你需求的方式，系统会自动生成对应的 Cron 表达式。", "Choose the schedule style that matches your intent. The cron expression is generated automatically."))}</div>
+                            <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.automation.cron.page.k630b85cb")}</div>
+                            <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.automation.cron.page.k5b2a9659")}</div>
                         </div>
 
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -698,7 +708,7 @@ export default function ScheduledTasksPage() {
 
                         {scheduleDraft.mode === "daily" || scheduleDraft.mode === "weekdays" ? (
                             <div className="space-y-2">
-                                <Label>{t(lt("执行时间", "Time"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k88be2169")}</Label>
                                 <Input type="time" value={normalizeTimeInput(scheduleDraft.time)} onChange={(event) => updateSchedule({ time: event.target.value })} />
                             </div>
                         ) : null}
@@ -706,7 +716,7 @@ export default function ScheduledTasksPage() {
                         {scheduleDraft.mode === "weekly" ? (
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label>{t(lt("星期", "Weekday"))}</Label>
+                                    <Label>{t("app.admin.dashboard.automation.cron.page.kb8b3e2a4")}</Label>
                                     <Select value={normalizeWeekday(scheduleDraft.weekday)} onValueChange={(value) => updateSchedule({ weekday: value })}>
                                         <SelectTrigger>
                                             <SelectValue />
@@ -721,7 +731,7 @@ export default function ScheduledTasksPage() {
                                     </Select>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("执行时间", "Time"))}</Label>
+                                    <Label>{t("app.admin.dashboard.automation.cron.page.k88be2169")}</Label>
                                     <Input type="time" value={normalizeTimeInput(scheduleDraft.time)} onChange={(event) => updateSchedule({ time: event.target.value })} />
                                 </div>
                             </div>
@@ -730,7 +740,7 @@ export default function ScheduledTasksPage() {
                         {scheduleDraft.mode === "monthly" ? (
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label>{t(lt("每月日期", "Day of month"))}</Label>
+                                    <Label>{t("app.admin.dashboard.automation.cron.page.k2f689528")}</Label>
                                     <Input
                                         type="number"
                                         min={1}
@@ -740,7 +750,7 @@ export default function ScheduledTasksPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("执行时间", "Time"))}</Label>
+                                    <Label>{t("app.admin.dashboard.automation.cron.page.k88be2169")}</Label>
                                     <Input type="time" value={normalizeTimeInput(scheduleDraft.time)} onChange={(event) => updateSchedule({ time: event.target.value })} />
                                 </div>
                             </div>
@@ -749,7 +759,7 @@ export default function ScheduledTasksPage() {
                         {scheduleDraft.mode === "every-hours" ? (
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label>{t(lt("间隔小时数", "Hour interval"))}</Label>
+                                    <Label>{t("app.admin.dashboard.automation.cron.page.k02b85aea")}</Label>
                                     <Input
                                         type="number"
                                         min={1}
@@ -759,7 +769,7 @@ export default function ScheduledTasksPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("执行分钟", "Minute offset"))}</Label>
+                                    <Label>{t("app.admin.dashboard.automation.cron.page.kc1cd9267")}</Label>
                                     <Input
                                         type="number"
                                         min={0}
@@ -773,21 +783,21 @@ export default function ScheduledTasksPage() {
 
                         {scheduleDraft.mode === "custom" ? (
                             <div className="space-y-2">
-                                <Label>{t(lt("原始 Cron 表达式", "Raw cron expression"))}</Label>
-                                <Input value={scheduleDraft.rawExpression} onChange={(event) => updateSchedule({ rawExpression: event.target.value })} placeholder={t(lt("例如：0 9 * * *", "e.g. 0 9 * * *"))} />
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k758ac620")}</Label>
+                                <Input value={scheduleDraft.rawExpression} onChange={(event) => updateSchedule({ rawExpression: event.target.value })} placeholder={t("app.admin.dashboard.automation.cron.page.kb9fba662")} />
                             </div>
                         ) : (
                             <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-                                {t(lt("当前计划：", "Current schedule:"))}<span className="font-medium text-slate-900">{describeCronExpression(buildCronExpression(scheduleDraft), locale)}</span>
+                                {t("app.admin.dashboard.automation.cron.page.k90cf7fa8")}<span className="font-medium text-slate-900">{describeCronExpression(buildCronExpression(scheduleDraft), locale)}</span>
                             </div>
                         )}
                     </div>
 
                     {!editingSystemJob ? (
-                    <AdvancedSection title={lt("更多选项", "More options")} description={lt("需要手动检查或调整原始 Cron 表达式时，再展开这里。", "Expand only when you need to inspect or override the raw cron expression.")}>
+                    <AdvancedSection title={"app.admin.dashboard.automation.cron.page.k5a31521e"} description={"app.admin.dashboard.automation.cron.page.kf89b0eca"}>
                         <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
                             <div className="space-y-2">
-                                <Label>{t(lt("原始 Cron 表达式", "Raw cron expression"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k758ac620")}</Label>
                                 <Input
                                     value={scheduleDraft.mode === "custom" ? scheduleDraft.rawExpression : buildCronExpression(scheduleDraft)}
                                     onChange={(event) =>
@@ -797,24 +807,24 @@ export default function ScheduledTasksPage() {
                                             rawExpression: event.target.value,
                                         }))
                                     }
-                                    placeholder={t(lt("例如：0 9 * * *", "e.g. 0 9 * * *"))}
+                                    placeholder={t("app.admin.dashboard.automation.cron.page.kb9fba662")}
                                 />
-                                <div className="text-xs leading-5 text-slate-500">{t(lt("如果你在这里直接修改，系统会自动切换到“自定义”模式。", "Direct edits here will switch the schedule to Custom mode."))}</div>
+                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.automation.cron.page.k1b9aa6dd")}</div>
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("附加参数（JSON）", "Payload (JSON)"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k1f02616d")}</Label>
                                 <Textarea value={payloadText} onChange={(event) => setPayloadText(event.target.value)} className="min-h-[140px] font-mono text-xs" />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("targetBinding（JSON）", "targetBinding (JSON)"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.kb5a63537")}</Label>
                                 <Textarea value={targetBindingText} onChange={(event) => setTargetBindingText(event.target.value)} className="min-h-[120px] font-mono text-xs" />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("recoveryAnchor（JSON）", "recoveryAnchor (JSON)"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k6b5e0d20")}</Label>
                                 <Textarea value={recoveryAnchorText} onChange={(event) => setRecoveryAnchorText(event.target.value)} className="min-h-[120px] font-mono text-xs" />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("sourceMetadata（JSON）", "sourceMetadata (JSON)"))}</Label>
+                                <Label>{t("app.admin.dashboard.automation.cron.page.k01d4c959")}</Label>
                                 <Textarea value={sourceMetadataText} onChange={(event) => setSourceMetadataText(event.target.value)} className="min-h-[120px] font-mono text-xs" />
                             </div>
                         </div>
@@ -824,8 +834,8 @@ export default function ScheduledTasksPage() {
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
                         <div className="flex items-center justify-between gap-4">
                             <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t(lt("启用状态", "Enablement"))}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t(lt("打开后，这个任务会按计划自动触发。", "When enabled, this task runs on schedule."))}</div>
+                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.automation.cron.page.k3936c4f6")}</div>
+                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.automation.cron.page.k135979e8")}</div>
                             </div>
                             <Switch checked={draftJob.enabled} onCheckedChange={(checked) => setDraftJob((current) => ({ ...current, enabled: checked }))} />
                         </div>
@@ -835,9 +845,9 @@ export default function ScheduledTasksPage() {
 
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>
-                            {t(lt("取消", "Cancel"))}
+                            {t("app.admin.dashboard.automation.cron.page.kb92cb20c")}
                         </Button>
-                        <Button onClick={() => void handleSaveDialog()}>{t(lt("保存", "Save"))}</Button>
+                        <Button onClick={() => void handleSaveDialog()}>{t("app.admin.dashboard.automation.cron.page.k6010e1ed")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
@@ -845,8 +855,8 @@ export default function ScheduledTasksPage() {
             <DocumentationGuideDialog
                 open={guideOpen}
                 onOpenChange={setGuideOpen}
-                title={t(lt("定时任务使用说明", "Cron guide"))}
-                description={t(lt("这里说明如何设置计划、目标和立即运行方式。", "This guide explains scheduling, targets, and manual runs."))}
+                title={t("app.admin.dashboard.automation.cron.page.k14b81bfe")}
+                description={t("app.admin.dashboard.automation.cron.page.k82bfd96f")}
                 content={docContent}
             />
         </AdminPageShell>

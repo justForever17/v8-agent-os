@@ -66,11 +66,13 @@ function ComposerActionButton({
     disabled,
     onPress,
     colors,
+    t,
 }: {
     mode: "send" | "stop" | "busy";
     disabled: boolean;
     onPress: () => void;
     colors: ReturnType<typeof useUiPrefs>["colors"];
+    t: ReturnType<typeof useUiPrefs>["t"];
 }) {
     const spin = useSharedValue(0);
     const pulse = useSharedValue(0);
@@ -127,7 +129,9 @@ function ComposerActionButton({
     return (
         <Pressable
             accessibilityRole="button"
-            accessibilityLabel={mode === "stop" ? "中断运行" : "发送消息"}
+            accessibilityLabel={mode === "stop"
+                ? t("src.components.chat.composer.stop_run")
+                : t("src.components.chat.composer.send_message")}
             disabled={disabled}
             onPress={onPress}
             style={[styles.sendWrap, disabled && styles.disabled]}
@@ -241,7 +245,7 @@ export const Composer = memo(function Composer({
         : null;
     const bodyPlaceholder = activeQueryMode
         ? ""
-        : t("给 智能主管 发送消息...", "Message Supervisor...");
+        : t("src.components.chat.composer.message_supervisor");
 
     useEffect(() => {
         const targetRef = activeQueryMode ? queryInputRef : bodyInputRef;
@@ -343,8 +347,8 @@ export const Composer = memo(function Composer({
                                             }
                                         }}
                                         placeholder={activeQueryMode === "command"
-                                            ? t("搜索命令", "Search command")
-                                            : t("搜索 Skill", "Search skill")}
+                                            ? t("src.components.chat.composer.search_command")
+                                            : t("src.components.chat.composer.search_skill")}
                                         placeholderTextColor={colors.textSoft}
                                         autoCorrect={false}
                                         spellCheck={false}
@@ -404,7 +408,9 @@ export const Composer = memo(function Composer({
                         <View style={styles.leftControls}>
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel={taskPlanningMode ? "关闭任务规划偏好" : "开启任务规划偏好"}
+                                accessibilityLabel={taskPlanningMode
+                                    ? t("src.components.chat.composer.disable_task_planning")
+                                    : t("src.components.chat.composer.enable_task_planning")}
                                 style={[
                                     styles.taskModeButton,
                                     {
@@ -465,7 +471,7 @@ export const Composer = memo(function Composer({
                                             <Pressable
                                                 key={previewKey}
                                                 accessibilityRole="button"
-                                                accessibilityLabel={t("移除附件", "Remove attachment")}
+                                                accessibilityLabel={t("src.components.chat.composer.remove_attachment")}
                                                 hitSlop={6}
                                                 style={({ pressed }) => [
                                                     styles.filePreviewButton,
@@ -508,6 +514,7 @@ export const Composer = memo(function Composer({
                             disabled={!canAct}
                             onPress={handlePrimaryAction}
                             colors={colors}
+                            t={t}
                         />
                     </View>
                 </View>

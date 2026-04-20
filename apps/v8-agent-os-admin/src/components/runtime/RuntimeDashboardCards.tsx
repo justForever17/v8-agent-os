@@ -8,7 +8,6 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
-import { lt } from "@/lib/locale";
 import { CANONICAL_RUNTIME_KINDS, CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
 import { cn } from "@/lib/utils";
 
@@ -106,15 +105,15 @@ function StatusDot({ enabled }: { enabled: boolean }) {
 function resolveRuntimeStateLabel(t: ReturnType<typeof useT>, runtime: RuntimeDescriptor) {
     const availability = String(runtime.availabilityReason || runtime.availability || "installed").trim();
     if (availability === "not_installed") {
-        return t(lt("未安装", "Not installed"));
+        return t("components.runtime.RuntimeDashboardCards.k95c16ca5");
     }
     if (availability === "disabled_by_config") {
-        return t(lt("配置关闭", "Disabled by config"));
+        return t("components.runtime.RuntimeDashboardCards.k9b3f5673");
     }
     if (availability === "disabled_by_policy" || runtime.policy?.enabled === false) {
-        return t(lt("关闭", "Off"));
+        return t("components.runtime.RuntimeDashboardCards.k574ff3b2");
     }
-    return t(lt("启用", "On"));
+    return t("components.runtime.RuntimeDashboardCards.kf34b4be4");
 }
 
 function resolveRuntimeToggleChecked(runtime: RuntimeDescriptor) {
@@ -144,8 +143,8 @@ export function RuntimeDashboardCards() {
         } catch (error) {
             console.error("Failed to load runtime cards:", error);
             toast({
-                title: t(lt("Runtime 加载失败", "Runtime load failed")),
-                description: t(lt("当前无法读取 runtime 状态。", "Unable to read runtime status right now.")),
+                title: t("components.runtime.RuntimeDashboardCards.kfa4f38cd"),
+                description: t("components.runtime.RuntimeDashboardCards.kd47576cd"),
                 variant: "destructive",
             });
         } finally {
@@ -161,8 +160,8 @@ export function RuntimeDashboardCards() {
         const core = runtimes.filter((item) => isCoreRuntimeKind(item.kind));
         const others = runtimes.filter((item) => !isCoreRuntimeKind(item.kind));
         return [
-            { key: "core", title: t(lt("核心", "Core")), items: core },
-            { key: "other", title: t(lt("扩展", "More")), items: others },
+            { key: "core", title: t("components.runtime.RuntimeDashboardCards.k095533f5"), items: core },
+            { key: "other", title: t("components.runtime.RuntimeDashboardCards.kf484a950"), items: others },
         ].filter((group) => group.items.length > 0);
     }, [runtimes, t]);
 
@@ -192,8 +191,8 @@ export function RuntimeDashboardCards() {
         } catch (error) {
             console.error("Failed to toggle runtime:", error);
             toast({
-                title: t(lt("切换失败", "Toggle failed")),
-                description: t(lt("当前无法更新 runtime 状态。", "Unable to update runtime state right now.")),
+                title: t("components.runtime.RuntimeDashboardCards.k3cccf1fc"),
+                description: t("components.runtime.RuntimeDashboardCards.k9653e087"),
                 variant: "destructive",
             });
         } finally {
@@ -204,7 +203,7 @@ export function RuntimeDashboardCards() {
     return (
         <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
             <CardHeader className="space-y-1 pb-4">
-                <CardTitle className="text-lg text-slate-900">{t(lt("Runtimes", "Runtimes"))}</CardTitle>
+                <CardTitle className="text-lg text-slate-900">{t("components.runtime.RuntimeDashboardCards.k67336fc2")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
                 {loading ? (
@@ -244,7 +243,7 @@ export function RuntimeDashboardCards() {
                                                         <span>{stateLabel}</span>
                                                         {onDemand ? (
                                                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                                                                {t(lt("按需调用", "On demand"))}
+                                                                {t("components.runtime.RuntimeDashboardCards.k37f55da8")}
                                                             </span>
                                                         ) : null}
                                                     </div>

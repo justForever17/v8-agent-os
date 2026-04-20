@@ -94,8 +94,8 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
         return null;
     }
 
-    const resolvedPrompt = details?.prompt || t("正在同步治理审批详情，请稍候。", "Syncing governance approval details. Please wait.");
-    const resolvedReason = details?.riskSummary || t("当前运行已暂停，待治理审批详情加载后可继续处理。", "The current run is paused while approval details are being synchronized.");
+    const resolvedPrompt = details?.prompt || t("src.components.chat.governanceapprovalmodal.syncing_governance_approval_details_please_wait");
+    const resolvedReason = details?.riskSummary || t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_while_approval_details_are_being_synchronized");
     const resolvedCommand = details?.command || "";
     const actionsDisabled = busy || !approval;
 
@@ -118,15 +118,15 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         </View>
                         <View style={styles.headerText}>
                             <Text style={[styles.eyebrow, { color: colors.warning }]}>
-                                {t("治理审批", "Governance approval")}
+                                {t("src.components.chat.governanceapprovalmodal.governance_approval")}
                             </Text>
                             <Text style={[styles.title, { color: colors.text }]}>
-                                {t("Safety Guardian 需要你的授权", "Safety Guardian needs your approval")}
+                                {t("src.components.chat.governanceapprovalmodal.safety_guardian_needs_your_approval")}
                             </Text>
                             <Text style={[styles.subtitle, { color: colors.textMuted }]}>
                                 {approval
-                                    ? t("当前运行已暂停，确认后会继续原命令执行。", "The current run is paused and will resume the original command after approval.")
-                                    : t("当前运行已暂停，正在同步审批详情。", "The current run is paused while approval details are loading.")}
+                                    ? t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_and_will_resume_the_original_command_after_approval")
+                                    : t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_while_approval_details_are_loading")}
                             </Text>
                         </View>
                     </View>
@@ -134,7 +134,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                     <CardContent style={styles.content}>
                         <View style={[styles.detailCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                {t("审批原因", "Approval reason")}
+                                {t("src.components.chat.governanceapprovalmodal.approval_reason")}
                             </Text>
                             <MarkdownRenderer content={resolvedPrompt} />
                         </View>
@@ -142,7 +142,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         {resolvedReason ? (
                             <View style={[styles.detailCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                                 <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                    {t("风险摘要", "Risk summary")}
+                                    {t("src.components.chat.governanceapprovalmodal.risk_summary")}
                                 </Text>
                                 <Text style={[styles.detailText, { color: colors.text }]}>{resolvedReason}</Text>
                             </View>
@@ -151,7 +151,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         {resolvedCommand ? (
                             <View style={[styles.detailCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                                 <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                    {t("待执行命令", "Command")}
+                                    {t("src.components.chat.governanceapprovalmodal.command")}
                                 </Text>
                                 <Text style={[styles.commandText, { color: colors.text }]}>{resolvedCommand}</Text>
                             </View>
@@ -159,12 +159,12 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
 
                         <View style={styles.answerSection}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                {t("补充说明", "Optional note")}
+                                {t("src.components.chat.governanceapprovalmodal.optional_note")}
                             </Text>
                             <Textarea
                                 value={answer}
                                 onChangeText={setAnswer}
-                                placeholder={t("可以补充授权说明，也可以直接批准。", "You can add context for the approval, or approve directly.")}
+                                placeholder={t("src.components.chat.governanceapprovalmodal.you_can_add_context_for_the_approval_or_approve_directly")}
                                 style={styles.textarea}
                                 editable={!actionsDisabled}
                             />
@@ -173,16 +173,16 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
 
                     <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.50)" : "rgba(255,255,255,0.72)" }]}>
                         <Button variant="ghost" onPress={onClose} disabled={busy}>
-                            {t("稍后处理", "Dismiss")}
+                            {t("src.components.chat.governanceapprovalmodal.dismiss")}
                         </Button>
                         <Button variant="outline" onPress={onViewDetails} disabled={busy}>
-                            {t("查看详情", "View details")}
+                            {t("src.components.chat.governanceapprovalmodal.view_details")}
                         </Button>
                         <Button variant="outline" onPress={() => void onReject(answer.trim())} disabled={actionsDisabled}>
-                            {busy ? t("处理中...", "Processing...") : t("拒绝", "Reject")}
+                            {busy ? t("src.components.chat.askusermodal.processing") : t("src.components.chat.approvalpromptcard.reject")}
                         </Button>
                         <Button onPress={() => void onApprove(answer.trim())} disabled={actionsDisabled}>
-                            {busy ? t("处理中...", "Processing...") : t("同意并继续", "Approve and continue")}
+                            {busy ? t("src.components.chat.askusermodal.processing") : t("src.components.chat.governanceapprovalmodal.approve_and_continue")}
                         </Button>
                     </View>
                 </Card>

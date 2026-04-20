@@ -23,9 +23,9 @@ type StabilityData = {
 };
 
 const MODES = [
-    { key: "fast", title: "更快响应", description: "忙时直接拒绝同会话新任务，减少等待。", lane: "reject" as const },
-    { key: "balanced", title: "平衡稳定", description: "同一会话排队等待，适合大多数日常使用。", lane: "queue" as const },
-    { key: "durable", title: "长任务优先", description: "优先保证长任务不互踩，建议长期保持。", lane: "queue" as const },
+    { key: "fast", title:"app.admin.dashboard.stability.strategy.page.kfd324ea2", description:"app.admin.dashboard.stability.strategy.page.kbe7d8e91", lane: "reject" as const },
+    { key: "balanced", title:"app.admin.dashboard.stability.strategy.page.k01e41059", description:"app.admin.dashboard.stability.strategy.page.k2b7cb710", lane: "queue" as const },
+    { key: "durable", title:"app.admin.dashboard.stability.strategy.page.k9a5e1d3b", description:"app.admin.dashboard.stability.strategy.page.k97d5e288", lane: "queue" as const },
 ];
 
 export default function StabilityStrategyPage() {
@@ -84,14 +84,14 @@ export default function StabilityStrategyPage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title="稳定性策略"
-                description="设置系统在速度、排队和长任务之间的取舍。"
+                title="app.admin.dashboard.stability.strategy.page.kb80fddf8"
+                description="app.admin.dashboard.stability.strategy.page.k64ae0dd1"
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
                         <Button onClick={() => void handleSave()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Gauge className="mr-2 h-4 w-4" />}
-                            {t("保存")}
+                            {t("app.admin.dashboard.stability.strategy.page.k6010e1ed")}
                         </Button>
                     </div>
                 }
@@ -99,10 +99,10 @@ export default function StabilityStrategyPage() {
 
             <DomainSummaryStrip
                 items={[
-                    { label: "当前策略", value: MODES.find((item) => item.key === mode)?.title || "平衡稳定", description: "当前首页选择的稳定性方案。" },
-                    { label: "持久化护栏", value: durability ? "已开启" : "已关闭", description: "建议长期保持开启。" },
-                    { label: "同会话任务", value: envelope.data.sessionLanePolicy === "reject" ? "忙时拒绝" : "稳妥排队", description: "控制同一会话内的任务冲突。" },
-                    { label: "保存位置", value: "config.json", description: "系统会把稳定性策略写入统一配置。" },
+                    { label:"app.admin.dashboard.stability.strategy.page.k2837705a", value: MODES.find((item) => item.key === mode)?.title || "app.admin.dashboard.stability.strategy.page.mode.balancedFallback", description:"app.admin.dashboard.stability.strategy.page.k93931b27" },
+                    { label:"app.admin.dashboard.stability.strategy.page.kb3e12f3b", value: durability ? "app.admin.dashboard.stability.strategy.page.state.enabled" : "app.admin.dashboard.stability.strategy.page.state.disabled", description:"app.admin.dashboard.stability.strategy.page.kddaaa8bf" },
+                    { label:"app.admin.dashboard.stability.strategy.page.k1700829f", value: envelope.data.sessionLanePolicy === "reject" ? "app.admin.dashboard.stability.strategy.page.lane.reject" : "app.admin.dashboard.stability.strategy.page.lane.queue", description:"app.admin.dashboard.stability.strategy.page.k4038289f" },
+                    { label:"app.admin.dashboard.stability.strategy.page.kee73bb6b", value: "config.json", description:"app.admin.dashboard.stability.strategy.page.k0ef844ca" },
                 ]}
             />
 
@@ -128,15 +128,15 @@ export default function StabilityStrategyPage() {
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                     <div>
-                        <div className="text-sm font-medium text-slate-900">{t("禁止持久化回退")}</div>
-                        <div className="mt-1 text-sm leading-6 text-slate-500">{t("关闭后长期任务更容易丢失运行状态。")}</div>
+                        <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.stability.strategy.page.kb33db226")}</div>
+                        <div className="mt-1 text-sm leading-6 text-slate-500">{t("app.admin.dashboard.stability.strategy.page.kd531f6ba")}</div>
                     </div>
                     <Button
                         variant={durability ? "default" : "outline"}
                         className="rounded-2xl"
                         onClick={() => setDurability((current) => !current)}
                     >
-                        {durability ? t("已开启") : t("已关闭")}
+                        {durability ? t("app.admin.dashboard.stability.strategy.page.kd945d5d0") : t("app.admin.dashboard.stability.strategy.page.k12b31ba6")}
                     </Button>
                 </div>
             </div>
@@ -147,7 +147,7 @@ export default function StabilityStrategyPage() {
                 reloadRequired={envelope.reloadRequired}
             />
 
-            <AdvancedSection title="详细规则" defaultOpen={false}>
+            <AdvancedSection title="app.admin.dashboard.stability.strategy.page.kcb5109d5" defaultOpen={false}>
                 <RuntimeStabilityPanel />
             </AdvancedSection>
         </AdminPageShell>

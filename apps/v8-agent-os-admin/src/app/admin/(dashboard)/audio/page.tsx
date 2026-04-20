@@ -9,7 +9,6 @@ import { useToast } from "@/components/ui/use-toast";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Mic, Save } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 export default function AudioPage() {
     const { toast } = useToast();
@@ -76,13 +75,13 @@ export default function AudioPage() {
             });
             if (!res.ok) throw new Error("Save failed");
             toast({
-                title: t(lt("配置已保存", "Saved")),
-                description: t(lt("多模态语音配置更新成功，并在引擎侧重载生效。", "Audio settings were updated and reloaded in the engine.")),
+                title: t("app.admin.dashboard.audio.page.k1cf22082"),
+                description: t("app.admin.dashboard.audio.page.k27f5bb98"),
             });
         } catch {
             toast({
-                title: t(lt("保存失败", "Save failed")),
-                description: t(lt("请检查引擎连通性", "Please check engine connectivity.")),
+                title: t("app.admin.dashboard.audio.page.k12769ce1"),
+                description: t("app.admin.dashboard.audio.page.k42aa2f80"),
                 variant: "destructive"
             });
         } finally {
@@ -119,7 +118,7 @@ export default function AudioPage() {
         }));
     };
 
-    if (loading) return <div className="p-8">{t(lt("正在载入音频配置...", "Loading audio config..."))}</div>;
+    if (loading) return <div className="p-8">{t("app.admin.dashboard.audio.page.k6d76de89")}</div>;
 
     return (
         <div className="p-8 max-w-4xl mx-auto space-y-6">
@@ -127,15 +126,15 @@ export default function AudioPage() {
                 <div>
                     <h1 className="text-3xl font-bold flex items-center gap-2">
                         <Mic className="h-8 w-8 text-primary" />
-                        {t(lt("多模挂载配置", "Audio"))}
+                        {t("app.admin.dashboard.audio.page.k5c98feb1")}
                     </h1>
                     <p className="text-muted-foreground mt-2">
-                        {t(lt("为 V8 Agent OS 指派语音识别 (STT) 和语音合成 (TTS) 的服务提供商。", "Assign speech-to-text and text-to-speech providers for V8 Agent OS."))}
+                        {t("app.admin.dashboard.audio.page.k918e6e58")}
                     </p>
                 </div>
                 <Button onClick={handleSave} disabled={saving} className="gap-2">
                     <Save className="h-4 w-4" />
-                    {saving ? t(lt("保存中...", "Saving...")) : t(lt("保存配置", "Save"))}
+                    {saving ? t("app.admin.dashboard.audio.page.kc225e8a3") : t("app.admin.dashboard.audio.page.ke22cbc80")}
                 </Button>
             </div>
 
@@ -145,8 +144,8 @@ export default function AudioPage() {
                     <CardHeader>
                         <div className="flex items-center justify-between">
                             <div>
-                                <CardTitle>{t(lt("语音识别 (STT)", "Speech to Text"))}</CardTitle>
-                                <CardDescription>{t(lt("配置用户的语音输入转写服务。", "Configure the user speech transcription service."))}</CardDescription>
+                                <CardTitle>{t("app.admin.dashboard.audio.page.k1593b15d")}</CardTitle>
+                                <CardDescription>{t("app.admin.dashboard.audio.page.kc407ee87")}</CardDescription>
                             </div>
                             <div className="w-48">
                                 <Select 
@@ -154,11 +153,11 @@ export default function AudioPage() {
                                     onValueChange={(val) => setConfig(prev => ({...prev, stt: {...prev.stt, active_provider: val}}))}
                                 >
                                     <SelectTrigger>
-                                        <SelectValue placeholder={t(lt("选择提供商", "Select provider"))} />
+                                        <SelectValue placeholder={t("app.admin.dashboard.audio.page.k2deec296")} />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="custom">{t(lt("自建 / 第三方 API", "Custom / 3rd-party API"))}</SelectItem>
-                                        <SelectItem value="baidu">{t(lt("百度智能云 STT", "Baidu STT"))}</SelectItem>
+                                        <SelectItem value="custom">{t("app.admin.dashboard.audio.page.k49861c04")}</SelectItem>
+                                        <SelectItem value="baidu">{t("app.admin.dashboard.audio.page.k347cd25b")}</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -168,8 +167,8 @@ export default function AudioPage() {
                         {config.stt.active_provider === "custom" && (
                             <div className="space-y-4 border rounded-md p-4 bg-muted/30">
                                 <div>
-                                    <Label className="text-sm font-semibold text-primary">{t(lt("自建服务 (Custom API)", "Custom API"))}</Label>
-                                    <p className="text-xs text-muted-foreground mb-4">{t(lt("兼容返回纯文本的 HTTP 接口，详见自建服务对接文档。", "Compatible with HTTP endpoints that return plain text output."))}</p>
+                                    <Label className="text-sm font-semibold text-primary">{t("app.admin.dashboard.audio.page.k1c5aaed3")}</Label>
+                                    <p className="text-xs text-muted-foreground mb-4">{t("app.admin.dashboard.audio.page.k50df78b0")}</p>
                                 </div>
                                 <div className="space-y-2">
                                     <Label>API URL</Label>
@@ -180,12 +179,12 @@ export default function AudioPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("API Key (可选)", "API Key (optional)"))}</Label>
+                                    <Label>{t("app.admin.dashboard.audio.page.kb8695ac0")}</Label>
                                     <Input
                                         type="password"
                                         value={config.stt.providers.custom.api_key || ""}
                                         onChange={e => updateSttValue("custom", "api_key", e.target.value)}
-                                        placeholder={t(lt("如需鉴权可填写", "Only needed if your endpoint requires auth"))}
+                                        placeholder={t("app.admin.dashboard.audio.page.k99b36d78")}
                                     />
                                 </div>
                             </div>
@@ -194,15 +193,15 @@ export default function AudioPage() {
                         {config.stt.active_provider === "baidu" && (
                             <div className="space-y-4 border rounded-md p-4 bg-muted/30">
                                 <div>
-                                    <Label className="text-sm font-semibold text-primary">{t(lt("百度智能云 STT", "Baidu STT"))}</Label>
-                                    <p className="text-xs text-muted-foreground mb-4">{t(lt("使用极速版短语音识别服务，获取你的 API Key 和 Secret Key。", "Use Baidu short-form speech recognition with your API Key and Secret Key."))}</p>
+                                    <Label className="text-sm font-semibold text-primary">{t("app.admin.dashboard.audio.page.k347cd25b")}</Label>
+                                    <p className="text-xs text-muted-foreground mb-4">{t("app.admin.dashboard.audio.page.k696912b7")}</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("App ID (暂未强制, 可选)", "App ID (optional)"))}</Label>
+                                    <Label>{t("app.admin.dashboard.audio.page.k004a31eb")}</Label>
                                     <Input 
                                         value={config.stt.providers.baidu.app_id || ""} 
                                         onChange={e => updateSttValue("baidu", "app_id", e.target.value)} 
-                                        placeholder={t(lt("填写你的 APP_ID", "Enter your APP_ID"))}
+                                        placeholder={t("app.admin.dashboard.audio.page.kdbb863db")}
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -210,7 +209,7 @@ export default function AudioPage() {
                                     <Input 
                                         value={config.stt.providers.baidu.api_key || ""} 
                                         onChange={e => updateSttValue("baidu", "api_key", e.target.value)} 
-                                        placeholder={t(lt("填写你的 API_KEY", "Enter your API_KEY"))}
+                                        placeholder={t("app.admin.dashboard.audio.page.k19b48365")}
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -231,8 +230,8 @@ export default function AudioPage() {
                     <CardHeader>
                         <div className="flex items-center justify-between">
                             <div>
-                                <CardTitle>{t(lt("语音合成 (TTS)", "Text to Speech"))}</CardTitle>
-                                <CardDescription>{t(lt("配置系统助手向用户播报的语音服务。", "Configure the assistant voice playback service."))}</CardDescription>
+                                <CardTitle>{t("app.admin.dashboard.audio.page.k7c12ec6b")}</CardTitle>
+                                <CardDescription>{t("app.admin.dashboard.audio.page.kfc48901d")}</CardDescription>
                             </div>
                             <div className="w-48">
                                 <Select 
@@ -240,11 +239,11 @@ export default function AudioPage() {
                                     onValueChange={(val) => setConfig(prev => ({...prev, tts: {...prev.tts, active_provider: val}}))}
                                 >
                                     <SelectTrigger>
-                                        <SelectValue placeholder={t(lt("选择提供商", "Select provider"))} />
+                                        <SelectValue placeholder={t("app.admin.dashboard.audio.page.k2deec296")} />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="edge-tts">{t(lt("微软 Edge TTS (免费)", "Microsoft Edge TTS (free)"))}</SelectItem>
-                                        <SelectItem value="custom">{t(lt("自建 / 第三方 API", "Custom / 3rd-party API"))}</SelectItem>
+                                        <SelectItem value="edge-tts">{t("app.admin.dashboard.audio.page.kc0f20f31")}</SelectItem>
+                                        <SelectItem value="custom">{t("app.admin.dashboard.audio.page.k49861c04")}</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -254,23 +253,23 @@ export default function AudioPage() {
                         {config.tts.active_provider === "edge-tts" && (
                             <div className="space-y-4 border rounded-md p-4 bg-muted/30">
                                 <div>
-                                    <Label className="text-sm font-semibold text-primary">{t(lt("微软 Edge TTS", "Microsoft Edge TTS"))}</Label>
-                                    <p className="text-xs text-muted-foreground mb-4">{t(lt("无配额限制的免费高质量合成，支持流式输出。", "High-quality free synthesis with streaming output."))}</p>
+                                    <Label className="text-sm font-semibold text-primary">{t("app.admin.dashboard.audio.page.k442c44b3")}</Label>
+                                    <p className="text-xs text-muted-foreground mb-4">{t("app.admin.dashboard.audio.page.ke0191398")}</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("默认发音人 (Voice)", "Default voice"))}</Label>
+                                    <Label>{t("app.admin.dashboard.audio.page.k357ab02c")}</Label>
                                     <Select 
                                         value={config.tts.edge_tts.voice || "zh-CN-XiaoxiaoNeural"} 
                                         onValueChange={(val) => updateTtsValue("edge_tts", "voice", val)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder={t(lt("选择音色...", "Choose a voice..."))} />
+                                            <SelectValue placeholder={t("app.admin.dashboard.audio.page.k598128a3")} />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="zh-CN-XiaoxiaoNeural">{t(lt("晓晓 (女声, 温柔亲切)", "Xiaoxiao (warm female)"))}</SelectItem>
-                                            <SelectItem value="zh-CN-YunxiNeural">{t(lt("云希 (活力男声)", "Yunxi (energetic male)"))}</SelectItem>
-                                            <SelectItem value="zh-CN-YunjianNeural">{t(lt("云健 (成熟男声)", "Yunjian (steady male)"))}</SelectItem>
-                                            <SelectItem value="zh-CN-XiaoyiNeural">{t(lt("晓伊 (可爱女童声)", "Xiaoyi (young female)"))}</SelectItem>
+                                            <SelectItem value="zh-CN-XiaoxiaoNeural">{t("app.admin.dashboard.audio.page.k0f6ca09d")}</SelectItem>
+                                            <SelectItem value="zh-CN-YunxiNeural">{t("app.admin.dashboard.audio.page.k366a2c45")}</SelectItem>
+                                            <SelectItem value="zh-CN-YunjianNeural">{t("app.admin.dashboard.audio.page.k31f2a1a4")}</SelectItem>
+                                            <SelectItem value="zh-CN-XiaoyiNeural">{t("app.admin.dashboard.audio.page.k80358ca2")}</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -280,8 +279,8 @@ export default function AudioPage() {
                         {config.tts.active_provider === "custom" && (
                             <div className="space-y-4 border rounded-md p-4 bg-muted/30">
                                 <div>
-                                    <Label className="text-sm font-semibold text-primary">{t(lt("自建服务 (Custom API)", "Custom API"))}</Label>
-                                    <p className="text-xs text-muted-foreground mb-4">{t(lt("使用 HTTP GET 接口流式输出 mp3，如 ChatTTS 一键部署接口等。", "Uses an HTTP GET endpoint that streams MP3, such as a one-click ChatTTS deployment."))}</p>
+                                    <Label className="text-sm font-semibold text-primary">{t("app.admin.dashboard.audio.page.k1c5aaed3")}</Label>
+                                    <p className="text-xs text-muted-foreground mb-4">{t("app.admin.dashboard.audio.page.k29a8ce90")}</p>
                                 </div>
                                 <div className="space-y-2">
                                     <Label>API URL</Label>
@@ -292,7 +291,7 @@ export default function AudioPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("API Key (可选)", "API Key (optional)"))}</Label>
+                                    <Label>{t("app.admin.dashboard.audio.page.kb8695ac0")}</Label>
                                     <Input
                                         type="password"
                                         value={config.tts.custom.api_key || ""}
@@ -300,11 +299,11 @@ export default function AudioPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{t(lt("Voice (可选)", "Voice (optional)"))}</Label>
+                                    <Label>{t("app.admin.dashboard.audio.page.kf142c067")}</Label>
                                     <Input
                                         value={config.tts.custom.voice || ""}
                                         onChange={e => updateTtsValue("custom", "voice", e.target.value)}
-                                        placeholder={t(lt("如 provider 支持 voice 字段可填写", "Fill this if your provider supports a voice field"))}
+                                        placeholder={t("app.admin.dashboard.audio.page.k8a4597ac")}
                                     />
                                 </div>
                             </div>
@@ -314,7 +313,7 @@ export default function AudioPage() {
             </div>
             
             <p className="text-sm text-muted-foreground mt-4 text-center">
-                {t(lt("配置保存在 ~/.v8-agent-os/config.json 的 audio 域", "Settings are stored in the audio section of ~/.v8-agent-os/config.json"))}
+                {t("app.admin.dashboard.audio.page.kf9563d3e")}
             </p>
         </div>
     );

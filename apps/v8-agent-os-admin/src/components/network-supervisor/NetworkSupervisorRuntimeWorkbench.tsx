@@ -1,8 +1,6 @@
 "use client";
-
 import * as React from "react";
 import Link from "next/link";
-
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -14,9 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { lt } from "@/lib/locale";
 import type { CanonicalConfigDiagnostics, LegacyPortNotice } from "@/lib/server/bridge-config";
-
 type PeerItem = {
     peerId: string;
     displayName: string;
@@ -34,13 +30,11 @@ type PeerItem = {
     source: string;
     address?: string;
 };
-
 type PeersPayload = {
     items: PeerItem[];
     trustedItems: PeerItem[];
     discoveredItems: PeerItem[];
 };
-
 type RuntimeConfig = {
     enabled: boolean;
     node: {
@@ -72,9 +66,10 @@ type RuntimeConfig = {
         defaultTimeoutSeconds: number;
     };
 };
-
-type Availability = { available: boolean; reasons: string[] };
-
+type Availability = {
+    available: boolean;
+    reasons: string[];
+};
 type RuntimeStatus = {
     enabled: boolean;
     started: boolean;
@@ -100,9 +95,10 @@ type RuntimeStatus = {
         trackedCount: number;
     };
     delegationAvailability: Availability;
-    toolAvailability?: { delegate_network_task?: Availability };
+    toolAvailability?: {
+        delegate_network_task?: Availability;
+    };
 };
-
 type PeerForm = {
     peerId: string;
     displayName: string;
@@ -113,18 +109,15 @@ type PeerForm = {
     allowedWorkspaces: string;
     peerToken: string;
 };
-
 type DiagState = {
     peerId: string;
     note: string;
     task: string;
     result: string;
 };
-
 type NetworkSupervisorRuntimeWorkbenchProps = {
     bridgeDiagnostics?: CanonicalConfigDiagnostics;
 };
-
 const DEFAULT_CONFIG: RuntimeConfig = {
     enabled: false,
     node: {
@@ -145,7 +138,6 @@ const DEFAULT_CONFIG: RuntimeConfig = {
     wake: { enabled: true, ackTimeoutSeconds: 10 },
     delegation: { enabled: true, maxConcurrent: 2, defaultTimeoutSeconds: 120 },
 };
-
 const EMPTY_STATUS: RuntimeStatus = {
     enabled: false,
     started: false,
@@ -162,33 +154,31 @@ const EMPTY_STATUS: RuntimeStatus = {
     delegationAvailability: { available: false, reasons: [] },
     toolAvailability: {},
 };
-
 const EMPTY_PEERS: PeersPayload = { items: [], trustedItems: [], discoveredItems: [] };
 const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", wsUrl: "", publicKey: "", allowedScopes: "", allowedWorkspaces: "", peerToken: "" };
 const EMPTY_DIAG: DiagState = { peerId: "", note: "", task: "", result: "" };
-
 const csv = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
 const lines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 const joinCsv = (value?: string[]) => Array.isArray(value) ? value.join(", ") : "";
 const joinLines = (value?: string[]) => Array.isArray(value) ? value.join("\n") : "";
 const detail = (value: unknown, fallback: string) => {
-    if (!value || typeof value !== "object") return fallback;
+    if (!value || typeof value !== "object")
+        return fallback;
     const payload = value as Record<string, unknown>;
     return String(payload.detail || payload.error || fallback);
 };
 const sourceLabel = (value: string) => {
     switch (String(value || "").trim().toLowerCase()) {
         case "lan":
-            return lt("局域网发现", "LAN");
+            return "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd8ac6d6d";
         case "trusted":
-            return lt("已信任", "Trusted");
+            return "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k05965884";
         case "bootstrap":
-            return lt("广域网引导", "Bootstrap");
+            return "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k00e04aa2";
         default:
             return value || "—";
     }
 };
-
 function mergeConfig(value?: Partial<RuntimeConfig>): RuntimeConfig {
     const payload = value || {};
     return {
@@ -201,7 +191,6 @@ function mergeConfig(value?: Partial<RuntimeConfig>): RuntimeConfig {
         delegation: { ...DEFAULT_CONFIG.delegation, ...(payload.delegation || {}) },
     };
 }
-
 function normalizeStatus(value: unknown): RuntimeStatus {
     const payload = (value && typeof value === "object") ? value as Partial<RuntimeStatus> : {};
     return {
@@ -218,7 +207,6 @@ function normalizeStatus(value: unknown): RuntimeStatus {
         toolAvailability: payload.toolAvailability || {},
     };
 }
-
 function normalizePeers(value: unknown): PeersPayload {
     const payload = (value && typeof value === "object") ? value as Partial<PeersPayload> : {};
     return {
@@ -227,12 +215,10 @@ function normalizePeers(value: unknown): PeersPayload {
         discoveredItems: Array.isArray(payload.discoveredItems) ? payload.discoveredItems : [],
     };
 }
-
 export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: NetworkSupervisorRuntimeWorkbenchProps) {
     const t = useT();
     const { locale } = useLocale();
     const { toast } = useToast();
-
     const [config, setConfig] = React.useState<RuntimeConfig>(DEFAULT_CONFIG);
     const [status, setStatus] = React.useState<RuntimeStatus>(EMPTY_STATUS);
     const [peers, setPeers] = React.useState<PeersPayload>(EMPTY_PEERS);
@@ -243,50 +229,43 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const [savingConfig, setSavingConfig] = React.useState(false);
     const [savingPeer, setSavingPeer] = React.useState(false);
     const [running, setRunning] = React.useState<"" | "challenge" | "wake" | "delegate">("");
-
     const docsUrl = locale === "zh-CN"
         ? "https://github.com/justForever17/v8-agent-os/blob/main/docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN_ZH.md"
         : "https://github.com/justForever17/v8-agent-os/blob/main/docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN.md";
     const availability = status.toolAvailability?.delegate_network_task || status.delegationAvailability;
     const portNotices = bridgeDiagnostics?.notices || [];
-
     const availabilityReason = React.useCallback((reason: string) => {
         switch (reason) {
             case "runtime_disabled":
-                return t(lt("runtime 还没有启用。", "The runtime is not enabled yet."));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc3470d8c");
             case "delegation_disabled":
-                return t(lt("远程委派当前已关闭。", "Remote delegation is currently disabled."));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8bba51bf");
             case "no_trusted_peers":
-                return t(lt("还没有 trusted peers。", "There are no trusted peers yet."));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k9091ec19");
             case "no_online_trusted_peers":
-                return t(lt("已有 trusted peers，但当前都不在线。", "Trusted peers exist, but none are online."));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k226ad4b8");
             default:
                 return reason;
         }
     }, [t]);
-
     const renderPortNotice = React.useCallback((notice: LegacyPortNotice) => {
         switch (notice.code) {
             case "config_migrated":
-                return t(lt(
-                    `已把 ${notice.path} 里的旧本地端口自动迁移到 Admin 9528 / Engine 9530。建议重启相关服务，并确认本地 .env.local 没再写回旧值。`,
-                    `Legacy local ports in ${notice.path} were auto-migrated to Admin 9528 / Engine 9530. Restart the related services and make sure no local .env.local writes the old values back.`,
-                ));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8e78c39c", {
+                    notice_path: notice.path
+                });
             case "admin_env_legacy_ports":
-                return t(lt(
-                    `${notice.path} 里仍然存在 8000 或 5001。它可能继续把 Admin 拉回旧本地端口。`,
-                    `${notice.path} still contains 8000 or 5001. It can drag Admin back to the legacy local ports.`,
-                ));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k1cefa135", {
+                    notice_path: notice.path
+                });
             case "web_env_legacy_ports":
-                return t(lt(
-                    `${notice.path} 里仍然存在 8000 或 5001。它可能继续让 Web 连接到旧端口。`,
-                    `${notice.path} still contains 8000 or 5001. It can make Web reconnect to the legacy ports.`,
-                ));
+                return t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2e55f716", {
+                    notice_path: notice.path
+                });
             default:
                 return notice.path;
         }
     }, [t]);
-
     const loadAll = React.useCallback(async () => {
         setLoading(true);
         setLoadError(null);
@@ -301,45 +280,45 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
                 statusRes.json().catch(() => ({})),
                 peerRes.json().catch(() => ({})),
             ]);
-            if (!configRes.ok) throw new Error(detail(configData, t(lt("读取配置失败。", "Failed to load configuration."))));
-            if (!statusRes.ok) throw new Error(detail(statusData, t(lt("读取状态失败。", "Failed to load runtime status."))));
-            if (!peerRes.ok) throw new Error(detail(peerData, t(lt("读取 peer 列表失败。", "Failed to load peer list."))));
-            setConfig(mergeConfig((configData as { data?: Partial<RuntimeConfig> }).data));
+            if (!configRes.ok)
+                throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
+            if (!statusRes.ok)
+                throw new Error(detail(statusData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
+            if (!peerRes.ok)
+                throw new Error(detail(peerData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k66ef1038")));
+            setConfig(mergeConfig((configData as {
+                data?: Partial<RuntimeConfig>;
+            }).data));
             setStatus(normalizeStatus(statusData));
             setPeers(normalizePeers(peerData));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : t(lt("无法读取 NETWORK SUPERVISOR RUNTIME。", "Unable to load NETWORK SUPERVISOR RUNTIME."));
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k105089b2");
             setLoadError(message);
-            toast({ variant: "destructive", title: t(lt("加载失败", "Load failed")), description: message });
-        } finally {
+            toast({ variant: "destructive", title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k65ed1d75"), description: message });
+        }
+        finally {
             setLoading(false);
         }
     }, [t, toast]);
-
     React.useEffect(() => {
         void loadAll();
     }, [loadAll]);
-
     const setNode = React.useCallback((patch: Partial<RuntimeConfig["node"]>) => {
         setConfig((prev) => ({ ...prev, node: { ...prev.node, ...patch } }));
     }, []);
-
     const setDiscovery = React.useCallback((patch: Partial<RuntimeConfig["discovery"]>) => {
         setConfig((prev) => ({ ...prev, discovery: { ...prev.discovery, ...patch } }));
     }, []);
-
     const setTrust = React.useCallback((patch: Partial<RuntimeConfig["trust"]>) => {
         setConfig((prev) => ({ ...prev, trust: { ...prev.trust, ...patch } }));
     }, []);
-
     const setWake = React.useCallback((patch: Partial<RuntimeConfig["wake"]>) => {
         setConfig((prev) => ({ ...prev, wake: { ...prev.wake, ...patch } }));
     }, []);
-
     const setDelegation = React.useCallback((patch: Partial<RuntimeConfig["delegation"]>) => {
         setConfig((prev) => ({ ...prev, delegation: { ...prev.delegation, ...patch } }));
     }, []);
-
     const fillPeerForm = React.useCallback((peer: PeerItem) => {
         setPeerForm({
             peerId: peer.peerId,
@@ -352,11 +331,9 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
             peerToken: "",
         });
     }, []);
-
     const chooseDiagPeer = React.useCallback((peerId: string) => {
         setDiag((prev) => ({ ...prev, peerId }));
     }, []);
-
     const saveConfig = React.useCallback(async () => {
         setSavingConfig(true);
         try {
@@ -367,31 +344,34 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(detail(payload, t(lt("保存配置失败。", "Failed to save config."))));
+                throw new Error(detail(payload, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k6af6d443")));
             }
-            setConfig(mergeConfig((payload as { data?: Partial<RuntimeConfig> }).data));
+            setConfig(mergeConfig((payload as {
+                data?: Partial<RuntimeConfig>;
+            }).data));
             toast({
-                title: t(lt("配置已保存", "Configuration saved")),
-                description: t(lt("NETWORK SUPERVISOR RUNTIME 会按新设置重新解释发现、信任与委派状态。", "NETWORK SUPERVISOR RUNTIME will reload discovery, trust, and delegation behavior with the new settings.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k96aea0e5"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k059b20dc"),
             });
             await loadAll();
-        } catch (error) {
+        }
+        catch (error) {
             toast({
                 variant: "destructive",
-                title: t(lt("保存失败", "Save failed")),
-                description: error instanceof Error ? error.message : t(lt("当前无法保存配置。", "Unable to save config right now.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k12769ce1"),
+                description: error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k65c24b3b"),
             });
-        } finally {
+        }
+        finally {
             setSavingConfig(false);
         }
     }, [config, loadAll, t, toast]);
-
     const savePeer = React.useCallback(async () => {
         if (!peerForm.peerId.trim()) {
             toast({
                 variant: "destructive",
-                title: t(lt("缺少 Peer ID", "Peer ID is required")),
-                description: t(lt("请先填写 Peer ID。", "Fill in the Peer ID first.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d624164"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7a77284c"),
             });
             return;
         }
@@ -413,25 +393,26 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(detail(payload, t(lt("保存 peer 失败。", "Failed to save peer."))));
+                throw new Error(detail(payload, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kea6e165d")));
             }
             toast({
-                title: t(lt("Peer 已保存", "Peer saved")),
-                description: t(lt("trusted peer 列表已经更新。", "The trusted peer list has been updated.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k9079be43"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k3112734f"),
             });
             setPeerForm((prev) => ({ ...prev, peerToken: "" }));
             await loadAll();
-        } catch (error) {
+        }
+        catch (error) {
             toast({
                 variant: "destructive",
-                title: t(lt("保存失败", "Save failed")),
-                description: error instanceof Error ? error.message : t(lt("当前无法保存 peer。", "Unable to save the peer right now.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k12769ce1"),
+                description: error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7ab1a5d4"),
             });
-        } finally {
+        }
+        finally {
             setSavingPeer(false);
         }
     }, [loadAll, peerForm, t, toast]);
-
     const deletePeer = React.useCallback(async (peerId: string) => {
         try {
             const response = await fetch(`/api/network-supervisor/peers/${encodeURIComponent(peerId)}`, {
@@ -439,11 +420,11 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(detail(payload, t(lt("删除 peer 失败。", "Failed to delete peer."))));
+                throw new Error(detail(payload, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kae4e2bf1")));
             }
             toast({
-                title: t(lt("Peer 已删除", "Peer deleted")),
-                description: t(lt("trusted peer 已从当前节点移除。", "The trusted peer has been removed from this node.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd70847b4"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k1901fc02"),
             });
             if (diag.peerId === peerId) {
                 setDiag((prev) => ({ ...prev, peerId: "" }));
@@ -452,498 +433,411 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
                 setPeerForm(EMPTY_PEER_FORM);
             }
             await loadAll();
-        } catch (error) {
+        }
+        catch (error) {
             toast({
                 variant: "destructive",
-                title: t(lt("删除失败", "Delete failed")),
-                description: error instanceof Error ? error.message : t(lt("当前无法删除该 peer。", "Unable to delete this peer right now.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0915ccdf"),
+                description: error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc5c16e4f"),
             });
         }
     }, [diag.peerId, loadAll, peerForm.peerId, t, toast]);
-
     const runDiagnostic = React.useCallback(async (kind: "challenge" | "wake" | "delegate", peerId?: string) => {
         const targetPeerId = String(peerId || diag.peerId || "").trim();
         if (!targetPeerId) {
             toast({
                 variant: "destructive",
-                title: t(lt("缺少目标 Peer", "Target peer is required")),
-                description: t(lt("先从 discovered peers 或 trusted peers 里选一个目标。", "Pick a target from discovered peers or trusted peers first.")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8836c6f2"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf9df9cc6"),
             });
             return;
         }
         setRunning(kind);
         try {
-            const response = await fetch(
-                kind === "delegate" ? "/api/network-supervisor/delegations" : `/api/network-supervisor/diagnostics/${kind}`,
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        peerId: targetPeerId,
-                        note: diag.note.trim(),
-                        task: diag.task.trim(),
-                        timeoutSeconds: 120,
-                    }),
-                },
-            );
+            const response = await fetch(kind === "delegate" ? "/api/network-supervisor/delegations" : `/api/network-supervisor/diagnostics/${kind}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    peerId: targetPeerId,
+                    note: diag.note.trim(),
+                    task: diag.task.trim(),
+                    timeoutSeconds: 120,
+                }),
+            });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                throw new Error(detail(payload, t(lt("诊断请求失败。", "Diagnostic request failed."))));
+                throw new Error(detail(payload, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k43c90b22")));
             }
             setDiag((prev) => ({ ...prev, peerId: targetPeerId, result: JSON.stringify(payload, null, 2) }));
             toast({
-                title: t(
-                    kind === "challenge"
-                        ? lt("Challenge 已发送", "Challenge sent")
-                        : kind === "wake"
-                          ? lt("Wake 已发送", "Wake sent")
-                          : lt("委派已发出", "Delegation sent"),
-                ),
-                description: t(
-                    kind === "delegate"
-                        ? lt("如果远端接受，这里会显示 accepted / progress / result。", "If the remote peer accepts, this panel will show accepted / progress / result.")
-                        : lt("请查看返回结果和状态区，确认远端是否已回应。", "Check the response payload and status panel to confirm the remote peer replied."),
-                ),
+                title: t(kind === "challenge"
+                    ? "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k04fef58e"
+                    : kind === "wake"
+                        ? "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kdb2f79cb"
+                        : "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k6d65e8f8"),
+                description: t(kind === "delegate"
+                    ? "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k75ac8c0a"
+                    : "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5c12cef1"),
             });
             await loadAll();
-        } catch (error) {
-            const message = error instanceof Error ? error.message : t(lt("当前无法执行该诊断。", "Unable to run this diagnostic right now."));
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf64b0727");
             setDiag((prev) => ({ ...prev, result: message }));
             toast({
                 variant: "destructive",
-                title: t(lt("诊断失败", "Diagnostic failed")),
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf7c06097"),
                 description: message,
             });
-        } finally {
+        }
+        finally {
             setRunning("");
         }
     }, [diag.note, diag.peerId, diag.task, loadAll, t, toast]);
-
-    return (
-        <AdminPageShell>
-            <AdminPageHeader
-                title={lt("NETWORK SUPERVISOR RUNTIME", "NETWORK SUPERVISOR RUNTIME")}
-                description={lt(
-                    "让当前节点发现、信任、唤醒并显式委派任务给其他 V8 节点。首版只做可观测、可诊断、可恢复的显式远程协作。",
-                    "Discover, trust, wake, and explicitly delegate work to other V8 nodes. The first release keeps remote collaboration observable, diagnosable, and recoverable.",
-                )}
-                badges={[lt("显式委派", "Explicit delegation"), lt("局域网 + 广域网", "LAN + WAN")]}
-                actions={
-                    <>
+    return (<AdminPageShell>
+            <AdminPageHeader title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k45a604ec"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.description"} badges={["components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kcd4380d3", "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k959f4745"]} actions={<>
                         <Button variant="outline" onClick={() => void loadAll()} disabled={loading}>
-                            {t(lt("刷新", "Refresh"))}
+                            {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k876e8c06")}
                         </Button>
                         <Button asChild variant="outline">
                             <Link href={docsUrl} target="_blank">
-                                {t(lt("设计文档", "Design doc"))}
+                                {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kac8eaf7f")}
                             </Link>
                         </Button>
-                    </>
-                }
-            />
+                    </>}/>
 
-            {loadError ? (
-                <ConfigCard
-                    title={lt("加载失败", "Load failed")}
-                    description={loadError}
-                    className="border-red-200"
-                >
+            {loadError ? (<ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k65ed1d75"} description={loadError} className="border-red-200">
                     <div className="flex items-center justify-end">
-                        <Button onClick={() => void loadAll()}>{t(lt("重试", "Retry"))}</Button>
+                        <Button onClick={() => void loadAll()}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k3a3e39b1")}</Button>
                     </div>
-                </ConfigCard>
-            ) : null}
+                </ConfigCard>) : null}
 
-            {portNotices.length ? (
-                <ConfigCard
-                    title={lt("端口与本地配置提醒", "Local port and config reminders")}
-                    description={lt("这里直接提醒你哪些旧本地端口已经被自动迁移，哪些本地 .env 仍可能把系统拉回旧时代。", "This area shows which legacy local ports were auto-migrated and which local .env files can still drag the system back.")}
-                    variant="list"
-                    bodyHeight="auto"
-                >
+            {portNotices.length ? (<ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k40de2d8c"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8cbba0cc"} variant="list" bodyHeight="auto">
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-950">
                         <ul className="list-disc space-y-2 pl-5 leading-6">
-                            {portNotices.map((notice, index) => (
-                                <li key={`${notice.code}-${notice.path}-${index}`}>{renderPortNotice(notice)}</li>
-                            ))}
+                            {portNotices.map((notice, index) => (<li key={`${notice.code}-${notice.path}-${index}`}>{renderPortNotice(notice)}</li>))}
                         </ul>
                     </div>
-                </ConfigCard>
-            ) : null}
+                </ConfigCard>) : null}
 
             <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-                <ConfigCard
-                    title={lt("Runtime 配置", "Runtime configuration")}
-                    description={lt("这里决定当前节点怎么发现 peers、暴露地址、处理 wake，以及是否允许远程委派。", "Control how this node discovers peers, advertises endpoints, handles wake requests, and allows remote delegation.")}
-                    variant="editor"
-                    bodyHeight="auto"
-                >
+                <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2fa8f47d"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf44c90c3"} variant="editor" bodyHeight="auto">
                     <div className="grid gap-5 lg:grid-cols-2">
                         <div className="space-y-4">
                             <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                                 <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t(lt("启用 runtime", "Enable runtime"))}</div>
-                                    <div className="text-xs text-slate-500">{t(lt("关闭后，不再接收发现、wake 和远程 delegation。", "When disabled, this node stops discovery, wake, and remote delegation."))}</div>
+                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0fcd82fa")}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51ccd94e")}</div>
                                 </div>
-                                <Switch checked={config.enabled} onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, enabled: checked }))} aria-label="network-supervisor-enabled" />
+                                <Switch checked={config.enabled} onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, enabled: checked }))} aria-label="network-supervisor-enabled"/>
                             </div>
 
                             <div className="space-y-2">
-                                <Label htmlFor="network-node-name">{t(lt("节点显示名", "Node display name"))}</Label>
-                                <Input id="network-node-name" value={config.node.displayName} onChange={(event) => setNode({ displayName: event.target.value })} />
+                                <Label htmlFor="network-node-name">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8c78324d")}</Label>
+                                <Input id="network-node-name" value={config.node.displayName} onChange={(event) => setNode({ displayName: event.target.value })}/>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="network-peer-id">{t(lt("Peer ID", "Peer ID"))}</Label>
-                                <Input id="network-peer-id" value={config.node.peerId} onChange={(event) => setNode({ peerId: event.target.value })} placeholder="peer_xxx" />
+                                <Label htmlFor="network-peer-id">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k23ad0ab3")}</Label>
+                                <Input id="network-peer-id" value={config.node.peerId} onChange={(event) => setNode({ peerId: event.target.value })} placeholder="peer_xxx"/>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="network-base-url">{t(lt("Base URL", "Base URL"))}</Label>
-                                <Input id="network-base-url" value={config.node.advertisedBaseUrl} onChange={(event) => setNode({ advertisedBaseUrl: event.target.value })} placeholder="http://127.0.0.1:9530" />
+                                <Label htmlFor="network-base-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd575b517")}</Label>
+                                <Input id="network-base-url" value={config.node.advertisedBaseUrl} onChange={(event) => setNode({ advertisedBaseUrl: event.target.value })} placeholder="http://127.0.0.1:9530"/>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="network-ws-url">{t(lt("WS URL", "WS URL"))}</Label>
-                                <Input id="network-ws-url" value={config.node.advertisedWsUrl} onChange={(event) => setNode({ advertisedWsUrl: event.target.value })} placeholder="ws://127.0.0.1:9530/v1/network-supervisor/peer/ws" />
+                                <Label htmlFor="network-ws-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb0019af3")}</Label>
+                                <Input id="network-ws-url" value={config.node.advertisedWsUrl} onChange={(event) => setNode({ advertisedWsUrl: event.target.value })} placeholder="ws://127.0.0.1:9530/v1/network-supervisor/peer/ws"/>
                             </div>
                         </div>
 
                         <div className="space-y-4">
                             <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                                 <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t(lt("启用局域网发现", "Enable LAN discovery"))}</div>
-                                    <div className="text-xs text-slate-500">{t(lt("首版使用 UDP multicast，只做发现，不自动建立 trust。", "The first release uses UDP multicast for discovery only. Discovery does not imply trust."))}</div>
+                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf6ca0e75")}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2288dd56")}</div>
                                 </div>
-                                <Switch checked={config.discovery.lanEnabled} onCheckedChange={(checked) => setDiscovery({ lanEnabled: checked })} aria-label="network-discovery-enabled" />
+                                <Switch checked={config.discovery.lanEnabled} onCheckedChange={(checked) => setDiscovery({ lanEnabled: checked })} aria-label="network-discovery-enabled"/>
                             </div>
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label htmlFor="network-group">{t(lt("Multicast Group", "Multicast group"))}</Label>
-                                    <Input id="network-group" value={config.discovery.multicastGroup} onChange={(event) => setDiscovery({ multicastGroup: event.target.value })} />
+                                    <Label htmlFor="network-group">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k653864a4")}</Label>
+                                    <Input id="network-group" value={config.discovery.multicastGroup} onChange={(event) => setDiscovery({ multicastGroup: event.target.value })}/>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label htmlFor="network-port">{t(lt("Multicast Port", "Multicast port"))}</Label>
-                                    <Input id="network-port" type="number" value={String(config.discovery.multicastPort)} onChange={(event) => setDiscovery({ multicastPort: Number(event.target.value || 0) })} />
+                                    <Label htmlFor="network-port">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k66d313cc")}</Label>
+                                    <Input id="network-port" type="number" value={String(config.discovery.multicastPort)} onChange={(event) => setDiscovery({ multicastPort: Number(event.target.value || 0) })}/>
                                 </div>
                             </div>
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label htmlFor="network-announce">{t(lt("Announce 秒数", "Announce interval"))}</Label>
-                                    <Input id="network-announce" type="number" value={String(config.discovery.announceIntervalSeconds)} onChange={(event) => setDiscovery({ announceIntervalSeconds: Number(event.target.value || 0) })} />
+                                    <Label htmlFor="network-announce">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k82e446f5")}</Label>
+                                    <Input id="network-announce" type="number" value={String(config.discovery.announceIntervalSeconds)} onChange={(event) => setDiscovery({ announceIntervalSeconds: Number(event.target.value || 0) })}/>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label htmlFor="network-expiry">{t(lt("Peer 过期秒数", "Peer expiry"))}</Label>
-                                    <Input id="network-expiry" type="number" value={String(config.discovery.peerExpirySeconds)} onChange={(event) => setDiscovery({ peerExpirySeconds: Number(event.target.value || 0) })} />
+                                    <Label htmlFor="network-expiry">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2898c0c3")}</Label>
+                                    <Input id="network-expiry" type="number" value={String(config.discovery.peerExpirySeconds)} onChange={(event) => setDiscovery({ peerExpirySeconds: Number(event.target.value || 0) })}/>
                                 </div>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="network-bootstrap">{t(lt("WAN Bootstrap Peers", "WAN bootstrap peers"))}</Label>
-                                <Textarea id="network-bootstrap" rows={4} value={joinLines(config.discovery.wanBootstrapPeers)} onChange={(event) => setDiscovery({ wanBootstrapPeers: lines(event.target.value) })} placeholder={"https://peer-a.example.com\nhttps://peer-b.example.com"} />
+                                <Label htmlFor="network-bootstrap">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k15b438dc")}</Label>
+                                <Textarea id="network-bootstrap" rows={4} value={joinLines(config.discovery.wanBootstrapPeers)} onChange={(event) => setDiscovery({ wanBootstrapPeers: lines(event.target.value) })} placeholder={"https://peer-a.example.com\nhttps://peer-b.example.com"}/>
                             </div>
                         </div>
                     </div>
 
                     <div className="grid gap-5 border-t border-slate-100 pt-5 lg:grid-cols-3">
                         <div className="space-y-2">
-                            <Label htmlFor="network-enrollment">{t(lt("Enrollment 模式", "Enrollment mode"))}</Label>
-                            <Input id="network-enrollment" value={config.trust.enrollmentMode} onChange={(event) => setTrust({ enrollmentMode: event.target.value === "open" ? "open" : "manual" })} />
+                            <Label htmlFor="network-enrollment">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf830fbd8")}</Label>
+                            <Input id="network-enrollment" value={config.trust.enrollmentMode} onChange={(event) => setTrust({ enrollmentMode: event.target.value === "open" ? "open" : "manual" })}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="network-allowed-scopes">{t(lt("允许的 scopes", "Allowed scopes"))}</Label>
-                            <Input id="network-allowed-scopes" value={joinCsv(config.trust.allowedScopes)} onChange={(event) => setTrust({ allowedScopes: csv(event.target.value) })} placeholder="global, workspace, memory" />
+                            <Label htmlFor="network-allowed-scopes">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0e27e25f")}</Label>
+                            <Input id="network-allowed-scopes" value={joinCsv(config.trust.allowedScopes)} onChange={(event) => setTrust({ allowedScopes: csv(event.target.value) })} placeholder="global, workspace, memory"/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="network-delegation-timeout">{t(lt("默认委派超时（秒）", "Default delegation timeout"))}</Label>
-                            <Input id="network-delegation-timeout" type="number" value={String(config.delegation.defaultTimeoutSeconds)} onChange={(event) => setDelegation({ defaultTimeoutSeconds: Number(event.target.value || 0) })} />
+                            <Label htmlFor="network-delegation-timeout">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k10d0be67")}</Label>
+                            <Input id="network-delegation-timeout" type="number" value={String(config.delegation.defaultTimeoutSeconds)} onChange={(event) => setDelegation({ defaultTimeoutSeconds: Number(event.target.value || 0) })}/>
                         </div>
                     </div>
 
                     <div className="grid gap-5 lg:grid-cols-2">
                         <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                             <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t(lt("启用 directed wake", "Enable directed wake"))}</div>
-                                <div className="text-xs text-slate-500">{t(lt("只处理定向唤醒与回执，不把 wake 伪装成普通聊天消息。", "Wake only handles directed wake and acknowledgement. It never pretends to be a normal chat message."))}</div>
+                                <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc4940ac2")}</div>
+                                <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kad9d78ed")}</div>
                             </div>
-                            <Switch checked={config.wake.enabled} onCheckedChange={(checked) => setWake({ enabled: checked })} aria-label="network-wake-enabled" />
+                            <Switch checked={config.wake.enabled} onCheckedChange={(checked) => setWake({ enabled: checked })} aria-label="network-wake-enabled"/>
                         </div>
                         <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                             <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t(lt("启用远程 delegation", "Enable remote delegation"))}</div>
-                                <div className="text-xs text-slate-500">{t(lt("真正执行仍走远端本地 chat runtime，network runtime 只负责 control-plane。", "Execution still happens on the remote node's local chat runtime. The network runtime only owns the control plane."))}</div>
+                                <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5c9b4ab7")}</div>
+                                <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k17b60019")}</div>
                             </div>
-                            <Switch checked={config.delegation.enabled} onCheckedChange={(checked) => setDelegation({ enabled: checked })} aria-label="network-delegation-enabled" />
+                            <Switch checked={config.delegation.enabled} onCheckedChange={(checked) => setDelegation({ enabled: checked })} aria-label="network-delegation-enabled"/>
                         </div>
                     </div>
 
                     <div className="grid gap-4 lg:grid-cols-2">
                         <div className="space-y-2">
-                            <Label htmlFor="network-ack-timeout">{t(lt("Wake ACK 超时（秒）", "Wake ACK timeout"))}</Label>
-                            <Input id="network-ack-timeout" type="number" value={String(config.wake.ackTimeoutSeconds)} onChange={(event) => setWake({ ackTimeoutSeconds: Number(event.target.value || 0) })} />
+                            <Label htmlFor="network-ack-timeout">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5294b489")}</Label>
+                            <Input id="network-ack-timeout" type="number" value={String(config.wake.ackTimeoutSeconds)} onChange={(event) => setWake({ ackTimeoutSeconds: Number(event.target.value || 0) })}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="network-max-concurrency">{t(lt("最大并发委派", "Max concurrent delegations"))}</Label>
-                            <Input id="network-max-concurrency" type="number" value={String(config.delegation.maxConcurrent)} onChange={(event) => setDelegation({ maxConcurrent: Number(event.target.value || 0) })} />
+                            <Label htmlFor="network-max-concurrency">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k45c23bdd")}</Label>
+                            <Input id="network-max-concurrency" type="number" value={String(config.delegation.maxConcurrent)} onChange={(event) => setDelegation({ maxConcurrent: Number(event.target.value || 0) })}/>
                         </div>
                     </div>
 
                     <div className="flex justify-end">
                         <Button onClick={() => void saveConfig()} disabled={savingConfig}>
-                            {savingConfig ? t(lt("保存中...", "Saving...")) : t(lt("保存配置", "Save configuration"))}
+                            {savingConfig ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc225e8a3") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc1f71c38")}
                         </Button>
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
-                    title={lt("当前状态", "Current status")}
-                    description={lt("这里直接看当前节点的身份、发现状态、委派能力和工具可用性原因。", "See the node identity, discovery state, delegation readiness, and the reasons behind tool availability here.")}
-                    variant="list"
-                    bodyHeight="auto"
-                >
-                    {loading ? (
-                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
-                            {t(lt("正在读取 runtime 状态...", "Loading runtime status..."))}
-                        </div>
-                    ) : (
-                        <div className="space-y-4 text-sm text-slate-700">
+                <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kae425cff"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k9687b4bd"} variant="list" bodyHeight="auto">
+                    {loading ? (<div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                            {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k28efa74d")}
+                        </div>) : (<div className="space-y-4 text-sm text-slate-700">
                             <div className="flex flex-wrap gap-2">
-                                <Badge variant={status.enabled ? "default" : "secondary"}>{status.enabled ? t(lt("已启用", "Enabled")) : t(lt("已关闭", "Disabled"))}</Badge>
-                                <Badge variant={status.started ? "default" : "secondary"}>{status.started ? t(lt("已启动", "Started")) : t(lt("未启动", "Stopped"))}</Badge>
-                                <Badge variant={availability.available ? "default" : "secondary"}>{availability.available ? t(lt("可委派", "Delegation ready")) : t(lt("暂不可委派", "Delegation blocked"))}</Badge>
+                                <Badge variant={status.enabled ? "default" : "secondary"}>{status.enabled ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kdb6c0cc1") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k12b31ba6")}</Badge>
+                                <Badge variant={status.started ? "default" : "secondary"}>{status.started ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d8295f0") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka5a2a276")}</Badge>
+                                <Badge variant={availability.available ? "default" : "secondary"}>{availability.available ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4398bbbc") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke95066ef")}</Badge>
                             </div>
                             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div><span className="font-medium text-slate-900">{t(lt("Peer ID：", "Peer ID:"))}</span> {status.node.peerId || "—"}</div>
-                                <div><span className="font-medium text-slate-900">{t(lt("显示名：", "Display name:"))}</span> {status.node.displayName || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t(lt("Base URL：", "Base URL:"))}</span> {status.node.advertisedBaseUrl || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t(lt("WS URL：", "WS URL:"))}</span> {status.node.advertisedWsUrl || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t(lt("Public key 指纹：", "Public key fingerprint:"))}</span> {status.node.publicKeyFingerprint || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t(lt("本地 token 指纹：", "Local token fingerprint:"))}</span> {status.node.localPeerTokenFingerprint || "—"}</div>
+                                <div><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4ec0ec8d")}</span> {status.node.peerId || "—"}</div>
+                                <div><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7c310026")}</span> {status.node.displayName || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf0354341")}</span> {status.node.advertisedBaseUrl || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0555b63c")}</span> {status.node.advertisedWsUrl || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k70e56416")}</span> {status.node.publicKeyFingerprint || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka2aeb345")}</span> {status.node.localPeerTokenFingerprint || "—"}</div>
                             </div>
                             <div className="grid gap-3 sm:grid-cols-2">
                                 <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t(lt("发现到的 peers", "Discovered peers"))}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka700a601")}</div>
                                     <div className="mt-1 text-lg font-semibold text-slate-900">{status.discovery.discoveredPeerCount}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t(lt("在线 trusted peers", "Online trusted peers"))}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke9012800")}</div>
                                     <div className="mt-1 text-lg font-semibold text-slate-900">{status.discovery.onlinePeerCount}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t(lt("活跃 inbound", "Active inbound"))}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51d9bdf8")}</div>
                                     <div className="mt-1 text-lg font-semibold text-slate-900">{status.delegation.activeInbound}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t(lt("跟踪中的委派", "Tracked delegations"))}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7efaaaeb")}</div>
                                     <div className="mt-1 text-lg font-semibold text-slate-900">{status.delegation.trackedCount}</div>
                                 </div>
                             </div>
-                            {availability.reasons.length ? (
-                                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
-                                    <div className="font-medium">{t(lt("当前为什么还不能稳定推荐 `delegate_network_task`", "Why `delegate_network_task` is not ready to recommend yet"))}</div>
+                            {availability.reasons.length ? (<div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                                    <div className="font-medium">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke477157c")}</div>
                                     <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5">
-                                        {availability.reasons.map((reason) => (
-                                            <li key={reason}>{availabilityReason(reason)}</li>
-                                        ))}
+                                        {availability.reasons.map((reason) => (<li key={reason}>{availabilityReason(reason)}</li>))}
                                     </ul>
-                                </div>
-                            ) : (
-                                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
-                                    {t(lt("当前节点已经具备显式远程委派条件。", "This node is ready for explicit remote delegation."))}
-                                </div>
-                            )}
-                        </div>
-                    )}
+                                </div>) : (<div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0f3a887d")}
+                                </div>)}
+                        </div>)}
                 </ConfigCard>
             </div>
 
             <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-                <ConfigCard
-                    title={lt("Peer 路径", "Peer flow")}
-                    description={lt("先发现，再 challenge，再 trust，再 wake，再 delegation。首版不做拓扑控制台，只把路径做顺。", "Start with discovery, then challenge, trust, wake, and delegation. The first release keeps the flow simple instead of building a topology console.")}
-                    variant="list"
-                    bodyHeight={420}
-                    bodyScroll="auto"
-                >
+                <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke26394fd"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k341139d5"} variant="list" bodyHeight={420} bodyScroll="auto">
                     <div className="space-y-6">
                         <section className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-semibold text-slate-900">{t(lt("Discovered peers", "Discovered peers"))}</h3>
+                                <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb07e9c89")}</h3>
                                 <Badge variant="outline">{peers.discoveredItems.length}</Badge>
                             </div>
-                            {peers.discoveredItems.length ? (
-                                <div className="space-y-3">
-                                    {peers.discoveredItems.map((peer) => (
-                                        <div key={`discovered-${peer.peerId}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                            {peers.discoveredItems.length ? (<div className="space-y-3">
+                                    {peers.discoveredItems.map((peer) => (<div key={`discovered-${peer.peerId}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <div className="font-medium text-slate-900">{peer.displayName || peer.peerId}</div>
                                                 <Badge variant="outline">{peer.peerId}</Badge>
-                                                <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t(lt("在线", "Online")) : t(lt("离线", "Offline"))}</Badge>
+                                                <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
                                                 {peer.source ? <Badge variant="secondary">{t(sourceLabel(peer.source))}</Badge> : null}
                                             </div>
                                             <div className="mt-2 space-y-1 text-xs text-slate-500">
                                                 <div className="break-all">{peer.baseUrl || "—"}</div>
                                                 {peer.address ? <div>{peer.address}</div> : null}
-                                                {peer.lastSeenAt ? <div>{t(lt("最近发现：", "Last seen:"))}{peer.lastSeenAt}</div> : null}
+                                                {peer.lastSeenAt ? <div>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k917aca51")}{peer.lastSeenAt}</div> : null}
                                             </div>
                                             <div className="mt-4 flex flex-wrap gap-2">
                                                 <Button variant="outline" size="sm" onClick={() => fillPeerForm(peer)}>
-                                                    {t(lt("带入编辑器", "Fill editor"))}
+                                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kbb24ad74")}
                                                 </Button>
                                                 <Button variant="outline" size="sm" onClick={() => chooseDiagPeer(peer.peerId)}>
-                                                    {t(lt("设为诊断目标", "Use for diagnostics"))}
+                                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k07d17f9d")}
                                                 </Button>
                                                 <Button variant="outline" size="sm" disabled={running === "challenge"} onClick={() => void runDiagnostic("challenge", peer.peerId)}>
-                                                    {running === "challenge" && diag.peerId === peer.peerId ? t(lt("发送中...", "Sending...")) : t(lt("Challenge", "Challenge"))}
+                                                    {running === "challenge" && diag.peerId === peer.peerId ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka9b6c6f6") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2697884b")}
                                                 </Button>
                                             </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
-                                    {t(lt("当前还没有发现到 peers。先确认局域网发现已启用，或在上方填 WAN bootstrap peers。", "No peers have been discovered yet. Enable LAN discovery first, or provide WAN bootstrap peers above."))}
-                                </div>
-                            )}
+                                        </div>))}
+                                </div>) : (<div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd961dc13")}
+                                </div>)}
                         </section>
 
                         <section className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-semibold text-slate-900">{t(lt("Trusted peers", "Trusted peers"))}</h3>
+                                <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kec3b469e")}</h3>
                                 <Badge variant="outline">{peers.trustedItems.length}</Badge>
                             </div>
-                            {peers.trustedItems.length ? (
-                                <div className="space-y-3">
-                                    {peers.trustedItems.map((peer) => (
-                                        <div key={`trusted-${peer.peerId}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                            {peers.trustedItems.length ? (<div className="space-y-3">
+                                    {peers.trustedItems.map((peer) => (<div key={`trusted-${peer.peerId}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <div className="font-medium text-slate-900">{peer.displayName || peer.peerId}</div>
                                                 <Badge variant="outline">{peer.peerId}</Badge>
-                                                <Badge variant="default">{t(lt("Trusted", "Trusted"))}</Badge>
-                                                <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t(lt("在线", "Online")) : t(lt("离线", "Offline"))}</Badge>
+                                                <Badge variant="default">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7ce56639")}</Badge>
+                                                <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
                                             </div>
                                             <div className="mt-2 space-y-1 text-xs text-slate-500">
                                                 <div className="break-all">{peer.baseUrl || "—"}</div>
-                                                <div className="break-all">{t(lt("Token 指纹：", "Token fingerprint:"))}{peer.tokenFingerprint || "—"}</div>
-                                                <div>{t(lt("Scopes：", "Scopes:"))}{peer.allowedScopes.length ? joinCsv(peer.allowedScopes) : "—"}</div>
+                                                <div className="break-all">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kcc6543c2")}{peer.tokenFingerprint || "—"}</div>
+                                                <div>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4fdf4201")}{peer.allowedScopes.length ? joinCsv(peer.allowedScopes) : "—"}</div>
                                             </div>
                                             <div className="mt-4 flex flex-wrap gap-2">
                                                 <Button variant="outline" size="sm" onClick={() => fillPeerForm(peer)}>
-                                                    {t(lt("编辑", "Edit"))}
+                                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k75997619")}
                                                 </Button>
                                                 <Button variant="outline" size="sm" onClick={() => chooseDiagPeer(peer.peerId)}>
-                                                    {t(lt("设为诊断目标", "Use for diagnostics"))}
+                                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k07d17f9d")}
                                                 </Button>
                                                 <Button variant="outline" size="sm" onClick={() => void deletePeer(peer.peerId)}>
-                                                    {t(lt("删除", "Delete"))}
+                                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k626f35dc")}
                                                 </Button>
                                             </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
-                                    {t(lt("还没有 trusted peers。可以先从 discovered peers 带入编辑器，再补 token 与 allowed scopes。", "There are no trusted peers yet. Start from a discovered peer, then add the token and allowed scopes."))}
-                                </div>
-                            )}
+                                        </div>))}
+                                </div>) : (<div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k01f8b04d")}
+                                </div>)}
                         </section>
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
-                    title={lt("Peer Editor", "Peer editor")}
-                    description={lt("这里决定哪些 peer 被当前节点信任、允许哪些 scope、以及 challenge / wake / delegation 要打向谁。", "This is where you trust a peer, define allowed scopes, and decide which peer challenge / wake / delegation should target.")}
-                    variant="editor"
-                    bodyHeight="auto"
-                >
+                <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k82be1826"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0a824403"} variant="editor" bodyHeight="auto">
                     <div className="space-y-4">
                         <div className="grid gap-4 sm:grid-cols-2">
                             <div className="space-y-2">
-                                <Label htmlFor="peer-form-id">{t(lt("Peer ID", "Peer ID"))}</Label>
-                                <Input id="peer-form-id" value={peerForm.peerId} onChange={(event) => setPeerForm((prev) => ({ ...prev, peerId: event.target.value }))} />
+                                <Label htmlFor="peer-form-id">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k23ad0ab3")}</Label>
+                                <Input id="peer-form-id" value={peerForm.peerId} onChange={(event) => setPeerForm((prev) => ({ ...prev, peerId: event.target.value }))}/>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="peer-form-name">{t(lt("显示名", "Display name"))}</Label>
-                                <Input id="peer-form-name" value={peerForm.displayName} onChange={(event) => setPeerForm((prev) => ({ ...prev, displayName: event.target.value }))} />
+                                <Label htmlFor="peer-form-name">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k71cd3126")}</Label>
+                                <Input id="peer-form-name" value={peerForm.displayName} onChange={(event) => setPeerForm((prev) => ({ ...prev, displayName: event.target.value }))}/>
                             </div>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="peer-form-base">{t(lt("Base URL", "Base URL"))}</Label>
-                            <Input id="peer-form-base" value={peerForm.baseUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, baseUrl: event.target.value }))} />
+                            <Label htmlFor="peer-form-base">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd575b517")}</Label>
+                            <Input id="peer-form-base" value={peerForm.baseUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, baseUrl: event.target.value }))}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="peer-form-ws">{t(lt("WS URL", "WS URL"))}</Label>
-                            <Input id="peer-form-ws" value={peerForm.wsUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, wsUrl: event.target.value }))} />
+                            <Label htmlFor="peer-form-ws">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb0019af3")}</Label>
+                            <Input id="peer-form-ws" value={peerForm.wsUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, wsUrl: event.target.value }))}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="peer-form-public-key">{t(lt("Public key", "Public key"))}</Label>
-                            <Textarea id="peer-form-public-key" rows={4} value={peerForm.publicKey} onChange={(event) => setPeerForm((prev) => ({ ...prev, publicKey: event.target.value }))} />
+                            <Label htmlFor="peer-form-public-key">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.keff9b55f")}</Label>
+                            <Textarea id="peer-form-public-key" rows={4} value={peerForm.publicKey} onChange={(event) => setPeerForm((prev) => ({ ...prev, publicKey: event.target.value }))}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="peer-form-token">{t(lt("Peer token", "Peer token"))}</Label>
-                            <Input id="peer-form-token" value={peerForm.peerToken} onChange={(event) => setPeerForm((prev) => ({ ...prev, peerToken: event.target.value }))} placeholder={t(lt("只写入 secret，不会在 GET 回显。", "Only written to secrets. It will never be returned by GET."))} />
+                            <Label htmlFor="peer-form-token">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke6a799cc")}</Label>
+                            <Input id="peer-form-token" value={peerForm.peerToken} onChange={(event) => setPeerForm((prev) => ({ ...prev, peerToken: event.target.value }))} placeholder={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k48afd459")}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="peer-form-scopes">{t(lt("Allowed scopes", "Allowed scopes"))}</Label>
-                            <Input id="peer-form-scopes" value={peerForm.allowedScopes} onChange={(event) => setPeerForm((prev) => ({ ...prev, allowedScopes: event.target.value }))} placeholder="global, workspace, memory" />
+                            <Label htmlFor="peer-form-scopes">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k84c3de2a")}</Label>
+                            <Input id="peer-form-scopes" value={peerForm.allowedScopes} onChange={(event) => setPeerForm((prev) => ({ ...prev, allowedScopes: event.target.value }))} placeholder="global, workspace, memory"/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="peer-form-workspaces">{t(lt("Allowed workspaces", "Allowed workspaces"))}</Label>
-                            <Textarea id="peer-form-workspaces" rows={4} value={peerForm.allowedWorkspaces} onChange={(event) => setPeerForm((prev) => ({ ...prev, allowedWorkspaces: event.target.value }))} placeholder={"workspace-a\nworkspace-b"} />
+                            <Label htmlFor="peer-form-workspaces">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k97eb1914")}</Label>
+                            <Textarea id="peer-form-workspaces" rows={4} value={peerForm.allowedWorkspaces} onChange={(event) => setPeerForm((prev) => ({ ...prev, allowedWorkspaces: event.target.value }))} placeholder={"workspace-a\nworkspace-b"}/>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                             <Button variant="outline" onClick={() => setPeerForm(EMPTY_PEER_FORM)}>
-                                {t(lt("清空", "Clear"))}
+                                {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k126cbd18")}
                             </Button>
                             <Button onClick={() => void savePeer()} disabled={savingPeer}>
-                                {savingPeer ? t(lt("保存中...", "Saving...")) : t(lt("保存 Peer", "Save peer"))}
+                                {savingPeer ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc225e8a3") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k944dbbe1")}
                             </Button>
                         </div>
                     </div>
                 </ConfigCard>
             </div>
 
-            <ConfigCard
-                title={lt("Diagnostics", "Diagnostics")}
-                description={lt("首版用手动 challenge / wake / delegation 诊断整条链。先选一个 trusted peer，再决定你要唤醒还是直接委派任务。", "Use manual challenge / wake / delegation to diagnose the whole first-release path. Pick a trusted peer first, then decide whether you want to wake it or delegate work directly.")}
-                variant="editor"
-                bodyHeight="auto"
-            >
+            <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0c8e0e83"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke100aaa0"} variant="editor" bodyHeight="auto">
                 <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
                     <div className="space-y-4">
                         <div className="space-y-2">
-                            <Label htmlFor="diag-peer">{t(lt("当前目标 Peer", "Current target peer"))}</Label>
-                            <Input id="diag-peer" value={diag.peerId} onChange={(event) => setDiag((prev) => ({ ...prev, peerId: event.target.value }))} placeholder="peer_xxx" />
+                            <Label htmlFor="diag-peer">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc5fee2d")}</Label>
+                            <Input id="diag-peer" value={diag.peerId} onChange={(event) => setDiag((prev) => ({ ...prev, peerId: event.target.value }))} placeholder="peer_xxx"/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="diag-note">{t(lt("备注 / note", "Note"))}</Label>
-                            <Textarea id="diag-note" rows={3} value={diag.note} onChange={(event) => setDiag((prev) => ({ ...prev, note: event.target.value }))} placeholder={t(lt("例如：Admin 手动 challenge", "For example: manual challenge from Admin"))} />
+                            <Label htmlFor="diag-note">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k96d8e7ec")}</Label>
+                            <Textarea id="diag-note" rows={3} value={diag.note} onChange={(event) => setDiag((prev) => ({ ...prev, note: event.target.value }))} placeholder={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7af11461")}/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="diag-task">{t(lt("委派任务", "Delegation task"))}</Label>
-                            <Textarea id="diag-task" rows={6} value={diag.task} onChange={(event) => setDiag((prev) => ({ ...prev, task: event.target.value }))} placeholder={t(lt("写一段要发给远端 chat runtime 的真实任务。", "Write the real task that should run on the remote chat runtime."))} />
+                            <Label htmlFor="diag-task">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k161c7567")}</Label>
+                            <Textarea id="diag-task" rows={6} value={diag.task} onChange={(event) => setDiag((prev) => ({ ...prev, task: event.target.value }))} placeholder={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb9ee78e3")}/>
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="outline" disabled={running !== ""} onClick={() => void runDiagnostic("challenge")}>
-                                {running === "challenge" ? t(lt("发送中...", "Sending...")) : t(lt("Challenge", "Challenge"))}
+                                {running === "challenge" ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka9b6c6f6") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2697884b")}
                             </Button>
                             <Button variant="outline" disabled={running !== ""} onClick={() => void runDiagnostic("wake")}>
-                                {running === "wake" ? t(lt("发送中...", "Sending...")) : t(lt("Wake", "Wake"))}
+                                {running === "wake" ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka9b6c6f6") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k46ae5f45")}
                             </Button>
                             <Button disabled={running !== ""} onClick={() => void runDiagnostic("delegate")}>
-                                {running === "delegate" ? t(lt("委派中...", "Delegating...")) : t(lt("Delegate", "Delegate"))}
+                                {running === "delegate" ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k6bd09d35") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kad52918d")}
                             </Button>
                         </div>
                     </div>
 
                     <div className="space-y-2">
-                        <Label htmlFor="diag-result">{t(lt("返回结果 / 状态投影", "Result / status projection"))}</Label>
-                        <Textarea
-                            id="diag-result"
-                            rows={18}
-                            value={diag.result}
-                            onChange={(event) => setDiag((prev) => ({ ...prev, result: event.target.value }))}
-                            placeholder={t(lt("Challenge、wake 或 delegation 的返回结果会显示在这里。", "The response payload from challenge, wake, or delegation will appear here."))}
-                        />
+                        <Label htmlFor="diag-result">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k271deed6")}</Label>
+                        <Textarea id="diag-result" rows={18} value={diag.result} onChange={(event) => setDiag((prev) => ({ ...prev, result: event.target.value }))} placeholder={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4b7a780f")}/>
                     </div>
                 </div>
             </ConfigCard>
-        </AdminPageShell>
-    );
+        </AdminPageShell>);
 }

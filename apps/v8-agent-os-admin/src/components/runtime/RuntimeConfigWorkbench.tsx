@@ -8,7 +8,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
 
 type RuntimePolicy = {
@@ -65,8 +64,8 @@ export function RuntimeConfigWorkbench({
         } catch (error) {
             console.error("Failed to load runtime config workbench:", error);
             toast({
-                title: t(lt("Runtime 加载失败", "Runtime load failed")),
-                description: t(lt("当前无法读取 runtime 配置。", "Unable to read runtime config right now.")),
+                title: t("components.runtime.RuntimeConfigWorkbench.kfa4f38cd"),
+                description: t("components.runtime.RuntimeConfigWorkbench.kceeaf2ae"),
                 variant: "destructive",
             });
         } finally {
@@ -112,8 +111,8 @@ export function RuntimeConfigWorkbench({
         } catch (error) {
             console.error("Failed to save runtime config:", error);
             toast({
-                title: t(lt("保存失败", "Save failed")),
-                description: t(lt("当前无法更新 runtime 状态。", "Unable to update runtime state right now.")),
+                title: t("components.runtime.RuntimeConfigWorkbench.k12769ce1"),
+                description: t("components.runtime.RuntimeConfigWorkbench.k9653e087"),
                 variant: "destructive",
             });
         } finally {
@@ -137,14 +136,14 @@ export function RuntimeConfigWorkbench({
                                     {runtime
                                         ? (
                                             availability === "not_installed"
-                                                ? t(lt("当前机器尚未安装这个 runtime。", "This runtime is not installed on the current machine."))
+                                                ? t("components.runtime.RuntimeConfigWorkbench.k67cba518")
                                                 : availability === "disabled_by_config"
-                                                    ? t(lt("当前被配置域关闭，请前往对应控制页启用。", "This runtime is disabled by config. Open its control page to enable it."))
+                                                    ? t("components.runtime.RuntimeConfigWorkbench.k23b359ee")
                                                 : enabled
-                                                    ? t(lt("当前已启用。", "Currently enabled."))
-                                                    : t(lt("当前已关闭。", "Currently disabled."))
+                                                    ? t("components.runtime.RuntimeConfigWorkbench.k465806e6")
+                                                    : t("components.runtime.RuntimeConfigWorkbench.kc3525b80")
                                         )
-                                        : t(lt("当前 runtime 尚未进入 capability snapshot。", "This runtime is not present in the capability snapshot yet."))}
+                                        : t("components.runtime.RuntimeConfigWorkbench.k7fa15272")}
                                 </div>
                             </div>
                             <Switch
@@ -160,7 +159,7 @@ export function RuntimeConfigWorkbench({
                                 href={governanceHref}
                                 className="inline-flex items-center gap-2 text-sm font-medium text-sky-700 transition hover:text-sky-800"
                             >
-                                {t(lt("进入 Runtime 治理", "Open Runtime governance"))}
+                                {t("components.runtime.RuntimeConfigWorkbench.k103f21d3")}
                                 <ArrowRight className="h-4 w-4" />
                             </Link>
                         </div>

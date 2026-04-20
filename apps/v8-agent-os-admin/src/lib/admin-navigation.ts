@@ -17,155 +17,153 @@ import {
     Workflow,
     Wrench,
 } from "lucide-react";
-import { LocalizedText, lt } from "@/lib/locale";
-
 export type AdminNavBadge = {
-    label: LocalizedText;
+    label: string;
     tone: "beta" | "dev";
 };
 
 export type AdminNavItem = {
-    title: LocalizedText;
+    title: string;
     href: string;
     icon: LucideIcon;
-    description: LocalizedText;
+    description: string;
     badge?: AdminNavBadge;
 };
 
 export type AdminNavGroup = {
     id: string;
-    title: LocalizedText;
+    title: string;
     items: AdminNavItem[];
 };
 
 export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
     {
         id: "overview",
-        title: lt("OVERVIEW", "OVERVIEW"),
+        title: "lib.admin.navigation.k44e34d5c",
         items: [
             {
-                title: lt("DASHBOARD", "DASHBOARD"),
+                title: "lib.admin.navigation.kec921d94",
                 href: "/admin",
                 icon: LayoutDashboard,
-                description: lt("系统总览、消息入口与关键状态。", "System overview, message entry, and key status."),
+                description: "lib.admin.navigation.k564ca1a5",
             },
             {
-                title: lt("MODELS", "MODELS"),
+                title: "lib.admin.navigation.k3642fc46",
                 href: "/admin/model-hub",
                 icon: Sparkles,
-                description: lt("供应商、模型目录与连接健康。", "Providers, model catalogues, and connection health."),
+                description: "lib.admin.navigation.ke5b09aa7",
             },
             {
-                title: lt("OPERATIONS", "OPERATIONS"),
+                title: "lib.admin.navigation.k4f3e92b5",
                 href: "/admin/operations-center",
                 icon: Gauge,
-                description: lt("运行状态、异常与恢复入口。", "Runtime status, incidents, and recovery entry."),
+                description: "lib.admin.navigation.kc0233cc5",
             },
             {
-                title: lt("USERS", "USERS"),
+                title: "lib.admin.navigation.k6f64cd4f",
                 href: "/admin/users",
                 icon: Users,
-                description: lt("后台用户与访问权限。", "Admin users and access control."),
+                description: "lib.admin.navigation.k4f4d831f",
             },
         ],
     },
     {
         id: "runtimes",
-        title: lt("RUNTIMES", "RUNTIMES"),
+        title: "lib.admin.navigation.k4d4cc3a3",
         items: [
             {
-                title: lt("CHAT RUNTIME", "CHAT RUNTIME"),
+                title: "lib.admin.navigation.ka46f7182",
                 href: "/admin/chat-runtime",
                 icon: MessageSquare,
-                description: lt("主理人、子 Agent 与聊天编排。", "Lead settings, subagents, and chat orchestration."),
+                description: "lib.admin.navigation.k38ee6957",
             },
             {
-                title: lt("MEMORY RUNTIME", "MEMORY RUNTIME"),
+                title: "lib.admin.navigation.k12e7fe1d",
                 href: "/admin/memory",
                 icon: Brain,
-                description: lt("长期记忆、知识与图谱。", "Long-term memory, knowledge, and graph."),
+                description: "lib.admin.navigation.kc6277f77",
             },
             {
-                title: lt("AUTOMATION RUNTIME", "AUTOMATION RUNTIME"),
+                title: "lib.admin.navigation.k924ec203",
                 href: "/admin/automation",
                 icon: Workflow,
-                description: lt("Hooks、Cron 与自动化触发。", "Hooks, cron, and automation triggers."),
+                description: "lib.admin.navigation.k3eb7c0bc",
             },
             {
-                title: lt("EXTENSIONS", "EXTENSIONS"),
+                title: "lib.admin.navigation.k4a6c7a20",
                 href: "/admin/extensions",
                 icon: Blocks,
-                description: lt("Skills、MCP 与扩展生态。", "Skills, MCP, and extension ecosystem."),
+                description: "lib.admin.navigation.kc841e62a",
             },
             {
-                title: lt("PLUGIN HOST RUNTIME", "PLUGIN HOST RUNTIME"),
+                title: "lib.admin.navigation.k64a90628",
                 href: "/admin/plugin-host",
                 icon: Blocks,
-                description: lt("OpenClaw 桥接、渠道与外部工具。", "OpenClaw bridge, channels, and external tools."),
-                badge: { label: lt("beta", "beta"), tone: "beta" },
+                description: "lib.admin.navigation.k3f9710f0",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
-                title: lt("COMPUTER USE RUNTIME", "COMPUTER USE RUNTIME"),
+                title: "lib.admin.navigation.kc32f16d1",
                 href: "/admin/desktop-automation",
                 icon: Wrench,
-                description: lt("桌面控制、视觉与环境感知。", "Desktop control, vision, and environment sensing."),
-                badge: { label: lt("beta", "beta"), tone: "beta" },
+                description: "lib.admin.navigation.k76403821",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
-                title: lt("RPA RUNTIME", "RPA RUNTIME"),
+                title: "lib.admin.navigation.kc278e600",
                 href: "/admin/rpa",
                 icon: Bot,
-                description: lt("流程发现、执行与回退。", "Process discovery, execution, and rollback."),
-                badge: { label: lt("beta", "beta"), tone: "beta" },
+                description: "lib.admin.navigation.kede68047",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
-                title: lt("NETWORK SUPERVISOR RUNTIME", "NETWORK SUPERVISOR RUNTIME"),
+                title: "lib.admin.navigation.k45a604ec",
                 href: "/admin/network-supervisor-runtime",
                 icon: Globe2,
-                description: lt("局域网/广域网组网协作入口。", "LAN/WAN supervisor collaboration entry."),
-                badge: { label: lt("beta", "beta"), tone: "beta" },
+                description: "lib.admin.navigation.k63312a13",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
         ],
     },
     {
         id: "capabilities",
-        title: lt("CAPABILITIES", "CAPABILITIES"),
+        title: "lib.admin.navigation.k7e688826",
         items: [
             {
-                title: lt("CONTEXT", "CONTEXT"),
+                title: "lib.admin.navigation.k3e8bf507",
                 href: "/admin/context",
                 icon: FolderTree,
-                description: lt("上下文治理、引用与 RAG 注入策略。", "Context governance, references, and RAG injection policy."),
+                description: "lib.admin.navigation.k4959020c",
             },
             {
-                title: lt("AUDIO", "AUDIO"),
+                title: "lib.admin.navigation.kcef5c2ee",
                 href: "/admin/audio",
                 icon: Mic,
-                description: lt("语音识别、语音合成与音频配置。", "Speech recognition, synthesis, and audio config."),
+                description: "lib.admin.navigation.k9e990c4d",
             },
         ],
     },
     {
         id: "platform",
-        title: lt("PLATFORM", "PLATFORM"),
+        title: "lib.admin.navigation.k3ff43c59",
         items: [
             {
-                title: lt("PROJECTS & WORKSPACES", "PROJECTS & WORKSPACES"),
+                title: "lib.admin.navigation.ka03c6e04",
                 href: "/admin/projects-workspaces",
                 icon: Building2,
-                description: lt("项目注册表与工作区绑定。", "Project registry and workspace bindings."),
+                description: "lib.admin.navigation.kcf00915a",
             },
             {
-                title: lt("SAFETY", "SAFETY"),
+                title: "lib.admin.navigation.k80c93722",
                 href: "/admin/safety-control",
                 icon: ShieldCheck,
-                description: lt("安全护栏、人工确认与风险策略。", "Safeguards, approvals, and risk policies."),
+                description: "lib.admin.navigation.ka3de25ee",
             },
             {
-                title: lt("SYSTEM BASE", "SYSTEM BASE"),
+                title: "lib.admin.navigation.kdb0e699b",
                 href: "/admin/system-base",
                 icon: SlidersHorizontal,
-                description: lt("服务地址、密钥与基础依赖。", "Service endpoints, secrets, and base dependencies."),
+                description: "lib.admin.navigation.k75b9814d",
             },
         ],
     },

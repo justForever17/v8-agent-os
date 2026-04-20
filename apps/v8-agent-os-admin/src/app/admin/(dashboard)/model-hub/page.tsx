@@ -1,8 +1,6 @@
 "use client";
-
 import { useEffect, useMemo, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -21,18 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { fetchConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-import {
-    getLocalBackendPresetConfig,
-    getPlatformLoginPresetConfig,
-    inferPlatformLoginPreset,
-    inferLocalBackendPreset,
-    LOCAL_BACKEND_PRESETS,
-    PLATFORM_LOGIN_PRESETS,
-    type LocalBackendPreset,
-    type PlatformLoginPreset,
-} from "@/lib/models/provider-admin";
-import { lt } from "@/lib/locale";
-
+import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
 type AIProvider = {
     id: string;
     name: string;
@@ -49,9 +36,10 @@ type AIProvider = {
     oauthPath?: string;
     oauthPathMasked?: string;
     localBackendPreset?: LocalBackendPreset;
-    models: { id: string }[];
+    models: {
+        id: string;
+    }[];
 };
-
 type AIModel = {
     id: string;
     providerId: string;
@@ -63,9 +51,11 @@ type AIModel = {
     temperature?: number | null;
     rerankApiFlavor?: string;
     isEnabled: boolean;
-    provider?: { name: string; icon?: string | null };
+    provider?: {
+        name: string;
+        icon?: string | null;
+    };
 };
-
 type ModelHubPayload = {
     summary?: {
         providers?: number;
@@ -82,14 +72,13 @@ type ModelHubPayload = {
         };
     };
 };
-
 type ModelConnectionStatus = {
     status: "idle" | "testing" | "success" | "error";
     message?: string;
 };
-
 function extractErrorText(value: unknown, fallback: string): string {
-    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "string" && value.trim())
+        return value;
     if (Array.isArray(value)) {
         const joined = value
             .map((item) => extractErrorText(item, ""))
@@ -99,22 +88,18 @@ function extractErrorText(value: unknown, fallback: string): string {
     }
     if (value && typeof value === "object") {
         const record = value as Record<string, unknown>;
-        return (
-            extractErrorText(record.error, "")
+        return (extractErrorText(record.error, "")
             || extractErrorText(record.message, "")
             || extractErrorText(record.detail, "")
-            || fallback
-        );
+            || fallback);
     }
     return fallback;
 }
-
 async function readJsonErrorMessage(response: Response, fallback: string) {
     const data = await response.json().catch(() => null);
     const detail = extractErrorText(data?.detail, "") || extractErrorText(data?.error, "");
     return detail || fallback;
 }
-
 export default function ModelHubPage() {
     const { toast } = useToast();
     const t = useT();
@@ -139,7 +124,6 @@ export default function ModelHubPage() {
     const [modelProviderId, setModelProviderId] = useState("");
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
-
     const fetchData = async () => {
         setIsLoading(true);
         try {
@@ -148,32 +132,22 @@ export default function ModelHubPage() {
                 fetch("/api/models", { cache: "no-store" }),
                 fetchConfigDomain<ModelHubPayload>("models"),
             ]);
-
             setProviders(providersRes.ok ? await providersRes.json() : []);
             setModels(modelsRes.ok ? await modelsRes.json() : []);
             setHubEnvelope(hubRes);
-        } finally {
+        }
+        finally {
             setIsLoading(false);
         }
     };
-
     useEffect(() => {
         void fetchData();
     }, []);
-
-    const controlModelsById = useMemo(
-        () => new Map((hubEnvelope?.data.models || []).map((item) => [item.modelId, item])),
-        [hubEnvelope]
-    );
-    const providerOverviewById = useMemo(
-        () => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])),
-        [hubEnvelope]
-    );
-
+    const controlModelsById = useMemo(() => new Map((hubEnvelope?.data.models || []).map((item) => [item.modelId, item])), [hubEnvelope]);
+    const providerOverviewById = useMemo(() => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])), [hubEnvelope]);
     const filteredModels = activeTab === "all"
         ? models
         : models.filter((model) => (model.type || "").toLowerCase() === activeTab);
-
     const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const formData = new FormData(event.currentTarget);
@@ -189,16 +163,14 @@ export default function ModelHubPage() {
         setEditingProvider(null);
         await fetchData();
     };
-
     const platformProviderSelected = providerType === "PLATFORM";
     const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
     const oauthHint = platformProviderSelected
         ? t(activePlatformPreset.helpText)
         : providerApiStandard === "gemini"
-            ? t(lt("Gemini 当前仍使用原生 API Key 调用。若需要 Gemini CLI OAuth，请切到“平台”并选择 Gemini CLI 预设。", "Gemini still uses native API keys here. Switch to Platform and choose the Gemini CLI preset if you need Gemini CLI OAuth."))
-            : t(lt("适用于 Qwen OAuth、Codex auth.json 等 access_token 文件。保存时会自动复制到 ~/.v8-agent-os/core/oauth/providers 并写回标准 oauth: 引用。", "Use this for Qwen OAuth, Codex auth.json, and other access_token files. Saved files are copied into ~/.v8-agent-os/core/oauth/providers and referenced with the standard oauth: format."));
+            ? t("app.admin.dashboard.model.hub.page.k37b02ec3")
+            : t("app.admin.dashboard.model.hub.page.k2daf728b");
     const localBackendConfig = getLocalBackendPresetConfig(localBackendPreset);
-
     const handleSaveModel = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const formData = new FormData(event.currentTarget);
@@ -213,10 +185,10 @@ export default function ModelHubPage() {
             body: JSON.stringify(payload),
         });
         if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, t(lt("保存模型失败", "Failed to save model")));
+            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kd2b2caac"));
             toast({
                 variant: "destructive",
-                title: t(lt("保存模型失败", "Failed to save model")),
+                title: t("app.admin.dashboard.model.hub.page.kd2b2caac"),
                 description: errorMessage,
             });
             return;
@@ -225,64 +197,70 @@ export default function ModelHubPage() {
         setEditingModel(null);
         await fetchData();
     };
-
     const handleDeleteProvider = async (id: string) => {
         const pendingToast = toast({
-            title: t(lt("删除供应商中", "Removing provider")),
-            description: t(lt("正在删除供应商配置。", "Removing the provider configuration.")),
+            title: t("app.admin.dashboard.model.hub.page.k9f8d01b1"),
+            description: t("app.admin.dashboard.model.hub.page.k73a26f43"),
         });
         try {
             const response = await fetch(`/api/providers/${id}`, { method: "DELETE" });
             if (!response.ok) {
-                const errorMessage = await readJsonErrorMessage(response, t(lt("删除供应商失败", "Failed to remove provider")));
+                const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kb2803a72"));
                 pendingToast.update({
                     id: pendingToast.id,
                     variant: "destructive",
-                    title: t(lt("删除供应商失败", "Failed to remove provider")),
+                    title: t("app.admin.dashboard.model.hub.page.kb2803a72"),
                     description: errorMessage,
                 });
                 return;
             }
             pendingToast.update({
                 id: pendingToast.id,
-                title: t(lt("删除供应商成功", "Provider removed")),
-                description: t(lt("供应商配置已移除。", "The provider configuration has been removed.")),
+                title: t("app.admin.dashboard.model.hub.page.k38297510"),
+                description: t("app.admin.dashboard.model.hub.page.k654e3a33"),
             });
             await fetchData();
-        } catch (error) {
+        }
+        catch (error) {
             pendingToast.update({
                 id: pendingToast.id,
                 variant: "destructive",
-                title: t(lt("删除供应商失败", "Failed to remove provider")),
-                description: error instanceof Error ? error.message : t("未知错误"),
+                title: t("app.admin.dashboard.model.hub.page.kb2803a72"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.model.hub.page.k52d13953"),
             });
         }
     };
-
-    const handleDeleteModel = async (model: { id: string; providerId?: string }) => {
-        if (!confirm(t(lt(`确认删除模型「${model.id}」吗？`, `Delete model "${model.id}"?`)))) {
+    const handleDeleteModel = async (model: {
+        id: string;
+        providerId?: string;
+    }) => {
+        if (!confirm(t("app.admin.dashboard.model.hub.page.k775e537a", {
+            model_id: model.id
+        }))) {
             return;
         }
         if (!model.providerId) {
             toast({
                 variant: "destructive",
-                title: t(lt("删除模型失败", "Failed to remove model")),
-                description: t(lt("当前模型缺少供应商归属，无法确定删除目标。", "This model has no provider binding, so the delete target cannot be resolved.")),
+                title: t("app.admin.dashboard.model.hub.page.kfdc39ee5"),
+                description: t("app.admin.dashboard.model.hub.page.k7ef5fb27"),
             });
             return;
         }
         const pendingToast = toast({
-            title: t(lt("删除模型中", "Removing model")),
-            description: t(lt(`正在删除 ${model.id}。`, `Removing ${model.id}.`)),
+            title: t("app.admin.dashboard.model.hub.page.k80306f42"),
+            description: t("app.admin.dashboard.model.hub.page.kd016d9bc", {
+                model_id: model.id
+            }),
         });
         try {
             const response = await fetch(`/api/models/${encodeURIComponent(model.id)}?providerId=${encodeURIComponent(model.providerId)}`, { method: "DELETE" });
             if (!response.ok) {
-                const errorMessage = await readJsonErrorMessage(response, t(lt("删除模型失败", "Failed to remove model")));
+                const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kfdc39ee5"));
                 pendingToast.update({
                     id: pendingToast.id,
                     variant: "destructive",
-                    title: t(lt("删除模型失败", "Failed to remove model")),
+                    title: t("app.admin.dashboard.model.hub.page.kfdc39ee5"),
                     description: errorMessage,
                 });
                 return;
@@ -290,24 +268,26 @@ export default function ModelHubPage() {
             setModels((current) => current.filter((item) => !(item.id === model.id && item.providerId === model.providerId)));
             pendingToast.update({
                 id: pendingToast.id,
-                title: t(lt("删除模型成功", "Model removed")),
-                description: t(lt(`${model.id} 已从模型目录移除。`, `${model.id} was removed from the catalog.`)),
+                title: t("app.admin.dashboard.model.hub.page.k55262795"),
+                description: t("app.admin.dashboard.model.hub.page.kcc45e1c7", {
+                    model_id: model.id
+                }),
             });
             await fetchData();
-        } catch (error) {
+        }
+        catch (error) {
             pendingToast.update({
                 id: pendingToast.id,
                 variant: "destructive",
-                title: t(lt("删除模型失败", "Failed to remove model")),
-                description: error instanceof Error ? error.message : t("未知错误"),
+                title: t("app.admin.dashboard.model.hub.page.kfdc39ee5"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.model.hub.page.k52d13953"),
             });
         }
     };
-
     const handleTestConnection = async (modelId: string) => {
         setConnectionStatusMap((current) => ({
             ...current,
-            [modelId]: { status: "testing", message: t(lt("正在验证模型连通性", "Testing model connectivity")) },
+            [modelId]: { status: "testing", message: t("app.admin.dashboard.model.hub.page.kdb5dbeb0") },
         }));
         try {
             const response = await fetch("/api/models/test-connection", {
@@ -319,7 +299,7 @@ export default function ModelHubPage() {
             if (!response.ok) {
                 const errorMessage = extractErrorText(data?.detail, "")
                     || extractErrorText(data?.error, "")
-                    || t(lt("请检查模型配置", "Check the model configuration"));
+                    || t("app.admin.dashboard.model.hub.page.k74ddeaa0");
                 setConnectionStatusMap((current) => ({
                     ...current,
                     [modelId]: { status: "error", message: errorMessage },
@@ -339,354 +319,266 @@ export default function ModelHubPage() {
                 ...current,
                 [modelId]: { status: "success", message: successMessage },
             }));
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("未知错误");
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : t("app.admin.dashboard.model.hub.page.k52d13953");
             setConnectionStatusMap((current) => ({
                 ...current,
                 [modelId]: { status: "error", message: errorMessage },
             }));
         }
     };
-
-    return (
-        <AdminPageShell>
-            <AdminPageHeader
-                title={t(lt("模型中心", "Model hub"))}
-                description={t(lt("管理供应商、模型目录和连接状态。", "Manage providers, models, and connectivity."))}
-                actions={
-                    <>
+    return (<AdminPageShell>
+            <AdminPageHeader title={t("app.admin.dashboard.model.hub.page.kf88eff69")} description={t("app.admin.dashboard.model.hub.page.k45bea0e7")} actions={<>
                         <Button variant="outline" onClick={() => void fetchData()} disabled={isLoading}>
-                            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
-                            {t("刷新")}
+                            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`}/>
+                            {t("app.admin.dashboard.model.hub.page.k876e8c06")}
                         </Button>
                         <Button onClick={() => {
-                            setEditingProvider(null);
-                            setProviderType("API");
-                            setProviderCredentialMode("apiKey");
-                            setProviderApiStandard("openai");
-                            setProviderBaseUrl("");
-                            setProviderApiKey("");
-                            setProviderOauthPath("");
-                            setPlatformLoginPreset("qwenCode");
-                            setLocalBackendPreset("ollama");
-                            setIsProviderDialogOpen(true);
-                        }}>
-                            <Plus className="mr-2 h-4 w-4" />
-                            {t(lt("添加供应商", "Add provider"))}
+                setEditingProvider(null);
+                setProviderType("API");
+                setProviderCredentialMode("apiKey");
+                setProviderApiStandard("openai");
+                setProviderBaseUrl("");
+                setProviderApiKey("");
+                setProviderOauthPath("");
+                setPlatformLoginPreset("qwenCode");
+                setLocalBackendPreset("ollama");
+                setIsProviderDialogOpen(true);
+            }}>
+                            <Plus className="mr-2 h-4 w-4"/>
+                            {t("app.admin.dashboard.model.hub.page.k9e31d9ed")}
                         </Button>
                         <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setModelType("TEXT"); setModelProviderId(providers[0]?.id || ""); setRerankApiFlavor("generic"); setIsModelDialogOpen(true); }}>
-                            <Plus className="mr-2 h-4 w-4" />
-                            {t(lt("添加模型", "Add model"))}
+                            <Plus className="mr-2 h-4 w-4"/>
+                            {t("app.admin.dashboard.model.hub.page.k82b1063c")}
                         </Button>
-                    </>
-                }
-            />
+                    </>}/>
 
-            <DomainSummaryStrip
-                items={[
-                    { label: t(lt("供应商", "Providers")), value: hubEnvelope?.data.summary?.providers || providers.length, description: t(lt("已登记的供应商数量。", "Total registered providers.")) },
-                    { label: t(lt("已启用供应商", "Enabled providers")), value: hubEnvelope?.data.summary?.enabledProviders || providers.filter((item) => item.isEnabled).length, description: t(lt("当前仍可用的供应商数量。", "Providers currently available for use.")) },
-                    { label: t(lt("模型数量", "Models")), value: hubEnvelope?.data.summary?.models || models.length, description: t(lt("已登记的模型总数。", "Total registered models.")) },
-                    { label: t(lt("规则状态", "Policy")), value: hubEnvelope?.data.config?.governance?.enabled ? t("已开启") : t("已关闭"), description: t(lt("这里显示模型规则是否生效。", "Shows whether model governance is active.")) },
-                ]}
-            />
+            <DomainSummaryStrip items={[
+            { label: t("app.admin.dashboard.model.hub.page.ked94504f"), value: hubEnvelope?.data.summary?.providers || providers.length, description: t("app.admin.dashboard.model.hub.page.k3b2008ff") },
+            { label: t("app.admin.dashboard.model.hub.page.k0a290add"), value: hubEnvelope?.data.summary?.enabledProviders || providers.filter((item) => item.isEnabled).length, description: t("app.admin.dashboard.model.hub.page.ka6812613") },
+            { label: t("app.admin.dashboard.model.hub.page.kc1128e3d"), value: hubEnvelope?.data.summary?.models || models.length, description: t("app.admin.dashboard.model.hub.page.k9196d416") },
+            { label: t("app.admin.dashboard.model.hub.page.kf7cda39f"), value: hubEnvelope?.data.config?.governance?.enabled ? t("app.admin.dashboard.model.hub.page.kd945d5d0") : t("app.admin.dashboard.model.hub.page.k12b31ba6"), description: t("app.admin.dashboard.model.hub.page.k3a277197") },
+        ]}/>
 
-            <ConfigCard title={t(lt("供应商目录", "Provider catalog"))} description={t(lt("管理供应商启用状态和连接入口。", "Manage provider enablement and connection entrypoints."))} variant="list" bodyHeight={520} bodyScroll="auto">
-                {providers.length === 0 ? (
-                    <EmptyState title={t(lt("还没有供应商", "No providers yet"))} description={t(lt("你可以先添加供应商，再登记模型目录。", "Add a provider first, then register models under it."))} />
-                ) : (
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                        {providers.map((provider) => (
-                            <ProviderCard
-                                key={provider.id}
-                                provider={provider}
-                                health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null}
-                                onEdit={() => {
-                                    const inferredPreset = inferPlatformLoginPreset({
-                                        providerType: provider.type,
-                                        apiStandard: provider.apiStandard,
-                                        baseUrl: provider.baseUrl,
-                                        oauthPath: provider.oauthPath,
-                                        code: provider.code,
-                                        name: provider.name,
-                                    });
-                                    const inferredLocalPreset = inferLocalBackendPreset({
-                                        providerType: provider.type,
-                                        baseUrl: provider.baseUrl,
-                                        preset: provider.localBackendPreset,
-                                        code: provider.code,
-                                        name: provider.name,
-                                    });
-                                    setEditingProvider(provider);
-                                    setProviderType(provider.type || "API");
-                                    setProviderCredentialMode(provider.type === "PLATFORM" ? "oauthFile" : (provider.credentialMode || "apiKey"));
-                                    setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini") || "openai");
-                                    setProviderBaseUrl(provider.baseUrl || "");
-                                    setProviderApiKey(provider.apiKey || "");
-                                    setProviderOauthPath(provider.oauthPath || "");
-                                    setPlatformLoginPreset(inferredPreset);
-                                    setLocalBackendPreset(inferredLocalPreset);
-                                    setIsProviderDialogOpen(true);
-                                }}
-                                onDelete={handleDeleteProvider}
-                                onToggle={async (id, enabled) => {
-                                    await fetch(`/api/providers/${id}`, {
-                                        method: "PUT",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ isEnabled: enabled }),
-                                    });
-                                    await fetchData();
-                                }}
-                            />
-                        ))}
-                    </div>
-                )}
+            <ConfigCard title={t("app.admin.dashboard.model.hub.page.kd0251a96")} description={t("app.admin.dashboard.model.hub.page.k79d4e8e7")} variant="list" bodyHeight={520} bodyScroll="auto">
+                {providers.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k8d04b4ed")} description={t("app.admin.dashboard.model.hub.page.k9e469730")}/>) : (<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        {providers.map((provider) => (<ProviderCard key={provider.id} provider={provider} health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null} onEdit={() => {
+                    const inferredPreset = inferPlatformLoginPreset({
+                        providerType: provider.type,
+                        apiStandard: provider.apiStandard,
+                        baseUrl: provider.baseUrl,
+                        oauthPath: provider.oauthPath,
+                        code: provider.code,
+                        name: provider.name,
+                    });
+                    const inferredLocalPreset = inferLocalBackendPreset({
+                        providerType: provider.type,
+                        baseUrl: provider.baseUrl,
+                        preset: provider.localBackendPreset,
+                        code: provider.code,
+                        name: provider.name,
+                    });
+                    setEditingProvider(provider);
+                    setProviderType(provider.type || "API");
+                    setProviderCredentialMode(provider.type === "PLATFORM" ? "oauthFile" : (provider.credentialMode || "apiKey"));
+                    setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini") || "openai");
+                    setProviderBaseUrl(provider.baseUrl || "");
+                    setProviderApiKey(provider.apiKey || "");
+                    setProviderOauthPath(provider.oauthPath || "");
+                    setPlatformLoginPreset(inferredPreset);
+                    setLocalBackendPreset(inferredLocalPreset);
+                    setIsProviderDialogOpen(true);
+                }} onDelete={handleDeleteProvider} onToggle={async (id, enabled) => {
+                    await fetch(`/api/providers/${id}`, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ isEnabled: enabled }),
+                    });
+                    await fetchData();
+                }}/>))}
+                    </div>)}
             </ConfigCard>
 
-            <ConfigCard title={t(lt("模型目录", "Model catalog"))} description={t(lt("查看模型能力和连接健康。", "Review model capabilities and connection health."))} variant="list" bodyHeight={520} bodyScroll="auto">
+            <ConfigCard title={t("app.admin.dashboard.model.hub.page.k6a95644c")} description={t("app.admin.dashboard.model.hub.page.k933aeed1")} variant="list" bodyHeight={520} bodyScroll="auto">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm text-slate-500">{t(lt("按能力查看当前已登记模型。", "Browse the registered models by capability."))}</div>
+                    <div className="text-sm text-slate-500">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
                     <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-xl">
                         <TabsList className="grid w-full grid-cols-5 rounded-2xl bg-slate-100">
-                            <TabsTrigger value="all">{t(lt("全部", "All"))}</TabsTrigger>
-                            <TabsTrigger value="text">{t(lt("文本", "Text"))}</TabsTrigger>
-                            <TabsTrigger value="multimodal">{t(lt("多模态", "Multimodal"))}</TabsTrigger>
-                            <TabsTrigger value="embedding">{t(lt("向量", "Embedding"))}</TabsTrigger>
-                            <TabsTrigger value="rerank">{t(lt("重排", "Rerank"))}</TabsTrigger>
+                            <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
+                            <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
+                            <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>
+                            <TabsTrigger value="embedding">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</TabsTrigger>
+                            <TabsTrigger value="rerank">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</TabsTrigger>
                         </TabsList>
                     </Tabs>
                 </div>
 
-                {filteredModels.length === 0 ? (
-                    <EmptyState title={t(lt("当前分类没有模型", "No models in this category"))} description={t(lt("可以切换分类，或先添加新的模型目录。", "Switch categories or add a new model to continue."))} />
-                ) : (
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                        {filteredModels.map((model) => (
-                            <ModelCardV2
-                                key={model.id}
-                                model={model}
-                                controlMeta={controlModelsById.get(model.modelId) || null}
-                                connectionStatus={connectionStatusMap[model.modelId] || null}
-                                onEdit={() => {
-                                    setEditingModel(model);
-                                    setModelType(model.type || "TEXT");
-                                    setModelProviderId(model.providerId);
-                                    setRerankApiFlavor(model.rerankApiFlavor || "generic");
-                                    setIsModelDialogOpen(true);
-                                }}
-                                onDelete={handleDeleteModel}
-                                onTestConnection={handleTestConnection}
-                            />
-                        ))}
-                    </div>
-                )}
+                {filteredModels.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k14457a61")} description={t("app.admin.dashboard.model.hub.page.k8d6baa0f")}/>) : (<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        {filteredModels.map((model) => (<ModelCardV2 key={model.id} model={model} controlMeta={controlModelsById.get(model.modelId) || null} connectionStatus={connectionStatusMap[model.modelId] || null} onEdit={() => {
+                    setEditingModel(model);
+                    setModelType(model.type || "TEXT");
+                    setModelProviderId(model.providerId);
+                    setRerankApiFlavor(model.rerankApiFlavor || "generic");
+                    setIsModelDialogOpen(true);
+                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection}/>))}
+                    </div>)}
             </ConfigCard>
 
-            {hubEnvelope ? (
-                <SourceMetaRow
-                    source={hubEnvelope.source}
-                    savePath={hubEnvelope.savePath}
-                    reloadRequired={hubEnvelope.reloadRequired}
-                />
-            ) : null}
+            {hubEnvelope ? (<SourceMetaRow source={hubEnvelope.source} savePath={hubEnvelope.savePath} reloadRequired={hubEnvelope.reloadRequired}/>) : null}
 
             <Dialog open={isProviderDialogOpen} onOpenChange={setIsProviderDialogOpen}>
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>{editingProvider ? t(lt("编辑供应商", "Edit provider")) : t(lt("添加供应商", "Add provider"))}</DialogTitle>
+                        <DialogTitle>{editingProvider ? t("app.admin.dashboard.model.hub.page.k03d9a3c5") : t("app.admin.dashboard.model.hub.page.k9e31d9ed")}</DialogTitle>
                     </DialogHeader>
                     <form key={`${editingProvider?.id || "new"}-${providerType}-${providerCredentialMode}`} onSubmit={handleSaveProvider} className="space-y-4">
                         <div className="space-y-2">
-                            <Label htmlFor="provider-name">{t(lt("供应商名称", "Provider name"))}</Label>
-                            <Input id="provider-name" name="name" defaultValue={editingProvider?.name || ""} required />
+                            <Label htmlFor="provider-name">{t("app.admin.dashboard.model.hub.page.kd00c0239")}</Label>
+                            <Input id="provider-name" name="name" defaultValue={editingProvider?.name || ""} required/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="provider-code">{t(lt("供应商标识", "Provider code"))}</Label>
-                            <Input id="provider-code" name="code" defaultValue={editingProvider?.code || ""} required />
+                            <Label htmlFor="provider-code">{t("app.admin.dashboard.model.hub.page.ke46386e9")}</Label>
+                            <Input id="provider-code" name="code" defaultValue={editingProvider?.code || ""} required/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="provider-type">{t(lt("供应商类型", "Provider type"))}</Label>
-                            <input type="hidden" name="type" value={providerType} />
+                            <Label htmlFor="provider-type">{t("app.admin.dashboard.model.hub.page.k8de6f532")}</Label>
+                            <input type="hidden" name="type" value={providerType}/>
                             <Select value={providerType} onValueChange={(value: AIProvider["type"]) => {
-                                setProviderType(value);
-                                if (value === "PLATFORM") {
-                                    const preset = editingProvider
-                                        ? inferPlatformLoginPreset({
-                                            providerType: value,
-                                            apiStandard: providerApiStandard,
-                                            baseUrl: providerBaseUrl,
-                                            oauthPath: providerOauthPath,
-                                            code: editingProvider.code,
-                                            name: editingProvider.name,
-                                        })
-                                        : platformLoginPreset;
-                                    const config = getPlatformLoginPresetConfig(preset);
-                                    setProviderCredentialMode("oauthFile");
-                                    setPlatformLoginPreset(preset);
-                                    setProviderApiStandard(config.apiStandard);
-                                    setProviderBaseUrl(config.baseUrl);
-                                    setProviderOauthPath(providerOauthPath || config.oauthPath);
-                                    setProviderApiKey("");
-                                } else if (value === "LOCAL") {
-                                    const config = getLocalBackendPresetConfig(localBackendPreset);
-                                    setProviderCredentialMode("apiKey");
-                                    setProviderApiStandard(config.apiStandard);
-                                    setProviderBaseUrl(config.baseUrl);
-                                    setProviderApiKey(config.apiKey);
-                                    setProviderOauthPath("");
-                                }
-                            }}>
+            setProviderType(value);
+            if (value === "PLATFORM") {
+                const preset = editingProvider
+                    ? inferPlatformLoginPreset({
+                        providerType: value,
+                        apiStandard: providerApiStandard,
+                        baseUrl: providerBaseUrl,
+                        oauthPath: providerOauthPath,
+                        code: editingProvider.code,
+                        name: editingProvider.name,
+                    })
+                    : platformLoginPreset;
+                const config = getPlatformLoginPresetConfig(preset);
+                setProviderCredentialMode("oauthFile");
+                setPlatformLoginPreset(preset);
+                setProviderApiStandard(config.apiStandard);
+                setProviderBaseUrl(config.baseUrl);
+                setProviderOauthPath(providerOauthPath || config.oauthPath);
+                setProviderApiKey("");
+            }
+            else if (value === "LOCAL") {
+                const config = getLocalBackendPresetConfig(localBackendPreset);
+                setProviderCredentialMode("apiKey");
+                setProviderApiStandard(config.apiStandard);
+                setProviderBaseUrl(config.baseUrl);
+                setProviderApiKey(config.apiKey);
+                setProviderOauthPath("");
+            }
+        }}>
                                 <SelectTrigger id="provider-type"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="API">API</SelectItem>
-                                    <SelectItem value="LOCAL">{t(lt("本地", "Local"))}</SelectItem>
-                                    <SelectItem value="PLATFORM">{t(lt("平台", "Platform"))}</SelectItem>
+                                    <SelectItem value="LOCAL">{t("app.admin.dashboard.model.hub.page.kde244a7f")}</SelectItem>
+                                    <SelectItem value="PLATFORM">{t("app.admin.dashboard.model.hub.page.k2093dbe7")}</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
-                        {platformProviderSelected ? (
-                            <>
-                                <input type="hidden" name="platformLoginPreset" value={platformLoginPreset} />
+                        {platformProviderSelected ? (<>
+                                <input type="hidden" name="platformLoginPreset" value={platformLoginPreset}/>
                                 <div className="space-y-2">
-                                    <Label htmlFor="platform-login-preset">{t(lt("平台登录", "Platform login"))}</Label>
-                                    <Select
-                                        value={platformLoginPreset}
-                                        onValueChange={(value: PlatformLoginPreset) => {
-                                            const config = getPlatformLoginPresetConfig(value);
-                                            setPlatformLoginPreset(value);
-                                            setProviderCredentialMode("oauthFile");
-                                            setProviderApiStandard(config.apiStandard);
-                                            setProviderBaseUrl(config.baseUrl);
-                                            setProviderOauthPath(config.oauthPath);
-                                        }}
-                                    >
+                                    <Label htmlFor="platform-login-preset">{t("app.admin.dashboard.model.hub.page.k1f6f2bda")}</Label>
+                                    <Select value={platformLoginPreset} onValueChange={(value: PlatformLoginPreset) => {
+                const config = getPlatformLoginPresetConfig(value);
+                setPlatformLoginPreset(value);
+                setProviderCredentialMode("oauthFile");
+                setProviderApiStandard(config.apiStandard);
+                setProviderBaseUrl(config.baseUrl);
+                setProviderOauthPath(config.oauthPath);
+            }}>
                                         <SelectTrigger id="platform-login-preset"><SelectValue /></SelectTrigger>
                                         <SelectContent>
-                                            {Object.values(PLATFORM_LOGIN_PRESETS).map((preset) => (
-                                                <SelectItem key={preset.id} value={preset.id}>
+                                            {Object.values(PLATFORM_LOGIN_PRESETS).map((preset) => (<SelectItem key={preset.id} value={preset.id}>
                                                     {preset.label}
-                                                </SelectItem>
-                                            ))}
+                                                </SelectItem>))}
                                         </SelectContent>
                                     </Select>
                                     <p className="text-xs text-muted-foreground">{activePlatformPreset.description}</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label htmlFor="provider-api-standard-readonly">{t(lt("API 格式", "API format"))}</Label>
-                                    <Input id="provider-api-standard-readonly" value={
-                                        providerApiStandard === "openai"
-                                            ? t(lt("OpenAI 兼容", "OpenAI-compatible"))
-                                            : providerApiStandard === "anthropic"
-                                                ? t(lt("Anthropic 兼容", "Anthropic-compatible"))
-                                                : t(lt("Gemini 原生", "Gemini native"))
-                                    } readOnly />
-                                    <input type="hidden" name="apiStandard" value={providerApiStandard} />
+                                    <Label htmlFor="provider-api-standard-readonly">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
+                                    <Input id="provider-api-standard-readonly" value={providerApiStandard === "openai"
+                ? t("app.admin.dashboard.model.hub.page.kdab0f774")
+                : providerApiStandard === "anthropic"
+                    ? t("app.admin.dashboard.model.hub.page.k504d12c7")
+                    : t("app.admin.dashboard.model.hub.page.k560df989")} readOnly/>
+                                    <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 </div>
-                            </>
-                        ) : providerType === "LOCAL" ? (
-                            <>
-                                <input type="hidden" name="localBackendPreset" value={localBackendPreset} />
+                            </>) : providerType === "LOCAL" ? (<>
+                                <input type="hidden" name="localBackendPreset" value={localBackendPreset}/>
                                 <div className="space-y-2">
-                                    <Label htmlFor="provider-local-preset">{t(lt("本地后端预设", "Local backend preset"))}</Label>
-                                    <Select
-                                        value={localBackendPreset}
-                                        onValueChange={(value: LocalBackendPreset) => {
-                                            const config = getLocalBackendPresetConfig(value);
-                                            setLocalBackendPreset(value);
-                                            setProviderCredentialMode("apiKey");
-                                            setProviderApiStandard(config.apiStandard);
-                                            setProviderBaseUrl(config.baseUrl);
-                                            setProviderApiKey(config.apiKey);
-                                        }}
-                                    >
+                                    <Label htmlFor="provider-local-preset">{t("app.admin.dashboard.model.hub.page.kd683ee7e")}</Label>
+                                    <Select value={localBackendPreset} onValueChange={(value: LocalBackendPreset) => {
+                const config = getLocalBackendPresetConfig(value);
+                setLocalBackendPreset(value);
+                setProviderCredentialMode("apiKey");
+                setProviderApiStandard(config.apiStandard);
+                setProviderBaseUrl(config.baseUrl);
+                setProviderApiKey(config.apiKey);
+            }}>
                                         <SelectTrigger id="provider-local-preset"><SelectValue /></SelectTrigger>
                                         <SelectContent>
-                                            {Object.values(LOCAL_BACKEND_PRESETS).map((preset) => (
-                                                <SelectItem key={preset.id} value={preset.id}>
+                                            {Object.values(LOCAL_BACKEND_PRESETS).map((preset) => (<SelectItem key={preset.id} value={preset.id}>
                                                     {preset.label}
-                                                </SelectItem>
-                                            ))}
+                                                </SelectItem>))}
                                         </SelectContent>
                                     </Select>
                                     <p className="text-xs text-muted-foreground">{t(localBackendConfig.description)}</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label htmlFor="provider-api-standard-readonly">{t(lt("API 格式", "API format"))}</Label>
-                                    <Input id="provider-api-standard-readonly" value={t(lt("OpenAI 兼容", "OpenAI-compatible"))} readOnly />
-                                    <input type="hidden" name="apiStandard" value={providerApiStandard} />
+                                    <Label htmlFor="provider-api-standard-readonly">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
+                                    <Input id="provider-api-standard-readonly" value={t("app.admin.dashboard.model.hub.page.kdab0f774")} readOnly/>
+                                    <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 </div>
-                            </>
-                        ) : (
-                            <div className="space-y-2">
-                                <Label htmlFor="provider-api-standard">{t(lt("API 格式", "API format"))}</Label>
-                                <input type="hidden" name="apiStandard" value={providerApiStandard} />
+                            </>) : (<div className="space-y-2">
+                                <Label htmlFor="provider-api-standard">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
+                                <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 <Select value={providerApiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini") => setProviderApiStandard(value)}>
                                     <SelectTrigger id="provider-api-standard"><SelectValue /></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="openai">{t(lt("OpenAI 兼容", "OpenAI-compatible"))}</SelectItem>
-                                        <SelectItem value="anthropic">{t(lt("Anthropic 兼容", "Anthropic-compatible"))}</SelectItem>
-                                        <SelectItem value="gemini">{t(lt("Gemini 原生", "Gemini native"))}</SelectItem>
+                                        <SelectItem value="openai">{t("app.admin.dashboard.model.hub.page.kdab0f774")}</SelectItem>
+                                        <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.page.k504d12c7")}</SelectItem>
+                                        <SelectItem value="gemini">{t("app.admin.dashboard.model.hub.page.k560df989")}</SelectItem>
                                     </SelectContent>
                                 </Select>
-                            </div>
-                        )}
+                            </div>)}
                         <div className="space-y-2">
-                            <Label htmlFor="provider-base-url">{t(lt("接口地址", "Base URL"))}</Label>
-                            <Input
-                                id="provider-base-url"
-                                name="baseUrl"
-                                value={providerBaseUrl}
-                                onChange={(event) => setProviderBaseUrl(event.target.value)}
-                            />
+                            <Label htmlFor="provider-base-url">{t("app.admin.dashboard.model.hub.page.k8331921c")}</Label>
+                            <Input id="provider-base-url" name="baseUrl" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)}/>
                         </div>
-                        {!platformProviderSelected ? (
-                            <div className="space-y-2">
-                                <Label htmlFor="provider-credential-mode">{t(lt("认证方式", "Credential mode"))}</Label>
-                                <input type="hidden" name="credentialMode" value={providerCredentialMode} />
+                        {!platformProviderSelected ? (<div className="space-y-2">
+                                <Label htmlFor="provider-credential-mode">{t("app.admin.dashboard.model.hub.page.k1947a36f")}</Label>
+                                <input type="hidden" name="credentialMode" value={providerCredentialMode}/>
                                 <Select value={providerCredentialMode} onValueChange={(value: "apiKey" | "oauthFile") => setProviderCredentialMode(value)}>
                                     <SelectTrigger id="provider-credential-mode"><SelectValue /></SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="apiKey">API Key</SelectItem>
-                                        <SelectItem value="oauthFile">{t(lt("OAuth 文件", "OAuth file"))}</SelectItem>
+                                        <SelectItem value="oauthFile">{t("app.admin.dashboard.model.hub.page.ke507bb9a")}</SelectItem>
                                     </SelectContent>
                                 </Select>
-                            </div>
-                        ) : (
-                            <input type="hidden" name="credentialMode" value="oauthFile" />
-                        )}
-                        {platformProviderSelected || providerCredentialMode === "oauthFile" ? (
-                            <div className="space-y-2">
-                                <Label htmlFor="provider-oauth-path">{t(lt("OAuth 文件路径", "OAuth file path"))}</Label>
+                            </div>) : (<input type="hidden" name="credentialMode" value="oauthFile"/>)}
+                        {platformProviderSelected || providerCredentialMode === "oauthFile" ? (<div className="space-y-2">
+                                <Label htmlFor="provider-oauth-path">{t("app.admin.dashboard.model.hub.page.k686313b2")}</Label>
                                 <div className="flex items-center rounded-xl border border-input bg-background">
                                     <span className="shrink-0 border-r border-border/60 px-3 text-sm text-muted-foreground">oauth:</span>
-                                        <Input
-                                            id="provider-oauth-path"
-                                            name="oauthPath"
-                                            className="border-0 shadow-none focus-visible:ring-0"
-                                            value={providerOauthPath}
-                                            onChange={(event) => setProviderOauthPath(event.target.value)}
-                                            placeholder={activePlatformPreset.oauthPath}
-                                        />
+                                        <Input id="provider-oauth-path" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath}/>
                                     </div>
                                 <p className={`text-xs ${(platformProviderSelected ? activePlatformPreset.supportState === "preset-only" : providerApiStandard === "gemini") ? "text-amber-600" : "text-muted-foreground"}`}>{oauthHint}</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-2">
+                            </div>) : (<div className="space-y-2">
                                 <Label htmlFor="provider-api-key">API Key</Label>
-                                <Input
-                                    id="provider-api-key"
-                                    name="apiKey"
-                                    type="password"
-                                    value={providerApiKey}
-                                    onChange={(event) => setProviderApiKey(event.target.value)}
-                                    placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}
-                                />
-                                {providerType === "LOCAL" ? (
-                                    <p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>
-                                ) : null}
-                            </div>
-                        )}
-                        <Button type="submit" className="w-full">{t(lt("保存供应商", "Save provider"))}</Button>
+                                <Input id="provider-api-key" name="apiKey" type="password" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}/>
+                                {providerType === "LOCAL" ? (<p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>) : null}
+                            </div>)}
+                        <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.k93b84c67")}</Button>
                     </form>
                 </DialogContent>
             </Dialog>
@@ -694,99 +586,73 @@ export default function ModelHubPage() {
             <Dialog open={isModelDialogOpen} onOpenChange={setIsModelDialogOpen}>
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>{editingModel ? t(lt("编辑模型", "Edit model")) : t(lt("添加模型", "Add model"))}</DialogTitle>
+                        <DialogTitle>{editingModel ? t("app.admin.dashboard.model.hub.page.k37053cf7") : t("app.admin.dashboard.model.hub.page.k82b1063c")}</DialogTitle>
                     </DialogHeader>
                     <form onSubmit={handleSaveModel} className="space-y-4">
-                        {providers.length === 0 ? (
-                            <EmptyState title={t(lt("请先添加供应商", "Add a provider first"))} description={t(lt("模型目录必须先归属到某个供应商。", "Every model must belong to a provider."))} />
-                        ) : null}
+                        {providers.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k5ca95d1d")} description={t("app.admin.dashboard.model.hub.page.k4119e026")}/>) : null}
                         <div className="space-y-2">
-                            <Label htmlFor="model-name">{t(lt("模型名称", "Model name"))}</Label>
-                            <Input id="model-name" name="name" defaultValue={editingModel?.name || ""} required />
+                            <Label htmlFor="model-name">{t("app.admin.dashboard.model.hub.page.k40ef3507")}</Label>
+                            <Input id="model-name" name="name" defaultValue={editingModel?.name || ""} required/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="model-provider">{t(lt("所属供应商", "Provider"))}</Label>
-                            <input type="hidden" name="providerId" value={modelProviderId} />
+                            <Label htmlFor="model-provider">{t("app.admin.dashboard.model.hub.page.kc9371614")}</Label>
+                            <input type="hidden" name="providerId" value={modelProviderId}/>
                             <Select value={modelProviderId} onValueChange={setModelProviderId}>
                                 <SelectTrigger id="model-provider"><SelectValue /></SelectTrigger>
                                 <SelectContent>
-                                    {providers.map((provider) => (
-                                        <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>
-                                    ))}
+                                    {providers.map((provider) => (<SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>))}
                                 </SelectContent>
                             </Select>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="model-model-id">{t(lt("模型 ID", "Model ID"))}</Label>
-                            <Input id="model-model-id" name="modelId" defaultValue={editingModel?.modelId || ""} required />
+                            <Label htmlFor="model-model-id">{t("app.admin.dashboard.model.hub.page.k8dbca6d6")}</Label>
+                            <Input id="model-model-id" name="modelId" defaultValue={editingModel?.modelId || ""} required/>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="model-type">{t(lt("模型类型", "Model type"))}</Label>
-                            <input type="hidden" name="type" value={modelType} />
+                            <Label htmlFor="model-type">{t("app.admin.dashboard.model.hub.page.k0bce4283")}</Label>
+                            <input type="hidden" name="type" value={modelType}/>
                             <Select value={modelType} onValueChange={setModelType}>
                                 <SelectTrigger id="model-type"><SelectValue /></SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="TEXT">{t(lt("文本", "Text"))}</SelectItem>
-                                    <SelectItem value="MULTIMODAL">{t(lt("多模态", "Multimodal"))}</SelectItem>
-                                    <SelectItem value="EMBEDDING">{t(lt("向量", "Embedding"))}</SelectItem>
-                                    <SelectItem value="RERANK">{t(lt("重排", "Rerank"))}</SelectItem>
+                                    <SelectItem value="TEXT">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</SelectItem>
+                                    <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</SelectItem>
+                                    <SelectItem value="EMBEDDING">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</SelectItem>
+                                    <SelectItem value="RERANK">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
-                        {modelType === "RERANK" ? (
-                            <div className="space-y-2">
-                                <Label htmlFor="model-rerank-flavor">{t(lt("Rerank 接口兼容层", "Rerank API flavor"))}</Label>
-                                <input type="hidden" name="rerankApiFlavor" value={rerankApiFlavor} />
+                        {modelType === "RERANK" ? (<div className="space-y-2">
+                                <Label htmlFor="model-rerank-flavor">{t("app.admin.dashboard.model.hub.page.k51b60583")}</Label>
+                                <input type="hidden" name="rerankApiFlavor" value={rerankApiFlavor}/>
                                 <Select value={rerankApiFlavor} onValueChange={setRerankApiFlavor}>
                                     <SelectTrigger id="model-rerank-flavor"><SelectValue /></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="generic">{t(lt("通用 /rerank", "Generic /rerank"))}</SelectItem>
-                                        <SelectItem value="vllm">{t(lt("vLLM /v1/rerank", "vLLM /v1/rerank"))}</SelectItem>
-                                        <SelectItem value="nexa">{t(lt("Nexa /v1/reranking", "Nexa /v1/reranking"))}</SelectItem>
+                                        <SelectItem value="generic">{t("app.admin.dashboard.model.hub.page.k2b007f7f")}</SelectItem>
+                                        <SelectItem value="vllm">{t("app.admin.dashboard.model.hub.page.k83238674")}</SelectItem>
+                                        <SelectItem value="nexa">{t("app.admin.dashboard.model.hub.page.ke12df81e")}</SelectItem>
                                     </SelectContent>
                                 </Select>
                                 <p className="text-xs text-muted-foreground">
-                                    {t(lt("vLLM / Nexa 的 rerank 继续按本地 HTTP provider 处理，但允许按各自端点差异构造请求。", "vLLM and Nexa rerank stay in the local HTTP provider flow, while requests are adapted to their endpoint differences."))}
+                                    {t("app.admin.dashboard.model.hub.page.kfaf657c9")}
                                 </p>
-                            </div>
-                        ) : null}
+                            </div>) : null}
                         <div className="grid gap-4 md:grid-cols-3">
                             <div className="space-y-2">
-                                <Label htmlFor="model-context-window">{t(lt("上下文窗口", "Context window"))}</Label>
-                                <Input
-                                    id="model-context-window"
-                                    name="contextWindow"
-                                    type="number"
-                                    defaultValue={editingModel?.contextWindow ?? ""}
-                                    placeholder="128000"
-                                />
+                                <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
+                                <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="128000"/>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="model-max-tokens">{t(lt("最大输出 Token", "Max output tokens"))}</Label>
-                                <Input
-                                    id="model-max-tokens"
-                                    name="maxTokens"
-                                    type="number"
-                                    defaultValue={editingModel?.maxTokens ?? ""}
-                                    placeholder="4096"
-                                />
+                                <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
+                                <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="4096"/>
                             </div>
                             <div className="space-y-2">
-                                <Label htmlFor="model-temperature">{t(lt("温度", "Temperature"))}</Label>
-                                <Input
-                                    id="model-temperature"
-                                    name="temperature"
-                                    type="number"
-                                    step="0.1"
-                                    defaultValue={editingModel?.temperature ?? 0.0}
-                                    placeholder="0.0"
-                                />
+                                <Label htmlFor="model-temperature">{t("app.admin.dashboard.model.hub.page.ke5e6cc55")}</Label>
+                                <Input id="model-temperature" name="temperature" type="number" step="0.1" defaultValue={editingModel?.temperature ?? 0.0} placeholder="0.0"/>
                             </div>
                         </div>
-                        <Button type="submit" className="w-full">{t(lt("保存模型", "Save model"))}</Button>
+                        <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button>
                     </form>
                 </DialogContent>
             </Dialog>
-        </AdminPageShell>
-    );
+        </AdminPageShell>);
 }

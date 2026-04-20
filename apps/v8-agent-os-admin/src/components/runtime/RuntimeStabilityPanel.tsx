@@ -33,18 +33,18 @@ const POLICY_OPTIONS: Array<{
 }> = [
     {
         value: "queue",
-        title: "稳妥排队",
-        description: "同一会话只跑一个任务，后来的任务排队等待，最适合长期稳定运行。",
+        title:"components.runtime.RuntimeStabilityPanel.k09c98e28",
+        description:"components.runtime.RuntimeStabilityPanel.k45db2c65",
     },
     {
         value: "reject",
-        title: "忙时拒绝",
-        description: "当前会话忙碌时直接拒绝新任务，避免互踩，但会牺牲连续性。",
+        title:"components.runtime.RuntimeStabilityPanel.k74dbd7fe",
+        description:"components.runtime.RuntimeStabilityPanel.k2faec923",
     },
     {
         value: "interrupt_then_replace",
-        title: "抢占替换",
-        description: "新任务先打断旧任务再接管会话，只适合强交互或强时效场景。",
+        title:"components.runtime.RuntimeStabilityPanel.kfc82fe4c",
+        description:"components.runtime.RuntimeStabilityPanel.k33ce5a8c",
     },
 ];
 
@@ -76,7 +76,7 @@ export function RuntimeStabilityPanel() {
         } catch (error) {
             toast({
                 variant: "destructive",
-                title: "加载失败",
+                title:"components.runtime.RuntimeStabilityPanel.k4e9dbcba",
                 description: error instanceof Error ? error.message : "未知错误",
             });
         } finally {
@@ -104,8 +104,8 @@ export function RuntimeStabilityPanel() {
                 throw new Error(data?.detail || data?.error || "保存运行稳定性配置失败");
             }
             toast({
-                title: "已保存",
-                description: "新的稳定性策略已经写入 Engine 配置源。",
+                title:"components.runtime.RuntimeStabilityPanel.k9bfe7d6d",
+                description:"components.runtime.RuntimeStabilityPanel.k250649f7",
             });
             setConfig({
                 strictSupervisorDurability: Boolean(data?.strictSupervisorDurability ?? true),
@@ -116,7 +116,7 @@ export function RuntimeStabilityPanel() {
         } catch (error) {
             toast({
                 variant: "destructive",
-                title: "保存失败",
+                title:"components.runtime.RuntimeStabilityPanel.k12769ce1",
                 description: error instanceof Error ? error.message : "未知错误",
             });
         } finally {

@@ -3,24 +3,23 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 
-import { useT } from "@/components/providers/LocaleProvider";
+import { useResolveText } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
-import { LocalizedText } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 
 export function AdvancedSection({
-    title = "更多选项",
+    title = "shared.advancedSection.moreOptions",
     description,
     defaultOpen = false,
     children,
 }: {
-    title?: LocalizedText | string;
-    description?: LocalizedText | string;
+    title?: string;
+    description?: string;
     defaultOpen?: boolean;
     children: React.ReactNode;
 }) {
     const [open, setOpen] = useState(defaultOpen);
-    const t = useT();
+    const resolveText = useResolveText();
 
     return (
         <div className="space-y-4">
@@ -31,8 +30,8 @@ export function AdvancedSection({
                 onClick={() => setOpen((current) => !current)}
             >
                 <div className="space-y-1">
-                    <div className="text-sm font-medium text-slate-900">{t(title)}</div>
-                    {description ? <div className="text-xs leading-5 text-slate-500">{t(description)}</div> : null}
+                    <div className="text-sm font-medium text-slate-900">{resolveText(title)}</div>
+                    {description ? <div className="text-xs leading-5 text-slate-500">{resolveText(description)}</div> : null}
                 </div>
                 <ChevronDown className={cn("h-4 w-4 text-slate-500 transition-transform", open ? "rotate-180" : "")} />
             </Button>

@@ -12,20 +12,17 @@ export default function NotFoundScreen() {
 
     return (
         <>
-            <Stack.Screen options={{ title: t("页面未找到", "Not found") }} />
+            <Stack.Screen options={{ title: t("app.not_found.not_found") }} />
             <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
                 <SafeAreaView style={styles.safeArea}>
                     <View style={styles.container}>
                         <GlassCard>
-                            <Text style={styles.title}>{t("这个页面不存在", "This page does not exist")}</Text>
+                            <Text style={styles.title}>{t("app.not_found.this_page_does_not_exist")}</Text>
                             <Text style={styles.body}>
-                                {t(
-                                    "当前手机端只承接 Web 用户面的正式入口，请返回首页继续使用。",
-                                    "This phone shell only exposes the formal Web user entry points. Return home to continue.",
-                                )}
+                                {t("app.not_found.this_phone_shell_only_exposes_the_formal_web_user_entry_points_return_home_to_continue")}
                             </Text>
                             <Link href="/" style={styles.link}>
-                                <Text style={styles.linkText}>{t("返回首页", "Back home")}</Text>
+                                <Text style={styles.linkText}>{t("app.not_found.back_home")}</Text>
                             </Link>
                         </GlassCard>
                     </View>

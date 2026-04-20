@@ -28,16 +28,16 @@ import { type AdminProcessRef } from "@v8/session-realtime";
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
     switch (kind) {
         case "governance":
-            return { label: "控制", tint: colors.danger };
+            return { labelKey: "src.components.chat.runtimetimelinepanel.kind_control" as const, tint: colors.danger };
         case "artifact":
-            return { label: "产物", tint: colors.primaryDeep };
+            return { labelKey: "src.components.chat.runtimetimelinepanel.kind_artifact" as const, tint: colors.primaryDeep };
         case "tool":
-            return { label: "工具", tint: colors.accent };
+            return { labelKey: "src.components.chat.runtimetimelinepanel.kind_tool" as const, tint: colors.accent };
         case "handoff":
-            return { label: "交接", tint: colors.warning };
+            return { labelKey: "src.components.chat.runtimetimelinepanel.kind_handoff" as const, tint: colors.warning };
         case "progress":
         default:
-            return { label: "运行", tint: colors.success };
+            return { labelKey: "src.components.chat.runtimetimelinepanel.kind_progress" as const, tint: colors.success };
     }
 }
 
@@ -98,7 +98,7 @@ function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[]
                         <View style={styles.broadcastDotPulse} />
                         <View style={[styles.broadcastDot, { backgroundColor: "#FBBF24" }]} />
                     </View>
-                    <Text style={styles.broadcastLabel}>BROADCAST</Text>
+                    <Text style={styles.broadcastLabel}>{t("src.components.chat.runtimetimelinepanel.broadcast")}</Text>
                 </View>
                 <Text style={styles.broadcastCount}>
                     {index + 1}/{activities.length}
@@ -111,15 +111,15 @@ function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[]
                     </View>
                     <View style={styles.broadcastTextWrap}>
                         <Text style={styles.broadcastTitle} numberOfLines={2}>
-                            {active.summary || t("运行轨迹正在更新", "Runtime activity is updating")}
+                            {active.summary || t("src.components.chat.runtimetimelinepanel.runtime_activity_is_updating")}
                         </Text>
                         <Text style={styles.broadcastSubtitle} numberOfLines={1}>
-                            {(active.actorLabel || tone.label)} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale, getEngineNowMs())}
+                            {(active.actorLabel || t(tone.labelKey))} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale, getEngineNowMs())}
                         </Text>
                     </View>
                 </View>
                 <Text style={styles.broadcastTopic} numberOfLines={3}>
-                    {active.topic || t("运行轨迹正在持续刷新。你可以继续停留在聊天主界面，细节会在这里循环播报。", "Runtime activity is streaming here while you stay in chat.")}
+                    {active.topic || t("src.components.chat.runtimetimelinepanel.runtime_activity_is_streaming_here_while_you_stay_in_chat")}
                 </Text>
             </View>
             {queue.length > 1 ? (
@@ -149,7 +149,7 @@ function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[]
                 </View>
             ) : null}
             <View style={styles.broadcastFooter}>
-                <Text style={styles.broadcastFooterText}>NOW BROADCASTING</Text>
+                <Text style={styles.broadcastFooterText}>{t("src.components.chat.runtimetimelinepanel.now_broadcasting")}</Text>
             </View>
         </LinearGradient>
     );
@@ -162,7 +162,7 @@ function ActivityFeedItem({
     activity: PhoneRuntimeStageActivity;
     processes: AdminProcessRef[];
 }) {
-    const { colors, locale } = useUiPrefs();
+    const { colors, locale, t } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
     const tone = getKindTone(activity.kind, colors);
     const iconName = getKindIconName(activity.kind);
@@ -181,7 +181,7 @@ function ActivityFeedItem({
             <View style={styles.feedMetaRow}>
                 <View style={[styles.feedKindPill, { backgroundColor: colors.surface }]}>
                     <MaterialCommunityIcons name={iconName} size={12} color={tone.tint} />
-                    <Text style={[styles.feedKindText, { color: tone.tint }]}>{tone.label}</Text>
+                    <Text style={[styles.feedKindText, { color: tone.tint }]}>{t(tone.labelKey)}</Text>
                 </View>
                 {activity.actorLabel ? (
                     <View style={[styles.feedActorPill, { backgroundColor: colors.surface }]}>
@@ -335,8 +335,8 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
             <View style={[styles.emptyState, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
                 <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
                     {effectiveSelectedRuntimeId === "context_governance"
-                        ? t("当前会话还没有上下文治理记录。", "There are no context governance entries for this session yet.")
-                        : t("当前还没有可展示的运行记录。", "There are no runtime entries to display yet.")}
+                        ? t("src.components.chat.runtimetimelinepanel.there_are_no_context_governance_entries_for_this_session_yet")
+                        : t("src.components.chat.runtimetimelinepanel.there_are_no_runtime_entries_to_display_yet")}
                 </Text>
             </View>
         ),
@@ -372,7 +372,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                 </View>
                                 <View style={styles.headerBody}>
                                     <Text style={[styles.title, { color: colors.text }]}>
-                                        {selectedDescriptor?.label || effectiveSelectedRuntimeDockItem?.label || t("运行状态", "Runtime")}
+                                        {selectedDescriptor?.label || effectiveSelectedRuntimeDockItem?.label || t("src.components.chat.runtimetimelinepanel.runtime")}
                                     </Text>
                                     <Text style={[styles.subtitle, { color: colors.textMuted }]} numberOfLines={1}>
                                         {currentRunLabel}

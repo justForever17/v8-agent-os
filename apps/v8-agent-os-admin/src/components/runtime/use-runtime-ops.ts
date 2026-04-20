@@ -30,14 +30,14 @@ export interface RunRecord {
 }
 
 export const RUN_LABELS: Record<string, string> = {
-    queued: "排队中",
-    running: "执行中",
-    waiting_approval: "等待审批",
-    waiting_input: "等待输入",
-    paused: "已暂停",
-    completed: "已完成",
-    failed: "失败",
-    cancelled: "已取消",
+    queued: "shared.runtimeStatus.queued",
+    running: "shared.runtimeStatus.running",
+    waiting_approval: "shared.runtimeStatus.waitingApproval",
+    waiting_input: "shared.runtimeStatus.waitingInput",
+    paused: "shared.runtimeStatus.paused",
+    completed: "shared.runtimeStatus.completed",
+    failed: "shared.runtimeStatus.failed",
+    cancelled: "shared.runtimeStatus.cancelled",
 };
 
 export function formatWhen(value?: string) {

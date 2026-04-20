@@ -54,15 +54,15 @@ export const PDFFileCard = memo(function PDFFileCard({
                 authorizedFetch,
             });
             Alert.alert(
-                t("已下载", "Downloaded"),
+                t("src.components.chat.downloadfilecard.downloaded"),
                 saved.shared
-                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                    ? `${t("src.components.chat.downloadfilecard.opened_the_system_share_save_to_files_sheet")}：${saved.filename}`
                     : saved.userVisible
-                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
-                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
+                    ? `${t("src.components.chat.downloadfilecard.saved_to_the_folder_you_selected")}：${saved.filename}`
+                    : `${t("src.components.chat.downloadfilecard.saved_to_app_sandbox")}：${saved.uri}`,
             );
         } catch (error) {
-            Alert.alert(t("下载失败", "Download failed"), error instanceof Error ? error.message : t("无法保存 PDF 文件", "Unable to save PDF file"));
+            Alert.alert(t("src.components.chat.downloadfilecard.download_failed"), error instanceof Error ? error.message : t("src.components.chat.pdffilecard.unable_to_save_pdf_file"));
         }
     };
 
@@ -107,7 +107,7 @@ export const PDFFileCard = memo(function PDFFileCard({
                             </View>
                             <View style={styles.modalActions}>
                                 <Button variant="outline" size="sm" onPress={() => void handleDownload()}>
-                                    {t("下载", "Download")}
+                                    {t("src.components.chat.downloadfilecard.download")}
                                 </Button>
                                 <Button variant="ghost" size="icon" onPress={() => setIsOpen(false)}>
                                     <MaterialCommunityIcons name="close" size={18} color={colors.text} />

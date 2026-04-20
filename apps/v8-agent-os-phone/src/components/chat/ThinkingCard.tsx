@@ -155,7 +155,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                         </View>
 
                         <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
-                            {t("推理过程", "Reasoning")}
+                            {t("src.components.chat.thinkingcard.reasoning")}
                         </Text>
 
                         {isStreaming ? (

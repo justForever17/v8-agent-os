@@ -83,8 +83,8 @@ export const ApprovalCard = memo(function ApprovalCard({
         ? status.trim()
         : "";
     const hint = tone === "control"
-        ? t("这是运行时发出的控制状态，不属于普通工具输出。", "This is a runtime control state rather than a regular tool result.")
-        : t("这是一个需要人工确认的运行节点。", "This is a run node waiting for human review.");
+        ? t("src.components.chat.approvalcard.this_is_a_runtime_control_state_rather_than_a_regular_tool_result")
+        : t("src.components.chat.approvalcard.this_is_a_run_node_waiting_for_human_review");
 
     return (
         <View

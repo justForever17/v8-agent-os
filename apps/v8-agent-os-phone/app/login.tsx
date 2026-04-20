@@ -16,6 +16,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
+import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
 import { readActiveAdminConnectionProfileId, readAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
 import { useAppSession } from "@/src/providers/app-session";
@@ -28,7 +29,7 @@ type Mode = "login" | "register";
 
 export default function LoginScreen() {
     const { status, adminBaseUrl, signIn, signUp, user } = useAppSession();
-    const { t, locale, toggleLocale } = useUiPrefs();
+    const { t } = useUiPrefs();
     const defaultWebBaseUrl = useMemo(() => {
         if (Platform.OS !== "web" || typeof window === "undefined") {
             return "";
@@ -80,14 +81,14 @@ export default function LoginScreen() {
     }, [adminBaseUrl, defaultWebBaseUrl]);
 
     const pageTitle = useMemo(
-        () => (mode === "login" ? t("欢迎回来", "Welcome back") : t("创建账号", "Create account")),
+        () => (mode === "login" ? t("app.login.welcome_back") : t("app.login.create_account")),
         [mode, t],
     );
     const pageSubtitle = useMemo(
         () =>
             mode === "login"
-                ? t("使用和 Web 端完全一致的用户账号进入 V8 OS Phone。手机端直接连接 Admin 作为用户面 BFF。", "Sign in with the same account you use on Web. Phone connects to Admin as the user-surface BFF.")
-                : t("这里复刻 Web 端注册链路。创建完成后会自动登录，并进入与 Web 同一条用户主链。", "This mirrors the Web sign-up flow. After registration, you will be signed in automatically and enter the same user runtime lane as Web."),
+                ? t("app.login.sign_in_with_the_same_account_you_use_on_web_phone_connects_to_admin_as_the_user_surface_bff")
+                : t("app.login.this_mirrors_the_web_sign_up_flow_after_registration_you_will_be_signed_in_automatically_and_enter_the_same_user_runtime_lane_as_web"),
         [mode, t],
     );
 
@@ -99,15 +100,15 @@ export default function LoginScreen() {
 
     const validate = () => {
         if (!baseUrl.trim()) {
-            setError(t("请填写可访问的 Admin 地址", "Please enter a reachable Admin URL"));
+            setError(t("app.login.please_enter_a_reachable_admin_url"));
             return false;
         }
         if (!login.trim() || !password.trim()) {
-            setError(t("请填写登录名和密码", "Please enter your login and password"));
+            setError(t("app.login.please_enter_your_login_and_password"));
             return false;
         }
         if (mode === "register" && !name.trim()) {
-            setError(t("注册时需要填写昵称", "Display name is required when registering"));
+            setError(t("app.login.display_name_is_required_when_registering"));
             return false;
         }
         return true;
@@ -136,8 +137,8 @@ export default function LoginScreen() {
                 nextError instanceof Error
                     ? nextError.message
                     : mode === "login"
-                        ? t("登录失败", "Sign-in failed")
-                        : t("注册失败", "Registration failed"),
+                        ? t("app.login.sign_in_failed")
+                        : t("app.login.registration_failed"),
             );
         } finally {
             setBusy(false);
@@ -165,14 +166,7 @@ export default function LoginScreen() {
                                     <Text style={styles.brandSub}>Phone</Text>
                                 </View>
                             </View>
-                            <Pressable
-                                accessibilityLabel={t("语言切换", "Toggle language")}
-                                accessibilityRole="button"
-                                onPress={() => void toggleLocale()}
-                                style={styles.localeToggle}
-                            >
-                                <Text style={styles.localeToggleText}>{locale === "en" ? "EN" : "中"}</Text>
-                            </Pressable>
+                            <LocaleMenu variant="default" />
                         </View>
                         <Text style={styles.title}>{pageTitle}</Text>
                         <Text style={styles.subtitle}>{pageSubtitle}</Text>
@@ -187,7 +181,7 @@ export default function LoginScreen() {
                                     resetError();
                                 }}
                             >
-                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("登录", "Sign in")}</Text>
+                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("app.login.sign_in")}</Text>
                             </Pressable>
                             <Pressable
                                 style={[styles.modeButton, mode === "register" && styles.modeButtonActive]}
@@ -196,13 +190,13 @@ export default function LoginScreen() {
                                     resetError();
                                 }}
                             >
-                                <Text style={[styles.modeText, mode === "register" && styles.modeTextActive]}>{t("注册", "Register")}</Text>
+                                <Text style={[styles.modeText, mode === "register" && styles.modeTextActive]}>{t("app.login.register")}</Text>
                             </Pressable>
                         </View>
 
                         <View style={styles.form}>
                             <View style={styles.field}>
-                                <Text style={styles.label}>{t("Admin 地址", "Admin URL")}</Text>
+                                <Text style={styles.label}>{t("app.login.admin_url")}</Text>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
@@ -219,14 +213,14 @@ export default function LoginScreen() {
 
                             {mode === "register" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>{t("昵称", "Display name")}</Text>
+                                    <Text style={styles.label}>{t("app.login.display_name")}</Text>
                                     <TextInput
                                         value={name}
                                         onChangeText={(next) => {
                                             setName(next);
                                             resetError();
                                         }}
-                                        placeholder={t("怎么称呼你？", "How should we address you?")}
+                                        placeholder={t("app.login.how_should_we_address_you")}
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
@@ -234,7 +228,7 @@ export default function LoginScreen() {
                             ) : null}
 
                             <View style={styles.field}>
-                                <Text style={styles.label}>{t("登录名", "Login")}</Text>
+                                <Text style={styles.label}>{t("app.login.login")}</Text>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
@@ -243,7 +237,7 @@ export default function LoginScreen() {
                                         setLogin(next);
                                         resetError();
                                     }}
-                                    placeholder={mode === "login" ? t("输入 Web 端同一登录名或邮箱", "Use the same login or email as Web") : t("设置一个登录名", "Choose a login name")}
+                                    placeholder={mode === "login" ? t("app.login.use_the_same_login_or_email_as_web") : t("app.login.choose_a_login_name")}
                                     placeholderTextColor={colors.textSoft}
                                     style={styles.input}
                                 />
@@ -251,7 +245,7 @@ export default function LoginScreen() {
 
                             {mode === "register" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>{t("邮箱", "Email")}</Text>
+                                    <Text style={styles.label}>{t("app.login.email")}</Text>
                                     <TextInput
                                         autoCapitalize="none"
                                         autoCorrect={false}
@@ -261,7 +255,7 @@ export default function LoginScreen() {
                                             setEmail(next);
                                             resetError();
                                         }}
-                                        placeholder={t("可选，便于同步头像与通知", "Optional, useful for avatar sync and notifications")}
+                                        placeholder={t("app.login.optional_useful_for_avatar_sync_and_notifications")}
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
@@ -269,7 +263,7 @@ export default function LoginScreen() {
                             ) : null}
 
                             <View style={styles.field}>
-                                <Text style={styles.label}>{mode === "login" ? t("密码", "Password") : t("设置密码", "Set password")}</Text>
+                                <Text style={styles.label}>{mode === "login" ? t("app.login.password") : t("app.login.set_password")}</Text>
                                 <TextInput
                                     secureTextEntry
                                     value={password}
@@ -302,8 +296,8 @@ export default function LoginScreen() {
                                     ) : (
                                         <Text style={styles.submitText}>
                                             {mode === "login"
-                                                ? t("登录并进入 V8 OS Phone", "Sign in to V8 OS Phone")
-                                                : t("创建账号并进入 V8 OS Phone", "Create account and enter V8 OS Phone")}
+                                                ? t("app.login.sign_in_to_v8_os_phone")
+                                                : t("app.login.create_account_and_enter_v8_os_phone")}
                                         </Text>
                                     )}
                                 </LinearGradient>
@@ -313,7 +307,7 @@ export default function LoginScreen() {
 
                     <Pressable style={styles.connectHint} onPress={() => router.push("/connect" as Href)}>
                         <MaterialCommunityIcons name="lan-connect" size={16} color={colors.textMuted} />
-                        <Text style={styles.connectHintText}>{t("先检查连接地址", "Check the connection first")}</Text>
+                        <Text style={styles.connectHintText}>{t("app.login.check_the_connection_first")}</Text>
                     </Pressable>
                 </KeyboardAvoidingView>
             </SafeAreaView>
@@ -366,27 +360,6 @@ const styles = StyleSheet.create({
         color: colors.textMuted,
         fontSize: 16,
         fontWeight: "800",
-    },
-    localeToggle: {
-        width: 36,
-        height: 36,
-        borderRadius: 12,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.78)",
-        borderWidth: 1,
-        borderColor: colors.border,
-        shadowColor: "#0F172A",
-        shadowOpacity: 0.04,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
-        elevation: 1,
-    },
-    localeToggleText: {
-        color: colors.textMuted,
-        fontSize: 10.5,
-        fontWeight: "800",
-        letterSpacing: 0.4,
     },
     title: {
         color: colors.text,

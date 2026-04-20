@@ -22,12 +22,12 @@ export default function AdvancedGovernancePage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title="高级附录"
-                description="查看高级治理细节与排障信息。"
+                title="app.admin.dashboard.advanced.governance.page.k3ae82fd9"
+                description="app.admin.dashboard.advanced.governance.page.k57c98d38"
             />
 
             <AdvancedSection
-                title="高级细节"
+                title="app.admin.dashboard.advanced.governance.page.keb9326e5"
                 defaultOpen={false}
             >
                 <RuntimeGovernanceWorkbench />

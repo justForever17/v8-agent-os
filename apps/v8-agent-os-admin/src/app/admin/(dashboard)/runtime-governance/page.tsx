@@ -9,13 +9,13 @@ export default function RuntimeGovernancePage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title="运行时治理"
-                description="查看运行时状态、治理策略和关闭边界。"
+                title="app.admin.dashboard.runtime.governance.page.ke6fff179"
+                description="app.admin.dashboard.runtime.governance.page.kdfdc5c07"
             />
 
             <StatusNotice
-                title="非核心 runtime 关闭后会 cold stop。"
-                description="关闭后应释放后台资源，不只隐藏 UI。"
+                title="app.admin.dashboard.runtime.governance.page.kd8f17ad5"
+                description="app.admin.dashboard.runtime.governance.page.k44283a5d"
                 tone="warning"
             />
 

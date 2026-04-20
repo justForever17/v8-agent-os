@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, RefreshCw, Trash2, Play, Pause } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { useT } from "@/components/providers/LocaleProvider";
 
 interface MusicTrack {
     id: string;
@@ -19,6 +20,7 @@ interface MusicTrack {
 }
 
 export default function MusicPage() {
+    const t = useT();
     const [tracks, setTracks] = useState<MusicTrack[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -70,15 +72,15 @@ export default function MusicPage() {
                 setIsDialogOpen(false);
                 fetchData();
             } else {
-                alert("Failed to add track");
+                alert(t("app.admin.dashboard.music.page.alert.addFailed"));
             }
         } catch {
-            alert("Error adding track");
+            alert(t("app.admin.dashboard.music.page.alert.addError"));
         }
     };
 
     const handleDelete = async (id: string) => {
-        if (!confirm("确定要删除这首音乐吗？")) return;
+        if (!confirm(t("app.admin.dashboard.music.page.confirm.delete"))) return;
         try {
             await fetch(`/api/music/${id}`, { method: "DELETE" });
             fetchData();
@@ -118,39 +120,39 @@ export default function MusicPage() {
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">背景音乐管理</h1>
-                    <p className="text-muted-foreground">管理聊天界面的背景音乐列表。</p>
+                    <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.music.page.title")}</h1>
+                    <p className="text-muted-foreground">{t("app.admin.dashboard.music.page.description")}</p>
                 </div>
                 <div className="flex gap-2">
                     <Button variant="outline" onClick={fetchData} disabled={isLoading}>
                         <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
-                        刷新
+                        {t("app.admin.dashboard.music.page.refresh")}
                     </Button>
                     <Button onClick={() => setIsDialogOpen(true)}>
                         <Plus className="w-4 h-4 mr-2" />
-                        添加音乐
+                        {t("app.admin.dashboard.music.page.add")}
                     </Button>
                 </div>
             </div>
 
             <Card>
                 <CardHeader>
-                    <CardTitle>音乐列表</CardTitle>
-                    <CardDescription>配置可供用户播放的背景音乐。</CardDescription>
+                    <CardTitle>{t("app.admin.dashboard.music.page.list.title")}</CardTitle>
+                    <CardDescription>{t("app.admin.dashboard.music.page.list.description")}</CardDescription>
                 </CardHeader>
                 <CardContent>
                     {tracks.length === 0 ? (
                         <div className="text-center py-8 text-muted-foreground">
-                            暂无音乐，请点击“添加音乐”开始配置。
+                            {t("app.admin.dashboard.music.page.list.empty")}
                         </div>
                     ) : (
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>标题</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.music.page.table.title")}</TableHead>
                                     <TableHead>URL</TableHead>
-                                    <TableHead>状态</TableHead>
-                                    <TableHead className="text-right">操作</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.music.page.table.status")}</TableHead>
+                                    <TableHead className="text-right">{t("app.admin.dashboard.music.page.table.actions")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -167,7 +169,9 @@ export default function MusicPage() {
                                                     onCheckedChange={() => handleToggle(track.id, track.isEnabled)}
                                                 />
                                                 <span className="text-sm text-muted-foreground">
-                                                    {track.isEnabled ? "已启用" : "已禁用"}
+                                                    {track.isEnabled
+                                                        ? t("app.admin.dashboard.music.page.status.enabled")
+                                                        : t("app.admin.dashboard.music.page.status.disabled")}
                                                 </span>
                                             </div>
                                         </TableCell>
@@ -194,18 +198,18 @@ export default function MusicPage() {
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>添加新音乐</DialogTitle>
+                        <DialogTitle>{t("app.admin.dashboard.music.page.dialog.title")}</DialogTitle>
                     </DialogHeader>
                     <form onSubmit={handleSave} className="space-y-6">
                         <div className="space-y-2">
-                            <Label htmlFor="title">音乐标题</Label>
-                            <Input id="title" name="title" required placeholder="例如：轻松爵士" />
+                            <Label htmlFor="title">{t("app.admin.dashboard.music.page.field.title")}</Label>
+                            <Input id="title" name="title" required placeholder="app.admin.dashboard.music.page.k29e0fa0e" />
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="url">音频文件 URL</Label>
+                            <Label htmlFor="url">{t("app.admin.dashboard.music.page.field.url")}</Label>
                             <Input id="url" name="url" required placeholder="https://example.com/music.mp3" />
                         </div>
-                        <Button type="submit" className="w-full">保存</Button>
+                        <Button type="submit" className="w-full">{t("app.admin.dashboard.music.page.save")}</Button>
                     </form>
                 </DialogContent>
             </Dialog>

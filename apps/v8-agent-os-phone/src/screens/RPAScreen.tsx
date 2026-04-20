@@ -55,7 +55,7 @@ export default function RPAScreen() {
             setAvailability(nextAvailability);
             setDrafts(nextDrafts);
         } catch (error) {
-            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法读取 RPA 用户入口状态", "Unable to load the RPA user entry state"));
+            Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_load_the_rpa_user_entry_state"));
         } finally {
             setRefreshing(false);
         }
@@ -69,11 +69,11 @@ export default function RPAScreen() {
         try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-                throw new Error(t("变量必须是 JSON 对象", "Variables must be a JSON object"));
+                throw new Error(t("src.screens.rpascreen.variables_must_be_a_json_object"));
             }
             return parsed as Record<string, unknown>;
         } catch (error) {
-            throw new Error(error instanceof Error ? error.message : t("变量 JSON 解析失败", "Failed to parse the variables JSON"));
+            throw new Error(error instanceof Error ? error.message : t("src.screens.rpascreen.failed_to_parse_the_variables_json"));
         }
     }, [variablesText, t]);
 
@@ -83,7 +83,7 @@ export default function RPAScreen() {
             .map((item) => item.trim())
             .filter(Boolean);
         if (runIds.length === 0) {
-            Alert.alert(t("无法生成", "Unable to generate"), t("请至少输入一个 Run ID。", "Enter at least one Run ID."));
+            Alert.alert(t("src.screens.rpascreen.unable_to_generate"), t("src.screens.rpascreen.enter_at_least_one_run_id"));
             return;
         }
         setBusyAction("compile");
@@ -92,7 +92,7 @@ export default function RPAScreen() {
             setLatestResult(payload);
             await load();
         } catch (error) {
-            Alert.alert(t("生成失败", "Generation failed"), error instanceof Error ? error.message : t("无法从 Run 生成 RPA 草稿", "Unable to generate an RPA draft from the run."));
+            Alert.alert(t("src.screens.rpascreen.generation_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_generate_an_rpa_draft_from_the_run"));
         } finally {
             setBusyAction("");
         }
@@ -101,14 +101,14 @@ export default function RPAScreen() {
     const handleRunExisting = useCallback(async () => {
         const robotFile = existingRobotFile.trim();
         if (!robotFile) {
-            Alert.alert(t("无法执行", "Unable to execute"), t("请填写既有的 robot 文件路径或脚本 ID。", "Enter an existing robot file path or script ID."));
+            Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id"));
             return;
         }
         let variables: Record<string, unknown>;
         try {
             variables = parseVariables();
         } catch (error) {
-            Alert.alert(t("变量格式错误", "Invalid variables"), error instanceof Error ? error.message : t("变量 JSON 不正确", "The variables JSON is invalid."));
+            Alert.alert(t("src.screens.rpascreen.invalid_variables"), error instanceof Error ? error.message : t("src.screens.rpascreen.the_variables_json_is_invalid"));
             return;
         }
         setBusyAction("run-existing");
@@ -117,7 +117,7 @@ export default function RPAScreen() {
             setLatestResult(payload);
             await load();
         } catch (error) {
-            Alert.alert(t("执行失败", "Execution failed"), error instanceof Error ? error.message : t("无法执行既有 RPA 流程", "Unable to execute the existing RPA flow."));
+            Alert.alert(t("src.screens.rpascreen.execution_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_execute_the_existing_rpa_flow"));
         } finally {
             setBusyAction("");
         }
@@ -130,7 +130,7 @@ export default function RPAScreen() {
     }, [load, status]);
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在读取 RPA 状态…", "Loading RPA status...")} />;
+        return <LoadingScreen label={t("src.screens.rpascreen.loading_rpa_status")} />;
     }
 
     if (status === "anonymous") {
@@ -152,30 +152,30 @@ export default function RPAScreen() {
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load()} />}
                 >
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("运行时可用性", "Runtime availability")}</Text>
+                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.runtime_availability")}</Text>
                         <View style={styles.statusRow}>
                             <View style={[styles.statusDot, availability?.robotFramework ? styles.statusOk : styles.statusMuted]} />
                             <Text style={styles.statusText}>
-                                Robot Framework {availability?.robotFramework ? t("已就绪", "Ready") : t("未就绪", "Not ready")}
+                                Robot Framework {availability?.robotFramework ? t("src.screens.rpascreen.ready") : t("src.screens.rpascreen.not_ready")}
                             </Text>
                         </View>
                         <View style={styles.statusRow}>
                             <View style={[styles.statusDot, availability?.rpaFramework ? styles.statusOk : styles.statusMuted]} />
                             <Text style={styles.statusText}>
-                                RPA Framework {availability?.rpaFramework ? t("已就绪", "Ready") : t("未就绪", "Not ready")}
+                                RPA Framework {availability?.rpaFramework ? t("src.screens.rpascreen.ready") : t("src.screens.rpascreen.not_ready")}
                             </Text>
                         </View>
                         <Text style={styles.metaText}>
-                            {t("Windows 库", "Windows library")}：{availability?.libraries?.["RPA.Windows"] ? t("已安装", "Installed") : t("缺失", "Missing")}
+                            {t("src.screens.rpascreen.windows_library")}：{availability?.libraries?.["RPA.Windows"] ? t("src.screens.rpascreen.installed") : t("src.screens.rpascreen.missing")}
                             {" · "}
-                            Browser：{availability?.libraries?.["RPA.Browser.Selenium"] ? t("已安装", "Installed") : t("缺失", "Missing")}
+                            Browser：{availability?.libraries?.["RPA.Browser.Selenium"] ? t("src.screens.rpascreen.installed") : t("src.screens.rpascreen.missing")}
                         </Text>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("最近草稿", "Recent drafts")}</Text>
+                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.recent_drafts")}</Text>
                         {drafts.length === 0 ? (
-                            <Text style={styles.emptyBody}>{t("当前没有可直接继续的 RPA 草稿。", "There are no RPA drafts ready to continue right now.")}</Text>
+                            <Text style={styles.emptyBody}>{t("src.screens.rpascreen.there_are_no_rpa_drafts_ready_to_continue_right_now")}</Text>
                         ) : (
                             drafts.map((draft) => (
                                 <Pressable
@@ -184,9 +184,9 @@ export default function RPAScreen() {
                                     onPress={() => setExistingRobotFile(draft.script_id || draft.id || draft.title || "")}
                                 >
                                     <View style={styles.draftBody}>
-                                        <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || t("未命名草稿", "Untitled draft")}</Text>
+                                        <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || t("src.screens.rpascreen.untitled_draft")}</Text>
                                         <Text style={styles.draftMeta}>
-                                            {draft.status || "draft"} · {draft.updated_at || draft.created_at || t("时间未知", "Unknown time")}
+                                            {draft.status || "draft"} · {draft.updated_at || draft.created_at || t("src.screens.rpascreen.unknown_time")}
                                         </Text>
                                     </View>
                                     <MaterialCommunityIcons name="chevron-right" size={18} color={colors.textSoft} />
@@ -196,27 +196,27 @@ export default function RPAScreen() {
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("从 Run 生成草稿", "Generate draft from run")}</Text>
+                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.generate_draft_from_run")}</Text>
                         <TextInput
                             value={compileRunIds}
                             onChangeText={setCompileRunIds}
-                            placeholder={t("run_123456 或用逗号 / 空格分隔多个 Run ID", "run_123456, or separate multiple Run IDs with commas / spaces")}
+                            placeholder={t("src.screens.rpascreen.run_123456_or_separate_multiple_run_ids_with_commas_spaces")}
                             placeholderTextColor={colors.textSoft}
                             autoCapitalize="none"
                             autoCorrect={false}
                             style={styles.input}
                         />
                         <Pressable style={[styles.primaryButton, busyAction === "compile" && styles.disabled]} onPress={() => void handleCompile()}>
-                            {busyAction === "compile" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("生成草稿", "Generate draft")}</Text>}
+                            {busyAction === "compile" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("src.screens.rpascreen.generate_draft")}</Text>}
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("执行既有流程", "Run existing flow")}</Text>
+                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.run_existing_flow")}</Text>
                         <TextInput
                             value={existingRobotFile}
                             onChangeText={setExistingRobotFile}
-                            placeholder={t("scripts/example.robot 或已有脚本 ID", "scripts/example.robot or an existing script ID")}
+                            placeholder={t("src.screens.rpascreen.scripts_example_robot_or_an_existing_script_id")}
                             placeholderTextColor={colors.textSoft}
                             autoCapitalize="none"
                             autoCorrect={false}
@@ -234,16 +234,16 @@ export default function RPAScreen() {
                             style={[styles.input, styles.multilineInput]}
                         />
                         <Pressable style={[styles.primaryButton, busyAction === "run-existing" && styles.disabled]} onPress={() => void handleRunExisting()}>
-                            {busyAction === "run-existing" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("执行既有流程", "Run existing flow")}</Text>}
+                            {busyAction === "run-existing" ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t("src.screens.rpascreen.run_existing_flow")}</Text>}
                         </Pressable>
                     </GlassCard>
 
                     <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("最近结果", "Latest result")}</Text>
+                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.latest_result")}</Text>
                         {latestResult ? (
                             <Text style={styles.resultText}>{JSON.stringify(latestResult, null, 2)}</Text>
                         ) : (
-                            <Text style={styles.emptyBody}>{t("这里会显示最近一次编译或执行返回的结果，便于手机端继续跟进。", "The latest compile or execution result appears here so you can continue from Phone.")}</Text>
+                            <Text style={styles.emptyBody}>{t("src.screens.rpascreen.the_latest_compile_or_execution_result_appears_here_so_you_can_continue_from_phone")}</Text>
                         )}
                     </GlassCard>
                 </ScrollView>

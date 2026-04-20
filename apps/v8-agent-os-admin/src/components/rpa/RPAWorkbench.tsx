@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
 
@@ -305,12 +306,12 @@ function prettyJson(value: unknown) {
 
 function probeState(detail?: AvailabilityProbe) {
     if (!detail?.detected) {
-        return { label: "未安装", variant: "secondary" as const };
+        return { label:"components.rpa.RPAWorkbench.kc623317d", variant: "secondary" as const };
     }
     if (detail.importable) {
-        return { label: "可运行", variant: "default" as const };
+        return { label:"components.rpa.RPAWorkbench.k6965af3b", variant: "default" as const };
     }
-    return { label: "缺依赖", variant: "destructive" as const };
+    return { label:"components.rpa.RPAWorkbench.k71ca3eb3", variant: "destructive" as const };
 }
 
 function parseJsonObject(value: string) {
@@ -377,6 +378,7 @@ function readRunUnavailableLibraries(metadata?: Record<string, unknown>) {
 
 export function RPAWorkbench() {
     const { toast } = useToast();
+    const t = useT();
     const [loading, setLoading] = useState(true);
     const [busyAction, setBusyAction] = useState<string | null>(null);
     const [availability, setAvailability] = useState<AvailabilityPayload>({});
@@ -461,7 +463,7 @@ export function RPAWorkbench() {
             console.error("[RPAWorkbench] load failed:", error);
             toast({
                 variant: "destructive",
-                title: "RPA 资源加载失败",
+                title:"components.rpa.RPAWorkbench.k83db87f2",
                 description: error instanceof Error ? error.message : "未知错误",
             });
         } finally {
@@ -517,7 +519,7 @@ export function RPAWorkbench() {
             console.error(`[RPAWorkbench] ${actionKey} failed:`, error);
             toast({
                 variant: "destructive",
-                title: "执行失败",
+                title:"components.rpa.RPAWorkbench.k2e9cdd7b",
                 description: error instanceof Error ? error.message : "未知错误",
             });
             throw error;
@@ -534,7 +536,7 @@ export function RPAWorkbench() {
     const handleCompile = async () => {
         const runIds = parseRunIdsInput(compileRunId);
         if (runIds.length === 0) {
-            toast({ variant: "destructive", title: "缺少 run_id", description: "请先输入 ComputerUse run_id。" });
+            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.kbf8ee2bb", description:"components.rpa.RPAWorkbench.k67c52b94" });
             return;
         }
         const compileRequest =
@@ -563,7 +565,7 @@ export function RPAWorkbench() {
 
     const handleViewSourceTrace = async () => {
         if (!selectedDraftId) {
-            toast({ variant: "destructive", title: "未选择 draft", description: "请先选择一个 RPA draft。" });
+            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.ke05762b8", description:"components.rpa.RPAWorkbench.k95f5425c" });
             return;
         }
         await runAction(
@@ -575,7 +577,7 @@ export function RPAWorkbench() {
 
     const handleDraftAction = async (mode: "export" | "prepare" | "run") => {
         if (!selectedDraftId) {
-            toast({ variant: "destructive", title: "未选择 draft", description: "请先选择一个 RPA draft。" });
+            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.ke05762b8", description:"components.rpa.RPAWorkbench.k95f5425c" });
             return;
         }
         let variables: Record<string, unknown>;
@@ -584,7 +586,7 @@ export function RPAWorkbench() {
         } catch (error) {
             toast({
                 variant: "destructive",
-                title: "变量格式无效",
+                title:"components.rpa.RPAWorkbench.k35f41066",
                 description: error instanceof Error ? error.message : "变量必须是 JSON 对象。",
             });
             return;
@@ -609,7 +611,7 @@ export function RPAWorkbench() {
     const handleExistingAction = async (mode: "prepare-existing" | "run-existing") => {
         const robotFile = existingRobotFile.trim();
         if (!robotFile) {
-            toast({ variant: "destructive", title: "缺少 .robot 文件路径", description: "请输入已有流程路径。" });
+            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.kfdb80aec", description:"components.rpa.RPAWorkbench.kbf440ba2" });
             return;
         }
         let variables: Record<string, unknown>;
@@ -618,7 +620,7 @@ export function RPAWorkbench() {
         } catch (error) {
             toast({
                 variant: "destructive",
-                title: "变量格式无效",
+                title:"components.rpa.RPAWorkbench.k35f41066",
                 description: error instanceof Error ? error.message : "变量必须是 JSON 对象。",
             });
             return;
@@ -683,7 +685,7 @@ export function RPAWorkbench() {
 
     const handleTemplateAction = async (action: "approve" | "freeze" | "review_required") => {
         if (!selectedTemplateId) {
-            toast({ variant: "destructive", title: "未选择模板", description: "请先选择一个模板。" });
+            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.ka3b5b6f9", description:"components.rpa.RPAWorkbench.k899e7048" });
             return;
         }
         const endpoint =
@@ -813,7 +815,7 @@ export function RPAWorkbench() {
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
                             <Label htmlFor="compile-run-id">ComputerUse run_id</Label>
-                            <Input id="compile-run-id" value={compileRunId} onChange={(event) => setCompileRunId(event.target.value)} placeholder="例如：run_xxx 或 run_xxx,run_yyy" />
+                            <Input id="compile-run-id" value={compileRunId} onChange={(event) => setCompileRunId(event.target.value)} placeholder="components.rpa.RPAWorkbench.k5b954856" />
                         </div>
                         <Button onClick={() => void handleCompile()} disabled={busyAction === "compile"}>
                             <FileCode2 className="mr-2 h-4 w-4" />
@@ -830,11 +832,11 @@ export function RPAWorkbench() {
                     <CardContent className="grid gap-4">
                         <div className="grid gap-2">
                             <Label htmlFor="cwd">工作目录（可选）</Label>
-                            <Input id="cwd" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="例如：E:\\Projects\\V8-Agent-OS" />
+                            <Input id="cwd" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="components.rpa.RPAWorkbench.kcb17052e" />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="output-dir">输出目录（可选）</Label>
-                            <Input id="output-dir" value={outputDir} onChange={(event) => setOutputDir(event.target.value)} placeholder="例如：E:\\Projects\\V8-Agent-OS\\.tmp\\rpa" />
+                            <Input id="output-dir" value={outputDir} onChange={(event) => setOutputDir(event.target.value)} placeholder="components.rpa.RPAWorkbench.kbc389513" />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="timeout-ms">超时（毫秒）</Label>
@@ -1026,7 +1028,7 @@ export function RPAWorkbench() {
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
                             <Label htmlFor="existing-robot">`.robot` 文件路径</Label>
-                            <Input id="existing-robot" value={existingRobotFile} onChange={(event) => setExistingRobotFile(event.target.value)} placeholder="例如：E:\\RPA\\wechat_send.robot" />
+                            <Input id="existing-robot" value={existingRobotFile} onChange={(event) => setExistingRobotFile(event.target.value)} placeholder="components.rpa.RPAWorkbench.k0f5296b5" />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="existing-vars">变量（JSON 对象）</Label>
@@ -1186,7 +1188,7 @@ export function RPAWorkbench() {
                                         className="min-h-[96px]"
                                         value={templateNote}
                                         onChange={(event) => setTemplateNote(event.target.value)}
-                                        placeholder="记录批准、冻结或回滚原因。"
+                                        placeholder="components.rpa.RPAWorkbench.k3d5ec5ad"
                                     />
                                 </div>
                                 <div className="flex flex-wrap gap-2">
@@ -1300,7 +1302,7 @@ export function RPAWorkbench() {
                                         </div>
                                         <Textarea
                                             className="mt-3 min-h-[96px]"
-                                            placeholder="输入批准说明、补充变量或拒绝原因。"
+                                            placeholder="components.rpa.RPAWorkbench.k5d7ae816"
                                             value={approvalDrafts[approval.id] || ""}
                                             onChange={(event) => setApprovalDrafts((current) => ({ ...current, [approval.id]: event.target.value }))}
                                         />
@@ -1343,7 +1345,7 @@ export function RPAWorkbench() {
                                 return (
                                     <div key={run.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap gap-2">
-                                            <Badge>{RUN_LABELS[status] || status}</Badge>
+                                            <Badge>{t(RUN_LABELS[status] || status)}</Badge>
                                             {run.metadata?.mode ? <Badge variant="outline">{String(run.metadata.mode)}</Badge> : null}
                                             {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
                                             {approvalCount > 0 ? <Badge variant="destructive">{approvalCount} 个审批点</Badge> : null}

@@ -67,6 +67,7 @@ import {
 import { buildDesktopLiveBridgeInjection, buildDesktopLivePreviewHtml } from "@/src/lib/desktop-live-preview";
 import { mergeSessionHistoryOverlay, sortSessionHistory } from "@/src/lib/session-history";
 import { saveResponseToCache } from "@/src/lib/file-transfer";
+import { createTranslator, translateCurrent } from "@/src/lib/locale";
 import { getDayGreeting } from "@/src/lib/time";
 import {
     approvePendingItem,
@@ -238,7 +239,13 @@ function buildUserMessage(
     return {
         id: metadata.clientMessageId as string,
         role: "user",
-        content: text || (attachments.length === 1 ? "已上传 1 个文件" : attachments.length > 1 ? `已上传 ${attachments.length} 个文件` : ""),
+        content: text || (
+            attachments.length === 1
+                ? translateCurrent("shared.upload.uploaded_single")
+                : attachments.length > 1
+                    ? translateCurrent("shared.upload.uploaded_count", { count: attachments.length })
+                    : ""
+        ),
         timestamp: now,
         images: options.files
             .map((file) => file.url || file.publicUrl || "")
@@ -377,18 +384,21 @@ async function buildLocalUploadedFileDraft(
 function buildUploadTransportError(asset: DocumentPicker.DocumentPickerAsset, error: unknown) {
     const rawMessage = error instanceof Error ? String(error.message || "").trim() : "";
     const lowered = rawMessage.toLowerCase();
-    const label = asset.name ? `“${asset.name}”` : "该文件";
+    const label = asset.name ? `“${asset.name}”` : translateCurrent("shared.upload.file_fallback_label");
     if (lowered.includes("network request failed")) {
-        return new Error(`${label} 上传体发送失败，网络请求在发送过程中被中断。`);
+        return new Error(translateCurrent("shared.upload.request_interrupted", { label }));
     }
     if (lowered.includes("failed to fetch") || lowered.includes("fetch failed")) {
-        return new Error(`${label} 上传 transport 失败，请检查当前 Admin 地址、网络链路或视频文件 URI。`);
+        return new Error(translateCurrent("shared.upload.transport_failed_check_admin", { label }));
     }
-    if (rawMessage.includes("无法连接 Admin")) {
-        return new Error(`${label} 上传 transport 失败：${rawMessage}`);
+    if (rawMessage.toLowerCase().includes("unable to reach admin") || rawMessage.includes("Admin")) {
+        return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: rawMessage }));
     }
-    return error instanceof Error ? error : new Error(`${label} 上传失败`);
+    return error instanceof Error ? error : new Error(translateCurrent("shared.upload.generic_failed", { label }));
 }
+
+const zhNewChatPlaceholder = createTranslator("zh-CN")("src.screens.sessionsscreen.new_chat").trim().toLowerCase();
+const legacyZhNewChatPlaceholder = zhNewChatPlaceholder.replace(/\u5efa/g, "");
 
 function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): ChatMessage | null {
     if (!raw || typeof raw !== "object") {
@@ -494,9 +504,9 @@ function removeUploadedWorkspaceFile(
 
 function buildAssistantPlaceholder(runId?: string): ChatMessage {
     return buildAssistantMessage({
-        agentName: "智能主管",
+        agentName: translateCurrent("shared.actor.supervisor"),
         agentAvatar: "/brand-mark.png",
-        agentRoleLabel: "主理人",
+        agentRoleLabel: translateCurrent("shared.actor.lead"),
     }, runId, "placeholder");
 }
 
@@ -674,33 +684,37 @@ function buildAssistantTaskProgressPatch(
 
     if (!label) {
         if (phase === "waiting_input") {
-            label = "等待你的输入";
+            label = translateCurrent("src.screens.chatscreen.waiting_for_your_answer");
         } else if (phase === "artifact_ready") {
-            label = "产物已就绪";
+            label = translateCurrent("src.screens.chatscreen.artifact_ready");
         } else if (phase === "settling") {
-            label = "任务即将完成";
+            label = translateCurrent("src.screens.chatscreen.task_is_nearly_complete");
         } else if (activeTodo) {
-            label = `步骤 ${activeIndex + 1}/${Math.max(totalCount, 1)}`;
+            label = translateCurrent("src.screens.chatscreen.step_progress", { current: activeIndex + 1, total: Math.max(totalCount, 1) });
         } else if (nextTodo) {
             label = completedCount > 0
-                ? `准备步骤 ${nextIndex + 1}/${Math.max(totalCount, 1)}`
-                : "正在规划任务";
+                ? translateCurrent("src.screens.chatscreen.preparing_step_progress", { current: nextIndex + 1, total: Math.max(totalCount, 1) })
+                : translateCurrent("src.screens.chatscreen.planning_task");
         } else {
-            label = "正在规划任务";
+            label = translateCurrent("src.screens.chatscreen.planning_task");
         }
     }
 
     if (!subtitle) {
         if (phase === "artifact_ready") {
-            subtitle = currentStep || (totalCount > 0 ? `已完成 ${completedCount}/${totalCount} 个步骤` : "产物已经生成，可继续挂载到工作区。");
+            subtitle = currentStep || (
+                totalCount > 0
+                    ? translateCurrent("src.screens.chatscreen.completed_step_progress", { completed: completedCount, total: totalCount })
+                    : translateCurrent("src.screens.chatscreen.artifact_can_now_be_attached_to_the_workspace")
+            );
         } else if (phase === "waiting_input") {
-            subtitle = currentStep || "请继续提供必要输入。";
+            subtitle = currentStep || translateCurrent("src.screens.chatscreen.please_provide_the_requested_input");
         } else if (activeTodo) {
             subtitle = currentStep;
         } else if (nextTodo) {
-            subtitle = currentStep || `已生成 ${totalCount} 个步骤`;
+            subtitle = currentStep || translateCurrent("src.screens.chatscreen.generated_step_count", { total: totalCount });
         } else if (totalCount > 0) {
-            subtitle = `已完成 ${completedCount}/${totalCount} 个步骤`;
+            subtitle = translateCurrent("src.screens.chatscreen.completed_step_progress", { completed: completedCount, total: totalCount });
         }
     }
 
@@ -1514,21 +1528,24 @@ function buildConversationOverlayPatch(detail: Partial<ConversationDetail> | nul
 
 function normalizeDesktopLiveErrorMessage(
     error: unknown,
-    t: (zh: string, en?: string) => string,
+    t: (key: string, params?: Record<string, string | number>) => string,
 ) {
     const raw = error instanceof Error ? String(error.message || "").trim() : "";
     if (!raw) {
-        return t("桌面预览正在准备中，请稍候。", "Desktop preview is still preparing. Please wait.");
+        return t("src.screens.chatscreen.desktop_preview_is_still_preparing_please_wait");
     }
     if (/fetch failed|network request failed|failed to fetch|bridge is starting|local-offer-unavailable|offer|candidate|session/i.test(raw)) {
-        return t("桌面预览正在准备中，请稍候。", "Desktop preview is still preparing. Please wait.");
+        return t("src.screens.chatscreen.desktop_preview_is_still_preparing_please_wait");
     }
     return raw;
 }
 
 function isPlaceholderConversationTitle(title: string | null | undefined) {
     const normalized = String(title || "").trim().toLowerCase();
-    return !normalized || normalized === "new chat" || normalized === "新对话";
+    return !normalized
+        || normalized === "new chat"
+        || normalized === zhNewChatPlaceholder
+        || normalized === legacyZhNewChatPlaceholder;
 }
 
 async function retryWithDelay<T>(fn: () => Promise<T>, retries: number, delayMs: number) {
@@ -1949,7 +1966,7 @@ export default function ChatScreen() {
         } catch {
             const fallback = {
                 available: false,
-                reason: t("桌面预览正在准备中，请稍候。", "Desktop preview is still preparing. Please wait."),
+                reason: t("src.screens.chatscreen.desktop_preview_is_still_preparing_please_wait"),
                 phase: "warming",
                 bridgeReady: false,
                 bridgeWarming: true,
@@ -2006,7 +2023,7 @@ export default function ChatScreen() {
         try {
             await releaseDesktopLiveSession(authorizedFetch, sessionId);
         } catch {
-            // 前景预览关闭时做 best-effort 释放，避免因为释放失败阻塞 UI
+            // Best-effort release when the foreground preview closes, without blocking the UI.
         }
         setDesktopLiveStatus((current) => current ? {
             ...current,
@@ -2029,13 +2046,13 @@ export default function ChatScreen() {
             }
             lastError = String(
                 status?.phase === "warming" || status?.bridgeWarming === true || status?.bridgeReady === false
-                    ? t("桌面预览桥正在启动，请稍候。", "Desktop preview bridge is starting. Please wait.")
+                    ? t("src.screens.chatscreen.desktop_preview_bridge_is_starting_please_wait")
                     : status?.reason
-                        || t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."),
+                        || t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"),
             );
             await new Promise((resolve) => setTimeout(resolve, Math.min(900 + attempt * 150, 1800)));
         }
-        throw new Error(lastError || t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
+        throw new Error(lastError || t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
     }, [refreshDesktopLiveStatus, t]);
 
     const maybeStartDesktopPreviewNegotiation = useCallback((sessionId?: string | null) => {
@@ -2082,7 +2099,7 @@ export default function ChatScreen() {
                 }
                 status = await waitForDesktopLiveAvailability(requestId) || {
                     available: false,
-                    reason: t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."),
+                    reason: t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"),
                     phase: "warming",
                     bridgeReady: false,
                     bridgeWarming: true,
@@ -2093,7 +2110,7 @@ export default function ChatScreen() {
                 return;
             }
             if (!status?.available) {
-                throw new Error(t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
+                throw new Error(t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
             }
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
@@ -2109,7 +2126,7 @@ export default function ChatScreen() {
             );
             const sessionId = String(payload.sessionId || payload.session_id || "").trim();
             if (!sessionId) {
-                throw new Error(t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
+                throw new Error(t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
             }
             if (desktopPreviewRequestIdRef.current !== requestId) {
                 try {
@@ -2193,7 +2210,7 @@ export default function ChatScreen() {
                     1000,
                 );
                 if (!answer?.sdp || !answer?.type) {
-                    throw new Error(t("桌面预览协商失败", "Desktop preview negotiation failed"));
+                    throw new Error(t("src.screens.chatscreen.desktop_preview_negotiation_failed"));
                 }
                 desktopPreviewWebViewRef.current?.injectJavaScript(
                     buildDesktopLiveBridgeInjection({
@@ -2243,7 +2260,7 @@ export default function ChatScreen() {
                 desktopLiveUserIntentRef.current = false;
                 setDesktopPreviewState("error");
                 setDesktopPreviewBusy(false);
-                setDesktopPreviewError(t("桌面预览连接失败，请检查桥接状态后再继续。", "Desktop preview failed to connect. Check the bridge state and try again later."));
+                setDesktopPreviewError(t("src.screens.chatscreen.desktop_preview_failed_to_connect_check_the_bridge_state_and_try_again_later"));
                 setDesktopLiveStatus((current) => ({
                     ...(current || {}),
                     activeSessionId: null,
@@ -2325,7 +2342,7 @@ export default function ChatScreen() {
             let creationPayload: Parameters<typeof createConversation>[1];
             if (draft.kind === "main") {
                 if (!mainWorkspacePath) {
-                    throw new Error(t("主工作区路径尚未就绪，请稍后再试。", "The main workspace path is not ready yet. Please try again shortly."));
+                    throw new Error(t("src.screens.chatscreen.the_main_workspace_path_is_not_ready_yet_please_try_again_shortly"));
                 }
                 creationPayload = {
                     title: "",
@@ -2336,7 +2353,7 @@ export default function ChatScreen() {
             } else {
                 const project = availableProjects.find((item) => item.id === draft.projectId);
                 if (!project?.id) {
-                    throw new Error(t("项目级工作区不存在或尚未就绪。", "The selected project workspace does not exist or is not ready yet."));
+                    throw new Error(t("src.screens.chatscreen.the_selected_project_workspace_does_not_exist_or_is_not_ready_yet"));
                 }
                 creationPayload = {
                     title: "",
@@ -2361,8 +2378,8 @@ export default function ChatScreen() {
             await loadSessionScope(createdSessionId);
         } catch (error) {
             Alert.alert(
-                t("创建会话失败", "Create conversation failed"),
-                error instanceof Error ? error.message : t("无法按当前工作区绑定创建会话。", "Unable to create a conversation with the selected workspace binding."),
+                t("src.screens.chatscreen.create_conversation_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_create_a_conversation_with_the_selected_workspace_binding"),
             );
         } finally {
             setWorkspaceChooserBusy(false);
@@ -2379,7 +2396,7 @@ export default function ChatScreen() {
             const createdProject = await createProject(authorizedFetch, { name: nextProjectName });
             const createdProjectId = String(createdProject?.id || "").trim();
             if (!createdProjectId) {
-                throw new Error(t("项目创建成功但没有返回有效的项目标识。", "Project creation succeeded but returned no valid project id."));
+                throw new Error(t("src.screens.chatscreen.project_creation_succeeded_but_returned_no_valid_project_id"));
             }
             await loadProjects();
             const createdConversation = await createConversation(authorizedFetch, {
@@ -2402,8 +2419,8 @@ export default function ChatScreen() {
             await loadSessionScope(createdSessionId);
         } catch (error) {
             Alert.alert(
-                t("创建项目级工作区失败", "Create project workspace failed"),
-                error instanceof Error ? error.message : t("无法创建新的项目级工作区。", "Unable to create a new project workspace."),
+                t("src.screens.chatscreen.create_project_workspace_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_create_a_new_project_workspace"),
             );
         } finally {
             setWorkspaceChooserBusy(false);
@@ -2775,8 +2792,8 @@ export default function ChatScreen() {
             const taskProgress = buildAssistantTaskProgressPatch(nextTodos, {
                 phase: "tooling",
             });
-            const taskLabel = taskProgress?.label || tRef.current("任务步骤推进中", "Task progress updated");
-            const taskSubtitle = taskProgress?.subtitle || tRef.current("正在更新任务进度", "Updating task progress");
+            const taskLabel = taskProgress?.label || tRef.current("src.screens.chatscreen.task_progress_updated");
+            const taskSubtitle = taskProgress?.subtitle || tRef.current("src.screens.chatscreen.updating_task_progress");
 
             patchAssistantTaskShell(nextTodos, {
                 phase: taskProgress?.phase || "tooling",
@@ -2795,7 +2812,7 @@ export default function ChatScreen() {
                         id: normalized.event_id || `todo:${normalizedToolName}:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         timestamp: normalized.ts || nowMs,
-                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        actorLabel: normalized.actorLabel || tRef.current("src.components.chat.messagebubble.supervisor"),
                         status: "running",
                         kind: "progress",
                     },
@@ -2832,7 +2849,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     normalized.topic || "agent.started",
-                    String(normalized.actorLabel || tRef.current("智能主管已开始处理", "Supervisor started working")),
+                    String(normalized.actorLabel || tRef.current("src.screens.chatscreen.supervisor_started_working")),
                     {
                         id: normalized.event_id || `agent:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -2847,12 +2864,12 @@ export default function ChatScreen() {
                 status: "running",
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
-                label: normalized.actorLabel || tRef.current("开始处理", "Started"),
+                label: normalized.actorLabel || tRef.current("src.screens.chatscreen.started"),
             }));
             patchAssistantTaskShell(todosRef.current, {
                 phase: "task_planning",
-                label: tRef.current("开始执行任务", "Task started"),
-                subtitle: tRef.current("正在整理上下文并准备响应。", "Preparing context and response."),
+                label: tRef.current("src.screens.chatscreen.task_started"),
+                subtitle: tRef.current("src.screens.chatscreen.preparing_context_and_response"),
                 runId: normalized.run_id,
                 createIfMissing: true,
             });
@@ -2867,7 +2884,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildPhaseRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     "reasoning",
-                    String(normalized.content || tRef.current("正在思考", "Thinking")).trim() || tRef.current("正在思考", "Thinking"),
+                    String(normalized.content || tRef.current("src.screens.chatscreen.thinking")).trim() || tRef.current("src.screens.chatscreen.thinking"),
                     {
                         runId: normalized.run_id,
                         seq: normalized.seq,
@@ -2882,12 +2899,12 @@ export default function ChatScreen() {
                 status: "running",
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
-                label: tRef.current("正在思考", "Thinking"),
+                label: tRef.current("src.screens.chatscreen.thinking"),
             }));
             patchAssistantTaskShell(todosRef.current, {
                 phase: "task_planning",
-                label: tRef.current("正在规划任务", "Planning task"),
-                subtitle: tRef.current("正在分析任务步骤与执行顺序。", "Analyzing steps and execution order."),
+                label: tRef.current("src.screens.chatscreen.planning_task"),
+                subtitle: tRef.current("src.screens.chatscreen.analyzing_steps_and_execution_order"),
                 runId: normalized.run_id,
                 createIfMissing: true,
             });
@@ -2899,7 +2916,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildPhaseRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     "streaming",
-                    String(normalized.content || tRef.current("正在回复", "Replying")).trim() || tRef.current("正在回复", "Replying"),
+                    String(normalized.content || tRef.current("src.screens.chatscreen.replying")).trim() || tRef.current("src.screens.chatscreen.replying"),
                     {
                         runId: normalized.run_id,
                         seq: normalized.seq,
@@ -2914,12 +2931,12 @@ export default function ChatScreen() {
                 status: "running",
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
-                label: tRef.current("正在回复", "Replying"),
+                label: tRef.current("src.screens.chatscreen.replying"),
             }));
             patchAssistantTaskShell(todosRef.current, {
                 phase: "streaming",
-                label: tRef.current("正在回复", "Replying"),
-                subtitle: tRef.current("正在持续输出结果。", "Streaming the response."),
+                label: tRef.current("src.screens.chatscreen.replying"),
+                subtitle: tRef.current("src.screens.chatscreen.streaming_the_response"),
                 runId: normalized.run_id,
                 createIfMissing: true,
             });
@@ -2933,15 +2950,15 @@ export default function ChatScreen() {
                 || normalized.data?.tool_name
                 || normalized.data?.label
                 || normalized.content
-                || tRef.current("工具调用", "Tool call"),
+                || tRef.current("src.components.chat.contentdispatcher.tool_call"),
             ).trim();
             appendRuntimeTimeline(
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || "chat")) || "chat",
                     normalized.topic || (normalized.type === "tool_start" ? "tool.started" : "tool.finished"),
                     normalized.type === "tool_start"
-                        ? tRef.current(`开始调用 ${toolLabel}`, `Starting ${toolLabel}`)
-                        : tRef.current(`已完成 ${toolLabel}`, `Finished ${toolLabel}`),
+                        ? tRef.current("src.screens.chatscreen.starting_tool", { toolLabel })
+                        : tRef.current("src.screens.chatscreen.finished_tool", { toolLabel }),
                     {
                         id: normalized.event_id || `${normalized.type}:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -2959,10 +2976,10 @@ export default function ChatScreen() {
             }));
             patchAssistantTaskShell(todosRef.current, {
                 phase: "tooling",
-                label: toolLabel || tRef.current("正在执行工具", "Running tool"),
+                label: toolLabel || tRef.current("src.screens.chatscreen.running_tool"),
                 subtitle: normalized.type === "tool_start"
-                    ? tRef.current("任务正在调用工具执行步骤。", "Task is calling a tool.")
-                    : tRef.current("工具已返回结果，正在整理后续步骤。", "Tool returned and next step is being prepared."),
+                    ? tRef.current("src.screens.chatscreen.task_is_calling_a_tool")
+                    : tRef.current("src.screens.chatscreen.tool_returned_and_next_step_is_being_prepared"),
                 runId: normalized.run_id,
                 createIfMissing: true,
             });
@@ -2977,21 +2994,21 @@ export default function ChatScreen() {
                 buildRuntimeTimelineEntry(
                     "chat",
                     normalized.topic,
-                    tRef.current("已启用任务规划偏好", "Task planning preference enabled"),
+                    tRef.current("src.screens.chatscreen.task_planning_preference_enabled"),
                     {
                         id: normalized.event_id || `task-planning-enabled:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
                         kind: "progress",
                         timestamp: normalized.ts || nowMs,
-                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        actorLabel: normalized.actorLabel || tRef.current("src.components.chat.messagebubble.supervisor"),
                         status: "running",
                     },
                 ),
             );
             patchAssistantTaskShell(todosRef.current, {
                 phase: "task_planning",
-                label: tRef.current("任务规划偏好已开启", "Task planning preference enabled"),
-                subtitle: tRef.current("多步骤任务会更倾向拆解并维护 Todo。", "Multi-step tasks will more readily use Todo planning."),
+                label: tRef.current("src.screens.chatscreen.task_planning_preference_enabled_2"),
+                subtitle: tRef.current("src.screens.chatscreen.multi_step_tasks_will_more_readily_use_todo_planning"),
                 runId: normalized.run_id,
                 createIfMissing: true,
             });
@@ -3004,14 +3021,14 @@ export default function ChatScreen() {
                 normalized.content
                 || normalized.data?.summary
                 || (usedTodos
-                    ? tRef.current("任务规划偏好已命中 Todo 链", "Task planning preference entered the Todo lane")
-                    : tRef.current("任务规划偏好已开启，但本轮按单步任务完成", "Task planning was enabled, but this run completed as a single-step task")),
+                    ? tRef.current("src.screens.chatscreen.task_planning_preference_entered_the_todo_lane")
+                    : tRef.current("src.screens.chatscreen.task_planning_was_enabled_but_this_run_completed_as_a_single_step_task")),
             ).trim();
             const subtitle = String(
                 normalized.data?.message
                 || (usedTodos
-                    ? tRef.current("本轮已创建或更新 Todo，并按任务计划推进。", "This run created or updated Todo items and progressed through a task plan.")
-                    : tRef.current("本轮没有进入 Todo 链，通常表示模型判断无需持续跟踪。", "This run did not enter the Todo lane, which usually means the model judged continuous tracking unnecessary.")),
+                    ? tRef.current("src.screens.chatscreen.this_run_created_or_updated_todo_items_and_progressed_through_a_task_plan")
+                    : tRef.current("src.screens.chatscreen.this_run_did_not_enter_the_todo_lane_which_usually_means_the_model_judged_continuous_tracking_unnecessary")),
             ).trim();
             appendRuntimeTimeline(
                 buildRuntimeTimelineEntry(
@@ -3023,7 +3040,7 @@ export default function ChatScreen() {
                         seq: normalized.seq,
                         kind: "progress",
                         timestamp: normalized.ts || nowMs,
-                        actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                        actorLabel: normalized.actorLabel || tRef.current("src.components.chat.messagebubble.supervisor"),
                         status: "completed",
                     },
                 ),
@@ -3043,7 +3060,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     normalized.topic || "run.completed",
-                    String(normalized.content || tRef.current("本轮任务已完成", "Run completed")),
+                    String(normalized.content || tRef.current("src.screens.chatscreen.run_completed")),
                     {
                         id: normalized.event_id || `done:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -3059,12 +3076,12 @@ export default function ChatScreen() {
                 status: current.status === "waiting_approval" || current.status === "waiting_input" ? current.status : "completed",
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
-                label: tRef.current("已完成", "Completed"),
+                label: tRef.current("src.screens.chatscreen.completed"),
             }));
             patchAssistantTaskShell(todosRef.current, {
                 phase: "settling",
-                label: tRef.current("任务已完成", "Task completed"),
-                subtitle: tRef.current("正在整理最终回复与产物。", "Preparing final response and artifacts."),
+                label: tRef.current("src.screens.chatscreen.task_completed"),
+                subtitle: tRef.current("src.screens.chatscreen.preparing_final_response_and_artifacts"),
                 runId: normalized.run_id,
                 createIfMissing: false,
             });
@@ -3082,7 +3099,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     normalized.topic || "run.failed",
-                    String(normalized.error || normalized.content || tRef.current("本轮任务失败", "Run failed")),
+                    String(normalized.error || normalized.content || tRef.current("src.screens.chatscreen.run_failed")),
                     {
                         id: normalized.event_id || `error:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -3098,12 +3115,12 @@ export default function ChatScreen() {
                 status: "failed",
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
-                label: tRef.current("运行失败", "Failed"),
+                label: tRef.current("src.screens.chatscreen.failed"),
             }));
             patchAssistantTaskShell(todosRef.current, {
                 phase: "error",
-                label: tRef.current("任务失败", "Task failed"),
-                subtitle: String(normalized.error || normalized.content || tRef.current("运行过程中出现错误。", "An error interrupted the run.")),
+                label: tRef.current("src.screens.chatscreen.task_failed"),
+                subtitle: String(normalized.error || normalized.content || tRef.current("src.screens.chatscreen.an_error_interrupted_the_run")),
                 runId: normalized.run_id,
                 createIfMissing: true,
             });
@@ -3124,12 +3141,12 @@ export default function ChatScreen() {
                     status: "running",
                     latestSeq: normalized.seq || current.latestSeq,
                     runId: normalized.run_id || current.runId,
-                    label: tRef.current("继续执行中", "Continuing"),
+                    label: tRef.current("src.screens.chatscreen.continuing"),
                 }));
                 patchAssistantTaskShell(todosRef.current, {
                     phase: "tooling",
-                    label: tRef.current("继续执行中", "Continuing"),
-                    subtitle: tRef.current("已收到你的输入，正在继续任务。", "Your answer was received and the task is continuing."),
+                    label: tRef.current("src.screens.chatscreen.continuing"),
+                    subtitle: tRef.current("src.screens.chatscreen.your_answer_was_received_and_the_task_is_continuing"),
                     runId: normalized.run_id,
                     createIfMissing: false,
                 });
@@ -3137,13 +3154,13 @@ export default function ChatScreen() {
                     buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                         normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || "chat")) || "chat",
                         normalized.topic || "ask_user.resolved",
-                        tRef.current("已收到你的输入，继续执行中", "Input received, continuing"),
+                        tRef.current("src.screens.chatscreen.input_received_continuing"),
                         {
                             id: normalized.event_id || `ask-user-resolved:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
                             timestamp: normalized.ts || nowMs,
-                            actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                            actorLabel: normalized.actorLabel || tRef.current("src.components.chat.messagebubble.supervisor"),
                         },
                     ),
                 );
@@ -3160,14 +3177,14 @@ export default function ChatScreen() {
                     status: "waiting_input",
                     latestSeq: normalized.seq || current.latestSeq,
                     runId: normalized.run_id || current.runId,
-                    label: tRef.current("等待你的输入", "Waiting for your answer"),
+                    label: tRef.current("src.screens.chatscreen.waiting_for_your_answer"),
                 }));
                 patchAssistantTaskShell(todosRef.current, {
                     phase: "waiting_input",
-                    label: tRef.current("等待你的输入", "Waiting for your answer"),
+                    label: tRef.current("src.screens.chatscreen.waiting_for_your_answer"),
                     subtitle: typeof normalized.data?.question === "string"
                         ? normalized.data.question
-                        : tRef.current("请继续补充必要信息。", "Please provide the requested input."),
+                        : tRef.current("src.screens.chatscreen.please_provide_the_requested_input"),
                     runId: normalized.run_id,
                     createIfMissing: true,
                 });
@@ -3175,13 +3192,13 @@ export default function ChatScreen() {
                     buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                         normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "chat")) || "chat",
                         normalized.topic || "ask_user.requested",
-                        String(normalized.data?.question || tRef.current("等待你的输入", "Waiting for your answer")),
+                        String(normalized.data?.question || tRef.current("src.screens.chatscreen.waiting_for_your_answer")),
                         {
                             id: normalized.event_id || `ask-user:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
                             timestamp: normalized.ts || nowMs,
-                            actorLabel: normalized.actorLabel || tRef.current("智能主管", "Supervisor"),
+                            actorLabel: normalized.actorLabel || tRef.current("src.components.chat.messagebubble.supervisor"),
                         },
                     ),
                 );
@@ -3208,14 +3225,14 @@ export default function ChatScreen() {
                     status: "waiting_approval",
                     latestSeq: normalized.seq || current.latestSeq,
                     runId: normalized.run_id || current.runId,
-                    label: tRef.current("等待授权确认", "Waiting for approval"),
+                    label: tRef.current("src.screens.chatscreen.waiting_for_approval"),
                 }));
                 patchAssistantTaskShell(todosRef.current, {
                     phase: "tooling",
-                    label: tRef.current("等待授权确认", "Waiting for approval"),
+                    label: tRef.current("src.screens.chatscreen.waiting_for_approval"),
                     subtitle: typeof normalized.data?.question === "string"
                         ? normalized.data.question
-                        : tRef.current("需要你的授权后才能继续。", "Approval is required to continue."),
+                        : tRef.current("src.screens.chatscreen.approval_is_required_to_continue"),
                     runId: normalized.run_id,
                     createIfMissing: true,
                 });
@@ -3225,14 +3242,14 @@ export default function ChatScreen() {
                         normalized.topic || "approval.requested",
                         String(
                             normalized.data?.question
-                            || tRef.current("等待授权确认", "Waiting for approval"),
+                            || tRef.current("src.screens.chatscreen.waiting_for_approval"),
                         ),
                         {
                             id: normalized.event_id || `approval:${normalized.seq || Date.now()}`,
                             seq: normalized.seq,
                             kind: "governance",
                             timestamp: normalized.ts || nowMs,
-                            actorLabel: normalized.actorLabel || tRef.current("运行调度", "Automation"),
+                            actorLabel: normalized.actorLabel || tRef.current("src.screens.chatscreen.automation"),
                         },
                     ),
                 );
@@ -3246,12 +3263,12 @@ export default function ChatScreen() {
         if (normalized.type === "custom_event" && normalized.name === "artifact_recorded") {
             patchAssistantTaskShell(todosRef.current, {
                 phase: "artifact_ready",
-                label: tRef.current("产物已就绪", "Artifact ready"),
+                label: tRef.current("src.screens.chatscreen.artifact_ready"),
                 subtitle: String(
                     normalized.artifact?.title
                     || normalized.data?.title
                     || normalized.data?.displayLabel
-                    || tRef.current("新的产物已经生成。", "A new artifact is ready."),
+                    || tRef.current("src.screens.chatscreen.a_new_artifact_is_ready"),
                 ),
                 runId: normalized.run_id,
                 createIfMissing: true,
@@ -3263,7 +3280,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.artifact?.kind || "chat")) || "chat",
                     normalized.topic || "artifact.recorded",
-                    String(normalized.artifact?.title || normalized.artifact?.kind || tRef.current("记录新的产物", "Recorded a new artifact")),
+                    String(normalized.artifact?.title || normalized.artifact?.kind || tRef.current("src.screens.chatscreen.recorded_a_new_artifact")),
                     {
                         id: normalized.event_id || `artifact:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -3284,7 +3301,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "chat")) || "chat",
                     normalized.topic || String(normalized.data?.topic || "runtime.progress"),
-                    String(normalized.data?.label || normalized.topic || tRef.current("运行更新", "Runtime updated")),
+                    String(normalized.data?.label || normalized.topic || tRef.current("src.screens.chatscreen.runtime_updated")),
                     {
                         id: normalized.event_id || `runtime:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -3311,7 +3328,7 @@ export default function ChatScreen() {
                 buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || normalized.topic || normalized.data?.topic || "chat")) || "chat",
                     normalized.topic || String(normalized.data?.topic || "run.controlled"),
-                    String(normalized.data?.topic || tRef.current("运行控制已更新", "Run control updated")),
+                    String(normalized.data?.topic || tRef.current("src.screens.chatscreen.run_control_updated")),
                     {
                         id: normalized.event_id || `control:${normalized.seq || Date.now()}`,
                         seq: normalized.seq,
@@ -3526,7 +3543,7 @@ export default function ChatScreen() {
                 activeConversationIdRef.current === conversationId
                 && conversationTransitionTokenRef.current === transitionToken
             ) {
-                Alert.alert(t("读取会话失败", "Load failed"), error instanceof Error ? error.message : t("无法加载会话详情", "Unable to load the conversation detail"));
+                Alert.alert(t("src.screens.chatscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_load_the_conversation_detail"));
             }
             return false;
         } finally {
@@ -3803,10 +3820,10 @@ export default function ChatScreen() {
 
     const handleDeleteConversation = useCallback((item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
-        Alert.alert(t("删除会话", "Delete conversation"), t("确定删除这个会话吗？", "Delete this conversation?"), [
-            { text: t("取消", "Cancel"), style: "cancel" },
+        Alert.alert(t("src.screens.chatscreen.delete_conversation"), t("src.screens.chatscreen.delete_this_conversation"), [
+            { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
             {
-                text: t("删除", "Delete"),
+                text: t("src.screens.chatscreen.delete"),
                 style: "destructive",
                 onPress: () => {
                     void (async () => {
@@ -3818,7 +3835,7 @@ export default function ChatScreen() {
                             await setActiveConversationId(fallbackId);
                         }
                     })().catch((error) => {
-                        Alert.alert(t("删除失败", "Delete failed"), error instanceof Error ? error.message : t("无法删除会话", "Unable to delete conversation"));
+                        Alert.alert(t("src.screens.chatscreen.delete_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_delete_conversation"));
                     });
                 },
             },
@@ -3826,10 +3843,10 @@ export default function ChatScreen() {
     }, [activeConversationId, authorizedFetch, conversations, setActiveConversationId, t]);
 
     const handleDeleteMessage = useCallback((message: ChatMessage) => {
-        Alert.alert(t("删除消息", "Delete message"), t("确定删除这条消息吗？", "Delete this message?"), [
-            { text: t("取消", "Cancel"), style: "cancel" },
+        Alert.alert(t("src.screens.chatscreen.delete_message"), t("src.screens.chatscreen.delete_this_message"), [
+            { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
             {
-                text: t("删除", "Delete"),
+                text: t("src.screens.chatscreen.delete"),
                 style: "destructive",
                 onPress: () => {
                     void (async () => {
@@ -3846,7 +3863,7 @@ export default function ChatScreen() {
                             return next;
                         });
                     })().catch((error) => {
-                        Alert.alert(t("删除失败", "Delete failed"), error instanceof Error ? error.message : t("无法删除消息", "Unable to delete message"));
+                        Alert.alert(t("src.screens.chatscreen.delete_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_delete_message"));
                     });
                 },
             },
@@ -3898,7 +3915,7 @@ export default function ChatScreen() {
 
             setUploadedFiles((current) => mergeUploadedWorkspaceFiles(current, uploaded));
         } catch (error) {
-            Alert.alert(t("上传失败", "Upload failed"), error instanceof Error ? error.message : t("无法上传附件", "Unable to upload the attachment"));
+            Alert.alert(t("src.screens.chatscreen.upload_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_upload_the_attachment"));
         } finally {
             setAttachmentBusy(false);
         }
@@ -3909,7 +3926,7 @@ export default function ChatScreen() {
             if (!recorder.isRecording) {
                 const permission = await requestRecordingPermissionsAsync();
                 if (!permission.granted) {
-                    throw new Error(t("需要麦克风权限才能录音", "Microphone access is required"));
+                    throw new Error(t("src.screens.chatscreen.microphone_access_is_required"));
                 }
                 await setAudioModeAsync({
                     allowsRecording: true,
@@ -3927,7 +3944,7 @@ export default function ChatScreen() {
             });
             const uri = recorder.uri;
             if (!uri) {
-                throw new Error(t("没有拿到录音文件", "No recording file found"));
+                throw new Error(t("src.screens.chatscreen.no_recording_file_found"));
             }
 
             setTranscribing(true);
@@ -3940,11 +3957,11 @@ export default function ChatScreen() {
             const payload = await speechToText(authorizedFetch, formData) as { text?: string; error?: string };
             const text = String(payload.text || "").trim();
             if (!text) {
-                throw new Error(String(payload.error || t("未识别到语音内容", "No speech detected")));
+                throw new Error(String(payload.error || t("src.screens.chatscreen.no_speech_detected")));
             }
             setInput((current) => [current.trim(), text].filter(Boolean).join(current.trim() ? "\n" : ""));
         } catch (error) {
-            Alert.alert(t("录音失败", "Recording failed"), error instanceof Error ? error.message : t("无法完成录音转写", "Unable to transcribe recording"));
+            Alert.alert(t("src.screens.chatscreen.recording_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_transcribe_recording"));
         } finally {
             setTranscribing(false);
         }
@@ -4013,7 +4030,7 @@ export default function ChatScreen() {
             const cached = await saveResponseToCache(response, { prefix: "tts", fallbackExtension: "mp3" });
             const audioUri = String(cached.uri || "").trim();
             if (!audioUri) {
-                throw new Error(t("语音文件生成失败", "Failed to create audio file"));
+                throw new Error(t("src.screens.chatscreen.failed_to_create_audio_file"));
             }
             if (ttsRequestIdRef.current !== requestId) {
                 return;
@@ -4024,7 +4041,7 @@ export default function ChatScreen() {
             if (ttsRequestIdRef.current === requestId) {
                 setSpeakingId("");
             }
-            Alert.alert(t("语音播放失败", "Speech playback failed"), error instanceof Error ? error.message : t("无法播放这条语音", "Unable to play audio"));
+            Alert.alert(t("src.screens.chatscreen.speech_playback_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_play_audio"));
         }
     }, [authorizedFetch, speakingId, t, ttsPlayer, ttsStatus.playing]);
 
@@ -4069,8 +4086,8 @@ export default function ChatScreen() {
             }
         } catch (error) {
             Alert.alert(
-                command === "interrupt" ? t("中断失败", "Stop failed") : t("重试失败", "Retry failed"),
-                error instanceof Error ? error.message : t("运行控制失败", "Run command failed"),
+                command === "interrupt" ? t("src.screens.chatscreen.stop_failed") : t("src.screens.chatscreen.retry_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.run_command_failed"),
             );
         } finally {
             setRunActionBusy(false);
@@ -4352,7 +4369,13 @@ export default function ChatScreen() {
         const pendingCommand = selectedCommand;
         const pendingSkills = [...selectedSkills];
         const pendingFiles = [...uploadedFiles];
-        const effectiveText = text || (pendingFiles.length === 1 ? "已上传 1 个文件" : pendingFiles.length > 1 ? `已上传 ${pendingFiles.length} 个文件` : "");
+        const effectiveText = text || (
+            pendingFiles.length === 1
+                ? t("shared.upload.uploaded_single")
+                : pendingFiles.length > 1
+                    ? t("shared.upload.uploaded_count", { count: pendingFiles.length })
+                    : ""
+        );
         const engineNowMs = getEngineNowMs();
         const engineNowIso = new Date(engineNowMs).toISOString();
         let submissionAccepted = false;
@@ -4392,8 +4415,8 @@ export default function ChatScreen() {
                     ...(assistantPlaceholder.metadata || {}),
                     assistantTaskProgress: {
                         phase: "task_planning",
-                        label: t("正在规划任务", "Planning task"),
-                        subtitle: t("正在拆解步骤并准备执行。", "Breaking down the steps and preparing execution."),
+                        label: t("src.screens.chatscreen.planning_task"),
+                        subtitle: t("src.screens.chatscreen.breaking_down_the_steps_and_preparing_execution"),
                     },
                 };
             }
@@ -4455,7 +4478,7 @@ export default function ChatScreen() {
                 },
             );
             if (submitResult.accepted === false) {
-                throw new Error(t("消息提交失败", "Unable to submit message"));
+                throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
             }
             submissionAccepted = true;
             const acceptedUserMessage = normalizeAcceptedUserMessage(submitResult.userMessage, userMessage);
@@ -4535,7 +4558,7 @@ export default function ChatScreen() {
                     return next;
                 });
             }
-            Alert.alert(t("发送失败", "Send failed"), error instanceof Error ? error.message : t("无法发送消息", "Unable to send message"));
+            Alert.alert(t("src.screens.chatscreen.send_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_send_message"));
         } finally {
             setSending(false);
         }
@@ -4552,7 +4575,7 @@ export default function ChatScreen() {
     ]);
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在读取聊天主链…", "Loading the conversation lane...")} />;
+        return <LoadingScreen label={t("src.screens.chatscreen.loading_the_conversation_lane")} />;
     }
 
     if (status === "anonymous") {
@@ -4563,8 +4586,8 @@ export default function ChatScreen() {
     const greetingEmptyState = !activeConversationId && projection.projectedMessages.length === 0
         ? {
             title: getDayGreeting(locale),
-            subtitle: t("先选工作区，再开始一段新对话。", "Choose a workspace, then start a new conversation."),
-            actionLabel: t("开始新对话", "Start a new conversation"),
+            subtitle: t("src.screens.chatscreen.choose_a_workspace_then_start_a_new_conversation"),
+            actionLabel: t("src.screens.chatscreen.start_a_new_conversation"),
             onAction: () => void handleNewConversation(),
             variant: "greeting" as const,
         }
@@ -4572,15 +4595,12 @@ export default function ChatScreen() {
     const legacyChatEmptyState = activeConversationId && legacyChatUnsupported && projection.projectedMessages.length === 0
         ? {
             icon: "archive-alert-outline" as const,
-            title: t("旧会话未接入 Canonical Transcript", "Legacy conversation is not on Canonical Transcript"),
-            subtitle: t(
-                "这条历史记录没有稳定 transcript 节点。为避免继续混用旧数据源造成漂移，当前版本已停止回放旧混源聊天内容。",
-                "This history record has no stable transcript nodes. To avoid mixed-source drift, this version no longer replays legacy chat content.",
-            ),
+            title: t("src.screens.chatscreen.legacy_conversation_is_not_on_canonical_transcript"),
+            subtitle: t("src.screens.chatscreen.this_history_record_has_no_stable_transcript_nodes_to_avoid_mixed_source_drift_this_version_no_longer_replays_legacy_chat_content"),
         }
         : null;
-    const currentWorkspaceLabel = boundProject?.name || t("主工作区", "Main workspace");
-    const currentWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || t("未绑定", "Unbound");
+    const currentWorkspaceLabel = boundProject?.name || t("src.screens.chatscreen.main_workspace");
+    const currentWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || t("src.screens.chatscreen.unbound");
     const showWorkspaceChooser = !activeConversationId && workspaceChooserVisible;
     const composerHorizontalInset = isLandscape ? 18 : 10;
     const composerBottomInset = Math.max(safeAreaInsets.bottom, Platform.OS === "ios" ? 8 : 10);
@@ -4719,7 +4739,7 @@ export default function ChatScreen() {
             ) : (
                 <GlassCard style={[styles.workspaceHintCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
                     <Text style={[styles.workspaceHintText, { color: palette.textMuted }]}>
-                        {t("先选择主工作区或项目级工作区，再开始新对话。", "Choose the main workspace or a project workspace before starting a new conversation.")}
+                        {t("src.screens.chatscreen.choose_the_main_workspace_or_a_project_workspace_before_starting_a_new_conversation")}
                     </Text>
                 </GlassCard>
             )}
@@ -4754,10 +4774,10 @@ export default function ChatScreen() {
                                         <View style={styles.workspaceChooserHeader}>
                                             <View style={styles.workspaceChooserHeaderBody}>
                                                 <Text style={[styles.workspaceChooserTitle, { color: palette.text }]}>
-                                                    {t("选择工作区", "Choose a workspace")}
+                                                    {t("src.screens.chatscreen.choose_a_workspace")}
                                                 </Text>
                                                 <Text style={[styles.workspaceChooserSubtitle, { color: palette.textMuted }]}>
-                                                    {t("历史会话始终优先；这里只在你明确开始新对话时出现。", "History always stays higher priority; this only appears when you explicitly start a new conversation.")}
+                                                    {t("src.screens.chatscreen.history_always_stays_higher_priority_this_only_appears_when_you_explicitly_start_a_new_conversation")}
                                                 </Text>
                                             </View>
                                             <Pressable
@@ -4777,21 +4797,21 @@ export default function ChatScreen() {
                                             onPress={() => void createBoundConversation({ kind: "main" })}
                                         >
                                             <Text style={[styles.workspaceOptionTitle, { color: palette.text }]}>
-                                                {t("主工作区", "Main workspace")}
+                                                {t("src.screens.chatscreen.main_workspace")}
                                             </Text>
                                             <Text style={[styles.workspaceOptionMeta, { color: palette.textMuted }]}>
-                                                {mainWorkspacePath || t("正在读取主工作区路径…", "Loading main workspace path...")}
+                                                {mainWorkspacePath || t("src.screens.chatscreen.loading_main_workspace_path")}
                                             </Text>
                                         </Pressable>
 
                                         <View style={[styles.workspaceChooserSection, { borderColor: palette.border }]}>
                                             <Text style={[styles.workspaceSectionLabel, { color: palette.textMuted }]}>
-                                                {t("现有项目级工作区", "Existing project workspaces")}
+                                                {t("src.screens.chatscreen.existing_project_workspaces")}
                                             </Text>
                                             <View style={styles.workspaceOptionList}>
                                                 {availableProjects.length === 0 ? (
                                                     <Text style={[styles.workspaceEmptyText, { color: palette.textMuted }]}>
-                                                        {t("当前还没有可用的项目级工作区。", "No project workspaces are available yet.")}
+                                                        {t("src.screens.chatscreen.no_project_workspaces_are_available_yet")}
                                                     </Text>
                                                 ) : (
                                                     availableProjects.map((project) => (
@@ -4802,10 +4822,10 @@ export default function ChatScreen() {
                                                             onPress={() => project.id && void createBoundConversation({ kind: "project", projectId: project.id })}
                                                         >
                                                             <Text style={[styles.workspaceOptionTitle, { color: palette.text }]}>
-                                                                {project.name || project.id || t("未命名项目", "Unnamed project")}
+                                                                {project.name || project.id || t("src.screens.chatscreen.unnamed_project")}
                                                             </Text>
                                                             <Text style={[styles.workspaceOptionMeta, { color: palette.textMuted }]}>
-                                                                {project.workspacePath || project.id || t("路径未就绪", "Path unavailable")}
+                                                                {project.workspacePath || project.id || t("src.screens.chatscreen.path_unavailable")}
                                                             </Text>
                                                         </Pressable>
                                                     ))
@@ -4815,16 +4835,16 @@ export default function ChatScreen() {
 
                                         <View style={[styles.workspaceChooserSection, { borderColor: palette.border }]}>
                                             <Text style={[styles.workspaceSectionLabel, { color: palette.textMuted }]}>
-                                                {t("新建项目级工作区", "Create a project workspace")}
+                                                {t("src.screens.chatscreen.create_a_project_workspace")}
                                             </Text>
                                             <Text style={[styles.workspaceSectionHint, { color: palette.textMuted }]}>
-                                                {t("这里只填项目名称；系统会在 ~/.v8-agent-os/workspace/projects 下自动创建路径。", "Only a project name is needed here; the system creates the path under ~/.v8-agent-os/workspace/projects automatically.")}
+                                                {t("src.screens.chatscreen.only_a_project_name_is_needed_here_the_system_creates_the_path_under_v8_agent_os_workspace_projects_automatically")}
                                             </Text>
                                             <View style={styles.workspaceCreateRow}>
                                                 <TextInput
                                                     value={newProjectName}
                                                     onChangeText={setNewProjectName}
-                                                    placeholder={t("输入项目名称", "Enter a project name")}
+                                                    placeholder={t("src.screens.chatscreen.enter_a_project_name")}
                                                     placeholderTextColor={palette.textSoft}
                                                     style={[styles.workspaceNameInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border }]}
                                                 />
@@ -4842,7 +4862,7 @@ export default function ChatScreen() {
                                                     {workspaceChooserBusy ? (
                                                         <ActivityIndicator size="small" color="#FFFFFF" />
                                                     ) : (
-                                                        <Text style={styles.workspaceCreateButtonText}>{t("创建并开始", "Create and start")}</Text>
+                                                        <Text style={styles.workspaceCreateButtonText}>{t("src.screens.chatscreen.create_and_start")}</Text>
                                                     )}
                                                 </Pressable>
                                             </View>
@@ -4901,7 +4921,7 @@ export default function ChatScreen() {
                                     >
                                         <Pressable
                                             accessibilityRole="button"
-                                            accessibilityLabel={t("当前工作区", "Current workspace")}
+                                            accessibilityLabel={t("src.screens.chatscreen.current_workspace")}
                                             style={[
                                                 styles.scopeTrigger,
                                                 {
@@ -5009,9 +5029,9 @@ export default function ChatScreen() {
                             <View style={[styles.scopeSheetHandle, { backgroundColor: palette.border }]} />
                             <View style={styles.scopeSheetHeader}>
                                 <View style={styles.scopeSheetHeaderText}>
-                                    <Text style={[styles.contextTitle, { color: palette.text }]}>{t("当前工作区", "Current workspace")}</Text>
+                                    <Text style={[styles.contextTitle, { color: palette.text }]}>{t("src.screens.chatscreen.current_workspace")}</Text>
                                     <Text style={[styles.contextSubtitle, { color: palette.textMuted }]}>
-                                        {t("当前会话的工作区绑定在创建后已冻结；如需切换，请新建对话。", "This conversation binding is frozen after creation. Start a new conversation to switch workspaces.")}
+                                        {t("src.screens.chatscreen.this_conversation_binding_is_frozen_after_creation_start_a_new_conversation_to_switch_workspaces")}
                                     </Text>
                                 </View>
                                 <Pressable
@@ -5030,7 +5050,7 @@ export default function ChatScreen() {
                             >
                                 <View style={styles.scopeSheetSection}>
                                     <Text style={[styles.scopeSheetSectionLabel, { color: palette.textMuted }]}>
-                                        {t("当前绑定", "Current binding")}
+                                        {t("src.screens.chatscreen.current_binding")}
                                     </Text>
                                     <View style={styles.scopeOptionGrid}>
                                         <View style={[styles.scopeOptionChip, { backgroundColor: palette.primarySoft, borderColor: `${palette.primary}33` }]}>
@@ -5046,17 +5066,17 @@ export default function ChatScreen() {
 
                                 <View style={styles.scopeSheetSection}>
                                     <Text style={[styles.scopeSheetSectionLabel, { color: palette.textMuted }]}>
-                                        {t("会话信息", "Conversation info")}
+                                        {t("src.screens.chatscreen.conversation_info")}
                                     </Text>
                                     <View style={styles.contextChips}>
                                         <View style={[styles.contextChip, { backgroundColor: palette.primarySoft, borderColor: `${palette.primary}1A` }]}>
                                             <Text style={[styles.contextChipText, { color: palette.primaryDeep }]}>
-                                                {t("会话", "Conversation")}：{projection.activeConversation?.title || t("当前对话", "Current conversation")}
+                                                {t("src.screens.artifactsscreen.conversation")}：{projection.activeConversation?.title || t("src.screens.chatscreen.current_conversation")}
                                             </Text>
                                         </View>
                                         <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                                             <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
-                                                {t("工作区类型", "Workspace kind")}：{currentWorkspaceLabel}
+                                                {t("src.screens.chatscreen.workspace_kind")}：{currentWorkspaceLabel}
                                             </Text>
                                         </View>
                                         <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
@@ -5066,7 +5086,7 @@ export default function ChatScreen() {
                                         </View>
                                         <View style={[styles.contextChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                                             <Text style={[styles.contextChipText, { color: palette.textMuted }]}>
-                                                {t("路径", "Path")}：{currentWorkspacePath}
+                                                {t("src.screens.chatscreen.path")}：{currentWorkspacePath}
                                             </Text>
                                         </View>
                                     </View>
@@ -5100,13 +5120,13 @@ export default function ChatScreen() {
                                 onError={() => {
                                     setDesktopPreviewState("error");
                                     setDesktopPreviewBusy(false);
-                                    setDesktopPreviewError(t("桌面预览尚未就绪，请稍候。", "Desktop preview is not ready yet. Please wait."));
+                                    setDesktopPreviewError(t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
                                 }}
                             />
                             {(desktopPreviewBusy || desktopPreviewState === "loading" || (!desktopPreviewError && desktopPreviewState !== "preview")) ? (
                                 <View style={styles.previewLoadingWrap}>
                                     <ActivityIndicator color="#FFFFFF" />
-                                    <Text style={styles.previewLoadingText}>{t("正在建立桌面流连接…", "Connecting desktop stream...")}</Text>
+                                    <Text style={styles.previewLoadingText}>{t("src.screens.chatscreen.connecting_desktop_stream")}</Text>
                                 </View>
                             ) : null}
                             {desktopPreviewError ? (

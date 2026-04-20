@@ -109,7 +109,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                         </Text>
 
                         <Badge variant={isComplete ? "secondary" : "outline"}>
-                            {isComplete ? t("已完成", "Complete") : t("执行中", "Running")}
+                            {isComplete ? t("src.components.chat.toolcard.complete") : t("src.components.chat.toolcard.running")}
                         </Badge>
                     </View>
 
@@ -134,7 +134,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                     >
                         <View style={styles.section}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                {t("输入", "Input")}
+                                {t("src.components.chat.toolcard.input")}
                             </Text>
                             <CodeBlock language="json" value={stringifyPayload(toolInvocation.args ?? {})} />
                         </View>
@@ -142,7 +142,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                         {isComplete && !hideResult ? (
                             <View style={styles.section}>
                                 <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                    {t("输出", "Output")}
+                                    {t("src.components.chat.toolcard.output")}
                                 </Text>
                                 <CodeBlock language="json" value={stringifyPayload(toolInvocation.result ?? "")} />
                             </View>

@@ -17,7 +17,6 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-import { lt } from "@/lib/locale";
 
 const RPAWorkbench = dynamic(
     () => import("@/components/rpa/RPAWorkbench").then((mod) => mod.RPAWorkbench),
@@ -138,14 +137,14 @@ export default function RpaRuntimePage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title={lt("RPA Runtime", "RPA Runtime")}
-                description={lt("管理流程发现、执行策略与回退方式。", "Manage discovery, execution policy, and fallback behavior for RPA.")} 
+                title={"app.admin.dashboard.rpa.page.kf4573dc1"}
+                description={"app.admin.dashboard.rpa.page.kcc16b8bd"} 
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
                         <Button onClick={() => void handleSave()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Workflow className="mr-2 h-4 w-4" />}
-                            {t(lt("保存", "Save"))}
+                            {t("app.admin.dashboard.rpa.page.k6010e1ed")}
                         </Button>
                     </div>
                 }
@@ -153,16 +152,16 @@ export default function RpaRuntimePage() {
 
             <DomainSummaryStrip
                 items={[
-                    { label: lt("流程发现模型", "Discovery model"), value: envelope.data.modelBindings.discoveryModel ? t(lt("已指定", "Bound")) : t(lt("未指定", "Unset")), description: lt("用于流程摸索、变量抽取和脚本生成。", "Used for discovery, variable extraction, and script generation.") },
-                    { label: lt("执行策略", "Execution policy"), value: envelope.data.executionPolicy.runtimeFirst ? t(lt("先本地恢复", "Local recovery first")) : t(lt("直接上报", "Escalate directly")), description: lt("先由运行时本地修复，再决定是否升级。", "Try local runtime recovery before escalation.") },
-                    { label: lt("副作用保护", "Side-effect guard"), value: envelope.data.executionPolicy.sideEffectIdempotency ? t(lt("已开启", "On")) : t(lt("未开启", "Off")), description: lt("避免重复执行高风险外部动作。", "Avoid replaying risky external side effects.") },
-                    { label: lt("恢复方式", "Recovery mode"), value: envelope.data.executionPolicy.localRecoveryPreferred ? t(lt("优先自动恢复", "Auto recovery first")) : t(lt("需人工判断", "Manual review")), description: lt("失败后优先本地修补并继续。", "Prefer local repair and continue after failures.") },
+                    { label: "app.admin.dashboard.rpa.page.kac114a5d", value: envelope.data.modelBindings.discoveryModel ? t("app.admin.dashboard.rpa.page.k7b68df0c") : t("app.admin.dashboard.rpa.page.k54745147"), description: "app.admin.dashboard.rpa.page.k091a9e28" },
+                    { label: "app.admin.dashboard.rpa.page.k412949c6", value: envelope.data.executionPolicy.runtimeFirst ? t("app.admin.dashboard.rpa.page.k8702fc03") : t("app.admin.dashboard.rpa.page.k15545a62"), description: "app.admin.dashboard.rpa.page.kd7db31e0" },
+                    { label: "app.admin.dashboard.rpa.page.kf49515d3", value: envelope.data.executionPolicy.sideEffectIdempotency ? t("app.admin.dashboard.rpa.page.k1f61b6f9") : t("app.admin.dashboard.rpa.page.k2cbc2a89"), description: "app.admin.dashboard.rpa.page.k0878d653" },
+                    { label: "app.admin.dashboard.rpa.page.k8225c664", value: envelope.data.executionPolicy.localRecoveryPreferred ? t("app.admin.dashboard.rpa.page.kd7741288") : t("app.admin.dashboard.rpa.page.kf62f97c0"), description: "app.admin.dashboard.rpa.page.kab062523" },
                 ]}
             />
 
-            <ConfigCard title={lt("流程发现模型", "Discovery model")} description={lt("配置流程发现模型。", "Configure the model used for RPA discovery.")}>
+            <ConfigCard title={"app.admin.dashboard.rpa.page.kac114a5d"} description={"app.admin.dashboard.rpa.page.ke461397f"}>
                 <div className="space-y-2">
-                    <Label>{t(lt("发现模型", "Discovery model"))}</Label>
+                    <Label>{t("app.admin.dashboard.rpa.page.k2948258d")}</Label>
                     <Select
                         value={envelope.data.modelBindings.discoveryModel || "__empty__"}
                         onValueChange={(value) =>
@@ -177,9 +176,9 @@ export default function RpaRuntimePage() {
                             })
                         }
                     >
-                        <SelectTrigger><SelectValue placeholder={t(lt("未指定", "Unset"))} /></SelectTrigger>
+                        <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.rpa.page.k54745147")} /></SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="__empty__">{t(lt("未指定", "Unset"))}</SelectItem>
+                            <SelectItem value="__empty__">{t("app.admin.dashboard.rpa.page.k54745147")}</SelectItem>
                             {llmModels.map((model) => (
                                 <SelectItem key={model.modelId} value={model.modelId}>
                                     {model.name} {model.provider?.name ? `(${model.provider.name})` : ""}
@@ -190,34 +189,34 @@ export default function RpaRuntimePage() {
                 </div>
             </ConfigCard>
 
-            <StatusNotice title={lt("只有本地无法继续时才会上升为中断或人工确认。", "Escalate to interrupt or manual review only when local recovery cannot continue.")} tone="info" />
+            <StatusNotice title={"app.admin.dashboard.rpa.page.ka1059631"} tone="info" />
 
-            <ConfigCard title={lt("Runtime 状态", "Runtime status")} description={lt("这里只影响 RPA runtime。", "This only affects the RPA runtime.")}>
+            <ConfigCard title={"app.admin.dashboard.rpa.page.kb6443896"} description={"app.admin.dashboard.rpa.page.kb0b0faae"}>
                 <div className="space-y-3">
                     <div className="grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
                         <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                            <div className="text-xs text-slate-500">{t(lt("当前状态", "Current state"))}</div>
+                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.rpa.page.k73b0e79c")}</div>
                             <div className="mt-1 text-base font-semibold text-slate-900">
-                                {runtimeCapability?.policy?.enabled === false ? t(lt("已禁用", "Disabled")) : t(lt("已启用", "Enabled"))}
+                                {runtimeCapability?.policy?.enabled === false ? t("app.admin.dashboard.rpa.page.kc6ff9900") : t("app.admin.dashboard.rpa.page.kdb6c0cc1")}
                             </div>
                             <div className="mt-2 text-xs text-slate-500">
-                            {runtimeCapability?.displayName || "RPA Runtime"} · {runtimeCapability?.summary || t(lt("负责流程发现、.robot 执行与失败回退。", "Handles discovery, .robot execution, and fallback recovery."))}
+                            {runtimeCapability?.displayName || "RPA Runtime"} · {runtimeCapability?.summary || t("app.admin.dashboard.rpa.page.k846fddf9")}
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-xs leading-6 text-slate-600">
-                            <div>{t(lt("自动路由：", "Auto-route:"))}{runtimeCapability?.policy?.autoRoute === false ? t(lt("关闭", "Off")) : t(lt("开启", "On"))}</div>
-                            <div>{t(lt("直连工具暴露：", "Direct tools:"))}{runtimeCapability?.policy?.exposeDirectTools === false ? t(lt("关闭", "Off")) : t(lt("开启", "On"))}</div>
-                            <div>{t(lt("影响范围：仅影响 `rpa` runtime，其他模块继续正常运行。", "Scope: only affects the `rpa` runtime. Other modules continue as usual."))}</div>
+                            <div>{t("app.admin.dashboard.rpa.page.k660c8c15")}{runtimeCapability?.policy?.autoRoute === false ? t("app.admin.dashboard.rpa.page.k574ff3b2") : t("app.admin.dashboard.rpa.page.k85549844")}</div>
+                            <div>{t("app.admin.dashboard.rpa.page.k320d306e")}{runtimeCapability?.policy?.exposeDirectTools === false ? t("app.admin.dashboard.rpa.page.k574ff3b2") : t("app.admin.dashboard.rpa.page.k85549844")}</div>
+                            <div>{t("app.admin.dashboard.rpa.page.kb135dd5b")}</div>
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-3">
                         <Button type="button" onClick={() => void setRuntimeEnabled(true)} disabled={runtimeSaving || runtimeCapability?.policy?.enabled !== false}>
                             {runtimeSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                            {t(lt("启用 RPA", "Enable RPA"))}
+                            {t("app.admin.dashboard.rpa.page.k6a58f024")}
                         </Button>
                         <Button type="button" variant="outline" onClick={() => void setRuntimeEnabled(false)} disabled={runtimeSaving || runtimeCapability?.policy?.enabled === false}>
                             {runtimeSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                            {t(lt("禁用 RPA", "Disable RPA"))}
+                            {t("app.admin.dashboard.rpa.page.kff9e27eb")}
                         </Button>
                     </div>
                 </div>
@@ -226,7 +225,7 @@ export default function RpaRuntimePage() {
             <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={envelope.reloadRequired} />
 
             <AdvancedSection
-                description={lt("只有在需要调试流程、模板或脚本细节时再展开。", "Expand only when you need to inspect flows, templates, or script details.")}
+                description={"app.admin.dashboard.rpa.page.k6bc68ae7"}
                 defaultOpen={false}
             >
                 <RPAWorkbench />

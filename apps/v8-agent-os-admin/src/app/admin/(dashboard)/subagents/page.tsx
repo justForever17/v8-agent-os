@@ -12,7 +12,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import {
     BrainCircuit,
     Cable,
@@ -258,10 +257,10 @@ export default function SubagentsPage() {
             );
             return (
                 <div className="flex flex-wrap gap-2">
-                    <Badge variant="secondary">{counts.skill} {t(lt("技能", "Skills"))}</Badge>
+                    <Badge variant="secondary">{counts.skill} {t("app.admin.dashboard.subagents.page.k6440d98e")}</Badge>
                     <Badge variant="secondary">{counts.mcp} MCP</Badge>
                     <Badge variant="secondary">{counts.plugin_host} PluginHost</Badge>
-                    {counts.other > 0 ? <Badge variant="outline">{counts.other} {t(lt("其他", "Other"))}</Badge> : null}
+                    {counts.other > 0 ? <Badge variant="outline">{counts.other} {t("app.admin.dashboard.subagents.page.kd7875daf")}</Badge> : null}
                 </div>
             );
         },
@@ -315,13 +314,13 @@ export default function SubagentsPage() {
             } else {
                 const data = await bridgeRes.json().catch(() => ({}));
                 setPluginHostTools([]);
-                setBridgeError(typeof data?.error === "string" ? data.error : t(lt("当前无法读取 PluginHostRuntime bridge 工具目录。", "Unable to read the PluginHostRuntime bridge tool catalog right now.")));
+                setBridgeError(typeof data?.error === "string" ? data.error : t("app.admin.dashboard.subagents.page.keff963b3"));
             }
         } catch (error) {
             console.error("Failed to fetch subagent data", error);
             toast({
-                title: t(lt("加载失败", "Load failed")),
-                description: t(lt("当前无法读取子 Agent 配置。", "Unable to read subagent configuration right now.")),
+                title: t("app.admin.dashboard.subagents.page.k65ed1d75"),
+                description: t("app.admin.dashboard.subagents.page.k6ccb2f21"),
                 variant: "destructive",
             });
         } finally {
@@ -341,11 +340,11 @@ export default function SubagentsPage() {
 
     const handleSave = useCallback(async () => {
         if (!form.name.trim()) {
-            toast({ title: t(lt("名称必填", "Name required")), description: t(lt("请先填写子 Agent 名称。", "Please enter a subagent name first.")), variant: "destructive" });
+            toast({ title: t("app.admin.dashboard.subagents.page.k2ba9f8cf"), description: t("app.admin.dashboard.subagents.page.kda9e4fc0"), variant: "destructive" });
             return;
         }
         if (!form.modelId.trim()) {
-            toast({ title: t(lt("模型必填", "Model required")), description: t(lt("请先为子 Agent 选择模型。", "Please choose a model for the subagent first.")), variant: "destructive" });
+            toast({ title: t("app.admin.dashboard.subagents.page.k24a5ad1b"), description: t("app.admin.dashboard.subagents.page.ka092e243"), variant: "destructive" });
             return;
         }
         setIsSaving(true);
@@ -377,10 +376,10 @@ export default function SubagentsPage() {
                 throw new Error(String(data?.detail || data?.error || response.status));
             }
             toast({
-                title: editingAgent ? t(lt("子 Agent 已更新", "Subagent updated")) : t(lt("子 Agent 已创建", "Subagent created")),
+                title: editingAgent ? t("app.admin.dashboard.subagents.page.kfeb7fab7") : t("app.admin.dashboard.subagents.page.kbd2c49ab"),
                 description: form.toolMode === "contextual_auto"
-                    ? t(lt("该子 Agent 会继承当前 route 的 skills、MCP、PluginHost 与基础系统工具候选。", "This subagent inherits the current route's skills, MCP candidates, PluginHost candidates, and baseline system tools."))
-                    : t(lt("该子 Agent 会按显式 selector 使用 skills、MCP 与 PluginHost 工具。", "This subagent uses explicitly selected skills, MCP tools, and PluginHost selectors.")),
+                    ? t("app.admin.dashboard.subagents.page.k6693a150")
+                    : t("app.admin.dashboard.subagents.page.kd4ec2786"),
             });
             setIsDialogOpen(false);
             setEditingAgent(null);
@@ -388,8 +387,8 @@ export default function SubagentsPage() {
         } catch (error) {
             console.error("Failed to save subagent", error);
             toast({
-                title: t(lt("保存失败", "Save failed")),
-                description: error instanceof Error ? error.message : t(lt("请稍后重试。", "Please try again later.")),
+                title: t("app.admin.dashboard.subagents.page.k12769ce1"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.ke0d2c647"),
                 variant: "destructive",
             });
         } finally {
@@ -398,19 +397,19 @@ export default function SubagentsPage() {
     }, [editingAgent, fetchData, form, t, toast]);
 
     const handleDelete = useCallback(async (id: string) => {
-        if (!confirm(t(lt("确定要删除这个子 Agent 吗？", "Delete this subagent?")))) return;
+        if (!confirm(t("app.admin.dashboard.subagents.page.ka7d365b9"))) return;
         try {
             const response = await fetch(`/api/agents/${id}`, { method: "DELETE" });
             if (!response.ok) {
                 throw new Error(String(response.status));
             }
-            toast({ title: t(lt("子 Agent 已删除", "Subagent deleted")) });
+            toast({ title: t("app.admin.dashboard.subagents.page.k1b2c89e7") });
             await fetchData();
         } catch (error) {
             console.error("Failed to delete subagent", error);
             toast({
-                title: t(lt("删除失败", "Delete failed")),
-                description: t(lt("当前无法删除该子 Agent。", "Unable to delete this subagent right now.")),
+                title: t("app.admin.dashboard.subagents.page.k0915ccdf"),
+                description: t("app.admin.dashboard.subagents.page.k5d01859a"),
                 variant: "destructive",
             });
         }
@@ -420,15 +419,15 @@ export default function SubagentsPage() {
         <div className="mx-auto max-w-7xl space-y-8 p-8">
             <div className="flex items-center justify-between gap-3">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">{t(lt("子智能体", "Subagents"))}</h1>
+                    <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.subagents.page.k6c291586")}</h1>
                     <p className="mt-1 text-muted-foreground">
-                        {t(lt("这里管理子 Agent 的 tool_mode、显式 selector、skills 继承和并发委派能力。", "Manage subagent tool modes, explicit selectors, skill inheritance, and parallel delegation here."))}
+                        {t("app.admin.dashboard.subagents.page.k790af087")}
                     </p>
                 </div>
                 <div className="flex gap-2">
                     <Button variant="outline" onClick={() => void fetchData()} disabled={isLoading}>
                         <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
-                        {t(lt("刷新", "Refresh"))}
+                        {t("app.admin.dashboard.subagents.page.k876e8c06")}
                     </Button>
                     <Button
                         onClick={() => {
@@ -438,7 +437,7 @@ export default function SubagentsPage() {
                         }}
                     >
                         <Plus className="mr-2 h-4 w-4" />
-                        {t(lt("新建子 Agent", "Create subagent"))}
+                        {t("app.admin.dashboard.subagents.page.k5ae562aa")}
                     </Button>
                 </div>
             </div>
@@ -446,8 +445,8 @@ export default function SubagentsPage() {
             <div className="grid gap-4 lg:grid-cols-3">
                 <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-base"><ShieldCheck className="h-4 w-4 text-sky-600" />{t(lt("基础系统工具", "Baseline System Tools"))}</CardTitle>
-                        <CardDescription>{t(lt("所有子 Agent 默认继承的基础读写、命令、检索与媒体分析能力。", "These are the baseline read/write, command, search, and media-analysis capabilities every subagent inherits by default."))}</CardDescription>
+                        <CardTitle className="flex items-center gap-2 text-base"><ShieldCheck className="h-4 w-4 text-sky-600" />{t("app.admin.dashboard.subagents.page.k00bf2013")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.subagents.page.k32187022")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                         <div className="flex flex-wrap gap-2">
@@ -457,36 +456,36 @@ export default function SubagentsPage() {
                             {BASELINE_SYSTEM_TOOLS.length > 8 ? <Badge variant="secondary">+{BASELINE_SYSTEM_TOOLS.length - 8}</Badge> : null}
                         </div>
                         <p className="text-xs leading-5 text-slate-500">
-                            {t(lt("这些工具不会因为 runtime route 没命中而完全消失；高风险的底层桌面/进程治理工具仍保持显式保护。", "These tools do not disappear just because a runtime route is not selected; high-risk low-level desktop and process controls still stay explicitly protected."))}
+                            {t("app.admin.dashboard.subagents.page.kc1d5d40b")}
                         </p>
                     </CardContent>
                 </Card>
                 <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-violet-600" />{t(lt("Skills / 路由继承", "Skills / Route Inheritance"))}</CardTitle>
-                        <CardDescription>{t(lt("contextual_auto 子 Agent 会继承当前 route 的 skill、MCP 与 PluginHost 候选。", "contextual_auto subagents inherit the current route's skill, MCP, and PluginHost candidates."))}</CardDescription>
+                        <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-violet-600" />{t("app.admin.dashboard.subagents.page.k9764402c")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.subagents.page.k90999eb9")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 text-sm text-slate-500">
-                        <div>{t(lt("已加载 Skills", "Loaded skills"))}：<span className="font-medium text-slate-900">{skills.length}</span></div>
-                        <div>{t(lt("已连接 MCP 服务", "Connected MCP servers"))}：<span className="font-medium text-slate-900">{connectedMcpServiceCount}</span></div>
-                        <div>{t(lt("可用 MCP 工具", "Available MCP tools"))}：<span className="font-medium text-slate-900">{availableMcpToolCount}</span></div>
-                        <div>{t(lt("已登记 MCP 服务", "Registered MCP servers"))}：<span className="font-medium text-slate-900">{mcpServiceCount}</span></div>
-                        <div>{t(lt("已发现 PluginHost 工具", "Discovered PluginHost tools"))}：<span className="font-medium text-slate-900">{pluginHostTools.length}</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.kfe41d471")}：<span className="font-medium text-slate-900">{skills.length}</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.k28701d18")}：<span className="font-medium text-slate-900">{connectedMcpServiceCount}</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.kac4fbea7")}：<span className="font-medium text-slate-900">{availableMcpToolCount}</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.k98864e9e")}：<span className="font-medium text-slate-900">{mcpServiceCount}</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.k2b971b98")}：<span className="font-medium text-slate-900">{pluginHostTools.length}</span></div>
                         <div className="text-xs leading-5">
-                            {t(lt("子 Agent 会共享同一套 extensions runtime 路由，不再出现 Supervisor 懂了但子 Agent 没候选、没技能的断层。", "Subagents share the same extensions-runtime routing surface, so you no longer get the split where Supervisor sees candidates but subagents do not."))}
+                            {t("app.admin.dashboard.subagents.page.k6aba54ed")}
                         </div>
                     </CardContent>
                 </Card>
                 <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-base"><Cable className="h-4 w-4 text-emerald-600" />{t(lt("委派 / 并行", "Delegation / Parallel"))}</CardTitle>
-                        <CardDescription>{t(lt("Supervisor 现在支持受控并发 fan-out / join。", "Supervisor now supports controlled parallel fan-out / join."))}</CardDescription>
+                        <CardTitle className="flex items-center gap-2 text-base"><Cable className="h-4 w-4 text-emerald-600" />{t("app.admin.dashboard.subagents.page.k11cd990c")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.subagents.page.kdd510546")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 text-sm text-slate-500">
-                        <div>{t(lt("delegate_parallel", "delegate_parallel"))}：<span className="font-medium text-slate-900">{t(lt("已启用", "Enabled"))}</span></div>
-                        <div>{t(lt("并发上限", "Parallel limit"))}：<span className="font-medium text-slate-900">2</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.ke60b3448")}：<span className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.kdb6c0cc1")}</span></div>
+                        <div>{t("app.admin.dashboard.subagents.page.k150a33d0")}：<span className="font-medium text-slate-900">2</span></div>
                         <div className="text-xs leading-5">
-                            {t(lt("并发委派只作用于已注册子 Agent，不支持嵌套并发；失败结果会和成功结果一起回收给 Supervisor。", "Parallel delegation only targets registered subagents, does not support nested parallelism, and returns failed results together with successful ones to Supervisor."))}
+                            {t("app.admin.dashboard.subagents.page.k6b4be373")}
                         </div>
                     </CardContent>
                 </Card>
@@ -511,12 +510,12 @@ export default function SubagentsPage() {
                                         )}
                                             <div className="min-w-0">
                                                 <CardTitle className="truncate text-lg">{agent.name}</CardTitle>
-                                                <CardDescription className="truncate">{agent.model?.name || agent.modelId || t(lt("未知模型", "Unknown model"))}</CardDescription>
+                                                <CardDescription className="truncate">{agent.model?.name || agent.modelId || t("app.admin.dashboard.subagents.page.kb1fcabf9")}</CardDescription>
                                             </div>
                                         </div>
                                         <div className="flex gap-1">
                                             <Button type="button" variant="ghost" size="sm" onClick={() => { setEditingAgent(agent); setIsDialogOpen(true); }}>
-                                                {t(lt("编辑", "Edit"))}
+                                                {t("app.admin.dashboard.subagents.page.k75997619")}
                                             </Button>
                                         <Button type="button" variant="ghost" size="sm" className="text-rose-600" onClick={() => void handleDelete(agent.id)}>
                                             <Trash2 className="h-4 w-4" />
@@ -525,21 +524,21 @@ export default function SubagentsPage() {
                                 </div>
                                 <div className="flex flex-wrap gap-2">
                                     <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{toolMode}</Badge>
-                                    {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t(lt("主理人创建", "Created by lead"))}</Badge> : null}
-                                    {agent.reflection_enabled ? <Badge variant="outline">{t(lt("自我检查", "Self-check"))} × {agent.max_reflections || 3}</Badge> : null}
+                                    {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t("app.admin.dashboard.subagents.page.kcec0f2f4")}</Badge> : null}
+                                    {agent.reflection_enabled ? <Badge variant="outline">{t("app.admin.dashboard.subagents.page.k1599cdff")} × {agent.max_reflections || 3}</Badge> : null}
                                 </div>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                                <p className="min-h-[3rem] text-sm leading-6 text-slate-500">{agent.description || t(lt("暂无描述", "No description"))}</p>
+                                <p className="min-h-[3rem] text-sm leading-6 text-slate-500">{agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}</p>
                                 {toolMode === "explicit" ? (
                                     <div className="space-y-2">
-                                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t(lt("显式能力预览", "Explicit capability preview"))}</div>
+                                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.subagents.page.k1dc6b253")}</div>
                                         {renderToolBadgeSummary(selectors)}
                                     </div>
                                 ) : (
                                     <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-xs leading-5 text-slate-500">
                                         <div className="font-medium text-slate-900">{t("contextual_auto")}</div>
-                                        <div>{t(lt("默认继承当前 route 的 Skills / MCP / PluginHost 候选，并始终保留 baseline system tools。", "By default, this inherits the current route's Skills / MCP / PluginHost candidates and always keeps baseline system tools."))}</div>
+                                        <div>{t("app.admin.dashboard.subagents.page.kf913a2e6")}</div>
                                     </div>
                                 )}
                             </CardContent>
@@ -548,7 +547,7 @@ export default function SubagentsPage() {
                 })}
                 {agents.length === 0 ? (
                     <div className="col-span-full rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 py-12 text-center text-sm text-slate-500">
-                        {t(lt("暂无子 Agent。创建后，Supervisor 就可以把明确分工的任务交给它们。", "No subagents yet. Once you create them, Supervisor can delegate clearly scoped work."))}
+                        {t("app.admin.dashboard.subagents.page.kc6380706")}
                     </div>
                 ) : null}
             </div>
@@ -556,40 +555,40 @@ export default function SubagentsPage() {
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">
                     <DialogHeader className="shrink-0 border-b border-slate-200 px-6 py-5">
-                        <DialogTitle>{editingAgent ? t(lt("编辑子 Agent", "Edit subagent")) : t(lt("新建子 Agent", "Create subagent"))}</DialogTitle>
+                        <DialogTitle>{editingAgent ? t("app.admin.dashboard.subagents.page.k74a55357") : t("app.admin.dashboard.subagents.page.k5ae562aa")}</DialogTitle>
                     </DialogHeader>
                     <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-5">
                         <div className="space-y-6">
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
-                                <Label>{t(lt("名称", "Name"))}</Label>
-                                <Input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder={t(lt("例如：代码助手", "For example: code assistant"))} />
+                                <Label>{t("app.admin.dashboard.subagents.page.k6a80aac6")}</Label>
+                                <Input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder={t("app.admin.dashboard.subagents.page.kffd7236f")} />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("角色标签", "Role label"))}</Label>
-                                <Input value={form.roleLabel} onChange={(event) => setForm((current) => ({ ...current, roleLabel: event.target.value }))} placeholder={t(lt("例如：专家", "For example: specialist"))} />
+                                <Label>{t("app.admin.dashboard.subagents.page.kc4e7d695")}</Label>
+                                <Input value={form.roleLabel} onChange={(event) => setForm((current) => ({ ...current, roleLabel: event.target.value }))} placeholder={t("app.admin.dashboard.subagents.page.k49570350")} />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("图标", "Icon"))}</Label>
+                                <Label>{t("app.admin.dashboard.subagents.page.k5888282d")}</Label>
                                 <Input value={form.icon} onChange={(event) => setForm((current) => ({ ...current, icon: event.target.value }))} placeholder="🤖" />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("头像 URL", "Avatar URL"))}</Label>
-                                <Input value={form.avatar} onChange={(event) => setForm((current) => ({ ...current, avatar: event.target.value }))} placeholder={t(lt("可留空，使用图标作为展示。", "Optional. Leave empty to use the icon instead."))} />
+                                <Label>{t("app.admin.dashboard.subagents.page.kc2c1e310")}</Label>
+                                <Input value={form.avatar} onChange={(event) => setForm((current) => ({ ...current, avatar: event.target.value }))} placeholder={t("app.admin.dashboard.subagents.page.kf714bed3")} />
                             </div>
                         </div>
 
                         <div className="space-y-2">
-                            <Label>{t(lt("职责说明", "Description"))}</Label>
-                            <Textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} placeholder={t(lt("简要说明这个子 Agent 负责什么。", "Briefly describe what this subagent is responsible for."))} />
+                            <Label>{t("app.admin.dashboard.subagents.page.k4218ea5a")}</Label>
+                            <Textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} placeholder={t("app.admin.dashboard.subagents.page.kdd73d22c")} />
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
-                                <Label>{t(lt("模型", "Model"))}</Label>
+                                <Label>{t("app.admin.dashboard.subagents.page.kca695f8f")}</Label>
                                 <Select value={form.modelId} onValueChange={(value) => setForm((current) => ({ ...current, modelId: value }))}>
                                     <SelectTrigger>
-                                        <SelectValue placeholder={t(lt("选择一个模型", "Choose a model"))} />
+                                        <SelectValue placeholder={t("app.admin.dashboard.subagents.page.k9e6fdf0a")} />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {models.map((model) => (
@@ -601,7 +600,7 @@ export default function SubagentsPage() {
                                 </Select>
                             </div>
                             <div className="space-y-2">
-                                <Label>{t(lt("tool_mode", "tool_mode"))}</Label>
+                                <Label>{t("app.admin.dashboard.subagents.page.k963f9424")}</Label>
                                 <Select value={form.toolMode} onValueChange={(value: "explicit" | "contextual_auto") => setForm((current) => ({ ...current, toolMode: value }))}>
                                     <SelectTrigger>
                                         <SelectValue />
@@ -617,13 +616,13 @@ export default function SubagentsPage() {
                         <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-sm leading-6 text-slate-500">
                             {form.toolMode === "contextual_auto" ? (
                                 <>
-                                    <div className="font-medium text-slate-900">{t(lt("contextual_auto 会做什么", "What contextual_auto does"))}</div>
-                                    <div>{t(lt("子 Agent 会继承 Supervisor 当轮 route 已筛出的 skills、MCP、PluginHost 候选，再按 delegated task 继续收窄。同时 baseline system tools 默认常开。", "The subagent inherits the skills, MCP, and PluginHost candidates already screened by Supervisor on the current route, then narrows them further for the delegated task. Baseline system tools stay on by default."))}</div>
+                                    <div className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.k9431e8c4")}</div>
+                                    <div>{t("app.admin.dashboard.subagents.page.k3b6c2a75")}</div>
                                 </>
                             ) : (
                                 <>
-                                    <div className="font-medium text-slate-900">{t(lt("explicit 会做什么", "What explicit does"))}</div>
-                                    <div>{t(lt("子 Agent 只会使用你在下面显式选择的 skills、MCP 与 PluginHost selector；系统原生工具会继续默认保留，不会因为这里没勾选而失效。", "The subagent only uses the skills, MCP tools, and PluginHost selectors you explicitly choose below. Baseline system tools still remain available and do not disappear just because they are not checked here."))}</div>
+                                    <div className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.kaaa3ff24")}</div>
+                                    <div>{t("app.admin.dashboard.subagents.page.k502a06d7")}</div>
                                 </>
                             )}
                         </div>
@@ -640,11 +639,11 @@ export default function SubagentsPage() {
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base">
                                                     <ShieldCheck className="h-4 w-4 text-sky-600" />
-                                                    {t(lt("系统原生工具", "Baseline system tools"))}
+                                                    {t("app.admin.dashboard.subagents.page.k8cf0c430")}
                                                     <Badge variant="outline">{BASELINE_SYSTEM_TOOLS.length}</Badge>
                                                 </CardTitle>
                                                 <CardDescription>
-                                                    {t(lt("这些工具始终保留给子 Agent，不需要在 explicit 模式下额外勾选。", "These tools always remain available to the subagent and do not need to be selected again in explicit mode."))}
+                                                    {t("app.admin.dashboard.subagents.page.k82df509a")}
                                                 </CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.baseline ? "rotate-180" : ""}`} />
@@ -660,7 +659,7 @@ export default function SubagentsPage() {
                                                 ))}
                                             </div>
                                             <p className="text-xs leading-5 text-slate-500">
-                                                {t(lt("也就是说，下面的 Skills / MCP / PluginHost 只决定附加能力面，不会把读写、命令、搜索和后台命令会话这些基础系统能力拿掉。", "In other words, the sections below only control additional capability surfaces. They do not remove the baseline read/write, command, search, or background command session tools."))}
+                                                {t("app.admin.dashboard.subagents.page.k76e62da1")}
                                             </p>
                                         </CardContent>
                                     ) : null}
@@ -673,15 +672,15 @@ export default function SubagentsPage() {
                                             onClick={() => toggleToolPanel("skills")}
                                         >
                                             <div className="space-y-1">
-                                                <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-violet-600" />{t(lt("Skills", "Skills"))}<Badge variant="outline">{skills.length}</Badge></CardTitle>
-                                                <CardDescription>{t(lt("只读当前已安装 skills 的原生 metadata。", "Read-only view of the native metadata for currently installed skills."))}</CardDescription>
+                                                <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-violet-600" />{t("app.admin.dashboard.subagents.page.ke431abc9")}<Badge variant="outline">{skills.length}</Badge></CardTitle>
+                                                <CardDescription>{t("app.admin.dashboard.subagents.page.k62807e10")}</CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.skills ? "rotate-180" : ""}`} />
                                         </button>
                                     </CardHeader>
                                     {toolPanels.skills ? (
                                     <CardContent className="max-h-[224px] space-y-3 overflow-y-auto overscroll-contain pr-2">
-                                        {skills.length === 0 ? <div className="text-xs text-slate-500">{t(lt("当前没有可选 skills。", "No selectable skills are available right now."))}</div> : null}
+                                        {skills.length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.k2b7b1954")}</div> : null}
                                         {skills.map((skill) => {
                                             const checked = form.tools.includes(skill.name);
                                             return (
@@ -706,14 +705,14 @@ export default function SubagentsPage() {
                                         >
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><Wrench className="h-4 w-4 text-sky-600" />MCP<Badge variant="outline">{availableMcpToolCount}</Badge></CardTitle>
-                                                <CardDescription>{t(lt("显式绑定的 MCP 工具。", "Explicitly bound MCP tools."))}</CardDescription>
+                                                <CardDescription>{t("app.admin.dashboard.subagents.page.k6490c720")}</CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.mcp ? "rotate-180" : ""}`} />
                                         </button>
                                     </CardHeader>
                                     {toolPanels.mcp ? (
                                     <CardContent className="max-h-[224px] space-y-4 overflow-y-auto overscroll-contain pr-2">
-                                        {Object.keys(groupedMcpTools).length === 0 ? <div className="text-xs text-slate-500">{t(lt("暂无可选 MCP 工具。", "No selectable MCP tools are available."))}</div> : null}
+                                        {Object.keys(groupedMcpTools).length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.k57c2bf93")}</div> : null}
                                         {Object.entries(groupedMcpTools).map(([serverName, items]) => (
                                             <div key={serverName} className="space-y-2">
                                                 <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{serverName}</div>
@@ -724,7 +723,7 @@ export default function SubagentsPage() {
                                                             <Checkbox checked={checked} onCheckedChange={(next) => toggleSelector(tool.name, Boolean(next))} className="mt-1" />
                                                             <div className="min-w-0">
                                                                 <div className="break-all text-sm font-medium text-slate-900">{tool.name}</div>
-                                                                <div className="text-xs leading-5 text-slate-500">{tool.description || t(lt("暂无说明。", "No description."))}</div>
+                                                                <div className="text-xs leading-5 text-slate-500">{tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}</div>
                                                             </div>
                                                         </label>
                                                     );
@@ -743,7 +742,7 @@ export default function SubagentsPage() {
                                         >
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><BrainCircuit className="h-4 w-4 text-emerald-600" />PluginHost<Badge variant="outline">{pluginHostTools.length}</Badge></CardTitle>
-                                                <CardDescription>{t(lt("显式绑定的 OpenClaw / PluginHost 工具 selector。", "Explicitly bound OpenClaw / PluginHost tool selectors."))}</CardDescription>
+                                                <CardDescription>{t("app.admin.dashboard.subagents.page.k5f711f45")}</CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.plugin_host ? "rotate-180" : ""}`} />
                                         </button>
@@ -751,7 +750,7 @@ export default function SubagentsPage() {
                                     {toolPanels.plugin_host ? (
                                     <CardContent className="max-h-[224px] space-y-4 overflow-y-auto overscroll-contain pr-2">
                                         {bridgeError ? <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-700">{bridgeError}</div> : null}
-                                        {!bridgeError && Object.keys(groupedPluginHostTools).length === 0 ? <div className="text-xs text-slate-500">{t(lt("暂无可选 PluginHost 工具。", "No selectable PluginHost tools are available."))}</div> : null}
+                                        {!bridgeError && Object.keys(groupedPluginHostTools).length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.kc9324cc5")}</div> : null}
                                         {Object.entries(groupedPluginHostTools).map(([pluginId, items]) => (
                                             <div key={pluginId} className="space-y-2">
                                                 <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{pluginId}</div>
@@ -777,12 +776,12 @@ export default function SubagentsPage() {
                         ) : null}
 
                         <div className="space-y-2">
-                            <Label>{t(lt("系统提示词", "System prompt"))}</Label>
+                            <Label>{t("app.admin.dashboard.subagents.page.kc2dd0474")}</Label>
                             <Textarea
                                 value={form.systemPrompt}
                                 onChange={(event) => setForm((current) => ({ ...current, systemPrompt: event.target.value }))}
                                 className="min-h-[180px] font-mono text-sm"
-                                placeholder={t(lt("描述这个子 Agent 的职责边界、风格和限制。", "Describe this subagent's responsibility boundary, tone, and constraints."))}
+                                placeholder={t("app.admin.dashboard.subagents.page.ke7295552")}
                             />
                         </div>
 
@@ -793,13 +792,13 @@ export default function SubagentsPage() {
                                     onCheckedChange={(checked) => setForm((current) => ({ ...current, reflectionEnabled: Boolean(checked) }))}
                                 />
                                 <div>
-                                    <div className="text-sm font-medium text-slate-900">{t(lt("开启自我检查", "Enable self-check"))}</div>
-                                    <div className="text-xs text-slate-500">{t(lt("工具执行失败或效果不佳时，允许子 Agent 做受控反思。", "Allow the subagent to perform controlled reflection when tool execution fails or performs poorly."))}</div>
+                                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.kdaaa0859")}</div>
+                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.k45e15cc8")}</div>
                                 </div>
                             </label>
                             {form.reflectionEnabled ? (
                                 <div className="space-y-2">
-                                    <Label>{t(lt("最大反思次数", "Max reflections"))}</Label>
+                                    <Label>{t("app.admin.dashboard.subagents.page.k372414e4")}</Label>
                                     <Input
                                         type="number"
                                         min={1}
@@ -814,7 +813,7 @@ export default function SubagentsPage() {
 
                         <Button className="w-full" onClick={() => void handleSave()} disabled={isSaving}>
                             {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            {t(lt("保存子 Agent", "Save subagent"))}
+                            {t("app.admin.dashboard.subagents.page.k7171a69c")}
                         </Button>
                         </div>
                     </div>

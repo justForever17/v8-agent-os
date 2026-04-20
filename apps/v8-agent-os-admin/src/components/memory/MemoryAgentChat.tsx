@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Send, Loader2, Zap } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 interface MessagePart {
     type: 'text' | 'tool_call' | 'tool_result' | 'thinking';
@@ -22,16 +21,16 @@ interface Message {
 }
 
 const QUICK_CMDS = [
-    { label: lt("📊 知识库统计", "📊 Knowledge stats"), prompt: lt("帮我统计当前知识库中有多少条知识，按 scope 分类", "Count the current knowledge items by scope.") },
-    { label: lt("🕸️ 图谱概览", "🕸️ Graph overview"), prompt: lt("查询知识图谱的实体和关系总数，列出最重要的 5 个实体", "Summarize graph entities and relations, then list the top 5 entities.") },
-    { label: lt("📝 近期日志", "📝 Recent logs"), prompt: lt("获取最近 2 天的记忆日志摘要", "Summarize the memory logs from the last 2 days.") },
-    { label: lt("🔍 搜索示例", "🔍 Search example"), prompt: lt("搜索知识库中与 Next.js 相关的所有条目", "Search the knowledge base for all entries related to Next.js.") },
+    { label: "components.memory.MemoryAgentChat.k5a681356", prompt: "components.memory.MemoryAgentChat.k5f44801f" },
+    { label: "components.memory.MemoryAgentChat.k2de5b426", prompt: "components.memory.MemoryAgentChat.k407ff049" },
+    { label: "components.memory.MemoryAgentChat.k6dd95b5d", prompt: "components.memory.MemoryAgentChat.k376dd616" },
+    { label: "components.memory.MemoryAgentChat.k78d55023", prompt: "components.memory.MemoryAgentChat.kb2b16645" },
 ];
 
 export default function MemoryAgentChat() {
     const t = useT();
     const [messages, setMessages] = useState<Message[]>([
-        { role: "assistant", parts: [{ type: 'text', content: t(lt("你好！我是记忆助手。你可以让我查询知识库、分析图谱、获取日志，或者直接告诉我该记住什么。", "Hi! I am Memory Agent. Ask me to query knowledge, inspect the graph, read logs, or remember something for you.")) }] }
+        { role: "assistant", parts: [{ type: 'text', content: t("components.memory.MemoryAgentChat.k764f5071") }] }
     ]);
     const [input, setInput] = useState("");
     const [loading, setLoading] = useState(false);
@@ -135,7 +134,7 @@ export default function MemoryAgentChat() {
             console.error("Chat error:", err);
             setMessages(prev => {
                 const updated = [...prev];
-                updated[updated.length - 1].parts.push({ type: 'text', content: t(lt("⚠️ 请求失败，请检查 Engine 服务运行状态。", "⚠️ Request failed. Check whether the Engine service is running.")) });
+                updated[updated.length - 1].parts.push({ type: 'text', content: t("components.memory.MemoryAgentChat.kf71ee052") });
                 return updated;
             });
         } finally {
@@ -150,7 +149,7 @@ export default function MemoryAgentChat() {
                 <Zap className="w-4 h-4 text-primary mt-0.5 shrink-0" />
                         {QUICK_CMDS.map((cmd) => (
                     <Button
-                        key={cmd.label["en"]}
+                        key={cmd.label}
                         variant="outline"
                         size="sm"
                         className="text-xs h-7"
@@ -178,7 +177,7 @@ export default function MemoryAgentChat() {
                                 if (part.type === 'thinking') {
                                     return (
                                         <div key={pIdx} className="border-l-2 border-primary/20 pl-3 py-1 my-1 text-muted-foreground italic text-xs whitespace-pre-wrap">
-                                            {part.content || (loading && t(lt("思考中...", "Thinking...")))}
+                                            {part.content || (loading && t("components.memory.MemoryAgentChat.kd0522086"))}
                                         </div>
                                     );
                                 }
@@ -189,7 +188,7 @@ export default function MemoryAgentChat() {
                                                 <Zap className="w-3 h-3" />
                                                 <span className="font-semibold">{part.toolName}</span>
                                                 {!part.isFinished && loading && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
-                                                {part.isFinished && <div className="ml-auto text-green-500 text-[10px] border border-green-500/30 px-1 rounded">{t(lt("✓ 完成", "✓ Done"))}</div>}
+                                                {part.isFinished && <div className="ml-auto text-green-500 text-[10px] border border-green-500/30 px-1 rounded">{t("components.memory.MemoryAgentChat.k1112c898")}</div>}
                                             </div>
                                             {part.toolArgs && typeof part.toolArgs === 'object' && Object.keys(part.toolArgs).length > 0 && (
                                                 <div className="text-muted-foreground ml-4 border-l pl-2">
@@ -200,7 +199,7 @@ export default function MemoryAgentChat() {
                                             )}
                                             {part.result && (
                                                 <div className="text-muted-foreground mt-1 ml-4 border-l pl-2 pt-1 border-t-0 line-clamp-3">
-                                                    {t(lt("结果", "Result"))}: {String(part.result)}
+                                                    {t("components.memory.MemoryAgentChat.kc8f7f305")}: {String(part.result)}
                                                 </div>
                                             )}
                                         </div>
@@ -227,7 +226,7 @@ export default function MemoryAgentChat() {
                 <Input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder={t("输入指令... 如「记住我喜欢 dark mode」")}
+                    placeholder={t("components.memory.MemoryAgentChat.kbc7a3903")}
                     onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage(input)}
                     disabled={loading}
                     className="text-sm"

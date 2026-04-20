@@ -9,6 +9,7 @@ import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
+import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
@@ -36,7 +37,7 @@ type WorkspaceData = {
 };
 
 function formatPathSummary(value?: string) {
-    if (!value) return "未设置";
+    if (!value) return "app.admin.dashboard.projects.workspaces.page.value.notSet";
     if (value.length <= 44) return value;
     const parts = value.split(/[\\/]+/).filter(Boolean);
     if (parts.length <= 3) return value;
@@ -49,6 +50,7 @@ function isAbsolutePath(value: string) {
 }
 
 export default function ProjectsWorkspacesPage() {
+    const t = useT();
     const [projectsEnvelope, setProjectsEnvelope] = useState<ConfigRegistryEnvelope<ProjectsData> | null>(null);
     const [workspaceEnvelope, setWorkspaceEnvelope] = useState<ConfigRegistryEnvelope<WorkspaceData> | null>(null);
     const [workspaceDraft, setWorkspaceDraft] = useState("");
@@ -79,10 +81,10 @@ export default function ProjectsWorkspacesPage() {
 
     const localValidationError = useMemo(() => {
         const normalized = workspaceDraft.trim();
-        if (!normalized) return "主工作区路径不能为空。";
-        if (!isAbsolutePath(normalized)) return "主工作区必须使用绝对路径。";
+        if (!normalized) return t("app.admin.dashboard.projects.workspaces.page.validation.required");
+        if (!isAbsolutePath(normalized)) return t("app.admin.dashboard.projects.workspaces.page.validation.absolute");
         return "";
-    }, [workspaceDraft]);
+    }, [t, workspaceDraft]);
 
     const saveWorkspace = async () => {
         if (!workspaceEnvelope) return;
@@ -103,7 +105,7 @@ export default function ProjectsWorkspacesPage() {
             setSaved(true);
             window.setTimeout(() => setSaved(false), 1800);
         } catch (saveError) {
-            setError(saveError instanceof Error ? saveError.message : "保存主工作区失败");
+            setError(saveError instanceof Error ? saveError.message : t("app.admin.dashboard.projects.workspaces.page.error.saveFailed"));
         } finally {
             setSaving(false);
         }
@@ -123,14 +125,14 @@ export default function ProjectsWorkspacesPage() {
     return (
         <AdminPageShell>
             <AdminPageHeader
-                title="项目与工作区"
-                description="这里负责主工作区治理；项目级工作区记录在项目注册表中单独维护。"
+                title="app.admin.dashboard.projects.workspaces.page.k6dc301c9"
+                description="app.admin.dashboard.projects.workspaces.page.k385d9359"
                 actions={
                     <div className="flex items-center gap-3">
-                        <InlineSaveState saving={saving} saved={saved && !workspaceHasChanges} label="主工作区" />
+                        <InlineSaveState saving={saving} saved={saved && !workspaceHasChanges} label="app.admin.dashboard.projects.workspaces.page.kbaeeefa6" />
                         <Button onClick={() => void saveWorkspace()} disabled={saving || Boolean(localValidationError) || !workspaceHasChanges}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            保存主工作区
+                            {t("app.admin.dashboard.projects.workspaces.page.action.save")}
                         </Button>
                     </div>
                 }
@@ -138,89 +140,89 @@ export default function ProjectsWorkspacesPage() {
 
             <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
                 <ConfigCard
-                    title="主工作区"
-                    description="这里显示当前主链采用的 canonical 工作区，或你显式保存的工作区配置值。"
+                    title="app.admin.dashboard.projects.workspaces.page.kbaeeefa6"
+                    description="app.admin.dashboard.projects.workspaces.page.k2d761c72"
                     variant="editor"
                     bodyHeight="clamp"
                     bodyScroll="auto"
                 >
                     <div className="space-y-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium text-slate-900">默认执行目录</label>
+                            <label className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.field.defaultWorkspace")}</label>
                             <Input
                                 value={workspaceDraft}
                                 onChange={(event) => {
                                     setWorkspaceDraft(event.target.value);
                                     if (error) setError("");
                                 }}
-                                placeholder="例如：C:\\Users\\你的账户\\.v8-agent-os\\workspace"
+                                placeholder="app.admin.dashboard.projects.workspaces.page.k63f45c6d"
                             />
                             <div className="text-xs leading-5 text-slate-500">
-                                只接受绝对路径。这里展示的是当前执行主链实际采用的默认工作区，不是一次性迁移补丁路径。
+                                {t("app.admin.dashboard.projects.workspaces.page.field.defaultWorkspaceHint")}
                             </div>
                         </div>
 
                         <div className="grid gap-3 sm:grid-cols-3">
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">目录存在</div>
+                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{t("app.admin.dashboard.projects.workspaces.page.status.existsLabel")}</div>
                                 <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
                                     {pathStatus.exists ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <AlertTriangle className="h-4 w-4 text-amber-600" />}
-                                    {pathStatus.exists ? "已存在" : "尚未创建"}
+                                    {pathStatus.exists ? t("app.admin.dashboard.projects.workspaces.page.status.exists") : t("app.admin.dashboard.projects.workspaces.page.status.missing")}
                                 </div>
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">绝对路径</div>
+                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{t("app.admin.dashboard.projects.workspaces.page.status.absoluteLabel")}</div>
                                 <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
                                     {pathStatus.isAbsolute ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <AlertTriangle className="h-4 w-4 text-rose-600" />}
-                                    {pathStatus.isAbsolute ? "符合要求" : "需要绝对路径"}
+                                    {pathStatus.isAbsolute ? t("app.admin.dashboard.projects.workspaces.page.status.absoluteOk") : t("app.admin.dashboard.projects.workspaces.page.status.absoluteRequired")}
                                 </div>
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">写入权限</div>
+                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{t("app.admin.dashboard.projects.workspaces.page.status.writableLabel")}</div>
                                 <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
                                     {pathStatus.writable ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <AlertTriangle className="h-4 w-4 text-amber-600" />}
-                                    {pathStatus.writable ? "可写" : "待确认"}
+                                    {pathStatus.writable ? t("app.admin.dashboard.projects.workspaces.page.status.writable") : t("app.admin.dashboard.projects.workspaces.page.status.pending")}
                                 </div>
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 sm:col-span-3">
-                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">路径类型</div>
+                                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{t("app.admin.dashboard.projects.workspaces.page.status.pathTypeLabel")}</div>
                                 <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
                                     {pathStatus.isLegacyResidue ? (
                                         <AlertTriangle className="h-4 w-4 text-rose-600" />
                                     ) : (
                                         <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                                     )}
-                                    {pathStatus.isLegacyResidue ? "Legacy Monorepo Residue" : "Canonical Workspace"}
+                                    {pathStatus.isLegacyResidue ? t("app.admin.dashboard.projects.workspaces.page.status.legacyResidue") : t("app.admin.dashboard.projects.workspaces.page.status.canonicalWorkspace")}
                                 </div>
                                 <div className="mt-2 text-xs leading-5 text-slate-500">
                                     {pathStatus.isLegacyResidue
-                                        ? "当前值已命中退役 monorepo residue 规则，主链不会再把它当成合法工作区。"
-                                        : "当前值属于主链认可的 canonical workspace / 显式配置值，并不是临时 workaround。"}
+                                        ? t("app.admin.dashboard.projects.workspaces.page.status.legacyDescription")
+                                        : t("app.admin.dashboard.projects.workspaces.page.status.canonicalDescription")}
                                 </div>
                                 {pathStatus.isLegacyResidue && pathStatus.recommendedPath ? (
                                     <div className="mt-2 text-xs leading-5 text-rose-600">
-                                        推荐改用：{formatPathSummary(pathStatus.recommendedPath)}
+                                        {t("app.admin.dashboard.projects.workspaces.page.status.recommendedPath")} {t(formatPathSummary(pathStatus.recommendedPath))}
                                     </div>
                                 ) : null}
                             </div>
                         </div>
 
                         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
-                            <div className="font-medium text-slate-900">状态说明</div>
+                            <div className="font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.status.summaryTitle")}</div>
                             <div className="mt-2 leading-6">
                                 {error
                                     || localValidationError
                                     || pathStatus.reason
                                     || (pathStatus.isLegacyResidue
-                                        ? "该路径已被识别为历史 monorepo residue，不会再被接受为当前默认工作区。"
-                                        : "当前工作区状态正常，这是系统当前主链认可的默认执行目录。")}
+                                        ? t("app.admin.dashboard.projects.workspaces.page.status.legacyRejected")
+                                        : t("app.admin.dashboard.projects.workspaces.page.status.normal"))}
                             </div>
                             {pathStatus.writableTarget ? (
-                                <div className="mt-2 text-xs text-slate-500">写入检测目录：{pathStatus.writableTarget}</div>
+                                <div className="mt-2 text-xs text-slate-500">{t("app.admin.dashboard.projects.workspaces.page.status.writeProbe")} {pathStatus.writableTarget}</div>
                             ) : null}
                             {pathStatus.isLegacyResidue && pathStatus.legacyReason ? (
                                 <div className="mt-2 text-xs leading-5 text-rose-600">
-                                    已识别为旧 monorepo 残留路径：{pathStatus.legacyReason}。这条规则来自当前主链默认规范，不是临时为某次报错追加的补丁，也不会允许继续自动建目录。
+                                    {t("app.admin.dashboard.projects.workspaces.page.status.legacyRulePrefix")} {pathStatus.legacyReason}。{t("app.admin.dashboard.projects.workspaces.page.status.legacyRuleSuffix")}
                                 </div>
                             ) : null}
                         </div>
@@ -228,19 +230,19 @@ export default function ProjectsWorkspacesPage() {
                 </ConfigCard>
 
                 <ConfigCard
-                    title="项目级工作区记录"
-                    description="项目注册表只维护项目名称和项目级工作区路径。"
+                    title="app.admin.dashboard.projects.workspaces.page.k8b859122"
+                    description="app.admin.dashboard.projects.workspaces.page.kb741bb0c"
                     bodyHeight="clamp"
                     bodyScroll="auto"
                 >
                     <div className="space-y-4">
                         <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-600">
-                            这里只有显式项目绑定才会覆盖主工作区，不再根据聊天内容推测项目或 scope。
+                            {t("app.admin.dashboard.projects.workspaces.page.projectCard.hint")}
                         </div>
                         <Link href="/admin/memory?tab=projects">
                             <Button className="w-full">
                                 <FolderOpen className="mr-2 h-4 w-4" />
-                                打开项目注册表
+                                {t("app.admin.dashboard.projects.workspaces.page.projectCard.open")}
                             </Button>
                         </Link>
                     </div>

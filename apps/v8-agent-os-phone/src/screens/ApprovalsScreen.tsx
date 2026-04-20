@@ -36,7 +36,7 @@ export default function ApprovalsScreen() {
         try {
             setItems(await listPendingApprovals(authorizedFetch));
         } catch (error) {
-            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法读取待处理确认", "Unable to load pending approvals"));
+            Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.approvalsscreen.unable_to_load_pending_approvals"));
         } finally {
             setRefreshing(false);
         }
@@ -51,7 +51,7 @@ export default function ApprovalsScreen() {
     const resolve = async (approval: PendingApproval, answer: string, approve: boolean) => {
         const approvalId = approval.id || approval.approval_id;
         if (!approvalId) {
-            Alert.alert(t("处理失败", "Action failed"), t("审批记录缺少 ID", "The approval record is missing its ID."));
+            Alert.alert(t("src.screens.approvalsscreen.action_failed"), t("src.screens.approvalsscreen.the_approval_record_is_missing_its_id"));
             return;
         }
         setBusyId(approvalId);
@@ -59,14 +59,14 @@ export default function ApprovalsScreen() {
             await approvePendingItem(authorizedFetch, approvalId, answer, approve);
             await load();
         } catch (error) {
-            Alert.alert(t("处理失败", "Action failed"), error instanceof Error ? error.message : t("无法提交审批结果", "Unable to submit the approval result"));
+            Alert.alert(t("src.screens.approvalsscreen.action_failed"), error instanceof Error ? error.message : t("src.screens.approvalsscreen.unable_to_submit_the_approval_result"));
         } finally {
             setBusyId("");
         }
     };
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在读取待处理确认…", "Loading pending approvals...")} />;
+        return <LoadingScreen label={t("src.screens.approvalsscreen.loading_pending_approvals")} />;
     }
 
     if (status === "anonymous") {
@@ -84,7 +84,7 @@ export default function ApprovalsScreen() {
                 >
                     {items.length === 0 ? (
                         <GlassCard>
-                            <Text style={styles.emptyBody}>{t("当前没有待处理确认", "There are no pending approvals right now.")}</Text>
+                            <Text style={styles.emptyBody}>{t("src.screens.approvalsscreen.there_are_no_pending_approvals_right_now")}</Text>
                         </GlassCard>
                     ) : null}
 

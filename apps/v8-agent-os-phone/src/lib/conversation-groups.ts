@@ -1,5 +1,6 @@
 import type { ConversationSummary } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
+import { createTranslator, type TranslationKey } from "@/src/lib/locale";
 
 export type ConversationGroupKey = "channels" | "cron" | "hooks" | "web";
 
@@ -10,22 +11,15 @@ export const conversationGroupOrder: ConversationGroupKey[] = [
     "web",
 ];
 
-export const conversationGroupLabels: Record<ConversationGroupKey, string> = {
-    channels: "第三方渠道",
-    cron: "定时任务",
-    hooks: "触发器",
-    web: "网页对话",
-};
-
-const conversationGroupLabelMap: Record<ConversationGroupKey, { zh: string; en: string }> = {
-    channels: { zh: "第三方渠道", en: "Channels" },
-    cron: { zh: "定时任务", en: "Cron" },
-    hooks: { zh: "触发器", en: "Hooks" },
-    web: { zh: "网页对话", en: "Web chat" },
+export const conversationGroupLabels: Record<ConversationGroupKey, TranslationKey> = {
+    channels: "shared.history.group.channels",
+    cron: "shared.history.group.cron",
+    hooks: "shared.history.group.hooks",
+    web: "shared.history.group.web",
 };
 
 export function getConversationGroupLabel(key: ConversationGroupKey, locale: LocaleCode = "zh-CN") {
-    return locale === "en" ? conversationGroupLabelMap[key].en : conversationGroupLabelMap[key].zh;
+    return createTranslator(locale)(conversationGroupLabels[key]);
 }
 
 export function groupConversations(items: ConversationSummary[]) {

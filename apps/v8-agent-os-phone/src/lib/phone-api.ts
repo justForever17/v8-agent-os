@@ -1,5 +1,6 @@
 import { buildAdminApiUrl, parseJsonSafe, parseTextSafe, streamNdjson } from "@/src/lib/admin-client";
 import { normalizeSessionHistoryItem, normalizeSessionHistoryList } from "@/src/lib/session-history";
+import { translateCurrent } from "@/src/lib/locale";
 import type {
     ArtifactDetail,
     AuthSessionPayload,
@@ -88,11 +89,11 @@ export async function signUp(adminBaseUrl: string, input: RegisterInput): Promis
             deviceName: "v8-phone",
         }),
     });
-    return readJsonOrThrow<AuthSessionPayload>(response, "注册失败");
+    return readJsonOrThrow<AuthSessionPayload>(response, translateCurrent("src.providers.app_session.text_4"));
 }
 
 export async function getConnectionSummary(authorizedFetch: AuthorizedFetch) {
-    return authorizedJson<ConnectionSummary>(authorizedFetch, "/api/client/connection", "读取连接摘要失败", {
+    return authorizedJson<ConnectionSummary>(authorizedFetch, "/api/client/connection", translateCurrent("src.lib.phone_api.text_2"), {
         cache: "no-store",
     });
 }
@@ -101,7 +102,7 @@ export async function getCurrentProfile(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ user?: PhoneUser }>(
         authorizedFetch,
         "/api/client/auth/profile",
-        "读取个人信息失败",
+        translateCurrent("src.lib.phone_api.text_3"),
         { cache: "no-store" },
     );
     return payload.user || null;
@@ -111,7 +112,7 @@ export async function updateProfile(authorizedFetch: AuthorizedFetch, input: Pro
     const payload = await authorizedJson<{ user?: PhoneUser }>(
         authorizedFetch,
         "/api/client/auth/profile",
-        "更新个人信息失败",
+        translateCurrent("src.lib.phone_api.text_4"),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -125,7 +126,7 @@ export async function updatePassword(authorizedFetch: AuthorizedFetch, input: Pa
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         "/api/client/auth/password",
-        "修改密码失败",
+        translateCurrent("src.lib.phone_api.text_5"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -151,7 +152,7 @@ export async function uploadUserAvatar(
         method: "POST",
         body: form,
     });
-    return readJsonOrThrow<{ url?: string; path?: string }>(response, "头像上传失败");
+    return readJsonOrThrow<{ url?: string; path?: string }>(response, translateCurrent("src.lib.phone_api.text_6"));
 }
 
 export async function uploadAttachment(
@@ -169,19 +170,19 @@ export async function uploadAttachment(
             method: "POST",
             body: form,
         });
-        return readJsonOrThrow<UploadedWorkspaceFile>(response, "附件上传失败");
+        return readJsonOrThrow<UploadedWorkspaceFile>(response, translateCurrent("src.lib.phone_api.text_7"));
     } catch (error) {
         const message = error instanceof Error ? String(error.message || "").trim() : "";
         const lowered = message.toLowerCase();
-        const label = file.name ? `“${file.name}”` : "附件";
+        const label = file.name ? `“${file.name}”` : translateCurrent("shared.upload.file_fallback_label");
         const scheme = String(file.uri || "").split(":")[0] || "unknown";
         if (lowered.includes("network request failed")) {
-            throw new Error(`${label} 上传体发送失败，网络请求在发送过程中被中断。`);
+            throw new Error(translateCurrent("shared.upload.request_interrupted", { label }));
         }
         if (lowered.includes("fetch failed") || lowered.includes("failed to fetch")) {
-            throw new Error(`${label} 上传 transport 失败（${scheme}），请检查文件 URI、网络链路或 Admin 上传限制。`);
+            throw new Error(translateCurrent("shared.upload.transport_failed_with_scheme", { label, scheme }));
         }
-        throw error instanceof Error ? error : new Error(`${label} 上传失败`);
+        throw error instanceof Error ? error : new Error(translateCurrent("shared.upload.generic_failed", { label }));
     }
 }
 
@@ -189,7 +190,7 @@ export async function listProjects(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ projects?: ProjectSummary[] }>(
         authorizedFetch,
         "/api/client/projects",
-        "读取项目列表失败",
+        translateCurrent("src.lib.phone_api.text_9"),
         { cache: "no-store" },
     );
     return normalizeArray<ProjectSummary>(payload.projects);
@@ -199,7 +200,7 @@ export async function getProjectsRegistry(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ projects?: ProjectSummary[]; defaultProjectId?: string | null; mainWorkspacePath?: string }>(
         authorizedFetch,
         "/api/client/projects",
-        "读取项目列表失败",
+        translateCurrent("src.lib.phone_api.text_9"),
         { cache: "no-store" },
     );
     return {
@@ -215,7 +216,7 @@ export async function createProject(authorizedFetch: AuthorizedFetch, input: Cre
     return authorizedJson<ProjectSummary>(
         authorizedFetch,
         "/api/client/projects",
-        "创建项目级工作区失败",
+        translateCurrent("src.lib.phone_api.text_11"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -228,7 +229,7 @@ export async function getSessionScope(authorizedFetch: AuthorizedFetch, sessionI
     const payload = await authorizedJson<{ binding?: ScopeBindingView | null }>(
         authorizedFetch,
         `/api/client/sessions/${encodeURIComponent(sessionId)}/scope`,
-        "读取会话 scope 失败",
+        translateCurrent("src.lib.phone_api.scope"),
         { cache: "no-store" },
     );
     return payload.binding || null;
@@ -250,7 +251,7 @@ export async function updateSessionScope(
     const payload = await authorizedJson<{ binding?: ScopeBindingView | null }>(
         authorizedFetch,
         `/api/client/sessions/${encodeURIComponent(sessionId)}/scope`,
-        "更新会话 scope 失败",
+        translateCurrent("src.lib.phone_api.scope_2"),
         {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -276,7 +277,7 @@ export async function reresolveSessionScope(
     const payload = await authorizedJson<{ binding?: ScopeBindingView | null }>(
         authorizedFetch,
         `/api/client/sessions/${encodeURIComponent(sessionId)}/scope/re-resolve`,
-        "重新解析会话 scope 失败",
+        translateCurrent("src.lib.phone_api.scope_3"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -293,7 +294,7 @@ export async function listMusicTracks(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ tracks?: MusicTrack[]; items?: MusicTrack[] }>(
         authorizedFetch,
         "/api/client/music",
-        "读取音乐列表失败",
+        translateCurrent("src.lib.phone_api.text_12"),
         { cache: "no-store" },
     );
     return normalizeArray<MusicTrack>(payload.tracks || payload.items).map((track) => {
@@ -306,7 +307,7 @@ export async function listMusicTracks(authorizedFetch: AuthorizedFetch) {
 }
 
 export async function listConversations(authorizedFetch: AuthorizedFetch) {
-    const payload = await authorizedJson<ConversationSummary[]>(authorizedFetch, "/api/client/conversations", "读取会话列表失败", {
+    const payload = await authorizedJson<ConversationSummary[]>(authorizedFetch, "/api/client/conversations", translateCurrent("src.lib.phone_api.text_13"), {
         cache: "no-store",
     });
     return normalizeSessionHistoryList(Array.isArray(payload) ? payload : []);
@@ -342,7 +343,7 @@ export async function createConversation(
             requestBody.scopeMode = input.scopeMode.trim();
         }
     }
-    const payload = await authorizedJson<ConversationSummary>(authorizedFetch, "/api/client/conversations", "创建会话失败", {
+    const payload = await authorizedJson<ConversationSummary>(authorizedFetch, "/api/client/conversations", translateCurrent("src.lib.phone_api.text_14"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
@@ -354,7 +355,7 @@ export async function deleteConversation(authorizedFetch: AuthorizedFetch, id: s
     return authorizedJson<{ success: boolean }>(
         authorizedFetch,
         `/api/client/conversations/${encodeURIComponent(id)}`,
-        "删除会话失败",
+        translateCurrent("src.lib.phone_api.text_15"),
         { method: "DELETE" },
     );
 }
@@ -363,7 +364,7 @@ export async function getConversationDetail(authorizedFetch: AuthorizedFetch, id
     return authorizedJson<ConversationDetail>(
         authorizedFetch,
         `/api/client/conversations/${encodeURIComponent(id)}`,
-        "读取会话详情失败",
+        translateCurrent("src.lib.phone_api.text_16"),
         { cache: "no-store" },
     );
 }
@@ -377,7 +378,7 @@ export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: 
     }>(
         authorizedFetch,
         `/api/client/sessions/${encodeURIComponent(id)}/processes`,
-        "读取会话进程失败",
+        translateCurrent("src.lib.phone_api.text_17"),
         { cache: "no-store" },
     );
     return {
@@ -392,7 +393,7 @@ export async function listCommandPresets(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ items?: CommandPresetSummary[] }>(
         authorizedFetch,
         "/api/client/commands",
-        "读取命令预设失败",
+        translateCurrent("src.lib.phone_api.text_18"),
         { cache: "no-store" },
     );
     return normalizeArray<CommandPresetSummary>(payload.items);
@@ -402,7 +403,7 @@ export async function getCommandPreset(authorizedFetch: AuthorizedFetch, name: s
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         `/api/client/commands/${encodeURIComponent(name)}`,
-        "读取命令预设详情失败",
+        translateCurrent("src.lib.phone_api.text_19"),
         { cache: "no-store" },
     );
 }
@@ -411,7 +412,7 @@ export async function listSkills(authorizedFetch: AuthorizedFetch) {
     const payload = await authorizedJson<{ skills?: SkillReferenceSummary[] }>(
         authorizedFetch,
         "/api/client/skills/list",
-        "读取技能列表失败",
+        translateCurrent("src.lib.phone_api.text_20"),
         { cache: "no-store" },
     );
     return normalizeArray<SkillReferenceSummary>(payload.skills);
@@ -422,7 +423,7 @@ export async function listArtifacts(authorizedFetch: AuthorizedFetch, conversati
     const payload = await authorizedJson<{ artifacts?: ArtifactDetail[] }>(
         authorizedFetch,
         `/api/client/artifacts${search}`,
-        "读取产物列表失败",
+        translateCurrent("src.lib.phone_api.text_21"),
         { cache: "no-store" },
     );
     return normalizeArray<ArtifactDetail>(payload.artifacts);
@@ -432,7 +433,7 @@ export async function getArtifact(authorizedFetch: AuthorizedFetch, id: string) 
     return authorizedJson<ArtifactDetail>(
         authorizedFetch,
         `/api/client/artifacts/${encodeURIComponent(id)}`,
-        "读取产物详情失败",
+        translateCurrent("src.lib.phone_api.text_22"),
         { cache: "no-store" },
     );
 }
@@ -456,7 +457,7 @@ export async function fetchArtifactContentResponse(authorizedFetch: AuthorizedFe
     });
     if (!response.ok) {
         const detail = await parseTextSafe(response);
-        throw new Error(detail || "读取产物内容失败");
+        throw new Error(detail || translateCurrent("src.lib.phone_api.text_23"));
     }
     return response;
 }
@@ -472,7 +473,7 @@ export async function fetchWorkspaceFileResponse(authorizedFetch: AuthorizedFetc
     });
     if (!response.ok) {
         const detail = await parseTextSafe(response);
-        throw new Error(detail || "读取工作区文件失败");
+        throw new Error(detail || translateCurrent("src.lib.phone_api.text_24"));
     }
     return response;
 }
@@ -481,7 +482,7 @@ export async function deleteMessage(authorizedFetch: AuthorizedFetch, id: string
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         `/api/client/messages/${encodeURIComponent(id)}`,
-        "删除消息失败",
+        translateCurrent("src.lib.phone_api.text_25"),
         { method: "DELETE" },
     );
 }
@@ -493,7 +494,7 @@ export async function listPendingApprovals(authorizedFetch: AuthorizedFetch, con
     const payload = await authorizedJson<{ approvals?: PendingApproval[] }>(
         authorizedFetch,
         `/api/client/approvals${suffix}`,
-        "读取待处理确认失败",
+        translateCurrent("src.lib.phone_api.text_26"),
         { cache: "no-store" },
     );
     return normalizeArray<PendingApproval>(payload.approvals);
@@ -508,7 +509,7 @@ export async function approvePendingItem(
     const path = approve
         ? `/api/client/approvals/${encodeURIComponent(approvalId)}/approve`
         : `/api/client/approvals/${encodeURIComponent(approvalId)}/reject`;
-    return authorizedJson<Record<string, unknown>>(authorizedFetch, path, approve ? "审批失败" : "拒绝失败", {
+    return authorizedJson<Record<string, unknown>>(authorizedFetch, path, approve ? translateCurrent("src.lib.phone_api.text_27") : translateCurrent("src.lib.phone_api.text_28"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -528,7 +529,7 @@ export async function respondAskUser(
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         `/api/client/ask-user/${encodeURIComponent(interactionId)}/respond`,
-        "提交回答失败",
+        translateCurrent("src.lib.phone_api.text_29"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -546,7 +547,7 @@ export async function dispatchRunCommand(
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         `/api/client/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(command)}`,
-        command === "interrupt" ? "中断运行失败" : "重试运行失败",
+        command === "interrupt" ? translateCurrent("src.lib.phone_api.text_30") : translateCurrent("src.lib.phone_api.text_31"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -559,7 +560,7 @@ export async function getRealtimeSnapshot(authorizedFetch: AuthorizedFetch, conv
     return authorizedJson<RealtimeSessionSnapshot>(
         authorizedFetch,
         `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/snapshot`,
-        "读取实时快照失败",
+        translateCurrent("src.lib.phone_api.text_32"),
         { cache: "no-store" },
     );
 }
@@ -609,14 +610,14 @@ export async function submitChatMessage(
         }),
     });
 
-    return readJsonOrThrow<ChatSubmitResponse>(response, "消息提交失败");
+    return readJsonOrThrow<ChatSubmitResponse>(response, translateCurrent("src.lib.phone_api.text_33"));
 }
 
 export async function getDesktopLiveStatus(authorizedFetch: AuthorizedFetch) {
     return authorizedJson<DesktopLiveStatus>(
         authorizedFetch,
         "/api/client/desktop-live/status",
-        "读取 Desktop Live 状态失败",
+        translateCurrent("src.lib.phone_api.desktop_live"),
         { cache: "no-store" },
     );
 }
@@ -625,7 +626,7 @@ export async function prepareDesktopLive(authorizedFetch: AuthorizedFetch) {
     return authorizedJson<DesktopLiveStatus>(
         authorizedFetch,
         "/api/client/desktop-live/prepare",
-        "预热 Desktop Live 失败",
+        translateCurrent("src.lib.phone_api.desktop_live_2"),
         { method: "POST" },
     );
 }
@@ -634,7 +635,7 @@ export async function createDesktopLiveSession(authorizedFetch: AuthorizedFetch)
     return authorizedJson<DesktopLiveSessionPayload>(
         authorizedFetch,
         "/api/client/desktop-live/session",
-        "创建 Desktop Live 会话失败",
+        translateCurrent("src.lib.phone_api.desktop_live_3"),
         { method: "POST" },
     );
 }
@@ -646,7 +647,7 @@ export async function createDesktopLiveOffer(
     return authorizedJson<DesktopLiveOfferPayload>(
         authorizedFetch,
         "/api/client/desktop-live/offer",
-        "创建 Desktop Live offer 失败",
+        translateCurrent("src.lib.phone_api.desktop_live_offer"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -662,7 +663,7 @@ export async function sendDesktopLiveCandidate(
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         "/api/client/desktop-live/candidate",
-        "提交 Desktop Live candidate 失败",
+        translateCurrent("src.lib.phone_api.desktop_live_candidate"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -675,7 +676,7 @@ export async function releaseDesktopLiveSession(authorizedFetch: AuthorizedFetch
     return authorizedJson<DesktopLiveSessionPayload>(
         authorizedFetch,
         `/api/client/desktop-live/session/${encodeURIComponent(sessionId)}`,
-        "释放 Desktop Live 会话失败",
+        translateCurrent("src.lib.phone_api.desktop_live_4"),
         { method: "DELETE" },
     );
 }
@@ -691,7 +692,7 @@ export async function getRpaAvailability(authorizedFetch: AuthorizedFetch) {
     return authorizedJson<RPAAvailability>(
         authorizedFetch,
         "/api/client/rpa/availability",
-        "读取 RPA 可用性失败",
+        translateCurrent("src.lib.phone_api.rpa"),
         { cache: "no-store" },
     );
 }
@@ -700,7 +701,7 @@ export async function listRpaDrafts(authorizedFetch: AuthorizedFetch, limit = 8)
     const payload = await authorizedJson<{ drafts?: RPADraftSummary[] }>(
         authorizedFetch,
         `/api/client/rpa/drafts?limit=${encodeURIComponent(String(limit))}`,
-        "读取 RPA 草稿失败",
+        translateCurrent("src.lib.phone_api.rpa_2"),
         { cache: "no-store" },
     );
     return normalizeArray<RPADraftSummary>(payload.drafts);
@@ -711,7 +712,7 @@ export async function runRpaCompile(authorizedFetch: AuthorizedFetch, runIds: st
         ? `/api/client/rpa/compile/${encodeURIComponent(runIds[0])}`
         : "/api/client/rpa/compile";
     const body = runIds.length === 1 ? { save: true } : { runIds, save: true };
-    return authorizedJson<Record<string, unknown>>(authorizedFetch, endpoint, "生成 RPA 草稿失败", {
+    return authorizedJson<Record<string, unknown>>(authorizedFetch, endpoint, translateCurrent("src.lib.phone_api.rpa_3"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -726,7 +727,7 @@ export async function runExistingRobotFlow(
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
         "/api/client/rpa/run-existing",
-        "运行现有 RPA 流程失败",
+        translateCurrent("src.lib.phone_api.rpa_4"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -740,7 +741,7 @@ export async function speechToText(authorizedFetch: AuthorizedFetch, formData: F
         method: "POST",
         body: formData,
     });
-    return readJsonOrThrow<Record<string, unknown>>(response, "语音识别失败");
+    return readJsonOrThrow<Record<string, unknown>>(response, translateCurrent("src.lib.phone_api.text_34"));
 }
 
 export async function requestTextToSpeech(authorizedFetch: AuthorizedFetch, payload: Record<string, unknown>) {
@@ -755,9 +756,9 @@ export async function requestTextToSpeech(authorizedFetch: AuthorizedFetch, payl
             errorPayload?.detail
             || errorPayload?.error
             || await parseTextSafe(response)
-            || "语音合成失败",
+            || translateCurrent("src.lib.phone_api.text_35"),
         ).trim();
-        throw new Error(detail || "语音合成失败");
+        throw new Error(detail || translateCurrent("src.lib.phone_api.text_35"));
     }
     return response;
 }
@@ -808,7 +809,7 @@ export async function sendChatMessageStream(
 
     if (!response.ok) {
         const detail = await parseTextSafe(response);
-        throw new Error(detail || "消息发送失败");
+        throw new Error(detail || translateCurrent("src.lib.phone_api.text_37"));
     }
 
     await streamNdjson(response, onEvent);

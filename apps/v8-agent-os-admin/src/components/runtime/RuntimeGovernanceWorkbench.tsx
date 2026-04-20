@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { ApprovalRecord, RunRecord, RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { CORE_RUNTIME_KINDS, getRuntimeControlHref, isLockedRuntimeKind } from "@/lib/runtime-admin";
@@ -122,9 +123,9 @@ type RuntimeLiveStats = {
 };
 
 const PRESET_LABELS: Record<RuntimePresetId, { title: string; description: string }> = {
-    balanced: { title: "平衡模板", description: "保持自动路由，同时默认收住低层 direct tools。" },
-    conservative: { title: "保守模板", description: "优先稳定与安全，尽量关闭 direct tools 暴露面。" },
-    debug: { title: "调试模板", description: "临时放开 direct tools，便于定位问题，不建议长期启用。" },
+    balanced: { title:"components.runtime.RuntimeGovernanceWorkbench.k0590e788", description:"components.runtime.RuntimeGovernanceWorkbench.k4a43ff73" },
+    conservative: { title:"components.runtime.RuntimeGovernanceWorkbench.k1de80f3c", description:"components.runtime.RuntimeGovernanceWorkbench.k7b94c86c" },
+    debug: { title:"components.runtime.RuntimeGovernanceWorkbench.ka3d1efbb", description:"components.runtime.RuntimeGovernanceWorkbench.kcd231fad" },
 };
 
 const NONCORE_RUNTIME_KINDS = ["plugin_host", "computer_use", "rpa", "desktop_live"] as const;
@@ -184,6 +185,7 @@ type RuntimeGovernanceWorkbenchProps = {
 
 export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernanceWorkbenchProps) {
     const { toast } = useToast();
+    const t = useT();
     const [loading, setLoading] = useState(true);
     const [busyKey, setBusyKey] = useState<string | null>(null);
     const [query, setQuery] = useState("帮我做桌面自动化、RPA 和网页阅读");
@@ -219,14 +221,14 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
         }> = [
             {
                 key: "core",
-                title: "核心运行时",
-                description: "chat / memory / extensions / automation / network_supervisor 构成最小安装五件套；其中前四项不应在治理页里被真正关闭。",
+                title:"components.runtime.RuntimeGovernanceWorkbench.k1bb93e07",
+                description:"components.runtime.RuntimeGovernanceWorkbench.kecf19787",
                 runtimeKinds: [...CORE_RUNTIME_KINDS],
             },
             {
                 key: "noncore",
-                title: "非核心运行时",
-                description: "plugin_host / computer_use / rpa / desktop_live 属于额外能力面；未安装或关闭后应 cold stop / silent release。",
+                title:"components.runtime.RuntimeGovernanceWorkbench.k29368dac",
+                description:"components.runtime.RuntimeGovernanceWorkbench.k875af2ed",
                 runtimeKinds: [...NONCORE_RUNTIME_KINDS],
             },
         ];
@@ -235,8 +237,8 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
         if (overflow.length) {
             sections.push({
                 key: "other",
-                title: "其他运行时",
-                description: "这里收纳当前 registry 里存在但尚未明确分组的运行时，便于继续做 IA 收口。",
+                title:"components.runtime.RuntimeGovernanceWorkbench.k2f02da37",
+                description:"components.runtime.RuntimeGovernanceWorkbench.k69ebb082",
                 runtimeKinds: overflow.map((item) => item.kind),
             });
         }
@@ -364,7 +366,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
             }
             setSelectedSessionDetail(data as SessionDetail);
         } catch (error) {
-            toast({ variant: "destructive", title: "加载现场失败", description: error instanceof Error ? error.message : "未知错误" });
+            toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.kb6ea6822", description: error instanceof Error ? error.message : "未知错误" });
         } finally {
             setDetailLoading(false);
         }
@@ -375,7 +377,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
             try {
                 await loadAll("帮我做桌面自动化、RPA 和网页阅读");
             } catch (error) {
-                toast({ variant: "destructive", title: "加载规则状态失败", description: error instanceof Error ? error.message : "未知错误" });
+                toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.k4a84157b", description: error instanceof Error ? error.message : "未知错误" });
             } finally {
                 setLoading(false);
             }
@@ -394,7 +396,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
         try {
             await loadSnapshot(query);
         } catch (error) {
-            toast({ variant: "destructive", title: "推荐失败", description: error instanceof Error ? error.message : "未知错误" });
+            toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.ke7a17970", description: error instanceof Error ? error.message : "未知错误" });
         } finally {
             setBusyKey(null);
         }
@@ -408,7 +410,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                 await inspectSession(selectedSessionId);
             }
         } catch (error) {
-            toast({ variant: "destructive", title: "刷新失败", description: error instanceof Error ? error.message : "未知错误" });
+            toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.kaeec4304", description: error instanceof Error ? error.message : "未知错误" });
         } finally {
             setLoading(false);
         }
@@ -432,10 +434,10 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || data?.error || "保存失败");
-            toast({ title: "策略已保存", description: `${kind} 已更新。` });
+            toast({ title:"components.runtime.RuntimeGovernanceWorkbench.k93e608a9", description: `${kind} 已更新。` });
             await loadAll(query);
         } catch (error) {
-            toast({ variant: "destructive", title: "保存失败", description: error instanceof Error ? error.message : "未知错误" });
+            toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.k12769ce1", description: error instanceof Error ? error.message : "未知错误" });
         } finally {
             setBusyKey(null);
         }
@@ -447,10 +449,10 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
             const res = await fetch(`/api/runtime-capabilities/${encodeURIComponent(kind)}/policy`, { method: "DELETE" });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || data?.error || "重置失败");
-            toast({ title: "策略已重置", description: `${kind} 已恢复默认值。` });
+            toast({ title:"components.runtime.RuntimeGovernanceWorkbench.kd5cd9463", description: `${kind} 已恢复默认值。` });
             await loadAll(query);
         } catch (error) {
-            toast({ variant: "destructive", title: "重置失败", description: error instanceof Error ? error.message : "未知错误" });
+            toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.kbb48c954", description: error instanceof Error ? error.message : "未知错误" });
         } finally {
             setBusyKey(null);
         }
@@ -475,10 +477,10 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data?.detail || data?.error || `${runtime.kind} 模板应用失败`);
             }));
-            toast({ title: "模板已应用", description: PRESET_LABELS[preset].title });
+            toast({ title:"components.runtime.RuntimeGovernanceWorkbench.kbd7964c6", description: PRESET_LABELS[preset].title });
             await loadAll(query);
         } catch (error) {
-            toast({ variant: "destructive", title: "模板应用失败", description: error instanceof Error ? error.message : "未知错误" });
+            toast({ variant: "destructive", title:"components.runtime.RuntimeGovernanceWorkbench.k5c114cf0", description: error instanceof Error ? error.message : "未知错误" });
         } finally {
             setBusyKey(null);
         }
@@ -525,7 +527,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="flex flex-col gap-3 md:flex-row">
-                            <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：帮我做桌面自动化、网页抓取和视觉分析" />
+                            <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="components.runtime.RuntimeGovernanceWorkbench.kab2a9ac2" />
                             <Button onClick={() => void handleSearch()} disabled={busyKey === "query"}>重新推荐</Button>
                         </div>
                         <div className="space-y-3">
@@ -642,7 +644,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                                                         </div>
                                                         <div>
                                                             <Label htmlFor={`${runtime.kind}-notes`}>备注</Label>
-                                                            <Textarea id={`${runtime.kind}-notes`} className="mt-2 min-h-[110px]" value={policy.notes} onChange={(event) => patchPolicy(runtime.kind, { notes: event.target.value })} placeholder="例如：桌面操作只允许在内部消化低层动作，不再默认直连主理人。" />
+                                                            <Textarea id={`${runtime.kind}-notes`} className="mt-2 min-h-[110px]" value={policy.notes} onChange={(event) => patchPolicy(runtime.kind, { notes: event.target.value })} placeholder="components.runtime.RuntimeGovernanceWorkbench.kaba1447c" />
                                                             {runtime.promptHints?.length ? <div className="mt-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground"><Settings2 className="mr-2 inline h-3 w-3" />路由提示：{runtime.promptHints.join("；")}</div> : null}
                                                         </div>
                                                     </div>
@@ -676,7 +678,7 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                                 filteredFailedRuns.slice(0, 6).map((run) => (
                                     <div key={run.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap items-center gap-2">
-                                            <Badge>{RUN_LABELS[run.status || "failed"] || run.status || "failed"}</Badge>
+                                            <Badge>{t(RUN_LABELS[run.status || "failed"] || run.status || "failed")}</Badge>
                                             <Badge variant="outline">{runtimeNameMap.get(inferRunRuntime(run)) || inferRunRuntime(run)}</Badge>
                                             {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
                                         </div>

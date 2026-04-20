@@ -1,5 +1,6 @@
 import type { ChatArtifact, ChatMessage, PendingApproval, PhoneUiTimelineNode } from "@/src/types/admin";
 import { mergeTimelineNodesByIdentity } from "@v8/session-realtime";
+import { translateCurrent } from "@/src/lib/locale";
 
 const LOOPBACK_AVATAR_PATTERN = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\//i;
 const ADMIN_AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
@@ -267,9 +268,9 @@ export function normalizeMessagesForState(messages: ChatMessage[]) {
     for (const message of messages) {
         const candidate: ChatMessage = {
             ...message,
-            agentName: message.role === "assistant" ? (message.agentName || "智能主管") : message.agentName,
+            agentName: message.role === "assistant" ? (message.agentName || translateCurrent("src.lib.chat_state.text")) : message.agentName,
             agentAvatar: resolveAgentAvatar(message.agentAvatar) || (message.role === "assistant" ? DEFAULT_AGENT_AVATAR : undefined),
-            agentRoleLabel: message.role === "assistant" ? (message.agentRoleLabel || "主理人") : message.agentRoleLabel,
+            agentRoleLabel: message.role === "assistant" ? (message.agentRoleLabel || translateCurrent("src.lib.chat_state.text_2")) : message.agentRoleLabel,
             agentType: message.role === "assistant" ? (message.agentType || "supervisor") : message.agentType,
             nodes: normalizeProjectedPartsToNodes(message),
             images: Array.isArray(message.images) ? [...message.images] : [],

@@ -72,7 +72,7 @@ export default function ArtifactsScreen() {
             setArtifacts(list);
             setSelectedArtifact(nextSelected || list[0] || null);
         } catch (error) {
-            Alert.alert(t("读取失败", "Load failed"), error instanceof Error ? error.message : t("无法读取产物信息", "Unable to load artifact details"));
+            Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.artifactsscreen.unable_to_load_artifact_details"));
         } finally {
             setLoading(false);
         }
@@ -85,7 +85,7 @@ export default function ArtifactsScreen() {
     }, [load, status]);
 
     const selectedTitle = useMemo(
-        () => selectedArtifact?.title || selectedArtifact?.displayLabel || selectedArtifact?.kind || t("产物", "Artifacts"),
+        () => selectedArtifact?.title || selectedArtifact?.displayLabel || selectedArtifact?.kind || t("src.screens.artifactsscreen.artifacts"),
         [selectedArtifact, t],
     );
 
@@ -108,7 +108,7 @@ export default function ArtifactsScreen() {
                 });
                 const opened = await openCachedFile(cached.uri);
                 if (!opened) {
-                    Alert.alert(t("已缓存产物", "Artifact cached"), `${t("文件已保存到", "File saved to")}：${cached.uri}`);
+                    Alert.alert(t("src.screens.artifactsscreen.artifact_cached"), `${t("src.screens.artifactsscreen.file_saved_to")}：${cached.uri}`);
                 }
                 return;
             }
@@ -125,21 +125,21 @@ export default function ArtifactsScreen() {
                 });
                 const opened = await openCachedFile(cached.uri);
                 if (!opened) {
-                    Alert.alert(t("已缓存文件", "File cached"), `${t("文件已保存到", "File saved to")}：${cached.uri}`);
+                    Alert.alert(t("src.screens.artifactsscreen.file_cached"), `${t("src.screens.artifactsscreen.file_saved_to")}：${cached.uri}`);
                 }
                 return;
             }
 
-            throw new Error(t("当前产物没有可打开的内容地址", "This artifact does not expose any openable content URL."));
+            throw new Error(t("src.screens.artifactsscreen.this_artifact_does_not_expose_any_openable_content_url"));
         } catch (error) {
-            Alert.alert(t("打开失败", "Open failed"), error instanceof Error ? error.message : t("无法打开这个产物", "Unable to open this artifact"));
+            Alert.alert(t("src.screens.artifactsscreen.open_failed"), error instanceof Error ? error.message : t("src.screens.artifactsscreen.unable_to_open_this_artifact"));
         } finally {
             setOpening(false);
         }
     }, [adminBaseUrl, authorizedFetch, selectedArtifact, t]);
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在读取产物…", "Loading artifacts...")} />;
+        return <LoadingScreen label={t("src.screens.artifactsscreen.loading_artifacts")} />;
     }
 
     if (status === "anonymous") {
@@ -152,16 +152,16 @@ export default function ArtifactsScreen() {
                 <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 {loading ? (
-                    <LoadingScreen label={t("同步产物中…", "Syncing artifacts...")} />
+                    <LoadingScreen label={t("src.screens.artifactsscreen.syncing_artifacts")} />
                 ) : (
                     <ScrollView contentContainerStyle={styles.content}>
                         <GlassCard>
                             <View style={styles.sectionHeader}>
                                 <Text style={styles.sectionTitle}>{selectedTitle}</Text>
-                                <Text style={styles.sectionMeta}>{locale === "en" ? `${artifacts.length} items` : `${artifacts.length} 个`}</Text>
+                                <Text style={styles.sectionMeta}>{t("src.screens.artifactsscreen.items_count", { count: artifacts.length })}</Text>
                             </View>
                             {artifacts.length === 0 ? (
-                                <Text style={styles.emptyText}>{t("当前会话还没有产物，等 Supervisor 生成后这里会自动出现。", "This conversation has no artifacts yet. New ones will appear here once the supervisor generates them.")}</Text>
+                                <Text style={styles.emptyText}>{t("src.screens.artifactsscreen.this_conversation_has_no_artifacts_yet_new_ones_will_appear_here_once_the_supervisor_generates_them")}</Text>
                             ) : (
                                 artifacts.map((artifact) => {
                                     const active = selectedArtifact?.id === artifact.id;
@@ -177,7 +177,7 @@ export default function ArtifactsScreen() {
                                                     {artifact.title || artifact.displayLabel || artifact.kind || artifact.id}
                                                 </Text>
                                                 <Text style={styles.itemSubtitle} numberOfLines={1}>
-                                                    {artifact.displaySubtitle || artifact.kind || artifact.workspacePath || artifact.sourcePath || t("产物", "Artifact")}
+                                                    {artifact.displaySubtitle || artifact.kind || artifact.workspacePath || artifact.sourcePath || t("src.screens.artifactsscreen.artifact")}
                                                 </Text>
                                             </View>
                                             <Text style={styles.itemTime}>
@@ -191,51 +191,51 @@ export default function ArtifactsScreen() {
 
                         <GlassCard>
                             <View style={styles.sectionHeader}>
-                                <Text style={styles.sectionTitle}>{t("详情", "Details")}</Text>
+                                <Text style={styles.sectionTitle}>{t("src.screens.artifactsscreen.details")}</Text>
                                 <Pressable
                                     style={[styles.primaryButton, opening && styles.disabled]}
                                     onPress={() => void openSelectedArtifact()}
                                     disabled={!selectedArtifact || opening}
                                 >
                                     <MaterialCommunityIcons name={opening ? "loading" : "open-in-new"} size={16} color="#FFFFFF" />
-                                    <Text style={styles.primaryButtonText}>{opening ? t("打开中…", "Opening...") : t("打开内容", "Open content")}</Text>
+                                    <Text style={styles.primaryButtonText}>{opening ? t("src.screens.artifactsscreen.opening") : t("src.screens.artifactsscreen.open_content")}</Text>
                                 </Pressable>
                             </View>
                             {!selectedArtifact ? (
-                                <Text style={styles.emptyText}>{t("先从上面的列表里选一个产物查看详情。", "Select an artifact above to inspect its details.")}</Text>
+                                <Text style={styles.emptyText}>{t("src.screens.artifactsscreen.select_an_artifact_above_to_inspect_its_details")}</Text>
                             ) : (
                                 <View style={styles.detailList}>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>{t("标题", "Title")}</Text>
-                                        <Text style={styles.detailValue}>{selectedArtifact.title || selectedArtifact.displayLabel || t("未命名产物", "Untitled artifact")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.title")}</Text>
+                                        <Text style={styles.detailValue}>{selectedArtifact.title || selectedArtifact.displayLabel || t("src.screens.artifactsscreen.untitled_artifact")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>{t("类型", "Type")}</Text>
-                                        <Text style={styles.detailValue}>{selectedArtifact.kind || t("未知", "Unknown")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.type")}</Text>
+                                        <Text style={styles.detailValue}>{selectedArtifact.kind || t("src.screens.artifactsscreen.unknown")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>{t("创建时间", "Created")}</Text>
-                                        <Text style={styles.detailValue}>{formatClock(selectedArtifact.createdAt, locale) || t("未知", "Unknown")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.created")}</Text>
+                                        <Text style={styles.detailValue}>{formatClock(selectedArtifact.createdAt, locale) || t("src.screens.artifactsscreen.unknown")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>{t("会话", "Conversation")}</Text>
-                                        <Text style={styles.detailValue}>{selectedArtifact.sessionId || conversationId || t("未知", "Unknown")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.conversation")}</Text>
+                                        <Text style={styles.detailValue}>{selectedArtifact.sessionId || conversationId || t("src.screens.artifactsscreen.unknown")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>Run</Text>
-                                        <Text style={styles.detailValue}>{selectedArtifact.runId || t("无", "None")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.run")}</Text>
+                                        <Text style={styles.detailValue}>{selectedArtifact.runId || t("src.screens.artifactsscreen.none")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>{t("消息", "Message")}</Text>
-                                        <Text style={styles.detailValue}>{selectedArtifact.messageId || t("无", "None")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.message")}</Text>
+                                        <Text style={styles.detailValue}>{selectedArtifact.messageId || t("src.screens.artifactsscreen.none")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
-                                        <Text style={styles.detailLabel}>{t("工作区路径", "Workspace path")}</Text>
-                                        <Text style={styles.detailMono}>{selectedArtifact.workspacePath || selectedArtifact.sourcePath || t("无", "None")}</Text>
+                                        <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.workspace_path")}</Text>
+                                        <Text style={styles.detailMono}>{selectedArtifact.workspacePath || selectedArtifact.sourcePath || t("src.screens.artifactsscreen.none")}</Text>
                                     </View>
                                     {selectedArtifact.metadata ? (
                                         <View style={styles.metaCard}>
-                                            <Text style={styles.detailLabel}>Metadata</Text>
+                                            <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.metadata")}</Text>
                                             <Text style={styles.detailMono}>
                                                 {JSON.stringify(selectedArtifact.metadata, null, 2)}
                                             </Text>

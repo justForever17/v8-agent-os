@@ -1,17 +1,85 @@
+import enCatalog from "@/i18n/locales/en.json";
+import zhCNCatalog from "@/i18n/locales/zh-CN.json";
+
 export const LOCALE_COOKIE_NAME = "v8-agent-os-locale";
 
 export type Locale = "zh-CN" | "en";
+export type TranslationParams = Record<string, string | number>;
 
-export type LocalizedText = {
-    "zh-CN": string;
-    en: string;
-};
+export const TRANSLATION_CATALOG = {
+    "zh-CN": zhCNCatalog,
+    en: enCatalog,
+} as const;
 
-export function lt(zhCN: string, en: string): LocalizedText {
-    return {
-        "zh-CN": zhCN,
-        en,
-    };
+export type TranslationKey = keyof typeof zhCNCatalog & string;
+
+const TRANSLATION_KEYS = new Set<TranslationKey>(Object.keys(zhCNCatalog) as TranslationKey[]);
+const PLACEHOLDER_PATTERN = /\{([a-zA-Z0-9_]+)\}/g;
+
+function failOrWarn(message: string) {
+    if (process.env.NODE_ENV !== "production") {
+        throw new Error(message);
+    }
+    console.warn(message);
+}
+
+function resolveMessage(locale: Locale, key: TranslationKey) {
+    const catalog = TRANSLATION_CATALOG[locale] as Record<string, string | undefined>;
+    const fallbackCatalog = TRANSLATION_CATALOG["zh-CN"] as Record<string, string | undefined>;
+    const message = catalog[key] ?? fallbackCatalog[key];
+    if (typeof message === "string") {
+        return message;
+    }
+    failOrWarn(`[admin-i18n] Missing translation key "${key}" for locale "${locale}".`);
+    return key;
+}
+
+function applyParams(key: TranslationKey, template: string, params?: TranslationParams) {
+    return template.replace(PLACEHOLDER_PATTERN, (_, name: string) => {
+        if (params && Object.prototype.hasOwnProperty.call(params, name)) {
+            return String(params[name]);
+        }
+        failOrWarn(`[admin-i18n] Missing interpolation param "${name}" for key "${key}".`);
+        return key;
+    });
+}
+
+export function isTranslationKey(value: string): value is TranslationKey {
+    return TRANSLATION_KEYS.has(value as TranslationKey);
+}
+
+export function createTranslator(locale: Locale) {
+    return (key: TranslationKey, params?: TranslationParams) =>
+        applyParams(key, resolveMessage(locale, key), params);
+}
+
+export function resolveText(
+    locale: Locale,
+    value: string,
+    params?: TranslationParams,
+) {
+    if (!value) {
+        return value;
+    }
+    if (isTranslationKey(value)) {
+        return createTranslator(locale)(value, params);
+    }
+    if (/^[a-z0-9]+(?:[._-][a-z0-9]+)+$/i.test(value)) {
+        failOrWarn(`[admin-i18n] Unknown translation key "${value}" for locale "${locale}".`);
+    }
+    return value;
+}
+
+export function getTranslationVariants(value: string) {
+    if (!value) {
+        return [];
+    }
+    if (!isTranslationKey(value)) {
+        return [value];
+    }
+    const zh = resolveMessage("zh-CN", value);
+    const en = resolveMessage("en", value);
+    return zh === en ? [zh] : [zh, en];
 }
 
 export function parseLocale(value: string | null | undefined): Locale | null {
@@ -31,8 +99,4 @@ export function resolveInitialLocale(
     acceptLanguage?: string | null,
 ): Locale {
     return parseLocale(cookieValue) || parseLocale(acceptLanguage) || "zh-CN";
-}
-
-export function pickLocalizedText(locale: Locale, value: LocalizedText | string): string {
-    return typeof value === "string" ? value : value[locale];
 }

@@ -8,7 +8,6 @@ import { LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { signOut } from "next-auth/react";
 
 import { ADMIN_NAV_GROUPS } from "@/lib/admin-navigation";
-import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -48,7 +47,7 @@ export function Sidebar() {
                         <div className="text-base font-semibold text-slate-900 notranslate" translate="no">
                             V8 Agent OS
                         </div>
-                        <div className="text-xs text-slate-500">{t(lt("查看状态与调整设置", "Observe and configure"))}</div>
+                        <div className="text-xs text-slate-500">{t("components.layout.Sidebar.k8021804f")}</div>
                     </div>
                 </div>
             </div>
@@ -117,7 +116,7 @@ export function Sidebar() {
                     onClick={() => signOut()}
                 >
                     <LogOut className="mr-2 h-4 w-4" />
-                    {t(lt("退出登录", "Sign out"))}
+                    {t("components.layout.Sidebar.k2ed944b1")}
                 </Button>
             </div>
         </aside>

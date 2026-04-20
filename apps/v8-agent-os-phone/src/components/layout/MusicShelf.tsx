@@ -107,7 +107,7 @@ export function MusicShelf({
         return (
             <View style={styles.emptyShell}>
                 <Text style={[styles.emptyText, { color: palette.textMuted }]}>
-                    {t("当前没有可用音乐曲目", "No tracks available")}
+                    {t("src.components.layout.musicshelf.no_tracks_available")}
                 </Text>
             </View>
         );
@@ -123,10 +123,10 @@ export function MusicShelf({
                 </View>
                 <View style={styles.meta}>
                     <Text style={[styles.title, { color: palette.text }]} numberOfLines={1}>
-                        {currentTrack.title || t("未命名曲目", "Untitled track")}
+                        {currentTrack.title || t("src.components.layout.musicshelf.untitled_track")}
                     </Text>
                     <Text style={[styles.nowPlaying, { color: palette.textMuted }]}>
-                        {playerStatus.playing ? t("NOW PLAYING", "NOW PLAYING") : t("READY", "READY")}
+                        {playerStatus.playing ? t("src.components.layout.musicshelf.now_playing") : t("src.components.layout.musicshelf.ready")}
                     </Text>
                 </View>
                 <Pressable

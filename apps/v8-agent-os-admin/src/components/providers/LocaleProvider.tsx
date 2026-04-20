@@ -2,13 +2,19 @@
 
 import React from "react";
 
-import { localizeAdminText } from "@/lib/admin-copy";
-import { LOCALE_COOKIE_NAME, Locale, LocalizedText } from "@/lib/locale";
+import {
+    LOCALE_COOKIE_NAME,
+    Locale,
+    resolveText,
+    type TranslationKey,
+    type TranslationParams,
+} from "@/lib/locale";
 
 type LocaleContextValue = {
     locale: Locale;
     setLocale: (locale: Locale) => void;
-    t: (value: LocalizedText | string) => string;
+    t: (key: TranslationKey | string, params?: TranslationParams) => string;
+    resolveText: (value: string, params?: TranslationParams) => string;
 };
 
 const LocaleContext = React.createContext<LocaleContextValue | null>(null);
@@ -32,7 +38,16 @@ export function LocaleProvider({
     }, []);
 
     const t = React.useCallback(
-        (value: LocalizedText | string) => localizeAdminText(locale, value),
+        (value: TranslationKey | string, params?: TranslationParams) => {
+            if (typeof value === "string" && !value) {
+                return value;
+            }
+            return resolveText(locale, String(value), params);
+        },
+        [locale],
+    );
+    const resolveTextValue = React.useCallback(
+        (value: string, params?: TranslationParams) => resolveText(locale, value, params),
         [locale],
     );
 
@@ -41,8 +56,9 @@ export function LocaleProvider({
             locale,
             setLocale,
             t,
+            resolveText: resolveTextValue,
         }),
-        [locale, setLocale, t],
+        [locale, setLocale, t, resolveTextValue],
     );
 
     return <LocaleContext.Provider value={contextValue}>{children}</LocaleContext.Provider>;
@@ -58,4 +74,8 @@ export function useLocale() {
 
 export function useT() {
     return useLocale().t;
+}
+
+export function useResolveText() {
+    return useLocale().resolveText;
 }

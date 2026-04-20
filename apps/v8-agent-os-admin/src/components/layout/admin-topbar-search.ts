@@ -1,11 +1,11 @@
 import { ADMIN_NAV_GROUPS, type AdminNavItem } from "@/lib/admin-navigation";
-import { lt, type LocalizedText } from "@/lib/locale";
+import { getTranslationVariants } from "@/lib/locale";
 import { RUNTIME_CONTROL_HREF } from "@/lib/runtime-admin";
 
 export type AdminTopbarSearchEntry = {
     id: string;
-    title: LocalizedText;
-    subtitle?: LocalizedText;
+    title: string;
+    subtitle?: string;
     href: string;
     aliases?: string[];
     priority?: number;
@@ -35,36 +35,36 @@ const NAV_ENTRIES: AdminTopbarSearchEntry[] = flattenNavItems().map((item, index
 }));
 
 const MEMORY_TAB_ENTRIES: AdminTopbarSearchEntry[] = [
-    { id: "memory-preferences", title: lt("偏好项", "Preferences"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=preferences", aliases: ["memory preferences", "prefs", "preference"] },
-    { id: "memory-projects", title: lt("项目注册表", "Project registry"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=projects", aliases: ["project registry", "projects"] },
-    { id: "memory-knowledge", title: lt("知识库", "Knowledge"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=knowledge", aliases: ["knowledge base", "knowledge items"] },
-    { id: "memory-artifacts", title: lt("Artifacts", "Artifacts"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=artifacts", aliases: ["artifact explorer", "artifacts"] },
-    { id: "memory-graph", title: lt("知识图谱", "Graph"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=graph", aliases: ["knowledge graph", "graph", "entities"] },
-    { id: "memory-agent", title: lt("记忆助手", "Assistant"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=agent", aliases: ["memory assistant", "assistant"] },
-    { id: "memory-audit", title: lt("系统日志", "Logs"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=audit", aliases: ["audit", "logs", "system logs"] },
-    { id: "memory-upload", title: lt("文档上传", "Upload"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=upload", aliases: ["upload", "documents"] },
-    { id: "memory-config", title: lt("配置", "Config"), subtitle: lt("记忆管理", "Memory"), href: "/admin/memory?tab=config", aliases: ["memory config", "config"] },
+    { id: "memory-preferences", title: "components.layout.admin.topbar.search.ka5cb9483", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=preferences", aliases: ["memory preferences", "prefs", "preference"] },
+    { id: "memory-projects", title: "components.layout.admin.topbar.search.k4758acb9", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=projects", aliases: ["project registry", "projects"] },
+    { id: "memory-knowledge", title: "components.layout.admin.topbar.search.k4a8a8d88", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=knowledge", aliases: ["knowledge base", "knowledge items"] },
+    { id: "memory-artifacts", title: "components.layout.admin.topbar.search.k2ed10a6e", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=artifacts", aliases: ["artifact explorer", "artifacts"] },
+    { id: "memory-graph", title: "components.layout.admin.topbar.search.k7fe6a3d0", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=graph", aliases: ["knowledge graph", "graph", "entities"] },
+    { id: "memory-agent", title: "components.layout.admin.topbar.search.ka46db0a3", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=agent", aliases: ["memory assistant", "assistant"] },
+    { id: "memory-audit", title: "components.layout.admin.topbar.search.k386095fc", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=audit", aliases: ["audit", "logs", "system logs"] },
+    { id: "memory-upload", title: "components.layout.admin.topbar.search.kdad82071", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=upload", aliases: ["upload", "documents"] },
+    { id: "memory-config", title: "components.layout.admin.topbar.search.k0e1a1cef", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=config", aliases: ["memory config", "config"] },
 ];
 
 const RUNTIME_ENTRIES: AdminTopbarSearchEntry[] = Object.entries(RUNTIME_CONTROL_HREF).map(([kind, href], index) => ({
     id: `runtime-${kind}`,
-    title: lt(kind, kind),
-    subtitle: lt("运行时", "Runtime"),
+    title: kind,
+    subtitle: "components.layout.admin.topbar.search.kf4928997",
     href,
     aliases: [kind, kind.replace(/_/g, " "), `${kind} runtime`],
     priority: 200 + index,
 }));
 
 const MANUAL_ENTRIES: AdminTopbarSearchEntry[] = [
-    { id: "plugin-host-bridge", title: lt("桥接状态", "Bridge status"), subtitle: lt("插件宿主", "Plugin Host"), href: "/admin/plugin-host", aliases: ["bridge", "handoff", "inbound", "plugin host bridge"], priority: 240 },
-    { id: "runtime-ops-approvals", title: lt("待处理确认", "Pending approvals"), subtitle: lt("运行与问题", "Ops"), href: "/admin/operations-center?tab=approvals", aliases: ["approvals", "pending approvals"] , priority: 260 },
-    { id: "runtime-ops-runs", title: lt("最近运行", "Recent runs"), subtitle: lt("运行与问题", "Ops"), href: "/admin/operations-center?tab=runs", aliases: ["runs", "recent runs"], priority: 261 },
-    { id: "runtime-ops-logs", title: lt("高级日志", "Logs"), subtitle: lt("运行与问题", "Ops"), href: "/admin/operations-center?tab=advanced", aliases: ["ops logs", "runtime logs"], priority: 262 },
+    { id: "plugin-host-bridge", title: "components.layout.admin.topbar.search.k03c86153", subtitle: "components.layout.admin.topbar.search.k4b9cbbff", href: "/admin/plugin-host", aliases: ["bridge", "handoff", "inbound", "plugin host bridge"], priority: 240 },
+    { id: "runtime-ops-approvals", title: "components.layout.admin.topbar.search.k61329e7f", subtitle: "components.layout.admin.topbar.search.kd71b1ac9", href: "/admin/operations-center?tab=approvals", aliases: ["approvals", "pending approvals"] , priority: 260 },
+    { id: "runtime-ops-runs", title: "components.layout.admin.topbar.search.k1a586b06", subtitle: "components.layout.admin.topbar.search.kd71b1ac9", href: "/admin/operations-center?tab=runs", aliases: ["runs", "recent runs"], priority: 261 },
+    { id: "runtime-ops-logs", title: "components.layout.admin.topbar.search.kdce17454", subtitle: "components.layout.admin.topbar.search.kd71b1ac9", href: "/admin/operations-center?tab=advanced", aliases: ["ops logs", "runtime logs"], priority: 262 },
 ];
 
 const SEARCH_ENTRIES: AdminTopbarSearchEntry[] = [...NAV_ENTRIES, ...RUNTIME_ENTRIES, ...MEMORY_TAB_ENTRIES, ...MANUAL_ENTRIES];
 
-function collectNavAliases(item: AdminNavItem & { groupTitle?: LocalizedText }) {
+function collectNavAliases(item: AdminNavItem & { groupTitle?: string }) {
     const aliases = [item.href];
     if (item.href === "/admin/plugin-host") {
         aliases.push("plugin host", "bridge", "handoff", "openclaw");
@@ -97,10 +97,8 @@ function compact(value: string) {
 function collectTerms(entry: AdminTopbarSearchEntry) {
     return [
         entry.href,
-        entry.title["zh-CN"],
-        entry.title.en,
-        entry.subtitle?.["zh-CN"] || "",
-        entry.subtitle?.en || "",
+        ...getTranslationVariants(entry.title),
+        ...(entry.subtitle ? getTranslationVariants(entry.subtitle) : []),
         ...(entry.aliases || []),
     ].filter(Boolean);
 }

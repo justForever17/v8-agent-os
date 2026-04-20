@@ -60,15 +60,15 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
     const openMediaMenu = () => {
         const url = resolvedSrc || current.src;
         Alert.alert(
-            t("媒体操作", "Media actions"),
+            t("src.components.chat.mediaviewerlightbox.media_actions"),
             current.name || url,
             [
                 {
-                    text: t("保存到系统文件夹", "Save to folder"),
+                    text: t("src.components.chat.mediaviewerlightbox.save_to_folder"),
                     onPress: () => {
                         void (async () => {
                             if (!url) {
-                                throw new Error(t("没有可保存的媒体地址", "No media URL is available to save."));
+                                throw new Error(t("src.components.chat.mediaviewerlightbox.no_media_url_is_available_to_save"));
                             }
                             const saved = await downloadUrlToUserSelectedFile(url, {
                                 prefix: "media",
@@ -77,25 +77,25 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                                 authorizedFetch,
                             });
                             Alert.alert(
-                                t("已保存", "Saved"),
+                                t("src.components.chat.mediaviewerlightbox.saved"),
                                 saved.shared
-                                    ? `${t("已打开系统分享/保存到文件面板", "Opened the system share / Save to Files sheet")}：${saved.filename}`
+                                    ? `${t("src.components.chat.downloadfilecard.opened_the_system_share_save_to_files_sheet")}：${saved.filename}`
                                     : saved.userVisible
-                                    ? `${t("文件已保存到你选择的系统文件夹", "Saved to the folder you selected")}：${saved.filename}`
-                                    : `${t("文件已保存到应用沙盒", "Saved to app sandbox")}：${saved.uri}`,
+                                    ? `${t("src.components.chat.downloadfilecard.saved_to_the_folder_you_selected")}：${saved.filename}`
+                                    : `${t("src.components.chat.downloadfilecard.saved_to_app_sandbox")}：${saved.uri}`,
                             );
                         })().catch((error) => {
-                            Alert.alert(t("保存失败", "Save failed"), error instanceof Error ? error.message : t("无法保存媒体", "Unable to save media"));
+                            Alert.alert(t("src.components.chat.mediaviewerlightbox.save_failed"), error instanceof Error ? error.message : t("src.components.chat.mediaviewerlightbox.unable_to_save_media"));
                         });
                     },
                 },
                 {
-                    text: t("复制链接", "Copy link"),
+                    text: t("src.components.chat.mediaviewerlightbox.copy_link"),
                     onPress: () => {
                         void Clipboard.setStringAsync(url || "");
                     },
                 },
-                { text: t("取消", "Cancel"), style: "cancel" },
+                { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
             ],
         );
     };
@@ -124,10 +124,10 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                         <View style={styles.blockedWrap}>
                             <ActivityIndicator size="small" color={colors.primary} />
                             <Text style={styles.blockedTitle}>
-                                {t("正在准备媒体内容", "Preparing media")}
+                                {t("src.components.chat.mediaviewerlightbox.preparing_media")}
                             </Text>
                             <Text style={styles.blockedText}>
-                                {t("正在检查可预览的媒体地址。", "Checking for a previewable media URL.")}
+                                {t("src.components.chat.mediaviewerlightbox.checking_for_a_previewable_media_url")}
                             </Text>
                         </View>
                     ) : current.type === "video" && !previewBlocked && resolvedSrc ? (
@@ -146,12 +146,12 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                         <View style={styles.blockedWrap}>
                             <MaterialCommunityIcons name="video-off-outline" size={36} color={colors.warning} />
                             <Text style={styles.blockedTitle}>
-                                {t("视频预览不可达", "Video preview unavailable")}
+                                {t("src.components.chat.mediaviewerlightbox.video_preview_unavailable")}
                             </Text>
                             <Text style={styles.blockedText}>
                                 {previewBlocked
-                                    ? t("当前视频地址仍指向 localhost/127.0.0.1，手机端无法直接打开。", "The video URL still points to localhost/127.0.0.1, so the phone cannot open it directly.")
-                                    : (error || t("当前视频内容暂不可用。", "The video content is currently unavailable."))}
+                                    ? t("src.components.chat.mediaviewerlightbox.the_video_url_still_points_to_localhost_127_0_0_1_so_the_phone_cannot_open_it_directly")
+                                    : (error || t("src.components.chat.mediaviewerlightbox.the_video_content_is_currently_unavailable"))}
                             </Text>
                         </View>
                     ) : resolvedSrc ? (
@@ -165,12 +165,12 @@ export const MediaViewerLightbox = memo(function MediaViewerLightbox({
                         <View style={styles.blockedWrap}>
                             <MaterialCommunityIcons name="image-off-outline" size={36} color={colors.warning} />
                             <Text style={styles.blockedTitle}>
-                                {t("图片预览不可达", "Image preview unavailable")}
+                                {t("src.components.chat.mediaviewerlightbox.image_preview_unavailable")}
                             </Text>
                             <Text style={styles.blockedText}>
                                 {previewBlocked
-                                    ? t("当前图片地址仍指向 localhost/127.0.0.1，手机端无法直接打开。", "The image URL still points to localhost/127.0.0.1, so the phone cannot open it directly.")
-                                    : (error || t("当前图片内容暂不可用。", "The image content is currently unavailable."))}
+                                    ? t("src.components.chat.mediaviewerlightbox.the_image_url_still_points_to_localhost_127_0_0_1_so_the_phone_cannot_open_it_directly")
+                                    : (error || t("src.components.chat.mediaviewerlightbox.the_image_content_is_currently_unavailable"))}
                             </Text>
                         </View>
                     )}

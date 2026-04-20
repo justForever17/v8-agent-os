@@ -38,9 +38,9 @@ export function EditUserDialog({ user }: { user: User }) {
             </DialogTrigger>
             <DialogContent className="sm:max-w-[425px]">
                 <DialogHeader>
-                    <DialogTitle>{t("编辑用户")}</DialogTitle>
+                    <DialogTitle>{t("components.admin.EditUserDialog.k667bc756")}</DialogTitle>
                     <DialogDescription>
-                        {t("修改用户信息和权限。")}
+                        {t("components.admin.EditUserDialog.k58adc925")}
                     </DialogDescription>
                 </DialogHeader>
                 <form action={async (formData) => {
@@ -51,19 +51,19 @@ export function EditUserDialog({ user }: { user: User }) {
                     <div className="grid gap-4 py-4">
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="name" className="text-right">
-                                {t("昵称")}
+                                {t("components.admin.EditUserDialog.kb6f6dc96")}
                             </Label>
                             <Input id="name" name="name" defaultValue={user.name || ""} className="col-span-3" />
                         </div>
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="login" className="text-right">
-                                {t("登录名")}
+                                {t("components.admin.EditUserDialog.k27ba7ff8")}
                             </Label>
                             <Input id="login" name="login" defaultValue={user.login} className="col-span-3" />
                         </div>
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="role" className="text-right">
-                                {t("角色")}
+                                {t("components.admin.EditUserDialog.k0bd8550f")}
                             </Label>
                             <select
                                 id="role"
@@ -71,16 +71,16 @@ export function EditUserDialog({ user }: { user: User }) {
                                 defaultValue={user.role}
                                 className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 col-span-3"
                             >
-                                <option value="USER">{t("普通用户")}</option>
-                                <option value="ADMIN">{t("管理员")}</option>
+                                <option value="USER">{t("components.admin.EditUserDialog.k4dd15429")}</option>
+                                <option value="ADMIN">{t("components.admin.EditUserDialog.kf2e17f9d")}</option>
                             </select>
                         </div>
                         <div className="grid grid-cols-4 items-start gap-4">
                             <Label htmlFor="resetPassword" className="pt-2 text-right">
-                                {t("重置密码")}
+                                {t("components.admin.EditUserDialog.k91c072e8")}
                             </Label>
                             <div className="col-span-3 space-y-2">
-                                <Input id="resetPassword" name="resetPassword" type="password" placeholder={t("留空表示不修改")} />
+                                <Input id="resetPassword" name="resetPassword" type="password" placeholder={t("components.admin.EditUserDialog.ka8691ef0")} />
                                 <label className="flex items-center gap-2 text-sm text-muted-foreground">
                                     <input
                                         type="checkbox"
@@ -88,13 +88,13 @@ export function EditUserDialog({ user }: { user: User }) {
                                         defaultChecked={Boolean(user.mustChangePassword)}
                                         className="h-4 w-4 rounded border-input"
                                     />
-                                    {t("下次登录要求改密")}
+                                    {t("components.admin.EditUserDialog.kc50b82ec")}
                                 </label>
                             </div>
                         </div>
                     </div>
                     <DialogFooter>
-                        <Button type="submit">{t("保存修改")}</Button>
+                        <Button type="submit">{t("components.admin.EditUserDialog.k1a3a9893")}</Button>
                     </DialogFooter>
                 </form>
             </DialogContent>

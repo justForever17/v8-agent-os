@@ -40,7 +40,7 @@ export const DialogTrigger = forwardRef<View, PressableProps>(function DialogTri
 ) {
     const context = useContext(DialogContext);
     if (!context) {
-        throw new Error("DialogTrigger 必须放在 Dialog 内使用");
+        throw new Error("DialogTrigger must be used within Dialog");
     }
     return (
         <Pressable
@@ -87,7 +87,7 @@ export const DialogClose = forwardRef<View, PressableProps>(function DialogClose
 ) {
     const context = useContext(DialogContext);
     if (!context) {
-        throw new Error("DialogClose 必须放在 Dialog 内使用");
+        throw new Error("DialogClose must be used within Dialog");
     }
     return (
         <Pressable
@@ -112,7 +112,7 @@ export const DialogContent = forwardRef<View, ViewProps & { showCloseButton?: bo
     const context = useContext(DialogContext);
     const { colors } = useUiPrefs();
     if (!context) {
-        throw new Error("DialogContent 必须放在 Dialog 内使用");
+        throw new Error("DialogContent must be used within Dialog");
     }
 
     return (

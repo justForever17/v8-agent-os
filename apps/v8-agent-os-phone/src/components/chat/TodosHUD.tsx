@@ -92,7 +92,7 @@ export const TodosHUD = memo(function TodosHUD({
                     <View style={[styles.iconWrap, { backgroundColor: "rgba(124,58,237,0.12)" }]}>
                         <MaterialCommunityIcons name="format-list-checks" size={16} color={colors.primary} />
                     </View>
-                    <Text style={[styles.title, { color: colors.text }]}>{t("任务进度", "Task Progress")}</Text>
+                    <Text style={[styles.title, { color: colors.text }]}>{t("src.components.chat.todoshud.task_progress")}</Text>
                     <View style={[styles.counterPill, { backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(241,245,249,0.96)" }]}>
                         <Text style={[styles.counterText, { color: colors.textMuted }]}>{completedCount}/{todos.length}</Text>
                     </View>

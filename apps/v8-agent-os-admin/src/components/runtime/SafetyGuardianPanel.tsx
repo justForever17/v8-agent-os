@@ -311,7 +311,7 @@ export function SafetyGuardianPanel() {
                             value={config.machinePosture}
                             onChange={(next) => updateAndSync((previous) => ({ ...previous, machinePosture: next }))}
                             options={[
-                                { value: "dedicated_runtime_host", label: "dedicated_runtime_host（推荐）" },
+                                { value: "dedicated_runtime_host", label:"components.runtime.SafetyGuardianPanel.k5970446a" },
                                 { value: "developer_mixed_host", label: "developer_mixed_host" },
                             ]}
                         />

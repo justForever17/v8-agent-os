@@ -51,7 +51,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
     qwenCode: {
         id: "qwenCode",
         label: "Qwen Code",
-        description: "Qwen Portal OAuth 文件",
+        description:"lib.models.provider.admin.k949dba29",
         apiStandard: "openai",
         baseUrl: "https://portal.qwen.ai/v1",
         oauthPath: "~/.qwen/oauth_creds.json",
@@ -61,7 +61,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
     geminiCli: {
         id: "geminiCli",
         label: "Gemini CLI",
-        description: "Gemini CLI OAuth 文件",
+        description:"lib.models.provider.admin.kf52f7884",
         apiStandard: "gemini",
         baseUrl: "https://cloudcode-pa.googleapis.com",
         oauthPath: "~/.gemini/oauth_creds.json",
@@ -84,7 +84,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     ollama: {
         id: "ollama",
         label: "Ollama",
-        description: "本机 Ollama OpenAI 兼容入口",
+        description:"lib.models.provider.admin.k64a1675f",
         apiStandard: "openai",
         baseUrl: "http://127.0.0.1:11434/v1",
         apiKey: "ollama",
@@ -94,7 +94,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     nexa: {
         id: "nexa",
         label: "Nexa",
-        description: "本机 Nexa OpenAI 兼容入口",
+        description:"lib.models.provider.admin.k3946df50",
         apiStandard: "openai",
         baseUrl: "http://127.0.0.1:18181/v1",
         apiKey: "",
@@ -104,7 +104,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     vllm: {
         id: "vllm",
         label: "vLLM",
-        description: "本机 vLLM OpenAI 兼容入口",
+        description:"lib.models.provider.admin.k2328ba1b",
         apiStandard: "openai",
         baseUrl: "http://127.0.0.1:8000/v1",
         apiKey: "local-vllm",
@@ -114,7 +114,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     lmstudio: {
         id: "lmstudio",
         label: "LM Studio",
-        description: "本机 LM Studio OpenAI 兼容入口",
+        description:"lib.models.provider.admin.k9f3a867d",
         apiStandard: "openai",
         baseUrl: "http://127.0.0.1:1234/v1",
         apiKey: "lm-studio",

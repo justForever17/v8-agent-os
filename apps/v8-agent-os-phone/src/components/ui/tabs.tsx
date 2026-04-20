@@ -56,7 +56,7 @@ export const TabsTrigger = forwardRef<View, PressableProps & { value: string }>(
     const context = useContext(TabsContext);
     const { colors, themeMode } = useUiPrefs();
     if (!context) {
-        throw new Error("TabsTrigger 必须放在 Tabs 内使用");
+        throw new Error("TabsTrigger must be used within Tabs");
     }
     const active = context.value === value;
 
@@ -107,7 +107,7 @@ export const TabsContent = forwardRef<View, ViewProps & { value: string }>(funct
 ) {
     const context = useContext(TabsContext);
     if (!context) {
-        throw new Error("TabsContent 必须放在 Tabs 内使用");
+        throw new Error("TabsContent must be used within Tabs");
     }
     if (context.value !== value) {
         return null;

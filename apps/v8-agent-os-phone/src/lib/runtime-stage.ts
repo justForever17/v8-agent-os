@@ -6,6 +6,7 @@ import type {
     PhoneUiGovernanceNode,
     PhoneUiTimelineNode,
 } from "@/src/types/admin";
+import { createTranslator } from "@/src/lib/locale";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
@@ -61,42 +62,6 @@ export type PhoneRuntimeStageModel = {
     activeRuntimeId: PhoneRuntimeId | null;
     items: PhoneRuntimeStageCard[];
     activities: PhoneRuntimeStageActivity[];
-};
-
-type RuntimeDescriptor = {
-    id: PhoneRuntimeId;
-    label: { zh: string; en: string };
-    shortLabel: { zh: string; en: string };
-    description: { zh: string; en: string };
-};
-
-function isEnglishLocale(locale: LocaleCode = "zh-CN") {
-    return locale === "en";
-}
-
-function rt(locale: LocaleCode, zh: string, en: string) {
-    return isEnglishLocale(locale) ? en : zh;
-}
-
-const RUNTIME_DESCRIPTORS: Record<PhoneRuntimeId, RuntimeDescriptor> = {
-} as Record<PhoneRuntimeId, RuntimeDescriptor>;
-
-for (const runtimeId of SESSION_RUNTIME_ORDER) {
-    const zhDescriptor = getRuntimeRegistryEntry(runtimeId, "zh-CN");
-    const enDescriptor = getRuntimeRegistryEntry(runtimeId, "en");
-    RUNTIME_DESCRIPTORS[runtimeId] = {
-        id: runtimeId,
-        label: { zh: zhDescriptor.label, en: enDescriptor.label },
-        shortLabel: { zh: zhDescriptor.shortLabel, en: enDescriptor.shortLabel },
-        description: { zh: zhDescriptor.description, en: enDescriptor.description },
-    };
-}
-
-RUNTIME_DESCRIPTORS.context_governance = {
-    id: "context_governance",
-    label: { zh: "上下文治理", en: "Context governance" },
-    shortLabel: { zh: "治理", en: "Govern" },
-    description: { zh: "查看上下文预算、压缩与召回注入。", en: "Inspect context budget, compaction, and recall injection." },
 };
 
 export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
@@ -179,50 +144,64 @@ export function inferPhoneRuntimeIdFromNode(node: PhoneUiTimelineNode): PhoneRun
     return firstRuntimeMatch([node.agentName, node.agentRoleLabel]);
 }
 
-function summarizeExecutionNode(node: PhoneUiExecutionNode): string | null {
+function summarizeExecutionNode(node: PhoneUiExecutionNode, locale: LocaleCode = "zh-CN"): string | null {
+    const t = createTranslator(locale);
     if (node.executionType === "runtime_progress") {
-        return node.label || node.topic || "运行中";
+        return node.label || node.topic || t("src.lib.runtime_stage.running");
     }
     if (node.executionType === "tool_call") {
-        return node.toolName ? `调用 ${node.toolName}` : "工具调用";
+        return node.toolName
+            ? t("src.lib.runtime_stage.call_tool", { toolName: node.toolName })
+            : t("src.lib.runtime_stage.tool_call");
     }
     if (node.executionType === "tool_result") {
-        return node.toolName ? `${node.toolName} 已完成` : (node.toolCallId ? `工具结果 ${node.toolCallId}` : "工具结果");
+        if (node.toolName) {
+            return t("src.lib.runtime_stage.tool_finished", { toolName: node.toolName });
+        }
+        return node.toolCallId
+            ? t("src.lib.runtime_stage.tool_result_with_id", { toolCallId: node.toolCallId })
+            : t("src.lib.runtime_stage.tool_result");
     }
     if (node.executionType === "agent_start") {
-        return node.agentName ? `${node.agentName} 已接入` : "协作单元已接入";
+        return node.agentName
+            ? t("src.lib.runtime_stage.agent_joined", { agentName: node.agentName })
+            : t("src.lib.runtime_stage.collaboration_unit_joined");
     }
     if (node.executionType === "reasoning") {
-        return "正在推理";
+        return t("src.lib.runtime_stage.reasoning");
     }
     return null;
 }
 
-function summarizeGovernanceNode(node: PhoneUiGovernanceNode): string | null {
+function summarizeGovernanceNode(node: PhoneUiGovernanceNode, locale: LocaleCode = "zh-CN"): string | null {
+    const t = createTranslator(locale);
     if (node.governanceType === "ask_user") {
-        return node.question || "等待你的输入";
+        return node.question || t("src.lib.runtime_stage.waiting_for_your_input");
     }
     if (node.governanceType === "approval_request") {
-        return node.question || "等待授权确认";
+        return node.question || t("src.lib.runtime_stage.waiting_for_approval");
     }
     if (node.governanceType === "approval_resolved") {
-        return node.reason || node.status || "审批状态已更新";
+        return node.reason || node.status || t("src.lib.runtime_stage.approval_status_updated");
     }
     if (node.governanceType === "safety_blocked") {
-        return node.reason || "安全预检已阻断当前运行";
+        return node.reason || t("src.lib.runtime_stage.safety_precheck_blocked");
     }
     if (node.governanceType === "context_governance") {
-        return node.reason || "上下文治理已更新";
+        return node.reason || t("src.lib.runtime_stage.context_governance_updated");
     }
     if (node.governanceType === "lane_updated") {
-        return node.reason || "运行调度状态已更新";
+        return node.reason || t("src.lib.runtime_stage.runtime_scheduling_updated");
     }
-    return node.reason || node.status || node.topic || "运行控制已更新";
+    return node.reason || node.status || node.topic || t("src.lib.runtime_stage.runtime_control_updated");
 }
 
-function summarizeTimelineNode(node: PhoneUiTimelineNode): { summary: string; kind: PhoneRuntimeStageActivity["kind"] } | null {
+function summarizeTimelineNode(
+    node: PhoneUiTimelineNode,
+    locale: LocaleCode = "zh-CN",
+): { summary: string; kind: PhoneRuntimeStageActivity["kind"] } | null {
     if (node.kind === "execution") {
-        const summary = summarizeExecutionNode(node);
+        const summary = summarizeExecutionNode(node, locale);
         if (!summary) return null;
         return {
             summary,
@@ -235,7 +214,7 @@ function summarizeTimelineNode(node: PhoneUiTimelineNode): { summary: string; ki
     }
 
     if (node.kind === "governance") {
-        const summary = summarizeGovernanceNode(node);
+        const summary = summarizeGovernanceNode(node, locale);
         if (!summary) return null;
         return { summary, kind: "governance" };
     }
@@ -383,15 +362,16 @@ export function formatPhoneRelativeRuntimeTime(
     locale: LocaleCode = "zh-CN",
     nowMs = Date.now(),
 ): string {
-    if (!timestamp) return rt(locale, "刚刚", "Just now");
+    const t = createTranslator(locale);
+    if (!timestamp) return t("shared.time.just_now");
     const diffMs = nowMs - timestamp;
     const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
-    if (diffMinutes < 1) return rt(locale, "刚刚", "Just now");
-    if (diffMinutes < 60) return isEnglishLocale(locale) ? `${diffMinutes}m ago` : `${diffMinutes} 分钟前`;
+    if (diffMinutes < 1) return t("shared.time.just_now");
+    if (diffMinutes < 60) return t("shared.time.minutes_ago", { count: diffMinutes });
     const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) return isEnglishLocale(locale) ? `${diffHours}h ago` : `${diffHours} 小时前`;
+    if (diffHours < 24) return t("shared.time.hours_ago", { count: diffHours });
     const diffDays = Math.floor(diffHours / 24);
-    return isEnglishLocale(locale) ? `${diffDays}d ago` : `${diffDays} 天前`;
+    return t("shared.time.days_ago", { count: diffDays });
 }
 
 export function normalizePhoneRuntimeId(raw?: string | null): PhoneRuntimeId | null {
@@ -423,12 +403,21 @@ export function mergePhoneRuntimeTimeline(
 }
 
 export function getPhoneRuntimeDescriptor(runtimeId: PhoneRuntimeId, locale: LocaleCode = "zh-CN") {
-    const descriptor = RUNTIME_DESCRIPTORS[runtimeId];
+    if (runtimeId === "context_governance") {
+        const t = createTranslator(locale);
+        return {
+            id: runtimeId,
+            label: t("src.lib.runtime_stage.context_governance_label"),
+            shortLabel: t("src.lib.runtime_stage.context_governance_short_label"),
+            description: t("src.lib.runtime_stage.context_governance_description"),
+        };
+    }
+    const descriptor = getRuntimeRegistryEntry(runtimeId, locale);
     return {
-        id: descriptor.id,
-        label: locale === "en" ? descriptor.label.en : descriptor.label.zh,
-        shortLabel: locale === "en" ? descriptor.shortLabel.en : descriptor.shortLabel.zh,
-        description: locale === "en" ? descriptor.description.en : descriptor.description.zh,
+        id: runtimeId,
+        label: descriptor.label,
+        shortLabel: descriptor.shortLabel,
+        description: descriptor.description,
     };
 }
 
@@ -458,12 +447,14 @@ export function buildPhoneRuntimeStageModel(
         locale?: LocaleCode;
     },
 ): PhoneRuntimeStageModel {
+    const locale = options?.locale || "zh-CN";
+    const t = createTranslator(locale);
     const activities: PhoneRuntimeStageActivity[] = [];
 
     for (const message of messages) {
         for (const node of Array.isArray(message.nodes) ? message.nodes : []) {
             const runtimeId = inferPhoneRuntimeIdFromNode(node);
-            const summarized = summarizeTimelineNode(node);
+            const summarized = summarizeTimelineNode(node, locale);
             if (!runtimeId || !summarized) continue;
 
             activities.push({
@@ -506,11 +497,13 @@ export function buildPhoneRuntimeStageModel(
 
     if (options?.memoryInsight) {
         const topScoresLabel = options.memoryInsight.topScores.length > 0
-            ? `Top Scores: ${options.memoryInsight.topScores.slice(0, 3).map((score) => score.toFixed(2)).join(", ")}`
+            ? t("src.lib.runtime_stage.top_scores", {
+                scores: options.memoryInsight.topScores.slice(0, 3).map((score) => score.toFixed(2)).join(", "),
+            })
             : null;
         const detailParts = [
-            options.memoryInsight.query ? `Query: ${options.memoryInsight.query}` : null,
-            options.memoryInsight.rejectReason ? `Reject: ${options.memoryInsight.rejectReason}` : null,
+            options.memoryInsight.query ? t("src.lib.runtime_stage.query_detail", { query: options.memoryInsight.query }) : null,
+            options.memoryInsight.rejectReason ? t("src.lib.runtime_stage.reject_detail", { reason: options.memoryInsight.rejectReason }) : null,
             topScoresLabel,
         ].filter((item): item is string => Boolean(item));
         activities.push({
@@ -519,7 +512,7 @@ export function buildPhoneRuntimeStageModel(
             timestamp: options.memoryInsight.timestamp,
             summary: options.memoryInsight.summary,
             topic: "memory.recall.insight",
-            actorLabel: "记忆召回",
+            actorLabel: t("src.lib.runtime_stage.memory_recall"),
             messageId: options.memoryInsight.id,
             node: {
                 id: `timeline-node-${options.memoryInsight.id}`,
@@ -538,8 +531,8 @@ export function buildPhoneRuntimeStageModel(
                     query: options.memoryInsight.query,
                 },
                 timestamp: options.memoryInsight.timestamp,
-                agentName: "记忆召回",
-                agentRoleLabel: "记忆召回",
+                agentName: t("src.lib.runtime_stage.memory_recall"),
+                agentRoleLabel: t("src.lib.runtime_stage.memory_recall"),
             },
             kind: "progress",
             synthetic: true,
@@ -557,14 +550,14 @@ export function buildPhoneRuntimeStageModel(
         }
         seenGovernanceIds.add(item.id);
         const summary = item.triggerReason
-            ? `上下文治理 · ${item.triggerReason}`
-            : "上下文治理已更新";
+            ? t("src.lib.runtime_stage.context_governance_reason", { reason: item.triggerReason })
+            : t("src.lib.runtime_stage.context_governance_updated_summary");
         const detailParts = [
-            item.resolvedScope ? `Scope: ${item.resolvedScope}` : null,
-            item.blockCount !== null ? `Blocks: ${item.blockCount}` : null,
-            item.durableFlushReason ? `durable: ${item.durableFlushReason}` : null,
-            item.compactionApplied ? "Compaction: applied" : null,
-            item.recallAudit?.rejectReason ? `Recall: ${item.recallAudit.rejectReason}` : null,
+            item.resolvedScope ? t("src.lib.runtime_stage.scope_detail", { scope: item.resolvedScope }) : null,
+            item.blockCount !== null ? t("src.lib.runtime_stage.blocks_detail", { count: item.blockCount }) : null,
+            item.durableFlushReason ? t("src.lib.runtime_stage.durable_detail", { reason: item.durableFlushReason }) : null,
+            item.compactionApplied ? t("src.lib.runtime_stage.compaction_applied") : null,
+            item.recallAudit?.rejectReason ? t("src.lib.runtime_stage.recall_detail", { reason: item.recallAudit.rejectReason }) : null,
         ].filter((value): value is string => Boolean(value));
         activities.push({
             id: `governance:${item.id}`,
@@ -572,7 +565,7 @@ export function buildPhoneRuntimeStageModel(
             timestamp: item.eventTs ? Date.parse(item.eventTs) || Date.now() : Date.now(),
             summary,
             topic: "context.prepared",
-            actorLabel: "上下文治理",
+            actorLabel: t("src.lib.runtime_stage.context_governance_label"),
             messageId: `governance:${item.id}`,
             node: {
                 id: `timeline-node-governance:${item.id}`,
@@ -582,8 +575,8 @@ export function buildPhoneRuntimeStageModel(
                 reason: detailParts.join("\n") || summary,
                 status: item.compactionApplied ? "compacted" : "updated",
                 timestamp: item.eventTs ? Date.parse(item.eventTs) || Date.now() : Date.now(),
-                agentName: "上下文治理",
-                agentRoleLabel: "上下文治理",
+                agentName: t("src.lib.runtime_stage.context_governance_label"),
+                agentRoleLabel: t("src.lib.runtime_stage.context_governance_label"),
             },
             kind: "governance",
             synthetic: true,

@@ -140,8 +140,8 @@ export const ChatWindow = memo(function ChatWindow({
     }, [lastVisibleMessage]);
     const resolvedEmptyState = emptyState || {
         icon: "robot-happy-outline" as const,
-        title: t("没有消息历史", "No messages yet"),
-        subtitle: t("打个招呼吧", "Start the conversation"),
+        title: t("src.components.chat.chatwindow.no_messages_yet"),
+        subtitle: t("src.components.chat.chatwindow.start_the_conversation"),
         variant: "default" as const,
     };
     const greetingEmptyState = resolvedEmptyState.variant === "greeting";
@@ -281,7 +281,7 @@ export const ChatWindow = memo(function ChatWindow({
                     >
                         <MaterialCommunityIcons name="message-processing-outline" size={14} color={colors.warning} />
                         <Text style={[styles.artifactsPillText, { color: colors.text }]}>
-                            {t("等待输入", "Waiting input")}
+                            {t("src.components.chat.chatwindow.waiting_input")}
                         </Text>
                     </Pressable>
                 ) : null}
@@ -292,7 +292,7 @@ export const ChatWindow = memo(function ChatWindow({
                     >
                         <MaterialCommunityIcons name="source-branch" size={14} color={colors.warning} />
                         <Text style={[styles.artifactsPillText, { color: colors.text }]}>
-                            {t("待确认", "Approvals")} {pendingApprovalCount || 1}
+                            {t("src.components.chat.chatwindow.approvals")} {pendingApprovalCount || 1}
                         </Text>
                     </Pressable>
                 ) : null}

@@ -19,7 +19,7 @@ type RuntimeSummary = {
     label?: string;
 };
 
-type Translate = (zh: string, en?: string) => string;
+type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 const ACTIVE_PROCESS_STATUSES = new Set([
     "queued",
@@ -39,16 +39,16 @@ const TERMINAL_RUN_STATUSES = new Set([
     "idle",
 ]);
 
-const STATUS_LABELS: Record<string, { zh: string; en: string }> = {
-    queued: { zh: "排队中", en: "Queued" },
-    running: { zh: "执行中", en: "Running" },
-    waiting_approval: { zh: "等待审批", en: "Waiting" },
-    waiting_input: { zh: "等待输入", en: "Input" },
-    paused: { zh: "已暂停", en: "Paused" },
-    completed: { zh: "已完成", en: "Done" },
-    failed: { zh: "失败", en: "Failed" },
-    cancelled: { zh: "已取消", en: "Cancelled" },
-    idle: { zh: "空闲", en: "Idle" },
+const STATUS_LABELS: Record<string, string> = {
+    queued: "shared.runtime_status.queued",
+    running: "shared.runtime_status.running",
+    waiting_approval: "shared.runtime_status.waiting_approval",
+    waiting_input: "shared.runtime_status.waiting_input",
+    paused: "shared.runtime_status.paused",
+    completed: "shared.runtime_status.completed",
+    failed: "shared.runtime_status.failed",
+    cancelled: "shared.runtime_status.cancelled",
+    idle: "shared.runtime_status.idle",
 };
 
 export type PhoneChatProjection = {
@@ -308,8 +308,8 @@ function matchesConversationProcess(
     if (sourceMessageId) {
         return messageIds.has(sourceMessageId);
     }
-    // 会话级 process route 已经按 session 做过 authoritative 过滤；
-    // 如果 process 元数据不完整，这里宁可保留也不要把 HUD 再次误杀。
+    // Session-level process routing is already authoritatively filtered by session.
+    // If process metadata is incomplete, prefer keeping it over suppressing the HUD incorrectly.
     return true;
 }
 
@@ -391,17 +391,17 @@ function deriveRunControlState({
 export function summarizePhoneRuntimeStatus(status: string, t: Translate) {
     const normalized = String(status || "idle").trim().toLowerCase();
     const label = STATUS_LABELS[normalized];
-    return label ? t(label.zh, label.en) : normalized || t("空闲", "Idle");
+    return label ? t(label) : normalized || t("shared.runtime_status.idle");
 }
 
 export function summarizePhoneRuntimeTimelineEntry(entry: PhoneRuntimeTimelineEntry, t: Translate) {
     if (entry.topic === "ask_user.requested") {
-        return t("等待你的输入", "Waiting for your input");
+        return t("src.lib.chat_projection.waiting_for_your_input");
     }
     if (entry.topic === "approval.requested") {
-        return t("等待用户确认", "Waiting for approval");
+        return t("src.lib.chat_projection.waiting_for_approval");
     }
-    return entry.summary || entry.topic || t("运行已更新", "Runtime updated");
+    return entry.summary || entry.topic || t("src.lib.chat_projection.runtime_updated");
 }
 
 export function buildPhoneChatProjection({

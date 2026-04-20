@@ -11,7 +11,6 @@ import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-searc
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
-import { lt } from "@/lib/locale";
 import { getAdminNavItem } from "@/lib/admin-navigation";
 import { cn } from "@/lib/utils";
 
@@ -86,8 +85,8 @@ export function Topbar() {
                 const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
                 console.warn("Failed to load runtime install state:", message);
                 toast({
-                    title: t(lt("安装态读取失败", "Install state unavailable")),
-                    description: t(lt("当前无法读取安装态信息。", "Unable to load the installation state right now.")),
+                    title: t("components.layout.Topbar.kc9b3a73e"),
+                    description: t("components.layout.Topbar.k7d9781c3"),
                     variant: "destructive",
                 });
                 return;
@@ -96,8 +95,8 @@ export function Topbar() {
         } catch (error) {
             console.error("Failed to load runtime install state:", error);
             toast({
-                title: t(lt("安装态读取失败", "Install state unavailable")),
-                description: t(lt("当前无法读取安装态信息。", "Unable to load the installation state right now.")),
+                title: t("components.layout.Topbar.kc9b3a73e"),
+                description: t("components.layout.Topbar.k7d9781c3"),
                 variant: "destructive",
             });
         } finally {
@@ -126,7 +125,7 @@ export function Topbar() {
             if (!response.ok) {
                 const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
                 console.warn("Failed to load admin inbox:", message);
-                setInboxError(t(lt("当前无法读取消息摘要。", "Unable to load inbox right now.")));
+                setInboxError(t("components.layout.Topbar.kaf9d80f8"));
                 if (!silent) {
                     setInboxItems([]);
                 }
@@ -136,7 +135,7 @@ export function Topbar() {
             setInboxError(null);
         } catch (error) {
             console.error("Failed to load admin inbox:", error);
-            setInboxError(t(lt("当前无法读取消息摘要。", "Unable to load inbox right now.")));
+            setInboxError(t("components.layout.Topbar.kaf9d80f8"));
             if (!silent) {
                 setInboxItems([]);
             }
@@ -274,7 +273,7 @@ export function Topbar() {
                 throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
             }
             toast({
-                title: t(lt("桌面增强安装已启动", "Desktop install started")),
+                title: t("components.layout.Topbar.k6ff2c8c3"),
                 description: String(payload.message || ""),
             });
             void loadInstallState();
@@ -282,8 +281,8 @@ export function Topbar() {
         } catch (error) {
             console.error("Failed to start desktop install:", error);
             toast({
-                title: t(lt("安装启动失败", "Failed to start install")),
-                description: error instanceof Error ? error.message : t(lt("当前无法启动桌面增强安装。", "Unable to start the desktop install right now.")),
+                title: t("components.layout.Topbar.k1a77eba9"),
+                description: error instanceof Error ? error.message : t("components.layout.Topbar.kca0ab74d"),
                 variant: "destructive",
             });
         } finally {
@@ -292,8 +291,8 @@ export function Topbar() {
     }, [closePanels, installState?.installPlatform, loadInstallState, t, toast]);
 
     const installProfileLabel = installState?.installProfile === "desktop"
-        ? t(lt("桌面安装", "Desktop install"))
-        : t(lt("最小安装", "Minimal install"));
+        ? t("components.layout.Topbar.kac0ecd7e")
+        : t("components.layout.Topbar.k9163f343");
     const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
 
     return (
@@ -327,12 +326,12 @@ export function Topbar() {
                                     <div className="space-y-4 text-sm text-slate-600">
                                         <div className="space-y-1">
                                             <div className="text-sm font-semibold text-slate-900">{installProfileLabel}</div>
-                                            <div>{t(lt("当前平台", "Platform"))}: {installState?.installPlatform || "-"}</div>
-                                            <div>{t(lt("安装来源", "Managed by bootstrap"))}: {installState?.bootstrapManaged ? t(lt("是", "Yes")) : t(lt("否", "No"))}</div>
+                                            <div>{t("components.layout.Topbar.k0769c431")}: {installState?.installPlatform || "-"}</div>
+                                            <div>{t("components.layout.Topbar.kff0c33d3")}: {installState?.bootstrapManaged ? t("components.layout.Topbar.k2ae24b34") : t("components.layout.Topbar.k8d9f05ae")}</div>
                                         </div>
                                         <div className="space-y-1">
                                             <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
-                                                {t(lt("已安装 runtime 家族", "Installed runtime families"))}
+                                                {t("components.layout.Topbar.k7a89604c")}
                                             </div>
                                             <div className="flex flex-wrap gap-1.5">
                                                 {(installState?.installedRuntimeFamilies || []).map((family) => (
@@ -346,8 +345,8 @@ export function Topbar() {
                                             <div className="space-y-2">
                                                 <div className="text-xs text-slate-500">
                                                     {installState?.canAutoRestart
-                                                        ? t(lt("可直接补装当前系统的桌面依赖，并在完成后重启 engine。", "Install desktop dependencies for this platform and restart the engine automatically."))
-                                                        : t(lt("可补装当前系统的桌面依赖，但当前环境不是 bootstrap-managed，安装后需要手动重启 engine。", "Desktop dependencies can be installed, but this environment is not bootstrap-managed, so you need to restart the engine manually afterwards."))}
+                                                        ? t("components.layout.Topbar.k3f17614c")
+                                                        : t("components.layout.Topbar.k7e24dc73")}
                                                 </div>
                                                 <Button
                                                     className="w-full rounded-2xl"
@@ -357,12 +356,12 @@ export function Topbar() {
                                                     {installSubmitting ? (
                                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                                     ) : null}
-                                                    {t(lt("安装桌面能力", "Install desktop capabilities"))}
+                                                    {t("components.layout.Topbar.k81c75821")}
                                                 </Button>
                                             </div>
                                         ) : (
                                             <div className="rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                                                {t(lt("当前机器已完成桌面安装。", "Desktop capabilities are already installed on this machine."))}
+                                                {t("components.layout.Topbar.ka167fbd8")}
                                             </div>
                                         )}
                                     </div>
@@ -376,8 +375,8 @@ export function Topbar() {
                             size="icon"
                             onClick={toggleSearch}
                             className="rounded-2xl border-slate-200 bg-white text-slate-500"
-                            aria-label={t(lt("搜索", "Search"))}
-                            title={t(lt("搜索", "Search"))}
+                            aria-label={t("components.layout.Topbar.ke9ace2b3")}
+                            title={t("components.layout.Topbar.ke9ace2b3")}
                             aria-expanded={activePanel === "search"}
                         >
                             <Search className="h-4 w-4" />
@@ -390,13 +389,13 @@ export function Topbar() {
                                         value={searchQuery}
                                         onChange={(event) => setSearchQuery(event.target.value)}
                                         onKeyDown={handleSearchKeyDown}
-                                        placeholder={t(lt("搜索页面、runtime 或记忆标签…", "Search pages, runtimes, or memory tabs…"))}
-                                        aria-label={t(lt("搜索管理页", "Search admin pages"))}
+                                        placeholder={t("components.layout.Topbar.k6c2190ce")}
+                                        aria-label={t("components.layout.Topbar.k8cef7920")}
                                         className="rounded-2xl border-slate-200"
                                     />
                                     <div className="max-h-80 overflow-y-auto">
                                         {searchResults.length ? (
-                                            <div role="listbox" aria-label={t(lt("搜索候选", "Search results"))} className="space-y-1.5">
+                                            <div role="listbox" aria-label={t("components.layout.Topbar.k5a0d1278")} className="space-y-1.5">
                                                 {searchResults.map((item, index) => (
                                                     <button
                                                         key={item.id}
@@ -423,14 +422,14 @@ export function Topbar() {
                                                                     ? "bg-slate-100 text-slate-600"
                                                                     : "bg-sky-100 text-sky-700",
                                                         )}>
-                                                            {item.matchMode === "exact" ? t(lt("精确", "Exact")) : item.matchMode === "fuzzy" ? t(lt("模糊", "Fuzzy")) : t(lt("常用", "Quick"))}
+                                                            {item.matchMode === "exact" ? t("components.layout.Topbar.k9d9dbbea") : item.matchMode === "fuzzy" ? t("components.layout.Topbar.k97b260d0") : t("components.layout.Topbar.kff332614")}
                                                         </span>
                                                     </button>
                                                 ))}
                                             </div>
                                         ) : (
                                             <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500">
-                                                {t(lt("没有匹配项，试试页面名、runtime 名称或 memory tab。", "No matches yet. Try a page name, runtime name, or memory tab."))}
+                                                {t("components.layout.Topbar.k4808f001")}
                                             </div>
                                         )}
                                     </div>
@@ -444,8 +443,8 @@ export function Topbar() {
                             size="icon"
                             onClick={toggleInbox}
                             className="rounded-2xl border-slate-200 bg-white text-slate-500"
-                            aria-label={t(lt("通知", "Alerts"))}
-                            title={t(lt("通知", "Alerts"))}
+                            aria-label={t("components.layout.Topbar.kaa548c2e")}
+                            title={t("components.layout.Topbar.kaa548c2e")}
                             aria-expanded={activePanel === "inbox"}
                         >
                             <Bell className="h-4 w-4" />
@@ -459,7 +458,7 @@ export function Topbar() {
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl">
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-900">{t(lt("消息摘要", "Inbox"))}</div>
+                                        <div className="text-sm font-semibold text-slate-900">{t("components.layout.Topbar.k3957f4b0")}</div>
                                         {inboxLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
                                     </div>
                                     {inboxError ? (
@@ -486,7 +485,7 @@ export function Topbar() {
                                         </div>
                                     ) : (
                                         <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500">
-                                            {t(lt("当前没有新的系统摘要。", "No new system summaries right now."))}
+                                            {t("components.layout.Topbar.k105fef86")}
                                         </div>
                                     )}
                                 </div>

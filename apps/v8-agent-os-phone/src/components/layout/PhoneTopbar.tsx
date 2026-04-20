@@ -14,6 +14,7 @@ import { Monitor, MoonStar, SunMedium, Volume2, VolumeX, Workflow } from "lucide
 import MaskedView from "@react-native-masked-view/masked-view";
 import { LinearGradient } from "expo-linear-gradient";
 
+import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
@@ -311,12 +312,11 @@ export function PhoneTopbar({
     onProfilePress?: () => void;
     onBrandPress?: () => void;
 }) {
-    const { locale, toggleLocale, colors, themeMode, voiceEnabled, t } = useUiPrefs();
+    const { colors, themeMode, voiceEnabled, t } = useUiPrefs();
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
         .map((key) => actionMap.get(key))
         .filter((item): item is PhoneTopbarAction => Boolean(item));
-    const localeLabel = locale === "en" ? "EN" : "中";
 
     return (
         <View
@@ -343,20 +343,7 @@ export function PhoneTopbar({
                         />
                     ))}
 
-                <Pressable
-                    accessibilityLabel={t("语言切换", "Toggle language")}
-                    accessibilityRole="button"
-                    onPress={() => void toggleLocale()}
-                    style={[
-                        styles.localeButton,
-                        {
-                            backgroundColor: themeMode === "dark" ? "rgba(15,23,42,0.52)" : "rgba(255,255,255,0.78)",
-                            borderColor: `${colors.border}A6`,
-                        },
-                    ]}
-                >
-                    <Text style={[styles.localeText, { color: colors.textMuted }]}>{localeLabel}</Text>
-                </Pressable>
+                <LocaleMenu variant="compact" />
 
                 {orderedActions
                     .filter((action) => action.key === "voice" || action.key === "theme")
@@ -372,7 +359,7 @@ export function PhoneTopbar({
 
                 <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={t("用户资料", "User profile")}
+                    accessibilityLabel={t("src.components.layout.phonetopbar.user_profile")}
                     style={({ pressed }) => [
                         styles.profileButton,
                         {
@@ -497,24 +484,6 @@ const styles = StyleSheet.create({
     },
     actionButtonSoftSquare: {
         borderRadius: 12,
-    },
-    localeButton: {
-        width: 36,
-        height: 36,
-        borderRadius: 12,
-        alignItems: "center",
-        justifyContent: "center",
-        borderWidth: 1,
-        shadowColor: "#0F172A",
-        shadowOpacity: 0.04,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
-        elevation: 1,
-    },
-    localeText: {
-        fontSize: 10.5,
-        fontWeight: "800",
-        letterSpacing: 0.4,
     },
     profileButton: {
         width: 36,

@@ -1,26 +1,36 @@
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Mail } from "lucide-react"
+import { Mail } from "lucide-react";
+import { cookies, headers } from "next/headers";
 
-export default function VerifyRequest() {
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { createTranslator, LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
+
+export default async function VerifyRequest() {
+    const cookieStore = await cookies();
+    const headerStore = await headers();
+    const locale = resolveInitialLocale(
+        cookieStore.get(LOCALE_COOKIE_NAME)?.value,
+        headerStore.get("accept-language"),
+    );
+    const t = createTranslator(locale);
+
     return (
         <div className="flex min-h-screen items-center justify-center bg-muted/10">
             <Card className="w-full max-w-md text-center">
                 <CardHeader>
-                    <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
-                        <Mail className="w-6 h-6 text-primary" />
+                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                        <Mail className="h-6 w-6 text-primary" />
                     </div>
-                    <CardTitle>检查您的邮箱</CardTitle>
+                    <CardTitle>{t("app.admin.verify.title")}</CardTitle>
                     <CardDescription>
-                        我们已向您发送了一个登录链接。<br />
-                        请点击邮件中的链接以完成登录。
+                        {t("app.admin.verify.descriptionLine1")}
+                        <br />
+                        {t("app.admin.verify.descriptionLine2")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <p className="text-sm text-muted-foreground">
-                        如果您没有收到邮件，请检查垃圾邮件文件夹。
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t("app.admin.verify.hint")}</p>
                 </CardContent>
             </Card>
         </div>
-    )
+    );
 }

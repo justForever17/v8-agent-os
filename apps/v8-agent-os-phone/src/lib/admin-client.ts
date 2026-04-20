@@ -1,4 +1,5 @@
 import type { ChatStreamEvent } from "@/src/types/admin";
+import { translateCurrent } from "@/src/lib/locale";
 
 type StreamEventHandler = (eventName: string, payload: unknown) => void;
 
@@ -179,7 +180,7 @@ export async function streamSseWithXmlHttpRequest(options: {
     onHeaders?: (headers: Record<string, string>) => void;
 }) {
     if (typeof XMLHttpRequest !== "function") {
-        throw buildStreamError("当前环境不支持原生实时事件流");
+        throw buildStreamError(translateCurrent("src.lib.admin_client.text"));
     }
 
     const { url, headers, signal, onEvent, onHeaders } = options;
@@ -329,7 +330,9 @@ export async function streamSseWithXmlHttpRequest(options: {
             }
 
             finish(() => reject(buildStreamError(
-                xhr.responseText?.trim() || `连接实时流失败（${status || "unknown"}）`,
+                xhr.responseText?.trim() || translateCurrent("src.lib.admin_client.realtime_stream_failed_with_status", {
+                    status: status || "unknown",
+                }),
                 status || undefined,
             )));
         };
@@ -340,14 +343,14 @@ export async function streamSseWithXmlHttpRequest(options: {
                 finish(resolve);
                 return;
             }
-            finish(() => reject(buildStreamError("实时流网络错误", Number(xhr.status || 0) || undefined)));
+            finish(() => reject(buildStreamError(translateCurrent("src.lib.admin_client.text_2"), Number(xhr.status || 0) || undefined)));
         };
         xhr.ontimeout = () => {
             if (aborted) {
                 finish(resolve);
                 return;
             }
-            finish(() => reject(buildStreamError("实时流连接超时", Number(xhr.status || 0) || undefined)));
+            finish(() => reject(buildStreamError(translateCurrent("src.lib.admin_client.text_3"), Number(xhr.status || 0) || undefined)));
         };
         xhr.onabort = () => {
             finish(resolve);
@@ -360,7 +363,7 @@ export async function streamSseWithXmlHttpRequest(options: {
         try {
             xhr.send();
         } catch (error) {
-            finish(() => reject(error instanceof Error ? error : new Error("实时流连接失败")));
+            finish(() => reject(error instanceof Error ? error : new Error(translateCurrent("src.providers.app_session.text_7"))));
         }
     });
 }

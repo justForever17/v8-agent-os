@@ -90,7 +90,7 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
                     <View style={[styles.iconWrap, { backgroundColor: "rgba(16,185,129,0.16)" }]}>
                         <MaterialCommunityIcons name="console-network-outline" size={16} color="#10B981" />
                     </View>
-                    <Text style={[styles.title, { color: colors.text }]}>{t("后台进程", "Processes")}</Text>
+                    <Text style={[styles.title, { color: colors.text }]}>{t("src.components.chat.processeshud.processes")}</Text>
                     <View style={[styles.counterPill, { backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.72)" }]}>
                         <View style={styles.counterDotWrap}>
                             <View style={styles.counterDot} />

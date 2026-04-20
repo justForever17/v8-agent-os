@@ -59,13 +59,13 @@ export const AskUserModal = memo(function AskUserModal({
                         </View>
                         <View style={styles.headerText}>
                             <Text style={[styles.eyebrow, { color: colors.primary }]}>
-                                {t("Supervisor 需要你的输入", "Supervisor needs your input")}
+                                {t("src.components.chat.askusermodal.supervisor_needs_your_input")}
                             </Text>
                             <Text style={[styles.title, { color: colors.text }]}>
-                                {t("继续前需要你确认一件事", "One quick answer before we continue")}
+                                {t("src.components.chat.askusermodal.one_quick_answer_before_we_continue")}
                             </Text>
                             <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-                                {t("你的回答会回填给当前运行，不会把你带离当前页面。", "Your answer is fed back into the active run without taking you away from the current page.")}
+                                {t("src.components.chat.askusermodal.your_answer_is_fed_back_into_the_active_run_without_taking_you_away_from_the_current_page")}
                             </Text>
                         </View>
                     </View>
@@ -73,37 +73,37 @@ export const AskUserModal = memo(function AskUserModal({
                     <CardContent style={styles.content}>
                         <View style={[styles.questionCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                {t("当前问题", "Current question")}
+                                {t("src.components.chat.askusermodal.current_question")}
                             </Text>
                             <MarkdownRenderer content={question} />
                         </View>
 
                         <View style={styles.answerSection}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                {t("你的回应", "Your answer")}
+                                {t("src.components.chat.askusermodal.your_answer")}
                             </Text>
                             <Textarea
                                 value={answer}
                                 onChangeText={setAnswer}
-                                placeholder={t("用一两句话直接回答，或补充继续执行所需的信息。", "Answer briefly, or provide the missing information needed to continue.")}
+                                placeholder={t("src.components.chat.askusermodal.answer_briefly_or_provide_the_missing_information_needed_to_continue")}
                                 style={styles.textarea}
                                 editable={!busy}
                             />
                             <Text style={[styles.hint, { color: colors.textMuted }]}>
-                                {t("如果暂时不想继续，可以直接拒绝，本次运行会停在等待输入的位置。", "If you do not want to continue right now, reject it and the run will stay at the waiting-for-input point.")}
+                                {t("src.components.chat.askusermodal.if_you_do_not_want_to_continue_right_now_reject_it_and_the_run_will_stay_at_the_waiting_for_input_point")}
                             </Text>
                         </View>
                     </CardContent>
 
                     <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.48)" : "rgba(255,255,255,0.72)" }]}>
                         <Button variant="ghost" onPress={onCancel} disabled={busy}>
-                            {t("先放着", "Dismiss")}
+                            {t("src.components.chat.askusermodal.dismiss")}
                         </Button>
                         <Button variant="outline" onPress={() => void onSubmit(toolCallId, answer, false)} disabled={busy}>
-                            {busy ? t("处理中...", "Processing...") : t("拒绝继续", "Reject")}
+                            {busy ? t("src.components.chat.askusermodal.processing") : t("src.components.chat.askusermodal.reject")}
                         </Button>
                         <Button onPress={() => void onSubmit(toolCallId, answer, true)} disabled={busy || !answer.trim()}>
-                            {busy ? t("发送中...", "Sending...") : t("发送并继续", "Send and continue")}
+                            {busy ? t("src.components.chat.askusermodal.sending") : t("src.components.chat.askusermodal.send_and_continue")}
                         </Button>
                     </View>
                 </Card>

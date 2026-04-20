@@ -9,7 +9,7 @@ export default function DesktopLiveScreen() {
     const { t } = useUiPrefs();
 
     if (status === "booting") {
-        return <LoadingScreen label={t("正在返回聊天主界面…", "Returning to chat...")} />;
+        return <LoadingScreen label={t("src.screens.desktoplivescreen.returning_to_chat")} />;
     }
 
     if (status === "anonymous") {

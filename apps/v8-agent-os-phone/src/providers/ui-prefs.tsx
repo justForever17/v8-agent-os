@@ -1,9 +1,16 @@
 import React from "react";
 
+import {
+    resolveText,
+    setActiveLocale,
+    type LocaleCode,
+    type TranslationKey,
+    type TranslationParams,
+} from "@/src/lib/locale";
 import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import { getThemeColors, type ThemeColors, type ThemeMode } from "@/src/theme/tokens";
 
-export type LocaleCode = "zh-CN" | "en";
+export type { LocaleCode, TranslationKey, TranslationParams } from "@/src/lib/locale";
 
 type UiPrefsContextValue = {
     locale: LocaleCode;
@@ -17,7 +24,8 @@ type UiPrefsContextValue = {
     toggleThemeMode: () => Promise<void>;
     setVoiceEnabled: (next: boolean) => Promise<void>;
     toggleVoiceEnabled: () => Promise<void>;
-    t: (zh: string, en?: string) => string;
+    t: (key: TranslationKey | string, params?: TranslationParams) => string;
+    resolveText: (value: string, params?: TranslationParams) => string;
 };
 
 const UiPrefsContext = React.createContext<UiPrefsContextValue | null>(null);
@@ -40,6 +48,10 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
     const [themeMode, setThemeModeState] = React.useState<ThemeMode>("light");
     const [voiceEnabled, setVoiceEnabledState] = React.useState(true);
     const [hydrated, setHydrated] = React.useState(false);
+
+    React.useEffect(() => {
+        setActiveLocale(locale);
+    }, [locale]);
 
     React.useEffect(() => {
         let disposed = false;
@@ -94,7 +106,11 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
     }, [voiceEnabled]);
 
     const translate = React.useCallback(
-        (zh: string, en?: string) => (locale === "en" ? (en || zh) : zh),
+        (value: TranslationKey | string, params?: TranslationParams) => resolveText(locale, String(value), params),
+        [locale],
+    );
+    const resolveTextValue = React.useCallback(
+        (value: string, params?: TranslationParams) => resolveText(locale, value, params),
         [locale],
     );
 
@@ -111,6 +127,7 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
         setVoiceEnabled,
         toggleVoiceEnabled,
         t: translate,
+        resolveText: resolveTextValue,
     }), [
         hydrated,
         locale,
@@ -122,6 +139,7 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
         toggleThemeMode,
         toggleVoiceEnabled,
         translate,
+        resolveTextValue,
         voiceEnabled,
     ]);
 
@@ -131,7 +149,7 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
 export function useUiPrefs() {
     const context = React.useContext(UiPrefsContext);
     if (!context) {
-        throw new Error("useUiPrefs 必须在 UiPrefsProvider 内使用");
+        throw new Error("useUiPrefs must be used within UiPrefsProvider");
     }
     return context;
 }

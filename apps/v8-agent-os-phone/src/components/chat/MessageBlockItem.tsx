@@ -18,6 +18,7 @@ import { VoiceCard } from "@/src/components/chat/VoiceCard";
 import { Badge } from "@/src/components/ui/badge";
 import { Card, CardContent } from "@/src/components/ui/card";
 import type { PhoneContentBlock } from "@/src/lib/content-detector";
+import { translateCurrent } from "@/src/lib/locale";
 import { resolveRenderableMediaCandidates, resolveRenderableMediaUrl } from "@/src/lib/workspace-links";
 import type { PhoneUiTimelineNode } from "@/src/types/admin";
 import { useAppSession } from "@/src/providers/app-session";
@@ -63,7 +64,7 @@ function artifactDisplayTitle(artifact: Record<string, unknown>) {
         || artifact.title
         || artifact.artifactId
         || artifact.id
-        || "附件"
+        || translateCurrent("src.components.chat.messageblockitem.attachment")
     ).trim();
 }
 
@@ -277,7 +278,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return (
                 <UnresolvedResourceCard
                     title={filename}
-                    subtitle={t("当前文件地址不可达，已保留正文其余内容。", "The file URL is unreachable right now, and the rest of the reply remains visible.")}
+                    subtitle={t("src.components.chat.messageblockitem.the_file_url_is_unreachable_right_now_and_the_rest_of_the_reply_remains_visible")}
                 />
             );
         }
@@ -303,21 +304,21 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     if (node?.kind === "governance") {
         const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
         if (node.governanceType === "ask_user") {
-            // ask_user 的唯一交互入口是前台阻塞输入组件；消息流里不再放第二个输入卡，
-            // 避免和治理审批卡语义纠缠。
+            // ask_user is handled only by the foreground blocking input surface.
+            // Avoid rendering a second input card in the message stream.
             return null;
         }
         const title = node.governanceType === "safety_blocked"
-            ? t("安全阻断", "Safety blocked")
+            ? t("src.components.chat.messageblockitem.safety_blocked")
             : node.governanceType === "context_governance"
-                ? t("上下文治理", "Context governance")
+                ? t("src.components.chat.messageblockitem.context_governance")
                     : node.governanceType === "lane_updated"
-                    ? t("运行调度", "Run scheduling")
+                    ? t("src.components.chat.messageblockitem.run_scheduling")
                     : node.governanceType === "approval_request"
-                        ? t("系统确认", "Approval")
+                        ? t("src.components.chat.messageblockitem.approval")
                         : approvalKind === "safety_blocked"
-                        ? t("安全阻断", "Safety blocked")
-                        : t("系统控制", "Runtime control");
+                        ? t("src.components.chat.messageblockitem.safety_blocked")
+                        : t("src.components.chat.messageblockitem.runtime_control");
         const tone = node.governanceType === "safety_blocked" || approvalKind === "safety_blocked"
             ? "safety"
             : node.governanceType === "run_controlled" || node.governanceType === "lane_updated" || node.governanceType === "context_governance"
@@ -356,7 +357,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return (
                 <UnresolvedResourceCard
                     title={title}
-                    subtitle={String(resourceRef?.previewBlockedReason || artifact.previewBlockedReason || artifact.displaySubtitle || resourceRef?.displaySubtitle || t("没有 canonical resourceRef，裸路径仅保留为文本。", "No canonical resourceRef is available; raw paths are text-only."))}
+                    subtitle={String(resourceRef?.previewBlockedReason || artifact.previewBlockedReason || artifact.displaySubtitle || resourceRef?.displaySubtitle || t("src.components.chat.messageblockitem.no_canonical_resourceref_is_available_raw_paths_are_text_only"))}
                 />
             );
         }
@@ -453,8 +454,8 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         if (!src) {
             return (
                 <UnresolvedResourceCard
-                    title={title || t("媒体资源暂不可预览", "Media preview unavailable")}
-                    subtitle={resourceRef?.previewBlockedReason || resourceSubtitle || t("没有 canonical resourceRef，裸路径仅保留为文本。", "No canonical resourceRef is available; raw paths are text-only.")}
+                    title={title || t("src.components.chat.messageblockitem.media_preview_unavailable")}
+                    subtitle={resourceRef?.previewBlockedReason || resourceSubtitle || t("src.components.chat.messageblockitem.no_canonical_resourceref_is_available_raw_paths_are_text_only")}
                 />
             );
         }
@@ -537,7 +538,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
     }
 
     if (block.type === "tool") {
-        const toolName = String(block.data?.toolName || block.content || t("工具调用", "Tool call")).trim();
+        const toolName = String(block.data?.toolName || block.content || t("src.components.chat.contentdispatcher.tool_call")).trim();
         const toolCallId = String(block.data?.toolCallId || "").trim();
         return (
             <ToolCard

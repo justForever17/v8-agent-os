@@ -13,11 +13,11 @@ import type { ConversationSummary, MusicTrack } from "@/src/types/admin";
 
 type GroupKey = "channels" | "cron" | "hooks" | "web";
 
-const GROUP_ORDER: Array<{ key: GroupKey; icon: keyof typeof MaterialCommunityIcons.glyphMap; zh: string; en: string }> = [
-    { key: "channels", icon: "web", zh: "第三方渠道", en: "Channels" },
-    { key: "cron", icon: "clock-time-four-outline", zh: "定时任务", en: "Cron" },
-    { key: "hooks", icon: "lightning-bolt-outline", zh: "触发器与钩子", en: "Hooks" },
-    { key: "web", icon: "message-outline", zh: "网页对话", en: "Web chat" },
+const GROUP_ORDER: Array<{ key: GroupKey; icon: keyof typeof MaterialCommunityIcons.glyphMap; labelKey: string }> = [
+    { key: "channels", icon: "web", labelKey: "shared.history.group.channels" },
+    { key: "cron", icon: "clock-time-four-outline", labelKey: "shared.history.group.cron" },
+    { key: "hooks", icon: "lightning-bolt-outline", labelKey: "shared.history.group.hooks" },
+    { key: "web", icon: "message-outline", labelKey: "shared.history.group.web" },
 ];
 
 function groupConversations(items: ConversationSummary[]) {
@@ -114,7 +114,7 @@ export function HistoryDrawer({
                                     style={styles.newChatButton}
                                 >
                                     <MaterialCommunityIcons name="plus" size={17} color="#FFFFFF" />
-                                    <Text style={styles.newChatText}>{t("新对话", "New chat")}</Text>
+                                    <Text style={styles.newChatText}>{t("src.components.layout.historydrawer.new_chat")}</Text>
                                 </LinearGradient>
                             </Pressable>
                             <Pressable
@@ -127,7 +127,7 @@ export function HistoryDrawer({
 
                         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
                             <View style={styles.sectionHeader}>
-                                <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>{t("历史记录", "History")}</Text>
+                                <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>{t("src.components.layout.historydrawer.history")}</Text>
                                 <Pressable onPress={onClose}>
                                     <MaterialCommunityIcons name="trash-can-outline" size={16} color={colors.textSoft} />
                                 </Pressable>
@@ -135,7 +135,7 @@ export function HistoryDrawer({
 
                             {items.length === 0 ? (
                                 <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-                                    {loading ? t("正在同步历史…", "Syncing history...") : t("暂无历史会话", "No history yet")}
+                                    {loading ? t("src.components.layout.historydrawer.syncing_history") : t("src.components.layout.historydrawer.no_history_yet")}
                                 </Text>
                             ) : (
                                 GROUP_ORDER.map((group) => {
@@ -154,7 +154,7 @@ export function HistoryDrawer({
                                                     color={colors.textMuted}
                                                 />
                                                 <MaterialCommunityIcons name={group.icon} size={14} color={colors.textMuted} />
-                                                <Text style={[styles.groupTitle, { color: colors.textMuted }]}>{t(group.zh, group.en)}</Text>
+                                                <Text style={[styles.groupTitle, { color: colors.textMuted }]}>{t(group.labelKey)}</Text>
                                                 <View style={[styles.groupCountPill, { backgroundColor: `${colors.primary}14` }]}>
                                                     <Text style={[styles.groupCount, { color: colors.textSoft }]}>{entries.length}</Text>
                                                 </View>
@@ -181,7 +181,7 @@ export function HistoryDrawer({
                                                             />
                                                             <View style={styles.itemBody}>
                                                                 <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text }]} numberOfLines={1}>
-                                                                    {item.title || t(`会话 ${canonicalSessionId.slice(0, 8)}`, `Conversation ${canonicalSessionId.slice(0, 8)}`)}
+                                                                    {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
                                                                 </Text>
                                                                 {(item.ownerRuntime || item.workflowStatus || Number(item.pendingApprovalCount || 0) > 0 || item.recoverable) ? (
                                                                     <View style={styles.badgeRow}>
@@ -197,13 +197,13 @@ export function HistoryDrawer({
                                                                         ) : null}
                                                                         {item.recoverable ? (
                                                                             <View style={[styles.metaBadge, { backgroundColor: "rgba(14,165,233,0.10)" }]}>
-                                                                                <Text style={[styles.metaBadgeText, { color: "#0369A1" }]}>{t("可恢复", "Recoverable")}</Text>
+                                                                                <Text style={[styles.metaBadgeText, { color: "#0369A1" }]}>{t("src.components.layout.historydrawer.recoverable")}</Text>
                                                                             </View>
                                                                         ) : null}
                                                                         {Number(item.pendingApprovalCount || 0) > 0 ? (
                                                                             <View style={[styles.metaBadge, { backgroundColor: "rgba(168,85,247,0.10)" }]}>
                                                                                 <Text style={[styles.metaBadgeText, { color: "#7C3AED" }]}>
-                                                                                    {t("审批", "Approval")} {Number(item.pendingApprovalCount || 0)}
+                                                                                    {t("src.components.layout.historydrawer.approval")} {Number(item.pendingApprovalCount || 0)}
                                                                                 </Text>
                                                                             </View>
                                                                         ) : null}

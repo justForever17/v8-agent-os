@@ -9,7 +9,7 @@ const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 
 export function LoadingScreen({ label }: { label?: string }) {
     const { colors: palette, themeMode, t } = useUiPrefs();
-    const subtitle = label || t("正在准备你的运行时工作区…", "Preparing your runtime workspace...");
+    const subtitle = label || t("src.components.common.loadingscreen.preparing_your_runtime_workspace");
 
     return (
         <LinearGradient
@@ -27,7 +27,7 @@ export function LoadingScreen({ label }: { label?: string }) {
             <Text style={[styles.label, { color: palette.textMuted }]}>{subtitle}</Text>
             <View style={styles.progressRow}>
                 <ActivityIndicator size="small" color={colors.primary} />
-                <Text style={[styles.progressText, { color: palette.textMuted }]}>{t("系统启动中", "System booting")}</Text>
+                <Text style={[styles.progressText, { color: palette.textMuted }]}>{t("src.components.common.loadingscreen.system_booting")}</Text>
             </View>
         </LinearGradient>
     );

@@ -2,6 +2,7 @@ import type {
     ChatArtifact,
     ChatMessage,
 } from "@/src/types/admin";
+import { translateCurrent } from "@/src/lib/locale";
 import {
     applyRealtimeEventToMessages as applySharedRealtimeEventToMessages,
     buildAssistantMessage as buildSharedAssistantMessage,
@@ -28,9 +29,9 @@ export type PhoneRealtimeUiEvent = SessionStreamUiEvent & {
 };
 
 const DEFAULT_AGENT_PROFILE: Required<AgentProfile> = {
-    agentName: "智能主管",
+    agentName: translateCurrent("src.lib.chat_state.text"),
     agentAvatar: "/brand-mark.png",
-    agentRoleLabel: "主理人",
+    agentRoleLabel: translateCurrent("src.lib.chat_state.text_2"),
 };
 
 function createClientId(prefix: string) {

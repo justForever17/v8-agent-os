@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -13,11 +14,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from core.database import db
 from core.llm_factory import llm_factory
 from core.llm_tree_prefilter import select_family_keys_with_llm
 from core.model_control_plane import model_control_plane
-from core.plugin_host.tool_exposure import expand_tool_family_seeds
+from core.plugin_host.tool_exposure import _family_prefix_for_tool, expand_tool_family_seeds
 from core.plugin_host.silk_codec import silk_toolchain_status
 from core.skills_install_service import get_skill_dependency_policy
 from core.storage import storage
@@ -70,6 +73,9 @@ _MCP_RERANK_POOL_FLOOR = 12
 _PLUGIN_HOST_RERANK_POOL_FLOOR = 12
 _PLUGIN_HOST_BOUND_CAP = 24
 _PLUGIN_HOST_LIVE_INVENTORY_SOURCES = {"gateway_rpc", "plugin_source_scan", "durable_cache"}
+_DYNAMIC_PROFILE_CACHE_LIMIT = 256
+_DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS = 6.0
+_DYNAMIC_THEME_FALLBACK_LIMIT = 2
 _PLUGIN_HOST_QUERY_HINTS = {
     "openclaw",
     "pluginhost",
@@ -139,6 +145,9 @@ _EXTENSION_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "图像": ("image", "images", "picture", "pictures"),
     "图片": ("image", "images", "picture", "pictures"),
     "文档": ("doc", "docs", "documentation", "library"),
+    "word": ("doc", "docx", "document", "office document"),
+    "docs": ("documentation", "spec", "design doc", "decision doc", "proposal", "rfc", "prd"),
+    "演示稿": ("presentation", "ppt", "pptx", "slides", "powerpoint"),
     "代码": ("code", "coding"),
     "邮件": ("mail", "email"),
     "头像": ("avatar", "avatars", "talking-head"),
@@ -152,7 +161,28 @@ _QUERY_ARTIFACT_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
     "presentation": ("ppt", "pptx", "presentation", "slide", "slides", "deck", "幻灯片", "演示稿", "演示文稿"),
     "video": ("视频", "video", "videos", "video generation", "短片", "动画视频"),
     "image": ("图片", "图像", "image", "images", "picture", "poster", "illustration"),
-    "document": ("文档", "document", "doc", "docx", "markdown", "md", "report", "文章"),
+    "document": (
+        "文档",
+        "document",
+        "documentation",
+        "doc",
+        "docs",
+        "docx",
+        "word",
+        "word document",
+        "markdown",
+        "md",
+        "report",
+        "article",
+        "spec",
+        "design doc",
+        "decision doc",
+        "rfc",
+        "prd",
+        "proposal",
+        "技术文档",
+        "方案",
+    ),
     "pdf": ("pdf",),
     "spreadsheet": ("excel", "xlsx", "xls", "csv", "spreadsheet", "表格", "表单"),
     "audio": ("音频", "语音", "audio", "voice", "speech"),
@@ -200,9 +230,17 @@ _QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
         "创业",
         "startup",
         "商业化",
+        "monetization",
         "traction",
         "distribution",
+        "增长策略",
+        "growth strategy",
         "用户增长",
+        "渠道增长",
+        "acquisition",
+        "conversion",
+        "growth loop",
+        "gtm",
     ),
     "product_strategy": (
         "产品战略",
@@ -253,10 +291,18 @@ _QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
         "组织",
         "leadership",
         "组织效率",
+        "团队效率",
+        "团队管理",
         "管理",
+        "管理者",
+        "manager",
         "management",
         "culture",
+        "hire",
         "hiring",
+        "talent",
+        "org design",
+        "组织协同",
         "组织设计",
         "人才密度",
     ),
@@ -273,13 +319,45 @@ _QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
         "谈判",
         "negotiation",
         "说服",
+        "说服力",
         "persuasion",
+        "convince",
+        "pitch",
+        "objection",
+        "objection handling",
+        "narrative",
+        "framing",
         "influence",
         "激励结构",
         "incentive",
+        "incentive alignment",
         "attention arbitrage",
         "注意力套利",
     ),
+}
+_QUERY_DOCUMENT_SUBINTENT_SYNONYMS: dict[str, dict[str, int]] = {
+    "office_document": {
+        "word": 4,
+        "word document": 5,
+        "word文档": 5,
+        "docx": 5,
+        ".docx": 5,
+        "doc": 3,
+        ".doc": 4,
+        "office document": 5,
+    },
+    "documentation": {
+        "docs": 4,
+        "documentation": 5,
+        "spec": 4,
+        "design doc": 5,
+        "decision doc": 5,
+        "rfc": 4,
+        "prd": 4,
+        "proposal": 4,
+        "技术文档": 5,
+        "方案": 3,
+    },
 }
 _QUERY_SECONDARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
     "first_principles": ("第一性原理", "first principles"),
@@ -306,6 +384,107 @@ _SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {
     "talent_density": ("organization_leadership",),
 }
 _THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial"}
+_THEME_FALLBACK_TARGETS = {"organization_leadership", "startup_growth", "negotiation_persuasion"}
+_META_ADVISORY_HINTS: tuple[str, ...] = (
+    "模糊需求",
+    "思维顾问",
+    "diagnostic recommendation",
+    "perspective recommendation",
+    "诊断推荐",
+    "生成人物skill",
+    "人物skill",
+    "造skill",
+    "造人",
+)
+_FAMILY_ADVISORY_HINTS: tuple[str, ...] = (
+    "advisor",
+    "advisory",
+    "perspective",
+    "framework",
+    "guide",
+    "tutorial",
+    "strategy",
+    "methodology",
+    "analysis",
+    "analyst",
+    "playbook",
+    "coauthor",
+    "collaboration",
+    "knowledge",
+    "knowledge base",
+    "knowledge-base",
+    "wiki",
+    "decision",
+    "negotiation",
+    "说服",
+    "顾问",
+    "视角",
+    "框架",
+    "方法论",
+    "策略",
+    "协作",
+    "知识库",
+    "知识协作",
+)
+_INTEGRATION_OR_TOOLING_HINTS: tuple[str, ...] = (
+    "api",
+    "connector",
+    "bridge",
+    "channel",
+    "channels",
+    "integration",
+    "tooling",
+    "query",
+    "lookup",
+    "search",
+    "fetch",
+    "retrieve",
+    "sync",
+    "upload",
+    "download",
+    "send",
+    "plugin",
+    "gateway",
+    "mcp",
+    "插件",
+    "桥接",
+    "渠道",
+    "查询",
+    "检索",
+    "搜索",
+    "同步",
+)
+_SKILL_DOCUMENT_SUBINTENT_SYNONYMS: dict[str, dict[str, int]] = {
+    "office_document": {
+        "docx": 5,
+        ".docx": 5,
+        "word": 4,
+        "word document": 5,
+        "professional documents": 4,
+        "tracked changes": 4,
+        "comments": 2,
+    },
+    "documentation": {
+        "documentation": 5,
+        "docs": 4,
+        "proposal": 4,
+        "spec": 4,
+        "design doc": 5,
+        "decision doc": 5,
+        "rfc": 4,
+        "prd": 4,
+        "internal communication": 4,
+        "status report": 4,
+        "project update": 4,
+        "leadership update": 4,
+        "faq": 3,
+        "cloud docs": 3,
+    },
+}
+_PROFILE_INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="v8-ext-profile",
+)
 _ARTIFACT_MISMATCH_GROUPS: dict[str, set[str]] = {
     "presentation": {"video", "image", "audio"},
     "video": {"presentation", "document", "pdf", "spreadsheet"},
@@ -360,6 +539,46 @@ def _unique_preserve_order(items: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _normalize_text_for_match(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _text_matches_phrase(text: str, phrase: str) -> bool:
+    normalized_text = _normalize_text_for_match(text)
+    normalized_phrase = _normalize_text_for_match(phrase)
+    if not normalized_text or not normalized_phrase:
+        return False
+    if re.search(r"[\u4e00-\u9fff]", normalized_phrase):
+        return normalized_phrase in normalized_text
+    escaped = re.escape(normalized_phrase).replace(r"\ ", r"\s+")
+    return re.search(rf"(?<![0-9a-z]){escaped}(?![0-9a-z])", normalized_text) is not None
+
+
+def _query_matches_synonym(query_text: str, query_tokens: list[str], synonym: str) -> bool:
+    normalized_synonym = _normalize_text_for_match(synonym)
+    if not normalized_synonym:
+        return False
+    if normalized_synonym in query_tokens:
+        return True
+    return _text_matches_phrase(query_text, normalized_synonym)
+
+
+def _weighted_query_hit_score(query_text: str, query_tokens: list[str], rules: dict[str, int]) -> int:
+    score = 0
+    for synonym, weight in rules.items():
+        if _query_matches_synonym(query_text, query_tokens, synonym):
+            score += int(weight)
+    return score
+
+
+def _weighted_text_hit_score(text: str, rules: dict[str, int]) -> int:
+    score = 0
+    for synonym, weight in rules.items():
+        if _text_matches_phrase(text, synonym):
+            score += int(weight)
+    return score
+
+
 def _expand_query_token_variants(query_tokens: list[str]) -> list[str]:
     expanded: list[str] = list(query_tokens)
     for token in list(query_tokens):
@@ -388,23 +607,40 @@ def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
     artifact_intents = [
         key
         for key, synonyms in _QUERY_ARTIFACT_INTENT_SYNONYMS.items()
-        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+        if any(_query_matches_synonym(lowered, query_tokens, str(synonym)) for synonym in synonyms)
     ]
     operation_intents = [
         key
         for key, synonyms in _QUERY_OPERATION_INTENT_SYNONYMS.items()
-        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+        if any(_query_matches_synonym(lowered, query_tokens, str(synonym)) for synonym in synonyms)
     ]
     primary_theme_intents = [
         key
         for key, synonyms in _QUERY_PRIMARY_THEME_SYNONYMS.items()
-        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+        if any(_query_matches_synonym(lowered, query_tokens, str(synonym)) for synonym in synonyms)
     ]
     secondary_theme_hints = [
         key
         for key, synonyms in _QUERY_SECONDARY_THEME_SYNONYMS.items()
-        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+        if any(_query_matches_synonym(lowered, query_tokens, str(synonym)) for synonym in synonyms)
     ]
+    office_document_score = _weighted_query_hit_score(
+        lowered,
+        query_tokens,
+        _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["office_document"],
+    )
+    documentation_score = _weighted_query_hit_score(
+        lowered,
+        query_tokens,
+        _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["documentation"],
+    )
+    document_sub_intent: str | None = None
+    if office_document_score > documentation_score and office_document_score > 0:
+        document_sub_intent = "office_document"
+    elif documentation_score > office_document_score and documentation_score > 0:
+        document_sub_intent = "documentation"
+    if document_sub_intent and "document" not in artifact_intents:
+        artifact_intents.append("document")
     for tag in secondary_theme_hints:
         for primary_theme in _SECONDARY_THEME_PRIMARY_MAP.get(tag, ()):
             if primary_theme not in primary_theme_intents:
@@ -437,6 +673,7 @@ def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
     return {
         "artifactIntent": artifact_intents[0] if artifact_intents else None,
         "artifactIntents": artifact_intents,
+        "documentSubIntent": document_sub_intent,
         "operationIntent": operation_intents[0] if operation_intents else None,
         "operationIntents": operation_intents,
         "primaryThemeIntents": primary_theme_intents,
@@ -492,6 +729,100 @@ def _normalize_profile_items(value: Any) -> list[str]:
         for item in list(value or [])
         if str(item).strip()
     ]
+
+
+def _skill_text_corpus(skill: dict[str, Any]) -> str:
+    parts: list[str] = [
+        str(skill.get("name") or skill.get("folder") or "").strip(),
+        str(skill.get("folder") or "").strip(),
+        str(skill.get("description") or "").strip(),
+    ]
+    for key in ("aliases", "triggers", "keywords", "tags"):
+        parts.extend(str(item).strip() for item in _normalize_hint_items(skill.get(key)))
+    return " ".join(part for part in parts if part)
+
+
+def _detect_skill_document_subintent(skill: dict[str, Any]) -> str | None:
+    text = _skill_text_corpus(skill)
+    office_score = _weighted_text_hit_score(text, _SKILL_DOCUMENT_SUBINTENT_SYNONYMS["office_document"])
+    documentation_score = _weighted_text_hit_score(text, _SKILL_DOCUMENT_SUBINTENT_SYNONYMS["documentation"])
+    if office_score > documentation_score and office_score > 0:
+        return "office_document"
+    if documentation_score > office_score and documentation_score > 0:
+        return "documentation"
+    return None
+
+
+def _has_meta_advisory_signal(skill: dict[str, Any]) -> bool:
+    text = _skill_text_corpus(skill)
+    return any(_text_matches_phrase(text, hint) for hint in _META_ADVISORY_HINTS)
+
+
+def _has_direct_primary_theme_match(skill: dict[str, Any], query_profile: dict[str, Any]) -> bool:
+    query_themes = set(_normalize_profile_items(query_profile.get("primaryThemeIntents")))
+    skill_themes = set(_normalize_profile_items((skill.get("themeProfile") or {}).get("primaryThemes")))
+    return bool(query_themes.intersection(skill_themes))
+
+
+def _score_advisory_fallback_entry(
+    *,
+    query_text: str,
+    query_tokens: list[str],
+    query_profile: dict[str, Any],
+    skill: dict[str, Any],
+) -> int:
+    profile = dict(skill.get("capabilityProfile") or {})
+    theme_profile = dict(skill.get("themeProfile") or {})
+    skill_class = str(profile.get("skillClass") or "").strip().lower()
+    if skill_class not in _THEME_HEAVY_CLASSES:
+        return 0
+    query_themes = set(_normalize_profile_items(query_profile.get("primaryThemeIntents"))).intersection(_THEME_FALLBACK_TARGETS)
+    if not query_themes:
+        return 0
+    implied_primary_themes = {
+        implied_theme
+        for tag in _normalize_profile_items(theme_profile.get("secondaryThemeTags"))
+        for implied_theme in _SECONDARY_THEME_PRIMARY_MAP.get(tag, ())
+    }
+    secondary_hints = set(_normalize_profile_items(query_profile.get("secondaryThemeHints")))
+    secondary_theme_tags = set(_normalize_profile_items(theme_profile.get("secondaryThemeTags")))
+    score = 0
+    if _has_meta_advisory_signal(skill):
+        score += 40
+    matched_implied_themes = query_themes.intersection(implied_primary_themes)
+    if matched_implied_themes:
+        score += 11 + (4 * len(matched_implied_themes))
+    matched_secondary_tags = secondary_hints.intersection(secondary_theme_tags)
+    if matched_secondary_tags:
+        score += 8 + (2 * len(matched_secondary_tags))
+    lexical_score = _score_text(
+        query_tokens=query_tokens,
+        title=str(skill.get("name") or skill.get("folder") or "").strip(),
+        description=_skill_text_corpus(skill),
+    )
+    if lexical_score > 0:
+        score += min(lexical_score, 14)
+    capability_confidence = float(profile.get("capabilityConfidence") or 0.0)
+    theme_confidence = float(theme_profile.get("themeConfidence") or 0.0)
+    score += int(round(capability_confidence * 4))
+    score += int(round(theme_confidence * 3))
+    if skill_class == "advisor_or_perspective":
+        score += 4
+    return score
+
+
+def _merge_keepalive_skills(primary: list[dict[str, Any]], keepalive: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in [*keepalive, *primary]:
+        skill_key = str(entry.get("skillId") or entry.get("skillRoot") or entry.get("path") or "").strip()
+        if not skill_key or skill_key in seen:
+            continue
+        seen.add(skill_key)
+        merged.append(entry)
+        if limit > 0 and len(merged) >= limit:
+            break
+    return merged
 
 
 def _score_skill_entry(
@@ -565,6 +896,9 @@ def _score_skill_entry(
     primary_theme_intents = _normalize_profile_items(query_profile.get("primaryThemeIntents"))
     secondary_theme_hints = _normalize_profile_items(query_profile.get("secondaryThemeHints"))
     topic_tokens = list(query_profile.get("topicTokens") or [])
+    document_sub_intent = str(query_profile.get("documentSubIntent") or "").strip().lower() or None
+    no_artifact_anchor = not artifact_intents
+    pure_theme_query = no_artifact_anchor and bool(primary_theme_intents)
 
     artifact_match = False
     if artifact_intents:
@@ -583,14 +917,29 @@ def _score_skill_entry(
                     break
             if mismatched:
                 score -= 18
+    if "document" in artifact_intents and document_sub_intent:
+        skill_document_sub_intent = _detect_skill_document_subintent(skill)
+        if skill_document_sub_intent == document_sub_intent:
+            artifact_match = True
+            score += 28
+            has_query_signal = True
+            if document_sub_intent == "documentation" and skill_class in {"methodology_or_tutorial", "advisor_or_perspective"}:
+                score += 14
+        elif skill_document_sub_intent and skill_document_sub_intent != document_sub_intent:
+            score -= 18
 
     operation_match = False
     if operation_intents:
         matched_operations = [item for item in operation_intents if item in primary_operations]
+        if pure_theme_query:
+            matched_operations = [item for item in matched_operations if item in {"advise", "analyze", "guide"}]
         if matched_operations:
             operation_match = True
             has_query_signal = True
-            score += 14 + (4 * len(matched_operations))
+            if pure_theme_query:
+                score += 10 + (3 * len(matched_operations))
+            else:
+                score += 14 + (4 * len(matched_operations))
         elif skill_class in {"advisor_or_perspective", "methodology_or_tutorial"} and "advise" in operation_intents:
             operation_match = True
             has_query_signal = True
@@ -600,7 +949,6 @@ def _score_skill_entry(
     matched_primary_themes = [item for item in primary_theme_intents if item in primary_themes]
     matched_secondary_tags = [item for item in secondary_theme_hints if item in secondary_theme_tags]
     matched_implied_themes = [item for item in primary_theme_intents if item in implied_primary_themes]
-    no_artifact_anchor = not artifact_intents
     if skill_class in _THEME_HEAVY_CLASSES:
         if matched_primary_themes:
             theme_match = True
@@ -672,7 +1020,15 @@ def _score_skill_entry(
     return score, artifact_match, operation_match
 
 
-def _score_mcp_server_entry(*, query_text: str, query_tokens: list[str], server_name: str, items: list[Any]) -> int:
+def _score_mcp_server_entry(
+    *,
+    query_text: str,
+    query_tokens: list[str],
+    query_profile: dict[str, Any],
+    server_name: str,
+    items: list[Any],
+    profile: dict[str, Any],
+) -> int:
     tool_names = [_tool_name(tool) for tool in items if _tool_name(tool)]
     tool_descriptions = [_tool_description(tool) for tool in items if _tool_description(tool)]
     server_description = " | ".join(
@@ -681,17 +1037,18 @@ def _score_mcp_server_entry(*, query_text: str, query_tokens: list[str], server_
             f"MCP server {server_name}",
             " ".join(tool_names),
             " ".join(tool_descriptions),
+            _build_family_profile_summary(profile),
         ]
         if str(part or "").strip()
     )
-    normalized_query = str(query_text or "").strip().lower()
-    score = _score_text(query_tokens=query_tokens, title=server_name, description=server_description)
-    if server_name.lower() in normalized_query:
-        score += 10
-    for tool_name in tool_names:
-        if tool_name.lower() in normalized_query:
-            score += 8
-    return score
+    return _score_dynamic_family_entry(
+        query_text=query_text,
+        query_tokens=query_tokens,
+        query_profile=query_profile,
+        family_name=server_name,
+        description=server_description,
+        profile=profile,
+    )
 
 
 def _truncate(text: str, limit: int = 100) -> str:
@@ -713,6 +1070,488 @@ def _tool_description(tool_ref: Any) -> str:
     raw = getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")) or ""
     lines = str(raw).strip().splitlines()
     return lines[0] if lines else ""
+
+
+def _tool_family_fingerprint(parts: Iterable[str]) -> str:
+    normalized = "\n".join(
+        str(part or "").strip()
+        for part in parts
+        if str(part or "").strip()
+    )
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+def _tool_family_text_corpus(
+    *,
+    family_name: str,
+    descriptions: Iterable[str],
+    tool_names: Iterable[str],
+    managed_channels: Iterable[str] | None = None,
+) -> str:
+    parts: list[str] = [str(family_name or "").strip()]
+    parts.extend(str(item or "").strip() for item in tool_names if str(item or "").strip())
+    parts.extend(str(item or "").strip() for item in descriptions if str(item or "").strip())
+    parts.extend(str(item or "").strip() for item in list(managed_channels or []) if str(item or "").strip())
+    return " ".join(part for part in parts if part)
+
+
+def _score_grouped_synonym_matches(
+    text: str,
+    grouped_synonyms: dict[str, tuple[str, ...]],
+) -> tuple[dict[str, float], dict[str, list[str]]]:
+    scores: dict[str, float] = {}
+    matches: dict[str, list[str]] = {}
+    for key, synonyms in grouped_synonyms.items():
+        score = 0.0
+        matched_terms: list[str] = []
+        for synonym in synonyms:
+            normalized = str(synonym or "").strip()
+            if not normalized or not _text_matches_phrase(text, normalized):
+                continue
+            matched_terms.append(normalized)
+            token_count = len(_tokenize(normalized))
+            if re.search(r"[\u4e00-\u9fff]", normalized) or " " in normalized or token_count >= 2 or len(normalized) >= 8:
+                score += 2.0
+            else:
+                score += 1.0
+        if score > 0:
+            scores[key] = score
+            matches[key] = matched_terms
+    return scores, matches
+
+
+def _select_profile_keys(
+    *,
+    scores: dict[str, float],
+    max_items: int,
+    minimum: float,
+) -> list[str]:
+    ordered = sorted(scores.items(), key=lambda item: (-float(item[1]), item[0]))
+    if not ordered:
+        return []
+    selected: list[str] = []
+    for key, score in ordered[:max_items]:
+        if float(score) < minimum:
+            continue
+        selected.append(str(key))
+    return selected
+
+
+def _detect_text_document_subintent_hints(text: str) -> list[str]:
+    office_score = _weighted_text_hit_score(text, _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["office_document"])
+    documentation_score = _weighted_text_hit_score(text, _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["documentation"])
+    hints: list[str] = []
+    if office_score > 0 and office_score >= documentation_score:
+        hints.append("office_document")
+    if documentation_score > 0 and documentation_score >= office_score:
+        hints.append("documentation")
+    return hints[:2]
+
+
+def _has_family_advisory_signal(text: str) -> bool:
+    return any(_text_matches_phrase(text, hint) for hint in _FAMILY_ADVISORY_HINTS)
+
+
+def _has_integration_or_tooling_signal(text: str, *, managed_channels: Iterable[str] | None = None) -> bool:
+    if any(str(item or "").strip() for item in list(managed_channels or [])):
+        return True
+    return any(_text_matches_phrase(text, hint) for hint in _INTEGRATION_OR_TOOLING_HINTS)
+
+
+def _derive_tool_family_profile_rules(
+    *,
+    family_name: str,
+    descriptions: list[str],
+    tool_names: list[str],
+    managed_channels: list[str] | None = None,
+) -> dict[str, Any]:
+    text = _tool_family_text_corpus(
+        family_name=family_name,
+        descriptions=descriptions,
+        tool_names=tool_names,
+        managed_channels=managed_channels,
+    )
+    artifact_scores, artifact_matches = _score_grouped_synonym_matches(text, _QUERY_ARTIFACT_INTENT_SYNONYMS)
+    operation_scores, operation_matches = _score_grouped_synonym_matches(text, _QUERY_OPERATION_INTENT_SYNONYMS)
+    theme_scores, theme_matches = _score_grouped_synonym_matches(text, _QUERY_PRIMARY_THEME_SYNONYMS)
+    secondary_scores, secondary_matches = _score_grouped_synonym_matches(text, _QUERY_SECONDARY_THEME_SYNONYMS)
+    document_subintent_hints = _detect_text_document_subintent_hints(text)
+
+    primary_artifact_types = _select_profile_keys(scores=artifact_scores, max_items=2, minimum=2.0)
+    primary_operations = _select_profile_keys(scores=operation_scores, max_items=3, minimum=1.0)
+    primary_themes = _select_profile_keys(scores=theme_scores, max_items=2, minimum=2.0)
+    secondary_theme_tags = _select_profile_keys(scores=secondary_scores, max_items=5, minimum=1.0)
+
+    advisory_signal = _has_family_advisory_signal(text)
+    integration_signal = _has_integration_or_tooling_signal(text, managed_channels=managed_channels)
+
+    skill_class_like = "integration_or_tooling"
+    if advisory_signal:
+        if any(_text_matches_phrase(text, hint) for hint in ("perspective", "advisor", "advisory", "视角", "顾问", "strategy", "决策")):
+            skill_class_like = "advisor_or_perspective"
+        else:
+            skill_class_like = "methodology_or_tutorial"
+    elif primary_themes and any(item in primary_operations for item in ("advise", "guide", "analyze")):
+        skill_class_like = "methodology_or_tutorial"
+    elif primary_artifact_types:
+        if "create" in primary_operations:
+            skill_class_like = "artifact_producer"
+        elif any(item in primary_operations for item in ("edit", "analyze", "convert")):
+            skill_class_like = "artifact_editor_or_analyzer"
+        else:
+            skill_class_like = "artifact_producer"
+    elif integration_signal:
+        skill_class_like = "integration_or_tooling"
+
+    if skill_class_like in {"advisor_or_perspective", "methodology_or_tutorial", "integration_or_tooling"} and not primary_artifact_types:
+        primary_artifact_types = []
+
+    evidence_strength = max(
+        list(artifact_scores.values())
+        + list(operation_scores.values())
+        + list(theme_scores.values())
+        + list(secondary_scores.values())
+        + [0.0]
+    )
+    confidence = 0.18
+    if primary_artifact_types:
+        confidence += 0.2 + (0.05 * min(len(primary_artifact_types), 2))
+    if primary_operations:
+        confidence += 0.12 + (0.04 * min(len(primary_operations), 3))
+    if document_subintent_hints:
+        confidence += 0.08
+    if primary_themes:
+        confidence += 0.12 + (0.04 * min(len(primary_themes), 2))
+    if secondary_theme_tags:
+        confidence += 0.06 + (0.02 * min(len(secondary_theme_tags), 3))
+    if skill_class_like in _THEME_HEAVY_CLASSES:
+        confidence += 0.08
+    elif skill_class_like == "integration_or_tooling":
+        confidence += 0.05
+    if evidence_strength >= 6.0:
+        confidence += 0.12
+    elif evidence_strength >= 3.5:
+        confidence += 0.06
+
+    return {
+        "skillClassLike": skill_class_like,
+        "primaryArtifactTypes": primary_artifact_types,
+        "primaryOperations": primary_operations,
+        "documentSubIntentHints": document_subintent_hints,
+        "primaryThemes": primary_themes,
+        "secondaryThemeTags": secondary_theme_tags,
+        "profileConfidence": round(max(0.0, min(confidence, 0.98)), 3),
+        "profileSource": "rules",
+        "evidenceSignals": {
+            "artifactMatches": {key: artifact_matches.get(key, []) for key in primary_artifact_types},
+            "operationMatches": {key: operation_matches.get(key, []) for key in primary_operations},
+            "primaryThemeMatches": {key: theme_matches.get(key, []) for key in primary_themes},
+            "secondaryThemeMatches": {key: secondary_matches.get(key, []) for key in secondary_theme_tags},
+        },
+    }
+
+
+def _should_attempt_dynamic_profile_inference(*, base_profile: dict[str, Any], allow_llm: bool) -> bool:
+    if not allow_llm:
+        return False
+    confidence = float(base_profile.get("profileConfidence") or 0.0)
+    primary_themes = list(base_profile.get("primaryThemes") or [])
+    document_hints = list(base_profile.get("documentSubIntentHints") or [])
+    skill_class_like = str(base_profile.get("skillClassLike") or "").strip().lower()
+    if len(document_hints) > 1:
+        return True
+    if skill_class_like in _THEME_HEAVY_CLASSES and not primary_themes:
+        return True
+    if confidence < 0.48:
+        return True
+    if len(primary_themes) > 1 and confidence < 0.7:
+        return True
+    return False
+
+
+def _normalize_dynamic_profile_with_fallback(
+    *,
+    payload: dict[str, Any] | None,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = dict(fallback)
+    if not isinstance(payload, dict):
+        return normalized
+    allowed_classes = {
+        "artifact_producer",
+        "artifact_editor_or_analyzer",
+        "workflow_or_script",
+        "methodology_or_tutorial",
+        "advisor_or_perspective",
+        "integration_or_tooling",
+    }
+    skill_class_like = str(payload.get("skillClassLike") or "").strip()
+    if skill_class_like in allowed_classes:
+        normalized["skillClassLike"] = skill_class_like
+    artifact_types = [
+        str(item).strip()
+        for item in list(payload.get("primaryArtifactTypes") or [])
+        if str(item).strip() in _QUERY_ARTIFACT_INTENT_SYNONYMS
+    ][:2]
+    operations = [
+        str(item).strip()
+        for item in list(payload.get("primaryOperations") or [])
+        if str(item).strip() in _QUERY_OPERATION_INTENT_SYNONYMS
+    ][:3]
+    document_hints = [
+        str(item).strip()
+        for item in list(payload.get("documentSubIntentHints") or [])
+        if str(item).strip() in {"office_document", "documentation"}
+    ][:2]
+    primary_themes = [
+        str(item).strip()
+        for item in list(payload.get("primaryThemes") or [])
+        if str(item).strip() in _QUERY_PRIMARY_THEME_SYNONYMS
+    ][:2]
+    secondary_theme_tags = [
+        str(item).strip()
+        for item in list(payload.get("secondaryThemeTags") or [])
+        if str(item).strip() in _QUERY_SECONDARY_THEME_SYNONYMS
+    ][:5]
+    if artifact_types:
+        normalized["primaryArtifactTypes"] = artifact_types
+    if operations:
+        normalized["primaryOperations"] = operations
+    if document_hints:
+        normalized["documentSubIntentHints"] = document_hints
+    if primary_themes:
+        normalized["primaryThemes"] = primary_themes
+    if secondary_theme_tags:
+        normalized["secondaryThemeTags"] = secondary_theme_tags
+    try:
+        confidence = float(payload.get("profileConfidence"))
+        normalized["profileConfidence"] = round(max(0.0, min(confidence, 0.99)), 3)
+    except (TypeError, ValueError):
+        pass
+    normalized["profileSource"] = "llm_assisted"
+    normalized.setdefault("evidenceSignals", {})
+    return normalized
+
+
+def _build_family_profile_summary(profile: dict[str, Any]) -> str:
+    parts: list[str] = []
+    skill_class_like = str(profile.get("skillClassLike") or "").strip()
+    if skill_class_like:
+        parts.append(f"class={skill_class_like}")
+    if list(profile.get("primaryArtifactTypes") or []):
+        parts.append(f"artifacts={','.join(profile.get('primaryArtifactTypes') or [])}")
+    if list(profile.get("documentSubIntentHints") or []):
+        parts.append(f"documentSubIntent={','.join(profile.get('documentSubIntentHints') or [])}")
+    if list(profile.get("primaryOperations") or []):
+        parts.append(f"operations={','.join(profile.get('primaryOperations') or [])}")
+    if list(profile.get("primaryThemes") or []):
+        parts.append(f"themes={','.join(profile.get('primaryThemes') or [])}")
+    return " | ".join(parts)
+
+
+def _family_profile_text_for_scoring(
+    *,
+    family_name: str,
+    description: str,
+    profile: dict[str, Any],
+) -> str:
+    return " ".join(
+        part
+        for part in [
+            str(family_name or "").strip(),
+            str(description or "").strip(),
+            " ".join(str(item).strip() for item in list(profile.get("primaryArtifactTypes") or []) if str(item).strip()),
+            " ".join(str(item).strip() for item in list(profile.get("primaryOperations") or []) if str(item).strip()),
+            " ".join(str(item).strip() for item in list(profile.get("documentSubIntentHints") or []) if str(item).strip()),
+            " ".join(str(item).strip() for item in list(profile.get("primaryThemes") or []) if str(item).strip()),
+            " ".join(str(item).strip() for item in list(profile.get("secondaryThemeTags") or []) if str(item).strip()),
+        ]
+        if part
+    )
+
+
+def _has_direct_dynamic_theme_match(profile: dict[str, Any], query_profile: dict[str, Any]) -> bool:
+    query_themes = set(_normalize_profile_items(query_profile.get("primaryThemeIntents")))
+    family_themes = set(_normalize_profile_items(profile.get("primaryThemes")))
+    return bool(query_themes.intersection(family_themes))
+
+
+def _score_dynamic_family_entry(
+    *,
+    query_text: str,
+    query_tokens: list[str],
+    query_profile: dict[str, Any],
+    family_name: str,
+    description: str,
+    profile: dict[str, Any],
+) -> int:
+    scoring_text = _family_profile_text_for_scoring(
+        family_name=family_name,
+        description=description,
+        profile=profile,
+    )
+    score = _score_text(query_tokens=query_tokens, title=family_name, description=scoring_text)
+    has_query_signal = score > 0
+    normalized_query = str(query_text or "").strip().lower()
+    if str(family_name or "").strip().lower() in normalized_query:
+        score += 10
+        has_query_signal = True
+
+    artifact_intents = _normalize_profile_items(query_profile.get("artifactIntents"))
+    operation_intents = _normalize_profile_items(query_profile.get("operationIntents"))
+    primary_theme_intents = _normalize_profile_items(query_profile.get("primaryThemeIntents"))
+    secondary_theme_hints = _normalize_profile_items(query_profile.get("secondaryThemeHints"))
+    topic_tokens = list(query_profile.get("topicTokens") or [])
+    document_sub_intent = str(query_profile.get("documentSubIntent") or "").strip().lower() or None
+    no_artifact_anchor = not artifact_intents
+    pure_theme_query = no_artifact_anchor and bool(primary_theme_intents)
+
+    primary_artifact_types = _normalize_profile_items(profile.get("primaryArtifactTypes"))
+    primary_operations = _normalize_profile_items(profile.get("primaryOperations"))
+    document_subintent_hints = _normalize_profile_items(profile.get("documentSubIntentHints"))
+    primary_themes = _normalize_profile_items(profile.get("primaryThemes"))
+    secondary_theme_tags = _normalize_profile_items(profile.get("secondaryThemeTags"))
+    skill_class_like = str(profile.get("skillClassLike") or "").strip().lower()
+    confidence = float(profile.get("profileConfidence") or 0.0)
+
+    artifact_match = False
+    if artifact_intents:
+        matched_artifacts = [item for item in artifact_intents if item in primary_artifact_types]
+        if matched_artifacts:
+            artifact_match = True
+            has_query_signal = True
+            score += 26 + (6 * len(matched_artifacts))
+        elif primary_artifact_types:
+            mismatched = False
+            for artifact_intent in artifact_intents:
+                conflicting = _ARTIFACT_MISMATCH_GROUPS.get(artifact_intent, set())
+                if conflicting.intersection(primary_artifact_types):
+                    mismatched = True
+                    break
+            if mismatched:
+                score -= 16
+    if "document" in artifact_intents and document_sub_intent:
+        if document_sub_intent in document_subintent_hints:
+            artifact_match = True
+            has_query_signal = True
+            score += 24
+        elif document_subintent_hints:
+            score -= 16
+
+    if operation_intents:
+        matched_operations = [item for item in operation_intents if item in primary_operations]
+        if pure_theme_query:
+            matched_operations = [item for item in matched_operations if item in {"advise", "analyze", "guide"}]
+        if matched_operations:
+            has_query_signal = True
+            score += (9 if pure_theme_query else 12) + (3 * len(matched_operations))
+
+    theme_match = False
+    matched_primary_themes = [item for item in primary_theme_intents if item in primary_themes]
+    matched_secondary_tags = [item for item in secondary_theme_hints if item in secondary_theme_tags]
+    if skill_class_like in _THEME_HEAVY_CLASSES:
+        if matched_primary_themes:
+            theme_match = True
+            has_query_signal = True
+            score += (24 if no_artifact_anchor else 6) + (6 * len(matched_primary_themes))
+        if matched_secondary_tags:
+            has_query_signal = True
+            score += (10 if no_artifact_anchor else 3) + (2 * len(matched_secondary_tags))
+    else:
+        if matched_primary_themes:
+            has_query_signal = True
+            score += 5 + (2 * len(matched_primary_themes))
+        if matched_secondary_tags:
+            has_query_signal = True
+            score += 2 + len(matched_secondary_tags)
+
+    if topic_tokens:
+        topic_score = _score_text(query_tokens=topic_tokens, title=family_name, description=scoring_text)
+        score += min(topic_score, 14)
+        if topic_score > 0:
+            has_query_signal = True
+
+    if pure_theme_query and skill_class_like not in _THEME_HEAVY_CLASSES:
+        score -= 10
+    if artifact_intents and skill_class_like in _THEME_HEAVY_CLASSES and not artifact_match:
+        score -= 8
+    if no_artifact_anchor and theme_match and skill_class_like in _THEME_HEAVY_CLASSES:
+        score += 6
+
+    if not has_query_signal:
+        return 0
+    score += int(round(confidence * 5))
+    return score
+
+
+def _score_dynamic_family_fallback_entry(
+    *,
+    query_text: str,
+    query_tokens: list[str],
+    query_profile: dict[str, Any],
+    family_name: str,
+    description: str,
+    profile: dict[str, Any],
+) -> int:
+    query_themes = set(_normalize_profile_items(query_profile.get("primaryThemeIntents")))
+    if not query_themes:
+        return 0
+    skill_class_like = str(profile.get("skillClassLike") or "").strip().lower()
+    profile_text = _family_profile_text_for_scoring(
+        family_name=family_name,
+        description=description,
+        profile=profile,
+    )
+    advisory_signal = _has_family_advisory_signal(profile_text)
+    collaboration_signal = any(
+        _text_matches_phrase(profile_text, hint)
+        for hint in ("coauthor", "collaboration", "knowledge", "wiki", "docs", "文档协作", "知识库", "协作")
+    )
+    if skill_class_like not in {*_THEME_HEAVY_CLASSES, "integration_or_tooling"}:
+        return 0
+    if skill_class_like == "integration_or_tooling" and not collaboration_signal:
+        return 0
+
+    primary_themes = set(_normalize_profile_items(profile.get("primaryThemes")))
+    secondary_theme_tags = set(_normalize_profile_items(profile.get("secondaryThemeTags")))
+    matched_primary_themes = query_themes.intersection(primary_themes)
+    implied_themes = {
+        implied_theme
+        for tag in secondary_theme_tags
+        for implied_theme in _SECONDARY_THEME_PRIMARY_MAP.get(tag, ())
+    }
+    matched_implied_themes = query_themes.intersection(implied_themes)
+    lexical_score = _score_text(query_tokens=query_tokens, title=family_name, description=profile_text)
+
+    score = 0
+    if advisory_signal:
+        score += 18
+    if collaboration_signal:
+        score += 10
+    if matched_primary_themes:
+        score += 14 + (4 * len(matched_primary_themes))
+    if matched_implied_themes:
+        score += 8 + (3 * len(matched_implied_themes))
+    if lexical_score > 0:
+        score += min(lexical_score, 10)
+    score += int(round(float(profile.get("profileConfidence") or 0.0) * 4))
+    if skill_class_like in _THEME_HEAVY_CLASSES:
+        score += 4
+    return score
+
+
+def _merge_keepalive_keys(primary: list[str], keepalive: list[str], limit: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for entry in [*keepalive, *primary]:
+        normalized = str(entry or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(normalized)
+        if limit > 0 and len(merged) >= limit:
+            break
+    return merged
 
 
 def _is_mcp_tool(tool_ref: Any) -> bool:
@@ -1040,9 +1879,15 @@ class ExtensionsRuntimeService:
         self._last_skill_inventory_change: dict[str, Any] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._blocked_skill_records: list[dict[str, Any]] = []
+        self._mcp_family_profile_cache: dict[str, dict[str, Any]] = {}
+        self._plugin_host_family_profile_cache: dict[str, dict[str, Any]] = {}
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _clear_dynamic_family_profile_caches(self) -> None:
+        self._mcp_family_profile_cache.clear()
+        self._plugin_host_family_profile_cache.clear()
 
     def _cache_path(self) -> Path:
         configured = str(os.getenv("V8_AGENT_OS_EXTENSIONS_CACHE_FILE") or "").strip()
@@ -1253,6 +2098,224 @@ class ExtensionsRuntimeService:
 
     def get_mcp_startup_status(self) -> dict[str, Any]:
         return dict(mcp_manager.get_startup_status())
+
+    def _remember_dynamic_profile(
+        self,
+        *,
+        cache: dict[str, dict[str, Any]],
+        fingerprint: str,
+        profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        cache[fingerprint] = dict(profile)
+        while len(cache) > _DYNAMIC_PROFILE_CACHE_LIMIT:
+            oldest_key = next(iter(cache))
+            cache.pop(oldest_key, None)
+        return dict(cache[fingerprint])
+
+    def _infer_dynamic_family_profile_with_llm(
+        self,
+        *,
+        family_kind: str,
+        family_name: str,
+        descriptions: list[str],
+        tool_names: list[str],
+        managed_channels: list[str],
+        base_profile: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        prompt_payload = json.dumps(
+            {
+                "familyKind": family_kind,
+                "familyName": family_name,
+                "toolNames": tool_names[:12],
+                "descriptions": descriptions[:8],
+                "managedChannels": managed_channels[:8],
+                "currentProfile": base_profile,
+                "allowedClasses": [
+                    "artifact_producer",
+                    "artifact_editor_or_analyzer",
+                    "workflow_or_script",
+                    "methodology_or_tutorial",
+                    "advisor_or_perspective",
+                    "integration_or_tooling",
+                ],
+                "allowedArtifacts": list(_QUERY_ARTIFACT_INTENT_SYNONYMS.keys()),
+                "allowedOperations": list(_QUERY_OPERATION_INTENT_SYNONYMS.keys()),
+                "allowedDocumentSubIntents": ["office_document", "documentation"],
+                "allowedPrimaryThemes": list(_QUERY_PRIMARY_THEME_SYNONYMS.keys()),
+                "allowedSecondaryThemeTags": list(_QUERY_SECONDARY_THEME_SYNONYMS.keys()),
+            },
+            ensure_ascii=False,
+        )
+
+        def _invoke() -> dict[str, Any] | None:
+            model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
+            response = model.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "你是 V8 Agent OS 的扩展族级画像归一器。\n"
+                            "任务：为 MCP server 或 PluginHost 工具族输出轻量画像。\n"
+                            "只返回 JSON："
+                            "{\"skillClassLike\":\"...\",\"primaryArtifactTypes\":[...],"
+                            "\"primaryOperations\":[...],\"documentSubIntentHints\":[...],"
+                            "\"primaryThemes\":[...],\"secondaryThemeTags\":[...],"
+                            "\"profileConfidence\":0.0}\n"
+                            "要求：只允许一个主类；主产物最多 2 个；主操作最多 3 个；"
+                            "主主题最多 2 个；不要输出解释文本。"
+                        )
+                    ),
+                    HumanMessage(content=prompt_payload),
+                ],
+                config={"callbacks": []},
+            )
+            content = getattr(response, "content", response)
+            text = content if isinstance(content, str) else str(content or "")
+            try:
+                payload = json.loads(text)
+            except Exception:
+                match = re.search(r"\{[\s\S]*\}", text)
+                if not match:
+                    return None
+                try:
+                    payload = json.loads(match.group(0))
+                except Exception:
+                    return None
+            return payload if isinstance(payload, dict) else None
+
+        try:
+            return _PROFILE_INFERENCE_EXECUTOR.submit(_invoke).result(timeout=_DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS)
+        except Exception:
+            return None
+
+    def _get_mcp_server_profile(
+        self,
+        *,
+        server_name: str,
+        items: list[Any],
+        allow_llm: bool,
+    ) -> dict[str, Any]:
+        ordered_items = sorted(
+            list(items or []),
+            key=lambda tool: (
+                _mcp_tool_server_name(tool).lower(),
+                _tool_name(tool).lower(),
+            ),
+        )
+        tool_names = [_tool_name(tool) for tool in ordered_items if _tool_name(tool)]
+        descriptions = [_tool_description(tool) for tool in ordered_items if _tool_description(tool)]
+        fingerprint = _tool_family_fingerprint([server_name, *tool_names, *descriptions])
+        cached = self._mcp_family_profile_cache.get(fingerprint)
+        if cached and (not _should_attempt_dynamic_profile_inference(base_profile=cached, allow_llm=allow_llm)):
+            return dict(cached)
+        base_profile = dict(cached or _derive_tool_family_profile_rules(
+            family_name=server_name,
+            descriptions=descriptions,
+            tool_names=tool_names,
+            managed_channels=[],
+        ))
+        final_profile = dict(base_profile)
+        if _should_attempt_dynamic_profile_inference(base_profile=base_profile, allow_llm=allow_llm):
+            llm_profile = self._infer_dynamic_family_profile_with_llm(
+                family_kind="mcp_server",
+                family_name=server_name,
+                descriptions=descriptions,
+                tool_names=tool_names,
+                managed_channels=[],
+                base_profile=base_profile,
+            )
+            final_profile = _normalize_dynamic_profile_with_fallback(payload=llm_profile, fallback=base_profile)
+        return self._remember_dynamic_profile(
+            cache=self._mcp_family_profile_cache,
+            fingerprint=fingerprint,
+            profile=final_profile,
+        )
+
+    def _build_plugin_host_family_entries(self, plugin_host_tools: list[Any]) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        sibling_names_by_plugin: dict[str, list[str]] = {}
+        for tool in plugin_host_tools:
+            plugin_id = _plugin_host_tool_plugin_id(tool)
+            sibling_names_by_plugin.setdefault(plugin_id, []).append(_plugin_host_tool_raw_name(tool))
+        for tool in plugin_host_tools:
+            plugin_id = _plugin_host_tool_plugin_id(tool)
+            raw_name = _plugin_host_tool_raw_name(tool)
+            family_prefix = _family_prefix_for_tool(
+                tool_name=raw_name,
+                sibling_tool_names=sibling_names_by_plugin.get(plugin_id, []),
+            )
+            family_name = family_prefix or raw_name
+            family_key = f"{plugin_id}::{family_name}"
+            bucket = grouped.setdefault(
+                family_key,
+                {
+                    "familyKey": family_key,
+                    "pluginId": plugin_id,
+                    "familyName": family_name,
+                    "items": [],
+                    "managedChannels": set(),
+                },
+            )
+            bucket["items"].append(tool)
+            for channel in _plugin_host_tool_managed_channels(tool):
+                bucket["managedChannels"].add(channel)
+        for payload in grouped.values():
+            payload["items"] = sorted(
+                list(payload.get("items") or []),
+                key=lambda tool: (
+                    _plugin_host_tool_plugin_id(tool).lower(),
+                    _plugin_host_tool_raw_name(tool).lower(),
+                    _plugin_host_tool_identity(tool).lower(),
+                ),
+            )
+            payload["managedChannels"] = sorted(payload.get("managedChannels") or [])
+            payload["seed"] = (payload["items"] or [None])[0]
+        return grouped
+
+    def _get_plugin_host_family_profile(
+        self,
+        *,
+        family_key: str,
+        family_name: str,
+        items: list[Any],
+        managed_channels: list[str],
+        allow_llm: bool,
+    ) -> dict[str, Any]:
+        ordered_items = sorted(
+            list(items or []),
+            key=lambda tool: (
+                _plugin_host_tool_plugin_id(tool).lower(),
+                _plugin_host_tool_raw_name(tool).lower(),
+                _plugin_host_tool_identity(tool).lower(),
+            ),
+        )
+        tool_names = [_plugin_host_tool_raw_name(tool) for tool in ordered_items if _plugin_host_tool_raw_name(tool)]
+        descriptions = [_tool_description(tool) for tool in ordered_items if _tool_description(tool)]
+        fingerprint = _tool_family_fingerprint([family_key, *tool_names, *descriptions, *managed_channels])
+        cached = self._plugin_host_family_profile_cache.get(fingerprint)
+        if cached and (not _should_attempt_dynamic_profile_inference(base_profile=cached, allow_llm=allow_llm)):
+            return dict(cached)
+        base_profile = dict(cached or _derive_tool_family_profile_rules(
+            family_name=family_name,
+            descriptions=descriptions,
+            tool_names=tool_names,
+            managed_channels=managed_channels,
+        ))
+        final_profile = dict(base_profile)
+        if _should_attempt_dynamic_profile_inference(base_profile=base_profile, allow_llm=allow_llm):
+            llm_profile = self._infer_dynamic_family_profile_with_llm(
+                family_kind="plugin_host_family",
+                family_name=family_name,
+                descriptions=descriptions,
+                tool_names=tool_names,
+                managed_channels=managed_channels,
+                base_profile=base_profile,
+            )
+            final_profile = _normalize_dynamic_profile_with_fallback(payload=llm_profile, fallback=base_profile)
+        return self._remember_dynamic_profile(
+            cache=self._plugin_host_family_profile_cache,
+            fingerprint=fingerprint,
+            profile=final_profile,
+        )
 
     def _derive_phase(self, *, skills_state: dict[str, Any], mcp_state: dict[str, Any]) -> tuple[str, list[str], list[str]]:
         blocked_reasons: list[str] = []
@@ -1538,6 +2601,7 @@ class ExtensionsRuntimeService:
             self._last_refresh_at = self._now_iso()
             self._last_refresh_error = None
             self._route_cache.clear()
+            self._clear_dynamic_family_profile_caches()
             self._persist_cache()
             return self._decorate_health(health)
 
@@ -1577,6 +2641,7 @@ class ExtensionsRuntimeService:
                     "reason": reason,
                 }
                 self._route_cache.clear()
+                self._clear_dynamic_family_profile_caches()
                 self._cached_catalog = None
                 self._cached_health = None
         except Exception as exc:
@@ -1802,10 +2867,20 @@ class ExtensionsRuntimeService:
                 "selectedMcpServers": candidate_summary.get("mcpSelectedServers") or [],
                 "selectedMcpFamilies": candidate_summary.get("mcpSelectedFamilies") or [],
                 "selectedMcpTools": candidate_summary.get("mcpTools") or [],
+                "selectedPluginHostFamilies": candidate_summary.get("pluginHostSelectedFamilies") or [],
+                "selectedPluginHostTools": candidate_summary.get("pluginHostTools") or [],
                 "primaryThemeIntents": candidate_summary.get("primaryThemeIntents") or [],
                 "themeMatchedCount": candidate_summary.get("themeMatchedCount"),
                 "themeBackfilledCount": candidate_summary.get("themeBackfilledCount"),
                 "themeRankingSignals": candidate_summary.get("themeRankingSignals") or {},
+                "mcpProfileMatchedCount": candidate_summary.get("mcpProfileMatchedCount"),
+                "pluginHostProfileMatchedCount": candidate_summary.get("pluginHostProfileMatchedCount"),
+                "mcpThemeMatchedCount": candidate_summary.get("mcpThemeMatchedCount"),
+                "pluginHostThemeMatchedCount": candidate_summary.get("pluginHostThemeMatchedCount"),
+                "mcpDocumentSubIntentMatched": candidate_summary.get("mcpDocumentSubIntentMatched"),
+                "pluginHostDocumentSubIntentMatched": candidate_summary.get("pluginHostDocumentSubIntentMatched"),
+                "mcpThemeFallbackInjectedCount": candidate_summary.get("mcpThemeFallbackInjectedCount"),
+                "pluginHostThemeFallbackInjectedCount": candidate_summary.get("pluginHostThemeFallbackInjectedCount"),
             },
         }
 
@@ -1873,6 +2948,43 @@ class ExtensionsRuntimeService:
             key=lambda row: (-int(bool(row[1])), -row[0], row[3].lower()),
         )
         skill_stage1_hits = [row[4] for row in ranked_skills if row[0] > 0] if skill_stage1_enabled else []
+        theme_fallback_candidates: list[dict[str, Any]] = []
+        if (
+            skill_stage1_enabled
+            and not query_profile.get("artifactIntent")
+            and set(_normalize_profile_items(query_profile.get("primaryThemeIntents"))).intersection(_THEME_FALLBACK_TARGETS)
+        ):
+            direct_theme_hits = [
+                item
+                for item in skill_entries
+                if str((item.get("capabilityProfile") or {}).get("skillClass") or "").strip().lower() in _THEME_HEAVY_CLASSES
+                and _has_direct_primary_theme_match(item, query_profile)
+            ]
+            if not direct_theme_hits:
+                ranked_fallback_candidates = sorted(
+                    (
+                        (
+                            _score_advisory_fallback_entry(
+                                query_text=query_text,
+                                query_tokens=query_tokens,
+                                query_profile=query_profile,
+                                skill=item,
+                            ),
+                            str(item.get("name") or item.get("folder") or "").lower(),
+                            item,
+                        )
+                        for item in skill_entries
+                        if str((item.get("capabilityProfile") or {}).get("skillClass") or "").strip().lower() in _THEME_HEAVY_CLASSES
+                    ),
+                    key=lambda row: (-row[0], row[1]),
+                )
+                theme_fallback_candidates = [row[2] for row in ranked_fallback_candidates if row[0] > 0][:3]
+                if theme_fallback_candidates:
+                    skill_stage1_hits = _merge_keepalive_skills(
+                        skill_stage1_hits,
+                        theme_fallback_candidates,
+                        max(len(skill_stage1_hits) + len(theme_fallback_candidates), effective_skill_stage1_limit),
+                    )
         skill_stage1_hit_count = len(skill_stage1_hits)
         skill_pool = skill_stage1_hits[:effective_skill_stage1_limit] if effective_skill_stage1_limit > 0 else []
         skill_stage1_shortlist = list(skill_pool)
@@ -1896,6 +3008,7 @@ class ExtensionsRuntimeService:
         for tool in mcp_tools:
             server_name = _mcp_tool_server_name(tool)
             mcp_server_map.setdefault(server_name, []).append(tool)
+        mcp_server_profiles: dict[str, dict[str, Any]] = {}
 
         ranked_mcp_servers: list[tuple[int, str, list[Any]]] = []
         for server_name, raw_items in mcp_server_map.items():
@@ -1908,17 +3021,19 @@ class ExtensionsRuntimeService:
             )
             if not items:
                 continue
-            tool_names = [_tool_name(tool) for tool in items if _tool_name(tool)]
-            tool_descriptions = [
-                _tool_description(tool)
-                for tool in items
-                if _tool_description(tool)
-            ]
+            profile = self._get_mcp_server_profile(
+                server_name=server_name,
+                items=items,
+                allow_llm=stage2_runtime_available,
+            )
+            mcp_server_profiles[server_name] = profile
             server_score = _score_mcp_server_entry(
                 query_text=query_text,
                 query_tokens=query_tokens,
+                query_profile=query_profile,
                 server_name=server_name,
                 items=items,
+                profile=profile,
             )
             ranked_mcp_servers.append((server_score, server_name, items))
 
@@ -1934,6 +3049,51 @@ class ExtensionsRuntimeService:
             for score, server_name, _items in ranked_mcp_servers
             if score > 0
         ] if mcp_stage1_enabled else []
+        mcp_theme_fallback_keys: list[str] = []
+        if (
+            mcp_stage1_enabled
+            and not query_profile.get("artifactIntent")
+            and list(query_profile.get("primaryThemeIntents") or [])
+        ):
+            direct_theme_hits = [
+                server_name
+                for server_name, profile in mcp_server_profiles.items()
+                if str(profile.get("skillClassLike") or "").strip().lower() in _THEME_HEAVY_CLASSES
+                and _has_direct_dynamic_theme_match(profile, query_profile)
+            ]
+            if not direct_theme_hits:
+                ranked_mcp_fallback = sorted(
+                    (
+                        (
+                            _score_dynamic_family_fallback_entry(
+                                query_text=query_text,
+                                query_tokens=query_tokens,
+                                query_profile=query_profile,
+                                family_name=server_name,
+                                description=" | ".join(
+                                    part
+                                    for part in [
+                                        " ".join(_tool_name(tool) for tool in items if _tool_name(tool)),
+                                        " ".join(_tool_description(tool) for tool in items if _tool_description(tool)),
+                                    ]
+                                    if str(part or "").strip()
+                                ),
+                                profile=mcp_server_profiles.get(server_name, {}),
+                            ),
+                            server_name.lower(),
+                            server_name,
+                        )
+                        for server_name, items in mcp_server_map.items()
+                    ),
+                    key=lambda row: (-row[0], row[1]),
+                )
+                mcp_theme_fallback_keys = [row[2] for row in ranked_mcp_fallback if row[0] > 0][:_DYNAMIC_THEME_FALLBACK_LIMIT]
+                if mcp_theme_fallback_keys:
+                    mcp_stage1_hits = _merge_keepalive_keys(
+                        mcp_stage1_hits,
+                        mcp_theme_fallback_keys,
+                        max(len(mcp_stage1_hits) + len(mcp_theme_fallback_keys), effective_mcp_stage1_limit),
+                    )
         mcp_stage1_hit_count = len(mcp_stage1_hits)
         mcp_pool_server_keys = mcp_stage1_hits[:effective_mcp_stage1_limit] if effective_mcp_stage1_limit > 0 else []
         mcp_pool = list(mcp_pool_server_keys)
@@ -1963,33 +3123,109 @@ class ExtensionsRuntimeService:
 
         selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
 
-        ranked_plugin_host = sorted(
-            (
-                (
-                    _score_text(
-                        query_tokens=query_tokens,
-                        title=_tool_name(tool),
-                        description=_tool_description(tool),
-                    ),
-                    _tool_name(tool).lower(),
-                    tool,
-                )
-                for tool in plugin_host_tools
-            ),
-            key=lambda row: (-row[0], row[1]),
-        )
+        plugin_host_family_entries = self._build_plugin_host_family_entries(plugin_host_tools)
+        plugin_host_family_profiles: dict[str, dict[str, Any]] = {}
+        ranked_plugin_host: list[tuple[int, str, dict[str, Any]]] = []
+        for family_key, payload in plugin_host_family_entries.items():
+            items = list(payload.get("items") or [])
+            if not items:
+                continue
+            family_name = str(payload.get("familyName") or family_key).strip() or family_key
+            descriptions = [_tool_description(tool) for tool in items if _tool_description(tool)]
+            profile = self._get_plugin_host_family_profile(
+                family_key=family_key,
+                family_name=family_name,
+                items=items,
+                managed_channels=list(payload.get("managedChannels") or []),
+                allow_llm=stage2_runtime_available,
+            )
+            plugin_host_family_profiles[family_key] = profile
+            family_description = " | ".join(
+                part
+                for part in [
+                    " ".join(_plugin_host_tool_raw_name(tool) for tool in items if _plugin_host_tool_raw_name(tool)),
+                    " ".join(descriptions),
+                    " ".join(str(item).strip() for item in list(payload.get("managedChannels") or []) if str(item).strip()),
+                    _build_family_profile_summary(profile),
+                ]
+                if str(part or "").strip()
+            )
+            family_score = _score_dynamic_family_entry(
+                query_text=query_text,
+                query_tokens=query_tokens,
+                query_profile=query_profile,
+                family_name=family_name,
+                description=family_description,
+                profile=profile,
+            )
+            ranked_plugin_host.append((family_score, family_key, payload))
+        ranked_plugin_host.sort(key=lambda row: (-row[0], row[1].lower()))
         plugin_host_pool_limit = max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR)
-        plugin_host_pool = [row[2] for row in ranked_plugin_host if row[0] > 0][:plugin_host_pool_limit]
-        selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
+        plugin_host_stage1_hits = [row[1] for row in ranked_plugin_host if row[0] > 0]
+        plugin_host_theme_fallback_keys: list[str] = []
+        if (
+            plugin_host_tools
+            and not query_profile.get("artifactIntent")
+            and list(query_profile.get("primaryThemeIntents") or [])
+        ):
+            direct_theme_hits = [
+                family_key
+                for family_key, profile in plugin_host_family_profiles.items()
+                if str(profile.get("skillClassLike") or "").strip().lower() in _THEME_HEAVY_CLASSES
+                and _has_direct_dynamic_theme_match(profile, query_profile)
+            ]
+            if not direct_theme_hits:
+                ranked_plugin_fallback = sorted(
+                    (
+                        (
+                            _score_dynamic_family_fallback_entry(
+                                query_text=query_text,
+                                query_tokens=query_tokens,
+                                query_profile=query_profile,
+                                family_name=str(payload.get("familyName") or family_key).strip() or family_key,
+                                description=" | ".join(
+                                    part
+                                    for part in [
+                                        " ".join(_plugin_host_tool_raw_name(tool) for tool in list(payload.get("items") or []) if _plugin_host_tool_raw_name(tool)),
+                                        " ".join(_tool_description(tool) for tool in list(payload.get("items") or []) if _tool_description(tool)),
+                                        " ".join(str(item).strip() for item in list(payload.get("managedChannels") or []) if str(item).strip()),
+                                    ]
+                                    if str(part or "").strip()
+                                ),
+                                profile=plugin_host_family_profiles.get(family_key, {}),
+                            ),
+                            family_key.lower(),
+                            family_key,
+                        )
+                        for family_key, payload in plugin_host_family_entries.items()
+                    ),
+                    key=lambda row: (-row[0], row[1]),
+                )
+                plugin_host_theme_fallback_keys = [row[2] for row in ranked_plugin_fallback if row[0] > 0][:_DYNAMIC_THEME_FALLBACK_LIMIT]
+                if plugin_host_theme_fallback_keys:
+                    plugin_host_stage1_hits = _merge_keepalive_keys(
+                        plugin_host_stage1_hits,
+                        plugin_host_theme_fallback_keys,
+                        max(len(plugin_host_stage1_hits) + len(plugin_host_theme_fallback_keys), plugin_host_pool_limit),
+                    )
+        plugin_host_pool_family_keys = plugin_host_stage1_hits[:plugin_host_pool_limit]
+        plugin_host_pool = [plugin_host_family_entries[key] for key in plugin_host_pool_family_keys if key in plugin_host_family_entries]
+        selected_plugin_host_family_keys = list(plugin_host_pool_family_keys[:effective_plugin_host_limit])
+        selected_plugin_host_seeds = [
+            plugin_host_family_entries[key].get("seed")
+            for key in selected_plugin_host_family_keys
+            if plugin_host_family_entries.get(key, {}).get("seed") is not None
+        ]
         skill_family_map = {
             str(item.get("path") or item.get("name") or item.get("folder") or "").strip(): item
             for item in skill_stage2_candidate_entries
             if str(item.get("path") or item.get("name") or item.get("folder") or "").strip()
         }
-        plugin_host_seed_map: dict[str, Any] = {}
-        for tool in plugin_host_pool:
-            family_key = f"{_plugin_host_tool_plugin_id(tool)}::{_plugin_host_tool_raw_name(tool)}"
-            plugin_host_seed_map.setdefault(family_key, tool)
+        plugin_host_seed_map: dict[str, Any] = {
+            family_key: plugin_host_family_entries[family_key].get("seed")
+            for family_key in plugin_host_pool_family_keys
+            if plugin_host_family_entries.get(family_key, {}).get("seed") is not None
+        }
 
         skill_state: dict[str, Any] = {
             "mode": skill_routing_mode,
@@ -2088,6 +3324,7 @@ class ExtensionsRuntimeService:
                                     for part in [
                                         " ".join(_tool_name(tool) for tool in items if _tool_name(tool)),
                                         " ".join(_tool_description(tool) for tool in items if _tool_description(tool)),
+                                        _build_family_profile_summary(mcp_server_profiles.get(server_name, {})),
                                     ]
                                     if str(part or "").strip()
                                 ),
@@ -2111,7 +3348,14 @@ class ExtensionsRuntimeService:
                             {
                                 "key": family_key,
                                 "name": str((getattr(tool, "metadata", None) or {}).get("canonicalName") or _tool_name(tool)).strip() or family_key,
-                                "description": _tool_description(tool),
+                                "description": " | ".join(
+                                    part
+                                    for part in [
+                                        _tool_description(tool),
+                                        _build_family_profile_summary(plugin_host_family_profiles.get(family_key, {})),
+                                    ]
+                                    if str(part or "").strip()
+                                ),
                             }
                             for family_key, tool in plugin_host_seed_map.items()
                         ],
@@ -2153,6 +3397,7 @@ class ExtensionsRuntimeService:
             if "plugin_host" in rerank_results:
                 plugin_host_keys, plugin_host_state = rerank_results["plugin_host"]
                 selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
+                selected_plugin_host_family_keys = [key for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
 
             if bool(skill_state.get("timedOut")):
                 prefilter_reason = "timeout"
@@ -2173,7 +3418,12 @@ class ExtensionsRuntimeService:
                 selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
             if bool(plugin_host_state.get("timedOut")):
                 prefilter_reason = "timeout"
-                selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
+                selected_plugin_host_seeds = [
+                    payload.get("seed")
+                    for payload in plugin_host_pool[:effective_plugin_host_limit]
+                    if payload.get("seed") is not None
+                ]
+                selected_plugin_host_family_keys = list(plugin_host_pool_family_keys[:effective_plugin_host_limit])
         else:
             plugin_host_state = {
                 "mode": "lexical_shortlist",
@@ -2184,6 +3434,7 @@ class ExtensionsRuntimeService:
             }
         selected_mcp_server_keys = _unique_preserve_order(selected_mcp_server_keys)
         selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+        selected_plugin_host_family_keys = _unique_preserve_order(selected_plugin_host_family_keys)
 
         plugin_host_bound_limit = min(
             max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR),
@@ -2254,7 +3505,34 @@ class ExtensionsRuntimeService:
             for server_key in selected_mcp_server_keys
             if mcp_server_map.get(server_key)
         ]
+        selected_mcp_profiles = [
+            dict(mcp_server_profiles.get(server_key) or {})
+            for server_key in selected_mcp_server_keys
+            if mcp_server_profiles.get(server_key)
+        ]
         exposed_plugin_host_tool_names = [_tool_name(tool) for tool in selected_plugin_host_tools]
+        selected_plugin_host_profiles = [
+            dict(plugin_host_family_profiles.get(family_key) or {})
+            for family_key in selected_plugin_host_family_keys
+            if plugin_host_family_profiles.get(family_key)
+        ]
+        query_document_sub_intent = str(query_profile.get("documentSubIntent") or "").strip().lower() or None
+        mcp_document_subintent_matched = len(
+            [
+                profile
+                for profile in selected_mcp_profiles
+                if query_document_sub_intent
+                and query_document_sub_intent in _normalize_profile_items(profile.get("documentSubIntentHints"))
+            ]
+        )
+        plugin_host_document_subintent_matched = len(
+            [
+                profile
+                for profile in selected_plugin_host_profiles
+                if query_document_sub_intent
+                and query_document_sub_intent in _normalize_profile_items(profile.get("documentSubIntentHints"))
+            ]
+        )
         filtered_tools = base_tools + selected_mcp_tools + selected_plugin_host_tools
         plugin_host_routing_mode = str(plugin_host_state.get("mode") or ("skipped" if not plugin_host_tools else "lexical_shortlist")).strip() or "skipped"
         route_modes = [skill_routing_mode, mcp_routing_mode]
@@ -2358,11 +3636,13 @@ class ExtensionsRuntimeService:
                 "skills": selected_skill_names,
                 "selectedSkillIds": selected_skill_ids,
                 "artifactIntent": query_profile.get("artifactIntent"),
+                "documentSubIntent": query_profile.get("documentSubIntent"),
                 "operationIntent": query_profile.get("operationIntent"),
                 "primaryThemeIntents": list(query_profile.get("primaryThemeIntents") or []),
                 "secondaryThemeHints": list(query_profile.get("secondaryThemeHints") or []),
                 "rankingSignals": {
                     "artifactAnchor": bool(query_profile.get("artifactIntent")),
+                    "documentSubIntent": str(query_profile.get("documentSubIntent") or "").strip() or None,
                     "operationIntent": bool(query_profile.get("operationIntent")),
                     "topicTokenCount": len(list(query_profile.get("topicTokens") or [])),
                 },
@@ -2370,6 +3650,7 @@ class ExtensionsRuntimeService:
                     "themeIntent": bool(query_profile.get("primaryThemeIntents")),
                     "secondaryThemeHints": len(list(query_profile.get("secondaryThemeHints") or [])),
                     "artifactAnchorPresent": bool(query_profile.get("artifactIntent")),
+                    "fallbackInjectedCount": len(theme_fallback_candidates),
                 },
                 "profileMatchedCount": len(
                     [
@@ -2401,6 +3682,42 @@ class ExtensionsRuntimeService:
                         if str((item.get("themeProfile") or {}).get("themeSource") or "").strip() == "llm_assisted"
                     ]
                 ),
+                "mcpProfileMatchedCount": len(
+                    [
+                        profile
+                        for profile in selected_mcp_profiles
+                        if bool(profile.get("primaryArtifactTypes"))
+                        or bool(profile.get("primaryOperations"))
+                        or bool(profile.get("documentSubIntentHints"))
+                    ]
+                ),
+                "pluginHostProfileMatchedCount": len(
+                    [
+                        profile
+                        for profile in selected_plugin_host_profiles
+                        if bool(profile.get("primaryArtifactTypes"))
+                        or bool(profile.get("primaryOperations"))
+                        or bool(profile.get("documentSubIntentHints"))
+                    ]
+                ),
+                "mcpThemeMatchedCount": len(
+                    [
+                        profile
+                        for profile in selected_mcp_profiles
+                        if bool(profile.get("primaryThemes")) or bool(profile.get("secondaryThemeTags"))
+                    ]
+                ),
+                "pluginHostThemeMatchedCount": len(
+                    [
+                        profile
+                        for profile in selected_plugin_host_profiles
+                        if bool(profile.get("primaryThemes")) or bool(profile.get("secondaryThemeTags"))
+                    ]
+                ),
+                "mcpDocumentSubIntentMatched": mcp_document_subintent_matched,
+                "pluginHostDocumentSubIntentMatched": plugin_host_document_subintent_matched,
+                "mcpThemeFallbackInjectedCount": len(mcp_theme_fallback_keys),
+                "pluginHostThemeFallbackInjectedCount": len(plugin_host_theme_fallback_keys),
                 "skillStage1Entries": skill_stage1_entries,
                 "skillEntries": selected_skill_entries,
                 "skillRootDescriptors": skill_root_descriptors,
@@ -2409,6 +3726,7 @@ class ExtensionsRuntimeService:
                 "mcpServers": selected_mcp_servers,
                 "mcpFamilies": selected_mcp_servers,
                 "pluginHostTools": exposed_plugin_host_tool_names,
+                "pluginHostSelectedFamilies": list(selected_plugin_host_family_keys),
                 "seedUnit": "skill_or_mcp_server",
                 "skillCandidates": len(selected_skill_names),
                 "mcpCandidates": len(exposed_mcp_tool_names),
@@ -2653,6 +3971,7 @@ class ExtensionsRuntimeService:
         )
         self._blocked_skill_records = self._blocked_skill_records[-24:]
         self._route_cache.clear()
+        self._clear_dynamic_family_profile_caches()
         self._emit("extension.skill.blocked", payload, node="skill_blocked")
         self._emit("safety.skill_blocked", payload, node="skill_blocked")
 

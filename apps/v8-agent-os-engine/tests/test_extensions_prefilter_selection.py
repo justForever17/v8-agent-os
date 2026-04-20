@@ -15,7 +15,7 @@ if str(ENGINE_ROOT) not in sys.path:
 from core import llm_tree_prefilter
 from runtimes.extensions import runtime as extensions_runtime_module
 from runtimes.extensions.runtime import ExtensionsRuntimeService
-from runtimes.extensions.skills.loader import SkillLoader
+from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 
 
 class _FakeResponse:
@@ -47,6 +47,32 @@ class _FakeTool:
         self.name = name
         self.description = description
         self.metadata = {"server_name": server_name}
+
+
+class _FakePluginHostTool:
+    def __init__(
+        self,
+        *,
+        canonical_name: str,
+        raw_name: str,
+        description: str,
+        plugin_id: str = "openclaw-lark",
+        managed_channels: list[str] | None = None,
+        bridge_ready: bool = True,
+        inventory_source: str = "gateway_rpc",
+    ) -> None:
+        self.name = canonical_name
+        self.description = description
+        self.metadata = {
+            "pluginHost": True,
+            "pluginId": plugin_id,
+            "canonicalName": canonical_name,
+            "rawName": raw_name,
+            "bridgeReady": bridge_ready,
+            "toolInventorySource": inventory_source,
+            "toolInventoryHealth": "healthy",
+            "managedChannels": managed_channels or ["feishu"],
+        }
 
 
 class ExtensionsPrefilterSelectionTests(unittest.TestCase):
@@ -141,6 +167,7 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         self.assertEqual(jimeng_payload["name"], "jimeng_visual_generation")
         self.assertIn("Generate images using Volcengine", jimeng_payload["description"])
         self.assertIn("Create a video generation task", jimeng_payload["description"])
+        self.assertIn("artifacts=", jimeng_payload["description"])
         self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["jimeng_visual_generation"])
         self.assertEqual(
             set(bundle.candidate_summary.get("mcpTools") or []),
@@ -888,6 +915,98 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         self.assertIn("create", list(profile.get("primaryOperations") or []))
         self.assertNotIn("video", list(profile.get("primaryArtifactTypes") or []))
 
+    def test_resolve_skill_matches_supports_alias_and_controlled_fuzzy_lookup(self):
+        skills = [
+            {
+                "skillId": "global:pptx",
+                "skillName": "pptx",
+                "name": "pptx",
+                "folder": "pptx",
+                "description": "Presentation creation and editing for PowerPoint slide decks.",
+                "skillRoot": "C:/skills/pptx",
+                "instructionPath": "C:/skills/pptx/SKILL.md",
+                "aliases": [],
+                "triggers": [],
+                "keywords": [],
+                "tags": [],
+            },
+            {
+                "skillId": "global:nuwa",
+                "skillName": "huashu-nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "女娲造人。模糊需求也触发：我需要一个思维顾问。",
+                "skillRoot": "C:/skills/huashu-nuwa",
+                "instructionPath": "C:/skills/huashu-nuwa/SKILL.md",
+                "aliases": [],
+                "triggers": [],
+                "keywords": [],
+                "tags": [],
+            },
+            {
+                "skillId": "global:elon",
+                "skillName": "elon-musk-perspective",
+                "name": "elon-musk-perspective",
+                "folder": "elon-musk-perspective",
+                "description": "Use when the user asks for elon perspective on cost structure and first principles.",
+                "skillRoot": "C:/skills/elon-musk-perspective",
+                "instructionPath": "C:/skills/elon-musk-perspective/SKILL.md",
+                "aliases": [],
+                "triggers": [],
+                "keywords": [],
+                "tags": [],
+            },
+        ]
+
+        with patch.object(SkillLoader, "get_inventory", return_value={"items": skills, "rootDescriptors": []}):
+            self.assertEqual(SkillLoader.resolve_skill_matches("ppt")[0]["skillName"], "pptx")
+            self.assertEqual(SkillLoader.resolve_skill_matches("slides")[0]["skillName"], "pptx")
+            self.assertEqual(SkillLoader.resolve_skill_matches("演示稿")[0]["skillName"], "pptx")
+            self.assertEqual(SkillLoader.resolve_skill_matches("女娲")[0]["skillName"], "huashu-nuwa")
+            self.assertEqual(SkillLoader.resolve_skill_matches("思维顾问")[0]["skillName"], "huashu-nuwa")
+            self.assertEqual(SkillLoader.resolve_skill_matches("elon perspective")[0]["skillName"], "elon-musk-perspective")
+
+    def test_fetch_skill_instructions_returns_ambiguity_for_near_fuzzy_ties(self):
+        skills = [
+            {
+                "skillId": "global:elon",
+                "skillName": "elon-musk-perspective",
+                "name": "elon-musk-perspective",
+                "folder": "elon-musk-perspective",
+                "description": "Elon perspective for first principles and business decisions.",
+                "instructions": "# Elon",
+                "skillRoot": "C:/skills/elon-musk-perspective",
+                "instructionPath": "C:/skills/elon-musk-perspective/SKILL.md",
+                "aliases": [],
+                "triggers": [],
+                "keywords": [],
+                "tags": [],
+            },
+            {
+                "skillId": "global:munger",
+                "skillName": "munger-perspective",
+                "name": "munger-perspective",
+                "folder": "munger-perspective",
+                "description": "Munger perspective for judgment and business decisions.",
+                "instructions": "# Munger",
+                "skillRoot": "C:/skills/munger-perspective",
+                "instructionPath": "C:/skills/munger-perspective/SKILL.md",
+                "aliases": [],
+                "triggers": [],
+                "keywords": [],
+                "tags": [],
+            },
+        ]
+
+        with patch.object(SkillLoader, "get_inventory", return_value={"items": skills, "rootDescriptors": []}):
+            matches = SkillLoader.resolve_skill_matches("perspective")
+            self.assertGreaterEqual(len(matches), 2)
+            result = fetch_skill_instructions.invoke({"skill_name": "perspective"})
+
+        self.assertIn("Error: 找到了多个同名或同引用的 skill", result)
+        self.assertIn("elon-musk-perspective", result)
+        self.assertIn("munger-perspective", result)
+
     def test_skill_loader_can_overlay_llm_assisted_profile(self):
         with patch.object(SkillLoader, "_should_attempt_llm_profile_inference", return_value=True), patch.object(
             SkillLoader,
@@ -1185,6 +1304,178 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         self.assertEqual(slide_bundle.candidate_summary.get("artifactIntent"), "presentation")
         self.assertEqual(deck_bundle.candidate_summary.get("artifactIntent"), "presentation")
 
+    def test_document_subintent_prioritizes_docx_for_word_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:docx",
+                "name": "docx",
+                "folder": "docx",
+                "description": "Create and edit Word documents with tracked changes and comments.",
+                "path": "C:/skills/docx",
+                "skillName": "docx",
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["document"],
+                    "primaryOperations": ["create", "edit", "analyze"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.97,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:doc-coauthoring",
+                "name": "doc-coauthoring",
+                "folder": "doc-coauthoring",
+                "description": "Structured workflow for writing documentation, proposals, specs, design docs, and RFCs.",
+                "path": "C:/skills/doc-coauthoring",
+                "skillName": "doc-coauthoring",
+                "capabilityProfile": {
+                    "skillClass": "methodology_or_tutorial",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["guide", "edit"],
+                    "interactionMode": "reference_guidance",
+                    "capabilityConfidence": 0.89,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["document"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="word文档",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
+        self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "office_document")
+        self.assertEqual(bundle.selected_skill_names[0], "docx")
+
+    def test_document_subintent_prioritizes_doc_workflows_for_documentation_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:docx",
+                "name": "docx",
+                "folder": "docx",
+                "description": "Create and edit Word documents with tracked changes and comments.",
+                "path": "C:/skills/docx",
+                "skillName": "docx",
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["document"],
+                    "primaryOperations": ["create", "edit", "analyze"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.97,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:doc-coauthoring",
+                "name": "doc-coauthoring",
+                "folder": "doc-coauthoring",
+                "description": "Structured workflow for writing documentation, proposals, specs, design docs, and RFCs.",
+                "path": "C:/skills/doc-coauthoring",
+                "skillName": "doc-coauthoring",
+                "capabilityProfile": {
+                    "skillClass": "methodology_or_tutorial",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["guide", "edit"],
+                    "interactionMode": "reference_guidance",
+                    "capabilityConfidence": 0.89,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["document"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="design doc",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
+        self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "documentation")
+        self.assertEqual(bundle.selected_skill_names[0], "doc-coauthoring")
+
     def test_capability_aware_stage1_keeps_methodology_skills_for_decision_quality_queries(self):
         service = ExtensionsRuntimeService()
         skills = [
@@ -1379,6 +1670,338 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         self.assertEqual(bundle.selected_skill_names[0], "elon-musk-perspective")
         self.assertIn("wealth_money", bundle.candidate_summary.get("primaryThemeIntents") or [])
 
+    def test_theme_fallback_keeps_advisory_skills_for_organization_queries_without_primary_theme_hits(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "模糊需求也触发：我需要一个思维顾问，先诊断推荐，再生成合适视角。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "create"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["skill"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.24,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:elon",
+                "name": "elon-musk-perspective",
+                "folder": "elon-musk-perspective",
+                "description": "Use this perspective for leadership, hiring, talent density, and organizational design tradeoffs.",
+                "path": "C:/skills/elon-musk-perspective",
+                "skillName": "elon-musk-perspective",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.88,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": ["organizational_design", "talent_density"],
+                    "themeConfidence": 0.52,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:video",
+                "name": "ai-video-generation",
+                "folder": "ai-video-generation",
+                "description": "Generate AI videos and avatars.",
+                "path": "C:/skills/ai-video-generation",
+                "skillName": "ai-video-generation",
+                "capabilityProfile": {
+                    "skillClass": "workflow_or_script",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="怎么提高组织效率",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertIn("organization_leadership", bundle.candidate_summary.get("primaryThemeIntents") or [])
+        self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
+        self.assertIn("elon-musk-perspective", bundle.selected_skill_names[:3])
+        self.assertNotEqual(bundle.selected_skill_names[0], "ai-video-generation")
+
+    def test_theme_fallback_keeps_growth_advisors_ahead_of_generic_creative_skills(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "模糊需求也触发：我需要一个思维顾问，先诊断推荐，再生成合适视角。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "create"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["skill"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.24,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:elon",
+                "name": "elon-musk-perspective",
+                "folder": "elon-musk-perspective",
+                "description": "Use this perspective for commercialization, distribution, startup growth, and product strategy.",
+                "path": "C:/skills/elon-musk-perspective",
+                "skillName": "elon-musk-perspective",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.88,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.3,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:video",
+                "name": "ai-video-generation",
+                "folder": "ai-video-generation",
+                "description": "Generate AI videos and avatars.",
+                "path": "C:/skills/ai-video-generation",
+                "skillName": "ai-video-generation",
+                "capabilityProfile": {
+                    "skillClass": "workflow_or_script",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="我想做增长",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertIn("startup_growth", bundle.candidate_summary.get("primaryThemeIntents") or [])
+        self.assertEqual(bundle.selected_skill_names[:2], ["huashu-nuwa", "elon-musk-perspective"])
+
+    def test_theme_fallback_keeps_negotiation_advisors_ahead_of_generic_creative_skills(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "模糊需求也触发：我需要一个思维顾问，先诊断推荐，再生成合适视角。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "create"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["skill"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.24,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:munger",
+                "name": "munger-perspective",
+                "folder": "munger-perspective",
+                "description": "Use this perspective for incentive alignment, persuasion, negotiation, and judgment.",
+                "path": "C:/skills/munger-perspective",
+                "skillName": "munger-perspective",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.88,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.3,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:video",
+                "name": "ai-video-generation",
+                "folder": "ai-video-generation",
+                "description": "Generate AI videos and avatars.",
+                "path": "C:/skills/ai-video-generation",
+                "skillName": "ai-video-generation",
+                "capabilityProfile": {
+                    "skillClass": "workflow_or_script",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="谈判怎么做",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertIn("negotiation_persuasion", bundle.candidate_summary.get("primaryThemeIntents") or [])
+        self.assertEqual(bundle.selected_skill_names[:2], ["huashu-nuwa", "munger-perspective"])
+
     def test_query_theme_faceting_maps_first_principles_and_decision_quality(self):
         query_tokens = extensions_runtime_module._query_tokens_for_extensions("从第一性原理想想，顺便提升决策质量")
         profile = extensions_runtime_module._detect_query_intents("从第一性原理想想，顺便提升决策质量", query_tokens)
@@ -1480,6 +2103,333 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         self.assertEqual(bundle.selected_skill_names[0], "pptx")
         self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "presentation")
 
+    def test_theme_fallback_does_not_override_artifact_chain_for_video_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "模糊需求也触发：我需要一个思维顾问，先诊断推荐，再生成合适视角。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "create"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["skill"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.24,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:video",
+                "name": "ai-video-generation",
+                "folder": "ai-video-generation",
+                "description": "Generate AI videos and avatars.",
+                "path": "C:/skills/ai-video-generation",
+                "skillName": "ai-video-generation",
+                "capabilityProfile": {
+                    "skillClass": "workflow_or_script",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.1,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 2, "llmEnabled": False, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="帮我生成视频",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names[0], "ai-video-generation")
+
+    def test_extensions_runtime_mcp_office_document_queries_prefer_word_servers(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool("create_word_doc", "Create and edit Word DOCX documents.", "cloud_doc"),
+            _FakeTool("comment_word_doc", "Comment on Word documents.", "cloud_doc"),
+            _FakeTool("search_docs", "Search design docs, RFCs, and proposals.", "doc_wiki"),
+            _FakeTool("generate_video", "Generate a short video.", "video_gen"),
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 1, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="帮我处理一个 word文档",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=1,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
+        self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "office_document")
+        self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["cloud_doc"])
+        self.assertEqual(bundle.candidate_summary.get("mcpDocumentSubIntentMatched"), 1)
+
+    def test_extensions_runtime_mcp_documentation_queries_prefer_docs_servers(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool("create_word_doc", "Create and edit Word DOCX documents.", "cloud_doc"),
+            _FakeTool("search_docs", "Search design docs, RFCs, and proposals.", "doc_wiki"),
+            _FakeTool("review_rfc", "Review documentation, specs, and PRDs.", "doc_wiki"),
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 1, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="帮我写一个 design doc",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=1,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "documentation")
+        self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["doc_wiki"])
+        self.assertEqual(bundle.candidate_summary.get("mcpDocumentSubIntentMatched"), 1)
+
+    def test_extensions_runtime_plugin_host_document_queries_prefer_doc_family_after_gate(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakePluginHostTool(
+                canonical_name="openclaw-lark.feishu_doc_create",
+                raw_name="feishu_doc_create",
+                description="Create and edit Feishu docs, design docs, RFCs and proposals.",
+            ),
+            _FakePluginHostTool(
+                canonical_name="openclaw-lark.feishu_doc_comment",
+                raw_name="feishu_doc_comment",
+                description="Comment on Feishu docs and documentation.",
+            ),
+            _FakePluginHostTool(
+                canonical_name="openclaw-lark.feishu_video_generate",
+                raw_name="feishu_video_generate",
+                description="Generate short videos for campaigns.",
+            ),
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="请用 OpenClaw 的 feishu docs 帮我写技术文档",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=0,
+                plugin_host_limit=1,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "documentation")
+        self.assertEqual(bundle.candidate_summary.get("pluginHostSelectedFamilies"), ["openclaw-lark::feishu_doc"])
+        self.assertIn("openclaw-lark.feishu_doc_create", bundle.candidate_summary.get("pluginHostTools") or [])
+        self.assertNotIn("openclaw-lark.feishu_video_generate", bundle.candidate_summary.get("pluginHostTools") or [])
+        self.assertEqual(bundle.candidate_summary.get("pluginHostDocumentSubIntentMatched"), 1)
+
+    def test_extensions_runtime_mcp_theme_queries_prefer_advisory_servers_over_generators(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool(
+                "growth_strategy_playbook",
+                "Founder growth strategy framework for GTM, monetization, conversion, and distribution.",
+                "growth_advisor",
+            ),
+            _FakeTool(
+                "review_growth_loop",
+                "Analyze startup growth loops and acquisition efficiency.",
+                "growth_advisor",
+            ),
+            _FakeTool("generate_video", "Generate social videos.", "video_gen"),
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 1, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="我想做增长",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=1,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("primaryThemeIntents"), ["startup_growth"])
+        self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["growth_advisor"])
+        self.assertGreaterEqual(int(bundle.candidate_summary.get("mcpThemeMatchedCount") or 0), 1)
+
+    def test_extensions_runtime_plugin_host_stage2_payload_includes_profile_summary(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakePluginHostTool(
+                canonical_name="openclaw-lark.feishu_doc_create",
+                raw_name="feishu_doc_create",
+                description="Create and edit Feishu docs, design docs, RFCs and proposals.",
+            ),
+            _FakePluginHostTool(
+                canonical_name="openclaw-lark.feishu_doc_comment",
+                raw_name="feishu_doc_comment",
+                description="Comment on documentation and specs.",
+            ),
+            _FakePluginHostTool(
+                canonical_name="openclaw-lark.feishu_video_generate",
+                raw_name="feishu_video_generate",
+                description="Generate short videos for campaigns.",
+            ),
+        ]
+        captured_plugin_families: list[dict[str, object]] = []
+
+        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
+            if kwargs.get("family_label") == "plugin_host":
+                captured_plugin_families.extend(list(kwargs.get("families") or []))
+                return ["openclaw-lark::feishu_doc"], {"mode": "llm_tree", "reason": "documentation", "timedOut": False, "cacheHit": False}
+            return [], {"mode": "lexical", "reason": "empty", "timedOut": False, "cacheHit": False}
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ), patch.object(
+            extensions_runtime_module,
+            "select_family_keys_with_llm",
+            side_effect=fake_select_family_keys_with_llm,
+        ):
+            bundle = service.build_contextual_route(
+                user_query="请用 OpenClaw 的 feishu docs 帮我写 design doc",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=0,
+                plugin_host_limit=1,
+            )
+
+        family_payload = next(item for item in captured_plugin_families if item["key"] == "openclaw-lark::feishu_doc")
+        self.assertIn("documentSubIntent=", family_payload["description"])
+        self.assertIn("artifacts=", family_payload["description"])
+        self.assertEqual(bundle.candidate_summary.get("pluginHostSelectedFamilies"), ["openclaw-lark::feishu_doc"])
+
     def test_rule_profile_keeps_primary_artifacts_narrow_for_pptx(self):
         profile = SkillLoader._derive_capability_profile(
             name="pptx",
@@ -1551,7 +2501,7 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
             cache_path = Path(temp_dir) / "skills_inventory_cache.json"
             cache_path.write_text(
                 """
-{"version":6,"fingerprint":"legacy","items":[{"skillId":"global:legacy","skillName":"pptx","path":"C:/skills/pptx","folder":"pptx","description":"legacy","capabilityProfile":{"skillClass":"artifact_producer","artifactTypes":["presentation"],"operations":["create"],"interactionMode":"file_workflow","capabilityConfidence":0.8,"profileSource":"rules"}}]}
+{"version":7,"fingerprint":"legacy","items":[{"skillId":"global:legacy","skillName":"pptx","path":"C:/skills/pptx","folder":"pptx","description":"legacy","capabilityProfile":{"skillClass":"artifact_producer","artifactTypes":["presentation"],"operations":["create"],"interactionMode":"file_workflow","capabilityConfidence":0.8,"profileSource":"rules"}}]}
                 """.strip(),
                 encoding="utf-8",
             )
@@ -1564,7 +2514,7 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
             cache_path = Path(temp_dir) / "skills_inventory_cache.json"
             cache_path.write_text(
                 """
-{"version":6,"fingerprint":"legacy","items":[{"skillId":"global:legacy","skillName":"pptx","path":"C:/skills/pptx","folder":"pptx","description":"legacy","capabilityProfile":{"skillClass":"artifact_producer","primaryArtifactTypes":["presentation"],"primaryOperations":["create"],"interactionMode":"file_workflow","capabilityConfidence":0.8,"profileSource":"rules","secondaryArtifactHints":[],"secondaryOperationHints":[],"evidenceSignals":{}}}]}
+{"version":7,"fingerprint":"legacy","items":[{"skillId":"global:legacy","skillName":"pptx","path":"C:/skills/pptx","folder":"pptx","description":"legacy","capabilityProfile":{"skillClass":"artifact_producer","primaryArtifactTypes":["presentation"],"primaryOperations":["create"],"interactionMode":"file_workflow","capabilityConfidence":0.8,"profileSource":"rules","secondaryArtifactHints":[],"secondaryOperationHints":[],"evidenceSignals":{}}}]}
                 """.strip(),
                 encoding="utf-8",
             )

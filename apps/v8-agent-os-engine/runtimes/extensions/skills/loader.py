@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from runtimes.memory.project_registry import project_registry_service
 
 
 _PROFILE_LLM_TIMEOUT_SECONDS = 6.0
-_SKILLS_CACHE_SCHEMA_VERSION = 6
+_SKILLS_CACHE_SCHEMA_VERSION = 7
 _PRIMARY_ARTIFACT_LIMIT = 2
 _PRIMARY_OPERATION_LIMIT = 3
 _SECONDARY_HINT_LIMIT = 4
@@ -35,6 +36,21 @@ _PROFILE_INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 _HINT_SPLIT_RE = re.compile(r"[,\n/|]+")
 _TEXT_WHITESPACE_RE = re.compile(r"\s+")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_SKILL_MATCH_TOKEN_RE = re.compile(r"[0-9a-z\u4e00-\u9fff]+")
+_SKILL_MATCH_FUZZY_MIN_SCORE = 10
+_SKILL_MATCH_AMBIGUITY_GAP = 4
+_SKILL_MATCH_AMBIGUITY_RATIO = 1.15
+_SKILL_MATCH_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "ppt": ("pptx", "powerpoint", "presentation", "slide", "slides", "deck", "演示稿"),
+    "slides": ("slide", "pptx", "presentation", "slide deck", "deck", "演示稿"),
+    "presentation deck": ("presentation", "pptx", "slides", "slide deck", "powerpoint", "演示稿"),
+    "演示稿": ("presentation", "ppt", "pptx", "slides", "powerpoint"),
+    "word": ("doc", "docx", "document", "word document", "office document", "文档"),
+    "word文档": ("word", "doc", "docx", "word document", "office document", "document"),
+    "docs": ("documentation", "design doc", "decision doc", "proposal", "prd", "rfc", "技术文档"),
+    "documentation": ("docs", "design doc", "decision doc", "proposal", "prd", "rfc", "技术文档"),
+    "思维顾问": ("女娲", "huashu-nuwa"),
+}
 _ARTIFACT_RULES: dict[str, tuple[str, ...]] = {
     "presentation": (
         "ppt",
@@ -193,11 +209,18 @@ _PRIMARY_THEME_RULES: dict[str, tuple[str, ...]] = {
         "growth",
         "创业",
         "增长",
+        "增长策略",
         "distribution",
         "商业化",
+        "monetization",
         "go to market",
         "gtm",
         "traction",
+        "acquisition",
+        "conversion",
+        "growth loop",
+        "用户增长",
+        "渠道增长",
         "增长飞轮",
     ),
     "product_strategy": (
@@ -259,9 +282,19 @@ _PRIMARY_THEME_RULES: dict[str, tuple[str, ...]] = {
         "leadership",
         "组织",
         "管理",
+        "管理者",
+        "manager",
         "culture",
         "hiring",
+        "hire",
         "talent",
+        "人才密度",
+        "talent density",
+        "组织效率",
+        "团队效率",
+        "团队管理",
+        "组织协同",
+        "org design",
         "组织设计",
         "lead",
         "team",
@@ -282,10 +315,18 @@ _PRIMARY_THEME_RULES: dict[str, tuple[str, ...]] = {
         "persuasion",
         "influence",
         "说服",
+        "说服力",
         "谈判",
+        "convince",
+        "pitch",
+        "objection",
+        "objection handling",
         "incentive",
+        "incentive alignment",
         "激励结构",
         "pricing power",
+        "narrative",
+        "framing",
         "attention arbitrage",
         "public narrative",
     ),
@@ -376,6 +417,87 @@ class SkillLoader:
             if matched:
                 hits[key] = matched
         return hits
+
+    @classmethod
+    def _skill_match_description_preview(cls, description: str) -> str:
+        lines = [line.strip() for line in str(description or "").splitlines() if line.strip()]
+        if not lines:
+            return ""
+        return lines[0][:220]
+
+    @classmethod
+    def _skill_match_query_variants(cls, identifier: str) -> list[str]:
+        normalized_identifier = cls._normalize_text(identifier)
+        if not normalized_identifier:
+            return []
+        variants = [normalized_identifier]
+        for key, synonyms in _SKILL_MATCH_QUERY_SYNONYMS.items():
+            if cls._match_phrase(normalized_identifier, key):
+                variants.extend(cls._normalize_text(item) for item in synonyms if str(item).strip())
+        for token in _SKILL_MATCH_TOKEN_RE.findall(normalized_identifier):
+            if token in _SKILL_MATCH_QUERY_SYNONYMS:
+                variants.extend(cls._normalize_text(item) for item in _SKILL_MATCH_QUERY_SYNONYMS[token] if str(item).strip())
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for item in variants:
+            normalized = cls._normalize_text(item)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
+
+    @classmethod
+    def _skill_match_candidate_score(cls, term: str, candidate: str) -> int:
+        normalized_term = cls._normalize_text(term)
+        normalized_candidate = cls._normalize_text(candidate)
+        if not normalized_term or not normalized_candidate:
+            return 0
+        if normalized_term == normalized_candidate:
+            return 24
+        if cls._match_phrase(candidate, term):
+            return 18
+        if cls._match_phrase(term, candidate):
+            return 14
+        ratio = SequenceMatcher(None, normalized_term, normalized_candidate).ratio()
+        if ratio >= 0.92:
+            return 12
+        if ratio >= 0.84:
+            return 9
+        if ratio >= 0.74 and (normalized_term in normalized_candidate or normalized_candidate in normalized_term):
+            return 7
+        term_tokens = {token for token in _SKILL_MATCH_TOKEN_RE.findall(normalized_term) if token}
+        candidate_tokens = {token for token in _SKILL_MATCH_TOKEN_RE.findall(normalized_candidate) if token}
+        overlap = len(term_tokens.intersection(candidate_tokens))
+        if overlap > 0:
+            return 5 + (2 * overlap)
+        return 0
+
+    @classmethod
+    def _score_skill_match_entry(cls, entry: dict[str, Any], query_variants: list[str]) -> int:
+        if not query_variants:
+            return 0
+        weighted_fields = [
+            (str(entry.get("skillName") or entry.get("name") or "").strip(), 1.45),
+            (str(entry.get("folder") or "").strip(), 1.35),
+            (cls._skill_match_description_preview(entry.get("description") or ""), 0.95),
+        ]
+        for key, weight in (
+            ("aliases", 1.2),
+            ("triggers", 1.15),
+            ("keywords", 1.0),
+            ("tags", 0.95),
+        ):
+            for item in cls._normalize_hint_items(entry.get(key)):
+                weighted_fields.append((item, weight))
+        score = 0
+        for field_text, weight in weighted_fields:
+            best_for_field = max(
+                (cls._skill_match_candidate_score(term, field_text) for term in query_variants),
+                default=0,
+            )
+            score += int(round(best_for_field * weight))
+        return score
 
     @classmethod
     def _select_primary_keys(
@@ -1964,7 +2086,10 @@ class SkillLoader:
         )
         entries = list(inventory.get("items") or [])
         normalized_needle = needle.lower()
-        matches: list[dict[str, Any]] = []
+        exact_matches: list[dict[str, Any]] = []
+        hint_matches: list[dict[str, Any]] = []
+        fuzzy_scored: list[tuple[int, dict[str, Any]]] = []
+        query_variants = cls._skill_match_query_variants(needle)
         for entry in entries:
             skill_id = str(entry.get("skillId") or "").strip()
             skill_name = str(entry.get("skillName") or entry.get("name") or entry.get("folder") or "").strip()
@@ -1979,8 +2104,65 @@ class SkillLoader:
                 instruction_path.lower(),
             }
             if normalized_needle in {candidate for candidate in candidates if candidate}:
-                matches.append(entry)
-        return matches
+                exact_matches.append(entry)
+                continue
+            hint_candidates = {
+                cls._normalize_text(item)
+                for key in ("aliases", "triggers", "keywords", "tags")
+                for item in cls._normalize_hint_items(entry.get(key))
+            }
+            if cls._normalize_text(needle) in {candidate for candidate in hint_candidates if candidate}:
+                hint_matches.append(entry)
+                continue
+            fuzzy_score = cls._score_skill_match_entry(entry, query_variants)
+            if fuzzy_score >= _SKILL_MATCH_FUZZY_MIN_SCORE:
+                fuzzy_scored.append((fuzzy_score, entry))
+
+        def _dedupe(entries_to_sort: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            deduped: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for candidate in sorted(
+                entries_to_sort,
+                key=lambda item: (
+                    str(item.get("skillName") or item.get("name") or item.get("folder") or "").lower(),
+                    str(item.get("skillRoot") or item.get("path") or "").lower(),
+                ),
+            ):
+                key = str(candidate.get("skillId") or candidate.get("skillRoot") or candidate.get("path") or "").strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(candidate)
+            return deduped
+
+        if exact_matches:
+            return _dedupe(exact_matches)
+        if hint_matches:
+            return _dedupe(hint_matches)
+        if not fuzzy_scored:
+            return []
+
+        fuzzy_scored.sort(
+            key=lambda item: (
+                -item[0],
+                str(item[1].get("skillName") or item[1].get("name") or item[1].get("folder") or "").lower(),
+                str(item[1].get("skillRoot") or item[1].get("path") or "").lower(),
+            )
+        )
+        top_score = int(fuzzy_scored[0][0])
+        if len(fuzzy_scored) == 1:
+            return [fuzzy_scored[0][1]]
+        second_score = int(fuzzy_scored[1][0])
+        if top_score <= 0:
+            return []
+        if top_score < int(round(second_score * _SKILL_MATCH_AMBIGUITY_RATIO)) and (top_score - second_score) <= _SKILL_MATCH_AMBIGUITY_GAP:
+            ambiguous = [
+                entry
+                for score, entry in fuzzy_scored
+                if (top_score - int(score)) <= _SKILL_MATCH_AMBIGUITY_GAP
+            ]
+            return _dedupe(ambiguous[:12])
+        return [fuzzy_scored[0][1]]
 
 
 @tool

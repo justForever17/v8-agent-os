@@ -109,6 +109,12 @@ def _extract_delegated_query(task_messages: list) -> str:
             continue
         content = message.content if isinstance(message.content, str) else str(message.content)
         normalized = content.strip()
+        if "[USER REQUEST]" in normalized and "[/USER REQUEST]" in normalized:
+            _prefix, _marker, remainder = normalized.partition("[USER REQUEST]")
+            body, _closing, _suffix = remainder.partition("[/USER REQUEST]")
+            extracted = body.strip()
+            if extracted:
+                return extracted
         if normalized.startswith("[Supervisor Delegated Task"):
             _, _, remainder = normalized.partition("]:")
             return remainder.strip() or normalized

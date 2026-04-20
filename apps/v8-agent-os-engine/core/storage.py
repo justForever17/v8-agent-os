@@ -308,7 +308,21 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "extensions": {
         "prefilterPolicy": {
             "enabled": False,
-            "mode": "llm_tree",
+            "mode": "two_stage",
+            "skills": {
+                "stage1Enabled": True,
+                "stage1TopK": 20,
+                "llmEnabled": True,
+                "stage2TopK": 5,
+                "llmTimeoutSeconds": 5,
+            },
+            "mcp": {
+                "stage1Enabled": True,
+                "stage1TopK": 20,
+                "llmEnabled": True,
+                "stage2TopK": 2,
+                "llmTimeoutSeconds": 5,
+            },
         },
     },
     "supervisor": {
@@ -1723,17 +1737,32 @@ class StorageManager:
         normalized = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["extensions"], data if isinstance(data, dict) else {})
         legacy_policy = dict(normalized.get("rerankPolicy") or {})
         prefilter_policy = dict(normalized.get("prefilterPolicy") or {})
+        default_prefilter_policy = dict(STRUCTURED_CONFIG_DEFAULTS["extensions"].get("prefilterPolicy") or {})
+        default_skills_policy = dict(default_prefilter_policy.get("skills") or {})
+        default_mcp_policy = dict(default_prefilter_policy.get("mcp") or {})
         if legacy_policy and not prefilter_policy:
             prefilter_policy = {
                 "enabled": bool(legacy_policy.get("enabled", False)),
-                "mode": "llm_tree",
+                "mode": "two_stage",
             }
         elif legacy_policy:
             prefilter_policy.setdefault("enabled", bool(legacy_policy.get("enabled", False)))
-            prefilter_policy.setdefault("mode", "llm_tree")
+            prefilter_policy.setdefault("mode", "two_stage")
+
+        def _normalize_stage_policy(raw: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "stage1Enabled": bool(raw.get("stage1Enabled", defaults.get("stage1Enabled", True))),
+                "stage1TopK": max(1, min(int(raw.get("stage1TopK", defaults.get("stage1TopK", 20)) or defaults.get("stage1TopK", 20)), 100)),
+                "llmEnabled": bool(raw.get("llmEnabled", defaults.get("llmEnabled", True))),
+                "stage2TopK": max(1, min(int(raw.get("stage2TopK", defaults.get("stage2TopK", 5)) or defaults.get("stage2TopK", 5)), 50)),
+                "llmTimeoutSeconds": max(5, min(int(raw.get("llmTimeoutSeconds", defaults.get("llmTimeoutSeconds", 5)) or defaults.get("llmTimeoutSeconds", 5)), 10)),
+            }
+
         normalized["prefilterPolicy"] = {
             "enabled": bool(prefilter_policy.get("enabled", False)),
-            "mode": str(prefilter_policy.get("mode") or "llm_tree").strip() or "llm_tree",
+            "mode": str(prefilter_policy.get("mode") or "two_stage").strip() or "two_stage",
+            "skills": _normalize_stage_policy(dict(prefilter_policy.get("skills") or {}), default_skills_policy),
+            "mcp": _normalize_stage_policy(dict(prefilter_policy.get("mcp") or {}), default_mcp_policy),
         }
         normalized.pop("rerankPolicy", None)
         return normalized
@@ -1746,15 +1775,30 @@ class StorageManager:
         if legacy_policy and not prefilter_policy:
             prefilter_policy = {
                 "enabled": bool(legacy_policy.get("enabled", False)),
-                "mode": "llm_tree",
+                "mode": "two_stage",
             }
+        default_prefilter_policy = dict(STRUCTURED_CONFIG_DEFAULTS["extensions"].get("prefilterPolicy") or {})
+        default_skills_policy = dict(default_prefilter_policy.get("skills") or {})
+        default_mcp_policy = dict(default_prefilter_policy.get("mcp") or {})
+
+        def _normalize_stage_policy(raw: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "stage1Enabled": bool(raw.get("stage1Enabled", defaults.get("stage1Enabled", True))),
+                "stage1TopK": max(1, min(int(raw.get("stage1TopK", defaults.get("stage1TopK", 20)) or defaults.get("stage1TopK", 20)), 100)),
+                "llmEnabled": bool(raw.get("llmEnabled", defaults.get("llmEnabled", True))),
+                "stage2TopK": max(1, min(int(raw.get("stage2TopK", defaults.get("stage2TopK", 5)) or defaults.get("stage2TopK", 5)), 50)),
+                "llmTimeoutSeconds": max(5, min(int(raw.get("llmTimeoutSeconds", defaults.get("llmTimeoutSeconds", 5)) or defaults.get("llmTimeoutSeconds", 5)), 10)),
+            }
+
         next_extensions = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["extensions"],
             {
                 **normalized,
                 "prefilterPolicy": {
                     "enabled": bool(prefilter_policy.get("enabled", False)),
-                    "mode": str(prefilter_policy.get("mode") or "llm_tree").strip() or "llm_tree",
+                    "mode": str(prefilter_policy.get("mode") or "two_stage").strip() or "two_stage",
+                    "skills": _normalize_stage_policy(dict(prefilter_policy.get("skills") or {}), default_skills_policy),
+                    "mcp": _normalize_stage_policy(dict(prefilter_policy.get("mcp") or {}), default_mcp_policy),
                 },
             },
         )

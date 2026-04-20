@@ -142,17 +142,23 @@ def select_family_keys_with_llm(
         key = str(item.get("key") or "").strip()
         if not key:
             continue
-        family: dict[str, Any] = {
-            "key": key,
-            "title": str(item.get("title") or item.get("name") or item.get("serverName") or "").strip(),
-            "description": str(item.get("description") or "").strip(),
-            "memberCount": int(item.get("memberCount") or 0),
-            "examples": [
-                str(example).strip()
-                for example in list(item.get("examples") or [])
-                if str(example).strip()
-            ][:8],
-        }
+        family: dict[str, Any] = {"key": key}
+        title = str(item.get("title") or item.get("name") or item.get("serverName") or "").strip()
+        description = str(item.get("description") or "").strip()
+        member_count = int(item.get("memberCount") or 0)
+        examples = [
+            str(example).strip()
+            for example in list(item.get("examples") or [])
+            if str(example).strip()
+        ][:8]
+        if title:
+            family["title"] = title
+        if description:
+            family["description"] = description
+        if member_count > 0:
+            family["memberCount"] = member_count
+        if examples:
+            family["examples"] = examples
         name = str(item.get("name") or "").strip()
         if name:
             family["name"] = name
@@ -171,7 +177,7 @@ def select_family_keys_with_llm(
                 tools.append({"name": tool_name, "description": tool_description})
         if tools:
             family["tools"] = tools
-            if not family["memberCount"]:
+            if not family.get("memberCount"):
                 family["memberCount"] = len(tools)
         normalized_families.append(family)
     if not normalized_families or max_families <= 0:

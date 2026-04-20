@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import json
 import os
@@ -123,6 +124,21 @@ _EXTENSION_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.Context
     "v8_agent_os_extensions_runtime_context",
     default={},
 )
+_EXTENSION_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "视频": ("video", "videos"),
+    "生成": ("generate", "generation", "create", "creation"),
+    "图像": ("image", "images", "picture", "pictures"),
+    "图片": ("image", "images", "picture", "pictures"),
+    "文档": ("doc", "docs", "documentation", "library"),
+    "代码": ("code", "coding"),
+    "邮件": ("mail", "email"),
+    "头像": ("avatar", "avatars", "talking-head"),
+    "音频": ("audio", "sound", "voice"),
+    "语音": ("voice", "audio", "speech"),
+    "设计": ("design", "designer"),
+    "界面": ("ui", "interface"),
+    "动画": ("animation", "animated"),
+}
 
 
 @dataclass(slots=True)
@@ -147,6 +163,41 @@ def _tokenize(text: str) -> list[str]:
     return tokens
 
 
+def _unique_preserve_order(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        normalized = str(item or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _expand_query_token_variants(query_tokens: list[str]) -> list[str]:
+    expanded: list[str] = list(query_tokens)
+    for token in list(query_tokens):
+        if re.fullmatch(r"[\u4e00-\u9fff]{3,}", token):
+            if len(token) >= 4:
+                expanded.append(token[:2])
+                expanded.append(token[-2:])
+            for index in range(0, len(token) - 1):
+                expanded.append(token[index : index + 2])
+    return _unique_preserve_order(expanded)
+
+
+def _query_tokens_for_extensions(text: str) -> list[str]:
+    expanded = _expand_query_token_variants(_tokenize(text))
+    query_text = str(text or "").strip().lower()
+    for token in list(expanded):
+        expanded.extend(_EXTENSION_QUERY_SYNONYMS.get(token, ()))
+    for hint, synonyms in _EXTENSION_QUERY_SYNONYMS.items():
+        if hint in query_text:
+            expanded.extend(synonyms)
+    return _unique_preserve_order(expanded)
+
+
 def _score_text(*, query_tokens: list[str], title: str, description: str) -> int:
     if not query_tokens:
         return 0
@@ -166,6 +217,67 @@ def _score_text(*, query_tokens: list[str], title: str, description: str) -> int
             score += 2
         if token in str(description or "").lower():
             score += 1
+    return score
+
+
+def _normalize_hint_items(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = re.split(r"[,\n/|]+", value)
+    else:
+        raw_items = list(value or [])
+    return [
+        str(item).strip()
+        for item in raw_items
+        if str(item).strip()
+    ]
+
+
+def _skill_recall_hints(skill: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for key in ("aliases", "triggers", "keywords", "tags"):
+        hints.extend(_normalize_hint_items(skill.get(key)))
+    return hints
+
+
+def _score_skill_entry(*, query_text: str, query_tokens: list[str], skill: dict[str, Any]) -> int:
+    name = str(skill.get("name") or skill.get("folder") or "").strip()
+    folder = str(skill.get("folder") or "").strip()
+    description = str(skill.get("description") or "").strip()
+    normalized_query = str(query_text or "").strip().lower()
+    score = _score_text(query_tokens=query_tokens, title=name or folder, description=description)
+    for candidate in (name, folder):
+        normalized_candidate = str(candidate or "").strip().lower()
+        if normalized_candidate and normalized_candidate in normalized_query:
+            score += 12
+    for hint in _skill_recall_hints(skill):
+        normalized_hint = str(hint or "").strip().lower()
+        if not normalized_hint:
+            continue
+        if normalized_hint in normalized_query:
+            score += 10
+        score += _score_text(query_tokens=query_tokens, title=normalized_hint, description="")
+    return score
+
+
+def _score_mcp_server_entry(*, query_text: str, query_tokens: list[str], server_name: str, items: list[Any]) -> int:
+    tool_names = [_tool_name(tool) for tool in items if _tool_name(tool)]
+    tool_descriptions = [_tool_description(tool) for tool in items if _tool_description(tool)]
+    server_description = " | ".join(
+        part
+        for part in [
+            f"MCP server {server_name}",
+            " ".join(tool_names),
+            " ".join(tool_descriptions),
+        ]
+        if str(part or "").strip()
+    )
+    normalized_query = str(query_text or "").strip().lower()
+    score = _score_text(query_tokens=query_tokens, title=server_name, description=server_description)
+    if server_name.lower() in normalized_query:
+        score += 10
+    for tool_name in tool_names:
+        if tool_name.lower() in normalized_query:
+            score += 8
     return score
 
 
@@ -1132,7 +1244,19 @@ class ExtensionsRuntimeService:
     def _resolve_prefilter_policy(self) -> dict[str, Any]:
         config = storage.get_extensions_config() or {}
         policy = dict(config.get("prefilterPolicy") or config.get("rerankPolicy") or {})
+        default_policy = ((storage.get_extensions_config() or {}).get("prefilterPolicy") or {})
+        skills_policy = dict(policy.get("skills") or default_policy.get("skills") or {})
+        mcp_policy = dict(policy.get("mcp") or default_policy.get("mcp") or {})
         enabled = bool(policy.get("enabled", False))
+
+        def _stage_policy(raw: dict[str, Any], *, default_top: int, default_llm_top: int) -> dict[str, Any]:
+            return {
+                "stage1TopK": max(1, min(int(raw.get("stage1TopK") or default_top), 100)),
+                "llmEnabled": bool(raw.get("llmEnabled", True)),
+                "stage2TopK": max(1, min(int(raw.get("stage2TopK") or default_llm_top), 50)),
+                "llmTimeoutSeconds": max(5, min(int(raw.get("llmTimeoutSeconds") or 5), 10)),
+            }
+
         if not enabled:
             return {
                 "enabled": False,
@@ -1141,6 +1265,8 @@ class ExtensionsRuntimeService:
                 "modelId": "",
                 "role": "",
                 "reason": "disabled",
+                "skills": _stage_policy(skills_policy, default_top=20, default_llm_top=5),
+                "mcp": _stage_policy(mcp_policy, default_top=20, default_llm_top=2),
             }
 
         for role in ("extensions_prefilter", "extensions_reranker"):
@@ -1154,16 +1280,20 @@ class ExtensionsRuntimeService:
                     "modelId": "",
                     "role": role,
                     "reason": str(exc),
+                    "skills": _stage_policy(skills_policy, default_top=20, default_llm_top=5),
+                    "mcp": _stage_policy(mcp_policy, default_top=20, default_llm_top=2),
                 }
             model_id = str(resolved.get("resolvedModelId") or "").strip()
             if model_id:
                 return {
                     "enabled": True,
                     "available": True,
-                    "mode": "llm_tree",
+                    "mode": str(policy.get("mode") or "two_stage").strip() or "two_stage",
                     "modelId": model_id,
                     "role": role,
                     "reason": "",
+                    "skills": _stage_policy(skills_policy, default_top=20, default_llm_top=5),
+                    "mcp": _stage_policy(mcp_policy, default_top=20, default_llm_top=2),
                 }
 
         return {
@@ -1173,6 +1303,8 @@ class ExtensionsRuntimeService:
             "modelId": "",
             "role": "extensions_prefilter",
             "reason": "未绑定可用的扩展候选预筛模型。",
+            "skills": _stage_policy(skills_policy, default_top=20, default_llm_top=5),
+            "mcp": _stage_policy(mcp_policy, default_top=20, default_llm_top=2),
         }
 
     def build_catalog(self) -> dict[str, Any]:
@@ -1191,7 +1323,9 @@ class ExtensionsRuntimeService:
         if not normalized_query:
             return {
                 "queryPreview": "",
+                "skillStage1Entries": [],
                 "skillEntries": [],
+                "mcpStage1Servers": [],
                 "mcpServers": [],
                 "mcpFamilies": [],
                 "counts": {},
@@ -1210,18 +1344,36 @@ class ExtensionsRuntimeService:
         candidate_summary = route_bundle.candidate_summary
         return {
             "queryPreview": _truncate(normalized_query, 160),
+            "skillStage1Entries": candidate_summary.get("skillStage1Entries") or [],
             "skillEntries": candidate_summary.get("skillEntries") or [],
             "skillRootDescriptors": candidate_summary.get("skillRootDescriptors") or [],
+            "mcpStage1Servers": candidate_summary.get("mcpStage1Servers") or [],
             "mcpServers": candidate_summary.get("mcpServers") or [],
             "mcpFamilies": candidate_summary.get("mcpFamilies") or [],
             "counts": candidate_summary,
             "routing": {
                 "mode": candidate_summary.get("mode"),
+                "routingMode": candidate_summary.get("routingMode"),
+                "skillsRoutingMode": candidate_summary.get("skillsRoutingMode"),
+                "mcpRoutingMode": candidate_summary.get("mcpRoutingMode"),
                 "modelId": candidate_summary.get("modelId"),
                 "role": candidate_summary.get("role"),
                 "reason": candidate_summary.get("reason"),
                 "prefilterTimedOut": candidate_summary.get("prefilterTimedOut"),
                 "prefilterCacheHit": candidate_summary.get("prefilterCacheHit"),
+                "stage1Enabled": candidate_summary.get("stage1Enabled") or {},
+                "stage1TopK": candidate_summary.get("stage1TopK") or {},
+                "stage2Enabled": candidate_summary.get("stage2Enabled") or {},
+                "stage2TopK": candidate_summary.get("stage2TopK") or {},
+                "llmTimeoutSeconds": candidate_summary.get("llmTimeoutSeconds") or {},
+                "skillStage1HitCount": candidate_summary.get("skillStage1HitCount"),
+                "skillStage1ShortlistCount": candidate_summary.get("skillStage1ShortlistCount"),
+                "skillFinalExposedCount": candidate_summary.get("skillFinalExposedCount"),
+                "mcpStage1HitCount": candidate_summary.get("mcpStage1HitCount"),
+                "mcpStage1ShortlistCount": candidate_summary.get("mcpStage1ShortlistCount"),
+                "mcpFinalExposedCount": candidate_summary.get("mcpFinalExposedCount"),
+                "skillInventoryCount": candidate_summary.get("skillInventoryCount"),
+                "mcpInventoryCount": candidate_summary.get("mcpInventoryCount"),
                 "skillPoolSize": candidate_summary.get("skillPoolSize"),
                 "mcpPoolSize": candidate_summary.get("mcpPoolSize"),
                 "mcpServerPoolSize": candidate_summary.get("mcpServerPoolSize"),
@@ -1246,17 +1398,32 @@ class ExtensionsRuntimeService:
         mcp_limit: int = 2,
         plugin_host_limit: int = 8,
     ) -> ExtensionRouteBundle:
-        query_tokens = _tokenize(user_query)
+        query_text = str(user_query or "").strip()
+        query_tokens = _query_tokens_for_extensions(query_text)
         context_payload = self._resolve_event_context()
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
-        effective_skill_limit = min(max(skill_limit + (2 if cross_runtime_escape else 0), skill_limit), 10)
-        effective_mcp_limit = min(max(mcp_limit + (2 if cross_runtime_escape else 0), mcp_limit), 12)
-        effective_plugin_host_limit = min(max(plugin_host_limit + (4 if cross_runtime_escape else 0), plugin_host_limit), 12)
         prefilter_policy = self._resolve_prefilter_policy()
-        prefilter_mode = str(prefilter_policy.get("mode") or "lexical")
+        skill_policy = dict(prefilter_policy.get("skills") or {})
+        mcp_policy = dict(prefilter_policy.get("mcp") or {})
+        skill_stage1_enabled = bool(skill_policy.get("stage1Enabled", True))
+        skill_stage1_top_k = max(1, int(skill_policy.get("stage1TopK") or 20))
+        skill_stage2_configured = bool(skill_policy.get("llmEnabled", True))
+        skill_stage2_top_k = max(1, int(skill_policy.get("stage2TopK") or 5))
+        skill_stage2_timeout = max(5, min(int(skill_policy.get("llmTimeoutSeconds") or 5), 10))
+        mcp_stage1_enabled = bool(mcp_policy.get("stage1Enabled", True))
+        mcp_stage1_top_k = max(1, int(mcp_policy.get("stage1TopK") or 20))
+        mcp_stage2_configured = bool(mcp_policy.get("llmEnabled", True))
+        mcp_stage2_top_k = max(1, int(mcp_policy.get("stage2TopK") or 2))
+        mcp_stage2_timeout = max(5, min(int(mcp_policy.get("llmTimeoutSeconds") or 5), 10))
+        effective_skill_stage1_limit = skill_stage1_top_k
+        effective_mcp_stage1_limit = mcp_stage1_top_k
+        effective_plugin_host_limit = max(0, min(plugin_host_limit, 12))
         prefilter_model_id = str(prefilter_policy.get("modelId") or "").strip()
         prefilter_role = str(prefilter_policy.get("role") or "").strip()
         prefilter_reason = str(prefilter_policy.get("reason") or "").strip()
+        stage2_runtime_available = bool(
+            prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id
+        )
 
         skill_inventory = self._resolve_skill_inventory(
             force_refresh=False,
@@ -1268,11 +1435,7 @@ class ExtensionsRuntimeService:
         ranked_skills = sorted(
             (
                 (
-                    _score_text(
-                        query_tokens=query_tokens,
-                        title=str(item.get("name") or item.get("folder") or ""),
-                        description=str(item.get("description") or ""),
-                    ),
+                    _score_skill_entry(query_text=query_text, query_tokens=query_tokens, skill=item),
                     str(item.get("name") or item.get("folder") or ""),
                     item,
                 )
@@ -1280,11 +1443,13 @@ class ExtensionsRuntimeService:
             ),
             key=lambda row: (-row[0], row[1].lower()),
         )
-        skill_pool_limit = max(effective_skill_limit * 2, _SKILL_RERANK_POOL_FLOOR)
-        skill_pool = [row[2] for row in ranked_skills if row[0] > 0][:skill_pool_limit]
-        if not skill_pool:
-            skill_pool = [row[2] for row in ranked_skills[: min(skill_pool_limit, len(ranked_skills))]]
-        selected_skills = list(skill_pool[:effective_skill_limit])
+        skill_stage1_hits = [row[2] for row in ranked_skills if row[0] > 0] if skill_stage1_enabled else []
+        skill_stage1_hit_count = len(skill_stage1_hits)
+        skill_pool = skill_stage1_hits[:effective_skill_stage1_limit] if effective_skill_stage1_limit > 0 else []
+        skill_stage1_shortlist = list(skill_pool)
+        skill_stage2_candidate_entries = list(skill_stage1_shortlist) if skill_stage1_enabled else list(skill_entries)
+        selected_skills = list(skill_stage1_shortlist) if skill_stage1_enabled else list(skill_entries)
+        skill_routing_mode = "stage1_only" if skill_stage1_enabled else "unfiltered"
 
         mcp_tools = [tool for tool in available_tools if _is_mcp_tool(tool)]
         raw_plugin_host_tools = [tool for tool in available_tools if _is_plugin_host_tool(tool)]
@@ -1320,19 +1485,11 @@ class ExtensionsRuntimeService:
                 for tool in items
                 if _tool_description(tool)
             ]
-            server_description = " | ".join(
-                part
-                for part in [
-                    f"MCP server {server_name}",
-                    " ".join(tool_names),
-                    " ".join(tool_descriptions),
-                ]
-                if str(part or "").strip()
-            )
-            server_score = _score_text(
+            server_score = _score_mcp_server_entry(
+                query_text=query_text,
                 query_tokens=query_tokens,
-                title=server_name,
-                description=server_description,
+                server_name=server_name,
+                items=items,
             )
             ranked_mcp_servers.append((server_score, server_name, items))
 
@@ -1343,19 +1500,18 @@ class ExtensionsRuntimeService:
             ),
         )
 
-        mcp_pool_limit = max(effective_mcp_limit * 2, _MCP_RERANK_POOL_FLOOR)
-        mcp_pool_server_keys = [
+        mcp_stage1_hits = [
             server_name
             for score, server_name, _items in ranked_mcp_servers
             if score > 0
-        ][:mcp_pool_limit]
-        if not mcp_pool_server_keys:
-            mcp_pool_server_keys = [
-                server_name
-                for _score, server_name, _items in ranked_mcp_servers[: min(mcp_pool_limit, len(ranked_mcp_servers))]
-            ]
+        ] if mcp_stage1_enabled else []
+        mcp_stage1_hit_count = len(mcp_stage1_hits)
+        mcp_pool_server_keys = mcp_stage1_hits[:effective_mcp_stage1_limit] if effective_mcp_stage1_limit > 0 else []
         mcp_pool = list(mcp_pool_server_keys)
-        selected_mcp_server_keys = list(mcp_pool_server_keys[:effective_mcp_limit])
+        mcp_stage1_shortlist_keys = list(mcp_pool_server_keys)
+        mcp_stage2_candidate_keys = list(mcp_stage1_shortlist_keys) if mcp_stage1_enabled else list(mcp_server_map.keys())
+        selected_mcp_server_keys = list(mcp_stage1_shortlist_keys) if mcp_stage1_enabled else list(mcp_server_map.keys())
+        mcp_routing_mode = "stage1_only" if mcp_stage1_enabled else "unfiltered"
 
         def _expand_mcp_server_keys(server_keys: list[str]) -> list[Any]:
             expanded: list[Any] = []
@@ -1395,14 +1551,10 @@ class ExtensionsRuntimeService:
         )
         plugin_host_pool_limit = max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR)
         plugin_host_pool = [row[2] for row in ranked_plugin_host if row[0] > 0][:plugin_host_pool_limit]
-        if not plugin_host_pool:
-            plugin_host_pool = [
-                row[2] for row in ranked_plugin_host[: min(plugin_host_pool_limit, len(ranked_plugin_host))]
-            ]
         selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
         skill_family_map = {
             str(item.get("path") or item.get("name") or item.get("folder") or "").strip(): item
-            for item in skill_entries
+            for item in skill_stage2_candidate_entries
             if str(item.get("path") or item.get("name") or item.get("folder") or "").strip()
         }
         plugin_host_seed_map: dict[str, Any] = {}
@@ -1410,125 +1562,199 @@ class ExtensionsRuntimeService:
             family_key = f"{_plugin_host_tool_plugin_id(tool)}::{_plugin_host_tool_raw_name(tool)}"
             plugin_host_seed_map.setdefault(family_key, tool)
 
-        skill_state: dict[str, Any] = {}
-        mcp_state: dict[str, Any] = {}
+        skill_state: dict[str, Any] = {
+            "mode": skill_routing_mode,
+            "reason": prefilter_reason or (
+                "Stage 2 已关闭，直接使用第 1 层 shortlist。"
+                if skill_stage1_enabled
+                else "Stage 1 与 Stage 2 已关闭，直接暴露完整 inventory。"
+            ),
+            "timedOut": False,
+            "cacheHit": False,
+            "bypassed": not stage2_runtime_available or not skill_stage2_configured,
+        }
+        mcp_state: dict[str, Any] = {
+            "mode": mcp_routing_mode,
+            "reason": prefilter_reason or (
+                "Stage 2 已关闭，直接使用第 1 层 shortlist。"
+                if mcp_stage1_enabled
+                else "Stage 1 与 Stage 2 已关闭，直接暴露完整 inventory。"
+            ),
+            "timedOut": False,
+            "cacheHit": False,
+            "bypassed": not stage2_runtime_available or not mcp_stage2_configured,
+        }
         plugin_host_state: dict[str, Any] = {}
-        should_prefilter = (
-            len(skill_family_map) > effective_skill_limit
-            or len(mcp_server_map) > effective_mcp_limit
-            or len(plugin_host_seed_map) > effective_plugin_host_limit
+        selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+        skill_stage2_enabled = bool(stage2_runtime_available and skill_stage2_configured)
+        mcp_stage2_enabled = bool(stage2_runtime_available and mcp_stage2_configured)
+        plugin_host_llm_enabled = (
+            stage2_runtime_available
+            and effective_plugin_host_limit > 0
+            and bool(plugin_host_tools)
+            and bool(plugin_host_seed_map)
+            and any(_plugin_host_tool_inventory_ready(tool) for tool in plugin_host_tools)
         )
-        if prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id and not should_prefilter:
-            prefilter_mode = "lexical"
-            prefilter_reason = "候选数量不足，无需额外预筛。"
-        if prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id and should_prefilter:
-            try:
-                skill_keys, skill_state = select_family_keys_with_llm(
-                    role=prefilter_role or "extensions_prefilter",
-                    user_query=user_query,
-                    family_label="skills",
-                    families=[
-                        {
-                            "key": key,
-                            "name": str(item.get("name") or item.get("folder") or "").strip() or key,
-                            "title": str(item.get("name") or item.get("folder") or "").strip() or key,
-                            "description": str(item.get("description") or "").strip(),
-                            "memberCount": 1,
-                        }
-                        for key, item in skill_family_map.items()
-                    ],
-                    max_families=effective_skill_limit,
-                    timeout_seconds=1.0,
-                )
-                if str(skill_state.get("mode") or "") == "llm_tree":
-                    selected_skills = [skill_family_map[key] for key in skill_keys if key in skill_family_map][:effective_skill_limit]
-                elif skill_keys:
-                    selected_skills = [skill_family_map[key] for key in skill_keys if key in skill_family_map][:effective_skill_limit]
-
-                mcp_keys, mcp_state = select_family_keys_with_llm(
-                    role=prefilter_role or "extensions_prefilter",
-                    user_query=user_query,
-                    family_label="mcp",
-                    families=[
-                        {
-                            "key": server_name,
-                            "serverName": server_name,
-                            "title": server_name,
-                            "description": " | ".join(
-                                part
-                                for part in [
-                                    " ".join(_tool_name(tool) for tool in items if _tool_name(tool)),
-                                    " ".join(_tool_description(tool) for tool in items if _tool_description(tool)),
-                                ]
-                                if str(part or "").strip()
-                            ),
-                            "memberCount": len(items),
-                            "examples": [_tool_name(tool) for tool in items],
-                            "tools": [
-                                {
-                                    "name": _tool_name(tool),
-                                    "description": _tool_description(tool),
-                                }
-                                for tool in items
-                                if _tool_name(tool)
-                            ],
-                        }
-                        for server_name, items in mcp_server_map.items()
-                        if items
-                    ],
-                    max_families=max(1, min(effective_mcp_limit, len(mcp_server_map))),
-                    timeout_seconds=1.0,
-                )
-                if str(mcp_state.get("mode") or "") == "llm_tree":
-                    selected_mcp_server_keys = [key for key in mcp_keys if key in mcp_server_map]
-                    selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
-                elif mcp_keys:
-                    selected_mcp_server_keys = [key for key in mcp_keys if key in mcp_server_map]
-                    selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
-
-                plugin_host_keys, plugin_host_state = select_family_keys_with_llm(
-                    role=prefilter_role or "extensions_prefilter",
-                    user_query=user_query,
-                    family_label="plugin_host",
-                    families=[
-                        {
-                            "key": family_key,
-                            "title": str((getattr(tool, "metadata", None) or {}).get("canonicalName") or _tool_name(tool)).strip() or family_key,
-                            "description": _tool_description(tool),
-                            "memberCount": 1,
-                            "examples": [_tool_name(tool)],
-                        }
-                        for family_key, tool in plugin_host_seed_map.items()
-                    ],
-                    max_families=effective_plugin_host_limit,
-                    timeout_seconds=1.0,
-                )
-                if str(plugin_host_state.get("mode") or "") == "llm_tree":
-                    selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
-                elif plugin_host_keys:
-                    selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
-
-                prefilter_mode = "llm_tree"
-                prefilter_reason = (
-                    skill_state.get("reason")
-                    or mcp_state.get("reason")
-                    or plugin_host_state.get("reason")
-                    or ""
-                )
-                if any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state)):
-                    prefilter_mode = "fallback"
-                    prefilter_reason = "timeout"
-                    selected_skills = list(skill_pool[:effective_skill_limit])
-                    selected_mcp_server_keys = list(mcp_pool_server_keys[:effective_mcp_limit])
-                    selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
-                    selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
-            except Exception as exc:
-                prefilter_mode = "fallback"
-                prefilter_reason = str(exc)
-                selected_skills = list(skill_pool[:effective_skill_limit])
-                selected_mcp_server_keys = list(mcp_pool_server_keys[:effective_mcp_limit])
+        if skill_stage2_enabled:
+            if len(skill_family_map) > skill_stage2_top_k:
+                skill_state = {}
+            else:
+                selected_skills = list(skill_stage2_candidate_entries[:skill_stage2_top_k])
+                skill_routing_mode = "llm_rerank_shortlist" if skill_stage1_enabled else "llm_rerank_full_inventory"
+                skill_state = {
+                    "mode": skill_routing_mode,
+                    "reason": "候选数量不足，直接使用当前候选集。",
+                    "timedOut": False,
+                    "cacheHit": False,
+                    "bypassed": True,
+                }
+        if mcp_stage2_enabled:
+            if len(mcp_stage2_candidate_keys) > mcp_stage2_top_k:
+                mcp_state = {}
+            else:
+                selected_mcp_server_keys = list(mcp_stage2_candidate_keys[:mcp_stage2_top_k])
                 selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+                mcp_routing_mode = "llm_rerank_shortlist" if mcp_stage1_enabled else "llm_rerank_full_inventory"
+                mcp_state = {
+                    "mode": mcp_routing_mode,
+                    "reason": "候选数量不足，直接使用当前候选集。",
+                    "timedOut": False,
+                    "cacheHit": False,
+                    "bypassed": True,
+                }
+        if stage2_runtime_available:
+            rerank_specs: list[tuple[str, dict[str, Any]]] = []
+            if skill_stage2_enabled and len(skill_family_map) > skill_stage2_top_k:
+                rerank_specs.append((
+                    "skills",
+                    {
+                        "role": prefilter_role or "extensions_prefilter",
+                        "user_query": query_text,
+                        "family_label": "skills",
+                        "families": [
+                            {
+                                "key": key,
+                                "name": str(item.get("name") or item.get("folder") or "").strip() or key,
+                                "description": str(item.get("description") or "").strip(),
+                            }
+                            for key, item in skill_family_map.items()
+                        ],
+                        "max_families": skill_stage2_top_k,
+                        "timeout_seconds": skill_stage2_timeout,
+                    },
+                ))
+            if mcp_stage2_enabled and len(mcp_stage2_candidate_keys) > mcp_stage2_top_k:
+                rerank_specs.append((
+                    "mcp",
+                    {
+                        "role": prefilter_role or "extensions_prefilter",
+                        "user_query": query_text,
+                        "family_label": "mcp",
+                        "families": [
+                            {
+                                "key": server_name,
+                                "name": server_name,
+                                "description": " | ".join(
+                                    part
+                                    for part in [
+                                        " ".join(_tool_name(tool) for tool in items if _tool_name(tool)),
+                                        " ".join(_tool_description(tool) for tool in items if _tool_description(tool)),
+                                    ]
+                                    if str(part or "").strip()
+                                ),
+                            }
+                            for server_name in mcp_stage2_candidate_keys
+                            for items in [mcp_server_map.get(server_name, [])]
+                            if items
+                        ],
+                        "max_families": mcp_stage2_top_k,
+                        "timeout_seconds": mcp_stage2_timeout,
+                    },
+                ))
+            if plugin_host_llm_enabled and len(plugin_host_seed_map) > effective_plugin_host_limit:
+                rerank_specs.append((
+                    "plugin_host",
+                    {
+                        "role": prefilter_role or "extensions_prefilter",
+                        "user_query": query_text,
+                        "family_label": "plugin_host",
+                        "families": [
+                            {
+                                "key": family_key,
+                                "name": str((getattr(tool, "metadata", None) or {}).get("canonicalName") or _tool_name(tool)).strip() or family_key,
+                                "description": _tool_description(tool),
+                            }
+                            for family_key, tool in plugin_host_seed_map.items()
+                        ],
+                        "max_families": effective_plugin_host_limit,
+                        "timeout_seconds": max(skill_stage2_timeout, mcp_stage2_timeout),
+                    },
+                ))
+            else:
+                plugin_host_state = {
+                    "mode": "lexical_shortlist",
+                    "reason": "PluginHost bridge 未 ready 或候选数量不足，跳过第 2 层精排。",
+                    "timedOut": False,
+                    "cacheHit": False,
+                    "bypassed": True,
+                }
+
+            rerank_results: dict[str, tuple[list[str], dict[str, Any]]] = {}
+            if rerank_specs:
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(rerank_specs), thread_name_prefix="v8-ext-route") as executor:
+                        future_map = {
+                            executor.submit(select_family_keys_with_llm, **kwargs): family_label
+                            for family_label, kwargs in rerank_specs
+                        }
+                        for future in concurrent.futures.as_completed(future_map):
+                            family_label = future_map[future]
+                            rerank_results[family_label] = future.result()
+                except Exception as exc:
+                    prefilter_reason = str(exc).strip() or exc.__class__.__name__
+            if "skills" in rerank_results:
+                skill_keys, skill_state = rerank_results["skills"]
+                selected_skills = [skill_family_map[key] for key in skill_keys if key in skill_family_map][:skill_stage2_top_k]
+                skill_routing_mode = "llm_rerank_shortlist" if skill_stage1_enabled else "llm_rerank_full_inventory"
+            if "mcp" in rerank_results:
+                mcp_keys, mcp_state = rerank_results["mcp"]
+                selected_mcp_server_keys = [key for key in mcp_keys if key in mcp_server_map]
+                selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+                mcp_routing_mode = "llm_rerank_shortlist" if mcp_stage1_enabled else "llm_rerank_full_inventory"
+            if "plugin_host" in rerank_results:
+                plugin_host_keys, plugin_host_state = rerank_results["plugin_host"]
+                selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
+
+            if bool(skill_state.get("timedOut")):
+                prefilter_reason = "timeout"
+                if skill_stage1_enabled:
+                    selected_skills = list(skill_stage1_shortlist)
+                    skill_routing_mode = "fallback_stage1"
+                else:
+                    selected_skills = list(skill_entries)
+                    skill_routing_mode = "fallback_unfiltered"
+            if bool(mcp_state.get("timedOut")):
+                prefilter_reason = "timeout"
+                if mcp_stage1_enabled:
+                    selected_mcp_server_keys = list(mcp_stage1_shortlist_keys)
+                    mcp_routing_mode = "fallback_stage1"
+                else:
+                    selected_mcp_server_keys = list(mcp_server_map.keys())
+                    mcp_routing_mode = "fallback_unfiltered"
+                selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+            if bool(plugin_host_state.get("timedOut")):
+                prefilter_reason = "timeout"
                 selected_plugin_host_seeds = list(plugin_host_pool[:effective_plugin_host_limit])
+        else:
+            plugin_host_state = {
+                "mode": "lexical_shortlist",
+                "reason": prefilter_reason or "未启用第 2 层 LLM 精排。",
+                "timedOut": False,
+                "cacheHit": False,
+                "bypassed": True,
+            }
+        selected_mcp_server_keys = _unique_preserve_order(selected_mcp_server_keys)
+        selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
 
         plugin_host_bound_limit = min(
             max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR),
@@ -1576,10 +1802,11 @@ class ExtensionsRuntimeService:
                         continue
                     seen_skill_keys.add(key)
                     merged_skills.append(item)
-                selected_skills = merged_skills[:effective_skill_limit]
+                selected_skills = merged_skills
 
         selected_skill_ids = [str(item.get("skillId") or "").strip() for item in selected_skills if str(item.get("skillId") or "").strip()]
         selected_skill_names = [str(item.get("name") or item.get("folder") or "") for item in selected_skills]
+        skill_stage1_entries = [_skill_entry_payload(item) for item in skill_stage1_shortlist]
         selected_skill_entries = [_skill_entry_payload(item) for item in selected_skills]
         skill_name_counts: dict[str, int] = {}
         for item in skill_entries:
@@ -1588,6 +1815,11 @@ class ExtensionsRuntimeService:
                 continue
             skill_name_counts[normalized_skill_name] = skill_name_counts.get(normalized_skill_name, 0) + 1
         exposed_mcp_tool_names = [_tool_name(tool) for tool in selected_mcp_tools]
+        mcp_stage1_servers = [
+            _mcp_server_payload(server_key, mcp_server_map.get(server_key, []))
+            for server_key in mcp_stage1_shortlist_keys
+            if mcp_server_map.get(server_key)
+        ]
         selected_mcp_servers = [
             _mcp_server_payload(server_key, mcp_server_map.get(server_key, []))
             for server_key in selected_mcp_server_keys
@@ -1595,6 +1827,17 @@ class ExtensionsRuntimeService:
         ]
         exposed_plugin_host_tool_names = [_tool_name(tool) for tool in selected_plugin_host_tools]
         filtered_tools = base_tools + selected_mcp_tools + selected_plugin_host_tools
+        plugin_host_routing_mode = str(plugin_host_state.get("mode") or ("skipped" if not plugin_host_tools else "lexical_shortlist")).strip() or "skipped"
+        route_modes = [skill_routing_mode, mcp_routing_mode]
+        distinct_route_modes = _unique_preserve_order([mode for mode in route_modes if str(mode or "").strip()])
+        prefilter_mode = distinct_route_modes[0] if len(distinct_route_modes) == 1 else "mixed"
+        prefilter_reason = (
+            prefilter_reason
+            or skill_state.get("reason")
+            or mcp_state.get("reason")
+            or plugin_host_state.get("reason")
+            or ""
+        )
 
         lines = [
             "\n[Extensions Runtime]",
@@ -1603,14 +1846,18 @@ class ExtensionsRuntimeService:
         ]
         if cross_runtime_escape:
             lines.append("- Cross-runtime escape：已启用。检测到阻塞/切换类任务语义，本轮适度放宽跨 runtime 候选。")
-        if prefilter_mode == "llm_tree":
-            lines.append(f"- 候选预筛：已启用 LLM 工具树预筛（模型：{prefilter_model_id}）")
-        elif prefilter_policy.get("enabled"):
+        if any(mode.startswith("llm_rerank") for mode in (skill_routing_mode, mcp_routing_mode)):
+            lines.append(f"- 候选预筛：已启用两层预筛（LLM 精排模型：{prefilter_model_id}）")
+        elif any(mode.startswith("fallback") for mode in (skill_routing_mode, mcp_routing_mode)):
             details = prefilter_reason or "当前未绑定可用的扩展候选预筛模型。"
             lines.append(f"- 候选预筛：本轮已回退 lexical（{_truncate(details, 120)}）")
+        elif skill_stage1_enabled or mcp_stage1_enabled:
+            lines.append("- 候选预筛：当前使用第 1 层 shortlist。")
+        else:
+            lines.append("- 候选预筛：当前未启用 Stage 1 / Stage 2，将直接暴露完整 inventory。")
         if selected_skill_names:
             lines.append("- 当前命中的 Skills 目录入口：")
-            for entry in selected_skill_entries[:effective_skill_limit]:
+            for entry in selected_skill_entries:
                 source_label = str(entry.get("sourceType") or "global").strip() or "global"
                 normalized_entry_name = str(entry.get("skillName") or "").strip().lower()
                 has_duplicate_skill_name = skill_name_counts.get(normalized_entry_name, 0) > 1
@@ -1650,16 +1897,42 @@ class ExtensionsRuntimeService:
             exposed_mcp_tool_names=exposed_mcp_tool_names,
             candidate_summary={
                 "mode": prefilter_mode,
+                "skillsRoutingMode": skill_routing_mode,
+                "mcpRoutingMode": mcp_routing_mode,
+                "pluginHostRoutingMode": plugin_host_routing_mode,
                 "modelId": prefilter_model_id,
                 "role": prefilter_role,
                 "reason": prefilter_reason or None,
                 "prefilterTimedOut": bool(any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state))),
                 "prefilterCacheHit": bool(any(bool(state.get("cacheHit")) for state in (skill_state, mcp_state, plugin_host_state))),
+                "stage1Enabled": {
+                    "skills": skill_stage1_enabled,
+                    "mcp": mcp_stage1_enabled,
+                },
+                "stage1TopK": {
+                    "skills": effective_skill_stage1_limit,
+                    "mcp": effective_mcp_stage1_limit,
+                },
+                "stage2Enabled": {
+                    "skills": skill_stage2_enabled,
+                    "mcp": mcp_stage2_enabled,
+                },
+                "stage2TopK": {
+                    "skills": skill_stage2_top_k,
+                    "mcp": mcp_stage2_top_k,
+                },
+                "llmTimeoutSeconds": {
+                    "skills": skill_stage2_timeout,
+                    "mcp": mcp_stage2_timeout,
+                },
+                "routingMode": prefilter_mode,
                 "skills": selected_skill_names,
                 "selectedSkillIds": selected_skill_ids,
+                "skillStage1Entries": skill_stage1_entries,
                 "skillEntries": selected_skill_entries,
                 "skillRootDescriptors": skill_root_descriptors,
                 "mcpTools": exposed_mcp_tool_names,
+                "mcpStage1Servers": mcp_stage1_servers,
                 "mcpServers": selected_mcp_servers,
                 "mcpFamilies": selected_mcp_servers,
                 "pluginHostTools": exposed_plugin_host_tool_names,
@@ -1668,10 +1941,18 @@ class ExtensionsRuntimeService:
                 "mcpCandidates": len(exposed_mcp_tool_names),
                 "mcpServerCandidates": len(selected_mcp_servers),
                 "pluginHostCandidates": len(exposed_plugin_host_tool_names),
-                "skillPoolSize": len(skill_family_map),
-                "skillLexicalPoolSize": len(skill_pool),
+                "skillInventoryCount": len(skill_entries),
+                "skillPoolSize": len(skill_entries),
+                "skillStage1HitCount": skill_stage1_hit_count,
+                "skillStage1ShortlistCount": len(skill_stage1_shortlist),
+                "skillLexicalPoolSize": len(skill_stage1_shortlist),
+                "skillFinalExposedCount": len(selected_skill_entries),
+                "mcpInventoryCount": len(mcp_server_map),
                 "mcpPoolSize": len(mcp_server_map),
-                "mcpLexicalPoolSize": len(mcp_pool),
+                "mcpStage1HitCount": mcp_stage1_hit_count,
+                "mcpStage1ShortlistCount": len(mcp_stage1_shortlist_keys),
+                "mcpLexicalPoolSize": len(mcp_stage1_shortlist_keys),
+                "mcpFinalExposedCount": len(selected_mcp_servers),
                 "mcpServerPoolSize": len(mcp_server_map),
                 "mcpServerCount": len(mcp_server_map),
                 "mcpFamilyPoolSize": len(mcp_server_map),
@@ -1683,8 +1964,8 @@ class ExtensionsRuntimeService:
                 "requestedSkillLimit": skill_limit,
                 "requestedMcpLimit": mcp_limit,
                 "requestedPluginHostLimit": plugin_host_limit,
-                "effectiveSkillLimit": effective_skill_limit,
-                "effectiveMcpLimit": effective_mcp_limit,
+                "effectiveSkillLimit": len(selected_skill_entries),
+                "effectiveMcpLimit": len(selected_mcp_servers),
                 "effectivePluginHostLimit": effective_plugin_host_limit,
                 "crossRuntimeEscape": cross_runtime_escape,
                 "pluginHostSeedCount": len(selected_plugin_host_seeds),
@@ -1797,16 +2078,32 @@ class ExtensionsRuntimeService:
                 "queryPreview": _truncate(user_query, 160),
                 "skillCandidates": route_bundle.selected_skill_names,
                 "selectedSkillIds": route_bundle.selected_skill_ids,
+                "skillStage1Entries": route_bundle.candidate_summary.get("skillStage1Entries") or [],
                 "skillEntries": route_bundle.candidate_summary.get("skillEntries") or [],
                 "skillRootDescriptors": route_bundle.skill_root_descriptors,
+                "mcpStage1Servers": route_bundle.candidate_summary.get("mcpStage1Servers") or [],
                 "mcpToolCandidates": route_bundle.exposed_mcp_tool_names,
                 "mcpServerCandidates": route_bundle.candidate_summary.get("mcpServers") or [],
                 "pluginHostToolCandidates": route_bundle.candidate_summary.get("pluginHostTools") or [],
                 "counts": route_bundle.candidate_summary,
                 "routing": {
                     "mode": route_bundle.candidate_summary.get("mode"),
+                    "routingMode": route_bundle.candidate_summary.get("routingMode"),
+                    "skillsRoutingMode": route_bundle.candidate_summary.get("skillsRoutingMode"),
+                    "mcpRoutingMode": route_bundle.candidate_summary.get("mcpRoutingMode"),
                     "modelId": route_bundle.candidate_summary.get("modelId"),
                     "role": route_bundle.candidate_summary.get("role"),
+                    "stage1Enabled": route_bundle.candidate_summary.get("stage1Enabled"),
+                    "stage1TopK": route_bundle.candidate_summary.get("stage1TopK"),
+                    "stage2Enabled": route_bundle.candidate_summary.get("stage2Enabled"),
+                    "stage2TopK": route_bundle.candidate_summary.get("stage2TopK"),
+                    "llmTimeoutSeconds": route_bundle.candidate_summary.get("llmTimeoutSeconds"),
+                    "skillInventoryCount": route_bundle.candidate_summary.get("skillInventoryCount"),
+                    "skillStage1ShortlistCount": route_bundle.candidate_summary.get("skillStage1ShortlistCount"),
+                    "skillFinalExposedCount": route_bundle.candidate_summary.get("skillFinalExposedCount"),
+                    "mcpInventoryCount": route_bundle.candidate_summary.get("mcpInventoryCount"),
+                    "mcpStage1ShortlistCount": route_bundle.candidate_summary.get("mcpStage1ShortlistCount"),
+                    "mcpFinalExposedCount": route_bundle.candidate_summary.get("mcpFinalExposedCount"),
                     "skillPoolSize": route_bundle.candidate_summary.get("skillPoolSize"),
                     "mcpPoolSize": route_bundle.candidate_summary.get("mcpPoolSize"),
                     "pluginHostPoolSize": route_bundle.candidate_summary.get("pluginHostPoolSize"),

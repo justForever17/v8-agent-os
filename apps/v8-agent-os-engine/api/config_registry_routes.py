@@ -225,14 +225,31 @@ def _save_memory_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_extensions_domain() -> dict[str, Any]:
     config = storage.get_extensions_config() or {}
     bindings = _roles_snapshot("extensions_prefilter", "extensions_reranker")
+    policy = dict(config.get("prefilterPolicy") or {})
+    skills_policy = dict(policy.get("skills") or {})
+    mcp_policy = dict(policy.get("mcp") or {})
     return {
         "domain": "extensions",
         "title": "扩展生态",
         "summary": "控制 Skills、MCP 与 PluginHost 候选树是否进入 LLM 预筛，并绑定扩展专用预筛模型。",
         "data": {
             "prefilterPolicy": {
-                "enabled": bool(((config.get("prefilterPolicy") or {}).get("enabled"))),
-                "mode": str(((config.get("prefilterPolicy") or {}).get("mode")) or "llm_tree").strip() or "llm_tree",
+                "enabled": bool(policy.get("enabled")),
+                "mode": str(policy.get("mode") or "two_stage").strip() or "two_stage",
+                "skills": {
+                    "stage1Enabled": bool(skills_policy.get("stage1Enabled", True)),
+                    "stage1TopK": int(skills_policy.get("stage1TopK") or 20),
+                    "llmEnabled": bool(skills_policy.get("llmEnabled", True)),
+                    "stage2TopK": int(skills_policy.get("stage2TopK") or 5),
+                    "llmTimeoutSeconds": int(skills_policy.get("llmTimeoutSeconds") or 5),
+                },
+                "mcp": {
+                    "stage1Enabled": bool(mcp_policy.get("stage1Enabled", True)),
+                    "stage1TopK": int(mcp_policy.get("stage1TopK") or 20),
+                    "llmEnabled": bool(mcp_policy.get("llmEnabled", True)),
+                    "stage2TopK": int(mcp_policy.get("stage2TopK") or 2),
+                    "llmTimeoutSeconds": int(mcp_policy.get("llmTimeoutSeconds") or 5),
+                },
             },
             "modelBindings": {
                 "prefilterModel": bindings["extensions_prefilter"] or bindings["extensions_reranker"],
@@ -250,10 +267,26 @@ def _save_extensions_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
     prefilter_policy = dict(data.get("prefilterPolicy") or {})
     model_bindings = dict(data.get("modelBindings") or {})
+    skills_policy = dict(prefilter_policy.get("skills") or {})
+    mcp_policy = dict(prefilter_policy.get("mcp") or {})
     storage.save_extensions_config({
         "prefilterPolicy": {
             "enabled": bool(prefilter_policy.get("enabled", False)),
-            "mode": str(prefilter_policy.get("mode") or "llm_tree").strip() or "llm_tree",
+            "mode": str(prefilter_policy.get("mode") or "two_stage").strip() or "two_stage",
+            "skills": {
+                "stage1Enabled": bool(skills_policy.get("stage1Enabled", True)),
+                "stage1TopK": int(skills_policy.get("stage1TopK") or 20),
+                "llmEnabled": bool(skills_policy.get("llmEnabled", True)),
+                "stage2TopK": int(skills_policy.get("stage2TopK") or 5),
+                "llmTimeoutSeconds": int(skills_policy.get("llmTimeoutSeconds") or 5),
+            },
+            "mcp": {
+                "stage1Enabled": bool(mcp_policy.get("stage1Enabled", True)),
+                "stage1TopK": int(mcp_policy.get("stage1TopK") or 20),
+                "llmEnabled": bool(mcp_policy.get("llmEnabled", True)),
+                "stage2TopK": int(mcp_policy.get("stage2TopK") or 2),
+                "llmTimeoutSeconds": int(mcp_policy.get("llmTimeoutSeconds") or 5),
+            },
         },
     })
     _update_role_bindings({"extensions_prefilter": model_bindings.get("prefilterModel")})

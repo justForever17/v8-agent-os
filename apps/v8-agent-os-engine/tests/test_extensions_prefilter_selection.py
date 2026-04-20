@@ -109,10 +109,12 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             return_value={
                 "enabled": True,
                 "available": True,
-                "mode": "llm_tree",
+                "mode": "two_stage",
                 "modelId": "test-prefilter",
                 "role": "extensions_prefilter",
                 "reason": "",
+                "skills": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 2, "llmEnabled": True, "stage2TopK": 1, "llmTimeoutSeconds": 5},
             },
         ), patch.object(
             service,
@@ -124,7 +126,7 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             side_effect=fake_select_family_keys_with_llm,
         ):
             bundle = service.build_contextual_route(
-                user_query="视频生成",
+                user_query="documentation video",
                 available_tools=tools,
                 loaded_agents=None,
                 skill_limit=5,
@@ -132,14 +134,11 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 plugin_host_limit=0,
             )
 
-        self.assertEqual({item["key"] for item in captured_mcp_families}, {"context7", "jimeng_visual_generation", "mail"})
+        self.assertEqual({item["key"] for item in captured_mcp_families}, {"context7", "jimeng_visual_generation"})
         jimeng_payload = next(item for item in captured_mcp_families if item["key"] == "jimeng_visual_generation")
-        self.assertEqual(jimeng_payload["serverName"], "jimeng_visual_generation")
-        self.assertEqual(
-            [tool["name"] for tool in jimeng_payload["tools"]],
-            ["generate_image", "generate_video"],
-        )
-        self.assertIn("Create a video generation task", jimeng_payload["tools"][1]["description"])
+        self.assertEqual(jimeng_payload["name"], "jimeng_visual_generation")
+        self.assertIn("Generate images using Volcengine", jimeng_payload["description"])
+        self.assertIn("Create a video generation task", jimeng_payload["description"])
         self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["jimeng_visual_generation"])
         self.assertEqual(
             set(bundle.candidate_summary.get("mcpTools") or []),
@@ -179,10 +178,12 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             return_value={
                 "enabled": True,
                 "available": True,
-                "mode": "llm_tree",
+                "mode": "two_stage",
                 "modelId": "test-prefilter",
                 "role": "extensions_prefilter",
                 "reason": "",
+                "skills": {"stage1TopK": 4, "llmEnabled": True, "stage2TopK": 3, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
             },
         ), patch.object(
             service,
@@ -361,6 +362,488 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
 
         self.assertIn("当前暴露给本轮的 MCP 工具：", bundle.prompt_addition)
         self.assertIn("query-docs (context7): 暂无说明。", bundle.prompt_addition)
+
+    def test_extensions_runtime_shortlist_hits_nuwa_skill_by_raw_name_query(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:67cb9ebfa7543040",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "女娲造人：输入人名/主题/甚至只是模糊需求，自动深度调研并生成人物 Skill。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+            },
+            {
+                "skillId": "global:other",
+                "name": "brand-guidelines",
+                "folder": "brand-guidelines",
+                "description": "brand color and typography",
+                "path": "C:/skills/brand-guidelines",
+                "skillName": "brand-guidelines",
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical_shortlist",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+                "skills": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="nuwa",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names, ["huashu-nuwa"])
+        self.assertEqual(bundle.candidate_summary.get("skillStage1HitCount"), 1)
+
+    def test_extensions_runtime_shortlist_supports_chinese_split_backoff(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:video",
+                "name": "seedance2-api",
+                "folder": "seedance2-api",
+                "description": "使用即梦 API 生成 AI 视频，支持生成视频和任务查询。",
+                "path": "C:/skills/seedance2-api",
+                "skillName": "seedance2-api",
+            },
+            {
+                "skillId": "global:ui",
+                "name": "building-native-ui",
+                "folder": "building-native-ui",
+                "description": "Expo app UI",
+                "path": "C:/skills/building-native-ui",
+                "skillName": "building-native-ui",
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical_shortlist",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+                "skills": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="视频生成",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names, ["seedance2-api"])
+        self.assertEqual(bundle.candidate_summary.get("skillStage1HitCount"), 1)
+
+    def test_extensions_runtime_zero_hit_no_longer_returns_arbitrary_skills(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:a",
+                "name": "brand-guidelines",
+                "folder": "brand-guidelines",
+                "description": "brand color and typography",
+                "path": "C:/skills/brand-guidelines",
+                "skillName": "brand-guidelines",
+            },
+            {
+                "skillId": "global:b",
+                "name": "building-native-ui",
+                "folder": "building-native-ui",
+                "description": "Expo app UI",
+                "path": "C:/skills/building-native-ui",
+                "skillName": "building-native-ui",
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical_shortlist",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+                "skills": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="量子烹饪",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names, [])
+        self.assertEqual(bundle.candidate_summary.get("skillStage1HitCount"), 0)
+
+    def test_extensions_runtime_stage2_rerank_receives_only_shortlist_families(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {"name": "huashu-nuwa", "folder": "huashu-nuwa", "description": "女娲造人，生成人物 skill", "path": "C:/skills/huashu-nuwa"},
+            {"name": "remotion-video", "folder": "remotion-video", "description": "用代码创建视频", "path": "C:/skills/remotion-video"},
+            {"name": "brand-guidelines", "folder": "brand-guidelines", "description": "brand color and typography", "path": "C:/skills/brand-guidelines"},
+        ]
+        captured_skill_families: list[dict[str, object]] = []
+
+        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
+            if kwargs.get("family_label") == "skills":
+                captured_skill_families.extend(list(kwargs.get("families") or []))
+                return ["C:/skills/huashu-nuwa"], {"mode": "llm_tree", "reason": "nuwa best", "timedOut": False, "cacheHit": False}
+            return [], {"mode": "lexical_shortlist", "reason": "skip", "timedOut": False, "cacheHit": False}
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1TopK": 2, "llmEnabled": True, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ), patch.object(
+            extensions_runtime_module,
+            "select_family_keys_with_llm",
+            side_effect=fake_select_family_keys_with_llm,
+        ):
+            bundle = service.build_contextual_route(
+                user_query="nuwa 视频",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(
+            [item["key"] for item in captured_skill_families],
+            ["C:/skills/remotion-video", "C:/skills/huashu-nuwa"],
+        )
+        self.assertEqual(bundle.selected_skill_names, ["huashu-nuwa"])
+
+    def test_extensions_runtime_stage1_only_uses_stage1_topk_without_old_skill_limit_cap(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": f"global:{index}",
+                "name": f"video-skill-{index}",
+                "folder": f"video-skill-{index}",
+                "description": "视频 生成 video generation",
+                "path": f"C:/skills/video-skill-{index}",
+                "skillName": f"video-skill-{index}",
+            }
+            for index in range(12)
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="视频生成",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(len(bundle.selected_skill_names), 10)
+        self.assertEqual(bundle.candidate_summary.get("routingMode"), "stage1_only")
+        self.assertEqual(bundle.candidate_summary.get("skillStage1ShortlistCount"), 10)
+        self.assertEqual(bundle.candidate_summary.get("skillFinalExposedCount"), 10)
+
+    def test_extensions_runtime_stage1_and_stage2_disabled_exposes_full_skill_inventory(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": f"global:{index}",
+                "name": f"misc-skill-{index}",
+                "folder": f"misc-skill-{index}",
+                "description": "misc",
+                "path": f"C:/skills/misc-skill-{index}",
+                "skillName": f"misc-skill-{index}",
+            }
+            for index in range(7)
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": False, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="任意请求",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(len(bundle.selected_skill_names), 7)
+        self.assertEqual(bundle.candidate_summary.get("routingMode"), "mixed")
+        self.assertEqual(bundle.candidate_summary.get("skillsRoutingMode"), "unfiltered")
+        self.assertEqual(bundle.candidate_summary.get("skillInventoryCount"), 7)
+        self.assertEqual(bundle.candidate_summary.get("skillFinalExposedCount"), 7)
+
+    def test_extensions_runtime_stage2_full_inventory_rerank_receives_all_skills_when_stage1_disabled(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {"name": "huashu-nuwa", "folder": "huashu-nuwa", "description": "女娲造人，生成人物 skill", "path": "C:/skills/huashu-nuwa"},
+            {"name": "remotion-video", "folder": "remotion-video", "description": "用代码创建视频", "path": "C:/skills/remotion-video"},
+            {"name": "brand-guidelines", "folder": "brand-guidelines", "description": "brand color and typography", "path": "C:/skills/brand-guidelines"},
+        ]
+        captured_skill_families: list[dict[str, object]] = []
+
+        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
+            if kwargs.get("family_label") == "skills":
+                captured_skill_families.extend(list(kwargs.get("families") or []))
+                return ["C:/skills/huashu-nuwa"], {"mode": "llm_tree", "reason": "nuwa best", "timedOut": False, "cacheHit": False}
+            return [], {"mode": "lexical_shortlist", "reason": "skip", "timedOut": False, "cacheHit": False}
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": False, "stage1TopK": 20, "llmEnabled": True, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ), patch.object(
+            extensions_runtime_module,
+            "select_family_keys_with_llm",
+            side_effect=fake_select_family_keys_with_llm,
+        ):
+            bundle = service.build_contextual_route(
+                user_query="nuwa",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(
+            [item["key"] for item in captured_skill_families],
+            ["C:/skills/huashu-nuwa", "C:/skills/remotion-video", "C:/skills/brand-guidelines"],
+        )
+        self.assertEqual(bundle.selected_skill_names, ["huashu-nuwa"])
+        self.assertEqual(bundle.candidate_summary.get("skillsRoutingMode"), "llm_rerank_full_inventory")
+
+    def test_extensions_runtime_stage2_timeout_without_stage1_falls_back_to_full_inventory(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {"name": "huashu-nuwa", "folder": "huashu-nuwa", "description": "女娲造人，生成人物 skill", "path": "C:/skills/huashu-nuwa"},
+            {"name": "remotion-video", "folder": "remotion-video", "description": "用代码创建视频", "path": "C:/skills/remotion-video"},
+            {"name": "brand-guidelines", "folder": "brand-guidelines", "description": "brand color and typography", "path": "C:/skills/brand-guidelines"},
+        ]
+
+        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
+            if kwargs.get("family_label") == "skills":
+                return [], {"mode": "fallback", "reason": "timeout", "timedOut": True, "cacheHit": False}
+            return [], {"mode": "lexical_shortlist", "reason": "skip", "timedOut": False, "cacheHit": False}
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": False, "stage1TopK": 20, "llmEnabled": True, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ), patch.object(
+            extensions_runtime_module,
+            "select_family_keys_with_llm",
+            side_effect=fake_select_family_keys_with_llm,
+        ):
+            bundle = service.build_contextual_route(
+                user_query="nuwa",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(len(bundle.selected_skill_names), 3)
+        self.assertEqual(bundle.candidate_summary.get("skillsRoutingMode"), "fallback_unfiltered")
+        self.assertEqual(bundle.candidate_summary.get("skillFinalExposedCount"), 3)
+
+    def test_extensions_runtime_mcp_stage1_disabled_and_stage2_disabled_exposes_full_inventory(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool("query-docs", "Retrieves documentation from Context7.", "context7"),
+            _FakeTool("resolve-library-id", "Resolves a package name to a Context7 library id.", "context7"),
+            _FakeTool("generate_video", "Create a video generation task using Volcengine API.", "jimeng_visual_generation"),
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": False, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="documentation video",
+                available_tools=tools,
+                loaded_agents=None,
+                skill_limit=0,
+                mcp_limit=2,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(
+            set(bundle.candidate_summary.get("mcpSelectedServers") or []),
+            {"context7", "jimeng_visual_generation"},
+        )
+        self.assertEqual(bundle.candidate_summary.get("mcpRoutingMode"), "unfiltered")
+        self.assertEqual(bundle.candidate_summary.get("mcpInventoryCount"), 2)
+
+    def test_extensions_runtime_preview_returns_stage1_and_final_lists_separately(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": f"global:{index}",
+                "name": f"video-skill-{index}",
+                "folder": f"video-skill-{index}",
+                "description": "视频 生成 video generation",
+                "path": f"C:/skills/video-skill-{index}",
+                "skillName": f"video-skill-{index}",
+            }
+            for index in range(6)
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 4, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            import asyncio
+
+            payload = asyncio.run(service.build_prefilter_preview(user_query="视频生成"))
+
+        self.assertEqual(len(payload.get("skillStage1Entries") or []), 4)
+        self.assertEqual(len(payload.get("skillEntries") or []), 4)
+        self.assertEqual(payload.get("counts", {}).get("skillStage1ShortlistCount"), 4)
+        self.assertEqual(payload.get("counts", {}).get("skillFinalExposedCount"), 4)
 
 
 if __name__ == "__main__":

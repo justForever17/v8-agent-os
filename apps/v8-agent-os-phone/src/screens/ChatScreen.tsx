@@ -1145,9 +1145,8 @@ function shouldPreserveAssistantPlaceholder(
     if (!matchingLocal.uiEphemeral && !isActiveAssistantStreamPhase(matchingLocal.uiStreamPhase)) {
         return false;
     }
-    const snapshotText = String(snapshotMessage.content || "").trim();
-    const snapshotHasStructuredState = hasStructuredAssistantPayload(snapshotMessage);
-    return !snapshotText && !snapshotHasStructuredState;
+    const snapshotRenderable = hasRenderableMessagePayload(snapshotMessage);
+    return !snapshotRenderable;
 }
 
 function mergeAssistantPlaceholder(

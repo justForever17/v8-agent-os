@@ -53,6 +53,15 @@ _STOPWORDS = {
     "一下",
     "一个",
     "一些",
+    "我想",
+    "想要",
+    "给我",
+    "请帮",
+    "如何",
+    "怎么",
+    "请问",
+    "帮忙",
+    "想想",
     "使用",
     "帮我",
 }
@@ -139,6 +148,182 @@ _EXTENSION_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "界面": ("ui", "interface"),
     "动画": ("animation", "animated"),
 }
+_QUERY_ARTIFACT_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "presentation": ("ppt", "pptx", "presentation", "slide", "slides", "deck", "幻灯片", "演示稿", "演示文稿"),
+    "video": ("视频", "video", "videos", "video generation", "短片", "动画视频"),
+    "image": ("图片", "图像", "image", "images", "picture", "poster", "illustration"),
+    "document": ("文档", "document", "doc", "docx", "markdown", "md", "report", "文章"),
+    "pdf": ("pdf",),
+    "spreadsheet": ("excel", "xlsx", "xls", "csv", "spreadsheet", "表格", "表单"),
+    "audio": ("音频", "语音", "audio", "voice", "speech"),
+    "code": ("代码", "脚本", "code", "script", "scripts"),
+    "skill": ("skill", "skills", "人物skill", "思维顾问", "persona"),
+}
+_QUERY_OPERATION_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "create": ("生成", "创建", "制作", "做", "写", "generate", "create", "build", "draft", "make"),
+    "edit": ("编辑", "修改", "调整", "edit", "revise", "modify", "update"),
+    "analyze": ("分析", "检查", "评估", "审阅", "analyze", "analysis", "review", "audit"),
+    "convert": ("转换", "转成", "导出", "convert", "transform", "export"),
+    "search": ("搜索", "检索", "查找", "查询", "search", "find", "lookup", "query"),
+    "guide": ("教程", "指南", "最佳实践", "guide", "tutorial", "best practice"),
+    "advise": ("建议", "视角", "顾问", "advise", "advisor", "perspective"),
+}
+_QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "decision_quality": (
+        "决策质量",
+        "decision quality",
+        "认知偏误",
+        "bias",
+        "biases",
+        "判断力",
+        "判断",
+        "第一性原理",
+        "first principles",
+        "逆向思考",
+        "inversion",
+    ),
+    "wealth_money": (
+        "赚钱",
+        "财富",
+        "wealth",
+        "money",
+        "投资",
+        "资本配置",
+        "杠杆",
+        "leverage",
+        "specific knowledge",
+        "特定知识",
+    ),
+    "startup_growth": (
+        "增长",
+        "growth",
+        "创业",
+        "startup",
+        "商业化",
+        "traction",
+        "distribution",
+        "用户增长",
+    ),
+    "product_strategy": (
+        "产品战略",
+        "product strategy",
+        "产品",
+        "product",
+        "定位",
+        "positioning",
+        "roadmap",
+        "成本结构",
+        "cost structure",
+        "垂直整合",
+        "vertical integration",
+    ),
+    "engineering_ai": (
+        "ai",
+        "人工智能",
+        "machine learning",
+        "机器学习",
+        "llm",
+        "engineering",
+        "software",
+        "代码",
+        "神经网络",
+    ),
+    "content_media": (
+        "内容",
+        "content",
+        "视频增长",
+        "thumbnail",
+        "hook",
+        "retention",
+        "attention",
+        "创作者",
+        "creator",
+        "youtube",
+    ),
+    "writing_communication": (
+        "写作",
+        "writing",
+        "沟通",
+        "communication",
+        "storytelling",
+        "copywriting",
+        "表达",
+    ),
+    "organization_leadership": (
+        "组织",
+        "leadership",
+        "组织效率",
+        "管理",
+        "management",
+        "culture",
+        "hiring",
+        "组织设计",
+        "人才密度",
+    ),
+    "career_learning": (
+        "学习",
+        "learning",
+        "职业",
+        "career",
+        "education",
+        "成长",
+        "学习方法",
+    ),
+    "negotiation_persuasion": (
+        "谈判",
+        "negotiation",
+        "说服",
+        "persuasion",
+        "influence",
+        "激励结构",
+        "incentive",
+        "attention arbitrage",
+        "注意力套利",
+    ),
+}
+_QUERY_SECONDARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "first_principles": ("第一性原理", "first principles"),
+    "cost_structure": ("成本结构", "cost structure", "idiot index", "白痴指数"),
+    "inversion": ("逆向思考", "inversion"),
+    "specific_knowledge": ("特定知识", "specific knowledge"),
+    "creator_growth": ("creator growth", "内容增长", "retention", "thumbnail", "hook", "ctr"),
+    "organizational_design": ("组织设计", "organizational design", "组织效率"),
+    "attention_arbitrage": ("attention arbitrage", "注意力套利", "注意力经济"),
+    "cognitive_bias": ("认知偏误", "bias", "biases", "lollapalooza"),
+    "leverage": ("杠杆", "leverage"),
+    "talent_density": ("人才密度", "talent density"),
+}
+_SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {
+    "first_principles": ("decision_quality", "product_strategy"),
+    "cost_structure": ("product_strategy", "wealth_money"),
+    "inversion": ("decision_quality",),
+    "specific_knowledge": ("wealth_money", "career_learning"),
+    "creator_growth": ("content_media", "startup_growth"),
+    "organizational_design": ("organization_leadership",),
+    "attention_arbitrage": ("content_media", "wealth_money"),
+    "cognitive_bias": ("decision_quality",),
+    "leverage": ("wealth_money", "startup_growth"),
+    "talent_density": ("organization_leadership",),
+}
+_THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial"}
+_ARTIFACT_MISMATCH_GROUPS: dict[str, set[str]] = {
+    "presentation": {"video", "image", "audio"},
+    "video": {"presentation", "document", "pdf", "spreadsheet"},
+    "image": {"presentation", "spreadsheet", "audio"},
+    "document": {"video", "audio"},
+    "pdf": {"video", "audio"},
+    "spreadsheet": {"video", "image", "audio"},
+    "audio": {"presentation", "spreadsheet", "document"},
+}
+_ARTIFACT_PROFILE_ANCHORS: dict[str, set[str]] = {
+    "presentation": {"ppt", "pptx", ".ppt", ".pptx", "powerpoint"},
+    "document": {"doc", "docx", ".doc", ".docx", "word"},
+    "pdf": {"pdf", ".pdf"},
+    "spreadsheet": {"xls", "xlsx", "csv", ".xls", ".xlsx", ".csv", "excel"},
+    "video": {"video", "videos"},
+    "image": {"image", "images", "poster", "illustration"},
+    "audio": {"audio", "voice", "speech", "podcast"},
+}
 
 
 @dataclass(slots=True)
@@ -168,7 +353,7 @@ def _unique_preserve_order(items: Iterable[str]) -> list[str]:
     ordered: list[str] = []
     for item in items:
         normalized = str(item or "").strip().lower()
-        if not normalized or normalized in seen:
+        if not normalized or normalized in seen or normalized in _STOPWORDS:
             continue
         seen.add(normalized)
         ordered.append(normalized)
@@ -196,6 +381,68 @@ def _query_tokens_for_extensions(text: str) -> list[str]:
         if hint in query_text:
             expanded.extend(synonyms)
     return _unique_preserve_order(expanded)
+
+
+def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
+    lowered = str(text or "").strip().lower()
+    artifact_intents = [
+        key
+        for key, synonyms in _QUERY_ARTIFACT_INTENT_SYNONYMS.items()
+        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+    ]
+    operation_intents = [
+        key
+        for key, synonyms in _QUERY_OPERATION_INTENT_SYNONYMS.items()
+        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+    ]
+    primary_theme_intents = [
+        key
+        for key, synonyms in _QUERY_PRIMARY_THEME_SYNONYMS.items()
+        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+    ]
+    secondary_theme_hints = [
+        key
+        for key, synonyms in _QUERY_SECONDARY_THEME_SYNONYMS.items()
+        if any(str(synonym).lower() in lowered or str(synonym).lower() in query_tokens for synonym in synonyms)
+    ]
+    for tag in secondary_theme_hints:
+        for primary_theme in _SECONDARY_THEME_PRIMARY_MAP.get(tag, ()):
+            if primary_theme not in primary_theme_intents:
+                primary_theme_intents.append(primary_theme)
+    matched_terms = {
+        str(synonym).lower()
+        for key in artifact_intents
+        for synonym in _QUERY_ARTIFACT_INTENT_SYNONYMS.get(key, ())
+        if str(synonym).strip()
+    }
+    matched_terms.update(
+        str(synonym).lower()
+        for key in operation_intents
+        for synonym in _QUERY_OPERATION_INTENT_SYNONYMS.get(key, ())
+        if str(synonym).strip()
+    )
+    matched_terms.update(
+        str(synonym).lower()
+        for key in primary_theme_intents
+        for synonym in _QUERY_PRIMARY_THEME_SYNONYMS.get(key, ())
+        if str(synonym).strip()
+    )
+    matched_terms.update(
+        str(synonym).lower()
+        for key in secondary_theme_hints
+        for synonym in _QUERY_SECONDARY_THEME_SYNONYMS.get(key, ())
+        if str(synonym).strip()
+    )
+    topic_tokens = [token for token in query_tokens if token not in matched_terms]
+    return {
+        "artifactIntent": artifact_intents[0] if artifact_intents else None,
+        "artifactIntents": artifact_intents,
+        "operationIntent": operation_intents[0] if operation_intents else None,
+        "operationIntents": operation_intents,
+        "primaryThemeIntents": primary_theme_intents,
+        "secondaryThemeHints": secondary_theme_hints,
+        "topicTokens": topic_tokens,
+    }
 
 
 def _score_text(*, query_tokens: list[str], title: str, description: str) -> int:
@@ -239,24 +486,190 @@ def _skill_recall_hints(skill: dict[str, Any]) -> list[str]:
     return hints
 
 
-def _score_skill_entry(*, query_text: str, query_tokens: list[str], skill: dict[str, Any]) -> int:
+def _normalize_profile_items(value: Any) -> list[str]:
+    return [
+        str(item).strip().lower()
+        for item in list(value or [])
+        if str(item).strip()
+    ]
+
+
+def _score_skill_entry(
+    *,
+    query_text: str,
+    query_tokens: list[str],
+    query_profile: dict[str, Any],
+    skill: dict[str, Any],
+) -> tuple[int, bool, bool]:
+    def _profile_artifact_anchor_bonus(profile_payload: dict[str, Any], matched_artifacts: list[str]) -> int:
+        evidence = profile_payload.get("evidenceSignals") or {}
+        artifact_matches = evidence.get("artifactMatches") if isinstance(evidence, dict) else {}
+        if not isinstance(artifact_matches, dict):
+            return 0
+        bonus = 0
+        for artifact in matched_artifacts:
+            terms = {
+                str(term or "").strip().lower()
+                for term in list(artifact_matches.get(artifact) or [])
+                if str(term or "").strip()
+            }
+            anchors = _ARTIFACT_PROFILE_ANCHORS.get(artifact, set())
+            if anchors.intersection(terms):
+                bonus = max(bonus, 6)
+            elif len(terms) >= 4:
+                bonus = max(bonus, 2)
+        return bonus
+
     name = str(skill.get("name") or skill.get("folder") or "").strip()
     folder = str(skill.get("folder") or "").strip()
     description = str(skill.get("description") or "").strip()
     normalized_query = str(query_text or "").strip().lower()
     score = _score_text(query_tokens=query_tokens, title=name or folder, description=description)
+    has_query_signal = score > 0
     for candidate in (name, folder):
         normalized_candidate = str(candidate or "").strip().lower()
         if normalized_candidate and normalized_candidate in normalized_query:
             score += 12
+            has_query_signal = True
     for hint in _skill_recall_hints(skill):
         normalized_hint = str(hint or "").strip().lower()
         if not normalized_hint:
             continue
         if normalized_hint in normalized_query:
             score += 10
-        score += _score_text(query_tokens=query_tokens, title=normalized_hint, description="")
-    return score
+            has_query_signal = True
+        hint_score = _score_text(query_tokens=query_tokens, title=normalized_hint, description="")
+        score += hint_score
+        if hint_score > 0:
+            has_query_signal = True
+
+    profile = dict(skill.get("capabilityProfile") or {})
+    theme_profile = dict(skill.get("themeProfile") or {})
+    primary_artifact_types = _normalize_profile_items(profile.get("primaryArtifactTypes"))
+    primary_operations = _normalize_profile_items(profile.get("primaryOperations"))
+    secondary_artifact_hints = _normalize_profile_items(profile.get("secondaryArtifactHints"))
+    secondary_operation_hints = _normalize_profile_items(profile.get("secondaryOperationHints"))
+    skill_class = str(profile.get("skillClass") or "").strip().lower()
+    confidence = float(profile.get("capabilityConfidence") or 0.0)
+    primary_themes = _normalize_profile_items(theme_profile.get("primaryThemes"))
+    secondary_theme_tags = _normalize_profile_items(theme_profile.get("secondaryThemeTags"))
+    implied_primary_themes = _unique_preserve_order(
+        implied_theme
+        for tag in secondary_theme_tags
+        for implied_theme in _SECONDARY_THEME_PRIMARY_MAP.get(tag, ())
+    )
+    theme_confidence = float(theme_profile.get("themeConfidence") or 0.0)
+
+    artifact_intents = _normalize_profile_items(query_profile.get("artifactIntents"))
+    operation_intents = _normalize_profile_items(query_profile.get("operationIntents"))
+    primary_theme_intents = _normalize_profile_items(query_profile.get("primaryThemeIntents"))
+    secondary_theme_hints = _normalize_profile_items(query_profile.get("secondaryThemeHints"))
+    topic_tokens = list(query_profile.get("topicTokens") or [])
+
+    artifact_match = False
+    if artifact_intents:
+        matched_artifacts = [item for item in artifact_intents if item in primary_artifact_types]
+        if matched_artifacts:
+            artifact_match = True
+            has_query_signal = True
+            score += 36 + (8 * len(matched_artifacts))
+            score += _profile_artifact_anchor_bonus(profile, matched_artifacts)
+        elif primary_artifact_types:
+            mismatched = False
+            for artifact_intent in artifact_intents:
+                conflicting = _ARTIFACT_MISMATCH_GROUPS.get(artifact_intent, set())
+                if conflicting.intersection(primary_artifact_types):
+                    mismatched = True
+                    break
+            if mismatched:
+                score -= 18
+
+    operation_match = False
+    if operation_intents:
+        matched_operations = [item for item in operation_intents if item in primary_operations]
+        if matched_operations:
+            operation_match = True
+            has_query_signal = True
+            score += 14 + (4 * len(matched_operations))
+        elif skill_class in {"advisor_or_perspective", "methodology_or_tutorial"} and "advise" in operation_intents:
+            operation_match = True
+            has_query_signal = True
+            score += 8
+
+    theme_match = False
+    matched_primary_themes = [item for item in primary_theme_intents if item in primary_themes]
+    matched_secondary_tags = [item for item in secondary_theme_hints if item in secondary_theme_tags]
+    matched_implied_themes = [item for item in primary_theme_intents if item in implied_primary_themes]
+    no_artifact_anchor = not artifact_intents
+    if skill_class in _THEME_HEAVY_CLASSES:
+        if matched_primary_themes:
+            theme_match = True
+            has_query_signal = True
+            if no_artifact_anchor:
+                score += 26 + (8 * len(matched_primary_themes)) + 12
+            else:
+                score += 6 + (2 * len(matched_primary_themes))
+        elif matched_implied_themes:
+            theme_match = True
+            has_query_signal = True
+            if no_artifact_anchor:
+                score += 14 + (5 * len(matched_implied_themes)) + 6
+            else:
+                score += 4 + len(matched_implied_themes)
+        if matched_secondary_tags:
+            has_query_signal = True
+            if no_artifact_anchor:
+                score += 8 + (3 * len(matched_secondary_tags)) + 4
+            else:
+                score += 2 + len(matched_secondary_tags)
+    else:
+        if matched_primary_themes:
+            has_query_signal = True
+            score += 6 + (2 * len(matched_primary_themes))
+        elif matched_implied_themes:
+            has_query_signal = True
+            score += 3 + len(matched_implied_themes)
+        if matched_secondary_tags:
+            has_query_signal = True
+            score += 3 + len(matched_secondary_tags)
+
+    if topic_tokens:
+        topic_score = _score_text(
+            query_tokens=topic_tokens,
+            title=name or folder,
+            description=" ".join(
+                part
+                for part in [
+                    description,
+                    " ".join(primary_artifact_types),
+                    " ".join(primary_operations),
+                    " ".join(secondary_artifact_hints),
+                    " ".join(secondary_operation_hints),
+                ]
+                if str(part or "").strip()
+            ),
+        )
+        score += min(topic_score, 18)
+        if topic_score > 0:
+            has_query_signal = True
+
+    if not has_query_signal:
+        return 0, artifact_match, operation_match
+
+    confidence_bonus = int(round(confidence * 6))
+    score += confidence_bonus
+    score += int(round(theme_confidence * 4))
+
+    if artifact_match and skill_class == "artifact_producer":
+        score += 10
+    if artifact_match and skill_class == "artifact_editor_or_analyzer":
+        score += 6
+    if artifact_intents and skill_class in {"advisor_or_perspective", "methodology_or_tutorial"} and not artifact_match:
+        score -= 8
+    if no_artifact_anchor and theme_match and skill_class in _THEME_HEAVY_CLASSES:
+        score += 6
+
+    return score, artifact_match, operation_match
 
 
 def _score_mcp_server_entry(*, query_text: str, query_tokens: list[str], server_name: str, items: list[Any]) -> int:
@@ -345,6 +758,12 @@ def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
             for item in list(skill.get("availableFiles") or [])
             if str(item).strip()
         ],
+        "aliases": [str(item).strip() for item in list(skill.get("aliases") or []) if str(item).strip()],
+        "triggers": [str(item).strip() for item in list(skill.get("triggers") or []) if str(item).strip()],
+        "keywords": [str(item).strip() for item in list(skill.get("keywords") or []) if str(item).strip()],
+        "tags": [str(item).strip() for item in list(skill.get("tags") or []) if str(item).strip()],
+        "capabilityProfile": dict(skill.get("capabilityProfile") or {}),
+        "themeProfile": dict(skill.get("themeProfile") or {}),
     }
 
 
@@ -1383,6 +1802,10 @@ class ExtensionsRuntimeService:
                 "selectedMcpServers": candidate_summary.get("mcpSelectedServers") or [],
                 "selectedMcpFamilies": candidate_summary.get("mcpSelectedFamilies") or [],
                 "selectedMcpTools": candidate_summary.get("mcpTools") or [],
+                "primaryThemeIntents": candidate_summary.get("primaryThemeIntents") or [],
+                "themeMatchedCount": candidate_summary.get("themeMatchedCount"),
+                "themeBackfilledCount": candidate_summary.get("themeBackfilledCount"),
+                "themeRankingSignals": candidate_summary.get("themeRankingSignals") or {},
             },
         }
 
@@ -1400,6 +1823,7 @@ class ExtensionsRuntimeService:
     ) -> ExtensionRouteBundle:
         query_text = str(user_query or "").strip()
         query_tokens = _query_tokens_for_extensions(query_text)
+        query_profile = _detect_query_intents(query_text, query_tokens)
         context_payload = self._resolve_event_context()
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
         prefilter_policy = self._resolve_prefilter_policy()
@@ -1435,15 +1859,20 @@ class ExtensionsRuntimeService:
         ranked_skills = sorted(
             (
                 (
-                    _score_skill_entry(query_text=query_text, query_tokens=query_tokens, skill=item),
+                    *_score_skill_entry(
+                        query_text=query_text,
+                        query_tokens=query_tokens,
+                        query_profile=query_profile,
+                        skill=item,
+                    ),
                     str(item.get("name") or item.get("folder") or ""),
                     item,
                 )
                 for item in skill_entries
             ),
-            key=lambda row: (-row[0], row[1].lower()),
+            key=lambda row: (-int(bool(row[1])), -row[0], row[3].lower()),
         )
-        skill_stage1_hits = [row[2] for row in ranked_skills if row[0] > 0] if skill_stage1_enabled else []
+        skill_stage1_hits = [row[4] for row in ranked_skills if row[0] > 0] if skill_stage1_enabled else []
         skill_stage1_hit_count = len(skill_stage1_hits)
         skill_pool = skill_stage1_hits[:effective_skill_stage1_limit] if effective_skill_stage1_limit > 0 else []
         skill_stage1_shortlist = list(skill_pool)
@@ -1928,6 +2357,50 @@ class ExtensionsRuntimeService:
                 "routingMode": prefilter_mode,
                 "skills": selected_skill_names,
                 "selectedSkillIds": selected_skill_ids,
+                "artifactIntent": query_profile.get("artifactIntent"),
+                "operationIntent": query_profile.get("operationIntent"),
+                "primaryThemeIntents": list(query_profile.get("primaryThemeIntents") or []),
+                "secondaryThemeHints": list(query_profile.get("secondaryThemeHints") or []),
+                "rankingSignals": {
+                    "artifactAnchor": bool(query_profile.get("artifactIntent")),
+                    "operationIntent": bool(query_profile.get("operationIntent")),
+                    "topicTokenCount": len(list(query_profile.get("topicTokens") or [])),
+                },
+                "themeRankingSignals": {
+                    "themeIntent": bool(query_profile.get("primaryThemeIntents")),
+                    "secondaryThemeHints": len(list(query_profile.get("secondaryThemeHints") or [])),
+                    "artifactAnchorPresent": bool(query_profile.get("artifactIntent")),
+                },
+                "profileMatchedCount": len(
+                    [
+                        item
+                        for item in selected_skill_entries
+                        if bool((item.get("capabilityProfile") or {}).get("primaryArtifactTypes"))
+                        or bool((item.get("capabilityProfile") or {}).get("primaryOperations"))
+                    ]
+                ),
+                "profileBackfilledCount": len(
+                    [
+                        item
+                        for item in selected_skill_entries
+                        if str((item.get("capabilityProfile") or {}).get("profileSource") or "").strip() == "llm_assisted"
+                    ]
+                ),
+                "themeMatchedCount": len(
+                    [
+                        item
+                        for item in selected_skill_entries
+                        if bool((item.get("themeProfile") or {}).get("primaryThemes"))
+                        or bool((item.get("themeProfile") or {}).get("secondaryThemeTags"))
+                    ]
+                ),
+                "themeBackfilledCount": len(
+                    [
+                        item
+                        for item in selected_skill_entries
+                        if str((item.get("themeProfile") or {}).get("themeSource") or "").strip() == "llm_assisted"
+                    ]
+                ),
                 "skillStage1Entries": skill_stage1_entries,
                 "skillEntries": selected_skill_entries,
                 "skillRootDescriptors": skill_root_descriptors,

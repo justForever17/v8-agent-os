@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ if str(ENGINE_ROOT) not in sys.path:
 from core import llm_tree_prefilter
 from runtimes.extensions import runtime as extensions_runtime_module
 from runtimes.extensions.runtime import ExtensionsRuntimeService
+from runtimes.extensions.skills.loader import SkillLoader
 
 
 class _FakeResponse:
@@ -563,9 +565,10 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            [item["key"] for item in captured_skill_families],
-            ["C:/skills/remotion-video", "C:/skills/huashu-nuwa"],
+            {item["key"] for item in captured_skill_families},
+            {"C:/skills/remotion-video", "C:/skills/huashu-nuwa"},
         )
+        self.assertEqual(len(captured_skill_families), 2)
         self.assertEqual(bundle.selected_skill_names, ["huashu-nuwa"])
 
     def test_extensions_runtime_stage1_only_uses_stage1_topk_without_old_skill_limit_cap(self):
@@ -844,6 +847,730 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         self.assertEqual(len(payload.get("skillEntries") or []), 4)
         self.assertEqual(payload.get("counts", {}).get("skillStage1ShortlistCount"), 4)
         self.assertEqual(payload.get("counts", {}).get("skillFinalExposedCount"), 4)
+
+    def test_skill_loader_extracts_hint_fields_and_rule_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_root = Path(temp_dir) / "pptx"
+            (skill_root / "scripts").mkdir(parents=True, exist_ok=True)
+            (skill_root / "examples").mkdir(parents=True, exist_ok=True)
+            skill_file = skill_root / "SKILL.md"
+            content = """---
+name: pptx
+description: Presentation creation, editing, and analysis for .pptx PowerPoint slide decks.
+aliases:
+  - ppt
+triggers:
+  - 幻灯片
+keywords:
+  - slides
+tags:
+  - presentation
+---
+Use this skill to create and edit presentation decks and PowerPoint slides.
+"""
+            skill_file.write_text(content, encoding="utf-8")
+            entry = SkillLoader._build_skill_entry(
+                folder_name="pptx",
+                file_path=skill_file,
+                descriptor={"sourceType": "global", "visibility": "global", "rootPath": str(skill_root.parent)},
+                content=content,
+            )
+
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry.get("aliases"), ["ppt"])
+        self.assertEqual(entry.get("triggers"), ["幻灯片"])
+        self.assertEqual(entry.get("keywords"), ["slides"])
+        self.assertEqual(entry.get("tags"), ["presentation"])
+        profile = dict(entry.get("capabilityProfile") or {})
+        self.assertEqual(profile.get("skillClass"), "artifact_producer")
+        self.assertEqual(list(profile.get("primaryArtifactTypes") or []), ["presentation"])
+        self.assertIn("create", list(profile.get("primaryOperations") or []))
+        self.assertNotIn("video", list(profile.get("primaryArtifactTypes") or []))
+
+    def test_skill_loader_can_overlay_llm_assisted_profile(self):
+        with patch.object(SkillLoader, "_should_attempt_llm_profile_inference", return_value=True), patch.object(
+            SkillLoader,
+            "_infer_profile_with_llm",
+            return_value={
+                "skillClass": "methodology_or_tutorial",
+                "primaryArtifactTypes": [],
+                "primaryOperations": ["guide"],
+                "interactionMode": "reference_guidance",
+                "capabilityConfidence": 0.77,
+            },
+        ):
+            profile = SkillLoader._derive_capability_profile(
+                name="general-guide",
+                description="A guide for improving decision quality.",
+                body="Use this guide when you need a better framework.",
+                folder="general-guide",
+                available_files=[],
+                aliases=[],
+                triggers=[],
+                keywords=[],
+                tags=[],
+                has_scripts=False,
+                has_templates=False,
+                has_examples=False,
+                has_assets=False,
+            )
+
+        self.assertEqual(profile.get("profileSource"), "llm_assisted")
+        self.assertEqual(profile.get("skillClass"), "methodology_or_tutorial")
+        self.assertEqual(profile.get("interactionMode"), "reference_guidance")
+        self.assertEqual(profile.get("primaryOperations"), ["guide"])
+
+    def test_skill_loader_derives_theme_profile_for_advisor_skills_without_polluting_artifact_skills(self):
+        with patch.object(SkillLoader, "_should_attempt_llm_theme_inference", return_value=False):
+            advisor_profile = SkillLoader._derive_theme_profile(
+                name="elon-musk-perspective",
+                folder="elon-musk-perspective",
+                description="用马斯克的视角分析成本结构、第一性原理、垂直整合与商业化增长。",
+                body="当用户提到第一性原理、成本结构、垂直整合、增长与财富时使用。",
+                available_files=[],
+                aliases=["elon perspective"],
+                triggers=["第一性原理", "成本结构"],
+                keywords=["vertical integration", "growth", "财富"],
+                tags=["product strategy"],
+                skill_class="advisor_or_perspective",
+            )
+            artifact_profile = SkillLoader._derive_theme_profile(
+                name="pptx",
+                folder="pptx",
+                description="Presentation creation, editing, and analysis for .pptx PowerPoint slide decks.",
+                body="Use this skill to create and edit presentation decks and PowerPoint slides.",
+                available_files=["templates/pitch-deck.pptx"],
+                aliases=["ppt", "slides"],
+                triggers=["演示稿"],
+                keywords=["presentation"],
+                tags=["deck"],
+                skill_class="artifact_producer",
+            )
+
+        self.assertIn("product_strategy", list(advisor_profile.get("primaryThemes") or []))
+        self.assertIn("first_principles", list(advisor_profile.get("secondaryThemeTags") or []))
+        self.assertEqual(list(artifact_profile.get("primaryThemes") or []), [])
+
+    def test_skill_loader_can_overlay_llm_assisted_theme_profile(self):
+        with patch.object(SkillLoader, "_should_attempt_llm_theme_inference", return_value=True), patch.object(
+            SkillLoader,
+            "_infer_theme_with_llm",
+            return_value={
+                "primaryThemes": ["wealth_money", "startup_growth"],
+                "secondaryThemeTags": ["specific_knowledge", "leverage"],
+                "themeConfidence": 0.79,
+            },
+        ):
+            theme_profile = SkillLoader._derive_theme_profile(
+                name="naval-perspective",
+                folder="naval-perspective",
+                description="Naval Ravikant 的财富与杠杆视角。",
+                body="讨论财富、特定知识、杠杆与创业增长。",
+                available_files=[],
+                aliases=["naval"],
+                triggers=["杠杆"],
+                keywords=["wealth"],
+                tags=["specific knowledge"],
+                skill_class="advisor_or_perspective",
+            )
+
+        self.assertEqual(theme_profile.get("themeSource"), "llm_assisted")
+        self.assertEqual(theme_profile.get("primaryThemes"), ["wealth_money", "startup_growth"])
+        self.assertIn("leverage", list(theme_profile.get("secondaryThemeTags") or []))
+
+    def test_capability_aware_stage1_prioritizes_presentation_artifact_over_generic_generation(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:video",
+                "name": "ai-video-generation",
+                "folder": "ai-video-generation",
+                "description": "Generate AI videos with many models.",
+                "path": "C:/skills/ai-video-generation",
+                "skillName": "ai-video-generation",
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "media_workflow",
+                    "capabilityConfidence": 0.94,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+            },
+            {
+                "skillId": "global:llm-video",
+                "name": "llm-video",
+                "folder": "llm-video",
+                "description": "Enterprise-grade AI video generation pipeline.",
+                "path": "C:/skills/llm-video",
+                "skillName": "llm-video",
+                "capabilityProfile": {
+                    "skillClass": "workflow_or_script",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create", "automate"],
+                    "interactionMode": "workflow",
+                    "capabilityConfidence": 0.86,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+            },
+            {
+                "skillId": "global:pptx",
+                "name": "pptx",
+                "folder": "pptx",
+                "description": "Presentation creation, editing, and analysis for PowerPoint slide decks.",
+                "path": "C:/skills/pptx",
+                "skillName": "pptx",
+                "aliases": ["ppt", "slides"],
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["presentation"],
+                    "primaryOperations": ["create", "edit", "analyze"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["slides", "deck"],
+                    "secondaryOperationHints": [],
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="帮我生成ppt",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names[0], "pptx")
+        self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "presentation")
+        self.assertEqual(bundle.candidate_summary.get("operationIntent"), "create")
+
+    def test_capability_aware_stage1_prioritizes_pptx_for_presentation_alias_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:video",
+                "name": "llm-video",
+                "folder": "llm-video",
+                "description": "Enterprise-grade AI video generation pipeline.",
+                "path": "C:/skills/llm-video",
+                "skillName": "llm-video",
+                "capabilityProfile": {
+                    "skillClass": "workflow_or_script",
+                    "primaryArtifactTypes": ["video"],
+                    "primaryOperations": ["create", "automate"],
+                    "interactionMode": "workflow",
+                    "capabilityConfidence": 0.86,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+            },
+            {
+                "skillId": "global:theme-factory",
+                "name": "theme-factory",
+                "folder": "theme-factory",
+                "description": "Toolkit for styling artifacts with a theme. These artifacts can be slides, docs, and HTML pages.",
+                "path": "C:/skills/theme-factory",
+                "skillName": "theme-factory",
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["presentation"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.93,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                    "evidenceSignals": {
+                        "artifactMatches": {"presentation": ["slides", "slide", "deck"]},
+                        "operationMatches": {"create": ["generate"]},
+                        "classMatches": {},
+                        "secondaryArtifacts": {},
+                        "secondaryOperations": {},
+                    },
+                },
+            },
+            {
+                "skillId": "global:pptx",
+                "name": "pptx",
+                "folder": "pptx",
+                "description": "Presentation creation and editing for PowerPoint slide decks and演示稿.",
+                "path": "C:/skills/pptx",
+                "skillName": "pptx",
+                "aliases": ["ppt", "slides", "presentation deck"],
+                "triggers": ["演示稿"],
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["presentation"],
+                    "primaryOperations": ["create", "edit", "analyze"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["slides", "deck"],
+                    "secondaryOperationHints": [],
+                    "evidenceSignals": {
+                        "artifactMatches": {"presentation": ["pptx", ".pptx", "powerpoint", "slide"]},
+                        "operationMatches": {"create": ["create"], "edit": ["edit"]},
+                        "classMatches": {},
+                        "secondaryArtifacts": {},
+                        "secondaryOperations": {},
+                    },
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 2, "llmEnabled": False, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            slide_bundle = service.build_contextual_route(
+                user_query="slides",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+            deck_bundle = service.build_contextual_route(
+                user_query="演示稿",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(slide_bundle.selected_skill_names[0], "pptx")
+        self.assertEqual(deck_bundle.selected_skill_names[0], "pptx")
+        self.assertEqual(slide_bundle.candidate_summary.get("artifactIntent"), "presentation")
+        self.assertEqual(deck_bundle.candidate_summary.get("artifactIntent"), "presentation")
+
+    def test_capability_aware_stage1_keeps_methodology_skills_for_decision_quality_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "模糊需求也触发：我想提升决策质量，我需要一个思维顾问。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["skill", "persona"],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": ["decision_quality"],
+                    "secondaryThemeTags": ["cognitive_bias", "inversion"],
+                    "themeConfidence": 0.92,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:pptx",
+                "name": "pptx",
+                "folder": "pptx",
+                "description": "Presentation creation and editing.",
+                "path": "C:/skills/pptx",
+                "skillName": "pptx",
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["presentation"],
+                    "primaryOperations": ["create", "edit"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.93,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.12,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 2, "llmEnabled": False, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="我想提升决策质量",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
+
+    def test_theme_aware_stage1_prioritizes_wealth_perspective_skills_for_money_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:elon",
+                "name": "elon-musk-perspective",
+                "folder": "elon-musk-perspective",
+                "description": "用马斯克的视角分析成本结构、商业化、增长和财富积累。",
+                "path": "C:/skills/elon-musk-perspective",
+                "skillName": "elon-musk-perspective",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": ["wealth_money", "startup_growth"],
+                    "secondaryThemeTags": ["first_principles", "cost_structure", "leverage"],
+                    "themeConfidence": 0.94,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:munger",
+                "name": "munger-perspective",
+                "folder": "munger-perspective",
+                "description": "芒格的逆向思考与认知偏误视角。",
+                "path": "C:/skills/munger-perspective",
+                "skillName": "munger-perspective",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.9,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": ["decision_quality", "wealth_money"],
+                    "secondaryThemeTags": ["inversion", "cognitive_bias"],
+                    "themeConfidence": 0.9,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:pptx",
+                "name": "pptx",
+                "folder": "pptx",
+                "description": "Presentation creation and editing.",
+                "path": "C:/skills/pptx",
+                "skillName": "pptx",
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["presentation"],
+                    "primaryOperations": ["create", "edit"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.93,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.12,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 3, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="我想赚钱",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names[0], "elon-musk-perspective")
+        self.assertIn("wealth_money", bundle.candidate_summary.get("primaryThemeIntents") or [])
+
+    def test_query_theme_faceting_maps_first_principles_and_decision_quality(self):
+        query_tokens = extensions_runtime_module._query_tokens_for_extensions("从第一性原理想想，顺便提升决策质量")
+        profile = extensions_runtime_module._detect_query_intents("从第一性原理想想，顺便提升决策质量", query_tokens)
+
+        self.assertIn("decision_quality", list(profile.get("primaryThemeIntents") or []))
+        self.assertIn("product_strategy", list(profile.get("primaryThemeIntents") or []))
+        self.assertIn("first_principles", list(profile.get("secondaryThemeHints") or []))
+
+    def test_theme_aware_stage1_does_not_override_artifact_chain_for_ppt_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:elon",
+                "name": "elon-musk-perspective",
+                "folder": "elon-musk-perspective",
+                "description": "用马斯克的视角分析成本结构、第一性原理与财富增长。",
+                "path": "C:/skills/elon-musk-perspective",
+                "skillName": "elon-musk-perspective",
+                "capabilityProfile": {
+                    "skillClass": "advisor_or_perspective",
+                    "primaryArtifactTypes": [],
+                    "primaryOperations": ["advise", "analyze"],
+                    "interactionMode": "advisory",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {
+                    "primaryThemes": ["wealth_money", "product_strategy"],
+                    "secondaryThemeTags": ["first_principles", "cost_structure"],
+                    "themeConfidence": 0.91,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:pptx",
+                "name": "pptx",
+                "folder": "pptx",
+                "description": "Presentation creation and editing for PowerPoint slide decks and演示稿.",
+                "path": "C:/skills/pptx",
+                "skillName": "pptx",
+                "aliases": ["ppt", "slides", "presentation deck"],
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["presentation"],
+                    "primaryOperations": ["create", "edit", "analyze"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": ["slides", "deck"],
+                    "secondaryOperationHints": [],
+                    "evidenceSignals": {
+                        "artifactMatches": {"presentation": ["pptx", ".pptx", "powerpoint", "slide"]},
+                        "operationMatches": {"create": ["create"], "edit": ["edit"]},
+                        "classMatches": {},
+                        "secondaryArtifacts": {},
+                        "secondaryOperations": {},
+                    },
+                },
+                "themeProfile": {
+                    "primaryThemes": [],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.15,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 2, "llmEnabled": False, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="帮我生成ppt",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names[0], "pptx")
+        self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "presentation")
+
+    def test_rule_profile_keeps_primary_artifacts_narrow_for_pptx(self):
+        profile = SkillLoader._derive_capability_profile(
+            name="pptx",
+            description="Presentation creation, editing, and analysis for .pptx PowerPoint slide decks.",
+            body="Use this skill to create and edit presentation decks and PowerPoint slides. It can export .pptx files and review speaker notes.",
+            folder="pptx",
+            available_files=["templates/pitch-deck.pptx", "examples/demo.pptx"],
+            aliases=["ppt", "slides"],
+            triggers=["演示稿"],
+            keywords=["presentation"],
+            tags=["deck"],
+            has_scripts=False,
+            has_templates=True,
+            has_examples=True,
+            has_assets=False,
+        )
+
+        self.assertEqual(profile.get("skillClass"), "artifact_producer")
+        self.assertEqual(
+            list(profile.get("primaryArtifactTypes") or []),
+            ["presentation"],
+        )
+        self.assertNotIn("video", list(profile.get("primaryArtifactTypes") or []))
+        self.assertNotIn("document", list(profile.get("primaryArtifactTypes") or []))
+
+    def test_rule_profile_keeps_perspective_skills_out_of_artifact_competition(self):
+        profile = SkillLoader._derive_capability_profile(
+            name="huashu-nuwa",
+            description="模糊需求也触发：我想提升决策质量，我需要一个思维顾问。",
+            body="用人物视角和方法论框架帮用户分析问题、给出建议，不负责生成视频或文档产物。",
+            folder="huashu-nuwa",
+            available_files=[],
+            aliases=["女娲", "思维顾问"],
+            triggers=["提升决策质量"],
+            keywords=["perspective", "advisor"],
+            tags=["methodology"],
+            has_scripts=False,
+            has_templates=False,
+            has_examples=True,
+            has_assets=False,
+        )
+
+        self.assertEqual(profile.get("skillClass"), "advisor_or_perspective")
+        self.assertEqual(list(profile.get("primaryArtifactTypes") or []), [])
+        self.assertIn("advise", list(profile.get("primaryOperations") or []))
+
+    def test_rule_profile_does_not_misclassify_remotion_video_as_advisor(self):
+        profile = SkillLoader._derive_capability_profile(
+            name="remotion-video",
+            description="使用 Remotion 框架以编程方式创建视频。",
+            body="适合程序化视频、教程讲解视频和 3D 视频制作。",
+            folder="remotion-video",
+            available_files=["scripts/render-video.ts"],
+            aliases=["remotion"],
+            triggers=["编程视频"],
+            keywords=["video"],
+            tags=["animation"],
+            has_scripts=True,
+            has_templates=False,
+            has_examples=True,
+            has_assets=False,
+        )
+
+        self.assertNotEqual(profile.get("skillClass"), "advisor_or_perspective")
+        self.assertIn("video", list(profile.get("primaryArtifactTypes") or []))
+
+    def test_load_cached_registry_rejects_legacy_profile_shape(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "skills_inventory_cache.json"
+            cache_path.write_text(
+                """
+{"version":6,"fingerprint":"legacy","items":[{"skillId":"global:legacy","skillName":"pptx","path":"C:/skills/pptx","folder":"pptx","description":"legacy","capabilityProfile":{"skillClass":"artifact_producer","artifactTypes":["presentation"],"operations":["create"],"interactionMode":"file_workflow","capabilityConfidence":0.8,"profileSource":"rules"}}]}
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(SkillLoader, "_cache_file", return_value=cache_path):
+                self.assertFalse(SkillLoader._load_cached_registry())
+
+    def test_load_cached_registry_rejects_cache_without_theme_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "skills_inventory_cache.json"
+            cache_path.write_text(
+                """
+{"version":6,"fingerprint":"legacy","items":[{"skillId":"global:legacy","skillName":"pptx","path":"C:/skills/pptx","folder":"pptx","description":"legacy","capabilityProfile":{"skillClass":"artifact_producer","primaryArtifactTypes":["presentation"],"primaryOperations":["create"],"interactionMode":"file_workflow","capabilityConfidence":0.8,"profileSource":"rules","secondaryArtifactHints":[],"secondaryOperationHints":[],"evidenceSignals":{}}}]}
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(SkillLoader, "_cache_file", return_value=cache_path):
+                self.assertFalse(SkillLoader._load_cached_registry())
 
 
 if __name__ == "__main__":

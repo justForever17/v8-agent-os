@@ -11,12 +11,18 @@ import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs, unquote, urlparse
 
 from api.models import ChatRequest
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
 from core.chat_output_extractor import extract_text_and_reasoning
+from core.delegation_broker import (
+    compact_external_worker_registry_entry,
+    normalize_task_brief,
+    summarize_capability_snapshot,
+)
+from core.llm_factory import llm_factory
 from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
@@ -56,10 +62,12 @@ from erc.safety_guardian import safety_guardian
 from erc.workflow_ledger import workflow_ledger_service
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
+from pydantic import BaseModel, Field
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
 )
+from core.time_truth import utc_now_iso
 
 
 class StreamFilter:
@@ -123,8 +131,11 @@ class ChatPreparedRequest:
     latest_user_content: str
     command_preset_name: str | None = None
     command_preset_hash: str | None = None
+    planner_mode: str = "off"
+    planner_intent_diagnostics: dict[str, Any] = field(default_factory=dict)
     task_planning_mode: bool = False
     skill_references: list[dict[str, str]] = field(default_factory=list)
+    planner_plan: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -184,6 +195,38 @@ class ChatRunContext:
                 agent_id=agent_id,
             ),
         )
+
+
+class PlannerTaskBriefPayload(BaseModel):
+    taskBriefId: str = ""
+    goal: str = ""
+    context: str | dict[str, Any] = ""
+    writeSet: list[str] = Field(default_factory=list)
+    behaviorScope: list[str] = Field(default_factory=list)
+    requiredCapabilities: list[str] = Field(default_factory=list)
+    acceptanceContract: str = ""
+    dependency: list[str] = Field(default_factory=list)
+    parallelGroup: str = ""
+    executionLaneHint: Literal["subagent", "external_worker", "auto"] = "auto"
+    preferredAgentId: str = ""
+    preferredWorkerType: str = ""
+
+
+class PlannerTaskNodePayload(BaseModel):
+    taskBriefId: str = ""
+    title: str = ""
+    dependency: list[str] = Field(default_factory=list)
+    parallelGroup: str = ""
+
+
+class PlannerPlanPayload(BaseModel):
+    planId: str = ""
+    executionStrategy: Literal["direct", "delegate", "mixed"] = "direct"
+    planSummary: str = ""
+    taskGraph: list[PlannerTaskNodePayload] = Field(default_factory=list)
+    taskBriefs: list[PlannerTaskBriefPayload] = Field(default_factory=list)
+    globalAcceptanceContract: str = ""
+    riskFlags: list[str] = Field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -573,6 +616,39 @@ class ChatRuntime:
                 return candidate.content
         return ""
 
+    def _normalize_planner_mode(self, value: Any, *, task_planning_mode: bool) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"auto", "force", "off"}:
+            return normalized
+        if task_planning_mode:
+            return "force"
+        return "off"
+
+    def _detect_planner_intent(self, user_content: str) -> dict[str, Any]:
+        text = str(user_content or "").strip().lower()
+        if not text:
+            return {"matched": False, "signals": [], "reason": "empty_user_request"}
+        signal_patterns: list[tuple[str, tuple[str, ...]]] = [
+            ("explicit_planning", ("plan", "planner", "todo", "todos", "roadmap", "break down", "decompose", "拆解", "计划", "规划", "分工", "任务清单", "执行计划")),
+            ("delegation_or_parallel", ("delegate", "subagent", "parallel", "swarm", "agent", "agents", "并发", "子代理", "子agent", "蜂群", "多代理")),
+            ("large_implementation", ("implement", "refactor", "migration", "architecture", "upgrade", "phase", "rollout", "实施", "实现", "改造", "迁移", "架构", "升级", "阶段")),
+            ("verification_contract", ("acceptance", "test plan", "verify", "validation", "验收", "验证", "测试计划", "回归")),
+        ]
+        signals: list[str] = []
+        for name, patterns in signal_patterns:
+            if any(pattern in text for pattern in patterns):
+                signals.append(name)
+        word_count = len(re.findall(r"\w+", text))
+        if word_count >= 80 or len(text) >= 360:
+            signals.append("large_request")
+        seen: set[str] = set()
+        deduped = [item for item in signals if not (item in seen or seen.add(item))]
+        return {
+            "matched": bool(deduped),
+            "signals": deduped,
+            "reason": "signals_matched" if deduped else "no_planner_signal",
+        }
+
     def _normalize_skill_references(self, request: ChatRequest) -> list[dict[str, str]]:
         request_data = request.data
         selected = getattr(request_data, "skill_references", None) if request_data else None
@@ -607,10 +683,22 @@ class ChatRuntime:
             )
         return normalized
 
-    def _resolve_request_context(self, request: ChatRequest) -> tuple[dict[str, Any] | None, bool, list[dict[str, str]]]:
+    def _resolve_request_context(
+        self,
+        request: ChatRequest,
+    ) -> tuple[dict[str, Any] | None, bool, str, dict[str, Any], list[dict[str, str]]]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
+        requested_planner_mode = getattr(request_data, "planner_mode", None) if request_data else None
+        planner_mode = self._normalize_planner_mode(requested_planner_mode, task_planning_mode=task_planning_mode)
+        planner_diagnostics = self._detect_planner_intent(self._latest_user_content(request))
+        if planner_mode == "auto":
+            task_planning_mode = bool(planner_diagnostics.get("matched"))
+        elif planner_mode == "force":
+            task_planning_mode = True
+        elif planner_mode == "off":
+            task_planning_mode = False
 
         command_preset = None
         if command_selection and command_selection.name:
@@ -618,7 +706,7 @@ class ChatRuntime:
             if not command_preset:
                 raise RuntimeError(f"Command preset '{command_selection.name}' does not exist.")
 
-        return command_preset, task_planning_mode, self._normalize_skill_references(request)
+        return command_preset, task_planning_mode, planner_mode, planner_diagnostics, self._normalize_skill_references(request)
 
     def _inject_structured_request_context(
         self,
@@ -626,9 +714,11 @@ class ChatRuntime:
         *,
         command_preset: dict[str, Any] | None,
         task_planning_mode: bool,
+        planner_mode: str,
+        planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
     ) -> None:
-        if not command_preset and not task_planning_mode and not skill_references:
+        if not command_preset and not skill_references:
             return
 
         for message in reversed(lc_messages):
@@ -668,19 +758,6 @@ class ChatRuntime:
                         skill_lines.append(f"  projectId: {skill['projectId']}")
                 skill_lines.append("[/SKILL REFERENCES]")
                 wrapped_sections.append("\n".join(skill_lines))
-            if task_planning_mode:
-                wrapped_sections.append(
-                    "\n".join(
-                        [
-                            "[TASK PLANNING MODE]",
-                            "请把本轮请求视为任务执行请求，优先给出结构化计划、执行步骤、风险与依赖。",
-                            "如果任务具备多步骤、依赖关系、执行过程或需要追踪进度，请优先创建并维护 todos。",
-                            "如果你判断本轮不需要 todos，也请按单步任务处理，而不是假装进入任务规划流程。",
-                            "[/TASK PLANNING MODE]",
-                        ]
-                    )
-                )
-
             user_content = str(message.content or "").strip()
             wrapped_sections.append(
                 "\n".join(
@@ -693,6 +770,314 @@ class ChatRuntime:
             )
             message.content = "\n\n".join(section for section in wrapped_sections if section.strip())
             return
+
+    @staticmethod
+    def _planner_registry_snapshot() -> dict[str, Any]:
+        loaded_agents = [
+            item for item in storage.get_all_agents()
+            if isinstance(item, dict) and str(item.get("id") or "").strip() and str(item.get("id") or "").strip() != "supervisor"
+        ]
+        supervisor_config = storage.get_supervisor_config() or {}
+        external_workers = [
+            compact_external_worker_registry_entry(item)
+            for item in list((supervisor_config.get("delegation") or {}).get("externalWorkers") or [])
+            if isinstance(item, dict) and bool(item.get("enabled"))
+        ]
+        return {
+            "subagents": loaded_agents,
+            "externalWorkers": external_workers,
+        }
+
+    @staticmethod
+    def _planner_registry_lines(registry: dict[str, Any]) -> list[str]:
+        lines: list[str] = []
+        subagents = list(registry.get("subagents") or [])
+        external_workers = list(registry.get("externalWorkers") or [])
+        if subagents:
+            lines.append("[Local Subagents]")
+            for agent in subagents[:12]:
+                snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+                capability = summarize_capability_snapshot(snapshot)
+                lines.append(
+                    f"- {str(agent.get('name') or agent.get('id') or 'unknown-agent').strip()} "
+                    f"({str(agent.get('id') or '').strip()}): "
+                    f"{str(agent.get('description') or 'No description').strip()}"
+                    f"{' | ' + capability if capability else ''}"
+                )
+        if external_workers:
+            lines.append("[External Workers]")
+            for worker in external_workers[:12]:
+                snapshot = worker.get("capabilitySnapshot") if isinstance(worker.get("capabilitySnapshot"), dict) else {}
+                capability = summarize_capability_snapshot(snapshot)
+                lines.append(
+                    f"- {str(worker.get('name') or worker.get('id') or 'external-worker').strip()} "
+                    f"({str(worker.get('id') or '').strip()}): "
+                    f"{str(worker.get('description') or 'No description').strip()}"
+                    f"{' | ' + capability if capability else ''}"
+                )
+        if not lines:
+            lines.append("- No local subagents or external workers are currently registered.")
+        return lines
+
+    def _planner_system_prompt(self) -> str:
+        return (
+            "You are the V8 Agent OS planner lane.\n"
+            "You are a non-executing orchestration planner. Produce only a structured planning contract.\n"
+            "Your job is to decide whether the request should be handled directly by the supervisor, delegated, or split into a mixed strategy.\n"
+            "Core discipline:\n"
+            "- Slice before execute.\n"
+            "- Keep the minimum task count that preserves write-set isolation, behavior isolation, and acceptance clarity.\n"
+            "- Prefer direct execution when delegation adds little value.\n"
+            "- Use delegation when specialized capability, independent context, parallel work, or external worker execution materially helps.\n"
+            "- Every task brief must be broker-ready and concrete.\n"
+            "- Define acceptance contracts before execution starts.\n"
+            "- Do not pretend work has already been done.\n"
+            "- Do not execute tools, browse, or simulate outputs.\n"
+            "Output rules:\n"
+            "- executionStrategy must be one of: direct, delegate, mixed.\n"
+            "- taskBriefs must align with executionStrategy.\n"
+            "- direct may still include one compact task brief for governance and verification.\n"
+            "- preferredAgentId and preferredWorkerType are optional hints, not guesses.\n"
+            "- executionLaneHint must be one of: subagent, external_worker, auto.\n"
+            "- Keep riskFlags short and concrete.\n"
+        )
+
+    def _fallback_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
+        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
+        diagnostics = dict(chat_run.prepared.planner_intent_diagnostics or {})
+        signals = [str(item).strip() for item in list(diagnostics.get("signals") or []) if str(item).strip()]
+        should_delegate = any(signal in {"delegation_or_parallel", "large_implementation"} for signal in signals)
+        brief = normalize_task_brief(
+            {
+                "taskBriefId": "task-1",
+                "goal": latest_user_content or "Handle the current user request.",
+                "context": {
+                    "source": "planner_fallback",
+                    "reason": reason,
+                    "plannerMode": chat_run.prepared.planner_mode,
+                    "intentSignals": signals,
+                },
+                "writeSet": [],
+                "behaviorScope": ["workspace_changes", "verification"] if not should_delegate else ["delegated_execution", "verification"],
+                "requiredCapabilities": [],
+                "acceptanceContract": "Satisfy the user request and report concrete outputs, touched files, and verification status.",
+                "dependency": [],
+                "parallelGroup": "",
+                "executionLaneHint": "auto" if should_delegate else "subagent",
+            }
+        )
+        execution_strategy = "delegate" if should_delegate else "direct"
+        return {
+            "planId": f"plan_{uuid.uuid4().hex[:10]}",
+            "executionStrategy": execution_strategy,
+            "planSummary": latest_user_content or "Plan the current request.",
+            "taskGraph": [
+                {
+                    "taskBriefId": brief["taskBriefId"],
+                    "title": brief["goal"],
+                    "dependency": list(brief.get("dependency") or []),
+                    "parallelGroup": str(brief.get("parallelGroup") or "").strip(),
+                }
+            ],
+            "taskBriefs": [brief],
+            "globalAcceptanceContract": str(brief.get("acceptanceContract") or "").strip(),
+            "riskFlags": ["planner_fallback_used"] if reason else [],
+        }
+
+    @staticmethod
+    def _normalize_planner_plan_payload(raw_plan: Any, *, fallback_plan: dict[str, Any]) -> dict[str, Any]:
+        payload = raw_plan.model_dump(mode="json") if isinstance(raw_plan, BaseModel) else dict(raw_plan or {})
+        normalized_briefs = [
+            normalize_task_brief(item, index=index)
+            for index, item in enumerate(list(payload.get("taskBriefs") or []))
+        ]
+        if not normalized_briefs:
+            normalized_briefs = list(fallback_plan.get("taskBriefs") or [])
+        normalized_graph: list[dict[str, Any]] = []
+        graph_rows = list(payload.get("taskGraph") or [])
+        task_lookup = {str(item.get("taskBriefId") or "").strip(): item for item in normalized_briefs}
+        for index, item in enumerate(graph_rows):
+            row = dict(item or {})
+            task_brief_id = str(row.get("taskBriefId") or normalized_briefs[min(index, len(normalized_briefs) - 1)].get("taskBriefId") or "").strip()
+            normalized_graph.append(
+                {
+                    "taskBriefId": task_brief_id,
+                    "title": str(row.get("title") or task_lookup.get(task_brief_id, {}).get("goal") or task_brief_id or f"Task {index + 1}").strip(),
+                    "dependency": [str(dep).strip() for dep in list(row.get("dependency") or task_lookup.get(task_brief_id, {}).get("dependency") or []) if str(dep).strip()],
+                    "parallelGroup": str(row.get("parallelGroup") or task_lookup.get(task_brief_id, {}).get("parallelGroup") or "").strip(),
+                }
+            )
+        if not normalized_graph:
+            normalized_graph = [
+                {
+                    "taskBriefId": str(item.get("taskBriefId") or f"task-{index + 1}").strip(),
+                    "title": str(item.get("goal") or item.get("taskBriefId") or f"Task {index + 1}").strip(),
+                    "dependency": [str(dep).strip() for dep in list(item.get("dependency") or []) if str(dep).strip()],
+                    "parallelGroup": str(item.get("parallelGroup") or "").strip(),
+                }
+                for index, item in enumerate(normalized_briefs)
+            ]
+        execution_strategy = str(payload.get("executionStrategy") or fallback_plan.get("executionStrategy") or "direct").strip().lower()
+        if execution_strategy not in {"direct", "delegate", "mixed"}:
+            execution_strategy = str(fallback_plan.get("executionStrategy") or "direct")
+        plan_summary = str(payload.get("planSummary") or fallback_plan.get("planSummary") or "").strip()
+        global_acceptance = str(payload.get("globalAcceptanceContract") or fallback_plan.get("globalAcceptanceContract") or "").strip()
+        risk_flags = [str(item).strip() for item in list(payload.get("riskFlags") or fallback_plan.get("riskFlags") or []) if str(item).strip()]
+        return {
+            "planId": str(payload.get("planId") or fallback_plan.get("planId") or f"plan_{uuid.uuid4().hex[:10]}").strip(),
+            "executionStrategy": execution_strategy,
+            "planSummary": plan_summary or str(fallback_plan.get("planSummary") or "").strip(),
+            "taskGraph": normalized_graph,
+            "taskBriefs": normalized_briefs,
+            "globalAcceptanceContract": global_acceptance or str(fallback_plan.get("globalAcceptanceContract") or "").strip(),
+            "riskFlags": risk_flags,
+        }
+
+    async def ensure_planner_plan(self, *, chat_run: ChatRunContext) -> dict[str, Any] | None:
+        if not chat_run.prepared.task_planning_mode or str(chat_run.prepared.planner_mode or "off").strip().lower() == "off":
+            chat_run.prepared.planner_plan = None
+            return None
+        if chat_run.prepared.is_resume_request:
+            return chat_run.prepared.planner_plan
+        if isinstance(chat_run.prepared.planner_plan, dict) and chat_run.prepared.planner_plan:
+            return chat_run.prepared.planner_plan
+
+        registry = self._planner_registry_snapshot()
+        planner_request = {
+            "plannerMode": chat_run.prepared.planner_mode,
+            "taskPlanningMode": chat_run.prepared.task_planning_mode,
+            "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
+            "userRequest": str(chat_run.prepared.latest_user_content or "").strip(),
+            "sessionScope": {
+                "projectId": chat_run.scope_result.binding.project_id,
+                "workspaceId": chat_run.scope_result.binding.workspace_id,
+                "workspacePath": chat_run.scope_result.binding.workspace_path,
+                "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+            },
+            "skillReferences": [
+                {
+                    "name": item.get("name"),
+                    "description": item.get("description"),
+                    "path": item.get("path"),
+                }
+                for item in list(chat_run.prepared.skill_references or [])
+            ],
+            "specialists": {
+                "localSubagents": [
+                    {
+                        "id": str(agent.get("id") or "").strip(),
+                        "name": str(agent.get("name") or "").strip(),
+                        "description": str(agent.get("description") or "").strip(),
+                        "capabilitySnapshot": agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {},
+                    }
+                    for agent in list(registry.get("subagents") or [])
+                ],
+                "externalWorkers": list(registry.get("externalWorkers") or []),
+            },
+        }
+        planner_user_message = (
+            "[Planner Request]\n"
+            f"Current Time: {utc_now_iso()}\n"
+            f"Planner Mode: {chat_run.prepared.planner_mode}\n"
+            f"Intent Signals: {', '.join(list(chat_run.prepared.planner_intent_diagnostics.get('signals') or [])) or str(chat_run.prepared.planner_intent_diagnostics.get('reason') or 'manual')}\n"
+            f"User Request:\n{str(chat_run.prepared.latest_user_content or '').strip() or '(empty request)'}\n\n"
+            "[Specialist Registry]\n"
+            + "\n".join(self._planner_registry_lines(registry))
+            + "\n\n[Planner Input JSON]\n"
+            + json.dumps(planner_request, ensure_ascii=False, indent=2)
+        )
+
+        fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason="planner_model_unavailable")
+        plan = fallback_plan
+        planning_error: str | None = None
+        try:
+            planner_model = llm_factory.create_for_role(
+                "supervisor",
+                streaming=False,
+                temperature=0,
+                max_tokens=1400,
+                _request_kind="planner",
+            ).with_structured_output(PlannerPlanPayload)
+            raw_plan = await planner_model.ainvoke(
+                [
+                    SystemMessage(content=self._planner_system_prompt()),
+                    HumanMessage(content=planner_user_message),
+                ]
+            )
+            plan = self._normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
+        except Exception as exc:
+            planning_error = str(exc)
+            logging.getLogger("v8chat.chat_runtime").warning(
+                "Planner lane fell back to deterministic plan for run '%s': %s",
+                chat_run.active_run_id,
+                planning_error,
+            )
+            fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
+            plan = fallback_plan
+
+        chat_run.prepared.planner_plan = plan
+        workflow_ledger_service.activate_runtime_step(
+            chat_run.active_run_id,
+            owner_runtime="planner_lane",
+            step_key="planner.pass",
+            title="Planner lane",
+            input_payload={
+                "plannerMode": chat_run.prepared.planner_mode,
+                "taskPlanningMode": chat_run.prepared.task_planning_mode,
+                "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
+                "userRequest": str(chat_run.prepared.latest_user_content or "").strip(),
+                "plannerPlan": plan,
+            },
+            projection_payload={
+                "plannerPlan": plan,
+                "plannerDiagnostics": {
+                    "mode": chat_run.prepared.planner_mode,
+                    "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
+                    "usedFallback": bool(planning_error),
+                    "error": planning_error,
+                },
+            },
+            status="completed",
+        )
+        payload = {
+            "planId": plan.get("planId"),
+            "executionStrategy": plan.get("executionStrategy"),
+            "planSummary": plan.get("planSummary"),
+            "taskCount": len(list(plan.get("taskBriefs") or [])),
+            "taskBriefs": list(plan.get("taskBriefs") or []),
+            "dependencies": [
+                {
+                    "taskBriefId": item.get("taskBriefId"),
+                    "dependency": list(item.get("dependency") or []),
+                    "parallelGroup": item.get("parallelGroup"),
+                }
+                for item in list(plan.get("taskGraph") or [])
+            ],
+            "globalAcceptanceContract": plan.get("globalAcceptanceContract"),
+            "riskFlags": list(plan.get("riskFlags") or []),
+            "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
+            "usedFallback": bool(planning_error),
+            "error": planning_error,
+        }
+        if planning_error:
+            chat_run.emit_runtime_event(
+                "planner.plan.failed",
+                {
+                    "planId": plan.get("planId"),
+                    "summary": "Planner lane failed over to deterministic fallback.",
+                    "error": planning_error,
+                    "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
+                },
+                agent_id=None,
+                node="planner_lane",
+            )
+        chat_run.emit_runtime_event(
+            "planner.plan.created",
+            payload,
+            agent_id=None,
+            node="planner_lane",
+        )
+        return plan
 
     def _attach_scope_context(self, lc_messages: list[Any], *, session_id: str, user_id: str, scope_result: Any) -> None:
         scope_payload = {
@@ -763,11 +1148,13 @@ class ChatRuntime:
         self._ensure_latest_user_content_for_attachments(request, attachments)
         lc_messages = self._to_langchain_messages(request)
         self._inject_uploaded_file_notices(request, lc_messages)
-        command_preset, task_planning_mode, skill_references = self._resolve_request_context(request)
+        command_preset, task_planning_mode, planner_mode, planner_intent_diagnostics, skill_references = self._resolve_request_context(request)
         self._inject_structured_request_context(
             lc_messages,
             command_preset=command_preset,
             task_planning_mode=task_planning_mode,
+            planner_mode=planner_mode,
+            planner_intent_diagnostics=planner_intent_diagnostics,
             skill_references=skill_references,
         )
 
@@ -786,6 +1173,8 @@ class ChatRuntime:
             latest_user_content=self._latest_user_content(request),
             command_preset_name=(str(command_preset.get("name") or "").strip() or None) if command_preset else None,
             command_preset_hash=(str(command_preset.get("contentHash") or "").strip() or None) if command_preset else None,
+            planner_mode=planner_mode,
+            planner_intent_diagnostics=planner_intent_diagnostics,
             task_planning_mode=task_planning_mode,
             skill_references=skill_references,
         )
@@ -980,6 +1369,11 @@ class ChatRuntime:
                 "name": chat_run.prepared.command_preset_name,
                 "contentHash": chat_run.prepared.command_preset_hash,
             }
+        prepared_planner_mode = getattr(chat_run.prepared, "planner_mode", "off")
+        prepared_planner_diagnostics = getattr(chat_run.prepared, "planner_intent_diagnostics", {}) or {}
+        if prepared_planner_mode != "off":
+            metadata["plannerMode"] = prepared_planner_mode
+            metadata["plannerIntentDiagnostics"] = dict(prepared_planner_diagnostics)
         if chat_run.prepared.task_planning_mode:
             metadata["taskPlanningMode"] = True
         if chat_run.prepared.skill_references:
@@ -1011,6 +1405,8 @@ class ChatRuntime:
             user_structured_metadata: dict[str, Any] = {
                 **({"clientMessageId": client_message_id} if client_message_id else {}),
                 **({"commandPreset": dict(metadata["commandPreset"])} if isinstance(metadata.get("commandPreset"), dict) else {}),
+                **({"plannerMode": metadata.get("plannerMode")} if metadata.get("plannerMode") else {}),
+                **({"plannerIntentDiagnostics": dict(metadata["plannerIntentDiagnostics"])} if isinstance(metadata.get("plannerIntentDiagnostics"), dict) else {}),
                 **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
                 **({"attachments": attachments} if attachments else {}),
@@ -1104,10 +1500,22 @@ class ChatRuntime:
                 )
             if chat_run.prepared.task_planning_mode:
                 chat_run.emit_runtime_event(
+                        "chat.planner_mode.enabled",
+                        {
+                            "messageId": user_message_id,
+                            "plannerMode": prepared_planner_mode,
+                            "enabled": True,
+                            "intentDiagnostics": dict(prepared_planner_diagnostics),
+                        },
+                        agent_id=None,
+                        node="planner_lane",
+                )
+                chat_run.emit_runtime_event(
                     "chat.task_planning_mode.enabled",
                     {
                         "messageId": user_message_id,
                         "enabled": True,
+                        "plannerMode": prepared_planner_mode,
                     },
                     agent_id=None,
                     node="input_recorder",
@@ -1132,6 +1540,8 @@ class ChatRuntime:
                     "transport": chat_run.transport,
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
                     "command_preset_name": chat_run.prepared.command_preset_name,
+                    "planner_mode": prepared_planner_mode,
+                    "planner_intent_diagnostics": dict(prepared_planner_diagnostics),
                     "task_planning_mode": chat_run.prepared.task_planning_mode,
                     "skill_references": list(chat_run.prepared.skill_references),
                 },
@@ -1220,6 +1630,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=chat_run.lc_messages,
             session_id=chat_run.session_id,
+            planner_plan=chat_run.prepared.planner_plan,
             recursion_limit=self._recursion_limit(),
         )
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
@@ -1255,17 +1666,21 @@ class ChatRuntime:
             "routeContext": dict(snapshot.get("current_route_context") or {}),
             "todosCount": len(list(snapshot.get("todos") or [])),
             "messageCount": len(state_messages),
+            "plannerPlanId": str((snapshot.get("planner_plan") or {}).get("planId") or "").strip() or None,
             "sessionId": chat_run.session_id,
             "projectId": chat_run.scope_result.binding.project_id,
             "workspaceId": chat_run.scope_result.binding.workspace_id,
             "workspacePath": chat_run.scope_result.binding.workspace_path,
             "resolvedScope": chat_run.scope_result.binding.resolved_scope,
         }
+        if isinstance(snapshot.get("planner_plan"), dict) and snapshot.get("planner_plan"):
+            chat_run.prepared.planner_plan = dict(snapshot.get("planner_plan") or {})
 
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
+            planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
             recursion_limit=self._recursion_limit(),
         )
         diagnostics = dict(runner_bundle.diagnostics or {})
@@ -2238,6 +2653,35 @@ class ChatRuntime:
                 compact["debug"] = True
             return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
 
+        if normalized_tool_name == "delegation_broker":
+            compact = {
+                "mode": sanitized.get("mode"),
+                "delegationId": sanitized.get("delegationId") or sanitized.get("delegation_id"),
+            }
+            followup = str(sanitized.get("followup") or "").strip()
+            if followup:
+                preview, truncated = cls._trim_preview_text(followup, limit=200)
+                compact["followupPreview"] = preview
+                if truncated:
+                    compact["followupTruncated"] = True
+            if isinstance(sanitized.get("tasks"), list):
+                task_previews: list[dict[str, Any]] = []
+                for task in list(sanitized.get("tasks") or [])[:6]:
+                    if not isinstance(task, dict):
+                        continue
+                    task_previews.append(
+                        {
+                            "taskBriefId": task.get("taskBriefId") or task.get("task_brief_id"),
+                            "goal": task.get("goal"),
+                            "executionLaneHint": task.get("executionLaneHint") or task.get("execution_lane_hint"),
+                            "preferredAgentId": task.get("preferredAgentId") or task.get("preferred_agent_id"),
+                            "preferredWorkerType": task.get("preferredWorkerType") or task.get("preferred_worker_type"),
+                        }
+                    )
+                if task_previews:
+                    compact["tasks"] = task_previews
+            return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
         if normalized_tool_name == "web_broker":
             compact = {
                 "mode": sanitized.get("mode"),
@@ -2362,6 +2806,45 @@ class ChatRuntime:
         }
         if isinstance(candidate.get("objects"), list):
             compact["objects"] = list(candidate.get("objects") or [])[:8]
+        return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+
+    @classmethod
+    def _compact_delegation_broker_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        compact: dict[str, Any] = {
+            "ok": candidate.get("ok"),
+            "mode": candidate.get("mode"),
+            "summary": candidate.get("summary"),
+            "recommendedNextAction": candidate.get("recommendedNextAction"),
+            "error": candidate.get("error"),
+        }
+        if isinstance(candidate.get("items"), list):
+            compact_items: list[dict[str, Any]] = []
+            for item in list(candidate.get("items") or [])[:8]:
+                if not isinstance(item, dict):
+                    continue
+                compact_items.append(
+                    {
+                        "delegationId": item.get("delegationId"),
+                        "taskBriefId": item.get("taskBriefId"),
+                        "taskGoal": item.get("taskGoal"),
+                        "lane": item.get("lane"),
+                        "targetId": item.get("targetId") or item.get("agentId"),
+                        "targetLabel": item.get("targetLabel") or item.get("agentName"),
+                        "status": item.get("status"),
+                        "workerType": item.get("workerType"),
+                        "commandSession": item.get("commandSession"),
+                        "resultSchemaMatched": item.get("resultSchemaMatched"),
+                        "artifactRefs": item.get("artifactRefs"),
+                        "localSelfCheck": item.get("localSelfCheck"),
+                        "acceptanceHint": item.get("acceptanceHint"),
+                        "error": item.get("error"),
+                    }
+                )
+            if compact_items:
+                compact["items"] = compact_items
         return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
 
     @classmethod
@@ -2519,6 +3002,8 @@ class ChatRuntime:
             return cls._compact_run_system_command_result(jsonable)
         if normalized_tool_name == "command_session_broker":
             return cls._compact_command_session_broker_result(jsonable)
+        if normalized_tool_name == "delegation_broker":
+            return cls._compact_delegation_broker_result(jsonable)
         if normalized_tool_name == "web_broker":
             return cls._compact_web_broker_result(jsonable)
         if normalized_tool_name == "s3_broker":
@@ -3418,9 +3903,26 @@ class ChatRuntime:
             else "本轮没有进入 todos 链，通常表示模型判断当前任务更适合一次性完成或无需持续跟踪。"
         )
         chat_run.emit_runtime_event(
+            "chat.planner_mode.decided",
+            {
+                "plannerMode": chat_run.prepared.planner_mode,
+                "enabled": True,
+                "usedTodos": used_todos,
+                "reason": reason,
+                "summary": summary,
+                "message": message,
+                "todoToolCount": len(todo_tool_calls),
+                "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
+                "runId": chat_run.active_run_id,
+            },
+            agent_id=None,
+            node="planner_lane",
+        )
+        chat_run.emit_runtime_event(
             "chat.task_planning_mode.decided",
             {
                 "enabled": True,
+                "plannerMode": chat_run.prepared.planner_mode,
                 "usedTodos": used_todos,
                 "reason": reason,
                 "summary": summary,
@@ -3431,6 +3933,134 @@ class ChatRuntime:
             agent_id=None,
             node="task_planning",
         )
+
+    async def emit_planner_lane_projection(
+        self,
+        chat_run: ChatRunContext,
+        execution_bundle: ChatExecutionBundle | None,
+    ) -> None:
+        if execution_bundle is None:
+            return
+        try:
+            state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to inspect final graph state for planner projection in run '%s'",
+                chat_run.active_run_id,
+            )
+            return
+        plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
+        if not plan and isinstance((state or {}).get("planner_plan"), dict):
+            plan = dict((state or {}).get("planner_plan") or {})
+        if not plan:
+            return
+        task_briefs = [dict(item) for item in list(plan.get("taskBriefs") or []) if isinstance(item, dict)]
+        selected_delegations: list[dict[str, Any]] = []
+        for item in [dict(row) for row in list((state or {}).get("parallel_results") or []) if isinstance(row, dict)]:
+            selected_delegations.append(
+                {
+                    "delegationId": item.get("delegationId"),
+                    "taskBriefId": item.get("taskBriefId"),
+                    "lane": item.get("lane"),
+                    "targetId": item.get("targetId"),
+                    "targetLabel": item.get("targetLabel") or item.get("agentName"),
+                    "status": item.get("status"),
+                    "workerType": item.get("workerType"),
+                    "commandSession": item.get("commandSession"),
+                }
+            )
+        chat_run.emit_runtime_event(
+            "planner.plan.projected",
+            {
+                "planId": plan.get("planId"),
+                "executionStrategy": plan.get("executionStrategy"),
+                "planSummary": plan.get("planSummary"),
+                "taskCount": len(task_briefs),
+                "taskBriefs": task_briefs,
+                "dependencies": [
+                    {
+                        "taskBriefId": row.get("taskBriefId"),
+                        "dependency": list(row.get("dependency") or []),
+                        "parallelGroup": row.get("parallelGroup"),
+                    }
+                    for row in list(plan.get("taskGraph") or [])
+                    if isinstance(row, dict)
+                ],
+                "globalAcceptanceContract": plan.get("globalAcceptanceContract"),
+                "riskFlags": list(plan.get("riskFlags") or []),
+                "selectedDelegations": selected_delegations,
+                "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
+            },
+            agent_id=None,
+            node="planner_lane",
+        )
+
+    async def emit_subagent_swarm_projection(
+        self,
+        chat_run: ChatRunContext,
+        execution_bundle: ChatExecutionBundle | None,
+    ) -> None:
+        if execution_bundle is None:
+            return
+        try:
+            state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to inspect final graph state for subagent swarm projection in run '%s'",
+                chat_run.active_run_id,
+            )
+            return
+        results = [dict(item) for item in list((state or {}).get("parallel_results") or []) if isinstance(item, dict)]
+        if not results:
+            return
+        seen: set[tuple[str, str, str]] = set()
+        for item in results:
+            invocation_id = str(item.get("invocationId") or "").strip()
+            agent_id = str(item.get("agentId") or item.get("targetId") or "").strip()
+            task_brief_id = str(item.get("taskBriefId") or f"{invocation_id}:{item.get('branchIndex') or 0}").strip()
+            key = (invocation_id, agent_id, task_brief_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            status = str(item.get("status") or "unknown").strip().lower()
+            if status in {"ok", "completed", "success", "terminated"}:
+                topic = "subagent.task.completed"
+            elif status in {"queued", "running", "starting", "waiting_input", "attached", "streaming", "observing"}:
+                topic = "subagent.task.updated"
+            else:
+                topic = "subagent.task.failed"
+            chat_run.emit_runtime_event(
+                topic,
+                {
+                    "invocationId": invocation_id or None,
+                    "taskBriefId": task_brief_id,
+                    "taskGoal": item.get("taskGoal"),
+                    "subagentId": agent_id,
+                    "subagentName": item.get("agentName") or item.get("targetLabel") or agent_id,
+                    "status": status,
+                    "lane": item.get("lane") or "subagent",
+                    "workerType": item.get("workerType"),
+                    "commandSession": item.get("commandSession"),
+                    "resultSchemaMatched": item.get("resultSchemaMatched"),
+                    "localSelfCheck": item.get("localSelfCheck"),
+                    "compactTranscript": item.get("compactTranscript") or item.get("error") or "",
+                    "traceRef": {
+                        "runId": chat_run.active_run_id,
+                        "invocationId": invocation_id,
+                        "branchIndex": item.get("branchIndex"),
+                        "commandId": (item.get("commandSession") or {}).get("commandId") if isinstance(item.get("commandSession"), dict) else None,
+                    },
+                    "artifactRefs": list(item.get("artifactRefs") or []),
+                    "acceptanceHint": item.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this subtask result.",
+                    "messageCount": item.get("messageCount"),
+                    "todoDeltaCount": item.get("todoDeltaCount"),
+                    "toolMode": item.get("toolMode"),
+                    "targetId": item.get("targetId"),
+                    "targetLabel": item.get("targetLabel"),
+                },
+                agent_id=agent_id or None,
+                node="subagent_swarm",
+            )
 
     def finalize_interrupted_run(self, chat_run: ChatRunContext, interrupted_signal: dict[str, Any]) -> list[dict[str, Any]]:
         if interrupted_signal.get("command") == "ask_user_requested":
@@ -3727,6 +4357,8 @@ class ChatRuntime:
                     yield preflight_event
                 return
 
+            await self.ensure_planner_plan(chat_run=chat_run)
+
             continuation_count = 0
             continuation_reason = ""
             continuation_bundle: ChatExecutionBundle | None = None
@@ -3821,6 +4453,8 @@ class ChatRuntime:
             for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                 yield flushed_event
             await self.reconcile_final_assistant_message(chat_run, stream_state, last_execution_bundle)
+            await self.emit_planner_lane_projection(chat_run, last_execution_bundle)
+            await self.emit_subagent_swarm_projection(chat_run, last_execution_bundle)
             self.persist_final_assistant_message(chat_run, stream_state)
             self.emit_task_planning_mode_decision(chat_run, stream_state)
             yield self.finalize_success_run(chat_run)

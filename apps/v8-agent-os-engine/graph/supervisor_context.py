@@ -6,6 +6,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
+from core.delegation_broker import compact_external_worker_registry_entry
 from core.storage import storage
 from core.system_base import get_engine_origin
 from core.time_truth import utc_now_iso
@@ -289,15 +290,100 @@ def build_supervisor_system_content(
     memory_runtime,
     extension_prompt_addition: str = "",
 ):
+    def _planner_context(plan: dict | None) -> str:
+        if not isinstance(plan, dict) or not plan:
+            return ""
+        lines = ["[PLANNER PLAN]"]
+        plan_id = str(plan.get("planId") or "").strip()
+        execution_strategy = str(plan.get("executionStrategy") or "").strip()
+        plan_summary = str(plan.get("planSummary") or "").strip()
+        if plan_id:
+            lines.append(f"Plan ID: {plan_id}")
+        if execution_strategy:
+            lines.append(f"Execution Strategy: {execution_strategy}")
+        if plan_summary:
+            lines.append(f"Summary: {plan_summary}")
+        task_briefs = [dict(item) for item in list(plan.get("taskBriefs") or []) if isinstance(item, dict)]
+        if task_briefs:
+            lines.append("Task Briefs:")
+            for index, brief in enumerate(task_briefs[:8]):
+                goal = str(brief.get("goal") or brief.get("taskBriefId") or f"Task {index + 1}").strip()
+                task_id = str(brief.get("taskBriefId") or f"task-{index + 1}").strip()
+                lines.append(f"- {task_id}: {goal}")
+                write_set = [str(item).strip() for item in list(brief.get("writeSet") or []) if str(item).strip()]
+                behavior_scope = [str(item).strip() for item in list(brief.get("behaviorScope") or []) if str(item).strip()]
+                capabilities = [str(item).strip() for item in list(brief.get("requiredCapabilities") or []) if str(item).strip()]
+                acceptance = str(brief.get("acceptanceContract") or "").strip()
+                lane_hint = str(brief.get("executionLaneHint") or "").strip()
+                preferred_agent_id = str(brief.get("preferredAgentId") or "").strip()
+                preferred_worker_type = str(brief.get("preferredWorkerType") or "").strip()
+                if write_set:
+                    lines.append(f"  writeSet: {', '.join(write_set)}")
+                if behavior_scope:
+                    lines.append(f"  behaviorScope: {', '.join(behavior_scope)}")
+                if capabilities:
+                    lines.append(f"  requiredCapabilities: {', '.join(capabilities)}")
+                if acceptance:
+                    lines.append(f"  acceptance: {acceptance}")
+                if lane_hint:
+                    lines.append(f"  laneHint: {lane_hint}")
+                if preferred_agent_id:
+                    lines.append(f"  preferredAgentId: {preferred_agent_id}")
+                if preferred_worker_type:
+                    lines.append(f"  preferredWorkerType: {preferred_worker_type}")
+        global_acceptance = str(plan.get("globalAcceptanceContract") or "").strip()
+        if global_acceptance:
+            lines.append(f"Global Acceptance Contract: {global_acceptance}")
+        risk_flags = [str(item).strip() for item in list(plan.get("riskFlags") or []) if str(item).strip()]
+        if risk_flags:
+            lines.append(f"Risk Flags: {', '.join(risk_flags)}")
+        lines.extend(
+            [
+                "Planner task briefs are the canonical delegation contract for this run.",
+                "If executionStrategy is delegate or mixed, use these task briefs when calling delegation_broker.",
+                "[/PLANNER PLAN]",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _capability_summary(agent: dict) -> str:
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent, dict) else None
+        if not isinstance(snapshot, dict) or not snapshot:
+            return ""
+        parts: list[str] = []
+        agent_class = str(snapshot.get("agentClass") or "").strip()
+        if agent_class:
+            parts.append(f"class={agent_class}")
+        for key, label in (
+            ("domainTags", "domains"),
+            ("artifactCapabilities", "artifacts"),
+            ("operationCapabilities", "operations"),
+            ("runtimeAffinities", "runtimes"),
+        ):
+            values = [str(item).strip() for item in list(snapshot.get(key) or []) if str(item).strip()]
+            if values:
+                parts.append(f"{label}={','.join(values[:4])}")
+        policy = str(snapshot.get("toolExposurePolicy") or "").strip()
+        if policy:
+            parts.append(f"toolPolicy={policy}")
+        return " | ".join(parts)
+
     workspace_path = _resolved_workspace_prompt_path()
     os_name = platform.system()
     current_time = utc_now_iso()
     identity_line = render_system_identity_line(storage.get_system_identity())
     base_prompt = config.system_prompt or storage.get_supervisor_prompt() or (
         "You are the V8 Agent OS AI Application Architect & Assistant.\n"
-        "As the orchestration engine, you should delegate complex specialized tasks to specialized agents using the `handoff_to_*` tools.\n"
-        "If a required specialized agent does not exist, use `create_agent` first.\n"
+        "As the orchestration engine, you should delegate complex specialized tasks using `delegation_broker`.\n"
+        "Treat planner task briefs as the canonical delegation contract for both local subagents and external workers.\n"
     )
+    supervisor_config = storage.get_supervisor_config() or {}
+    external_workers = [
+        compact_external_worker_registry_entry(item)
+        for item in list((supervisor_config.get("delegation") or {}).get("externalWorkers") or [])
+        if isinstance(item, dict)
+    ]
 
     stable_signature = hashlib.sha1(
         json.dumps(
@@ -312,10 +398,12 @@ def build_supervisor_system_content(
                         "id": str(agent.get("id") or "").strip(),
                         "name": str(agent.get("name") or "").strip(),
                         "description": str(agent.get("description") or "").strip(),
+                        "capabilitySnapshot": agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {},
                     }
                     for agent in list(loaded_agents or [])
                     if isinstance(agent, dict)
                 ],
+                "externalWorkers": external_workers,
                 "tools": [
                     {
                         "name": str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip(),
@@ -357,12 +445,25 @@ def build_supervisor_system_content(
         specialist_agents = [agent for agent in loaded_agents if agent.get("id") != "supervisor"]
         if specialist_agents:
             for agent in specialist_agents:
+                capability = _capability_summary(agent)
                 specialist_agents_context += (
                     f"- {agent.get('name') or agent.get('id')} ({agent.get('id')}): "
-                    f"{agent.get('description') or 'No description'} | tools={len(agent.get('tools') or [])}\n"
+                    f"{agent.get('description') or 'No description'} | tools={len(agent.get('tools') or [])}"
+                    f"{' | ' + capability if capability else ''}\n"
                 )
-        else:
-            specialist_agents_context += "- 暂无已注册的专业子 Agent，可按需使用 create_agent 创建。\n"
+        if external_workers:
+            specialist_agents_context += "\n[External Workers]\n"
+            for worker in external_workers:
+                capability = _capability_summary(
+                    {"capabilitySnapshot": worker.get("capabilitySnapshot"), "description": worker.get("description")}
+                )
+                specialist_agents_context += (
+                    f"- {worker.get('name') or worker.get('id')} ({worker.get('id')}): "
+                    f"{worker.get('description') or 'No description'} | enabled={bool(worker.get('enabled'))}"
+                    f"{' | ' + capability if capability else ''}\n"
+                )
+        if not specialist_agents and not external_workers:
+            specialist_agents_context += "- 暂无已注册的 subagent 或 external worker，可先在 Admin 配置再通过 delegation_broker 调度。\n"
         specialist_agents_context += "--------------------------------\n"
 
         cached_stable = {
@@ -396,6 +497,7 @@ def build_supervisor_system_content(
 
     available_tools_context = cached_stable["availableToolsContext"]
     specialist_agents_context = cached_stable["specialistAgentsContext"]
+    planner_context = _planner_context(state.get("planner_plan"))
 
     todos_context = ""
     raw_todos = state.get("todos", [])
@@ -475,6 +577,7 @@ def build_supervisor_system_content(
         f"{runtime_registry_context}\n\n"
         f"{specialist_agents_context}"
         f"{available_tools_context}\n"
+        f"{planner_context}"
         f"{todos_context}{memory_context}\n\n"
         f"{workspace_rules_context}"
         f"{env_context}{runtime_guidance}\n"
@@ -487,6 +590,7 @@ def build_supervisor_system_content(
         "runtime_registry_context": runtime_registry_context,
         "specialist_agents_context": specialist_agents_context,
         "available_tools_context": available_tools_context,
+        "planner_context": planner_context,
         "todos_context": todos_context,
         "workspace_rules_context": workspace_rules_context,
         "env_context": env_context,

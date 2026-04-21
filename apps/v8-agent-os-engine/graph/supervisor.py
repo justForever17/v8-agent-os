@@ -1,4 +1,4 @@
-from typing import Annotated, Sequence, TypedDict
+from typing import Annotated, NotRequired, Sequence, TypedDict
 import operator
 
 from runtimes.memory.scope_resolution import scope_resolution_service
@@ -28,6 +28,7 @@ class AgentState(TypedDict):
     parallel_results: Annotated[list, operator.add]
     parallel_invocations: Annotated[list, operator.add]
     current_route_context: dict
+    planner_plan: NotRequired[dict]
 
 from core.context_orchestrator import context_orchestrator
 

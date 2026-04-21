@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Dict, Mapping, Optional
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -11,11 +10,12 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
 from core.database import db
+from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return utc_now_iso()
 
 
 def _safe_int(value: Any) -> int:

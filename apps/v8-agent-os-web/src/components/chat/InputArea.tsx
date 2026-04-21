@@ -634,6 +634,7 @@ export function InputArea({
                     }));
                 }
                 if (taskPlanningMode) {
+                    nextData.plannerMode = "force";
                     nextData.taskPlanningMode = true;
                 }
 

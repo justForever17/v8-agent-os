@@ -66,6 +66,7 @@ from erc.canonical_model_events import LangChainCanonicalModelEventAdapter, cons
 from erc.snapshot_service import SnapshotService
 import erc.snapshot_service as snapshot_service_module
 import erc.session_realtime_contract as session_realtime_contract_module
+from graph.supervisor_routing import build_supervisor_toolset
 import runtimes.chat.runtime as chat_runtime_module
 
 
@@ -389,6 +390,30 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
             ["run_system_command", "command_session_broker"],
         )
 
+    def test_supervisor_toolset_uses_delegation_broker_and_omits_legacy_delegation_entries(self):
+        class _Tool:
+            def __init__(self, name: str):
+                self.name = name
+                self.description = f"{name} description"
+
+        fetch_skill_instructions_tool = _Tool("fetch_skill_instructions")
+        selected = build_supervisor_toolset(
+            fetch_skill_instructions_tool=fetch_skill_instructions_tool,
+            create_agent_tool=_Tool("create_agent"),
+            delegate_parallel_tool=_Tool("delegate_parallel"),
+            handoff_tools=[_Tool("handoff_to_coder"), _Tool("handoff_to_writer")],
+            filtered_native_tools=[_Tool("delegation_broker"), _Tool("run_system_command")],
+            all_mcp_tools=[],
+            plugin_host_tools=[],
+            supervisor_allowed_tools=None,
+            config_allowed_tools=None,
+        )
+
+        self.assertEqual(
+            [tool.name for tool in selected],
+            ["fetch_skill_instructions", "delegation_broker", "run_system_command"],
+        )
+
     def test_process_message_index_ignores_command_tool_without_command_session(self):
         snapshot = {
             "session_id": "session-process",
@@ -472,6 +497,57 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
 
         mapping = session_realtime_contract_module._build_process_message_index(snapshot)
         self.assertEqual(mapping["cmd-1"]["toolCallId"], "tool-call-start")
+
+    def test_process_message_index_uses_delegation_broker_external_worker_command_session(self):
+        snapshot = {
+            "session_id": "session-process",
+            "messages": [
+                {
+                    "id": "assistant-process",
+                    "runId": "run-process",
+                    "nodes": [
+                        {
+                            "id": "assistant-process:tool_call:dispatch",
+                            "kind": "execution",
+                            "executionType": "tool_call",
+                            "toolName": "delegation_broker",
+                            "toolCallId": "tool-call-dispatch",
+                            "args": {
+                                "mode": "dispatch",
+                                "tasks": [{"taskBriefId": "task-1", "goal": "Implement patch"}],
+                            },
+                        },
+                        {
+                            "id": "assistant-process:tool_result:dispatch",
+                            "kind": "execution",
+                            "executionType": "tool_result",
+                            "toolName": "delegation_broker",
+                            "toolCallId": "tool-call-dispatch",
+                            "result": {
+                                "ok": True,
+                                "mode": "dispatch",
+                                "items": [
+                                    {
+                                        "delegationId": "external::cmd-ext-1::task-1::coding-cli-worker",
+                                        "lane": "external_worker",
+                                        "taskBriefId": "task-1",
+                                        "targetId": "coding-cli-worker",
+                                        "commandSession": {
+                                            "commandId": "cmd-ext-1",
+                                            "sessionId": "cmd-ext-1",
+                                            "runId": "run-process",
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        mapping = session_realtime_contract_module._build_process_message_index(snapshot)
+        self.assertEqual(mapping["cmd-ext-1"]["toolCallId"], "tool-call-dispatch")
 
     def test_record_request_inputs_persists_user_structured_metadata_to_canonical_row(self):
         runtime = chat_runtime_module.ChatRuntime()

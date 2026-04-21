@@ -115,6 +115,11 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 commandPreset: data.commandPreset,
                 fileUrls,
                 attachments: dedupedAttachments,
+                plannerMode: typeof data.plannerMode === "string"
+                    ? data.plannerMode
+                    : data.taskPlanningMode === true
+                        ? "force"
+                        : undefined,
                 taskPlanningMode: data.taskPlanningMode === true,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,
             },

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from core.delegation_broker import normalize_task_brief
+
 
 def _unique_str_list(values: Iterable[Any] | None) -> list[str]:
     items: list[str] = []
@@ -94,6 +96,7 @@ def build_delegation_context(
     selected_baseline_tools: Iterable[Any] | None = None,
     prompt_addition: str | None = None,
     invocation_id: str | None = None,
+    task_brief: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "agentId": str(agent_id or "").strip() or None,
@@ -109,6 +112,7 @@ def build_delegation_context(
         "selectedPluginHostTools": _unique_str_list(selected_plugin_host_tools),
         "selectedBaselineTools": _unique_str_list(selected_baseline_tools),
         "promptAddition": str(prompt_addition or "").strip(),
+        "taskBrief": normalize_task_brief(task_brief) if isinstance(task_brief, dict) else None,
     }
     if invocation_id:
         payload["invocationId"] = str(invocation_id).strip()
@@ -141,6 +145,7 @@ def latest_delegation_context(
             selected_baseline_tools=item.get("selectedBaselineTools"),
             prompt_addition=item.get("promptAddition"),
             invocation_id=item.get("invocationId"),
+            task_brief=item.get("taskBrief"),
         )
         latest_any = normalized
         if target_agent_id and normalized.get("agentId") == target_agent_id:

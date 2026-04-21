@@ -66,6 +66,7 @@ class ChatRequestData(BaseModel):
     client_message_id: Optional[str] = Field(default=None, alias="clientMessageId")
     command_preset: Optional[CommandPresetSelection] = Field(default=None, alias="commandPreset")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")
+    planner_mode: Optional[str] = Field(default=None, alias="plannerMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")

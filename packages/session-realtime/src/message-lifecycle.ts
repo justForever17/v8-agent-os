@@ -44,7 +44,7 @@ export type SessionStreamArtifact = {
 
 export type SessionStreamUiEvent = Pick<
   NormalizedSessionRuntimeEvent,
-  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "seq" | "message_id" | "node_id" | "transcript_version"
+  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "runtimeId" | "seq" | "message_id" | "node_id" | "transcript_version"
 > & {
   agent?: {
     id?: string;
@@ -620,9 +620,19 @@ export function deriveRealtimeStreamState<TMessage extends SessionStreamMessage 
 }
 
 export function shouldApplyRuntimeEventToMessage(
-  event: Pick<SessionStreamUiEvent, "type" | "name" | "targets" | "visibility">,
+  event: Pick<SessionStreamUiEvent, "type" | "name" | "targets" | "visibility" | "runtimeId" | "topic">,
 ) {
   if (!shouldForwardRuntimeEventToRealtimeSurface(event)) {
+    return false;
+  }
+  if (
+    event.runtimeId === "subagent_swarm"
+    || event.runtimeId === "planner_lane"
+    || String(event.topic || "").startsWith("subagent.")
+    || String(event.topic || "").startsWith("planner.")
+    || String(event.topic || "").startsWith("chat.planner_mode.")
+    || String(event.topic || "").startsWith("chat.task_planning_mode.")
+  ) {
     return false;
   }
   const todoToolEvent = isTodoToolRuntimePayload(event);

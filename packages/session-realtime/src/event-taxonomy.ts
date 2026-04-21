@@ -22,6 +22,11 @@ export type RuntimeEventMatrixEntry = RuntimeEventTaxonomyEntry;
 export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "session.connected", topicPattern: "session.connected", runtimeId: "chat", scope: "active_run", visibility: "excluded", targets: [], explicit: true },
   { key: "session.subscribed", topicPattern: "session.subscribed", runtimeId: "chat", scope: "active_run", visibility: "excluded", targets: [], explicit: true },
+  { key: "planner.mode.enabled", topicPattern: "chat.planner_mode.enabled", runtimeId: "planner_lane", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud"], explicit: true },
+  { key: "planner.task_mode.enabled", topicPattern: "chat.task_planning_mode.enabled", runtimeId: "planner_lane", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud"], explicit: true },
+  { key: "planner.mode.decided", topicPattern: "chat.planner_mode.decided", runtimeId: "planner_lane", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud"], explicit: true },
+  { key: "planner.task_mode.decided", topicPattern: "chat.task_planning_mode.decided", runtimeId: "planner_lane", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud"], explicit: true },
+  { key: "planner.lifecycle", topicPattern: "planner.", runtimeId: "planner_lane", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud"], explicit: true },
   { key: "chat.agent_start", topicPattern: "agent.started", eventType: "agent_start", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["runtime_card", "hud"], explicit: true },
   { key: "chat.text_chunk", topicPattern: "run.text.delta", eventType: "text_chunk", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message"], explicit: true },
   { key: "chat.reasoning_chunk", topicPattern: "run.reasoning.delta", eventType: "reasoning_chunk", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card"], explicit: true },
@@ -49,6 +54,8 @@ export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "chat.context_governance", topicPattern: "context.prepared", eventType: "custom_event", eventName: "context_governance_changed", runtimeId: "chat", scope: "active_run", visibility: "hidden", targets: ["runtime_card", "hud", "context"], explicit: true },
   { key: "chat.done", topicPattern: "run.completed", eventType: "done", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card", "hud"], explicit: true },
   { key: "chat.error", topicPattern: "run.failed", eventType: "error", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card", "hud"], explicit: true },
+  { key: "subagent.lifecycle", topicPattern: "subagent.", runtimeId: "subagent_swarm", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud", "artifact"], explicit: true },
+  { key: "subagent.delegation", topicPattern: "delegation.", runtimeId: "subagent_swarm", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "hud", "artifact"], explicit: true },
   { key: "chat.lifecycle", topicPattern: "chat.", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card"], explicit: true },
   { key: "memory.lifecycle", topicPattern: "memory.", runtimeId: "memory", scope: "active_run", visibility: "hidden", targets: ["runtime_card"], explicit: true },
   { key: "automation.lifecycle", topicPattern: "automation.", runtimeId: "automation", scope: "active_run", visibility: "visible", targets: ["runtime_card", "hud", "process"], explicit: true },
@@ -61,7 +68,7 @@ export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "computer_use.lifecycle", topicPattern: "computer_use.", runtimeId: "computer_use", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card", "terminal", "process"], explicit: true },
   { key: "rpa.lifecycle", topicPattern: "rpa.", runtimeId: "rpa", scope: "active_run", visibility: "visible", targets: ["runtime_card", "process"], explicit: true },
   { key: "desktop_live.lifecycle", topicPattern: "desktop_live.", runtimeId: "desktop_live", scope: "active_run", visibility: "excluded", targets: [], explicit: true },
-  { key: "supervisor.graph", topicPattern: "supervisor.graph.", runtimeId: "chat", scope: "active_run", visibility: "hidden", targets: ["runtime_card"], explicit: true },
+  { key: "supervisor.graph", topicPattern: "supervisor.graph.", runtimeId: "chat", scope: "active_run", visibility: "hidden", targets: ["runtime_card", "context"], explicit: true },
 ];
 
 function topicMatches(entryTopicPattern: string | undefined, normalizedTopic: string) {

@@ -221,7 +221,7 @@ function coerceTimelineString(value: unknown) {
 
 function remapTimelineEntryRuntimeId(entry: RuntimeTimelineEntry): RuntimeId {
     const topic = String(entry.topic || "").trim().toLowerCase();
-    if (topic.startsWith("context.") || topic === "context_governance_changed") {
+    if (topic.startsWith("context.") || topic === "context_governance_changed" || topic.startsWith("supervisor.graph.")) {
         return "context_governance";
     }
     return entry.runtimeId;
@@ -262,7 +262,7 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         if (topic === "ask_user.resolved") return "ask_user" as const;
         if (topic.startsWith("approval.")) return "approval_resolved" as const;
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
-        if (topic.startsWith("context.")) return "context_governance" as const;
+        if (topic.startsWith("context.") || topic.startsWith("supervisor.graph.")) return "context_governance" as const;
         if (topic.startsWith("run.lane.")) return "lane_updated" as const;
         return "run_controlled" as const;
     })();

@@ -93,6 +93,7 @@ def _build_supervisor_domain() -> dict[str, Any]:
     supervisor_config = storage.get_supervisor_config() or {}
     supervisor_profile = storage.get_supervisor_profile()
     tool_policy = build_supervisor_tool_policy_snapshot(supervisor_config.get("allowed_tools"))
+    delegation = dict(supervisor_config.get("delegation") or {})
     return {
         "domain": "supervisor",
         "title": "主理人",
@@ -112,6 +113,9 @@ def _build_supervisor_domain() -> dict[str, Any]:
             "bindings": {
                 "supervisorModel": model_control_plane.get_role_model_id("supervisor") or "",
                 "defaultReplyModel": model_control_plane.get_role_model_id("default") or "",
+            },
+            "delegation": {
+                "externalWorkers": list(delegation.get("externalWorkers") or []),
             },
         },
         "source": f"V8_AGENT_OS.md + {_config_source('systemBase.identity')} + {_config_source('supervisor')} + {_config_source('models')}",
@@ -138,10 +142,24 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
     if "allowedTools" in data:
         allowed_tools = data.get("allowedTools")
         supervisor_config["allowed_tools"] = allowed_tools if allowed_tools is not None else None
-        storage.save_supervisor_config(supervisor_config)
 
     if "profile" in data and isinstance(data.get("profile"), dict):
-        storage.save_supervisor_profile(dict(data.get("profile") or {}))
+        current_profile = storage.get_supervisor_profile()
+        incoming_profile = dict(data.get("profile") or {})
+        supervisor_config["profile"] = {
+            "name": str(incoming_profile.get("name") or current_profile.get("name") or "智能主管"),
+            "roleLabel": str(incoming_profile.get("roleLabel") or current_profile.get("roleLabel") or "主理人"),
+            "avatar": str(incoming_profile.get("avatar") or current_profile.get("avatar") or ""),
+        }
+
+    if "delegation" in data and isinstance(data.get("delegation"), dict):
+        delegation = dict(supervisor_config.get("delegation") or {})
+        incoming = dict(data.get("delegation") or {})
+        if "externalWorkers" in incoming:
+            delegation["externalWorkers"] = list(incoming.get("externalWorkers") or [])
+        supervisor_config["delegation"] = delegation
+
+    storage.save_supervisor_config(supervisor_config)
 
     bindings = dict(data.get("bindings") or {})
     role_updates: dict[str, Any] = {}

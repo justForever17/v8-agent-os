@@ -36,7 +36,7 @@ else:
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import InjectedState
-from langgraph.types import Command, Interrupt as LangGraphInterrupt, interrupt
+from langgraph.types import Command, Interrupt as LangGraphInterrupt, Send, interrupt
 try:
     from langgraph.errors import GraphBubbleUp, GraphInterrupt, Interrupt as ErrorInterrupt, NodeInterrupt
     LANGGRAPH_INTERRUPT_EXCEPTIONS = tuple(
@@ -96,7 +96,25 @@ def _raise_runtime_governance_exception_if_needed(exc: Exception) -> None:
     _raise_langgraph_interrupt_if_needed(exc)
 
 from core.artifact_store import artifact_store
+from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.database import db
+from core.delegation_broker import (
+    build_minimal_task_brief,
+    choose_best_external_worker,
+    choose_best_local_agent,
+    compact_external_worker_registry_entry,
+    default_external_worker_descriptors,
+    make_external_delegation_id,
+    make_local_delegation_id,
+    normalize_external_worker_descriptors,
+    normalize_task_brief,
+    normalize_task_briefs,
+    parse_delegation_id,
+    parse_external_worker_result_block,
+    render_external_worker_command,
+    task_brief_query_text,
+    task_brief_summary,
+)
 from core.computer_use_execution_route import (
     _compact_environment_signal_summary,
     _compact_timing_signal_summary,
@@ -5624,6 +5642,102 @@ def _command_session_payload(
     )
 
 
+def _delegation_broker_payload(
+    *,
+    mode: str,
+    summary: str,
+    items: list[dict[str, Any]] | None = None,
+    recommended_next_action: str = "none",
+    ok: bool = True,
+    error: str | None = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "ok": ok,
+        "mode": mode,
+        "summary": summary,
+        "items": list(items or []),
+        "recommendedNextAction": recommended_next_action,
+    }
+    if error:
+        payload["error"] = error
+    return json.dumps(
+        {key: value for key, value in payload.items() if value not in (None, "", [], {})},
+        ensure_ascii=False,
+    )
+
+
+def _delegation_external_worker_descriptors() -> list[dict[str, Any]]:
+    supervisor_config = storage.get_supervisor_config() or {}
+    delegation = dict(supervisor_config.get("delegation") or {})
+    descriptors = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
+    return descriptors or default_external_worker_descriptors()
+
+
+def _delegation_acceptance_hint(value: Any = None) -> str:
+    normalized = str(value or "").strip()
+    return normalized or "Supervisor must explicitly accept, retry, or ignore this delegated result."
+
+
+def _delegation_trace_ref(*, run_id: str | None, invocation_id: str | None, branch_index: int | None = None, command_id: str | None = None) -> dict[str, Any]:
+    trace: dict[str, Any] = {}
+    if str(run_id or "").strip():
+        trace["runId"] = str(run_id).strip()
+    if str(invocation_id or "").strip():
+        trace["invocationId"] = str(invocation_id).strip()
+    if branch_index is not None:
+        trace["branchIndex"] = int(branch_index)
+    if str(command_id or "").strip():
+        trace["commandId"] = str(command_id).strip()
+    return trace
+
+
+def _delegation_compact_item(
+    *,
+    delegation_id: str,
+    task_brief: dict[str, Any],
+    lane: str,
+    target_id: str,
+    target_label: str,
+    status: str,
+    trace_ref: dict[str, Any] | None = None,
+    artifact_refs: list[Any] | None = None,
+    local_self_check: str | None = None,
+    acceptance_hint: str | None = None,
+    worker_type: str | None = None,
+    command_session: dict[str, Any] | None = None,
+    result_schema_matched: bool | None = None,
+    invocation_id: str | None = None,
+    branch_index: int | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "delegationId": delegation_id,
+        "taskBriefId": str(task_brief.get("taskBriefId") or "").strip(),
+        "taskGoal": str(task_brief.get("goal") or "").strip(),
+        "lane": lane,
+        "targetId": target_id,
+        "targetLabel": target_label,
+        "agentId": target_id,
+        "agentName": target_label,
+        "status": status,
+        "traceRef": trace_ref or {},
+        "artifactRefs": list(artifact_refs or []),
+        "localSelfCheck": local_self_check,
+        "acceptanceHint": _delegation_acceptance_hint(acceptance_hint),
+        "invocationId": invocation_id,
+        "branchIndex": branch_index,
+    }
+    if worker_type:
+        item["workerType"] = worker_type
+    if command_session:
+        item["commandSession"] = command_session
+    if result_schema_matched is not None:
+        item["resultSchemaMatched"] = bool(result_schema_matched)
+    if error:
+        item["error"] = error
+    return {key: value for key, value in item.items() if value not in (None, "", [], {})}
+
+
 @tool
 def command_session_broker(
     mode: str = "observe",
@@ -5948,6 +6062,389 @@ def command_session_broker(
             recommended_next_action="none",
             error=str(exc),
         )
+
+
+@tool
+def delegation_broker(
+    mode: str = "observe",
+    tasks: list[dict[str, Any]] | None = None,
+    delegation_id: str = "",
+    followup: str = "",
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> Command:
+    """Unified delegation broker for local subagents and external workers: dispatch, observe, resume, or interrupt delegated work."""
+    normalized_mode = str(mode or "observe").strip().lower()
+    if normalized_mode not in {"dispatch", "observe", "resume", "interrupt"}:
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode=normalized_mode or "unknown",
+                            ok=False,
+                            summary=f"Unsupported delegation_broker mode: {normalized_mode}",
+                            recommended_next_action="none",
+                            error="unsupported_mode",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            },
+        )
+
+    base_state = dict(state or {})
+    base_messages = list(base_state.get("messages") or [])
+    base_todos = list(base_state.get("todos") or [])
+    base_contexts = list(base_state.get("delegation_contexts") or [])
+    inherited_context = dict(base_state.get("current_route_context") or {})
+    if not inherited_context:
+        inherited_context = latest_delegation_context(base_contexts, agent_id=None)
+
+    if normalized_mode == "dispatch":
+        normalized_tasks = normalize_task_briefs(tasks or [])
+        if not normalized_tasks:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_delegation_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="delegation_broker(mode=dispatch) 需要提供 tasks。",
+                                recommended_next_action="none",
+                                error="missing_tasks",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+            )
+
+        invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
+        loaded_agents = storage.get_all_agents()
+        external_descriptors = _delegation_external_worker_descriptors()
+        sends: list[Send] = []
+        items: list[dict[str, Any]] = []
+        parallel_results: list[dict[str, Any]] = []
+
+        for index, task_brief in enumerate(normalized_tasks):
+            task_query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
+            task_goal = str(task_brief.get("goal") or "").strip() or task_query or f"Task {index + 1}"
+            lane_hint = str(task_brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
+            local_agent = choose_best_local_agent(task_brief, loaded_agents) if lane_hint in {"subagent", "auto"} else None
+            external_worker = None
+            if lane_hint == "external_worker":
+                external_worker = choose_best_external_worker(task_brief, external_descriptors)
+            elif lane_hint == "auto" and local_agent is None:
+                external_worker = choose_best_external_worker(task_brief, external_descriptors)
+
+            if local_agent and lane_hint != "external_worker":
+                agent_id = str(local_agent.get("id") or "").strip()
+                agent_name = str(local_agent.get("name") or agent_id).strip() or agent_id
+                delegation_id_value = make_local_delegation_id(
+                    invocation_id=invocation_id,
+                    branch_index=index,
+                    task_brief_id=str(task_brief.get("taskBriefId") or ""),
+                    agent_id=agent_id,
+                )
+                branch_context = build_delegation_context(
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    query=task_query,
+                    mode="parallel" if len(normalized_tasks) > 1 else "serial",
+                    source_runtime_kind=inherited_context.get("sourceRuntimeKind"),
+                    selected_skill_ids=inherited_context.get("selectedSkillIds"),
+                    selected_skill_names=inherited_context.get("selectedSkillNames"),
+                    selected_skill_entries=inherited_context.get("selectedSkillEntries"),
+                    skill_root_descriptors=inherited_context.get("skillRootDescriptors"),
+                    selected_mcp_tools=inherited_context.get("selectedMcpTools"),
+                    selected_plugin_host_tools=inherited_context.get("selectedPluginHostTools"),
+                    selected_baseline_tools=inherited_context.get("selectedBaselineTools"),
+                    prompt_addition=inherited_context.get("promptAddition"),
+                    invocation_id=invocation_id,
+                    task_brief=task_brief,
+                )
+                branch_state = dict(base_state)
+                branch_state["messages"] = base_messages + [
+                    HumanMessage(content=f"[Supervisor Delegated Task to {agent_name}]:\n{task_query or task_goal}")
+                ]
+                branch_state["todos"] = list(base_todos)
+                branch_state["delegation_contexts"] = base_contexts + [branch_context]
+                branch_state["current_route_context"] = branch_context
+                branch_state["parallel_branch"] = {
+                    "invocationId": invocation_id,
+                    "branchIndex": index,
+                    "agentId": agent_id,
+                    "agentName": agent_name,
+                    "reason": task_goal,
+                    "taskBriefId": str(task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
+                    "taskBrief": task_brief,
+                    "delegationId": delegation_id_value,
+                    "lane": "subagent",
+                    "acceptanceHint": _delegation_acceptance_hint(task_brief.get("acceptanceContract")),
+                    "initialMessageCount": len(base_messages) + 1,
+                    "initialTodoCount": len(base_todos),
+                }
+                sends.append(Send("parallel_delegate_task", branch_state))
+                items.append(
+                    _delegation_compact_item(
+                        delegation_id=delegation_id_value,
+                        task_brief=task_brief,
+                        lane="subagent",
+                        target_id=agent_id,
+                        target_label=agent_name,
+                        status="queued",
+                        invocation_id=invocation_id,
+                        branch_index=index,
+                        trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                    )
+                )
+                continue
+
+            if external_worker:
+                rendered_command = render_external_worker_command(
+                    descriptor=external_worker,
+                    task_brief=task_brief,
+                    workspace_path=str(base_state.get("workspace_path") or ""),
+                )
+                if not rendered_command:
+                    item = _delegation_compact_item(
+                        delegation_id=make_external_delegation_id(
+                            command_id=f"missing-command-{index}",
+                            task_brief_id=str(task_brief.get("taskBriefId") or ""),
+                            worker_id=str(external_worker.get("id") or ""),
+                        ),
+                        task_brief=task_brief,
+                        lane="external_worker",
+                        target_id=str(external_worker.get("id") or ""),
+                        target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
+                        status="error",
+                        invocation_id=invocation_id,
+                        branch_index=index,
+                        worker_type=str(external_worker.get("workerType") or "").strip() or None,
+                        trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                        error="missing_command_template",
+                    )
+                    items.append(item)
+                    parallel_results.append(item)
+                    continue
+
+                raw_start_payload = command_session_broker.func(
+                    mode="start",
+                    command=rendered_command,
+                    profile="auto",
+                    tool_call_id=tool_call_id,
+                )
+                start_payload = json.loads(str(raw_start_payload or "{}"))
+                command_id = str(start_payload.get("commandId") or start_payload.get("sessionId") or "").strip()
+                worker_result = parse_external_worker_result_block(
+                    start_payload.get("initialPreview"),
+                    markers=((external_worker.get("resultSchema") or {}).get("markers") or []),
+                )
+                delegation_id_value = make_external_delegation_id(
+                    command_id=command_id or f"pending-{uuid.uuid4().hex[:8]}",
+                    task_brief_id=str(task_brief.get("taskBriefId") or ""),
+                    worker_id=str(external_worker.get("id") or ""),
+                )
+                worker_item = _delegation_compact_item(
+                    delegation_id=delegation_id_value,
+                    task_brief=task_brief,
+                    lane="external_worker",
+                    target_id=str(external_worker.get("id") or ""),
+                    target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
+                    status=str(start_payload.get("state") or "running").strip() or "running",
+                    invocation_id=invocation_id,
+                    branch_index=index,
+                    worker_type=str(external_worker.get("workerType") or "").strip() or None,
+                    command_session={
+                        "commandId": command_id,
+                        "sessionId": str(start_payload.get("sessionId") or command_id).strip() or command_id,
+                        "runId": start_payload.get("runId"),
+                    },
+                    trace_ref=_delegation_trace_ref(
+                        run_id=start_payload.get("runId") or base_state.get("run_id"),
+                        invocation_id=invocation_id,
+                        branch_index=index,
+                        command_id=command_id,
+                    ),
+                    local_self_check=str((worker_result or {}).get("localSelfCheck") or "").strip() or None,
+                    artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
+                    acceptance_hint=(worker_result or {}).get("acceptanceHint"),
+                    result_schema_matched=bool(worker_result),
+                    error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
+                )
+                items.append(worker_item)
+                parallel_results.append(worker_item)
+                continue
+
+            unresolved_lane = "external_worker" if lane_hint == "external_worker" else "subagent"
+            item = _delegation_compact_item(
+                delegation_id=f"{unresolved_lane}::unresolved::{str(task_brief.get('taskBriefId') or index)}::{lane_hint}",
+                task_brief=task_brief,
+                lane=unresolved_lane,
+                target_id=str(task_brief.get("preferredAgentId") or task_brief.get("preferredWorkerType") or lane_hint).strip() or unresolved_lane,
+                target_label=str(task_brief.get("preferredAgentId") or task_brief.get("preferredWorkerType") or lane_hint).strip() or unresolved_lane,
+                status="error",
+                invocation_id=invocation_id,
+                branch_index=index,
+                trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                error="no_matching_target",
+            )
+            items.append(item)
+            parallel_results.append(item)
+
+        summary = f"Delegation broker queued {len(items)} task(s): " + ", ".join(
+            task_brief_summary(task_brief) or f"task-{index + 1}"
+            for index, task_brief in enumerate(normalized_tasks)
+        )
+        update: dict[str, Any] = {
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode=normalized_mode,
+                        summary=summary,
+                        items=items,
+                        recommended_next_action="observe" if any(item.get("lane") == "external_worker" for item in items) else "review",
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ],
+        }
+        if sends:
+            update["parallel_invocations"] = [
+                {
+                    "invocationId": invocation_id,
+                    "expected": len(sends),
+                    "createdAt": utc_now_iso(),
+                }
+            ]
+        if parallel_results:
+            update["parallel_results"] = parallel_results
+        return Command(goto=sends if sends else "supervisor", update=update)
+
+    parsed = parse_delegation_id(delegation_id)
+    if str(parsed.get("lane") or "").strip() != "external_worker":
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode=normalized_mode,
+                            ok=False,
+                            summary="当前 observe/resume/interrupt 仅支持 external_worker delegationId。",
+                            recommended_next_action="dispatch",
+                            error="unsupported_lane",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            },
+        )
+
+    external_descriptors = _delegation_external_worker_descriptors()
+    descriptor = next(
+        (
+            item
+            for item in external_descriptors
+            if str(item.get("id") or "").strip() == str(parsed.get("targetId") or "").strip()
+        ),
+        None,
+    )
+    task_brief = normalize_task_brief({"taskBriefId": str(parsed.get("taskBriefId") or "").strip(), "goal": ""})
+    command_id = str(parsed.get("commandId") or "").strip()
+
+    if normalized_mode == "resume":
+        followup_text = str(followup or "").strip()
+        if not followup_text:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_delegation_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="delegation_broker(mode=resume) 需要提供 followup。",
+                                recommended_next_action="none",
+                                error="missing_followup",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+            )
+        raw_payload = command_session_broker.func(
+            mode="input",
+            session_id=command_id,
+            input_text=followup_text,
+            tool_call_id=tool_call_id,
+        )
+    elif normalized_mode == "interrupt":
+        raw_payload = command_session_broker.func(
+            mode="terminate",
+            session_id=command_id,
+            tool_call_id=tool_call_id,
+        )
+    else:
+        raw_payload = command_session_broker.func(
+            mode="observe",
+            session_id=command_id,
+            tool_call_id=tool_call_id,
+        )
+
+    payload = json.loads(str(raw_payload or "{}"))
+    markers = ((descriptor or {}).get("resultSchema") or {}).get("markers") or []
+    worker_result = parse_external_worker_result_block(
+        payload.get("deltaText") or payload.get("finalPreview") or payload.get("initialPreview"),
+        markers=markers,
+    )
+    worker_item = _delegation_compact_item(
+        delegation_id=delegation_id,
+        task_brief=task_brief,
+        lane="external_worker",
+        target_id=str((descriptor or {}).get("id") or parsed.get("targetId") or "").strip(),
+        target_label=str((descriptor or {}).get("name") or parsed.get("targetId") or "external-worker").strip(),
+        status=str(payload.get("state") or ("terminated" if normalized_mode == "interrupt" else "running")).strip() or "running",
+        worker_type=str((descriptor or {}).get("workerType") or "").strip() or None,
+        command_session={
+            "commandId": command_id,
+            "sessionId": str(payload.get("sessionId") or command_id).strip() or command_id,
+            "runId": payload.get("runId"),
+        },
+        trace_ref=_delegation_trace_ref(
+            run_id=payload.get("runId") or base_state.get("run_id"),
+            invocation_id=None,
+            command_id=command_id,
+        ),
+        local_self_check=str((worker_result or {}).get("localSelfCheck") or "").strip() or None,
+        artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
+        acceptance_hint=(worker_result or {}).get("acceptanceHint"),
+        result_schema_matched=bool(worker_result),
+        error=None if bool(payload.get("ok", True)) else str(payload.get("error") or f"{normalized_mode}_failed"),
+    )
+    return Command(
+        goto="supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode=normalized_mode,
+                        ok=bool(payload.get("ok", True)),
+                        summary=str(payload.get("summary") or f"Delegation {normalized_mode} completed.").strip(),
+                        items=[worker_item],
+                        recommended_next_action=str(payload.get("recommendedNextAction") or "none").strip() or "none",
+                        error=str(payload.get("error") or "").strip() or None,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            "parallel_results": [worker_item],
+        },
+    )
 
 
 def _build_terminal_status_tool_view(status: dict) -> dict:
@@ -8873,6 +9370,7 @@ async def delegate_network_task(
 NATIVE_TOOLS = [
     run_system_command,
     command_session_broker,
+    delegation_broker,
     read_background_output,
     send_background_input,
     terminate_background_command,

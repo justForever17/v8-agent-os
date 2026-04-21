@@ -13,8 +13,10 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.delegation_broker import build_minimal_task_brief, task_brief_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
+from core.native_tools import delegation_broker
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
@@ -61,6 +63,15 @@ def _dedupe_tools(tools: list) -> list:
         seen.add(identity)
         deduped.append(tool_ref)
     return deduped
+
+
+def _exclude_supervisor_only_tools(tools: list) -> list:
+    excluded = {"delegation_broker"}
+    return [
+        tool_ref
+        for tool_ref in list(tools or [])
+        if str(getattr(tool_ref, "name", "")).strip() not in excluded
+    ]
 
 
 def _resolved_tool_mode(agent_data: dict) -> str:
@@ -253,33 +264,16 @@ def build_handoff_tool(agent_id: str, agent_name: str, agent_desc: str):
         tool_call_id: Annotated[str, InjectedToolCallId],
         state: Annotated[dict, InjectedState],
     ) -> Command:
-        inherited_context = _resolve_inherited_route_context(dict(state or {}), list((state or {}).get("messages") or []), agent_id=agent_id)
-        branch_context = build_delegation_context(
-            agent_id=agent_id,
-            agent_name=agent_name,
-            query=reason,
-            mode="serial",
-            source_runtime_kind=inherited_context.get("sourceRuntimeKind"),
-            selected_skill_ids=inherited_context.get("selectedSkillIds"),
-            selected_skill_names=inherited_context.get("selectedSkillNames"),
-            selected_skill_entries=inherited_context.get("selectedSkillEntries"),
-            skill_root_descriptors=inherited_context.get("skillRootDescriptors"),
-            selected_mcp_tools=inherited_context.get("selectedMcpTools"),
-            selected_plugin_host_tools=inherited_context.get("selectedPluginHostTools"),
-            selected_baseline_tools=inherited_context.get("selectedBaselineTools"),
-            prompt_addition=inherited_context.get("promptAddition"),
-            invocation_id=inherited_context.get("invocationId"),
+        task_brief = build_minimal_task_brief(
+            goal=reason,
+            preferred_agent_id=agent_id,
+            execution_lane_hint="subagent",
         )
-        return Command(
-            goto=agent_id,
-            update={
-                "messages": [
-                    ToolMessage(content=f"Successfully delegated to {agent_name}", tool_call_id=tool_call_id),
-                    HumanMessage(content=f"[Supervisor Delegated Task to {agent_name}]:\n{reason}"),
-                ],
-                "delegation_contexts": [branch_context],
-                "current_route_context": _merged_route_context(state, branch_context),
-            },
+        return delegation_broker.func(
+            mode="dispatch",
+            tasks=[task_brief],
+            tool_call_id=tool_call_id,
+            state=state,
         )
 
     return StructuredTool.from_function(
@@ -362,8 +356,9 @@ def build_agent_node(
             task_messages = extract_task_context(messages)
             delegated_query = _extract_delegated_query(task_messages)
             inherited_route_context = _resolve_inherited_route_context(state, task_messages, agent_id=agent_id)
-            delegated_query = str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
-            base_tools = _dedupe_tools(list(filtered_native_tools) + [fetch_skill_instructions_tool])
+            delegated_task_brief = inherited_route_context.get("taskBrief") if isinstance(inherited_route_context.get("taskBrief"), dict) else None
+            delegated_query = task_brief_query_text(delegated_task_brief) or str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
+            base_tools = _dedupe_tools(_exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions_tool]))
             selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
             selected_plugin_host_tools = _resolve_selected_plugin_host_tools(all_plugin_host_tools, agent_tool_selectors)
             explicit_skill_ids, explicit_skill_names = _resolve_selected_skills(agent_tool_selectors, state=state)
@@ -468,6 +463,7 @@ def build_agent_node(
                     selected_baseline_tools=select_baseline_system_tool_names(combined_tools),
                     prompt_addition=route_bundle.prompt_addition,
                     invocation_id=inherited_route_context.get("invocationId"),
+                    task_brief=delegated_task_brief,
                 ),
                 "toolMode": agent_tool_mode,
                 "inheritedSkillIds": inherited_skill_ids,
@@ -725,10 +721,10 @@ def build_specialist_agent_components(
         agent_tool_mode = _resolved_tool_mode(agent_data)
 
         if agent_tool_mode == "contextual_auto":
-            tool_node_tools = _dedupe_tools(list(filtered_native_tools) + [fetch_skill_instructions] + list(all_mcp_tools) + list(all_plugin_host_tools))
+            tool_node_tools = _dedupe_tools(_exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions] + list(all_mcp_tools) + list(all_plugin_host_tools)))
         else:
             tool_node_tools = _dedupe_tools(
-                list(filtered_native_tools)
+                _exclude_supervisor_only_tools(list(filtered_native_tools))
                 + [fetch_skill_instructions]
                 + _resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
                 + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors)

@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from core.native_tools import command_session_broker, run_system_command
+from core.native_tools import command_session_broker, delegation_broker, run_system_command
 from core.tools.s3_tools import s3_broker
 from core.tools.web_fetcher import web_broker
 
@@ -133,6 +133,152 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["commandId"], "cmd123")
         self.assertEqual(payload["linkedProcess"]["processId"], "cmd123")
         self.assertEqual(payload["recommendedNextAction"], "observe")
+
+    def test_delegation_broker_dispatch_starts_external_worker_session(self):
+        descriptor = {
+            "id": "coding-cli-worker",
+            "name": "Coding CLI Worker",
+            "description": "External coding worker",
+            "enabled": True,
+            "workerType": "coding_cli",
+            "capabilitySnapshot": {
+                "agentClass": "external_worker",
+                "domainTags": ["software_engineering"],
+                "operationCapabilities": ["implement"],
+                "externalWorkerSuitability": "high",
+            },
+            "launchProfile": {
+                "commandTemplate": "worker --task {task_brief_b64}",
+                "cwdPolicy": "inherit_workspace",
+                "envPassThrough": [],
+                "startupTimeoutSeconds": 10,
+            },
+            "sessionMode": "interactive",
+            "allowedSideEffects": ["workspace_write"],
+            "resultSchema": {
+                "type": "v8_worker_result_v1",
+                "markers": ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"],
+            },
+        }
+
+        with patch("core.native_tools.storage.get_all_agents", return_value=[]), patch(
+            "core.native_tools.storage.get_supervisor_config",
+            return_value={"delegation": {"externalWorkers": [descriptor]}},
+        ), patch(
+            "core.native_tools.command_session_broker.func",
+            return_value=json.dumps(
+                {
+                    "ok": True,
+                    "mode": "start",
+                    "kind": "command_session",
+                    "commandId": "cmd-ext-1",
+                    "sessionId": "cmd-ext-1",
+                    "runId": "run-ext-1",
+                    "state": "running",
+                    "summary": "worker started",
+                    "recommendedNextAction": "observe",
+                }
+            ),
+        ) as mocked_start:
+            command = delegation_broker.func(
+                mode="dispatch",
+                tasks=[
+                    {
+                        "taskBriefId": "task-impl",
+                        "goal": "Implement the requested patch",
+                        "requiredCapabilities": ["software_engineering", "implement"],
+                        "executionLaneHint": "external_worker",
+                        "preferredWorkerType": "coding_cli",
+                    }
+                ],
+                state={"run_id": "run-supervisor-1", "workspace_path": "E:/Projects/v8chat"},
+            )
+
+        payload = json.loads(command.update["messages"][0].content)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["mode"], "dispatch")
+        self.assertEqual(payload["recommendedNextAction"], "observe")
+        self.assertEqual(payload["items"][0]["lane"], "external_worker")
+        self.assertEqual(payload["items"][0]["targetId"], "coding-cli-worker")
+        self.assertEqual(payload["items"][0]["commandSession"]["commandId"], "cmd-ext-1")
+        self.assertFalse(payload["items"][0]["resultSchemaMatched"])
+        mocked_start.assert_called_once()
+        self.assertEqual(mocked_start.call_args.kwargs["mode"], "start")
+
+    def test_delegation_broker_observe_parses_worker_result_block(self):
+        descriptor = {
+            "id": "research-writer-worker",
+            "name": "Research / Writing Worker",
+            "description": "External research worker",
+            "enabled": True,
+            "workerType": "research_writer",
+            "capabilitySnapshot": {
+                "agentClass": "external_worker",
+                "domainTags": ["research", "writing"],
+                "operationCapabilities": ["research", "write"],
+                "externalWorkerSuitability": "high",
+            },
+            "launchProfile": {
+                "commandTemplate": "worker --task {task_brief_b64}",
+                "cwdPolicy": "inherit_workspace",
+                "envPassThrough": [],
+                "startupTimeoutSeconds": 10,
+            },
+            "sessionMode": "interactive",
+            "allowedSideEffects": ["workspace_write"],
+            "resultSchema": {
+                "type": "v8_worker_result_v1",
+                "markers": ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"],
+            },
+        }
+        result_block = (
+            "<V8_WORKER_RESULT>"
+            + json.dumps(
+                {
+                    "summary": "Draft completed",
+                    "localSelfCheck": "Checked structure and evidence coverage.",
+                    "artifactRefs": [{"kind": "file", "path": "E:/Projects/v8chat/out.md"}],
+                    "acceptanceHint": "Review draft tone and references before publishing.",
+                },
+                ensure_ascii=False,
+            )
+            + "</V8_WORKER_RESULT>"
+        )
+
+        with patch(
+            "core.native_tools.storage.get_supervisor_config",
+            return_value={"delegation": {"externalWorkers": [descriptor]}},
+        ), patch(
+            "core.native_tools.command_session_broker.func",
+            return_value=json.dumps(
+                {
+                    "ok": True,
+                    "mode": "observe",
+                    "kind": "command_session",
+                    "commandId": "cmd-ext-2",
+                    "sessionId": "cmd-ext-2",
+                    "runId": "run-ext-2",
+                    "state": "completed",
+                    "summary": "worker finished",
+                    "deltaText": result_block,
+                    "recommendedNextAction": "none",
+                }
+            ),
+        ):
+            command = delegation_broker.func(
+                mode="observe",
+                delegation_id="external::cmd-ext-2::task-draft::research-writer-worker",
+                state={"run_id": "run-supervisor-2"},
+            )
+
+        payload = json.loads(command.update["messages"][0].content)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["items"][0]["lane"], "external_worker")
+        self.assertEqual(payload["items"][0]["targetId"], "research-writer-worker")
+        self.assertTrue(payload["items"][0]["resultSchemaMatched"])
+        self.assertEqual(payload["items"][0]["localSelfCheck"], "Checked structure and evidence coverage.")
+        self.assertEqual(payload["items"][0]["artifactRefs"][0]["path"], "E:/Projects/v8chat/out.md")
+        self.assertEqual(payload["items"][0]["acceptanceHint"], "Review draft tone and references before publishing.")
 
 
 if __name__ == "__main__":

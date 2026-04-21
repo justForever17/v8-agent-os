@@ -21,6 +21,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             avatar,
             icon,
             roleLabel,
+            capabilitySnapshot,
             reflection_enabled,
             max_reflections,
         } = data;
@@ -36,6 +37,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             model: modelId || "",
             tools: tools || [],
             tool_mode: String(tool_mode || "").trim() || undefined,
+            capabilitySnapshot: capabilitySnapshot && typeof capabilitySnapshot === "object" && !Array.isArray(capabilitySnapshot)
+                ? capabilitySnapshot
+                : {},
             reflection_enabled: reflection_enabled || false,
             max_reflections: max_reflections || 3,
             system_prompt: systemPrompt || ""

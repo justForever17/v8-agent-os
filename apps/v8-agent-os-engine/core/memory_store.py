@@ -1386,6 +1386,19 @@ class MemoryStore:
             key=lambda item: item.name,
         )
 
+    def _latest_memory_day_date(self) -> date | None:
+        latest: date | None = None
+        for year_dir in self._iter_year_dirs():
+            for month_dir in self._iter_month_dirs(year_dir):
+                for day_path in self._iter_day_log_paths(month_dir):
+                    try:
+                        day_date = date.fromisoformat(day_path.stem)
+                    except ValueError:
+                        continue
+                    if latest is None or day_date > latest:
+                        latest = day_date
+        return latest
+
     def _summary_state(self, *, summary_path: Path, descendant_paths: List[Path]) -> tuple[bool, str]:
         if not summary_path.exists():
             return False, "missing"
@@ -1931,10 +1944,14 @@ class MemoryStore:
             return ""
 
         now = datetime.now()
+        latest_day = self._latest_memory_day_date()
+        latest_anchor = datetime.combine(latest_day, datetime.min.time()) if latest_day else None
         parts = []
 
         for tier in ("week", "month", "year"):
             memory_ref, summary_path, label = self._resolve_summary_target(tier, now)
+            if not summary_path.exists() and latest_anchor is not None:
+                memory_ref, summary_path, label = self._resolve_summary_target(tier, latest_anchor)
             if not summary_path.exists():
                 continue
             metadata, body = self._read_frontmatter(summary_path)

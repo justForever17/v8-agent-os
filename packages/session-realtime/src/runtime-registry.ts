@@ -19,6 +19,15 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Carries the supervisor conversation and orchestration flow.",
     },
   },
+  planner_lane: {
+    id: "planner_lane",
+    label: { zh: "规划编排", en: "Planner lane" },
+    shortLabel: { zh: "规划", en: "Plan" },
+    description: {
+      zh: "承接结构化任务切片、task brief、依赖与验收契约。",
+      en: "Carries structured planning, task briefs, dependencies, and acceptance contracts.",
+    },
+  },
   memory: {
     id: "memory",
     label: { zh: "记忆运行", en: "Memory runtime" },
@@ -73,6 +82,15 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Handles OpenClaw channels and external communication history.",
     },
   },
+  subagent_swarm: {
+    id: "subagent_swarm",
+    label: { zh: "子代理蜂群", en: "Subagent swarm" },
+    shortLabel: { zh: "子代理", en: "Agents" },
+    description: {
+      zh: "承接子代理任务分组、紧凑转录、自检、产物引用与汇聚状态。",
+      en: "Tracks subagent task groups, compact transcripts, self-checks, artifact refs, and aggregation status.",
+    },
+  },
   computer_use: {
     id: "computer_use",
     label: { zh: "桌面操作", en: "Computer use" },
@@ -104,11 +122,13 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
 
 export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "chat",
+  "planner_lane",
   "extensions",
   "computer_use",
   "rpa",
   "network_supervisor",
   "plugin_host_tool",
+  "subagent_swarm",
   "automation",
   "memory",
   "plugin_host_channel",
@@ -140,6 +160,26 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
   const normalized = normalizeRuntimeString(raw);
   if (!normalized) return null;
 
+  if (
+    normalized === "planner_lane"
+    || normalized.includes("planner")
+    || normalized.includes("plan_lane")
+    || normalized.includes("task_planning")
+    || normalized.includes("task_plan")
+  ) {
+    return "planner_lane";
+  }
+  if (
+    normalized === "subagent_swarm"
+    || normalized.includes("subagent")
+    || normalized.includes("agent_swarm")
+    || normalized.includes("swarm")
+    || normalized.includes("delegation")
+    || normalized.includes("delegate")
+    || normalized.includes("parallel_delegate")
+  ) {
+    return "subagent_swarm";
+  }
   if (
     normalized === "plugin_host_channel"
     || normalized.includes("channel")

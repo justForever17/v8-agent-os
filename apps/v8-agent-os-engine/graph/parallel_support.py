@@ -11,6 +11,8 @@ from langgraph.types import Command, Send
 from pydantic import BaseModel, Field
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.delegation_broker import build_minimal_task_brief
+from core.native_tools import delegation_broker
 from .route_context import merge_route_context
 
 def _now_iso() -> str:
@@ -36,6 +38,38 @@ def _merge_state_update(state: dict[str, Any], update: dict[str, Any] | None) ->
     return merged
 
 
+def _compact_message_text(message: Any, *, limit: int = 900) -> str:
+    content = getattr(message, "content", message)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item or ""))
+        text = "\n".join(part.strip() for part in parts if part.strip())
+    else:
+        text = str(content or "")
+    normalized = "\n".join(line.rstrip() for line in text.strip().splitlines() if line.strip())
+    if len(normalized) > limit:
+        return normalized[: limit - 3].rstrip() + "..."
+    return normalized
+
+
+def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
+    chunks: list[str] = []
+    for message in messages:
+        text = _compact_message_text(message, limit=700)
+        if not text:
+            continue
+        role = getattr(message, "type", None) or getattr(message, "role", None) or message.__class__.__name__
+        chunks.append(f"{role}: {text}")
+    compact = "\n\n".join(chunks)
+    if len(compact) > limit:
+        return compact[: limit - 3].rstrip() + "..."
+    return compact
+
+
 def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
     agent_directory = {
         str(agent.get("id") or "").strip(): str(agent.get("name") or agent.get("id") or "").strip()
@@ -46,6 +80,7 @@ def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
     class ParallelDelegationItem(BaseModel):
         agent_id: str = Field(description="Registered target agent id.")
         reason: str = Field(description="Concrete delegated task for that agent.")
+        taskBriefId: str | None = Field(default=None, description="Optional planner task brief id for swarm projection.")
 
     class DelegateParallelInput(BaseModel):
         tasks: list[ParallelDelegationItem] = Field(
@@ -87,6 +122,7 @@ def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
             {
                 "agent_id": str(item.get("agent_id") or "").strip(),
                 "reason": str(item.get("reason") or "").strip(),
+                "taskBriefId": str(item.get("taskBriefId") or item.get("task_brief_id") or "").strip(),
             }
             for item in list(tasks or [])
         ]
@@ -103,74 +139,20 @@ def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
                 }
             )
 
-        invocation_id = f"parallel_{uuid.uuid4().hex[:12]}"
-        base_state = dict(state or {})
-        base_messages = list(base_state.get("messages") or [])
-        base_todos = list(base_state.get("todos") or [])
-        base_contexts = list(base_state.get("delegation_contexts") or [])
-        inherited_context = dict(base_state.get("current_route_context") or {})
-        if not inherited_context:
-            inherited_context = latest_delegation_context(base_contexts, agent_id=None)
-        sends: list[Send] = []
-        summary_lines: list[str] = []
-
-        for index, spec in enumerate(normalized_tasks):
-            agent_name = agent_directory[spec["agent_id"]]
-            branch_context = build_delegation_context(
-                agent_id=spec["agent_id"],
-                agent_name=agent_name,
-                query=spec["reason"],
-                mode="parallel",
-                source_runtime_kind=inherited_context.get("sourceRuntimeKind"),
-                selected_skill_ids=inherited_context.get("selectedSkillIds"),
-                selected_skill_names=inherited_context.get("selectedSkillNames"),
-                selected_skill_entries=inherited_context.get("selectedSkillEntries"),
-                skill_root_descriptors=inherited_context.get("skillRootDescriptors"),
-                selected_mcp_tools=inherited_context.get("selectedMcpTools"),
-                selected_plugin_host_tools=inherited_context.get("selectedPluginHostTools"),
-                selected_baseline_tools=inherited_context.get("selectedBaselineTools"),
-                prompt_addition=inherited_context.get("promptAddition"),
-                invocation_id=invocation_id,
+        broker_tasks = [
+            build_minimal_task_brief(
+                goal=spec["reason"],
+                task_brief_id=spec.get("taskBriefId") or "",
+                preferred_agent_id=spec["agent_id"],
+                execution_lane_hint="subagent",
             )
-            branch_state = dict(base_state)
-            branch_state["messages"] = base_messages + [
-                HumanMessage(content=f"[Supervisor Delegated Task to {agent_name}]:\n{spec['reason']}")
-            ]
-            branch_state["todos"] = list(base_todos)
-            branch_state["delegation_contexts"] = base_contexts + [branch_context]
-            branch_state["current_route_context"] = merge_route_context(inherited_context, branch_context)
-            branch_state["parallel_branch"] = {
-                "invocationId": invocation_id,
-                "branchIndex": index,
-                "agentId": spec["agent_id"],
-                "agentName": agent_name,
-                "reason": spec["reason"],
-                "initialMessageCount": len(base_messages) + 1,
-                "initialTodoCount": len(base_todos),
-            }
-            sends.append(Send("parallel_delegate_task", branch_state))
-            summary_lines.append(f"- {agent_name}: {spec['reason']}")
-
-        ack = ToolMessage(
-            content=(
-                f"Queued {len(sends)} concurrent delegations.\n"
-                f"Invocation: {invocation_id}\n"
-                + "\n".join(summary_lines)
-            ),
+            for spec in normalized_tasks
+        ]
+        return delegation_broker.func(
+            mode="dispatch",
+            tasks=broker_tasks,
             tool_call_id=tool_call_id,
-        )
-        return Command(
-            goto=sends,
-            update={
-                "messages": [ack],
-                "parallel_invocations": [
-                    {
-                        "invocationId": invocation_id,
-                        "expected": len(sends),
-                        "createdAt": _now_iso(),
-                    }
-                ],
-            },
+            state=state,
         )
 
     return StructuredTool.from_function(
@@ -226,14 +208,24 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
     delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
     summary = {
         "invocationId": branch.get("invocationId"),
+        "taskBriefId": branch.get("taskBriefId"),
+        "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+        "taskGoal": branch.get("reason"),
         "agentId": agent_id,
         "agentName": branch.get("agentName") or agent_id,
+        "delegationId": branch.get("delegationId"),
+        "lane": branch.get("lane") or "subagent",
+        "targetId": agent_id,
+        "targetLabel": branch.get("agentName") or agent_id,
         "branchIndex": branch.get("branchIndex"),
         "status": "ok",
         "completedAt": _now_iso(),
         "messageCount": len(delta_messages),
         "todoDeltaCount": len(delta_todos),
         "toolMode": agent_data.get("tool_mode"),
+        "compactTranscript": _compact_transcript(delta_messages),
+        "localSelfCheck": "Subagent branch completed; supervisor must still accept, retry, or ignore the result.",
+        "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
     }
     return delta_messages, delta_todos, summary
 
@@ -250,11 +242,19 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                     "parallel_results": [
                         {
                             "invocationId": branch.get("invocationId"),
+                            "taskBriefId": branch.get("taskBriefId"),
+                            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                            "taskGoal": branch.get("reason"),
                             "agentId": agent_id,
                             "agentName": branch.get("agentName") or agent_id,
+                            "delegationId": branch.get("delegationId"),
+                            "lane": branch.get("lane") or "subagent",
+                            "targetId": agent_id,
+                            "targetLabel": branch.get("agentName") or agent_id,
                             "branchIndex": branch.get("branchIndex"),
                             "status": "error",
                             "error": f"未找到子 Agent '{agent_id}'。",
+                            "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
                             "completedAt": _now_iso(),
                         }
                     ]
@@ -266,31 +266,31 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
             return Command(
                 goto="parallel_delegate_join",
                 update={
-                    "messages": delta_messages,
                     "todos": delta_todos,
                     "parallel_results": [summary],
                 },
             )
         except Exception as exc:
-            failure_message = HumanMessage(
-                content=(
-                    f"[{branch.get('agentName') or agent_id} 并发执行异常]\n"
-                    f"错误: {type(exc).__name__}: {str(exc).strip() or 'Unknown error'}"
-                ),
-                id=str(uuid.uuid4()),
-            )
             return Command(
                 goto="parallel_delegate_join",
                 update={
-                    "messages": [failure_message],
                     "parallel_results": [
                         {
                             "invocationId": branch.get("invocationId"),
+                            "taskBriefId": branch.get("taskBriefId"),
+                            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                            "taskGoal": branch.get("reason"),
                             "agentId": agent_id,
                             "agentName": branch.get("agentName") or agent_id,
+                            "delegationId": branch.get("delegationId"),
+                            "lane": branch.get("lane") or "subagent",
+                            "targetId": agent_id,
+                            "targetLabel": branch.get("agentName") or agent_id,
                             "branchIndex": branch.get("branchIndex"),
                             "status": "error",
                             "error": str(exc).strip() or exc.__class__.__name__,
+                            "localSelfCheck": "Subagent branch failed before supervisor acceptance.",
+                            "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
                             "completedAt": _now_iso(),
                         }
                     ],
@@ -321,7 +321,7 @@ def build_parallel_delegate_join_node():
                 f"Invocation: {invocation_id or 'n/a'}\n"
                 f"已回收 {len(results)}/{expected or len(results)} 个并发子任务结果。\n"
                 f"失败: {len(failures)} 个。\n"
-                "请结合上方各子 Agent 回传结果继续决策。"
+                "详细 compact transcript、产物引用与局部自检已投影到 subagent_swarm runtime card；最终采纳、重试或忽略仍由 supervisor 决定。"
             ),
             id=str(uuid.uuid4()),
         )

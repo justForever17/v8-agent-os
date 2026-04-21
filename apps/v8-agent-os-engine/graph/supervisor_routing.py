@@ -84,10 +84,13 @@ def build_supervisor_toolset(
         supervisor_allowed_tools=supervisor_allowed_tools,
         config_allowed_tools=config_allowed_tools,
     )
-    supervisor_tools = [fetch_skill_instructions_tool, create_agent_tool]
-    if delegate_parallel_tool is not None:
-        supervisor_tools.append(delegate_parallel_tool)
-    supervisor_tools += handoff_tools + selected_native_tools
+    broker_tools = [
+        tool_ref
+        for tool_ref in selected_native_tools
+        if str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip() == "delegation_broker"
+    ]
+    remaining_native_tools = [tool_ref for tool_ref in selected_native_tools if tool_ref not in broker_tools]
+    supervisor_tools = [fetch_skill_instructions_tool] + broker_tools + remaining_native_tools
 
     if supervisor_allowed_tools is not None:
         allowed_mcp_tools = [tool for tool in all_mcp_tools if tool.name in supervisor_allowed_tools]

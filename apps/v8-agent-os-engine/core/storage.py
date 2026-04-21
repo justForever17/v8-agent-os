@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 from uuid import uuid4
 
 from core.context_policy import DEFAULT_CONTEXT_POLICY, normalize_context_policy
+from core.delegation_broker import default_external_worker_descriptors, normalize_external_worker_descriptors
 from core.runtime.supervisor_tool_policy import sanitize_supervisor_allowed_tools
 from core.v8_agent_os_identity import default_system_identity, normalize_system_identity
 from core.v8_agent_os_paths import (
@@ -221,6 +222,20 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n",
     ),
     (
+        "## Delegation Discipline\n"
+        "- If a task is small and local, solve it directly.\n"
+        "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"
+        "- Use `create_agent` to create durable specialists for future turns.\n"
+        "- Use `delegate_parallel` only for bounded fan-out, at most two subtasks, with isolated scopes.\n"
+        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n",
+        "## Delegation Discipline\n"
+        "- If a task is small and local, solve it directly.\n"
+        "- If a task needs a distinct role, independent context, or parallel execution, use `delegation_broker`.\n"
+        "- Treat planner task briefs as the canonical delegation contract.\n"
+        "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
+        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n",
+    ),
+    (
         "## Recoverability And Observability\n"
         "- Prefer paths that preserve pause/resume, retry, snapshots, run ledgers, and event trails.\n"
         "- Do not fake completion. If something is blocked, state what is blocked, what is done, and what should happen next.\n"
@@ -331,6 +346,9 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "name": "智能主管",
             "roleLabel": "主理人",
             "avatar": "",
+        },
+        "delegation": {
+            "externalWorkers": default_external_worker_descriptors(),
         },
     },
     "workspace": {"agent_workspace_path": _default_workspace_path()},
@@ -669,8 +687,9 @@ class StorageManager:
                 "## Delegation Discipline\n"
                 "- If a task is small and local, solve it directly.\n"
                 "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"
-                "- Use `create_agent` to create durable specialists for future turns.\n"
-                "- Use `delegate_parallel` only for bounded fan-out, at most two subtasks, with isolated scopes.\n"
+                "- Use `delegation_broker` as the canonical delegation entrypoint.\n"
+                "- Treat planner task briefs as the canonical delegation contract.\n"
+                "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
                 "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n"
                 "## Todo Discipline\n"
                 "- For non-trivial tasks, create and maintain todos.\n"
@@ -705,10 +724,26 @@ class StorageManager:
                 continue
 
         self._sanitize_stock_supervisor_prompt_file()
+        self._ensure_default_subagents()
         self._ensure_config_json_exists()
         self._migrate_computer_use_storage()
         self._ensure_plugin_json_exists()
         self._migrate_legacy_structured_files()
+
+    def _ensure_default_subagents(self):
+        agents_dir = self.base_dir / "agents"
+        try:
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            from core.agents import default_subagent_configs, dump_agent_md
+
+            for agent_config in default_subagent_configs():
+                agent_path = agents_dir / f"{agent_config.id}.md"
+                if agent_path.exists():
+                    continue
+                with open(agent_path, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(dump_agent_md(agent_config))
+        except (OSError, PermissionError) as exc:
+            print(f"[Storage] Default subagent initialization skipped: {exc}")
 
     def _sanitize_stock_supervisor_prompt_file(self):
         filepath = self.base_dir / "V8_AGENT_OS.md"
@@ -1813,15 +1848,27 @@ class StorageManager:
             STRUCTURED_CONFIG_DEFAULTS["supervisor"],
             self._read_config_payload().get("supervisor") if isinstance(self._read_config_payload().get("supervisor"), dict) else {},
         )
+        should_save = False
         sanitized_allowed_tools = sanitize_supervisor_allowed_tools(config.get("allowed_tools"))
         if sanitized_allowed_tools != config.get("allowed_tools"):
             config["allowed_tools"] = sanitized_allowed_tools
+            should_save = True
+        delegation = dict(config.get("delegation") or {})
+        normalized_external_workers = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
+        if normalized_external_workers != delegation.get("externalWorkers"):
+            delegation["externalWorkers"] = normalized_external_workers
+            config["delegation"] = delegation
+            should_save = True
+        if should_save:
             self.save_supervisor_config(config)
         return config
         
     def save_supervisor_config(self, data: Dict[str, Any]):
         next_payload = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["supervisor"], dict(data or {}))
         next_payload["allowed_tools"] = sanitize_supervisor_allowed_tools(next_payload.get("allowed_tools"))
+        delegation = dict(next_payload.get("delegation") or {})
+        delegation["externalWorkers"] = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
+        next_payload["delegation"] = delegation
         payload = self._read_config_payload()
         payload["supervisor"] = next_payload
         self._write_config_payload(payload)

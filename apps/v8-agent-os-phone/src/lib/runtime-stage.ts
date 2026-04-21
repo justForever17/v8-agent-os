@@ -66,6 +66,7 @@ export type PhoneRuntimeStageModel = {
 
 export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "chat",
+    "planner_lane",
     "extensions",
     "automation",
     "memory",
@@ -80,11 +81,12 @@ export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
 
 export const VISIBLE_PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "chat",
+    "planner_lane",
     "extensions",
     "automation",
     "memory",
     "context_governance",
-    ...VISIBLE_SESSION_RUNTIME_ORDER.filter((runtimeId) => !["chat", "extensions", "automation", "memory"].includes(runtimeId)),
+    ...VISIBLE_SESSION_RUNTIME_ORDER.filter((runtimeId) => !["chat", "planner_lane", "extensions", "automation", "memory"].includes(runtimeId)),
 ];
 
 function firstRuntimeMatch(values: Array<string | null | undefined>): PhoneRuntimeId | null {
@@ -240,7 +242,7 @@ function coerceTimelineString(value: unknown) {
 
 function remapTimelineEntryRuntimeId(entry: PhoneRuntimeTimelineEntry): PhoneRuntimeId {
     const topic = String(entry.topic || "").trim().toLowerCase();
-    if (topic.startsWith("context.") || topic === "context_governance_changed") {
+    if (topic.startsWith("context.") || topic === "context_governance_changed" || topic.startsWith("supervisor.graph.")) {
         return "context_governance";
     }
     return entry.runtimeId;
@@ -295,7 +297,7 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
         if (topic === "ask_user.resolved") return "ask_user" as const;
         if (topic.startsWith("approval.")) return "approval_resolved" as const;
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
-        if (topic.startsWith("context.")) return "context_governance" as const;
+        if (topic.startsWith("context.") || topic.startsWith("supervisor.graph.")) return "context_governance" as const;
         if (topic.startsWith("run.lane.")) return "lane_updated" as const;
         return "run_controlled" as const;
     })();

@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import type { ElementType } from "react";
 import { cn } from "@/lib/utils";
 import { RuntimeId, RuntimeStageModel } from "@/lib/runtime-stage";
-import { Blocks, Bot, Cpu, Database, Globe, RadioTower, Shield, TerminalSquare, Workflow } from "lucide-react";
+import { Blocks, Bot, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, TerminalSquare, Workflow } from "lucide-react";
 
 interface RuntimeDockProps {
     model: RuntimeStageModel;
@@ -15,10 +15,12 @@ interface RuntimeDockProps {
 
 const runtimeIcons: Record<RuntimeId, ElementType<{ className?: string }>> = {
     chat: Bot,
+    planner_lane: Route,
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
     context_governance: Shield,
+    subagent_swarm: GitBranch,
     network_supervisor: Globe,
     plugin_host_tool: RadioTower,
     plugin_host_channel: RadioTower,

@@ -38,6 +38,7 @@ type Agent = {
     tools: string[] | null;
     skills: string[] | null;
     roleLabel: string | null;
+    capabilitySnapshot?: Record<string, unknown> | null;
     createdBy?: string;
     isEnabled: boolean;
     reflection_enabled?: boolean;
@@ -77,6 +78,14 @@ type PluginHostTool = {
 
 type BridgeToolsPayload = {
     inventory?: PluginHostTool[];
+};
+
+type SupervisorConfigRegistryPayload = {
+    data?: {
+        delegation?: {
+            externalWorkers?: unknown[];
+        } | null;
+    } | null;
 };
 
 type ExtensionsCatalogPayload = {
@@ -121,6 +130,7 @@ type AgentFormState = {
     systemPrompt: string;
     tools: string[];
     toolMode: "explicit" | "contextual_auto";
+    capabilitySnapshotJson: string;
     reflectionEnabled: boolean;
     maxReflections: number;
 };
@@ -137,6 +147,7 @@ const DEFAULT_FORM_STATE: AgentFormState = {
     systemPrompt: "",
     tools: [],
     toolMode: "contextual_auto",
+    capabilitySnapshotJson: "{}",
     reflectionEnabled: false,
     maxReflections: 3,
 };
@@ -168,9 +179,12 @@ export default function SubagentsPage() {
     });
     const [bridgeError, setBridgeError] = useState<string | null>(null);
     const [defaultModelId, setDefaultModelId] = useState("");
+    const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(null);
+    const [externalWorkersJson, setExternalWorkersJson] = useState("[]");
     const [isLoading, setIsLoading] = useState(false);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [isSavingExternalWorkers, setIsSavingExternalWorkers] = useState(false);
     const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
     const [form, setForm] = useState<AgentFormState>(DEFAULT_FORM_STATE);
     const [toolPanels, setToolPanels] = useState<Record<ToolPanelKey, boolean>>({
@@ -215,6 +229,9 @@ export default function SubagentsPage() {
                 setForm({ ...DEFAULT_FORM_STATE, modelId: defaultModelId || "" });
                 return;
             }
+            const capabilitySnapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot)
+                ? agent.capabilitySnapshot
+                : {};
             setForm({
                 name: agent.name || "",
                 description: agent.description || "",
@@ -225,6 +242,7 @@ export default function SubagentsPage() {
                 systemPrompt: agent.systemPrompt || "",
                 tools: Array.isArray(agent.tools) ? agent.tools : [],
                 toolMode: agent.tool_mode === "explicit" ? "explicit" : "contextual_auto",
+                capabilitySnapshotJson: JSON.stringify(capabilitySnapshot, null, 2),
                 reflectionEnabled: Boolean(agent.reflection_enabled),
                 maxReflections: agent.max_reflections || 3,
             });
@@ -270,12 +288,13 @@ export default function SubagentsPage() {
     const fetchData = useCallback(async () => {
         setIsLoading(true);
         try {
-            const [agentsRes, modelsRes, defaultModelRes, extensionsRes, bridgeRes] = await Promise.all([
+            const [agentsRes, modelsRes, defaultModelRes, extensionsRes, bridgeRes, supervisorRes] = await Promise.all([
                 fetch("/api/agents", { cache: "no-store" }),
                 fetch("/api/models", { cache: "no-store" }),
                 fetch("/api/settings/default-agent-model", { cache: "no-store" }),
                 fetch("/api/extensions/catalog", { cache: "no-store" }),
                 fetch("/api/plugin-host/bridge/tools?limit=24", { cache: "no-store" }),
+                fetch("/api/config-registry/supervisor", { cache: "no-store" }),
             ]);
 
             if (agentsRes.ok) setAgents(await agentsRes.json());
@@ -316,6 +335,17 @@ export default function SubagentsPage() {
                 setPluginHostTools([]);
                 setBridgeError(typeof data?.error === "string" ? data.error : t("app.admin.dashboard.subagents.page.keff963b3"));
             }
+            if (supervisorRes.ok) {
+                const data: SupervisorConfigRegistryPayload = await supervisorRes.json();
+                setSupervisorDomainData(data);
+                setExternalWorkersJson(
+                    JSON.stringify(
+                        Array.isArray(data?.data?.delegation?.externalWorkers) ? data.data!.delegation!.externalWorkers : [],
+                        null,
+                        2,
+                    ),
+                );
+            }
         } catch (error) {
             console.error("Failed to fetch subagent data", error);
             toast({
@@ -347,6 +377,21 @@ export default function SubagentsPage() {
             toast({ title: t("app.admin.dashboard.subagents.page.k24a5ad1b"), description: t("app.admin.dashboard.subagents.page.ka092e243"), variant: "destructive" });
             return;
         }
+        let capabilitySnapshot: Record<string, unknown> = {};
+        try {
+            const parsed = JSON.parse(form.capabilitySnapshotJson || "{}");
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error("capabilitySnapshot must be a JSON object.");
+            }
+            capabilitySnapshot = parsed as Record<string, unknown>;
+        } catch (error) {
+            toast({
+                title: "capabilitySnapshot JSON is invalid",
+                description: error instanceof Error ? error.message : "Please enter a valid JSON object.",
+                variant: "destructive",
+            });
+            return;
+        }
         setIsSaving(true);
         try {
             const payload = {
@@ -359,6 +404,7 @@ export default function SubagentsPage() {
                 systemPrompt: form.systemPrompt,
                 tools: form.toolMode === "explicit" ? form.tools : [],
                 tool_mode: form.toolMode,
+                capabilitySnapshot,
                 reflection_enabled: form.reflectionEnabled,
                 max_reflections: form.maxReflections,
                 isEnabled: true,
@@ -395,6 +441,70 @@ export default function SubagentsPage() {
             setIsSaving(false);
         }
     }, [editingAgent, fetchData, form, t, toast]);
+
+    const handleSaveExternalWorkers = useCallback(async () => {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(externalWorkersJson || "[]");
+        } catch (error) {
+            toast({
+                title: "External worker JSON is invalid",
+                description: error instanceof Error ? error.message : "Please enter a valid JSON array.",
+                variant: "destructive",
+            });
+            return;
+        }
+        if (!Array.isArray(parsed)) {
+            toast({
+                title: "External worker JSON must be an array",
+                description: "Please provide a JSON array of external worker descriptors.",
+                variant: "destructive",
+            });
+            return;
+        }
+        setIsSavingExternalWorkers(true);
+        try {
+            const nextPayload = {
+                data: {
+                    ...(supervisorDomainData?.data || {}),
+                    delegation: {
+                        ...((supervisorDomainData?.data?.delegation || {}) as Record<string, unknown>),
+                        externalWorkers: parsed,
+                    },
+                },
+            };
+            const response = await fetch("/api/config-registry/supervisor", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(nextPayload),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(String(data?.detail || data?.error || response.status));
+            }
+            setSupervisorDomainData(data);
+            setExternalWorkersJson(
+                JSON.stringify(
+                    Array.isArray(data?.data?.delegation?.externalWorkers) ? data.data.delegation.externalWorkers : [],
+                    null,
+                    2,
+                ),
+            );
+            toast({
+                title: "External workers updated",
+                description: "Delegation descriptors have been saved to supervisor config.",
+            });
+        } catch (error) {
+            console.error("Failed to save external workers", error);
+            toast({
+                title: "Failed to save external workers",
+                description: error instanceof Error ? error.message : "Unknown error",
+                variant: "destructive",
+            });
+        } finally {
+            setIsSavingExternalWorkers(false);
+        }
+    }, [externalWorkersJson, supervisorDomainData, toast]);
 
     const handleDelete = useCallback(async (id: string) => {
         if (!confirm(t("app.admin.dashboard.subagents.page.ka7d365b9"))) return;
@@ -495,6 +605,13 @@ export default function SubagentsPage() {
                 {agents.map((agent) => {
                     const selectors = Array.isArray(agent.tools) ? agent.tools : [];
                     const toolMode = agent.tool_mode === "explicit" ? "explicit" : "contextual_auto";
+                    const capabilitySnapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot)
+                        ? agent.capabilitySnapshot
+                        : {};
+                    const agentClass = typeof capabilitySnapshot.agentClass === "string" ? capabilitySnapshot.agentClass : "";
+                    const domainTags = Array.isArray(capabilitySnapshot.domainTags)
+                        ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3)
+                        : [];
                     return (
                         <Card key={agent.id} className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
                             <CardHeader className="space-y-4">
@@ -524,6 +641,8 @@ export default function SubagentsPage() {
                                 </div>
                                 <div className="flex flex-wrap gap-2">
                                     <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{toolMode}</Badge>
+                                    {agentClass ? <Badge variant="outline">{agentClass}</Badge> : null}
+                                    {domainTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}
                                     {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t("app.admin.dashboard.subagents.page.kcec0f2f4")}</Badge> : null}
                                     {agent.reflection_enabled ? <Badge variant="outline">{t("app.admin.dashboard.subagents.page.k1599cdff")} × {agent.max_reflections || 3}</Badge> : null}
                                 </div>
@@ -551,6 +670,35 @@ export default function SubagentsPage() {
                     </div>
                 ) : null}
             </div>
+
+            <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                        <Cable className="h-4 w-4 text-emerald-600" />
+                        External worker descriptors
+                    </CardTitle>
+                    <CardDescription>
+                        Delegation broker uses these descriptors as the editable truth for external CLI workers. They are stored in <code>config.json#supervisor.delegation.externalWorkers</code>.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <Textarea
+                        value={externalWorkersJson}
+                        onChange={(event) => setExternalWorkersJson(event.target.value)}
+                        className="min-h-[220px] font-mono text-xs"
+                        placeholder='[{"id":"coding-cli-worker","enabled":false}]'
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs leading-5 text-slate-500">
+                            Keep one worker per object. Put the launcher in <code>launchProfile.commandTemplate</code> and result markers in <code>resultSchema.markers</code>.
+                        </p>
+                        <Button onClick={() => void handleSaveExternalWorkers()} disabled={isSavingExternalWorkers}>
+                            {isSavingExternalWorkers ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            Save external workers
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">
@@ -625,6 +773,19 @@ export default function SubagentsPage() {
                                     <div>{t("app.admin.dashboard.subagents.page.k502a06d7")}</div>
                                 </>
                             )}
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>capabilitySnapshot JSON</Label>
+                            <Textarea
+                                value={form.capabilitySnapshotJson}
+                                onChange={(event) => setForm((current) => ({ ...current, capabilitySnapshotJson: event.target.value }))}
+                                className="min-h-[180px] font-mono text-xs"
+                                placeholder='{"agentClass":"executor","domainTags":["software_engineering"]}'
+                            />
+                            <p className="text-xs leading-5 text-slate-500">
+                                Routing metadata for planner/subagent selection. This is separate from roleLabel, which remains presentation-only.
+                            </p>
                         </div>
 
                         {form.toolMode === "explicit" ? (

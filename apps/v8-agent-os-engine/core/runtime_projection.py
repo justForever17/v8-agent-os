@@ -994,14 +994,84 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 status="configured",
                 actor_label="聊天运行",
             )
+        elif topic == "chat.planner_mode.enabled":
+            planner_mode = str(payload.get("plannerMode") or "force").strip() or "force"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="planner_lane",
+                kind="progress",
+                summary=f"已进入规划编排通道（{planner_mode}）",
+                status="configured",
+                actor_label="规划编排",
+            )
         elif topic == "chat.task_planning_mode.enabled":
             entry = _runtime_timeline_entry(
                 event,
-                runtime_id="chat",
+                runtime_id="planner_lane",
                 kind="progress",
                 summary="已开启任务模式",
                 status="configured",
-                actor_label="聊天运行",
+                actor_label="规划编排",
+            )
+        elif topic == "chat.planner_mode.decided":
+            reason = str(payload.get("reason") or "").strip()
+            summary = str(payload.get("summary") or "").strip() or "规划模式决策已更新"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="planner_lane",
+                kind="progress",
+                summary=summary,
+                status=reason or "decided",
+                actor_label="规划编排",
+            )
+        elif topic == "chat.task_planning_mode.decided":
+            reason = str(payload.get("reason") or "").strip()
+            summary = str(payload.get("summary") or "").strip() or "任务规划决策已更新"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="planner_lane",
+                kind="progress",
+                summary=summary,
+                status=reason or "decided",
+                actor_label="规划编排",
+            )
+        elif topic == "planner.plan.created":
+            task_count = int(payload.get("taskCount") or len(list(payload.get("taskBriefs") or [])) or 0)
+            execution_strategy = str(payload.get("executionStrategy") or "direct").strip() or "direct"
+            plan_summary = str(payload.get("planSummary") or "").strip()
+            summary = plan_summary or f"已生成规划：{execution_strategy} · {task_count} 个任务"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="planner_lane",
+                kind="progress",
+                summary=_truncate_runtime_summary(summary, 120),
+                status=execution_strategy,
+                actor_label="规划编排",
+            )
+        elif topic == "planner.plan.projected":
+            selected = len(list(payload.get("selectedDelegations") or []))
+            execution_strategy = str(payload.get("executionStrategy") or "direct").strip() or "direct"
+            plan_summary = str(payload.get("planSummary") or "").strip()
+            summary = plan_summary or f"规划已投影：{execution_strategy}"
+            if selected > 0:
+                summary += f" · 已选择 {selected} 个 delegation"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="planner_lane",
+                kind="progress",
+                summary=_truncate_runtime_summary(summary, 120),
+                status=execution_strategy,
+                actor_label="规划编排",
+            )
+        elif topic == "planner.plan.failed":
+            summary = str(payload.get("summary") or payload.get("error") or "规划生成失败，已回退。").strip()
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="planner_lane",
+                kind="governance",
+                summary=_truncate_runtime_summary(summary, 120),
+                status="failed",
+                actor_label="规划编排",
             )
         elif topic == "run.lane.queued":
             entry = _runtime_timeline_entry(

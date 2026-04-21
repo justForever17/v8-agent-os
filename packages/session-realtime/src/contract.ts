@@ -1,11 +1,13 @@
 export const SESSION_RUNTIME_IDS = [
   "chat",
+  "planner_lane",
   "memory",
   "automation",
   "extensions",
   "network_supervisor",
   "plugin_host_tool",
   "plugin_host_channel",
+  "subagent_swarm",
   "computer_use",
   "rpa",
   "desktop_live",

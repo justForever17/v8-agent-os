@@ -17,7 +17,7 @@ import {
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
 import { ContentDispatcher } from "./ContentDispatcher";
-import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, Globe, RadioTower, Shield, TerminalSquare, Workflow, X } from "lucide-react";
+import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, TerminalSquare, Workflow, X } from "lucide-react";
 
 interface RuntimeTimelinePanelProps {
     isOpen: boolean;
@@ -35,10 +35,12 @@ interface RuntimeTimelinePanelProps {
 
 const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>> = {
     chat: Bot,
+    planner_lane: Route,
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
     context_governance: Shield,
+    subagent_swarm: GitBranch,
     network_supervisor: Globe,
     plugin_host_tool: RadioTower,
     plugin_host_channel: RadioTower,
@@ -54,6 +56,82 @@ const kindMeta: Record<RuntimeStageActivity["kind"], { label: string; icon: Reac
     artifact: { label: "产物", icon: Box, tone: "text-violet-600 dark:text-violet-300" },
     handoff: { label: "交接", icon: Workflow, tone: "text-amber-600 dark:text-amber-300" },
 };
+
+function readExecutionData(activity: RuntimeStageActivity): Record<string, unknown> {
+    if (activity.node.kind !== "execution" || !activity.node.data || typeof activity.node.data !== "object") {
+        return {};
+    }
+    return activity.node.data as Record<string, unknown>;
+}
+
+function readString(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function getSwarmTaskBriefId(activity?: RuntimeStageActivity): string {
+    if (!activity) return "";
+    const data = readExecutionData(activity);
+    return readString(data.taskBriefId)
+        || readString(data.task_brief_id)
+        || readString(data.invocationId)
+        || activity.id;
+}
+
+function getSwarmTaskLabel(activity: RuntimeStageActivity): { title: string; meta: string } {
+    const data = readExecutionData(activity);
+    const title = readString(data.taskGoal) || readString(data.task_goal) || activity.summary || "Subagent task";
+    const lane = readString(data.lane) || "subagent";
+    const agent = lane === "external_worker"
+        ? readString(data.workerType) || readString(data.targetLabel) || readString(data.subagentName) || "External worker"
+        : readString(data.subagentName) || readString(data.targetLabel) || readString(data.subagentId) || activity.actorLabel || "Subagent";
+    const status = readString(data.status) || "running";
+    const commandSession = readRecord(data.commandSession);
+    const traceRef = readRecord(data.traceRef);
+    const commandId = readString(commandSession.commandId) || readString(traceRef.commandId);
+    const metaParts = [`${agent}`, status];
+    if (lane === "external_worker") {
+        metaParts.unshift("external");
+    }
+    if (commandId) {
+        metaParts.push(commandId);
+    }
+    return {
+        title,
+        meta: metaParts.join(" · "),
+    };
+}
+
+function getPlannerPlanId(activity?: RuntimeStageActivity): string {
+    if (!activity) return "";
+    const data = readExecutionData(activity);
+    return readString(data.planId)
+        || readString(data.plan_id)
+        || readString((readRecord(data.traceRef)).planId)
+        || activity.id;
+}
+
+function getPlannerPlanLabel(activity: RuntimeStageActivity): { title: string; meta: string } {
+    const data = readExecutionData(activity);
+    const title = readString(data.planSummary) || readString(data.summary) || activity.summary || "Planner plan";
+    const executionStrategy = readString(data.executionStrategy) || "direct";
+    const taskCount = Number(data.taskCount || (Array.isArray(data.taskBriefs) ? data.taskBriefs.length : 0) || 0);
+    const selectedDelegations = Array.isArray(data.selectedDelegations) ? data.selectedDelegations.length : 0;
+    const riskFlags = Array.isArray(data.riskFlags)
+        ? data.riskFlags.map((item) => readString(item)).filter(Boolean)
+        : [];
+    const metaParts = [executionStrategy];
+    if (taskCount > 0) metaParts.push(`${taskCount} tasks`);
+    if (selectedDelegations > 0) metaParts.push(`${selectedDelegations} delegated`);
+    if (riskFlags.length > 0) metaParts.push(`risks: ${riskFlags.slice(0, 2).join(", ")}`);
+    return {
+        title,
+        meta: metaParts.join(" · "),
+    };
+}
 
 function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
     const [index, setIndex] = React.useState(0);
@@ -447,9 +525,40 @@ export function RuntimeTimelinePanel({
 
                                 <div className={cn("space-y-3", activities.length > 0 ? "md:mt-4" : "")}>
                                     {activities.length > 0 ? (
-                                        activities.slice(0, 24).map((activity) => (
-                                            <ActivityFeedItem key={activity.id} activity={activity} processes={processes} />
-                                        ))
+                                        activities.map((activity, index) => {
+                                            const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane";
+                                            const currentGroupId = !shouldGroup
+                                                ? ""
+                                                : runtimeId === "subagent_swarm"
+                                                    ? getSwarmTaskBriefId(activity)
+                                                    : getPlannerPlanId(activity);
+                                            const previousGroupId = !shouldGroup
+                                                ? ""
+                                                : runtimeId === "subagent_swarm"
+                                                    ? getSwarmTaskBriefId(activities[index - 1])
+                                                    : getPlannerPlanId(activities[index - 1]);
+                                            const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
+                                            const taskLabel = !showTaskHeader
+                                                ? null
+                                                : runtimeId === "subagent_swarm"
+                                                    ? getSwarmTaskLabel(activity)
+                                                    : getPlannerPlanLabel(activity);
+                                            return (
+                                                <div key={activity.id} className="space-y-2.5">
+                                                    {taskLabel && (
+                                                        <div className="rounded-[20px] border border-stone-200/80 bg-stone-50/90 px-3.5 py-2.5 dark:border-white/10 dark:bg-white/[0.035]">
+                                                            <div className="line-clamp-2 text-[13px] font-semibold leading-5 text-foreground/90">
+                                                                {taskLabel.title}
+                                                            </div>
+                                                            <div className="mt-1 text-[11px] text-muted-foreground">
+                                                                {taskLabel.meta}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    <ActivityFeedItem activity={activity} processes={processes} />
+                                                </div>
+                                            );
+                                        })
                                     ) : (
                                         <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
                                             当前还没有可展示的运行记录。

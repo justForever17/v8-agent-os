@@ -57,6 +57,82 @@ function getKindIconName(kind: PhoneRuntimeStageActivity["kind"]): React.Compone
     }
 }
 
+function readExecutionData(activity: PhoneRuntimeStageActivity): Record<string, unknown> {
+    if (activity.node.kind !== "execution" || !activity.node.data || typeof activity.node.data !== "object") {
+        return {};
+    }
+    return activity.node.data as Record<string, unknown>;
+}
+
+function readString(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function getSwarmTaskBriefId(activity?: PhoneRuntimeStageActivity): string {
+    if (!activity) return "";
+    const data = readExecutionData(activity);
+    return readString(data.taskBriefId)
+        || readString(data.task_brief_id)
+        || readString(data.invocationId)
+        || activity.id;
+}
+
+function getSwarmTaskLabel(activity: PhoneRuntimeStageActivity): { title: string; meta: string } {
+    const data = readExecutionData(activity);
+    const title = readString(data.taskGoal) || readString(data.task_goal) || activity.summary || "Subagent task";
+    const lane = readString(data.lane) || "subagent";
+    const agent = lane === "external_worker"
+        ? readString(data.workerType) || readString(data.targetLabel) || readString(data.subagentName) || "External worker"
+        : readString(data.subagentName) || readString(data.targetLabel) || readString(data.subagentId) || activity.actorLabel || "Subagent";
+    const status = readString(data.status) || "running";
+    const commandSession = readRecord(data.commandSession);
+    const traceRef = readRecord(data.traceRef);
+    const commandId = readString(commandSession.commandId) || readString(traceRef.commandId);
+    const metaParts = [`${agent}`, status];
+    if (lane === "external_worker") {
+        metaParts.unshift("external");
+    }
+    if (commandId) {
+        metaParts.push(commandId);
+    }
+    return {
+        title,
+        meta: metaParts.join(" · "),
+    };
+}
+
+function getPlannerPlanId(activity?: PhoneRuntimeStageActivity): string {
+    if (!activity) return "";
+    const data = readExecutionData(activity);
+    return readString(data.planId)
+        || readString(data.plan_id)
+        || readString((readRecord(data.traceRef)).planId)
+        || activity.id;
+}
+
+function getPlannerPlanLabel(activity: PhoneRuntimeStageActivity): { title: string; meta: string } {
+    const data = readExecutionData(activity);
+    const title = readString(data.planSummary) || readString(data.summary) || activity.summary || "Planner plan";
+    const executionStrategy = readString(data.executionStrategy) || "direct";
+    const taskCount = Number(data.taskCount || (Array.isArray(data.taskBriefs) ? data.taskBriefs.length : 0) || 0);
+    const selectedDelegations = Array.isArray(data.selectedDelegations) ? data.selectedDelegations.length : 0;
+    const riskFlags = Array.isArray(data.riskFlags)
+        ? data.riskFlags.map((item) => readString(item)).filter(Boolean)
+        : [];
+    const metaParts = [executionStrategy];
+    if (taskCount > 0) metaParts.push(`${taskCount} tasks`);
+    if (selectedDelegations > 0) metaParts.push(`${selectedDelegations} delegated`);
+    if (riskFlags.length > 0) metaParts.push(`risks: ${riskFlags.slice(0, 2).join(", ")}`);
+    return {
+        title,
+        meta: metaParts.join(" · "),
+    };
+}
+
 function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
     const { colors, t, locale } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
@@ -263,15 +339,14 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                 const governanceType = isGovernanceNode
                     ? String((activity.node as Extract<typeof activity.node, { kind: "governance" }>).governanceType || "").trim().toLowerCase()
                     : "";
-                if (topic.startsWith("context.") || topic === "context_governance_changed") {
+                if (topic.startsWith("context.") || topic === "context_governance_changed" || topic.startsWith("supervisor.graph.")) {
                     return false;
                 }
                 if (governanceType === "context_governance") {
                     return false;
                 }
                 return true;
-            })
-            .slice(0, 24);
+            });
     }, [activities, effectiveSelectedRuntimeId]);
     const runtimeListKey = useMemo(
         () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}:${visibleActivities.map((activity) => activity.id).join("|")}`,
@@ -327,8 +402,41 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     }, [activities.length, effectiveSelectedRuntimeId, resetScrollTop, visible]);
 
     const renderActivityItem = useCallback(
-        ({ item }: { item: PhoneRuntimeStageActivity }) => <ActivityFeedItem activity={item} processes={processes} />,
-        [processes],
+        ({ item, index }: { item: PhoneRuntimeStageActivity; index: number }) => {
+            const shouldGroup = effectiveSelectedRuntimeId === "subagent_swarm" || effectiveSelectedRuntimeId === "planner_lane";
+            const currentGroupId = !shouldGroup
+                ? ""
+                : effectiveSelectedRuntimeId === "subagent_swarm"
+                    ? getSwarmTaskBriefId(item)
+                    : getPlannerPlanId(item);
+            const previousGroupId = !shouldGroup
+                ? ""
+                : effectiveSelectedRuntimeId === "subagent_swarm"
+                    ? getSwarmTaskBriefId(visibleActivities[index - 1])
+                    : getPlannerPlanId(visibleActivities[index - 1]);
+            const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
+            const taskLabel = !showTaskHeader
+                ? null
+                : effectiveSelectedRuntimeId === "subagent_swarm"
+                    ? getSwarmTaskLabel(item)
+                    : getPlannerPlanLabel(item);
+            return (
+                <View>
+                    {taskLabel ? (
+                        <View style={[styles.swarmTaskHeader, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
+                            <Text style={[styles.swarmTaskTitle, { color: colors.text }]} numberOfLines={2}>
+                                {taskLabel.title}
+                            </Text>
+                            <Text style={[styles.swarmTaskMeta, { color: colors.textMuted }]} numberOfLines={1}>
+                                {taskLabel.meta}
+                            </Text>
+                        </View>
+                    ) : null}
+                    <ActivityFeedItem activity={item} processes={processes} />
+                </View>
+            );
+        },
+        [colors.border, colors.surfaceStrong, colors.text, colors.textMuted, effectiveSelectedRuntimeId, processes, visibleActivities],
     );
     const renderEmptyState = useCallback(
         () => (
@@ -716,6 +824,23 @@ const styles = StyleSheet.create({
     },
     feedGap: {
         height: 12,
+    },
+    swarmTaskHeader: {
+        borderWidth: 1,
+        borderRadius: 18,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        marginBottom: 10,
+    },
+    swarmTaskTitle: {
+        fontSize: 13,
+        fontWeight: "800",
+        lineHeight: 18,
+    },
+    swarmTaskMeta: {
+        marginTop: 4,
+        fontSize: 11,
+        lineHeight: 15,
     },
     broadcastCard: {
         borderRadius: 22,

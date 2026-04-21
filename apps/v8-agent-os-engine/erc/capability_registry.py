@@ -59,8 +59,8 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "visibility": "primary",
     },
     "desktop_live": {
-        "displayName": "DesktopLiveRuntime",
-        "summary": "负责桌面实时画面桥接、会话采集、WebRTC 协商与直播状态管理。",
+        "displayName": "DesktopLiveSurface",
+        "summary": "负责 Admin/Phone/Web 远程桌面画面桥接、会话采集、WebRTC/MJPEG 协商与直播状态管理；不作为 agent 执行 runtime。",
         "visibility": "secondary",
     },
 }

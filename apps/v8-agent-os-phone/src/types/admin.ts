@@ -416,6 +416,7 @@ export type OperationsSummary = {
 
 export type DesktopLiveStatus = {
     available?: boolean;
+    fallbackAvailable?: boolean;
     reason?: string | null;
     phase?: "idle" | "warming" | "ready" | "degraded";
     bridgeReady?: boolean;
@@ -425,9 +426,15 @@ export type DesktopLiveStatus = {
     activeSessionId?: string | null;
     viewerCount?: number;
     warmingStartedAt?: string;
-    lastErrorStage?: "spawn" | "port" | "status" | "session" | "offer" | "candidate" | "track";
+    bridgePhase?: string;
+    lastErrorStage?: "spawn" | "port" | "status" | "capture" | "webrtc" | "session" | "offer" | "candidate" | "track";
+    lastErrorMessage?: string | null;
     retryAllowed?: boolean;
     bridgePid?: number;
+    captureProvider?: string;
+    webrtcReady?: boolean;
+    streamFallbackReady?: boolean;
+    logPath?: string;
     config?: {
         enabled?: boolean;
         maxWidth?: number;

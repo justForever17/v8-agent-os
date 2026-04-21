@@ -18,6 +18,11 @@ type DesktopLiveStatus = {
     bridgeWarming?: boolean;
     activeSessionId?: string | null;
     viewerCount?: number;
+    fallbackAvailable?: boolean;
+    streamFallbackReady?: boolean;
+    captureProvider?: string;
+    lastErrorStage?: string;
+    lastErrorMessage?: string | null;
     config?: {
         enabled?: boolean;
         maxWidth?: number;
@@ -58,6 +63,7 @@ export function DesktopLiveButton() {
     const [error, setError] = useState<string | null>(null);
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [videoReady, setVideoReady] = useState(false);
+    const [streamFallbackUrl, setStreamFallbackUrl] = useState<string | null>(null);
     const t = useT();
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const sessionIdRef = useRef<string | null>(null);
@@ -135,6 +141,7 @@ export function DesktopLiveButton() {
         setOpen(false);
         setError(null);
         setVideoReady(false);
+        setStreamFallbackUrl(null);
         setSessionId(null);
         sessionIdRef.current = null;
 
@@ -220,22 +227,36 @@ export function DesktopLiveButton() {
         setLoading(true);
         setError(null);
         setVideoReady(false);
+        setStreamFallbackUrl(null);
         let activeSessionId: string | null = null;
+        let latestStatus: DesktopLiveStatus | null = null;
+
+        const canUseStreamFallback = (status: DesktopLiveStatus | null) => (
+            status?.streamFallbackReady === true || status?.fallbackAvailable === true
+        );
+
+        const activateStreamFallback = (activeId: string) => {
+            const url = `/api/desktop-live/stream?sessionId=${encodeURIComponent(activeId)}&t=${Date.now()}`;
+            setStreamFallbackUrl(url);
+            setVideoReady(true);
+            setLoading(false);
+            setError(null);
+        };
 
         try {
-            let latestStatus = await refreshStatus();
-            if (latestStatus?.available !== true) {
+            latestStatus = await refreshStatus();
+            if (latestStatus?.available !== true && !canUseStreamFallback(latestStatus)) {
                 await prepareBridge().catch(() => null);
             }
             for (let attempt = 0; attempt < 12; attempt += 1) {
                 latestStatus = await refreshStatus();
-                if (latestStatus?.available === true) {
+                if (latestStatus?.available === true || canUseStreamFallback(latestStatus)) {
                     break;
                 }
                 await new Promise((resolve) => window.setTimeout(resolve, 850));
             }
 
-            if (latestStatus?.available !== true) {
+            if (latestStatus?.available !== true && !canUseStreamFallback(latestStatus)) {
                 throw new Error(
                     latestStatus?.reason
                     || t(lt("桌面直播桥仍在启动，请稍后重试。", "Desktop Live bridge is still starting. Please retry shortly.")),
@@ -262,6 +283,12 @@ export function DesktopLiveButton() {
             activeSessionId = sessionPayload.sessionId;
             sessionIdRef.current = activeSessionId;
             setSessionId(activeSessionId);
+
+            if (latestStatus?.available !== true && canUseStreamFallback(latestStatus)) {
+                activateStreamFallback(activeSessionId);
+                await refreshStatus();
+                return;
+            }
 
             const pc = new RTCPeerConnection({ iceServers: [] });
             connectionRef.current = pc;
@@ -355,6 +382,11 @@ export function DesktopLiveButton() {
                     // noop
                 }
             }
+            if (activeSessionId && canUseStreamFallback(latestStatus)) {
+                activateStreamFallback(activeSessionId);
+                await refreshStatus();
+                return;
+            }
             if (activeSessionId) {
                 void releaseSession(activeSessionId);
             }
@@ -420,8 +452,15 @@ export function DesktopLiveButton() {
                                     autoPlay
                                     playsInline
                                     muted
-                                    className="block h-auto max-h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-24px)] w-full max-w-[min(calc(100vw-24px),1180px)] select-none rounded-[24px] bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.45)]"
+                                    className={streamFallbackUrl ? "hidden" : "block h-auto max-h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-24px)] w-full max-w-[min(calc(100vw-24px),1180px)] select-none rounded-[24px] bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.45)]"}
                                 />
+                                {streamFallbackUrl ? (
+                                    <img
+                                        src={streamFallbackUrl}
+                                        alt={t(lt("桌面直播备用流", "Desktop Live fallback stream"))}
+                                        className="block h-auto max-h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-24px)] w-full max-w-[min(calc(100vw-24px),1180px)] select-none rounded-[24px] bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.45)]"
+                                    />
+                                ) : null}
                                 {(loading || (!videoReady && !error)) ? (
                                     <div className="absolute inset-0 flex items-center justify-center rounded-[24px] bg-black/55">
                                         <div className="rounded-full bg-black/70 px-5 py-3 text-sm text-zinc-100">

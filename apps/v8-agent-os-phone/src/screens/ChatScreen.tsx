@@ -80,6 +80,7 @@ import {
     deleteMessage,
     dispatchRunCommand,
     getDesktopLiveStatus,
+    getDesktopLiveStreamUrl,
     getConversationDetail,
     getProjectsRegistry,
     getRealtimeSnapshot,
@@ -1539,6 +1540,18 @@ function normalizeDesktopLiveErrorMessage(
     return raw;
 }
 
+function canUseDesktopLiveWebrtc(status: DesktopLiveStatus | null | undefined) {
+    return status?.available === true && status?.bridgeReady !== false;
+}
+
+function canUseDesktopLiveStreamFallback(status: DesktopLiveStatus | null | undefined) {
+    return Boolean(status && status.bridgeReady !== false && (status.fallbackAvailable === true || status.streamFallbackReady === true));
+}
+
+function canUseDesktopLivePreview(status: DesktopLiveStatus | null | undefined) {
+    return canUseDesktopLiveWebrtc(status) || canUseDesktopLiveStreamFallback(status);
+}
+
 function isPlaceholderConversationTitle(title: string | null | undefined) {
     const normalized = String(title || "").trim().toLowerCase();
     return !normalized
@@ -1569,6 +1582,7 @@ export default function ChatScreen() {
         status,
         user,
         adminBaseUrl,
+        accessToken,
         activeConversationId,
         setActiveConversationId,
         authorizedFetch,
@@ -1693,6 +1707,7 @@ export default function ChatScreen() {
     const [desktopPreviewError, setDesktopPreviewError] = useState("");
     const [desktopPreviewState, setDesktopPreviewState] = useState<"closed" | "loading" | "preview" | "error">("closed");
     const [desktopPreviewWebReady, setDesktopPreviewWebReady] = useState(false);
+    const [desktopPreviewFallbackUrl, setDesktopPreviewFallbackUrl] = useState("");
     const [desktopLiveStatus, setDesktopLiveStatus] = useState<DesktopLiveStatus | null>(null);
 
     const queryTerm = activeQueryText.trim().toLowerCase();
@@ -2016,6 +2031,7 @@ export default function ChatScreen() {
         setDesktopPreviewError("");
         setDesktopPreviewSessionId("");
         setDesktopPreviewWebReady(false);
+        setDesktopPreviewFallbackUrl("");
         if (!sessionId) {
             return;
         }
@@ -2040,7 +2056,7 @@ export default function ChatScreen() {
                 return null;
             }
             const status = await refreshDesktopLiveStatus();
-            if (status?.available === true && status?.bridgeReady !== false) {
+            if (canUseDesktopLivePreview(status)) {
                 return status;
             }
             lastError = String(
@@ -2054,19 +2070,43 @@ export default function ChatScreen() {
         throw new Error(lastError || t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
     }, [refreshDesktopLiveStatus, t]);
 
+    const injectDesktopLiveFallbackStream = useCallback((sessionId?: string | null) => {
+        const normalizedSessionId = String(sessionId || "").trim();
+        if (!desktopLiveUserIntentRef.current || !desktopPreviewOpen || !normalizedSessionId) {
+            return false;
+        }
+        const streamUrl = getDesktopLiveStreamUrl(adminBaseUrl, normalizedSessionId);
+        desktopPreviewNegotiatedSessionRef.current = `fallback:${normalizedSessionId}`;
+        setDesktopPreviewFallbackUrl(streamUrl);
+        setDesktopPreviewBusy(false);
+        setDesktopPreviewState("preview");
+        setDesktopPreviewError("");
+        return true;
+    }, [adminBaseUrl, desktopPreviewOpen]);
+
     const maybeStartDesktopPreviewNegotiation = useCallback((sessionId?: string | null) => {
         const normalizedSessionId = String(sessionId || "").trim();
-        if (!desktopLiveUserIntentRef.current || !desktopPreviewOpen || !desktopPreviewWebReady || !normalizedSessionId) {
+        if (!desktopLiveUserIntentRef.current || !desktopPreviewOpen || !normalizedSessionId) {
             return;
         }
-        if (desktopPreviewNegotiatedSessionRef.current === normalizedSessionId) {
+        if (!canUseDesktopLiveWebrtc(desktopLiveStatus) && canUseDesktopLiveStreamFallback(desktopLiveStatus)) {
+            if (desktopPreviewNegotiatedSessionRef.current === `fallback:${normalizedSessionId}`) {
+                return;
+            }
+            injectDesktopLiveFallbackStream(normalizedSessionId);
             return;
         }
-        desktopPreviewNegotiatedSessionRef.current = normalizedSessionId;
+        if (!desktopPreviewWebReady) {
+            return;
+        }
+        if (desktopPreviewNegotiatedSessionRef.current === `webrtc:${normalizedSessionId}`) {
+            return;
+        }
+        desktopPreviewNegotiatedSessionRef.current = `webrtc:${normalizedSessionId}`;
         desktopPreviewWebViewRef.current?.injectJavaScript(
             buildDesktopLiveBridgeInjection({ type: "start" }),
         );
-    }, [desktopPreviewOpen, desktopPreviewWebReady]);
+    }, [desktopLiveStatus, desktopPreviewOpen, desktopPreviewWebReady, injectDesktopLiveFallbackStream]);
 
     const openDesktopPreview = useCallback(async () => {
         if (desktopPreviewBusy || desktopPreviewState === "loading") {
@@ -2085,13 +2125,14 @@ export default function ChatScreen() {
         setDesktopPreviewError("");
         setDesktopPreviewSessionId("");
         setDesktopPreviewWebReady(false);
+        setDesktopPreviewFallbackUrl("");
         desktopPreviewNegotiatedSessionRef.current = "";
         try {
-            let status = await refreshDesktopLiveStatus();
+            let status: DesktopLiveStatus | null = await refreshDesktopLiveStatus();
             if (desktopPreviewRequestIdRef.current !== requestId) {
                 return;
             }
-            if (status?.available !== true) {
+            if (!canUseDesktopLivePreview(status)) {
                 await prepareDesktopLiveBridge();
                 if (desktopPreviewRequestIdRef.current !== requestId) {
                     return;
@@ -2103,18 +2144,18 @@ export default function ChatScreen() {
                     bridgeReady: false,
                     bridgeWarming: true,
                     retryAllowed: false,
-                };
+                } satisfies DesktopLiveStatus;
             }
             if (desktopPreviewRequestIdRef.current !== requestId) {
                 return;
             }
-            if (!status?.available) {
+            if (!canUseDesktopLivePreview(status)) {
                 throw new Error(t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
             }
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
                 ...status,
-                phase: "ready",
+                phase: canUseDesktopLiveWebrtc(status) ? "ready" : "degraded",
                 bridgeWarming: false,
                 retryAllowed: false,
             }));
@@ -2140,9 +2181,11 @@ export default function ChatScreen() {
             setDesktopPreviewOpen(true);
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
-                available: true,
-                phase: "ready",
-                bridgeReady: true,
+                available: status?.available === true,
+                fallbackAvailable: status?.fallbackAvailable,
+                streamFallbackReady: status?.streamFallbackReady,
+                phase: canUseDesktopLiveWebrtc(status) ? "ready" : "degraded",
+                bridgeReady: status?.bridgeReady,
                 bridgeWarming: false,
                 activeSessionId: sessionId,
                 retryAllowed: false,
@@ -2219,6 +2262,12 @@ export default function ChatScreen() {
                     }),
                 );
             } catch (error) {
+                if (canUseDesktopLiveStreamFallback(desktopLiveStatus) && injectDesktopLiveFallbackStream(sessionId)) {
+                    setDesktopPreviewState("loading");
+                    setDesktopPreviewBusy(true);
+                    setDesktopPreviewError("");
+                    return;
+                }
                 setDesktopPreviewState("error");
                 setDesktopPreviewBusy(false);
                 setDesktopPreviewError(normalizeDesktopLiveErrorMessage(error, t));
@@ -2233,14 +2282,17 @@ export default function ChatScreen() {
         }
 
         if (type === "video-ready") {
+            const fallbackPreview = payload.fallback === true;
             setDesktopPreviewBusy(false);
             setDesktopPreviewState("preview");
             setDesktopPreviewError("");
             setDesktopLiveStatus((current) => ({
                 ...(current || {}),
-                available: true,
-                phase: "ready",
-                bridgeReady: true,
+                available: fallbackPreview ? current?.available === true : true,
+                fallbackAvailable: fallbackPreview ? true : current?.fallbackAvailable,
+                streamFallbackReady: fallbackPreview ? true : current?.streamFallbackReady,
+                phase: fallbackPreview ? "degraded" : "ready",
+                bridgeReady: current?.bridgeReady ?? true,
                 bridgeWarming: false,
                 activeSessionId: sessionId,
                 retryAllowed: false,
@@ -2256,6 +2308,12 @@ export default function ChatScreen() {
                 setDesktopPreviewError("");
             }
             if (state === "failed") {
+                if (canUseDesktopLiveStreamFallback(desktopLiveStatus) && injectDesktopLiveFallbackStream(sessionId)) {
+                    setDesktopPreviewState("loading");
+                    setDesktopPreviewBusy(true);
+                    setDesktopPreviewError("");
+                    return;
+                }
                 desktopLiveUserIntentRef.current = false;
                 setDesktopPreviewState("error");
                 setDesktopPreviewBusy(false);
@@ -2272,6 +2330,12 @@ export default function ChatScreen() {
         }
 
         if (type === "error") {
+            if (canUseDesktopLiveStreamFallback(desktopLiveStatus) && injectDesktopLiveFallbackStream(sessionId)) {
+                setDesktopPreviewState("loading");
+                setDesktopPreviewBusy(true);
+                setDesktopPreviewError("");
+                return;
+            }
             desktopLiveUserIntentRef.current = false;
             setDesktopPreviewState("error");
             setDesktopPreviewBusy(false);
@@ -2284,9 +2348,9 @@ export default function ChatScreen() {
                 retryAllowed: true,
             }));
         }
-    }, [authorizedFetch, desktopPreviewSessionId, maybeStartDesktopPreviewNegotiation, t]);
+    }, [authorizedFetch, desktopLiveStatus, desktopPreviewSessionId, injectDesktopLiveFallbackStream, maybeStartDesktopPreviewNegotiation, t]);
 
-    const desktopLiveReady = desktopLiveStatus?.available === true && desktopLiveStatus?.bridgeReady !== false;
+    const desktopLiveReady = canUseDesktopLivePreview(desktopLiveStatus);
     const desktopLiveConnecting = desktopPreviewBusy || desktopPreviewState === "loading" || (desktopLiveStatus?.bridgeWarming === true && !desktopLiveReady);
     const desktopLiveConnected = desktopPreviewState === "preview";
 
@@ -2296,12 +2360,12 @@ export default function ChatScreen() {
             onPress: () => void openDesktopPreview(),
             tone: desktopLiveConnected ? "primary" : "default",
             indicatorColor: desktopLiveConnected ? "#10B981" : undefined,
-            disabled: desktopPreviewBusy || (desktopLiveStatus?.bridgeStartable === false && !desktopLiveConnecting && !desktopLiveConnected),
+            disabled: desktopPreviewBusy || (desktopLiveStatus?.bridgeStartable === false && !desktopLiveConnecting && !desktopLiveConnected && !desktopLiveReady),
         },
         { key: "rpa", onPress: () => router.push("/rpa" as Href) },
         { key: "voice", onPress: () => void toggleVoiceEnabled() },
         { key: "theme", onPress: () => void toggleThemeMode() },
-    ], [desktopLiveConnected, desktopLiveConnecting, desktopLiveStatus?.bridgeStartable, desktopPreviewBusy, openDesktopPreview, toggleThemeMode, toggleVoiceEnabled]);
+    ], [desktopLiveConnected, desktopLiveConnecting, desktopLiveReady, desktopLiveStatus?.bridgeStartable, desktopPreviewBusy, openDesktopPreview, toggleThemeMode, toggleVoiceEnabled]);
 
     useEffect(() => {
         maybeStartDesktopPreviewNegotiation(desktopPreviewSessionId);
@@ -5109,7 +5173,12 @@ export default function ChatScreen() {
                             <WebView
                                 ref={desktopPreviewWebViewRef}
                                 originWhitelist={["*"]}
-                                source={{ html: desktopPreviewHtml }}
+                                source={desktopPreviewFallbackUrl
+                                    ? {
+                                        uri: desktopPreviewFallbackUrl,
+                                        ...(accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
+                                    }
+                                    : { html: desktopPreviewHtml }}
                                 style={styles.previewWebview}
                                 allowsInlineMediaPlayback
                                 mediaPlaybackRequiresUserAction={false}

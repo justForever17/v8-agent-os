@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from core.database import db
@@ -26,7 +26,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _today_bucket() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 class ModelBudgetService:

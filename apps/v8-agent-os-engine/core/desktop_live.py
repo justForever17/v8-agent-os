@@ -41,10 +41,18 @@ else:
 from PIL import Image
 
 from core.system_base import get_desktop_live_config
-from runtimes.computer_use.runtime import computer_use_runtime
 
 
 LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
+
+
+def _computer_use_runtime():
+    try:
+        from runtimes.computer_use.runtime import computer_use_runtime
+
+        return computer_use_runtime
+    except Exception:
+        return None
 
 
 @dataclass
@@ -141,6 +149,27 @@ class DesktopLiveService:
             return False, "未安装 numpy"
         return True, None
 
+    def _direct_capture_supported(self) -> tuple[bool, str | None]:
+        if mss is None:
+            return False, "未安装 mss"
+        try:
+            with mss.mss() as sct:
+                if not sct.monitors:
+                    return False, "未发现可采集的显示器"
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
+    def _computer_use_capture_supported(self) -> tuple[bool, dict[str, Any], str | None]:
+        runtime = _computer_use_runtime()
+        if runtime is None:
+            return False, {}, "computer_use runtime 不可用"
+        try:
+            availability = runtime.availability()
+        except Exception as exc:  # pragma: no cover - defensive
+            return False, {}, str(exc)
+        return bool(availability.get("available")), availability, None
+
     def _availability(self) -> dict[str, Any]:
         now = time.time()
         if self._availability_cache and (now - self._availability_cached_at) < self._availability_ttl_seconds:
@@ -160,39 +189,46 @@ class DesktopLiveService:
             return dict(payload)
 
         webrtc_available, webrtc_reason = self._is_webrtc_supported()
-        try:
-            availability = computer_use_runtime.availability()
-        except Exception as exc:  # pragma: no cover - defensive
-            payload = {
-                "available": False,
-                "reason": str(exc),
-                "source": "computer_use_runtime",
-                "webrtcAvailable": webrtc_available,
-                "fallbackAvailable": False,
-            }
-            self._availability_cache = payload
-            self._availability_cached_at = now
-            return dict(payload)
-
-        details = availability.get("details") or {}
-        fallback_available = bool(availability.get("available"))
-        available = bool(availability.get("available")) and webrtc_available
+        direct_available, direct_reason = self._direct_capture_supported()
+        if direct_available:
+            computer_use_available, computer_use_availability, computer_use_reason = False, {}, "未检查：mss 直采已可用"
+        else:
+            computer_use_available, computer_use_availability, computer_use_reason = self._computer_use_capture_supported()
+        details = computer_use_availability.get("details") or {}
+        capture_available = direct_available or computer_use_available
+        capture_provider = "mss" if direct_available else ("computer_use_runtime" if computer_use_available else "none")
+        fallback_available = capture_available
+        available = capture_available and webrtc_available
         reason = None
-        if not availability.get("available"):
-            reason = "桌面采集驱动当前不可用"
+        if not capture_available:
+            reason = direct_reason or computer_use_reason or "桌面采集当前不可用"
         elif not webrtc_available:
             reason = f"桌面直播缺少 WebRTC 依赖：{webrtc_reason}"
 
         payload = {
             "available": available,
             "reason": reason,
-            "source": "computer_use_runtime",
-            "platform": availability.get("platform"),
-            "backend": availability.get("backend"),
-            "requires": availability.get("requires") or [],
+            "source": "desktop_live_surface",
+            "platform": computer_use_availability.get("platform"),
+            "backend": capture_provider,
+            "requires": [] if direct_available else (computer_use_availability.get("requires") or []),
             "webrtcAvailable": webrtc_available,
+            "webrtcReady": webrtc_available,
             "fallbackAvailable": fallback_available,
+            "streamFallbackReady": fallback_available,
+            "captureProvider": capture_provider,
+            "captureProviderPriority": ["mss", "computer_use_runtime"],
+            "lastErrorStage": None if available else ("capture" if not capture_available else "webrtc"),
+            "lastErrorMessage": reason,
             "details": {
+                "directCapture": {
+                    "available": direct_available,
+                    "reason": direct_reason,
+                },
+                "computerUseFallback": {
+                    "available": computer_use_available,
+                    "reason": computer_use_reason,
+                },
                 "driver": details.get("driver"),
                 "visionFallback": details.get("visionFallback"),
             },
@@ -213,6 +249,7 @@ class DesktopLiveService:
                 "mode": "webrtc_bridge",
                 "fallbackMode": "multipart_jpeg_stream",
                 "captureSurface": "primary_display",
+                "bridgePhase": "engine_service",
                 "activeSessionId": active.id if active else None,
                 "viewerCount": 1 if active else 0,
                 "singleViewer": bool(config.get("singleViewerOnly", True)),
@@ -253,7 +290,7 @@ class DesktopLiveService:
     def create_session(self, viewer_id: str) -> dict[str, Any]:
         self._cleanup_expired_sessions()
         availability = self._availability()
-        if not availability.get("available"):
+        if not availability.get("available") and not availability.get("fallbackAvailable"):
             raise RuntimeError(str(availability.get("reason") or "当前桌面直播不可用"))
 
         config = self._config()
@@ -267,6 +304,7 @@ class DesktopLiveService:
                     "sessionId": active.id,
                     "viewerCount": 1,
                     "mode": "webrtc_bridge",
+                    "fallbackMode": "multipart_jpeg_stream",
                 }
 
             session_id = f"desktop-live-{uuid.uuid4().hex[:12]}"
@@ -277,6 +315,7 @@ class DesktopLiveService:
                 "sessionId": session_id,
                 "viewerCount": 1,
                 "mode": "webrtc_bridge",
+                "fallbackMode": "multipart_jpeg_stream",
             }
 
     def touch_session(self, session_id: str) -> DesktopLiveSession:
@@ -290,15 +329,22 @@ class DesktopLiveService:
             return session
 
     def _load_capture_image(self) -> Image.Image:
-        driver = getattr(computer_use_runtime, "driver", None)
-        if driver is None or not getattr(driver, "is_available", lambda: False)():
-            raise RuntimeError("桌面采集驱动当前不可用。")
-
         if mss is not None:
-            with mss.mss() as sct:
-                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-                shot = sct.grab(monitor)
-                return Image.frombytes("RGB", shot.size, shot.rgb)
+            try:
+                with mss.mss() as sct:
+                    monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                    shot = sct.grab(monitor)
+                    return Image.frombytes("RGB", shot.size, shot.rgb)
+            except Exception:
+                # Fall through to the optional computer_use fallback. Desktop
+                # Live is an Admin remote surface; computer_use is not the
+                # primary semantic owner of this capture path.
+                pass
+
+        runtime = _computer_use_runtime()
+        driver = getattr(runtime, "driver", None) if runtime is not None else None
+        if driver is None or not getattr(driver, "is_available", lambda: False)():
+            raise RuntimeError("桌面采集不可用：mss 直采失败，computer_use fallback 也不可用。")
 
         fd, temp_path = tempfile.mkstemp(prefix="v8chat-desktop-live-", suffix=".png")
         os.close(fd)

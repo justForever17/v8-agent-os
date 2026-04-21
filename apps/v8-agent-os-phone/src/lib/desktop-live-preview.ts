@@ -1,6 +1,7 @@
 export type DesktopLiveBridgeInjection =
     | { type: "start" }
     | { type: "answer"; sdp: string; sdpType: string }
+    | { type: "fallback-stream"; streamUrl: string }
     | { type: "close" };
 
 export function buildDesktopLivePreviewHtml() {
@@ -26,7 +27,7 @@ export function buildDesktopLivePreviewHtml() {
         align-items: center;
         justify-content: center;
       }
-      video {
+      video, img {
         width: 100%;
         height: 100%;
         object-fit: contain;
@@ -36,12 +37,14 @@ export function buildDesktopLivePreviewHtml() {
   </head>
   <body>
     <video id="desktopLiveVideo" autoplay playsinline muted></video>
+    <img id="desktopLiveFallback" alt="Desktop live fallback stream" style="display: none;" />
     <script>
       (function () {
         var pc = null;
         var remoteStream = null;
         var starting = false;
         var video = document.getElementById("desktopLiveVideo");
+        var fallbackImage = document.getElementById("desktopLiveFallback");
 
         function post(type, payload) {
           try {
@@ -56,6 +59,11 @@ export function buildDesktopLivePreviewHtml() {
             if (video) {
               try { video.pause(); } catch (error) {}
               video.srcObject = null;
+              video.style.display = "";
+            }
+            if (fallbackImage) {
+              fallbackImage.removeAttribute("src");
+              fallbackImage.style.display = "none";
             }
             if (remoteStream) {
               remoteStream.getTracks().forEach(function (track) {
@@ -123,6 +131,23 @@ export function buildDesktopLivePreviewHtml() {
           }
         }
 
+        async function showFallbackStream(streamUrl) {
+          await teardown();
+          if (!streamUrl) {
+            throw new Error("fallback-stream-unavailable");
+          }
+          if (video) {
+            try { video.pause(); } catch (error) {}
+            video.srcObject = null;
+            video.style.display = "none";
+          }
+          if (fallbackImage) {
+            fallbackImage.style.display = "";
+            fallbackImage.src = streamUrl;
+          }
+          post("video-ready", { fallback: true });
+        }
+
         window.__desktopLiveReceive = async function (payload) {
           try {
             if (!payload || typeof payload !== "object") return;
@@ -136,6 +161,10 @@ export function buildDesktopLivePreviewHtml() {
                 type: payload.sdpType || "answer",
                 sdp: payload.sdp || "",
               });
+              return;
+            }
+            if (payload.type === "fallback-stream") {
+              await showFallbackStream(payload.streamUrl || "");
               return;
             }
             if (payload.type === "close") {

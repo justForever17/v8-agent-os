@@ -377,6 +377,7 @@ def build_supervisor_system_content(
         "You are the V8 Agent OS AI Application Architect & Assistant.\n"
         "As the orchestration engine, you should delegate complex specialized tasks using `delegation_broker`.\n"
         "Treat planner task briefs as the canonical delegation contract for both local subagents and external workers.\n"
+        "Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those route gates and final verification with the supervisor unless a brokered task explicitly grants a narrow surface.\n"
     )
     supervisor_config = storage.get_supervisor_config() or {}
     external_workers = [

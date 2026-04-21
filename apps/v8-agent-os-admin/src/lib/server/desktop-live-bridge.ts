@@ -8,12 +8,13 @@ import {
     resolveEnginePythonPath,
     resolveInternalSecret,
 } from "@/lib/server/runtime-config";
+import { getBaseDir } from "@/lib/storage";
 
 let ensurePromise: Promise<string> | null = null;
 let idleStopTimer: NodeJS.Timeout | null = null;
 
 type BridgePhase = "idle" | "warming" | "ready" | "degraded";
-type BridgeErrorStage = "spawn" | "port" | "status" | "session" | "offer" | "candidate" | "track";
+type BridgeErrorStage = "spawn" | "port" | "status" | "capture" | "webrtc" | "session" | "offer" | "candidate" | "track";
 
 type BridgeRuntimeState = {
     phase: BridgePhase;
@@ -22,6 +23,7 @@ type BridgeRuntimeState = {
     lastErrorMessage: string | null;
     retryAllowed: boolean;
     bridgePid: number | null;
+    logPath: string | null;
 };
 
 const bridgeRuntimeState: BridgeRuntimeState = {
@@ -31,6 +33,7 @@ const bridgeRuntimeState: BridgeRuntimeState = {
     lastErrorMessage: null,
     retryAllowed: false,
     bridgePid: null,
+    logPath: null,
 };
 
 export type BridgeStatusPayload = {
@@ -58,8 +61,13 @@ export type BridgeStatusPayload = {
     bridgeLayer?: string;
     bridgeExecutable?: string;
     bridgeReachable?: boolean;
+    logPath?: string;
+    captureProvider?: string;
+    webrtcReady?: boolean;
+    streamFallbackReady?: boolean;
     warmingStartedAt?: string;
     lastErrorStage?: BridgeErrorStage;
+    lastErrorMessage?: string;
     retryAllowed?: boolean;
     bridgePid?: number;
 };
@@ -93,6 +101,13 @@ function getBridgeScriptPath() {
     }
 
     return candidates[0];
+}
+
+function getBridgeLogPath() {
+    const dir = path.join(getBaseDir(), "logs", "desktop-live-bridge");
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return path.join(dir, `desktop-live-bridge-${stamp}.log`);
 }
 
 async function pingBridge(timeoutMs = 1200): Promise<BridgeStatusPayload | null> {
@@ -323,8 +338,10 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
         bridgeExecutable: bridgeExecutable || undefined,
         warmingStartedAt: bridgeRuntimeState.warmingStartedAt || undefined,
         lastErrorStage: bridgeRuntimeState.lastErrorStage || undefined,
+        lastErrorMessage: bridgeRuntimeState.lastErrorMessage || undefined,
         retryAllowed: bridgeRuntimeState.phase === "degraded",
         bridgePid: bridgeRuntimeState.bridgePid || undefined,
+        logPath: bridgeRuntimeState.logPath || undefined,
         config: {
             enabled,
             maxWidth: Number(config.maxWidth || 640),
@@ -348,6 +365,7 @@ export async function getDesktopLiveBridgeStatus() {
             lastErrorMessage: null,
             retryAllowed: false,
             bridgePid: currentPid,
+            logPath: bridgeRuntimeState.logPath,
         });
         return {
             ...payload,
@@ -361,6 +379,7 @@ export async function getDesktopLiveBridgeStatus() {
             lastErrorStage: undefined,
             retryAllowed: false,
             bridgePid: currentPid || undefined,
+            logPath: bridgeRuntimeState.logPath || undefined,
         };
     }
     if (ensurePromise || bridgeRuntimeState.phase === "warming") {
@@ -391,6 +410,7 @@ export async function warmDesktopLiveBridge() {
             lastErrorMessage: null,
             retryAllowed: false,
             bridgePid: currentPid,
+            logPath: bridgeRuntimeState.logPath,
         });
         return {
             ...reachable,
@@ -402,6 +422,7 @@ export async function warmDesktopLiveBridge() {
             bridgeReachable: true,
             retryAllowed: false,
             bridgePid: currentPid || undefined,
+            logPath: bridgeRuntimeState.logPath || undefined,
         } satisfies BridgeStatusPayload;
     }
 
@@ -432,6 +453,7 @@ export async function stopDesktopLiveBridge() {
         lastErrorMessage: null,
         retryAllowed: false,
         bridgePid: null,
+        logPath: null,
     });
     return !(await findBridgePidByPort());
 }
@@ -441,24 +463,37 @@ function spawnBridgeProcess(pythonExecutable: string) {
     if (!fs.existsSync(scriptPath)) {
         throw new Error(`桌面直播 bridge 脚本不存在：${scriptPath}`);
     }
+    const logPath = getBridgeLogPath();
+    const logFd = fs.openSync(logPath, "a");
+    setBridgeRuntimeState({ logPath });
 
-    const child = spawn(
-        pythonExecutable,
-        [scriptPath],
-        {
-            cwd: path.dirname(scriptPath),
-            detached: true,
-            stdio: "ignore",
-            windowsHide: true,
-            env: {
-                ...process.env,
-                V8_AGENT_OS_INTERNAL_SECRET: resolveInternalSecret(),
-                V8_AGENT_OS_DESKTOP_LIVE_BRIDGE_URL: resolveDesktopLiveBridgeBaseUrl(),
+    try {
+        fs.writeSync(logFd, `\n[${new Date().toISOString()}] spawning desktop live bridge\n`);
+        fs.writeSync(logFd, `python=${pythonExecutable}\nscript=${scriptPath}\nurl=${resolveDesktopLiveBridgeBaseUrl()}\n`);
+        const child = spawn(
+            pythonExecutable,
+            [scriptPath],
+            {
+                cwd: path.dirname(scriptPath),
+                detached: true,
+                stdio: ["ignore", logFd, logFd],
+                windowsHide: true,
+                env: {
+                    ...process.env,
+                    V8_AGENT_OS_INTERNAL_SECRET: resolveInternalSecret(),
+                    V8_AGENT_OS_DESKTOP_LIVE_BRIDGE_URL: resolveDesktopLiveBridgeBaseUrl(),
+                },
             },
-        },
-    );
-    child.unref();
-    return child.pid ?? null;
+        );
+        child.unref();
+        return child.pid ?? null;
+    } finally {
+        try {
+            fs.closeSync(logFd);
+        } catch {
+            // best-effort
+        }
+    }
 }
 
 export function scheduleDesktopLiveBridgeIdleStop() {
@@ -497,6 +532,7 @@ export async function ensureDesktopLiveBridge() {
             lastErrorMessage: null,
             retryAllowed: false,
             bridgePid: currentPid,
+            logPath: bridgeRuntimeState.logPath,
         });
         return resolveDesktopLiveBridgeBaseUrl();
     }
@@ -509,6 +545,7 @@ export async function ensureDesktopLiveBridge() {
                 lastErrorStage: "spawn",
                 lastErrorMessage: null,
                 retryAllowed: false,
+                logPath: null,
             });
             const spawnedPid = spawnBridgeProcess(expectedPython);
             setBridgeRuntimeState({
@@ -526,6 +563,7 @@ export async function ensureDesktopLiveBridge() {
                         lastErrorMessage: null,
                         retryAllowed: false,
                         bridgePid: currentPid,
+                        logPath: bridgeRuntimeState.logPath,
                     });
                     return resolveDesktopLiveBridgeBaseUrl();
                 }

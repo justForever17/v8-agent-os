@@ -2,7 +2,7 @@ import json
 import os
 import shutil
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from uuid import uuid4
@@ -222,6 +222,23 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n",
     ),
     (
+        # Migration sanitizer only: this matches the brokered stock block
+        # before the subagent runtime-authority boundary was added.
+        "## Delegation Discipline\n"
+        "- If a task is small and local, solve it directly.\n"
+        "- If a task needs a distinct role, independent context, or parallel execution, use `delegation_broker`.\n"
+        "- Treat planner task briefs as the canonical delegation contract.\n"
+        "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
+        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n",
+        "## Delegation Discipline\n"
+        "- If a task is small and local, solve it directly.\n"
+        "- If a task needs a distinct role, independent context, or parallel execution, use `delegation_broker`.\n"
+        "- Treat planner task briefs as the canonical delegation contract.\n"
+        "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
+        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n"
+        "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n",
+    ),
+    (
         # Migration sanitizer only: this left-hand block matches older stock
         # V8_AGENT_OS.md files so they can be rewritten to the brokered
         # delegation contract below. It is not current prompt truth.
@@ -236,7 +253,8 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "- If a task needs a distinct role, independent context, or parallel execution, use `delegation_broker`.\n"
         "- Treat planner task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n",
+        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n"
+        "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n",
     ),
     (
         "## Recoverability And Observability\n"
@@ -265,6 +283,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "roles": {
             "default": "",
             "supervisor": "",
+            "subagent": "",
             "summary": "",
             "extraction": "",
             "vision": "",
@@ -291,6 +310,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         },
         "routingPolicies": {
             "chat": "supervisor",
+            "subagent": "subagent",
             "channel": "channel",
             "automation": "automation",
             "summary": "summary",
@@ -693,7 +713,8 @@ class StorageManager:
                 "- Use `delegation_broker` as the canonical delegation entrypoint.\n"
                 "- Treat planner task briefs as the canonical delegation contract.\n"
                 "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-                "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n"
+                "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n"
+                "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n"
                 "## Todo Discipline\n"
                 "- For non-trivial tasks, create and maintain todos.\n"
                 "- A plan is not decoration: keep it updated.\n"
@@ -737,14 +758,69 @@ class StorageManager:
         agents_dir = self.base_dir / "agents"
         try:
             agents_dir.mkdir(parents=True, exist_ok=True)
-            from core.agents import default_subagent_configs, dump_agent_md
+            from core.agents import (
+                DEFAULT_SUBAGENT_TEMPLATE_VERSION,
+                DEPRECATED_DEFAULT_SUBAGENT_IDS,
+                default_subagent_configs,
+                dump_agent_md,
+                parse_agent_md,
+            )
+
+            backup_dir: Path | None = None
+
+            def backup_once(path: Path) -> None:
+                nonlocal backup_dir
+                if not path.exists():
+                    return
+                if backup_dir is None:
+                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    backup_dir = self.base_dir / "backups" / "agents" / stamp
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, backup_dir / path.name)
+
+            def is_managed_default(path: Path) -> bool:
+                try:
+                    content = path.read_text(encoding="utf-8")
+                    parsed = parse_agent_md(content, path.name)
+                except Exception:
+                    return False
+                if parsed.defaultTemplateVersion:
+                    return True
+                source = str((parsed.capabilitySnapshot or {}).get("source") or "").strip()
+                if source == "system_default":
+                    return True
+                legacy_markers = (
+                    "a focused V8 Agent OS subagent",
+                    "Shared engineering discipline:",
+                    "When delegated a task, respond with a compact result",
+                )
+                return any(marker in content for marker in legacy_markers)
+
+            for deprecated_id in sorted(DEPRECATED_DEFAULT_SUBAGENT_IDS):
+                deprecated_path = agents_dir / f"{deprecated_id}.md"
+                if deprecated_path.exists() and is_managed_default(deprecated_path):
+                    backup_once(deprecated_path)
+                    deprecated_path.unlink()
 
             for agent_config in default_subagent_configs():
                 agent_path = agents_dir / f"{agent_config.id}.md"
+                should_write = not agent_path.exists()
                 if agent_path.exists():
-                    continue
-                with open(agent_path, "w", encoding="utf-8", newline="\n") as handle:
-                    handle.write(dump_agent_md(agent_config))
+                    try:
+                        existing = parse_agent_md(agent_path.read_text(encoding="utf-8"), agent_path.name)
+                    except Exception:
+                        existing = None
+                    existing_version = getattr(existing, "defaultTemplateVersion", "") if existing else ""
+                    if existing_version != DEFAULT_SUBAGENT_TEMPLATE_VERSION and is_managed_default(agent_path):
+                        backup_once(agent_path)
+                        should_write = True
+                if should_write:
+                    with open(agent_path, "w", encoding="utf-8", newline="\n") as handle:
+                        handle.write(dump_agent_md(agent_config))
+
+            # If an old default had been renamed manually but still declares a
+            # system-default source, leave it intact. Only canonical default
+            # ids and known deprecated ids are managed here.
         except (OSError, PermissionError) as exc:
             print(f"[Storage] Default subagent initialization skipped: {exc}")
 
@@ -1645,9 +1721,12 @@ class StorageManager:
         return normalize_system_identity(system_base.get("identity"))
 
     def get_default_agent_model_id(self) -> Optional[str]:
-        """Reads the default agent model ID, preferring models.json roles.default."""
+        """Resolve the default subagent model role, falling back to roles.default."""
         config = self.get_models_config()
         roles = config.get("roles", {})
+        subagent_model_id = roles.get("subagent")
+        if subagent_model_id:
+            return subagent_model_id
         default_model_id = roles.get("default")
         if default_model_id:
             return default_model_id
@@ -2469,7 +2548,7 @@ class StorageManager:
                 "sessionId": session_id,
                 "activeTaskId": task_id if snapshot.get("isActive") else None,
                 "latestTaskId": task_id,
-                "updatedAt": snapshot.get("updatedAt") or snapshot.get("createdAt") or datetime.utcnow().isoformat(),
+                "updatedAt": snapshot.get("updatedAt") or snapshot.get("createdAt") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
             with open(session_index_path, "w", encoding="utf-8") as f:
                 json.dump(index_payload, f, indent=2, ensure_ascii=False)

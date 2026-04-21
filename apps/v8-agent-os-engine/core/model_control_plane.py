@@ -20,6 +20,7 @@ CHAT_CAPABILITY_CLASSES = [
 DEFAULT_ROLE_MAP = {
     "default": "",
     "supervisor": "",
+    "subagent": "",
     "summary": "",
     "extraction": "",
     "vision": "",
@@ -64,6 +65,7 @@ DEFAULT_GOVERNANCE = {
 
 DEFAULT_ROUTING_POLICIES = {
     "chat": "supervisor",
+    "subagent": "subagent",
     "channel": "channel",
     "automation": "automation",
     "summary": "summary",
@@ -86,6 +88,12 @@ ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "supervisor": {
         "label": "主理人模型",
         "description": "主会话编排、多智能体决策与工具调度。",
+        "group": "system",
+        "capabilityClasses": CHAT_CAPABILITY_CLASSES,
+    },
+    "subagent": {
+        "label": "默认 Subagent 模型",
+        "description": "本地子代理默认继承的模型绑定；单个 agent 显式绑定仍优先。",
         "group": "system",
         "capabilityClasses": CHAT_CAPABILITY_CLASSES,
     },
@@ -187,6 +195,15 @@ MODULE_DEFINITIONS: List[Dict[str, Any]] = [
         "roles": ["supervisor"],
         "pagePath": "/admin/supervisor",
         "pageLabel": "主理人",
+    },
+    {
+        "key": "subagent_lane",
+        "label": "Subagent 执行班子",
+        "description": "Planner / Delegation Broker 调度的本地子代理默认模型。",
+        "group": "system",
+        "roles": ["subagent"],
+        "pagePath": "/admin/subagents",
+        "pageLabel": "子代理",
     },
     {
         "key": "context_summary",

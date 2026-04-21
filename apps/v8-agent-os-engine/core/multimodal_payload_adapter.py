@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -253,4 +253,4 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

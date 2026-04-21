@@ -40,10 +40,12 @@ export function RuntimeConfigWorkbench({
     kind,
     fallbackDisplayName,
     governanceHref = "/admin/runtime-governance",
+    showGovernanceLink = true,
 }: {
     kind: string;
     fallbackDisplayName: string;
     governanceHref?: string;
+    showGovernanceLink?: boolean;
 }) {
     const t = useT();
     const { toast } = useToast();
@@ -154,15 +156,17 @@ export function RuntimeConfigWorkbench({
                                 className={disabled ? "data-[state=checked]:bg-slate-300 data-[state=unchecked]:bg-slate-200" : undefined}
                             />
                         </div>
-                        <div className="flex justify-end">
-                            <Link
-                                href={governanceHref}
-                                className="inline-flex items-center gap-2 text-sm font-medium text-sky-700 transition hover:text-sky-800"
-                            >
-                                {t("components.runtime.RuntimeConfigWorkbench.k103f21d3")}
-                                <ArrowRight className="h-4 w-4" />
-                            </Link>
-                        </div>
+                        {showGovernanceLink ? (
+                            <div className="flex justify-end">
+                                <Link
+                                    href={governanceHref}
+                                    className="inline-flex items-center gap-2 text-sm font-medium text-sky-700 transition hover:text-sky-800"
+                                >
+                                    {t("components.runtime.RuntimeConfigWorkbench.k103f21d3")}
+                                    <ArrowRight className="h-4 w-4" />
+                                </Link>
+                            </div>
+                        ) : null}
                     </>
                 )}
             </CardContent>

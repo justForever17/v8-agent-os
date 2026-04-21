@@ -315,6 +315,25 @@ function modelLabel(model: SysModel) {
     const providerName = model.provider?.name || model.providerName || "";
     return `${model.name || modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
 }
+function humanizeFallbackLabel(value: string, fallback: string) {
+    const source = value.trim();
+    if (!source) {
+        return fallback;
+    }
+    const normalized = source.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!normalized) {
+        return fallback;
+    }
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+function mappedStatusLabel(
+    value: string | null | undefined,
+    map: Record<string, string>,
+    fallback = "Unknown",
+) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return map[normalized] || humanizeFallbackLabel(normalized, fallback);
+}
 function gatewayLabel(status?: string | null): string {
     const map: Record<string, string> = {
         running: "components.plugin.host.PluginHostWorkbench.k69570f96",
@@ -324,7 +343,7 @@ function gatewayLabel(status?: string | null): string {
         missing_cli: "components.plugin.host.PluginHostWorkbench.k94fb74b3",
         unreachable: "components.plugin.host.PluginHostWorkbench.k06750c61",
     };
-    return map[String(status || "").trim().toLowerCase()] || String(status || "unknown");
+    return mappedStatusLabel(status, map);
 }
 function ownershipLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -333,7 +352,7 @@ function ownershipLabel(value?: string | null): string {
         unverified: "components.plugin.host.PluginHostWorkbench.ke7ba1e89",
         disabled: "components.plugin.host.PluginHostWorkbench.kf6be1dc1",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function supportLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -342,7 +361,7 @@ function supportLabel(value?: string | null): string {
         "registered only": "components.plugin.host.PluginHostWorkbench.kd4b0f1c2",
         "handoff unsupported": "components.plugin.host.PluginHostWorkbench.kbca28c2e",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unset");
+    return mappedStatusLabel(value, map, "Unset");
 }
 function cliSourceLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -353,7 +372,7 @@ function cliSourceLabel(value?: string | null): string {
         bundled_local: "components.plugin.host.PluginHostWorkbench.ke4833a10",
         missing: "components.plugin.host.PluginHostWorkbench.k94fb74b3",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function toolingModeLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -366,7 +385,7 @@ function toolingModeLabel(value?: string | null): string {
         external_host: "components.plugin.host.PluginHostWorkbench.k0ff5b852",
         missing: "components.plugin.host.PluginHostWorkbench.k8d99f9ee",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function launcherSourceLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -374,17 +393,18 @@ function launcherSourceLabel(value?: string | null): string {
         configured_launcher: "components.plugin.host.PluginHostWorkbench.k66d3e35b",
         direct_cli_run: "components.plugin.host.PluginHostWorkbench.ka480d87e",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function bridgeProvenanceLabel(value?: string | null): string {
     const map: Record<string, string> = {
         install_record: "components.plugin.host.PluginHostWorkbench.k49abe05a",
         load_path: "components.plugin.host.PluginHostWorkbench.ka6aae691",
         global_auto_discovery: "components.plugin.host.PluginHostWorkbench.kade347f9",
+        global_extensions_root: "components.plugin.host.PluginHostWorkbench.bridgeProvenance.globalExtensionsRoot",
         missing: "components.plugin.host.PluginHostWorkbench.k451c35af",
         unknown: "components.plugin.host.PluginHostWorkbench.k8d99f9ee",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function configSourceLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -392,7 +412,7 @@ function configSourceLabel(value?: string | null): string {
         env: "components.plugin.host.PluginHostWorkbench.k86bc947d",
         defaults: "components.plugin.host.PluginHostWorkbench.kf23992ab",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function toolInventorySourceLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -402,14 +422,14 @@ function toolInventorySourceLabel(value?: string | null): string {
         state_manifest: "components.plugin.host.PluginHostWorkbench.k0f035a2e",
         openclaw_log_registered_tools: "components.plugin.host.PluginHostWorkbench.kd08a4764",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function toolInventoryHealthLabel(value?: string | null): string {
     const map: Record<string, string> = {
         healthy: "components.plugin.host.PluginHostWorkbench.k883b1ef7",
         degraded: "components.plugin.host.PluginHostWorkbench.k40145a50",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 function doctorStatusLabel(value?: string | null): string {
     const map: Record<string, string> = {
@@ -417,7 +437,7 @@ function doctorStatusLabel(value?: string | null): string {
         warning: "components.plugin.host.PluginHostWorkbench.k0c47dbdd",
         critical: "components.plugin.host.PluginHostWorkbench.kdf6081a3",
     };
-    return map[String(value || "").trim().toLowerCase()] || String(value || "unknown");
+    return mappedStatusLabel(value, map);
 }
 export function PluginHostWorkbench() {
     const { toast } = useToast();

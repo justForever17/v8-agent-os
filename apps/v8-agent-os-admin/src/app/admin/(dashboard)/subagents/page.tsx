@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import {
+    ArrowLeft,
     BrainCircuit,
     Cable,
     ChevronDown,
@@ -25,7 +27,6 @@ import {
     Trash2,
     Wrench,
 } from "lucide-react";
-import { BASELINE_SYSTEM_TOOLS } from "@/lib/runtime-baseline-tools";
 
 type Agent = {
     id: string;
@@ -48,6 +49,11 @@ type Agent = {
         name: string;
         provider?: { name?: string | null } | null;
     } | null;
+};
+
+type BaselineSystemTool = {
+    name: string;
+    description?: string;
 };
 
 type AIModel = {
@@ -120,6 +126,14 @@ type ExtensionsCatalogPayload = {
     };
 };
 
+type AgentToolSurfacePayload = {
+    baselineSystemTools?: BaselineSystemTool[];
+    toolModes?: {
+        recommended?: string;
+        modes?: Record<string, { status?: string; selectorPolicy?: string }>;
+    };
+};
+
 type AgentFormState = {
     name: string;
     description: string;
@@ -178,6 +192,7 @@ export default function SubagentsPage() {
         mcpToolCount: 0,
     });
     const [bridgeError, setBridgeError] = useState<string | null>(null);
+    const [baselineSystemTools, setBaselineSystemTools] = useState<BaselineSystemTool[]>([]);
     const [defaultModelId, setDefaultModelId] = useState("");
     const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(null);
     const [externalWorkersJson, setExternalWorkersJson] = useState("[]");
@@ -200,6 +215,10 @@ export default function SubagentsPage() {
         () => new Set(pluginHostTools.map((item) => String(item.canonicalName || item.toolName || "").trim()).filter(Boolean)),
         [pluginHostTools],
     );
+    const baselineToolNames = useMemo(
+        () => baselineSystemTools.map((item) => String(item.name || "").trim()).filter(Boolean),
+        [baselineSystemTools],
+    );
 
     const groupedMcpTools = useMemo(() => {
         return mcpTools.reduce<Record<string, MCPTool[]>>((acc, tool) => {
@@ -218,6 +237,20 @@ export default function SubagentsPage() {
             return acc;
         }, {});
     }, [pluginHostTools]);
+
+    const resolveToolModeLabel = useCallback((value?: string | null) => {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (normalized === "contextual_auto") {
+            return t("app.admin.dashboard.subagents.page.toolMode.contextualAuto");
+        }
+        if (normalized === "explicit") {
+            return t("app.admin.dashboard.subagents.page.toolMode.explicit");
+        }
+        if (!normalized) {
+            return t("app.admin.dashboard.subagents.page.toolMode.unknown");
+        }
+        return normalized.replace(/[_-]+/g, " ");
+    }, [t]);
 
     const mcpServiceCount = extensionsSummary.mcpServerCount;
     const connectedMcpServiceCount = extensionsSummary.connectedMcpServerCount;
@@ -288,13 +321,14 @@ export default function SubagentsPage() {
     const fetchData = useCallback(async () => {
         setIsLoading(true);
         try {
-            const [agentsRes, modelsRes, defaultModelRes, extensionsRes, bridgeRes, supervisorRes] = await Promise.all([
+            const [agentsRes, modelsRes, defaultModelRes, extensionsRes, bridgeRes, supervisorRes, toolSurfaceRes] = await Promise.all([
                 fetch("/api/agents", { cache: "no-store" }),
                 fetch("/api/models", { cache: "no-store" }),
                 fetch("/api/settings/default-agent-model", { cache: "no-store" }),
                 fetch("/api/extensions/catalog", { cache: "no-store" }),
                 fetch("/api/plugin-host/bridge/tools?limit=24", { cache: "no-store" }),
                 fetch("/api/config-registry/supervisor", { cache: "no-store" }),
+                fetch("/api/agents/tool-surface", { cache: "no-store" }),
             ]);
 
             if (agentsRes.ok) setAgents(await agentsRes.json());
@@ -346,6 +380,10 @@ export default function SubagentsPage() {
                     ),
                 );
             }
+            if (toolSurfaceRes.ok) {
+                const data: AgentToolSurfacePayload = await toolSurfaceRes.json();
+                setBaselineSystemTools(Array.isArray(data.baselineSystemTools) ? data.baselineSystemTools : []);
+            }
         } catch (error) {
             console.error("Failed to fetch subagent data", error);
             toast({
@@ -386,8 +424,8 @@ export default function SubagentsPage() {
             capabilitySnapshot = parsed as Record<string, unknown>;
         } catch (error) {
             toast({
-                title: "capabilitySnapshot JSON is invalid",
-                description: error instanceof Error ? error.message : "Please enter a valid JSON object.",
+                title: t("app.admin.dashboard.subagents.page.externalWorkers.capabilityJsonInvalidTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.capabilityJsonInvalidDescription"),
                 variant: "destructive",
             });
             return;
@@ -448,16 +486,16 @@ export default function SubagentsPage() {
             parsed = JSON.parse(externalWorkersJson || "[]");
         } catch (error) {
             toast({
-                title: "External worker JSON is invalid",
-                description: error instanceof Error ? error.message : "Please enter a valid JSON array.",
+                title: t("app.admin.dashboard.subagents.page.externalWorkers.invalidJsonTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.invalidJsonDescription"),
                 variant: "destructive",
             });
             return;
         }
         if (!Array.isArray(parsed)) {
             toast({
-                title: "External worker JSON must be an array",
-                description: "Please provide a JSON array of external worker descriptors.",
+                title: t("app.admin.dashboard.subagents.page.externalWorkers.arrayJsonTitle"),
+                description: t("app.admin.dashboard.subagents.page.externalWorkers.arrayJsonDescription"),
                 variant: "destructive",
             });
             return;
@@ -491,14 +529,14 @@ export default function SubagentsPage() {
                 ),
             );
             toast({
-                title: "External workers updated",
-                description: "Delegation descriptors have been saved to supervisor config.",
+                title: t("app.admin.dashboard.subagents.page.externalWorkers.savedTitle"),
+                description: t("app.admin.dashboard.subagents.page.externalWorkers.savedDescription"),
             });
         } catch (error) {
             console.error("Failed to save external workers", error);
             toast({
-                title: "Failed to save external workers",
-                description: error instanceof Error ? error.message : "Unknown error",
+                title: t("app.admin.dashboard.subagents.page.externalWorkers.saveFailedTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError"),
                 variant: "destructive",
             });
         } finally {
@@ -528,11 +566,18 @@ export default function SubagentsPage() {
     return (
         <div className="mx-auto max-w-7xl space-y-8 p-8">
             <div className="flex items-center justify-between gap-3">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.subagents.page.k6c291586")}</h1>
-                    <p className="mt-1 text-muted-foreground">
-                        {t("app.admin.dashboard.subagents.page.k790af087")}
-                    </p>
+                <div className="flex items-start gap-4">
+                    <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
+                        <Link href="/admin/chat-runtime" aria-label={t("app.admin.dashboard.common.backToChatRuntime")}>
+                            <ArrowLeft className="h-4 w-4" />
+                        </Link>
+                    </Button>
+                    <div>
+                        <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.subagents.page.k6c291586")}</h1>
+                        <p className="mt-1 text-muted-foreground">
+                            {t("app.admin.dashboard.subagents.page.k790af087")}
+                        </p>
+                    </div>
                 </div>
                 <div className="flex gap-2">
                     <Button variant="outline" onClick={() => void fetchData()} disabled={isLoading}>
@@ -560,14 +605,11 @@ export default function SubagentsPage() {
                     </CardHeader>
                     <CardContent className="space-y-3">
                         <div className="flex flex-wrap gap-2">
-                            {BASELINE_SYSTEM_TOOLS.slice(0, 8).map((name) => (
+                            {baselineToolNames.slice(0, 8).map((name) => (
                                 <Badge key={name} variant="outline" className="font-mono text-[11px]">{name}</Badge>
                             ))}
-                            {BASELINE_SYSTEM_TOOLS.length > 8 ? <Badge variant="secondary">+{BASELINE_SYSTEM_TOOLS.length - 8}</Badge> : null}
+                            {baselineToolNames.length > 8 ? <Badge variant="secondary">+{baselineToolNames.length - 8}</Badge> : null}
                         </div>
-                        <p className="text-xs leading-5 text-slate-500">
-                            {t("app.admin.dashboard.subagents.page.kc1d5d40b")}
-                        </p>
                     </CardContent>
                 </Card>
                 <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
@@ -640,7 +682,7 @@ export default function SubagentsPage() {
                                     </div>
                                 </div>
                                 <div className="flex flex-wrap gap-2">
-                                    <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{toolMode}</Badge>
+                                    <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{resolveToolModeLabel(toolMode)}</Badge>
                                     {agentClass ? <Badge variant="outline">{agentClass}</Badge> : null}
                                     {domainTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}
                                     {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t("app.admin.dashboard.subagents.page.kcec0f2f4")}</Badge> : null}
@@ -656,7 +698,7 @@ export default function SubagentsPage() {
                                     </div>
                                 ) : (
                                     <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-xs leading-5 text-slate-500">
-                                        <div className="font-medium text-slate-900">{t("contextual_auto")}</div>
+                                        <div className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.toolMode.contextualAuto")}</div>
                                         <div>{t("app.admin.dashboard.subagents.page.kf913a2e6")}</div>
                                     </div>
                                 )}
@@ -675,10 +717,10 @@ export default function SubagentsPage() {
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-base">
                         <Cable className="h-4 w-4 text-emerald-600" />
-                        External worker descriptors
+                        {t("app.admin.dashboard.subagents.page.externalWorkers.title")}
                     </CardTitle>
                     <CardDescription>
-                        Delegation broker uses these descriptors as the editable truth for external CLI workers. They are stored in <code>config.json#supervisor.delegation.externalWorkers</code>.
+                        {t("app.admin.dashboard.subagents.page.externalWorkers.description")} <code>config.json#supervisor.delegation.externalWorkers</code>.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -690,11 +732,11 @@ export default function SubagentsPage() {
                     />
                     <div className="flex items-center justify-between gap-3">
                         <p className="text-xs leading-5 text-slate-500">
-                            Keep one worker per object. Put the launcher in <code>launchProfile.commandTemplate</code> and result markers in <code>resultSchema.markers</code>.
+                            {t("app.admin.dashboard.subagents.page.externalWorkers.hintPrefix")} <code>launchProfile.commandTemplate</code> {t("app.admin.dashboard.subagents.page.externalWorkers.hintMiddle")} <code>resultSchema.markers</code>.
                         </p>
                         <Button onClick={() => void handleSaveExternalWorkers()} disabled={isSavingExternalWorkers}>
                             {isSavingExternalWorkers ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            Save external workers
+                            {t("app.admin.dashboard.subagents.page.externalWorkers.saveButton")}
                         </Button>
                     </div>
                 </CardContent>
@@ -754,8 +796,8 @@ export default function SubagentsPage() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="contextual_auto">contextual_auto</SelectItem>
-                                        <SelectItem value="explicit">explicit</SelectItem>
+                                        <SelectItem value="contextual_auto">{t("app.admin.dashboard.subagents.page.toolMode.contextualAuto")}</SelectItem>
+                                        <SelectItem value="explicit">{t("app.admin.dashboard.subagents.page.toolMode.explicit")}</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -801,7 +843,7 @@ export default function SubagentsPage() {
                                                 <CardTitle className="flex items-center gap-2 text-base">
                                                     <ShieldCheck className="h-4 w-4 text-sky-600" />
                                                     {t("app.admin.dashboard.subagents.page.k8cf0c430")}
-                                                    <Badge variant="outline">{BASELINE_SYSTEM_TOOLS.length}</Badge>
+                                                    <Badge variant="outline">{baselineToolNames.length}</Badge>
                                                 </CardTitle>
                                                 <CardDescription>
                                                     {t("app.admin.dashboard.subagents.page.k82df509a")}
@@ -812,13 +854,20 @@ export default function SubagentsPage() {
                                     </CardHeader>
                                     {toolPanels.baseline ? (
                                         <CardContent className="max-h-[148px] space-y-3 overflow-y-auto overscroll-contain pr-2">
-                                            <div className="flex flex-wrap gap-2">
-                                                {BASELINE_SYSTEM_TOOLS.map((name) => (
-                                                    <Badge key={name} variant="secondary" className="font-mono text-[11px]">
-                                                        {name}
-                                                    </Badge>
-                                                ))}
-                                            </div>
+                                            {baselineSystemTools.length > 0 ? (
+                                                <div className="grid gap-2">
+                                                    {baselineSystemTools.map((tool) => (
+                                                        <div key={tool.name} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2">
+                                                            <div className="font-mono text-[11px] font-medium text-slate-900">{tool.name}</div>
+                                                            <div className="mt-1 text-xs leading-5 text-slate-500">
+                                                                {tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.kca19dcd0")}</div>
+                                            )}
                                             <p className="text-xs leading-5 text-slate-500">
                                                 {t("app.admin.dashboard.subagents.page.k76e62da1")}
                                             </p>

@@ -33,7 +33,7 @@ export default async function ChatRuntimePage() {
                 description={"app.admin.dashboard.chat.runtime.page.keea91eab"}
             />
             <div className="space-y-6">
-                <RuntimeConfigWorkbench kind="chat" fallbackDisplayName="CHAT RUNTIME" />
+                <RuntimeConfigWorkbench kind="chat" fallbackDisplayName="CHAT RUNTIME" showGovernanceLink={false} />
                 <div className="grid gap-4 lg:grid-cols-2">
                     {CHAT_RUNTIME_LINKS.map((item) => (
                         <Link key={item.href} href={item.href}>

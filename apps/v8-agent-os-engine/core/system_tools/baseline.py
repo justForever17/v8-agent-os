@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any, Iterable
 
-BASELINE_SYSTEM_TOOL_NAMES = {
+BASELINE_SYSTEM_TOOL_NAME_ORDER = (
     "ask_user",
     "read_native_file",
     "share_workspace_file",
@@ -15,7 +16,9 @@ BASELINE_SYSTEM_TOOL_NAMES = {
     "web_broker",
     "http_request",
     "s3_broker",
-}
+)
+
+BASELINE_SYSTEM_TOOL_NAMES = set(BASELINE_SYSTEM_TOOL_NAME_ORDER)
 
 
 def is_baseline_system_tool_name(name: str | None) -> bool:
@@ -37,3 +40,25 @@ def select_baseline_system_tool_names(tools: Iterable[Any]) -> list[str]:
         if name and name not in names:
             names.append(name)
     return names
+
+
+def build_baseline_system_tool_descriptors() -> list[dict[str, str]]:
+    descriptors: list[dict[str, str]] = []
+    native_tools_module = None
+    try:
+        native_tools_module = import_module("core.native_tools")
+    except Exception:
+        native_tools_module = None
+
+    for name in BASELINE_SYSTEM_TOOL_NAME_ORDER:
+        description = ""
+        if native_tools_module is not None:
+            tool_ref = getattr(native_tools_module, name, None)
+            description = str(getattr(tool_ref, "description", "") or "").strip()
+        descriptors.append(
+            {
+                "name": name,
+                "description": description,
+            }
+        )
+    return descriptors

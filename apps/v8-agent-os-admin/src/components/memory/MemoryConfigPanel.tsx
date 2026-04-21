@@ -308,7 +308,7 @@ export default function MemoryConfigPanel() {
                             </Select>
                         </div>
                         <div className="space-y-1.5">
-                            <Label>{t("Recall Top-K")}</Label>
+                            <Label>{t("components.memory.MemoryConfigPanel.recallTopKLabel")}</Label>
                             <Input type="number" value={config.recall_top_k ?? 3} onChange={(e) => setConfig(prev => ({ ...prev, recall_top_k: Number(e.target.value) }))} min={1} max={10}/>
                         </div>
                     </div>
@@ -392,8 +392,8 @@ export default function MemoryConfigPanel() {
                                                     <span>{item.source || "unknown"}</span>
                                                     <span>{item.scope || "global"}</span>
                                                     <span>{item.category || "general"}</span>
-                                                    <span>{t("raw")} {(item.raw_relevance_score ?? 0).toFixed(4)}</span>
-                                                    <span>{t("final")} {(item.final_relevance_score ?? 0).toFixed(4)}</span>
+                                                    <span>{t("components.memory.MemoryConfigPanel.scoreRaw")} {(item.raw_relevance_score ?? 0).toFixed(4)}</span>
+                                                    <span>{t("components.memory.MemoryConfigPanel.scoreFinal")} {(item.final_relevance_score ?? 0).toFixed(4)}</span>
                                                     <span>{item.accepted
                                                         ? t("components.memory.MemoryConfigPanel.k05278b16")
                                                         : item.reject_reason

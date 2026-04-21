@@ -101,7 +101,9 @@ from core.database import db
 from core.delegation_broker import (
     build_minimal_task_brief,
     choose_best_external_worker,
+    choose_best_external_worker_with_diagnostics,
     choose_best_local_agent,
+    choose_best_local_agent_with_diagnostics,
     compact_external_worker_registry_entry,
     default_external_worker_descriptors,
     make_external_delegation_id,
@@ -5706,6 +5708,13 @@ def _delegation_compact_item(
     worker_type: str | None = None,
     command_session: dict[str, Any] | None = None,
     result_schema_matched: bool | None = None,
+    selection_reason: str | None = None,
+    selection_confidence: float | None = None,
+    match_signals: list[Any] | None = None,
+    compat_source: str | None = None,
+    supervisor_acceptance: dict[str, Any] | None = None,
+    adopted_artifact_refs: list[Any] | None = None,
+    auto_dispatch_source: str | None = None,
     invocation_id: str | None = None,
     branch_index: int | None = None,
     error: str | None = None,
@@ -5724,6 +5733,16 @@ def _delegation_compact_item(
         "artifactRefs": list(artifact_refs or []),
         "localSelfCheck": local_self_check,
         "acceptanceHint": _delegation_acceptance_hint(acceptance_hint),
+        "supervisorAcceptance": supervisor_acceptance or {
+            "status": "pending",
+            "summary": "Supervisor has not accepted, retried, or ignored this delegated result yet.",
+        },
+        "adoptedArtifactRefs": list(adopted_artifact_refs or []),
+        "selectionReason": selection_reason,
+        "selectionConfidence": selection_confidence,
+        "matchSignals": list(match_signals or []),
+        "compatSource": compat_source,
+        "autoDispatchSource": auto_dispatch_source,
         "invocationId": invocation_id,
         "branchIndex": branch_index,
     }
@@ -6126,6 +6145,9 @@ def delegation_broker(
         invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
         loaded_agents = storage.get_all_agents()
         external_descriptors = _delegation_external_worker_descriptors()
+        dispatch_source = str(base_state.get("delegationDispatchSource") or inherited_context.get("delegationDispatchSource") or "").strip()
+        compat_source = str(base_state.get("delegationCompatSource") or inherited_context.get("delegationCompatSource") or "").strip()
+        auto_dispatch_source = dispatch_source if dispatch_source.startswith("planner_auto") else ""
         sends: list[Send] = []
         items: list[dict[str, Any]] = []
         parallel_results: list[dict[str, Any]] = []
@@ -6134,12 +6156,16 @@ def delegation_broker(
             task_query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
             task_goal = str(task_brief.get("goal") or "").strip() or task_query or f"Task {index + 1}"
             lane_hint = str(task_brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
-            local_agent = choose_best_local_agent(task_brief, loaded_agents) if lane_hint in {"subagent", "auto"} else None
+            local_agent = None
+            local_diagnostics: dict[str, Any] = {}
+            external_diagnostics: dict[str, Any] = {}
+            if lane_hint in {"subagent", "auto"}:
+                local_agent, local_diagnostics = choose_best_local_agent_with_diagnostics(task_brief, loaded_agents)
             external_worker = None
             if lane_hint == "external_worker":
-                external_worker = choose_best_external_worker(task_brief, external_descriptors)
+                external_worker, external_diagnostics = choose_best_external_worker_with_diagnostics(task_brief, external_descriptors)
             elif lane_hint == "auto" and local_agent is None:
-                external_worker = choose_best_external_worker(task_brief, external_descriptors)
+                external_worker, external_diagnostics = choose_best_external_worker_with_diagnostics(task_brief, external_descriptors)
 
             if local_agent and lane_hint != "external_worker":
                 agent_id = str(local_agent.get("id") or "").strip()
@@ -6200,6 +6226,11 @@ def delegation_broker(
                         invocation_id=invocation_id,
                         branch_index=index,
                         trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                        selection_reason=str(local_diagnostics.get("selectionReason") or "").strip() or None,
+                        selection_confidence=local_diagnostics.get("selectionConfidence"),
+                        match_signals=list(local_diagnostics.get("matchSignals") or []),
+                        compat_source=compat_source or None,
+                        auto_dispatch_source=auto_dispatch_source or None,
                     )
                 )
                 continue
@@ -6226,6 +6257,11 @@ def delegation_broker(
                         branch_index=index,
                         worker_type=str(external_worker.get("workerType") or "").strip() or None,
                         trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                        selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
+                        selection_confidence=external_diagnostics.get("selectionConfidence"),
+                        match_signals=list(external_diagnostics.get("matchSignals") or []),
+                        compat_source=compat_source or None,
+                        auto_dispatch_source=auto_dispatch_source or None,
                         error="missing_command_template",
                     )
                     items.append(item)
@@ -6274,6 +6310,11 @@ def delegation_broker(
                     artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
                     acceptance_hint=(worker_result or {}).get("acceptanceHint"),
                     result_schema_matched=bool(worker_result),
+                    selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
+                    selection_confidence=external_diagnostics.get("selectionConfidence"),
+                    match_signals=list(external_diagnostics.get("matchSignals") or []),
+                    compat_source=compat_source or None,
+                    auto_dispatch_source=auto_dispatch_source or None,
                     error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
                 )
                 items.append(worker_item)
@@ -6291,6 +6332,11 @@ def delegation_broker(
                 invocation_id=invocation_id,
                 branch_index=index,
                 trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                selection_reason=str((external_diagnostics or local_diagnostics).get("selectionReason") or "no_matching_target").strip(),
+                selection_confidence=(external_diagnostics or local_diagnostics).get("selectionConfidence", 0.0),
+                match_signals=list((external_diagnostics or local_diagnostics).get("matchSignals") or []),
+                compat_source=compat_source or None,
+                auto_dispatch_source=auto_dispatch_source or None,
                 error="no_matching_target",
             )
             items.append(item)

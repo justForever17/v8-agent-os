@@ -152,7 +152,7 @@ def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
             mode="dispatch",
             tasks=broker_tasks,
             tool_call_id=tool_call_id,
-            state=state,
+            state={**dict(state or {}), "delegationCompatSource": "delegate_parallel"},
         )
 
     return StructuredTool.from_function(

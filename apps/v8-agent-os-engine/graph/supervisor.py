@@ -29,6 +29,7 @@ class AgentState(TypedDict):
     parallel_invocations: Annotated[list, operator.add]
     current_route_context: dict
     planner_plan: NotRequired[dict]
+    planner_dispatch_status: NotRequired[dict]
 
 from core.context_orchestrator import context_orchestrator
 

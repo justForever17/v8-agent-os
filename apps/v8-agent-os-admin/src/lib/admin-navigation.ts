@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+    Activity,
     Blocks,
     Bot,
     Brain,
@@ -129,6 +130,12 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
         id: "capabilities",
         title: "lib.admin.navigation.k7e688826",
         items: [
+            {
+                title: "lib.admin.navigation.runtimeGovernanceTitle",
+                href: "/admin/runtime-governance",
+                icon: Activity,
+                description: "lib.admin.navigation.runtimeGovernanceDescription",
+            },
             {
                 title: "lib.admin.navigation.k3e8bf507",
                 href: "/admin/context",

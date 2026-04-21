@@ -463,7 +463,7 @@ export function RPAWorkbench() {
             console.error("[RPAWorkbench] load failed:", error);
             toast({
                 variant: "destructive",
-                title:"components.rpa.RPAWorkbench.k83db87f2",
+                title: t("components.rpa.RPAWorkbench.k83db87f2"),
                 description: error instanceof Error ? error.message : "未知错误",
             });
         } finally {
@@ -519,7 +519,7 @@ export function RPAWorkbench() {
             console.error(`[RPAWorkbench] ${actionKey} failed:`, error);
             toast({
                 variant: "destructive",
-                title:"components.rpa.RPAWorkbench.k2e9cdd7b",
+                title: t("components.rpa.RPAWorkbench.k2e9cdd7b"),
                 description: error instanceof Error ? error.message : "未知错误",
             });
             throw error;
@@ -536,7 +536,7 @@ export function RPAWorkbench() {
     const handleCompile = async () => {
         const runIds = parseRunIdsInput(compileRunId);
         if (runIds.length === 0) {
-            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.kbf8ee2bb", description:"components.rpa.RPAWorkbench.k67c52b94" });
+            toast({ variant: "destructive", title: t("components.rpa.RPAWorkbench.kbf8ee2bb"), description: t("components.rpa.RPAWorkbench.k67c52b94") });
             return;
         }
         const compileRequest =
@@ -565,7 +565,7 @@ export function RPAWorkbench() {
 
     const handleViewSourceTrace = async () => {
         if (!selectedDraftId) {
-            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.ke05762b8", description:"components.rpa.RPAWorkbench.k95f5425c" });
+            toast({ variant: "destructive", title: t("components.rpa.RPAWorkbench.ke05762b8"), description: t("components.rpa.RPAWorkbench.k95f5425c") });
             return;
         }
         await runAction(
@@ -577,7 +577,7 @@ export function RPAWorkbench() {
 
     const handleDraftAction = async (mode: "export" | "prepare" | "run") => {
         if (!selectedDraftId) {
-            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.ke05762b8", description:"components.rpa.RPAWorkbench.k95f5425c" });
+            toast({ variant: "destructive", title: t("components.rpa.RPAWorkbench.ke05762b8"), description: t("components.rpa.RPAWorkbench.k95f5425c") });
             return;
         }
         let variables: Record<string, unknown>;
@@ -586,7 +586,7 @@ export function RPAWorkbench() {
         } catch (error) {
             toast({
                 variant: "destructive",
-                title:"components.rpa.RPAWorkbench.k35f41066",
+                title: t("components.rpa.RPAWorkbench.k35f41066"),
                 description: error instanceof Error ? error.message : "变量必须是 JSON 对象。",
             });
             return;
@@ -611,7 +611,7 @@ export function RPAWorkbench() {
     const handleExistingAction = async (mode: "prepare-existing" | "run-existing") => {
         const robotFile = existingRobotFile.trim();
         if (!robotFile) {
-            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.kfdb80aec", description:"components.rpa.RPAWorkbench.kbf440ba2" });
+            toast({ variant: "destructive", title: t("components.rpa.RPAWorkbench.kfdb80aec"), description: t("components.rpa.RPAWorkbench.kbf440ba2") });
             return;
         }
         let variables: Record<string, unknown>;
@@ -620,7 +620,7 @@ export function RPAWorkbench() {
         } catch (error) {
             toast({
                 variant: "destructive",
-                title:"components.rpa.RPAWorkbench.k35f41066",
+                title: t("components.rpa.RPAWorkbench.k35f41066"),
                 description: error instanceof Error ? error.message : "变量必须是 JSON 对象。",
             });
             return;
@@ -685,7 +685,7 @@ export function RPAWorkbench() {
 
     const handleTemplateAction = async (action: "approve" | "freeze" | "review_required") => {
         if (!selectedTemplateId) {
-            toast({ variant: "destructive", title:"components.rpa.RPAWorkbench.ka3b5b6f9", description:"components.rpa.RPAWorkbench.k899e7048" });
+            toast({ variant: "destructive", title: t("components.rpa.RPAWorkbench.ka3b5b6f9"), description: t("components.rpa.RPAWorkbench.k899e7048") });
             return;
         }
         const endpoint =
@@ -751,8 +751,10 @@ export function RPAWorkbench() {
                         <CardDescription>执行 `.robot` 的基础运行时</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2">
-                        <Badge variant={probeState(availability.robotFrameworkDetail).variant}>
-                            {probeState(availability.robotFrameworkDetail).label}
+                        <Badge variant={probeState(availability.robotFrameworkDetail).variant} className="max-w-full overflow-hidden">
+                            <span className="block max-w-[10rem] overflow-hidden whitespace-nowrap [mask-image:linear-gradient(90deg,#000_82%,transparent)]">
+                                {t(probeState(availability.robotFrameworkDetail).label)}
+                            </span>
                         </Badge>
                         {availability.robotFrameworkDetail?.origin ? (
                             <div className="break-all text-xs text-muted-foreground">{availability.robotFrameworkDetail.origin}</div>
@@ -768,8 +770,10 @@ export function RPAWorkbench() {
                         <CardDescription>扩展桌面/浏览器/文件关键字库</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2">
-                        <Badge variant={probeState(availability.rpaFrameworkDetail).variant}>
-                            {probeState(availability.rpaFrameworkDetail).label}
+                        <Badge variant={probeState(availability.rpaFrameworkDetail).variant} className="max-w-full overflow-hidden">
+                            <span className="block max-w-[10rem] overflow-hidden whitespace-nowrap [mask-image:linear-gradient(90deg,#000_82%,transparent)]">
+                                {t(probeState(availability.rpaFrameworkDetail).label)}
+                            </span>
                         </Badge>
                         {availability.rpaFrameworkDetail?.origin ? (
                             <div className="break-all text-xs text-muted-foreground">{availability.rpaFrameworkDetail.origin}</div>
@@ -787,9 +791,13 @@ export function RPAWorkbench() {
                     <CardContent className="grid gap-3 md:grid-cols-2">
                         {Object.entries(availability.libraryDetails || {}).map(([name, detail]) => (
                             <div key={name} className="rounded-xl border border-border/60 p-3">
-                                <div className="flex items-center justify-between gap-2">
-                                    <div className="text-sm font-medium">{name}</div>
-                                    <Badge variant={probeState(detail).variant}>{probeState(detail).label}</Badge>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0 flex-1 break-words text-sm font-medium">{name}</div>
+                                    <Badge variant={probeState(detail).variant} className="max-w-[11rem] shrink-0 overflow-hidden">
+                                        <span className="block overflow-hidden whitespace-nowrap [mask-image:linear-gradient(90deg,#000_82%,transparent)]">
+                                            {t(probeState(detail).label)}
+                                        </span>
+                                    </Badge>
                                 </div>
                                 {detail?.origin ? (
                                     <div className="mt-2 break-all text-xs text-muted-foreground">{detail.origin}</div>
@@ -815,7 +823,7 @@ export function RPAWorkbench() {
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
                             <Label htmlFor="compile-run-id">ComputerUse run_id</Label>
-                            <Input id="compile-run-id" value={compileRunId} onChange={(event) => setCompileRunId(event.target.value)} placeholder="components.rpa.RPAWorkbench.k5b954856" />
+                            <Input id="compile-run-id" value={compileRunId} onChange={(event) => setCompileRunId(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.k5b954856")} />
                         </div>
                         <Button onClick={() => void handleCompile()} disabled={busyAction === "compile"}>
                             <FileCode2 className="mr-2 h-4 w-4" />
@@ -832,11 +840,11 @@ export function RPAWorkbench() {
                     <CardContent className="grid gap-4">
                         <div className="grid gap-2">
                             <Label htmlFor="cwd">工作目录（可选）</Label>
-                            <Input id="cwd" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="components.rpa.RPAWorkbench.kcb17052e" />
+                            <Input id="cwd" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.kcb17052e")} />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="output-dir">输出目录（可选）</Label>
-                            <Input id="output-dir" value={outputDir} onChange={(event) => setOutputDir(event.target.value)} placeholder="components.rpa.RPAWorkbench.kbc389513" />
+                            <Input id="output-dir" value={outputDir} onChange={(event) => setOutputDir(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.kbc389513")} />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="timeout-ms">超时（毫秒）</Label>
@@ -1028,7 +1036,7 @@ export function RPAWorkbench() {
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
                             <Label htmlFor="existing-robot">`.robot` 文件路径</Label>
-                            <Input id="existing-robot" value={existingRobotFile} onChange={(event) => setExistingRobotFile(event.target.value)} placeholder="components.rpa.RPAWorkbench.k0f5296b5" />
+                            <Input id="existing-robot" value={existingRobotFile} onChange={(event) => setExistingRobotFile(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.k0f5296b5")} />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="existing-vars">变量（JSON 对象）</Label>
@@ -1188,7 +1196,7 @@ export function RPAWorkbench() {
                                         className="min-h-[96px]"
                                         value={templateNote}
                                         onChange={(event) => setTemplateNote(event.target.value)}
-                                        placeholder="components.rpa.RPAWorkbench.k3d5ec5ad"
+                                        placeholder={t("components.rpa.RPAWorkbench.k3d5ec5ad")}
                                     />
                                 </div>
                                 <div className="flex flex-wrap gap-2">
@@ -1302,7 +1310,7 @@ export function RPAWorkbench() {
                                         </div>
                                         <Textarea
                                             className="mt-3 min-h-[96px]"
-                                            placeholder="components.rpa.RPAWorkbench.k5d7ae816"
+                                            placeholder={t("components.rpa.RPAWorkbench.k5d7ae816")}
                                             value={approvalDrafts[approval.id] || ""}
                                             onChange={(event) => setApprovalDrafts((current) => ({ ...current, [approval.id]: event.target.value }))}
                                         />

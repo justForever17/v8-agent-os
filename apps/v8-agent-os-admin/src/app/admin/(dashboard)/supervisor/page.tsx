@@ -1,10 +1,11 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
+import Link from "next/link";
 import { useMemo, useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
+import { ArrowLeft, Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -58,6 +59,7 @@ export default function SupervisorPage() {
     const [runtimeManagedTools, setRuntimeManagedTools] = useState<LockedTool[]>([]);
     const [expandedServers, setExpandedServers] = useState<Record<string, boolean>>({});
     const [testingServers, setTestingServers] = useState<Record<string, boolean>>({});
+    const [showManualMcpTools, setShowManualMcpTools] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
@@ -72,10 +74,10 @@ export default function SupervisorPage() {
                 const data = await res.json();
                 const hasTools = (data.mcpTools as MCPTool[]).some(t => t.serverName === serverName || (serverName === "通用工具" && !t.serverName));
                 if (hasTools) {
-                    toast({ title: t("app.admin.dashboard.supervisor.page.k40bd808e"), description: `${t("app.admin.dashboard.supervisor.page.k99cb7895")}: ${t(serverName)}` });
+                    toast({ title: t("app.admin.dashboard.supervisor.page.k40bd808e"), description: `${t("app.admin.dashboard.supervisor.page.k99cb7895")}: ${serverName}` });
                 }
                 else {
-                    toast({ variant: "destructive", title: t("app.admin.dashboard.supervisor.page.k5797988b"), description: `${t("app.admin.dashboard.supervisor.page.k15cf84b7")} (${t(serverName)})` });
+                    toast({ variant: "destructive", title: t("app.admin.dashboard.supervisor.page.k5797988b"), description: `${t("app.admin.dashboard.supervisor.page.k15cf84b7")} (${serverName})` });
                 }
             }
             else {
@@ -210,7 +212,7 @@ export default function SupervisorPage() {
             console.error("Failed to save supervisor prompt", error);
             toast({
                 variant: "destructive",
-                title: t(supervisorSaved ? "app.admin.dashboard.supervisor.page.k23038732" : "保存失败"),
+                title: t(supervisorSaved ? "app.admin.dashboard.supervisor.page.k23038732" : "app.admin.dashboard.supervisor.page.k12769ce1"),
                 description: error instanceof Error ? error.message : t("app.admin.dashboard.supervisor.page.k2eee8863"),
             });
         }
@@ -224,14 +226,21 @@ export default function SupervisorPage() {
             </div>);
     }
     return (<div className="p-8 space-y-8 max-w-4xl mx-auto">
-            <div>
-                <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-                    <Crown className="w-8 h-8 text-amber-500"/>
-                    {t("app.admin.dashboard.supervisor.page.kf45c6152")}
-                </h1>
-                <p className="text-muted-foreground mt-2">
-                    {t("app.admin.dashboard.supervisor.page.k48284369")}
-                </p>
+            <div className="flex items-start gap-4">
+                <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
+                    <Link href="/admin/chat-runtime" aria-label={t("app.admin.dashboard.common.backToChatRuntime")}>
+                        <ArrowLeft className="h-4 w-4" />
+                    </Link>
+                </Button>
+                <div>
+                    <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+                        <Crown className="w-8 h-8 text-amber-500"/>
+                        {t("app.admin.dashboard.supervisor.page.kf45c6152")}
+                    </h1>
+                    <p className="text-muted-foreground mt-2">
+                        {t("app.admin.dashboard.supervisor.page.k48284369")}
+                    </p>
+                </div>
             </div>
 
             <Card>
@@ -447,7 +456,20 @@ export default function SupervisorPage() {
                 ? `${detachedSelectedTools.length} saved MCP tools are currently offline: ${detachedSelectedTools.join(", ")}. They stay preserved until you remove them or the service reconnects.`
                 : `当前配置里有 ${detachedSelectedTools.length} 个补充工具暂未在可连接列表中出现：${detachedSelectedTools.join(", ")}。保存时会继续保留它们，直到你主动取消或服务重新连上。`}
                             </div>) : null}
-                        <div className="border rounded-md bg-muted/30 max-h-[400px] overflow-y-auto mt-2">
+                        <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="text-xs leading-5 text-muted-foreground">
+                                    {t("app.admin.dashboard.supervisor.page.manualMcpMode.description")}
+                                </div>
+                                <Button type="button" variant="outline" size="sm" onClick={() => setShowManualMcpTools((current) => !current)}>
+                                    {showManualMcpTools ? <ChevronDown className="mr-2 h-4 w-4"/> : <ChevronRight className="mr-2 h-4 w-4"/>}
+                                    {showManualMcpTools
+                ? t("app.admin.dashboard.supervisor.page.manualMcpMode.hideButton")
+                : t("app.admin.dashboard.supervisor.page.manualMcpMode.showButton")}
+                                </Button>
+                            </div>
+                        </div>
+                        {showManualMcpTools ? (<div className="border rounded-md bg-muted/30 max-h-[400px] overflow-y-auto mt-2">
                             {editableMcpTools.length > 0 ? ((() => {
             const grouped = editableMcpTools.reduce((acc, tool) => {
                 const srv = tool.serverName || "通用工具";
@@ -466,7 +488,7 @@ export default function SupervisorPage() {
                                                         {isExpanded ? <ChevronDown className="h-4 w-4"/> : <ChevronRight className="h-4 w-4"/>}
                                                     </Button>
                                                     <div className="flex-1 cursor-pointer font-medium text-sm flex items-center" onClick={() => setExpandedServers(prev => ({ ...prev, [server]: !isExpanded }))}>
-                                                        <span>{t(server)}</span>
+                                                        <span>{server}</span>
                                                         <Button variant="outline" size="sm" className="ml-4 gap-1 h-6 text-[10px] px-2" disabled={testingServers[server]} onClick={(e) => handleTestConnection(e, server)}>
                                                             {testingServers[server] ? <Loader2 className="w-3 h-3 animate-spin"/> : <Play className="w-3 h-3"/>}
                                                             {t("app.admin.dashboard.supervisor.page.k4b0ac62c")}
@@ -508,7 +530,7 @@ export default function SupervisorPage() {
                                             </div>);
             });
         })()) : (<div className="p-4"><p className="text-xs text-muted-foreground col-span-full">{t("app.admin.dashboard.supervisor.page.k58c74c39")}</p></div>)}
-                        </div>
+                        </div>) : null}
                     </div>
                 </CardContent>
                 <CardFooter className="flex justify-end pt-4 border-t">

@@ -207,6 +207,144 @@ def _score_text_overlap(text: str, task_brief: dict[str, Any], *, heavy_tokens: 
     return score
 
 
+def _lower_set(values: Iterable[Any] | None) -> set[str]:
+    return {str(item or "").strip().lower() for item in list(values or []) if str(item or "").strip()}
+
+
+def _snapshot_value_set(snapshot: dict[str, Any] | None, key: str) -> set[str]:
+    if not isinstance(snapshot, dict):
+        return set()
+    value = snapshot.get(key)
+    if isinstance(value, dict):
+        return _lower_set(value.keys()) | _lower_set(value.values())
+    if isinstance(value, (list, tuple, set)):
+        return _lower_set(value)
+    if value in (None, ""):
+        return set()
+    return {str(value).strip().lower()}
+
+
+def _field_overlap(task_values: Iterable[Any] | None, snapshot_values: Iterable[Any] | None) -> set[str]:
+    task_set = _lower_set(task_values)
+    snapshot_set = _lower_set(snapshot_values)
+    if not task_set or not snapshot_set:
+        return set()
+    matches: set[str] = set()
+    for task_value in task_set:
+        task_tokens = set(_tokenize(task_value))
+        for snapshot_value in snapshot_set:
+            if task_value == snapshot_value or task_value in snapshot_value or snapshot_value in task_value:
+                matches.add(task_value)
+                continue
+            snapshot_tokens = set(_tokenize(snapshot_value))
+            if task_tokens and snapshot_tokens and task_tokens.issubset(snapshot_tokens):
+                matches.add(task_value)
+    return matches
+
+
+def score_capability_candidate(
+    *,
+    task_brief: dict[str, Any],
+    candidate_id: str,
+    candidate_label: str,
+    description: str = "",
+    capability_snapshot: dict[str, Any] | None = None,
+    candidate_kind: str = "subagent",
+) -> dict[str, Any]:
+    snapshot = capability_snapshot if isinstance(capability_snapshot, dict) else {}
+    signals: list[str] = []
+    score = 0
+
+    required = _as_string_list(task_brief.get("requiredCapabilities"))
+    required_set = _lower_set(required)
+    domain = _snapshot_value_set(snapshot, "domainTags")
+    artifacts = _snapshot_value_set(snapshot, "artifactCapabilities")
+    operations = _snapshot_value_set(snapshot, "operationCapabilities")
+    runtimes = _snapshot_value_set(snapshot, "runtimeAffinities")
+    agent_class = str(snapshot.get("agentClass") or "").strip().lower()
+
+    for key, values, weight in (
+        ("domain", domain, 6),
+        ("artifact", artifacts, 7),
+        ("operation", operations, 8),
+        ("runtime", runtimes, 3),
+    ):
+        matches = _field_overlap(required_set, values)
+        if matches:
+            score += weight * len(matches)
+            signals.append(f"{key}:{','.join(sorted(matches)[:4])}")
+
+    behavior = _lower_set(task_brief.get("behaviorScope"))
+    if behavior:
+        matches = _field_overlap(behavior, operations | domain | runtimes)
+        if matches:
+            score += 4 * len(matches)
+            signals.append(f"behavior:{','.join(sorted(matches)[:4])}")
+
+    write_set = _lower_set(task_brief.get("writeSet"))
+    if write_set:
+        matches = _field_overlap(write_set, artifacts | domain)
+        if matches:
+            score += 3 * len(matches)
+            signals.append(f"writeSet:{','.join(sorted(matches)[:4])}")
+
+    if agent_class:
+        if candidate_kind == "external_worker" and agent_class == "external_worker":
+            score += 3
+            signals.append("agentClass:external_worker")
+        elif candidate_kind == "subagent" and agent_class != "external_worker":
+            score += 2
+            signals.append(f"agentClass:{agent_class}")
+
+    suitability_key = "externalWorkerSuitability" if candidate_kind == "external_worker" else "plannerSuitability"
+    suitability = str(snapshot.get(suitability_key) or "").strip().lower()
+    if suitability in {"high", "preferred", "strong"}:
+        score += 4
+        signals.append(f"{suitability_key}:high")
+    elif suitability in {"medium", "normal"}:
+        score += 1
+        signals.append(f"{suitability_key}:medium")
+    elif suitability in {"low", "avoid"}:
+        score -= 4
+        signals.append(f"{suitability_key}:{suitability}")
+
+    heavy_tokens = _tokenize(" ".join(required))
+    text_parts = [
+        candidate_id,
+        candidate_label,
+        description,
+        summarize_capability_snapshot(snapshot),
+        " ".join(_flatten_snapshot_values(snapshot)),
+    ]
+    lexical_score = _score_text_overlap(
+        "\n".join(str(part or "").strip() for part in text_parts if str(part or "").strip()),
+        task_brief,
+        heavy_tokens=heavy_tokens,
+    )
+    if lexical_score:
+        score += min(lexical_score, 12)
+        signals.append(f"lexical:{min(lexical_score, 12)}")
+
+    confidence = max(0.0, min(1.0, round(score / 24, 2)))
+    reason = "no_match"
+    if score >= 12:
+        reason = "strong_capability_match"
+    elif score >= 6:
+        reason = "moderate_capability_match"
+    elif score >= 4:
+        reason = "weak_capability_match"
+
+    return {
+        "candidateId": candidate_id,
+        "candidateLabel": candidate_label,
+        "candidateKind": candidate_kind,
+        "score": score,
+        "confidence": confidence,
+        "reason": reason,
+        "matchSignals": signals[:8],
+    }
+
+
 def summarize_capability_snapshot(snapshot: dict[str, Any] | None) -> str:
     if not isinstance(snapshot, dict) or not snapshot:
         return ""
@@ -221,37 +359,59 @@ def summarize_capability_snapshot(snapshot: dict[str, Any] | None) -> str:
     return " | ".join(parts)
 
 
-def choose_best_local_agent(task_brief: dict[str, Any], agents: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     preferred_id = str(task_brief.get("preferredAgentId") or "").strip()
     normalized_agents = [agent for agent in list(agents or []) if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"]
     if preferred_id:
         for agent in normalized_agents:
             if str(agent.get("id") or "").strip() == preferred_id:
-                return agent
-        return None
+                return agent, {
+                    "selectionReason": "preferredAgentId",
+                    "selectionConfidence": 1.0,
+                    "matchSignals": [f"preferredAgentId:{preferred_id}"],
+                    "targetId": preferred_id,
+                }
+        return None, {
+            "selectionReason": "preferredAgentId_not_found",
+            "selectionConfidence": 0.0,
+            "matchSignals": [f"preferredAgentId:{preferred_id}"],
+            "targetId": preferred_id,
+        }
 
     best_agent: dict[str, Any] | None = None
-    best_score = 0
-    heavy_tokens = _tokenize(" ".join(_as_string_list(task_brief.get("requiredCapabilities"))))
+    best_diagnostics: dict[str, Any] = {}
     for agent in normalized_agents:
         if agent.get("isEnabled") is False:
             continue
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
-        text_parts = [
-            str(agent.get("name") or "").strip(),
-            str(agent.get("description") or "").strip(),
-            summarize_capability_snapshot(snapshot),
-            " ".join(_flatten_snapshot_values(snapshot)),
-        ]
-        score = _score_text_overlap("\n".join(part for part in text_parts if part), task_brief, heavy_tokens=heavy_tokens)
-        if str(snapshot.get("externalWorkerSuitability") or "").strip().lower() in {"low", "avoid"}:
-            score -= 1
-        if score > best_score:
-            best_score = score
+        diagnostics = score_capability_candidate(
+            task_brief=task_brief,
+            candidate_id=str(agent.get("id") or "").strip(),
+            candidate_label=str(agent.get("name") or agent.get("id") or "").strip(),
+            description=str(agent.get("description") or "").strip(),
+            capability_snapshot=snapshot,
+            candidate_kind="subagent",
+        )
+        if int(diagnostics.get("score") or 0) > int(best_diagnostics.get("score") or 0):
             best_agent = agent
-    if best_score < 4:
-        return None
-    return best_agent
+            best_diagnostics = diagnostics
+    if int(best_diagnostics.get("score") or 0) < 4:
+        return None, best_diagnostics or {
+            "selectionReason": "no_matching_subagent",
+            "selectionConfidence": 0.0,
+            "matchSignals": [],
+        }
+    return best_agent, {
+        "selectionReason": best_diagnostics.get("reason") or "capability_match",
+        "selectionConfidence": best_diagnostics.get("confidence") or 0.0,
+        "matchSignals": list(best_diagnostics.get("matchSignals") or []),
+        "targetId": best_diagnostics.get("candidateId"),
+    }
+
+
+def choose_best_local_agent(task_brief: dict[str, Any], agents: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    agent, _diagnostics = choose_best_local_agent_with_diagnostics(task_brief, agents)
+    return agent
 
 
 def default_external_worker_descriptors() -> list[dict[str, Any]]:
@@ -355,38 +515,64 @@ def normalize_external_worker_descriptors(values: Iterable[Any] | None) -> list[
     return items
 
 
-def choose_best_external_worker(task_brief: dict[str, Any], descriptors: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+def choose_best_external_worker_with_diagnostics(task_brief: dict[str, Any], descriptors: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     preferred_worker_type = str(task_brief.get("preferredWorkerType") or "").strip().lower()
     normalized = [item for item in normalize_external_worker_descriptors(descriptors) if item.get("enabled")]
     if preferred_worker_type:
         for descriptor in normalized:
             worker_type = str(descriptor.get("workerType") or descriptor.get("id") or "").strip().lower()
             if worker_type == preferred_worker_type or str(descriptor.get("id") or "").strip().lower() == preferred_worker_type:
-                return descriptor
+                return descriptor, {
+                    "selectionReason": "preferredWorkerType",
+                    "selectionConfidence": 1.0,
+                    "matchSignals": [f"preferredWorkerType:{preferred_worker_type}"],
+                    "targetId": str(descriptor.get("id") or "").strip(),
+                }
+        return None, {
+            "selectionReason": "preferredWorkerType_not_found",
+            "selectionConfidence": 0.0,
+            "matchSignals": [f"preferredWorkerType:{preferred_worker_type}"],
+            "targetId": preferred_worker_type,
+        }
     best_descriptor: dict[str, Any] | None = None
-    best_score = 0
-    heavy_tokens = _tokenize(" ".join(_as_string_list(task_brief.get("requiredCapabilities"))))
+    best_diagnostics: dict[str, Any] = {}
     for descriptor in normalized:
         snapshot = descriptor.get("capabilitySnapshot") if isinstance(descriptor.get("capabilitySnapshot"), dict) else {}
-        text_parts = [
-            str(descriptor.get("name") or "").strip(),
-            str(descriptor.get("description") or "").strip(),
-            str(descriptor.get("workerType") or "").strip(),
-            summarize_capability_snapshot(snapshot),
-            " ".join(_flatten_snapshot_values(snapshot)),
-        ]
-        score = _score_text_overlap("\n".join(part for part in text_parts if part), task_brief, heavy_tokens=heavy_tokens)
-        suitability = str(snapshot.get("externalWorkerSuitability") or "").strip().lower()
-        if suitability == "high":
-            score += 2
-        elif suitability in {"low", "avoid"}:
-            score -= 1
-        if score > best_score:
-            best_score = score
+        diagnostics = score_capability_candidate(
+            task_brief=task_brief,
+            candidate_id=str(descriptor.get("id") or "").strip(),
+            candidate_label=str(descriptor.get("name") or descriptor.get("id") or "").strip(),
+            description=" ".join(
+                part
+                for part in [
+                    str(descriptor.get("description") or "").strip(),
+                    str(descriptor.get("workerType") or "").strip(),
+                ]
+                if part
+            ),
+            capability_snapshot=snapshot,
+            candidate_kind="external_worker",
+        )
+        if int(diagnostics.get("score") or 0) > int(best_diagnostics.get("score") or 0):
             best_descriptor = descriptor
-    if best_score < 4:
-        return None
-    return best_descriptor
+            best_diagnostics = diagnostics
+    if int(best_diagnostics.get("score") or 0) < 4:
+        return None, best_diagnostics or {
+            "selectionReason": "no_matching_external_worker",
+            "selectionConfidence": 0.0,
+            "matchSignals": [],
+        }
+    return best_descriptor, {
+        "selectionReason": best_diagnostics.get("reason") or "capability_match",
+        "selectionConfidence": best_diagnostics.get("confidence") or 0.0,
+        "matchSignals": list(best_diagnostics.get("matchSignals") or []),
+        "targetId": best_diagnostics.get("candidateId"),
+    }
+
+
+def choose_best_external_worker(task_brief: dict[str, Any], descriptors: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    worker, _diagnostics = choose_best_external_worker_with_diagnostics(task_brief, descriptors)
+    return worker
 
 
 def render_external_worker_command(
@@ -492,4 +678,3 @@ def compact_external_worker_registry_entry(descriptor: dict[str, Any]) -> dict[s
         "workerType": str(descriptor.get("workerType") or "").strip(),
         "capabilitySnapshot": deepcopy(snapshot),
     }
-

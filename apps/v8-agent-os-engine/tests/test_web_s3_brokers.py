@@ -202,6 +202,10 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["targetId"], "coding-cli-worker")
         self.assertEqual(payload["items"][0]["commandSession"]["commandId"], "cmd-ext-1")
         self.assertFalse(payload["items"][0]["resultSchemaMatched"])
+        self.assertIn(payload["items"][0]["selectionReason"], {"preferredWorkerType", "strong_capability_match", "moderate_capability_match"})
+        self.assertGreaterEqual(payload["items"][0]["selectionConfidence"], 0)
+        self.assertIsInstance(payload["items"][0]["matchSignals"], list)
+        self.assertEqual(payload["items"][0]["supervisorAcceptance"]["status"], "pending")
         mocked_start.assert_called_once()
         self.assertEqual(mocked_start.call_args.kwargs["mode"], "start")
 

@@ -21,6 +21,7 @@ from core.model_control_plane import model_control_plane
 from core.realtime_protocol import format_ndjson
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
+from core.system_tools.baseline import build_baseline_system_tool_descriptors
 from core.workspace_resolution import workspace_resolution_service
 from runtimes.chat.runtime import StreamFilter
 from runtimes.memory.prompts import render_memory_admin_chat_prompt
@@ -47,6 +48,29 @@ def _get_role_binding(role: str) -> str:
 async def get_agents():
     try:
         return {"agents": storage.get_all_agents()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/agents/tool-surface")
+async def get_agent_tool_surface():
+    try:
+        return {
+            "baselineSystemTools": build_baseline_system_tool_descriptors(),
+            "toolModes": {
+                "recommended": "contextual_auto",
+                "modes": {
+                    "contextual_auto": {
+                        "status": "recommended",
+                        "selectorPolicy": "delegated_task_contextual_route",
+                    },
+                    "explicit": {
+                        "status": "legacy_compatibility",
+                        "selectorPolicy": "manual_candidate_pinning",
+                    },
+                },
+            },
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

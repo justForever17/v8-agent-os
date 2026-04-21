@@ -250,6 +250,31 @@ def _merged_route_context(state: dict | None, overlay: dict | None) -> dict:
     )
 
 
+def build_contextual_auto_tool_node(
+    *,
+    base_tools: list,
+    all_mcp_tools: list,
+    all_plugin_host_tools: list,
+    name: str,
+    fallback_goto: str,
+):
+    async def contextual_tool_node(state):
+        route_context = dict((state or {}).get("current_route_context") or {})
+        selected_mcp_tools = _resolve_selected_mcp_tools(
+            all_mcp_tools,
+            list(route_context.get("selectedMcpTools") or []),
+        )
+        selected_plugin_host_tools = _resolve_selected_plugin_host_tools(
+            all_plugin_host_tools,
+            list(route_context.get("selectedPluginHostTools") or []),
+        )
+        tools = _dedupe_tools(list(base_tools or []) + selected_mcp_tools + selected_plugin_host_tools)
+        routed = create_routed_tool_node(tools, name=name, fallback_goto=fallback_goto)
+        return await routed(state)
+
+    return contextual_tool_node
+
+
 def build_handoff_tool(agent_id: str, agent_name: str, agent_desc: str):
     class HandoffInput(BaseModel):
         reason: str = Field(description=f"Detailed instructions, task description, and context for {agent_name} to execute.")
@@ -273,7 +298,7 @@ def build_handoff_tool(agent_id: str, agent_name: str, agent_desc: str):
             mode="dispatch",
             tasks=[task_brief],
             tool_call_id=tool_call_id,
-            state=state,
+            state={**dict(state or {}), "delegationCompatSource": safe_tool_name},
         )
 
     return StructuredTool.from_function(
@@ -720,8 +745,19 @@ def build_specialist_agent_components(
         max_reflections = agent_data.get("max_reflections", 3)
         agent_tool_mode = _resolved_tool_mode(agent_data)
 
+        contextual_base_tools = _dedupe_tools(_exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions]))
         if agent_tool_mode == "contextual_auto":
-            tool_node_tools = _dedupe_tools(_exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions] + list(all_mcp_tools) + list(all_plugin_host_tools)))
+            # Contextual agents receive external MCP/PluginHost tools only after the
+            # delegated task route selects them. Keep the static tool node narrow so
+            # the runtime surface does not silently retain the full external tree.
+            tool_node_tools = contextual_base_tools
+            tool_node_func = build_contextual_auto_tool_node(
+                base_tools=contextual_base_tools,
+                all_mcp_tools=all_mcp_tools,
+                all_plugin_host_tools=all_plugin_host_tools,
+                name=f"{agent_id}_tools",
+                fallback_goto=agent_id,
+            )
         else:
             tool_node_tools = _dedupe_tools(
                 _exclude_supervisor_only_tools(list(filtered_native_tools))
@@ -729,6 +765,7 @@ def build_specialist_agent_components(
                 + _resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
                 + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors)
             )
+            tool_node_func = create_routed_tool_node(tool_node_tools, name=f"{agent_id}_tools", fallback_goto=agent_id) if tool_node_tools else None
 
         handoff_tools.append(build_handoff_tool(agent_id, agent_name, agent_desc))
         agent_nodes_map[agent_id] = {
@@ -754,9 +791,7 @@ def build_specialist_agent_components(
                 sanitize_response_tool_calls=sanitize_response_tool_calls,
             ),
             "tools": tool_node_tools,
-            "tool_node_func": create_routed_tool_node(tool_node_tools, name=f"{agent_id}_tools", fallback_goto=agent_id)
-            if tool_node_tools
-            else None,
+            "tool_node_func": tool_node_func,
             "tool_mode": agent_tool_mode,
             "reflection_enabled": reflection_enabled,
             "reviewer_func": (

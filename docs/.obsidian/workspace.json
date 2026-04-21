@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "chatruntime/SUPERVISOR_SUBAGENT_GOVERNANCE_UPGRADE_IMPLEMENTATION_PROPOSAL_ZH.md",
+                "file": "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_supervisor_plan_pipeline_readable_zh.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "SUPERVISOR_SUBAGENT_GOVERNANCE_UPGRADE_IMPLEMENTATION_PROPOSAL_ZH"
+              "title": "2026-04-21_23-24-06_nuwa_einstein_supervisor_plan_pipeline_readable_zh"
             }
           }
         ],
@@ -93,7 +93,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 291.5
   },
   "right": {
     "id": "aeb60b0322ccdb67",
@@ -200,14 +200,31 @@
   },
   "active": "5f02ea1e820c9b83",
   "lastOpenFiles": [
+    "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_supervisor_plan_pipeline.md",
+    "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_supervisor_plan_pipeline_readable_zh.md",
+    "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_subagent_system_content.md",
+    "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_supervisor_system_content.md",
+    "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_supervisor_plan_pipeline.md",
+    "supervisor/plan/2026-04-21_23-20-40_nuwa_einstein_subagent_system_content.md",
+    "supervisor/plan/2026-04-21_23-20-40_nuwa_einstein_supervisor_plan_pipeline.md",
+    "supervisor/plan/2026-04-21_23-20-40_nuwa_einstein_supervisor_system_content.md",
+    "supervisor/plan/_dry_run_debug.log",
+    "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_subagent_system_content.md",
+    "supervisor/plan/2026-04-21_22-01-16_nuwa_einstein_subagent_system_content.md",
+    "supervisor/plan/2026-04-21_22-01-16_nuwa_einstein_supervisor_system_content.md",
+    "supervisor/plan/2026-04-21_22-01-16_nuwa_einstein_supervisor_plan_pipeline.md",
+    "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_supervisor_system_content.md",
+    "memoryruntime/2026-04-21_16-04-34_hermes_skill_memory_workflow_report_zh.md",
+    "supervisor/SUPERVISOR_SINGLE_TURN_SYSTEM_CONTENT_2026-04-19.md",
+    "memoryruntime",
+    "supervisor/plan",
+    "chatruntime/SUPERVISOR_SUBAGENT_GOVERNANCE_UPGRADE_IMPLEMENTATION_PROPOSAL_ZH.md",
     "prompt.md",
     "chatruntime/SUPERVISOR_SUBAGENT_GOVERNANCE_REPORT_ZH.md",
-    "chatruntime/SUPERVISOR_SUBAGENT_GOVERNANCE_UPGRADE_IMPLEMENTATION_PROPOSAL_ZH.md",
     "next.md",
     "extensions/EXTENSIONS_PREFILTER_MAINTENANCE_GUIDE_ZH.md",
     "chatruntime",
     "extensions",
-    "supervisor/SUPERVISOR_SINGLE_TURN_SYSTEM_CONTENT_2026-04-19.md",
     "supervisor/SUPERVISOR_TOOL_SURFACE_LAYERING_REPORT_2026-04-19.md",
     "supervisor/SUPERVISOR_TOOL_SURFACE_AND_PROMPT_SNAPSHOT_2026-04-19.md",
     "software-copyright/01_申请主表信息.md",

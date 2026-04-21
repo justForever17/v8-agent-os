@@ -49,6 +49,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "taskBriefId": f"task-{index + 1}",
         "goal": "",
         "context": "",
+        "routeQuery": "",
         "writeSet": [],
         "behaviorScope": [],
         "requiredCapabilities": [],
@@ -68,6 +69,7 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
         "goal": str(payload.get("goal") or "").strip(),
         "context": payload.get("context") if isinstance(payload.get("context"), dict) else str(payload.get("context") or "").strip(),
+        "routeQuery": str(payload.get("routeQuery") or payload.get("route_query") or payload.get("extensionsRouteQuery") or payload.get("extensions_route_query") or "").strip(),
         "writeSet": _normalize_scope_values(payload.get("writeSet") or payload.get("write_set")),
         "behaviorScope": _normalize_scope_values(payload.get("behaviorScope") or payload.get("behavior_scope")),
         "requiredCapabilities": _normalize_scope_values(payload.get("requiredCapabilities") or payload.get("required_capabilities")),
@@ -101,6 +103,7 @@ def build_minimal_task_brief(
             "taskBriefId": task_brief_id or "",
             "goal": goal,
             "context": "",
+            "routeQuery": "",
             "writeSet": [],
             "behaviorScope": [],
             "requiredCapabilities": [],
@@ -145,6 +148,73 @@ def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     acceptance = _stringify_context(task_brief.get("acceptanceContract"))
     if acceptance:
         parts.append(f"Acceptance contract: {acceptance}")
+    return "\n".join(part for part in parts if part).strip()
+
+
+_ROUTE_QUERY_NOISE_VALUES = {
+    "acceptance",
+    "acceptance_contract",
+    "artifact_ref",
+    "contract",
+    "documentation",
+    "final_acceptance",
+    "handoff",
+    "proposal",
+    "review",
+    "verification",
+    "verification_contract",
+    "verify",
+}
+
+
+def _route_query_values(values: Iterable[Any] | None, *, max_items: int = 6) -> list[str]:
+    selected: list[str] = []
+    for value in _as_string_list(values):
+        normalized = value.strip()
+        if not normalized:
+            continue
+        normalized_key = normalized.lower().replace("-", "_").replace(" ", "_")
+        if normalized_key in _ROUTE_QUERY_NOISE_VALUES:
+            continue
+        if normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= max_items:
+            break
+    return selected
+
+
+def task_brief_route_query_text(task_brief: dict[str, Any] | None) -> str:
+    """Return a compact delegated-task query for extension prefiltering.
+
+    This deliberately keeps the full task brief out of Stage1/Stage2 routing:
+    write sets, acceptance contracts, and long context often contain governance
+    nouns such as "documentation" or "verification" that are not task intent.
+    """
+    if not isinstance(task_brief, dict):
+        return ""
+    explicit_query = str(
+        task_brief.get("routeQuery")
+        or task_brief.get("route_query")
+        or task_brief.get("extensionsRouteQuery")
+        or task_brief.get("extensions_route_query")
+        or ""
+    ).strip()
+    if explicit_query:
+        return explicit_query
+
+    parts: list[str] = []
+    goal = str(task_brief.get("goal") or "").strip()
+    if goal:
+        parts.append(goal)
+
+    capabilities = _route_query_values(task_brief.get("requiredCapabilities"), max_items=5)
+    if capabilities:
+        parts.append(f"Required capabilities: {', '.join(capabilities)}")
+
+    behavior_scope = _route_query_values(task_brief.get("behaviorScope"), max_items=4)
+    if behavior_scope:
+        parts.append(f"Behavior scope: {', '.join(behavior_scope)}")
+
     return "\n".join(part for part in parts if part).strip()
 
 

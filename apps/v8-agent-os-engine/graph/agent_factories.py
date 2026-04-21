@@ -1,3 +1,4 @@
+import json
 import logging
 import platform
 import uuid
@@ -8,14 +9,14 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.types import Command
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
-from core.delegation_broker import task_brief_query_text
+from core.delegation_broker import task_brief_query_text, task_brief_route_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.storage import storage
-from core.system_tools.baseline import select_baseline_system_tool_names
+from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
 from core.time_truth import utc_now_iso
 from core.workspace_guard import build_workspace_path_status
 from core.workspace_resolution import workspace_resolution_service
@@ -217,6 +218,92 @@ def _resolved_workspace_prompt_path() -> str:
     return workspace_resolution_service.get_main_workspace_path()
 
 
+def _compact_prompt_value(value) -> str:
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return str(value)
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item).strip() for item in list(value) if str(item).strip())
+    return str(value or "").strip()
+
+
+def _format_delegated_plan_context(task_brief: dict | None, planner_context: dict | None) -> str:
+    if not isinstance(task_brief, dict) and not isinstance(planner_context, dict):
+        return ""
+    lines: list[str] = [
+        "",
+        "<delegated_task_plan>",
+        "You are executing one bounded task from the supervisor's planner/delegation pipeline.",
+        "Use this local task contract as the routing truth; do not reinterpret the original user request as your primary scope.",
+    ]
+    if isinstance(planner_context, dict) and planner_context:
+        if planner_context.get("planId"):
+            lines.append(f"Plan ID: {planner_context.get('planId')}")
+        if planner_context.get("executionStrategy"):
+            lines.append(f"Execution Strategy: {planner_context.get('executionStrategy')}")
+        if planner_context.get("planSummary"):
+            lines.append(f"Plan Summary: {planner_context.get('planSummary')}")
+        if planner_context.get("taskCount"):
+            lines.append(f"Task Count: {planner_context.get('taskCount')}")
+        risk_flags = _compact_prompt_value(planner_context.get("riskFlags"))
+        if risk_flags:
+            lines.append(f"Risk Flags: {risk_flags}")
+        dependencies = _compact_prompt_value(planner_context.get("dependencies"))
+        if dependencies:
+            lines.append(f"Dependencies: {dependencies}")
+        global_acceptance = _compact_prompt_value(planner_context.get("globalAcceptanceContract"))
+        if global_acceptance:
+            lines.append(f"Global Acceptance Contract: {global_acceptance}")
+    if isinstance(task_brief, dict) and task_brief:
+        lines.append("")
+        lines.append("Assigned Task Brief:")
+        for label, key in (
+            ("Task Brief ID", "taskBriefId"),
+            ("Goal", "goal"),
+            ("Context", "context"),
+            ("Write Set", "writeSet"),
+            ("Behavior Scope", "behaviorScope"),
+            ("Required Capabilities", "requiredCapabilities"),
+            ("Dependency", "dependency"),
+            ("Parallel Group", "parallelGroup"),
+            ("Execution Lane Hint", "executionLaneHint"),
+            ("Acceptance Contract", "acceptanceContract"),
+        ):
+            rendered = _compact_prompt_value(task_brief.get(key))
+            if rendered:
+                lines.append(f"- {label}: {rendered}")
+    lines.append("</delegated_task_plan>")
+    return "\n".join(lines) + "\n"
+
+
+_INTERACTIVE_CLI_RULE = (
+    "[Interactive CLI Rule]\n"
+    "Use `run_system_command` only for short synchronous commands.\n"
+    "Use `command_session_broker(mode=start)` for long-running commands, interactive CLIs/REPLs, and dev servers; continue with `observe`, `input`, or `terminate`.\n"
+    "Treat broker JSON (`summary`, `recommendedNextAction`, `awaitingInput`, `hasMore`, `status`) as the primary truth; use `debug=true` only for raw terminal diagnostics.\n"
+    "If terminal automation or observation is uncertain, report that uncertainty instead of inventing progress.\n\n"
+    "When you have fully completed your assigned task, respond with your findings or status to return control to the supervisor."
+)
+
+
+def _build_agent_system_content(
+    *,
+    agent_name: str,
+    agent_system_prompt: str,
+    env_context: str,
+    active_plan_context: str = "",
+    delegated_plan_context: str = "",
+    route_prompt_addition: str = "",
+) -> str:
+    return (
+        f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n"
+        f"{env_context}{active_plan_context}{delegated_plan_context}{route_prompt_addition}\n\n"
+        f"{_INTERACTIVE_CLI_RULE}"
+    )
+
+
 def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_id: str) -> dict[str, list[str] | str]:
     delegated = latest_delegation_context(list(state.get("delegation_contexts") or []), agent_id=agent_id)
     if any(delegated.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
@@ -342,17 +429,32 @@ def build_agent_node(
             delegated_query = _extract_delegated_query(task_messages)
             inherited_route_context = _resolve_inherited_route_context(state, task_messages, agent_id=agent_id)
             delegated_task_brief = inherited_route_context.get("taskBrief") if isinstance(inherited_route_context.get("taskBrief"), dict) else None
-            delegated_query = task_brief_query_text(delegated_task_brief) or str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
-            base_tools = _dedupe_tools(_exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions_tool]))
+            delegated_planner_context = inherited_route_context.get("plannerContext") if isinstance(inherited_route_context.get("plannerContext"), dict) else None
+            delegated_plan_context = _format_delegated_plan_context(delegated_task_brief, delegated_planner_context)
+            inherited_query = str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
+            full_task_brief_query = task_brief_query_text(delegated_task_brief)
+            extensions_route_query = task_brief_route_query_text(delegated_task_brief)
+            delegated_query = full_task_brief_query or inherited_query
+            extensions_route_query = extensions_route_query or delegated_query
+            contextual_base_tools = _dedupe_tools(
+                _exclude_supervisor_only_tools(
+                    select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions_tool]
+                )
+            )
+            explicit_base_tools = _dedupe_tools(
+                _exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions_tool])
+            )
             selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
             selected_plugin_host_tools = _resolve_selected_plugin_host_tools(all_plugin_host_tools, agent_tool_selectors)
             explicit_skill_ids, explicit_skill_names = _resolve_selected_skills(agent_tool_selectors, state=state)
 
             if agent_tool_mode == "explicit":
+                base_tools = explicit_base_tools
                 available_tools = _dedupe_tools(base_tools + selected_mcp_tools + selected_plugin_host_tools)
                 inherited_skill_ids: list[str] = explicit_skill_ids
                 inherited_skill_names: list[str] = explicit_skill_names
             else:
+                base_tools = contextual_base_tools
                 inherited_mcp_tools = _resolve_selected_mcp_tools(
                     all_mcp_tools,
                     list(inherited_route_context.get("selectedMcpTools") or []),
@@ -380,38 +482,27 @@ def build_agent_node(
             )
             try:
                 route_bundle = extensions_runtime_service.build_contextual_route(
-                    user_query=delegated_query,
+                    user_query=extensions_route_query,
                     available_tools=available_tools,
                     loaded_agents=None,
                     inherited_skill_ids=inherited_skill_ids,
                     inherited_skill_names=inherited_skill_names,
-                    skill_limit=4,
                     mcp_limit=6,
                     plugin_host_limit=6,
                 )
-                extensions_runtime_service.emit_route_selected(user_query=delegated_query, route_bundle=route_bundle)
+                extensions_runtime_service.emit_route_selected(user_query=extensions_route_query, route_bundle=route_bundle)
                 combined_tools = route_bundle.filtered_tools
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
             sys_msg = SystemMessage(
-                content=(
-                    f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n"
-                    f"{env_context}{active_plan_context}{route_bundle.prompt_addition}\n\n"
-                    "[Interactive CLI Rule]\n"
-                    "If you need to use an interactive CLI or REPL (examples: qwen, python REPL, node REPL, powershell, bash, cmd), NEVER use sync mode.\n"
-                    "You MUST use `command_session_broker(mode=start)` for long-running or interactive terminal sessions.\n"
-                    "After a session starts, use `command_session_broker(mode=observe|input|terminate)` to inspect, continue, and finish it.\n"
-                    "For known AI CLIs, the broker may automatically enable the `chat_cli` profile so that observe returns only the latest semantic delta instead of replaying the whole accumulated screen.\n"
-                    "For `interactive + tty + terminal_screen` sessions, treat `screenSnapshot`, `observationState`, `awaitingInput`, and `status` as the primary truth.\n"
-                    "If observe reports that the CLI still has more reply to emit, keep polling or use `wait(seconds, note)` before polling again; do NOT assume the model stalled just because it did not replay the full transcript.\n"
-                    "If the prompt/input box is already rendered and `awaitingInput=true`, the CLI is ready for dialogue even if MCP/debug banners are still visible.\n"
-                    "When sending input, treat a rendered prompt as ready immediately. The broker accepts both actual newlines and common escaped sequences like `\\n` to represent Enter.\n"
-                    "NEVER conclude that the CLI has stalled or produced no reply solely because appended text is empty; full-screen TUIs often redraw the screen in place.\n"
-                    "If observation indicates `render_stalled`, report that V8 has not yet confirmed a new reply from the terminal observation chain instead of claiming the CLI definitely failed to answer.\n"
-                    "If `encodingState` indicates mojibake or undecodable text, report that the terminal text is currently distorted instead of interpreting the corrupted content as a real answer.\n"
-                    "If the environment reports that TTY/interactive automation is unavailable, stop retrying and return a concise failure summary to the supervisor.\n\n"
-                    "When you have fully completed your assigned task, respond with your findings or status to return control to the supervisor."
+                content=_build_agent_system_content(
+                    agent_name=agent_name,
+                    agent_system_prompt=agent_system_prompt,
+                    env_context=env_context,
+                    active_plan_context=active_plan_context,
+                    delegated_plan_context=delegated_plan_context,
+                    route_prompt_addition=route_bundle.prompt_addition,
                 )
             )
 
@@ -436,7 +527,7 @@ def build_agent_node(
                 **build_delegation_context(
                     agent_id=agent_id,
                     agent_name=agent_name,
-                    query=delegated_query,
+                    query=extensions_route_query,
                     mode=str(inherited_route_context.get("mode") or "serial"),
                     source_runtime_kind=inherited_route_context.get("sourceRuntimeKind") or "chat",
                     selected_skill_ids=route_bundle.selected_skill_ids,
@@ -449,10 +540,13 @@ def build_agent_node(
                     prompt_addition=route_bundle.prompt_addition,
                     invocation_id=inherited_route_context.get("invocationId"),
                     task_brief=delegated_task_brief,
+                    planner_context=delegated_planner_context,
                 ),
                 "toolMode": agent_tool_mode,
                 "inheritedSkillIds": inherited_skill_ids,
                 "inheritedSkillNames": inherited_skill_names,
+                "delegatedFullQuery": delegated_query,
+                "extensionsRouteQuery": extensions_route_query,
             }
 
             from core.automation.hooks import hooks_manager
@@ -704,7 +798,11 @@ def build_specialist_agent_components(
         max_reflections = agent_data.get("max_reflections", 3)
         agent_tool_mode = _resolved_tool_mode(agent_data)
 
-        contextual_base_tools = _dedupe_tools(_exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions]))
+        contextual_base_tools = _dedupe_tools(
+            _exclude_supervisor_only_tools(
+                select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions]
+            )
+        )
         if agent_tool_mode == "contextual_auto":
             # Contextual agents receive external MCP/PluginHost tools only after the
             # delegated task route selects them. Keep the static tool node narrow so

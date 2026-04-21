@@ -187,7 +187,17 @@ _QUERY_ARTIFACT_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
     "spreadsheet": ("excel", "xlsx", "xls", "csv", "spreadsheet", "表格", "表单"),
     "audio": ("音频", "语音", "audio", "voice", "speech"),
     "code": ("代码", "脚本", "code", "script", "scripts"),
-    "skill": ("skill", "skills", "人物skill", "思维顾问", "persona"),
+    "skill": (
+        "skill",
+        "人物skill",
+        "人物 skill",
+        "造skill",
+        "造 skill",
+        "蒸馏",
+        "create skill",
+        "generate skill",
+        "persona skill",
+    ),
 }
 _QUERY_OPERATION_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
     "create": ("生成", "创建", "制作", "做", "写", "generate", "create", "build", "draft", "make"),
@@ -383,7 +393,7 @@ _SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {
     "leverage": ("wealth_money", "startup_growth"),
     "talent_density": ("organization_leadership",),
 }
-_THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial"}
+_THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial", "skill_authoring"}
 _THEME_FALLBACK_TARGETS = {"organization_leadership", "startup_growth", "negotiation_persuasion"}
 _META_ADVISORY_HINTS: tuple[str, ...] = (
     "模糊需求",
@@ -486,13 +496,14 @@ _PROFILE_INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     thread_name_prefix="v8-ext-profile",
 )
 _ARTIFACT_MISMATCH_GROUPS: dict[str, set[str]] = {
-    "presentation": {"video", "image", "audio"},
-    "video": {"presentation", "document", "pdf", "spreadsheet"},
-    "image": {"presentation", "spreadsheet", "audio"},
-    "document": {"video", "audio"},
-    "pdf": {"video", "audio"},
-    "spreadsheet": {"video", "image", "audio"},
-    "audio": {"presentation", "spreadsheet", "document"},
+    "presentation": {"video", "image", "audio", "skill"},
+    "video": {"presentation", "document", "pdf", "spreadsheet", "skill"},
+    "image": {"presentation", "spreadsheet", "audio", "skill"},
+    "document": {"video", "audio", "skill"},
+    "pdf": {"video", "audio", "skill"},
+    "spreadsheet": {"video", "image", "audio", "skill"},
+    "audio": {"presentation", "spreadsheet", "document", "skill"},
+    "skill": {"presentation", "video", "image", "document", "pdf", "spreadsheet", "audio", "code"},
 }
 _ARTIFACT_PROFILE_ANCHORS: dict[str, set[str]] = {
     "presentation": {"ppt", "pptx", ".ppt", ".pptx", "powerpoint"},
@@ -682,6 +693,26 @@ def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
     }
 
 
+_SKILL_TEMPLATE_NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\buse\s+this\s+skill\b", re.IGNORECASE),
+    re.compile(r"\buse\s+when\b", re.IGNORECASE),
+    re.compile(r"\bwhen\s+claude\s+needs\b", re.IGNORECASE),
+    re.compile(r"\bthis\s+skill\s+should\b", re.IGNORECASE),
+    re.compile(r"\bskill\s+description\b", re.IGNORECASE),
+    re.compile(r"\bSKILL\.md\b", re.IGNORECASE),
+    re.compile(r"使用该技能"),
+    re.compile(r"使用技能"),
+    re.compile(r"当用户需要"),
+)
+
+
+def _clean_skill_template_noise(text: str) -> str:
+    cleaned = str(text or "")
+    for pattern in _SKILL_TEMPLATE_NOISE_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _score_text(*, query_tokens: list[str], title: str, description: str) -> int:
     if not query_tokens:
         return 0
@@ -735,7 +766,7 @@ def _skill_text_corpus(skill: dict[str, Any]) -> str:
     parts: list[str] = [
         str(skill.get("name") or skill.get("folder") or "").strip(),
         str(skill.get("folder") or "").strip(),
-        str(skill.get("description") or "").strip(),
+        _clean_skill_template_noise(str(skill.get("description") or "").strip()),
     ]
     for key in ("aliases", "triggers", "keywords", "tags"):
         parts.extend(str(item).strip() for item in _normalize_hint_items(skill.get(key)))
@@ -854,20 +885,21 @@ def _score_skill_entry(
     name = str(skill.get("name") or skill.get("folder") or "").strip()
     folder = str(skill.get("folder") or "").strip()
     description = str(skill.get("description") or "").strip()
+    cleaned_description = _clean_skill_template_noise(description)
     normalized_query = str(query_text or "").strip().lower()
-    score = _score_text(query_tokens=query_tokens, title=name or folder, description=description)
+    score = _score_text(query_tokens=query_tokens, title=name or folder, description=cleaned_description)
     has_query_signal = score > 0
     for candidate in (name, folder):
         normalized_candidate = str(candidate or "").strip().lower()
         if normalized_candidate and normalized_candidate in normalized_query:
-            score += 12
+            score += 36
             has_query_signal = True
     for hint in _skill_recall_hints(skill):
         normalized_hint = str(hint or "").strip().lower()
         if not normalized_hint:
             continue
         if normalized_hint in normalized_query:
-            score += 10
+            score += 32
             has_query_signal = True
         hint_score = _score_text(query_tokens=query_tokens, title=normalized_hint, description="")
         score += hint_score
@@ -881,6 +913,9 @@ def _score_skill_entry(
     secondary_artifact_hints = _normalize_profile_items(profile.get("secondaryArtifactHints"))
     secondary_operation_hints = _normalize_profile_items(profile.get("secondaryOperationHints"))
     skill_class = str(profile.get("skillClass") or "").strip().lower()
+    capability_tags = dict(skill.get("capabilityTags") or {})
+    capability_kinds = set(_normalize_profile_items(capability_tags.get("capabilityKind")))
+    capability_artifacts = set(_normalize_profile_items(capability_tags.get("artifactTypes")))
     confidence = float(profile.get("capabilityConfidence") or 0.0)
     primary_themes = _normalize_profile_items(theme_profile.get("primaryThemes"))
     secondary_theme_tags = _normalize_profile_items(theme_profile.get("secondaryThemeTags"))
@@ -899,10 +934,21 @@ def _score_skill_entry(
     document_sub_intent = str(query_profile.get("documentSubIntent") or "").strip().lower() or None
     no_artifact_anchor = not artifact_intents
     pure_theme_query = no_artifact_anchor and bool(primary_theme_intents)
+    skill_authoring_candidate = (
+        skill_class == "skill_authoring"
+        or "skill_authoring" in capability_kinds
+        or "persona_skill" in capability_artifacts
+    )
+    skill_authoring_query = "skill" in artifact_intents and (
+        "create" in operation_intents
+        or any(token in normalized_query for token in ("女娲", "造skill", "造 skill", "造人", "蒸馏", "create skill", "generate skill", "persona skill"))
+    )
 
     artifact_match = False
     if artifact_intents:
         matched_artifacts = [item for item in artifact_intents if item in primary_artifact_types]
+        if skill_authoring_query and skill_authoring_candidate and "skill" not in matched_artifacts:
+            matched_artifacts.append("skill")
         if matched_artifacts:
             artifact_match = True
             has_query_signal = True
@@ -917,6 +963,9 @@ def _score_skill_entry(
                     break
             if mismatched:
                 score -= 18
+    if skill_authoring_query and skill_authoring_candidate:
+        score += 30
+        has_query_signal = True
     if "document" in artifact_intents and document_sub_intent:
         skill_document_sub_intent = _detect_skill_document_subintent(skill)
         if skill_document_sub_intent == document_sub_intent:
@@ -989,6 +1038,7 @@ def _score_skill_entry(
                 part
                 for part in [
                     description,
+                    cleaned_description,
                     " ".join(primary_artifact_types),
                     " ".join(primary_operations),
                     " ".join(secondary_artifact_hints),
@@ -3643,34 +3693,74 @@ class ExtensionsRuntimeService:
             max_items=plugin_host_bound_limit,
         )
 
-        inherited_skill_ids_set = {
+        inherited_skill_ids_ordered = [
             str(item or "").strip()
             for item in list(inherited_skill_ids or [])
             if str(item or "").strip()
-        }
-        inherited_skill_names_set = {
+        ]
+        inherited_skill_names_ordered = [
             str(item or "").strip()
             for item in list(inherited_skill_names or [])
             if str(item or "").strip()
-        }
-        if inherited_skill_ids_set or inherited_skill_names_set:
-            inherited_skill_entries = [
-                item
-                for item in skill_entries
-                if (
-                    str(item.get("skillId") or "").strip() in inherited_skill_ids_set
-                    or str(item.get("name") or item.get("folder") or "").strip() in inherited_skill_names_set
-                )
-            ]
+        ]
+        if inherited_skill_ids_ordered or inherited_skill_names_ordered:
+            skill_by_id: dict[str, dict[str, Any]] = {}
+            skill_by_name: dict[str, dict[str, Any]] = {}
+            for item in skill_entries:
+                skill_id = str(item.get("skillId") or "").strip()
+                if skill_id and skill_id not in skill_by_id:
+                    skill_by_id[skill_id] = item
+                for candidate in (
+                    item.get("name"),
+                    item.get("folder"),
+                    item.get("skillName"),
+                ):
+                    normalized_candidate = str(candidate or "").strip()
+                    if normalized_candidate and normalized_candidate not in skill_by_name:
+                        skill_by_name[normalized_candidate] = item
+                    lower_candidate = normalized_candidate.lower()
+                    if lower_candidate and lower_candidate not in skill_by_name:
+                        skill_by_name[lower_candidate] = item
+            inherited_skill_entries: list[dict[str, Any]] = []
+            inherited_entry_keys: set[str] = set()
+
+            def _append_inherited_skill(item: dict[str, Any] | None) -> None:
+                if not isinstance(item, dict):
+                    return
+                key = str(item.get("skillId") or item.get("path") or item.get("name") or item.get("folder") or "").strip()
+                if not key or key in inherited_entry_keys:
+                    return
+                inherited_entry_keys.add(key)
+                inherited_skill_entries.append(item)
+
+            for inherited_id in inherited_skill_ids_ordered:
+                _append_inherited_skill(skill_by_id.get(inherited_id))
+            for inherited_name in inherited_skill_names_ordered:
+                _append_inherited_skill(skill_by_name.get(inherited_name) or skill_by_name.get(inherited_name.lower()))
             if inherited_skill_entries:
                 merged_skills: list[dict[str, Any]] = []
                 seen_skill_keys: set[str] = set()
+                if skill_routing_mode in {"unfiltered", "fallback_unfiltered"}:
+                    skill_exposure_cap = len(skill_entries)
+                elif skill_routing_mode == "fallback_stage1":
+                    skill_exposure_cap = effective_skill_stage1_limit
+                elif str(skill_routing_mode or "").startswith("llm_rerank"):
+                    skill_exposure_cap = skill_stage2_top_k
+                elif skill_stage1_enabled:
+                    skill_exposure_cap = effective_skill_stage1_limit
+                elif skill_stage2_configured:
+                    skill_exposure_cap = skill_stage2_top_k
+                else:
+                    skill_exposure_cap = len(skill_entries)
+                skill_exposure_cap = max(0, int(skill_exposure_cap or 0))
                 for item in inherited_skill_entries + list(selected_skills):
                     key = str(item.get("skillId") or item.get("path") or item.get("name") or item.get("folder") or "").strip()
                     if not key or key in seen_skill_keys:
                         continue
                     seen_skill_keys.add(key)
                     merged_skills.append(item)
+                    if skill_exposure_cap and len(merged_skills) >= skill_exposure_cap:
+                        break
                 selected_skills = merged_skills
 
         selected_skill_ids = [str(item.get("skillId") or "").strip() for item in selected_skills if str(item.get("skillId") or "").strip()]

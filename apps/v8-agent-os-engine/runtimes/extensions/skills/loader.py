@@ -23,7 +23,7 @@ from runtimes.memory.project_registry import project_registry_service
 
 
 _PROFILE_LLM_TIMEOUT_SECONDS = 6.0
-_SKILLS_CACHE_SCHEMA_VERSION = 8
+_SKILLS_CACHE_SCHEMA_VERSION = 9
 _PRIMARY_ARTIFACT_LIMIT = 2
 _PRIMARY_OPERATION_LIMIT = 3
 _SECONDARY_HINT_LIMIT = 4
@@ -51,6 +51,42 @@ _SKILL_MATCH_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "documentation": ("docs", "design doc", "decision doc", "proposal", "prd", "rfc", "技术文档"),
     "思维顾问": ("女娲", "huashu-nuwa"),
 }
+_SKILL_TEMPLATE_NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\buse\s+this\s+skill\b", re.IGNORECASE),
+    re.compile(r"\buse\s+when\b", re.IGNORECASE),
+    re.compile(r"\bwhen\s+claude\s+needs\b", re.IGNORECASE),
+    re.compile(r"\bthis\s+skill\s+should\b", re.IGNORECASE),
+    re.compile(r"\bskill\s+description\b", re.IGNORECASE),
+    re.compile(r"\bSKILL\.md\b", re.IGNORECASE),
+    re.compile(r"使用该技能"),
+    re.compile(r"使用技能"),
+    re.compile(r"当用户需要"),
+)
+_SKILL_AUTHORING_STRONG_TERMS: tuple[str, ...] = (
+    "skill-creator",
+    "skill creator",
+    "skill-builder",
+    "skill builder",
+    "darwin-skill",
+    "nuwa",
+    "女娲",
+    "女娲造人",
+    "造skill",
+    "造 skill",
+    "造人",
+    "蒸馏",
+    "create skill",
+    "create a skill",
+    "generate skill",
+    "generate a skill",
+    "build skill",
+    "build a skill",
+    "update skill",
+    "optimize skill",
+    "persona skill",
+    "人物skill",
+    "人物 skill",
+)
 _ARTIFACT_RULES: dict[str, tuple[str, ...]] = {
     "presentation": (
         "ppt",
@@ -134,7 +170,7 @@ _ARTIFACT_RULES: dict[str, tuple[str, ...]] = {
         "配音",
     ),
     "code": ("code", "coding", "script", "scripts", "代码", "脚本"),
-    "skill": ("skill", "skills", "persona", "advisor", "思维顾问", "人物skill"),
+    "skill": _SKILL_AUTHORING_STRONG_TERMS,
 }
 _OPERATION_RULES: dict[str, tuple[str, ...]] = {
     "create": (
@@ -161,6 +197,7 @@ _OPERATION_RULES: dict[str, tuple[str, ...]] = {
     "automate": ("workflow", "pipeline", "automation", "automated", "api", "cli", "batch", "自动化", "流水线", "接口"),
 }
 _SKILL_CLASS_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "skill_authoring": _SKILL_AUTHORING_STRONG_TERMS,
     "advisor_or_perspective": ("perspective", "视角", "顾问", "advisor", "mentor", "思维框架"),
     "methodology_or_tutorial": ("tutorial", "guide", "指南", "教程", "best practice", "framework", "方法论"),
     "integration_or_tooling": ("mcp", "plugin", "bridge", "integration", "builder", "server", "宿主", "桥接"),
@@ -355,7 +392,7 @@ _SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {
     "leverage": ("wealth_money", "startup_growth"),
     "talent_density": ("organization_leadership",),
 }
-_THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial"}
+_THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial", "skill_authoring"}
 
 
 class SkillLoader:
@@ -464,6 +501,14 @@ class SkillLoader:
             return 18
         if cls._match_phrase(term, candidate):
             return 14
+        if "xx" in normalized_candidate:
+            wildcard_parts = [part for part in normalized_candidate.split("xx") if part]
+            if wildcard_parts and all(part in normalized_term for part in wildcard_parts):
+                return 18 if wildcard_parts[0] and normalized_term.startswith(wildcard_parts[0]) else 14
+        if "xx" in normalized_term:
+            wildcard_parts = [part for part in normalized_term.split("xx") if part]
+            if wildcard_parts and all(part in normalized_candidate for part in wildcard_parts):
+                return 18
         ratio = SequenceMatcher(None, normalized_term, normalized_candidate).ratio()
         if ratio >= 0.92:
             return 12
@@ -545,6 +590,56 @@ class SkillLoader:
         return cls._normalize_hint_items(extension_terms)
 
     @classmethod
+    def _clean_template_noise(cls, text: str) -> str:
+        cleaned = str(text or "")
+        for pattern in _SKILL_TEMPLATE_NOISE_PATTERNS:
+            cleaned = pattern.sub(" ", cleaned)
+        return _TEXT_WHITESPACE_RE.sub(" ", cleaned).strip()
+
+    @classmethod
+    def _available_file_evidence_text(cls, available_files: list[str]) -> str:
+        evidence_items: list[str] = []
+        for candidate in list(available_files or []):
+            raw = str(candidate or "").strip()
+            if not raw:
+                continue
+            normalized = raw.replace("\\", "/").lower()
+            if normalized.endswith("/skill.md") or normalized == "skill.md":
+                continue
+            evidence_items.append(raw)
+        return " ".join(evidence_items)
+
+    @classmethod
+    def _extract_description_hint_fields(cls, description: str) -> dict[str, list[str]]:
+        hints: dict[str, list[str]] = {"aliases": [], "triggers": [], "keywords": [], "tags": []}
+        for raw_line in str(description or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            lowered = line.lower()
+            target_key = ""
+            if any(marker in lowered for marker in ("trigger", "triggers")) or "触发" in line or "触发词" in line:
+                target_key = "triggers"
+            elif any(marker in lowered for marker in ("alias", "aliases")) or "别名" in line:
+                target_key = "aliases"
+            elif any(marker in lowered for marker in ("capabilities", "capability", "use for")) or "用途" in line or "能力" in line:
+                target_key = "keywords"
+            if not target_key:
+                continue
+            quoted = re.findall(r"[「“\"]([^」”\"]+)[」”\"]", line)
+            payload = line
+            for marker in ("触发词", "触发", "Triggers", "triggers", "Aliases", "aliases", "Capabilities", "capabilities", "Use for", "use for", "用途", "能力"):
+                index = payload.find(marker)
+                if index >= 0:
+                    payload = payload[index + len(marker):]
+                    break
+            payload = payload.split("：", 1)[-1].split(":", 1)[-1]
+            payload_items = [] if quoted else re.split(r"[、，,;/；]+", payload)
+            items = [*quoted, *payload_items]
+            hints[target_key].extend(cls._normalize_hint_items(items))
+        return hints
+
+    @classmethod
     def _accumulate_weighted_rule_scores(
         cls,
         *,
@@ -580,8 +675,11 @@ class SkillLoader:
         keywords: list[str],
         tags: list[str],
     ) -> dict[str, list[tuple[str, float]]]:
-        intro_text = cls._extract_intro_text(body)
+        intro_text = cls._clean_template_noise(cls._extract_intro_text(body))
+        cleaned_description = cls._clean_template_noise(description)
+        cleaned_body = cls._clean_template_noise(str(body or "")[:3200])
         explicit_extensions = " ".join(cls._extract_extension_evidence(available_files))
+        available_file_evidence = cls._available_file_evidence_text(available_files)
         strong_segments = [
             (name, 5.0),
             (folder, 4.5),
@@ -592,12 +690,12 @@ class SkillLoader:
             (explicit_extensions, 4.0),
         ]
         medium_segments = [
-            (description, 2.5),
+            (cleaned_description, 2.5),
             (intro_text, 1.75),
         ]
         weak_segments = [
-            (str(body or "")[:3200], 0.75),
-            (" ".join(str(item or "") for item in list(available_files or [])), 0.5),
+            (cleaned_body, 0.75),
+            (available_file_evidence, 0.5),
         ]
         return {
             "strong": [(text, weight) for text, weight in strong_segments if str(text or "").strip()],
@@ -618,6 +716,8 @@ class SkillLoader:
             return "advisory"
         if skill_class == "methodology_or_tutorial":
             return "reference_guidance"
+        if skill_class == "skill_authoring":
+            return "guided_workflow"
         if skill_class in {"workflow_or_script", "integration_or_tooling"}:
             return "workflow"
         if interaction_scores.get("media_workflow", 0.0) >= interaction_scores.get("file_workflow", 0.0) and interaction_scores.get("media_workflow", 0.0) >= 2.0:
@@ -743,6 +843,11 @@ class SkillLoader:
                 skill_class = "methodology_or_tutorial"
             elif has_templates or has_examples:
                 skill_class = "methodology_or_tutorial"
+        if skill_class == "skill_authoring":
+            if "skill" not in primary_artifact_types:
+                primary_artifact_types = ["skill", *primary_artifact_types][:_PRIMARY_ARTIFACT_LIMIT]
+            if "create" not in primary_operations:
+                primary_operations = ["create", *primary_operations][:_PRIMARY_OPERATION_LIMIT]
         if skill_class in {"advisor_or_perspective", "methodology_or_tutorial", "workflow_or_script", "integration_or_tooling"}:
             primary_artifact_types = []
         interaction_mode = cls._derive_interaction_mode(
@@ -1087,6 +1192,7 @@ class SkillLoader:
                 "allowedSkillClasses": [
                     "artifact_producer",
                     "artifact_editor_or_analyzer",
+                    "skill_authoring",
                     "workflow_or_script",
                     "methodology_or_tutorial",
                     "advisor_or_perspective",
@@ -1101,6 +1207,8 @@ class SkillLoader:
                     "workflow",
                     "file_workflow",
                     "media_workflow",
+                    "guided_workflow",
+                    "multi_agent_swarm",
                     "general",
                 ],
             },
@@ -1228,6 +1336,83 @@ class SkillLoader:
             base_profile=base_profile,
         )
         return cls._normalize_profile_with_fallback(payload=llm_profile, fallback=base_profile)
+
+    @classmethod
+    def _derive_capability_tags(
+        cls,
+        *,
+        capability_profile: dict[str, Any],
+        theme_profile: dict[str, Any],
+        aliases: list[str],
+        triggers: list[str],
+        keywords: list[str],
+        tags: list[str],
+        has_scripts: bool,
+        has_templates: bool,
+        has_examples: bool,
+        has_assets: bool,
+    ) -> dict[str, Any]:
+        skill_class = str(capability_profile.get("skillClass") or "general").strip() or "general"
+        primary_artifacts = cls._normalize_hint_items(capability_profile.get("primaryArtifactTypes"))
+        secondary_artifacts = cls._normalize_hint_items(capability_profile.get("secondaryArtifactHints"))
+        primary_operations = cls._normalize_hint_items(capability_profile.get("primaryOperations"))
+        secondary_operations = cls._normalize_hint_items(capability_profile.get("secondaryOperationHints"))
+        topic_themes = cls._normalize_hint_items(theme_profile.get("primaryThemes"))
+        language_aliases = cls._normalize_hint_items([*aliases, *triggers, *keywords, *tags])
+
+        capability_kind = [skill_class]
+        if skill_class == "skill_authoring":
+            capability_kind.extend(["research_workflow", "advisor"])
+        artifact_types = list(primary_artifacts)
+        if skill_class == "skill_authoring":
+            for artifact in ("skill", "persona_skill"):
+                if artifact not in artifact_types:
+                    artifact_types.append(artifact)
+        operation_tags = list(primary_operations)
+        if skill_class == "skill_authoring":
+            for operation in ("search", "extract", "synthesize", "create", "verify", "orchestrate"):
+                if operation not in operation_tags:
+                    operation_tags.append(operation)
+        side_effect_level: list[str] = []
+        if has_scripts:
+            side_effect_level.append("executes_command")
+        if skill_class == "skill_authoring":
+            side_effect_level.append("writes_skill_home")
+            side_effect_level.append("external_network")
+        elif "search" in operation_tags:
+            side_effect_level.append("external_network")
+        runtime_affinity: list[str] = []
+        if has_scripts:
+            runtime_affinity.append("command_session")
+        if skill_class == "skill_authoring":
+            runtime_affinity.append("subagent_swarm")
+        if has_templates:
+            runtime_affinity.append("template_assets")
+        if has_assets:
+            runtime_affinity.append("media_assets")
+
+        return {
+            "capabilityKind": cls._normalize_hint_items(capability_kind),
+            "artifactTypes": cls._normalize_hint_items(artifact_types),
+            "operationTags": cls._normalize_hint_items([*operation_tags, *secondary_operations[:2]]),
+            "topicThemes": cls._normalize_hint_items([*topic_themes, *cls._normalize_hint_items(theme_profile.get("secondaryThemeTags"))[:2]]),
+            "interactionMode": str(capability_profile.get("interactionMode") or "general").strip() or "general",
+            "evidenceMode": {
+                "profileSource": str(capability_profile.get("profileSource") or "rules"),
+                "themeSource": str(theme_profile.get("themeSource") or "rules"),
+                "hasScripts": bool(has_scripts),
+                "hasTemplates": bool(has_templates),
+                "hasExamples": bool(has_examples),
+                "hasAssets": bool(has_assets),
+            },
+            "sideEffectLevel": cls._normalize_hint_items(side_effect_level),
+            "runtimeAffinity": cls._normalize_hint_items(runtime_affinity),
+            "languageAliases": language_aliases,
+            "trustAndProvenance": {
+                "capabilityConfidence": capability_profile.get("capabilityConfidence"),
+                "themeConfidence": theme_profile.get("themeConfidence"),
+            },
+        }
 
     @classmethod
     def _now_iso(cls) -> str:
@@ -1459,6 +1644,33 @@ class SkillLoader:
         return True
 
     @classmethod
+    def _is_valid_capability_tags(cls, tags: Any) -> bool:
+        if not isinstance(tags, dict):
+            return False
+        required_keys = {
+            "capabilityKind",
+            "artifactTypes",
+            "operationTags",
+            "topicThemes",
+            "interactionMode",
+            "evidenceMode",
+            "sideEffectLevel",
+            "runtimeAffinity",
+            "languageAliases",
+            "trustAndProvenance",
+        }
+        if not required_keys.issubset(set(tags.keys())):
+            return False
+        for key in ("capabilityKind", "artifactTypes", "operationTags", "topicThemes", "sideEffectLevel", "runtimeAffinity", "languageAliases"):
+            if not isinstance(tags.get(key), list):
+                return False
+        if not isinstance(tags.get("evidenceMode"), dict):
+            return False
+        if not isinstance(tags.get("trustAndProvenance"), dict):
+            return False
+        return True
+
+    @classmethod
     def _persist_cache(cls) -> None:
         cache_file = cls._cache_file()
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1534,6 +1746,7 @@ class SkillLoader:
             "tags": cls._normalize_hint_items(item.get("tags")),
             "capabilityProfile": dict(item.get("capabilityProfile") or {}),
             "themeProfile": dict(item.get("themeProfile") or {}),
+            "capabilityTags": dict(item.get("capabilityTags") or {}),
             "sourceType": source_type,
             "visibility": str(item.get("visibility") or "global").strip() or "global",
             "workspacePath": cls._normalize_path(item.get("workspacePath")),
@@ -1561,6 +1774,8 @@ class SkillLoader:
             if not cls._is_valid_capability_profile(item.get("capabilityProfile")):
                 return False
             if not cls._is_valid_theme_profile(item.get("themeProfile")):
+                return False
+            if not cls._is_valid_capability_tags(item.get("capabilityTags")):
                 return False
             normalized = cls._normalize_cached_item(item)
             if normalized is None:
@@ -1789,6 +2004,11 @@ class SkillLoader:
         triggers = cls._normalize_hint_items(frontmatter.get("triggers"))
         keywords = cls._normalize_hint_items(frontmatter.get("keywords"))
         tags = cls._normalize_hint_items(frontmatter.get("tags"))
+        description_hints = cls._extract_description_hint_fields(description)
+        aliases = cls._normalize_hint_items([*aliases, *description_hints.get("aliases", [])])
+        triggers = cls._normalize_hint_items([*triggers, *description_hints.get("triggers", [])])
+        keywords = cls._normalize_hint_items([*keywords, *description_hints.get("keywords", [])])
+        tags = cls._normalize_hint_items([*tags, *description_hints.get("tags", [])])
         references_dir = cls._normalize_path(skill_root / "references") if (skill_root / "references").exists() else ""
         scripts_dir = cls._normalize_path(skill_root / "scripts") if (skill_root / "scripts").exists() else ""
         assets_dir = cls._normalize_path(skill_root / "assets") if (skill_root / "assets").exists() else ""
@@ -1821,6 +2041,18 @@ class SkillLoader:
             tags=tags,
             skill_class=str(capability_profile.get("skillClass") or "general").strip() or "general",
         )
+        capability_tags = cls._derive_capability_tags(
+            capability_profile=capability_profile,
+            theme_profile=theme_profile,
+            aliases=aliases,
+            triggers=triggers,
+            keywords=keywords,
+            tags=tags,
+            has_scripts=bool(scripts_dir),
+            has_templates=bool(templates_dir),
+            has_examples=bool(examples_dir),
+            has_assets=bool(assets_dir),
+        )
         return {
             "skillId": cls._stable_skill_id(
                 source_type=source_type,
@@ -1847,6 +2079,7 @@ class SkillLoader:
             "tags": tags,
             "capabilityProfile": capability_profile,
             "themeProfile": theme_profile,
+            "capabilityTags": capability_tags,
             "sourceType": source_type,
             "visibility": str(descriptor.get("visibility") or "global").strip() or "global",
             "workspacePath": cls._normalize_path(descriptor.get("workspacePath")),

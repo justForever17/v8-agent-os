@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from .profiles import callable_tool_defs, support_profile
 
+_LIVE_INVENTORY_SOURCES = {"gateway_rpc", "plugin_source_scan", "durable_cache"}
+
 
 class PluginHostToolArgs(BaseModel):
     params: dict[str, Any] = Field(
@@ -94,6 +96,15 @@ class PluginHostToolRegistry:
         inventory_source = str(catalog.get("toolInventorySource") or "").strip() or None
         inventory_health = str(catalog.get("toolInventoryHealth") or "").strip() or None
         inventory_freshness = str(catalog.get("toolInventoryFreshness") or "").strip() or None
+        # Supervisor-callable PluginHost tools must come from a live bridge inventory.
+        # Log-inferred OpenClaw tools are useful diagnostics, but they are not safe or
+        # reliable enough to enter the callable tool pool.
+        if (
+            not bridge_ready
+            or str(inventory_source or "").strip().lower() not in _LIVE_INVENTORY_SOURCES
+            or (str(inventory_health or "").strip().lower() not in {"", "healthy"})
+        ):
+            return tools
         managed_channels = [
             str(item).strip()
             for item in list(catalog.get("managedChannels") or [])

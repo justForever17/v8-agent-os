@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from core.plugin_host.tool_registry import plugin_host_tool_registry
 from runtimes.extensions.runtime import _should_expose_plugin_host_tools
 
 
@@ -53,6 +55,48 @@ class ExtensionsPluginHostPromptGatingTests(unittest.TestCase):
                 context_payload={"runtime_kind": "channel"},
             )
         )
+
+    def test_registry_does_not_build_log_inferred_supervisor_tools(self):
+        with patch(
+            "core.plugin_host.plugin_host_service.list_bridge_tools",
+            return_value={
+                "bridgeReady": False,
+                "toolInventorySource": "openclaw_log_registered_tools",
+                "toolInventoryHealth": "healthy",
+                "inventory": [
+                    {
+                        "canonicalName": "openclaw-lark.feishu_doc",
+                        "toolName": "feishu_doc",
+                        "pluginId": "openclaw-lark",
+                        "description": "从 OpenClaw 运行日志推断的动态工具：feishu_doc",
+                    }
+                ],
+            },
+        ):
+            self.assertEqual(plugin_host_tool_registry.build_supervisor_tools(), [])
+
+    def test_registry_builds_tools_from_live_healthy_inventory(self):
+        with patch(
+            "core.plugin_host.plugin_host_service.list_bridge_tools",
+            return_value={
+                "bridgeReady": True,
+                "toolInventorySource": "gateway_rpc",
+                "toolInventoryHealth": "healthy",
+                "managedChannels": ["feishu"],
+                "inventory": [
+                    {
+                        "canonicalName": "openclaw-lark.feishu_doc",
+                        "toolName": "feishu_doc",
+                        "pluginId": "openclaw-lark",
+                        "description": "Read or write Feishu documents.",
+                    }
+                ],
+            },
+        ):
+            tools = plugin_host_tool_registry.build_supervisor_tools()
+
+        self.assertEqual([tool.name for tool in tools], ["openclaw-lark.feishu_doc"])
+        self.assertEqual(tools[0].metadata.get("toolInventorySource"), "gateway_rpc")
 
 
 if __name__ == "__main__":

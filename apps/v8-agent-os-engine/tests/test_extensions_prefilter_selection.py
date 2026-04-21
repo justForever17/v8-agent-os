@@ -13,6 +13,7 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from core import llm_tree_prefilter
+from erc.safety_guardian import safety_guardian
 from runtimes.extensions import runtime as extensions_runtime_module
 from runtimes.extensions.mcp.client import MCPManager
 from runtimes.extensions.runtime import ExtensionsRuntimeService
@@ -645,6 +646,61 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         self.assertEqual(bundle.candidate_summary.get("skillStage1ShortlistCount"), 10)
         self.assertEqual(bundle.candidate_summary.get("skillFinalExposedCount"), 10)
 
+    def test_inherited_skills_are_pinned_but_do_not_exceed_configured_exposure_cap(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": f"global:video-{index}",
+                "name": f"video-skill-{index}",
+                "folder": f"video-skill-{index}",
+                "description": "视频 生成 video generation",
+                "path": f"C:/skills/video-skill-{index}",
+                "skillName": f"video-skill-{index}",
+            }
+            for index in range(14)
+        ] + [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "女娲造人，生成可运行的人物 Skill。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+            }
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="视频生成",
+                available_tools=[],
+                loaded_agents=None,
+                inherited_skill_ids=["global:nuwa"],
+                skill_limit=10,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(len(bundle.selected_skill_names), 10)
+        self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
+        self.assertEqual(bundle.candidate_summary.get("skillFinalExposedCount"), 10)
+
     def test_extensions_runtime_stage1_and_stage2_disabled_exposes_full_skill_inventory(self):
         service = ExtensionsRuntimeService()
         skills = [
@@ -915,6 +971,40 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         self.assertEqual(list(profile.get("primaryArtifactTypes") or []), ["presentation"])
         self.assertIn("create", list(profile.get("primaryOperations") or []))
         self.assertNotIn("video", list(profile.get("primaryArtifactTypes") or []))
+        capability_tags = dict(entry.get("capabilityTags") or {})
+        self.assertIn("presentation", list(capability_tags.get("artifactTypes") or []))
+        self.assertNotIn("skill", list(capability_tags.get("artifactTypes") or []))
+
+    def test_skill_loader_extracts_description_triggers_for_nuwa_skill_authoring(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_root = Path(temp_dir) / "huashu-nuwa"
+            (skill_root / "scripts").mkdir(parents=True, exist_ok=True)
+            skill_file = skill_root / "SKILL.md"
+            content = """---
+name: huashu-nuwa
+description: 女娲造人：输入人名/主题/甚至只是模糊需求，自动深度调研→思维框架提炼→生成可运行的人物Skill。 触发词：「造skill」「蒸馏XX」「女娲」「造人」「XX的思维方式」「做个XX视角」「更新XX的skill」。
+---
+先调研，再提炼框架，最后创建 persona skill。
+"""
+            skill_file.write_text(content, encoding="utf-8")
+            entry = SkillLoader._build_skill_entry(
+                folder_name="huashu-nuwa",
+                file_path=skill_file,
+                descriptor={"sourceType": "global", "visibility": "global", "rootPath": str(skill_root.parent)},
+                content=content,
+            )
+
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertIn("女娲", list(entry.get("triggers") or []))
+        self.assertIn("造skill", list(entry.get("triggers") or []))
+        profile = dict(entry.get("capabilityProfile") or {})
+        self.assertEqual(profile.get("skillClass"), "skill_authoring")
+        self.assertIn("skill", list(profile.get("primaryArtifactTypes") or []))
+        capability_tags = dict(entry.get("capabilityTags") or {})
+        self.assertIn("skill_authoring", list(capability_tags.get("capabilityKind") or []))
+        self.assertIn("persona_skill", list(capability_tags.get("artifactTypes") or []))
+        self.assertIn("writes_skill_home", list(capability_tags.get("sideEffectLevel") or []))
 
     def test_resolve_skill_matches_supports_alias_and_controlled_fuzzy_lookup(self):
         skills = [
@@ -940,7 +1030,7 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
                 "skillRoot": "C:/skills/huashu-nuwa",
                 "instructionPath": "C:/skills/huashu-nuwa/SKILL.md",
                 "aliases": [],
-                "triggers": [],
+                "triggers": ["女娲", "蒸馏XX"],
                 "keywords": [],
                 "tags": [],
             },
@@ -965,6 +1055,7 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
             self.assertEqual(SkillLoader.resolve_skill_matches("演示稿")[0]["skillName"], "pptx")
             self.assertEqual(SkillLoader.resolve_skill_matches("女娲")[0]["skillName"], "huashu-nuwa")
             self.assertEqual(SkillLoader.resolve_skill_matches("思维顾问")[0]["skillName"], "huashu-nuwa")
+            self.assertEqual(SkillLoader.resolve_skill_matches("蒸馏爱因斯坦")[0]["skillName"], "huashu-nuwa")
             self.assertEqual(SkillLoader.resolve_skill_matches("elon perspective")[0]["skillName"], "elon-musk-perspective")
 
     def test_fetch_skill_instructions_returns_ambiguity_for_near_fuzzy_ties(self):
@@ -1476,6 +1567,98 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
         self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "documentation")
         self.assertEqual(bundle.selected_skill_names[0], "doc-coauthoring")
+
+    def test_skill_authoring_query_prioritizes_nuwa_over_template_skill_noise(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "女娲造人：调研人物并生成可运行的人物Skill。触发词：「造skill」「蒸馏XX」「女娲」「造人」。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "aliases": [],
+                "triggers": ["女娲", "造skill", "蒸馏XX", "造人"],
+                "keywords": ["persona skill"],
+                "tags": [],
+                "capabilityProfile": {
+                    "skillClass": "skill_authoring",
+                    "primaryArtifactTypes": ["skill"],
+                    "primaryOperations": ["create", "search", "analyze"],
+                    "interactionMode": "guided_workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                    "evidenceSignals": {"artifactMatches": {"skill": ["女娲", "造skill", "人物skill"]}},
+                },
+                "capabilityTags": {
+                    "capabilityKind": ["skill_authoring", "research_workflow", "advisor"],
+                    "artifactTypes": ["skill", "persona_skill"],
+                    "operationTags": ["search", "extract", "synthesize", "create", "verify", "orchestrate"],
+                },
+                "themeProfile": {
+                    "primaryThemes": ["decision_quality"],
+                    "secondaryThemeTags": [],
+                    "themeConfidence": 0.5,
+                    "themeSource": "rules",
+                    "themeEvidenceSignals": {},
+                },
+            },
+            {
+                "skillId": "global:frontend",
+                "name": "frontend-design",
+                "folder": "frontend-design",
+                "description": "Use this skill when users need frontend UI design. This skill should create polished components.",
+                "path": "C:/skills/frontend-design",
+                "skillName": "frontend-design",
+                "aliases": [],
+                "triggers": [],
+                "keywords": ["frontend", "design"],
+                "tags": [],
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["code"],
+                    "primaryOperations": ["create"],
+                    "interactionMode": "general",
+                    "capabilityConfidence": 0.88,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                },
+                "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.1, "themeSource": "rules", "themeEvidenceSignals": {}},
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 2, "llmEnabled": False, "stage2TopK": 1, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="使用女娲技能调研爱因斯坦生成一个爱因斯坦skill",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=2,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
 
     def test_capability_aware_stage1_keeps_methodology_skills_for_decision_quality_queries(self):
         service = ExtensionsRuntimeService()
@@ -2455,6 +2638,27 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
         )
         self.assertNotIn("video", list(profile.get("primaryArtifactTypes") or []))
         self.assertNotIn("document", list(profile.get("primaryArtifactTypes") or []))
+        self.assertNotIn("skill", list(profile.get("primaryArtifactTypes") or []))
+
+    def test_rule_profile_ignores_skill_template_noise_for_generic_skills(self):
+        profile = SkillLoader._derive_capability_profile(
+            name="frontend-design",
+            description="Use this skill when users need high-quality frontend UI/UX design.",
+            body="This SKILL.md explains how to use this skill. It should create polished React components.",
+            folder="frontend-design",
+            available_files=["SKILL.md", "references/design-guide.md"],
+            aliases=[],
+            triggers=[],
+            keywords=["frontend", "ui", "design"],
+            tags=["frontend"],
+            has_scripts=False,
+            has_templates=False,
+            has_examples=False,
+            has_assets=False,
+        )
+
+        self.assertNotIn("skill", list(profile.get("primaryArtifactTypes") or []))
+        self.assertNotIn("skill", list(profile.get("secondaryArtifactHints") or []))
 
     def test_rule_profile_keeps_perspective_skills_out_of_artifact_competition(self):
         profile = SkillLoader._derive_capability_profile(
@@ -2496,6 +2700,26 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
 
         self.assertNotEqual(profile.get("skillClass"), "advisor_or_perspective")
         self.assertIn("video", list(profile.get("primaryArtifactTypes") or []))
+
+    def test_safety_guardian_does_not_block_skill_read_on_template_like_noise(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_root = Path(temp_dir) / "huashu-nuwa"
+            (skill_root / "scripts").mkdir(parents=True, exist_ok=True)
+            skill_file = skill_root / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text("---\nname: huashu-nuwa\ndescription: 女娲造人\n---\n说明。", encoding="utf-8")
+            (skill_root / "README.md").write_text("Star History and skill usage notes.", encoding="utf-8")
+            (skill_root / "scripts" / "download_subtitles.sh").write_text("yt-dlp --write-subs --sub-format srt URL", encoding="utf-8")
+
+            decision = safety_guardian.assess_skill_directory(
+                skill_name="huashu-nuwa",
+                skill_root=str(skill_root),
+                instruction_path=str(skill_file),
+            )
+
+        self.assertNotEqual(decision.get("verdict"), "block")
+        self.assertNotIn("destructive_fs", list(decision.get("findingCategories") or []))
+        self.assertNotIn("browser_profile_access", list(decision.get("findingCategories") or []))
 
     def test_load_cached_registry_rejects_legacy_profile_shape(self):
         with tempfile.TemporaryDirectory() as temp_dir:

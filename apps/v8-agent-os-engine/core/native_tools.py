@@ -5693,6 +5693,43 @@ def _delegation_trace_ref(*, run_id: str | None, invocation_id: str | None, bran
     return trace
 
 
+def _delegation_planner_context(plan: Any, task_brief: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(plan, dict) or not plan:
+        return None
+    task_id = str(task_brief.get("taskBriefId") or "").strip()
+    dependency_rows: list[dict[str, Any]] = []
+    for row in list(plan.get("dependencies") or []):
+        if not isinstance(row, dict):
+            continue
+        if task_id and str(row.get("taskBriefId") or "").strip() not in {"", task_id}:
+            continue
+        dependency_rows.append(
+            {
+                "taskBriefId": str(row.get("taskBriefId") or "").strip(),
+                "dependsOn": [
+                    str(item).strip()
+                    for item in list(row.get("dependsOn") or row.get("dependency") or [])
+                    if str(item).strip()
+                ],
+            }
+        )
+    return {
+        "planId": str(plan.get("planId") or "").strip(),
+        "executionStrategy": str(plan.get("executionStrategy") or "").strip(),
+        "planSummary": str(plan.get("planSummary") or "").strip(),
+        "globalAcceptanceContract": plan.get("globalAcceptanceContract")
+        if isinstance(plan.get("globalAcceptanceContract"), dict)
+        else str(plan.get("globalAcceptanceContract") or "").strip(),
+        "riskFlags": [
+            str(item).strip()
+            for item in list(plan.get("riskFlags") or [])
+            if str(item).strip()
+        ],
+        "dependencies": dependency_rows,
+        "taskCount": len(list(plan.get("taskBriefs") or [])),
+    }
+
+
 def _delegation_compact_item(
     *,
     delegation_id: str,
@@ -5777,9 +5814,12 @@ def command_session_broker(
     - terminate: stop the session
 
     Usage guidance:
-    - Keep using run_system_command for short synchronous commands
-    - Use command_session_broker for long-running tasks, interactive CLIs, REPLs, and server/dev processes
-    - Add debug=true only when you need screen/raw/status diagnostics
+    - Keep using run_system_command for short synchronous commands; run_system_command(mode=auto) redirects long-running or interactive commands here.
+    - Use this broker for long-running tasks, interactive CLIs/REPLs, AI CLIs, and server/dev processes.
+    - Treat summary, recommendedNextAction, awaitingInput, hasMore, state/status, and returnCode as the compact truth for the next step.
+    - profile=auto may enable chat_cli semantics for known AI CLIs so observe reports the latest semantic delta instead of replaying the whole screen.
+    - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
+    - Use debug=true only for raw terminal diagnostics such as screenPreview, rawFramePreview, render_stalled, or encodingState/mojibake.
     """
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"start", "observe", "input", "terminate"}:
@@ -6117,6 +6157,7 @@ def delegation_broker(
     base_messages = list(base_state.get("messages") or [])
     base_todos = list(base_state.get("todos") or [])
     base_contexts = list(base_state.get("delegation_contexts") or [])
+    planner_plan = dict(base_state.get("planner_plan") or {}) if isinstance(base_state.get("planner_plan"), dict) else {}
     inherited_context = dict(base_state.get("current_route_context") or {})
     if not inherited_context:
         inherited_context = latest_delegation_context(base_contexts, agent_id=None)
@@ -6192,6 +6233,7 @@ def delegation_broker(
                     prompt_addition=inherited_context.get("promptAddition"),
                     invocation_id=invocation_id,
                     task_brief=task_brief,
+                    planner_context=_delegation_planner_context(planner_plan, task_brief),
                 )
                 branch_state = dict(base_state)
                 branch_state["messages"] = base_messages + [

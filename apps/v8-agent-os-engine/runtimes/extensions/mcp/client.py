@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import hashlib
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +44,9 @@ class MCPManager:
         self._startup_state = "cold"
         self._last_refresh_at: str | None = None
         self._last_refresh_error: str | None = None
+        self._server_config_fingerprints: dict[str, str] = {}
+        self._inventory_revision = "cold"
+        self._last_reload_result: dict[str, Any] = {}
 
     def _log_server_task_result(self, name: str, task: asyncio.Task) -> None:
         try:
@@ -54,6 +58,32 @@ class MCPManager:
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _server_config_fingerprint(self, name: str, srv_config: dict[str, Any]) -> str:
+        payload = {
+            "name": name,
+            "config": srv_config or {},
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _revision_from_state(self) -> str:
+        server_payload: list[dict[str, Any]] = []
+        for name in sorted(set(self._server_config_fingerprints) | set(self._server_tools) | set(self._server_state)):
+            server_payload.append(
+                {
+                    "name": name,
+                    "configFingerprint": self._server_config_fingerprints.get(name),
+                    "toolNames": sorted(str(getattr(tool, "name", "") or "") for tool in list(self._server_tools.get(name) or [])),
+                    "status": str((self._server_state.get(name) or {}).get("status") or ""),
+                }
+            )
+        raw = json.dumps(server_payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _commit_inventory_revision(self) -> str:
+        self._inventory_revision = self._revision_from_state()
+        return self._inventory_revision
 
     def _set_server_state(self, name: str, **patch: Any) -> dict[str, Any]:
         current = dict(self._server_state.get(name) or {})
@@ -91,9 +121,11 @@ class MCPManager:
                 self._initialized = True
                 self._startup_state = "ready"
                 self._last_refresh_at = self._now_iso()
+                self._commit_inventory_revision()
                 return
 
             for name, srv_config in servers.items():
+                self._server_config_fingerprints[name] = self._server_config_fingerprint(name, srv_config)
                 if self._closing:
                     print("[MCP] Cleanup requested during initialize. Stopping further MCP bootstrap.")
                     break
@@ -150,6 +182,7 @@ class MCPManager:
             self._initialized = True
             self._startup_state = "ready"
             self._last_refresh_at = self._now_iso()
+            self._commit_inventory_revision()
 
     def _remove_server_tools(self, name: str) -> None:
         server_tools = list(self._server_tools.pop(name, []) or [])
@@ -336,6 +369,7 @@ class MCPManager:
                 executionImpacted=False,
                 readyAt=self._now_iso(),
             )
+            self._commit_inventory_revision()
             if not ready_future.done():
                 ready_future.set_result({"tool_count": len(server_tools)})
             print(f"[MCP] Successfully loaded {len(server_tools)} tools from '{name}'.")
@@ -383,6 +417,7 @@ class MCPManager:
                     toolCount=0,
                     executionImpacted=False,
                 )
+            self._commit_inventory_revision()
             try:
                 await stack.aclose()
             except asyncio.CancelledError:
@@ -429,10 +464,213 @@ class MCPManager:
         self.subprocesses = {}
         self._server_tools = {}
         self._server_tasks = {}
+        self._server_config_fingerprints = {}
         self._initialized = False
         self._closing = False
         self._startup_state = "cold"
+        self._commit_inventory_revision()
         print("[MCP] Cleanup complete.")
+
+    async def remove_server(self, name: str) -> dict[str, Any]:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            return {"changed": False, "server": "", "reason": "empty_name"}
+        async with self._init_lock:
+            await self._stop_server_task(normalized_name, cancel=True)
+            self._remove_server_tools(normalized_name)
+            self.sessions.pop(normalized_name, None)
+            self.subprocesses.pop(normalized_name, None)
+            self._server_tools.pop(normalized_name, None)
+            self._server_config_fingerprints.pop(normalized_name, None)
+            self._set_server_state(
+                normalized_name,
+                status="removed",
+                impact="removed",
+                toolCount=0,
+                executionImpacted=False,
+                lastError=None,
+                lastErrorKind=None,
+            )
+            self._last_refresh_at = self._now_iso()
+            self._commit_inventory_revision()
+            return {
+                "changed": True,
+                "server": normalized_name,
+                "revision": self._inventory_revision,
+            }
+
+    async def refresh_server(self, name: str) -> dict[str, Any]:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            return {"changed": False, "server": "", "reason": "empty_name"}
+        try:
+            config = storage.get_mcp_config() or {}
+        except Exception as exc:
+            self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
+            return {"changed": False, "server": normalized_name, "error": self._last_refresh_error}
+        servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
+        if normalized_name not in servers:
+            return await self.remove_server(normalized_name)
+        async with self._init_lock:
+            srv_config = servers.get(normalized_name) or {}
+            fingerprint = self._server_config_fingerprint(normalized_name, srv_config)
+            self._server_config_fingerprints[normalized_name] = fingerprint
+            transport_type = srv_config.get("type") or ("stdio" if srv_config.get("command") else ("http" if str(srv_config.get("url") or "").startswith("http") else "sse"))
+            if srv_config.get("disabled", False):
+                await self._stop_server_task(normalized_name, cancel=True)
+                self._remove_server_tools(normalized_name)
+                self._set_server_state(
+                    normalized_name,
+                    transport=transport_type,
+                    status="disabled",
+                    impact="disabled",
+                    toolCount=0,
+                    lastError=None,
+                    lastErrorKind=None,
+                    executionImpacted=False,
+                )
+            elif not srv_config.get("command") and not srv_config.get("url"):
+                await self._stop_server_task(normalized_name, cancel=True)
+                self._remove_server_tools(normalized_name)
+                self._set_server_state(
+                    normalized_name,
+                    transport=transport_type,
+                    status="error",
+                    impact="startup_failed",
+                    toolCount=0,
+                    lastError="missing command/url",
+                    lastErrorKind="ConfigurationError",
+                    executionImpacted=False,
+                )
+            else:
+                await self._start_server(normalized_name, srv_config)
+            self._initialized = True
+            self._startup_state = "ready"
+            self._last_refresh_at = self._now_iso()
+            self._last_refresh_error = None
+            self._commit_inventory_revision()
+            return {
+                "changed": True,
+                "server": normalized_name,
+                "revision": self._inventory_revision,
+            }
+
+    async def reload_if_changed(self) -> dict[str, Any]:
+        started = datetime.now(timezone.utc)
+        changed_servers: dict[str, list[str]] = {"added": [], "updated": [], "removed": []}
+        try:
+            config = storage.get_mcp_config() or {}
+        except Exception as exc:
+            self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
+            result = {
+                "changed": False,
+                "refreshMode": "delta",
+                "revision": self._inventory_revision,
+                "mcpChangedServers": changed_servers,
+                "error": self._last_refresh_error,
+                "durationMs": int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
+            }
+            self._last_reload_result = result
+            return result
+
+        servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
+        if not isinstance(servers, dict):
+            servers = {}
+
+        async with self._init_lock:
+            self._startup_state = "refreshing"
+            self._last_refresh_error = None
+            current_names = set(self._server_config_fingerprints)
+            configured_names = {str(name) for name in servers.keys()}
+
+            for removed_name in sorted(current_names - configured_names):
+                await self._stop_server_task(removed_name, cancel=True)
+                self._remove_server_tools(removed_name)
+                self.sessions.pop(removed_name, None)
+                self.subprocesses.pop(removed_name, None)
+                self._server_tools.pop(removed_name, None)
+                self._server_config_fingerprints.pop(removed_name, None)
+                self._set_server_state(
+                    removed_name,
+                    status="removed",
+                    impact="removed",
+                    toolCount=0,
+                    executionImpacted=False,
+                    lastError=None,
+                    lastErrorKind=None,
+                )
+                changed_servers["removed"].append(removed_name)
+
+            for name, srv_config in sorted(servers.items(), key=lambda item: str(item[0]).lower()):
+                server_name = str(name)
+                srv_config = srv_config or {}
+                new_fingerprint = self._server_config_fingerprint(server_name, srv_config)
+                old_fingerprint = self._server_config_fingerprints.get(server_name)
+                server_known = server_name in self._server_config_fingerprints
+                server_state = dict(self._server_state.get(server_name) or {})
+                state_status = str(server_state.get("status") or "").strip()
+                should_refresh = (
+                    not server_known
+                    or old_fingerprint != new_fingerprint
+                    or state_status in {"error", "removed"}
+                )
+                if not should_refresh:
+                    continue
+                self._server_config_fingerprints[server_name] = new_fingerprint
+                transport_type = srv_config.get("type") or ("stdio" if srv_config.get("command") else ("http" if str(srv_config.get("url") or "").startswith("http") else "sse"))
+                if srv_config.get("disabled", False):
+                    await self._stop_server_task(server_name, cancel=True)
+                    self._remove_server_tools(server_name)
+                    self._set_server_state(
+                        server_name,
+                        transport=transport_type,
+                        status="disabled",
+                        impact="disabled",
+                        toolCount=0,
+                        lastError=None,
+                        lastErrorKind=None,
+                        executionImpacted=False,
+                    )
+                elif not srv_config.get("command") and not srv_config.get("url"):
+                    await self._stop_server_task(server_name, cancel=True)
+                    self._remove_server_tools(server_name)
+                    self._set_server_state(
+                        server_name,
+                        transport=transport_type,
+                        status="error",
+                        impact="startup_failed",
+                        toolCount=0,
+                        lastError="missing command/url",
+                        lastErrorKind="ConfigurationError",
+                        executionImpacted=False,
+                    )
+                else:
+                    try:
+                        await self._start_server(server_name, srv_config)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        print(f"[MCP] Delta refresh failed for server '{server_name}': {type(exc).__name__}: {exc}")
+                if server_known:
+                    changed_servers["updated"].append(server_name)
+                else:
+                    changed_servers["added"].append(server_name)
+
+            self._initialized = True
+            self._startup_state = "ready"
+            self._last_refresh_at = self._now_iso()
+            self._commit_inventory_revision()
+
+        changed = any(changed_servers.values())
+        result = {
+            "changed": changed,
+            "refreshMode": "delta",
+            "revision": self._inventory_revision,
+            "mcpChangedServers": changed_servers,
+            "durationMs": int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
+        }
+        self._last_reload_result = result
+        return result
 
     def get_tools(self) -> List[Any]:
         return self.tools
@@ -539,10 +777,15 @@ class MCPManager:
             "startupState": startup_state,
             "lastRefreshAt": self._last_refresh_at,
             "lastRefreshError": self._last_refresh_error,
+            "inventoryRevision": self._inventory_revision,
+            "lastReloadResult": dict(self._last_reload_result or {}),
             "configuredServers": len(status),
             "connectedServers": connected_servers,
             "connectedCount": len(connected_servers),
         }
+
+    def get_inventory_revision(self) -> str:
+        return self._inventory_revision
 
 # Global singleton instance
 mcp_manager = MCPManager()

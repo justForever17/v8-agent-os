@@ -99,8 +99,9 @@ async def update_mcp_config(config: dict = Body(...)):
         existing_servers = existing.get("mcpServers", {})
         existing_servers.update(new_servers)
         storage.save_mcp_config({"mcpServers": existing_servers})
-        runtime_health = await extensions_runtime_service.reload()
-        return {"status": "success", "extensionsRuntime": runtime_health}
+        inventory_refresh = await extensions_runtime_service.refresh_inventory_if_changed(reason="mcp_config_update")
+        runtime_health = extensions_runtime_service.build_health()
+        return {"status": "success", "extensionsRuntime": runtime_health, "inventoryRefresh": inventory_refresh}
     except McpConfigValidationError as e:
         raise HTTPException(status_code=400, detail=e.to_payload())
     except Exception as e:

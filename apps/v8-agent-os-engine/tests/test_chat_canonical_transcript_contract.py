@@ -399,9 +399,6 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         fetch_skill_instructions_tool = _Tool("fetch_skill_instructions")
         selected = build_supervisor_toolset(
             fetch_skill_instructions_tool=fetch_skill_instructions_tool,
-            create_agent_tool=_Tool("create_agent"),
-            delegate_parallel_tool=_Tool("delegate_parallel"),
-            handoff_tools=[_Tool("handoff_to_coder"), _Tool("handoff_to_writer")],
             filtered_native_tools=[_Tool("delegation_broker"), _Tool("run_system_command")],
             all_mcp_tools=[],
             plugin_host_tools=[],

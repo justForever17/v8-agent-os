@@ -2,20 +2,20 @@
 
 更新时间：2026-04-21  
 适用仓：`E:\Projects\v8chat\v8-agent-os`  
-文档性质：实施方案书 / 深技术蓝图 / 本轮不改代码  
+文档性质：实施方案书 / 深技术蓝图 / 已进入 MVP+ 硬化阶段  
 主题范围：`supervisor`、`subagent`、`planner lane`、`delegation broker`、`external CLI worker`
 
 ## 1. 执行摘要与决策表
 
 ### 1.1 这份方案要解决什么
 
-当前 `supervisor / subagent` 主链已经具备若干关键雏形，但治理语义仍然分裂：
+当前 `supervisor / subagent` 主链已经从方案进入 MVP+ 硬化阶段，治理主链已基本收成 `planner_lane + delegation_broker + subagent_swarm`：
 
 - `supervisor` 仍是重提示词、重 direct tool surface、重 runtime registry 的统御节点
-- `subagent` 已经有 `explicit / contextual_auto` 两种工具模式，但缺少独立的能力画像真相层
-- `task_planning_mode` 目前更像 todos 偏置，而不是专用 planner lane
-- `delegate_parallel / handoff_to_* / create_agent` 共同构成了分裂的 delegation 入口
-- `roleLabel` 目前实际上属于展示身份，却容易被误用成能力分类字段
+- `subagent` 已经有 `explicit / contextual_auto` 两种工具模式，并已引入独立 `capabilitySnapshot`
+- `planner_lane` 已经承接结构化 planner pass、quality gate、repair/fallback 与 auto-dispatch diagnostics
+- `delegation_broker` 已经成为 supervisor delegation 主链；历史 `delegate_parallel / handoff_to_* / create_agent` 不再作为 supervisor 可见主入口
+- `roleLabel` 已明确保留为展示身份，能力路由使用 `capabilitySnapshot`
 
 本方案的目标不是直接扩“并发数”，而是先把统御治理主链收成：
 
@@ -30,15 +30,15 @@
 
 | 议题 | 当前真相 | 已锁定决策 | 阶段 |
 | --- | --- | --- | --- |
-| Planner 优先级 | 当前无专用 planner lane | 第一阶段优先做 `Planner Lane` | Phase 1 |
-| Planner 形态 | `task_planning_mode` 只是 todos 偏置 | `Planner Lane` 嵌入 supervisor 内部，不单独拆 planner agent | Phase 1 |
-| Planner 触发 | 当前无稳定意图切 lane 机制 | `auto + explicit override` | Phase 1 |
-| Capability Snapshot 来源 | 当前无独立 capability snapshot | `配置 + 派生混合` | Phase 1 |
-| Capability Snapshot 首版维护面 | 当前 admin 只有展示身份和基础 agent 字段 | 第一版由 `Admin 可编辑`，运行时再做派生补全 | Phase 1 |
-| Delegation 主链 | `delegate_parallel / handoff_to_* / create_agent` 分裂并存 | 统一迁向单一 `Delegation Broker` | Phase 1 |
-| 兼容策略 | 历史入口仍被 prompt 教学和工具面依赖 | 明确准备替换，不再视为长期真相 | Phase 1-2 |
+| Planner 优先级 | 已有 `planner_lane` runtime 与结构化 planner pass | 继续硬化 planner quality gate 与 surface inspector | MVP+ |
+| Planner 形态 | `Planner Lane` 已嵌入 supervisor 内部 | 不单独拆 planner agent；planner 不直接执行 side effect | MVP+ |
+| Planner 触发 | 已支持 `auto / force / off` 与 `taskPlanningMode=true` 兼容映射 | 继续保持显式 override 与安全门 | MVP+ |
+| Capability Snapshot 来源 | 已引入独立 `capabilitySnapshot` | 继续采用 `配置 + 派生混合` | MVP+ |
+| Capability Snapshot 首版维护面 | Admin 已有 JSON 高级编辑面 | 继续避免复用 `roleLabel` 做能力真相 | MVP+ |
+| Delegation 主链 | `delegation_broker` 已是主入口 | 删除旧 supervisor delegation 工具构造与文案残留 | MVP+ |
+| 兼容策略 | 历史入口已退出 supervisor 可见主链 | 不再为已清理历史工具调用保留 runtime 兼容壳 | MVP+ |
 | 外部 CLI Agent | 当前只有命令会话与 hooks 基础能力 | 纳入第二阶段主线，形态为 `Broker 包装 Worker` | Phase 2 |
-| Swarm 并发上限 | 当前 `delegate_parallel` 工具合同上限为 2 | 未来架构不设固定硬上限，治理建议默认 `<=10` 并发 | Phase 1-2 |
+| Swarm 并发上限 | `delegation_broker` 承接并发调度；旧 `delegate_parallel` 上限不再代表主链 | 架构不设固定硬上限，治理建议默认 `<=10` 并发 | MVP+ |
 | Swarm 展示投影 | subagent 事件仍可能经 message lifecycle 影响同一 assistant 气泡 | 新增独立 `subagent_swarm` runtime lane，subagent 中间输出不混入 supervisor 气泡 | Phase 1 |
 | Swarm 状态卡结构 | runtime timeline 当前更偏普通时间线 | 按 `taskBrief / planner task node` 分组，可展开 compact transcript + trace ref | Phase 1 |
 | Supervisor 气泡边界 | 中间运行进展与最终答复容易混在同一消息流 | 允许动画 milestone summary，但不承载 subagent 原文；最终采纳与验收仍归 supervisor | Phase 1 |
@@ -49,13 +49,13 @@
 
 #### 当前已实现
 
-- `subagent` 已经支持 `explicit / contextual_auto`
-- `contextual_auto` 已在 agent node 内再次执行 contextual route
-- subagent route 输入已经存在 `delegated query` 雏形
-- `command_session_broker + hooks + process surface` 已经能承接长命令和外部 worker 的基础形态
-- shared session contract 已存在 `runtimeTimeline`，phone/web runtime panel 已能消费 runtime activities
-- phone/web 当前 runtime panel 仍有 `slice(0, 24)` 类展示截断
-- `agent.started`、`run.text.delta`、`tool.started`、`tool.finished` 等事件当前仍可能进入 message lifecycle
+- `subagent` 支持 `explicit / contextual_auto`，其中 `contextual_auto` 已按 delegated task route 收窄外部工具面
+- `capabilitySnapshot` 已与 `roleLabel` 分层
+- `delegation_broker` 已支持本地 subagent 与 external worker descriptor
+- `planner_lane` 已成为独立 runtime id，并承接结构化 planner projection
+- `subagent_swarm` 已成为独立 runtime id，并承接子代理/外部 worker 中间态
+- phone/web runtime panel 已消费 `planner_lane / subagent_swarm`，并按 plan/task 分组 compact feed
+- message lifecycle 已显式阻止 `planner_lane / subagent_swarm` 进入 supervisor 气泡
 
 #### 建议方案
 
@@ -68,9 +68,9 @@
 
 #### 后续演进
 
-- 第二阶段引入 `External CLI Worker Broker`
-- 在 planner 质量稳定后，再扩更大规模 swarm 编排
-- 逐步淘汰 `delegate_parallel / handoff_to_* / create_agent` 的统御主链地位
+- 继续硬化 planner quality gate、auto-dispatch safety gate 与 delegation diagnostics
+- 继续增强 `planner_lane / subagent_swarm` 的 UI 可读性；当前是 compact feed，不是完整 kanban
+- 清理旧 delegation 工具残留，避免兼容壳回潮为主链真相
 
 ## 2. 当前实现真相审计
 
@@ -83,9 +83,9 @@
   - direct tool registry
   - specialist agent registry
   - memory / workspace / todos / safety 等规则
-- `graph/supervisor_context.py` 仍明确教学：
-  - 复杂任务优先使用 `handoff_to_*`
-  - 缺少 agent 时可用 `create_agent`
+- `graph/supervisor_context.py` 当前教学 `delegation_broker`：
+  - 复杂专业任务通过 `delegation_broker` 委派
+  - planner task briefs 是本地 subagent 与 external worker 的 canonical delegation contract
 
 这说明当前 `supervisor` 不是一个极窄的纯编排器，而是：
 
@@ -198,11 +198,11 @@
 - `apps/v8-agent-os-engine/runtimes/chat/runtime.py`
 - `apps/v8-agent-os-engine/core/native_tools.py`
 
-### 2.5 `delegate_parallel` 当前上限 2，是工具合同，不是架构结论
+### 2.5 旧 `delegate_parallel` 上限 2，是历史工具合同，不是架构结论
 
-#### 当前已实现
+#### 历史状态
 
-`graph/parallel_support.py` 当前把 `DelegateParallelInput.tasks` 限定为：
+旧 `delegate_parallel` 工具曾把并发委派限定为：
 
 - `min_length=1`
 - `max_length=2`
@@ -213,13 +213,13 @@
 
 #### 当前真相
 
-这只能证明：
+这只代表旧工具合同，不能代表当前架构主链。当前并发委派主链已经迁到 `delegation_broker`：
 
-- 现有 `delegate_parallel` 工具合同最多 2 个并发 subtask
+- `delegation_broker` 接收 planner task briefs
+- 本地 subagent 分支仍复用 `parallel_delegate_task / parallel_delegate_join` 执行节点
+- 架构不设固定并发硬上限，治理建议默认控制在 `<=10`
 
-不能推出：
-
-- V8OS 架构永远只适合 2 并发
+旧 `delegate_parallel` 不再作为 supervisor 可见工具或 prompt 教学真相。
 
 #### 风险
 
@@ -764,33 +764,33 @@
 #### 它应该替代什么
 
 - `handoff_to_*`
-  - 未来降级为 broker 的单目标兼容壳
+  - 已退出 supervisor 可见主链；后续不再保留 runtime 兼容壳
 - `delegate_parallel`
-  - 未来降级为 broker 的“小型并行兼容壳”
+  - 已退出 supervisor 可见主链；并行委派由 `delegation_broker` 直接接收任务数组
 - `create_agent`
-  - 未来不再作为 supervisor 主链的常用编排入口
+  - 已退出 supervisor 编排入口；agent 创建/编辑保留在 Admin/API 管理面
 
 ### 7.5 兼容迁移策略
 
-已锁定决策：
+当前执行状态：
 
-- 现有 `delegate_parallel / handoff_to_* / create_agent` 是“明确准备替换”
+- `delegation_broker` 已成为 supervisor delegation 主入口
+- `delegate_parallel / handoff_to_* / create_agent` 不再需要面向 supervisor 的运行兼容壳
+- 历史工具调用记录已清理，不再为这些旧 tool call 保留 replay 兼容
 
-建议迁移路线：
+清理路线：
 
-1. Phase 1
-   - 保留旧工具
-   - prompt 与治理文档开始把 broker 设为新真相
-   - 旧工具内部逐步薄壳转发
+1. 主链硬删
+   - 删除旧工具构造、传参、bundle 字段和测试桩
+   - 保留 `parallel_delegate_task / parallel_delegate_join`，因为它们服务 `delegation_broker` 的本地 subagent branch
 
-2. 兼容期
-   - `handoff_to_*` 变成对 broker 的单目标包装
-   - `delegate_parallel` 变成对 broker 的多任务数组包装
-   - `create_agent` 逐步退出“主编排入口”，保留为受控配置/运营入口
+2. 文案清毒
+   - supervisor prompt / docs / diagnostics 不再把旧入口描述成长期真相
+   - Admin 只展示 `delegation_broker` 主链与 `contextual_auto / explicit` 模式边界
 
-3. 退役期
-   - supervisor prompt 不再教学旧入口
-   - 旧入口只保兼容，不再承载新能力
+3. 回归防线
+   - supervisor toolset 和 prompt snapshot 持续断言旧工具不可见
+   - CDC 测试持续断言 planner/subagent 事件不污染 supervisor 气泡
 
 ### 7.6 第一阶段补充：Swarm Surface Projection 与状态卡治理
 
@@ -1273,8 +1273,9 @@ type SwarmArtifactRef = {
 
 后续实现必须验证：
 
-- `delegate_parallel / handoff_to_* / create_agent` 有清晰替换关系
-- 兼容期行为写清，并通过薄壳转发到新主链
+- supervisor 工具面只保留 `delegation_broker` 作为 delegation 主链
+- `delegate_parallel / handoff_to_* / create_agent` 不再出现在 supervisor toolset、prompt snapshot 或主链文案中
+- 删除的是 supervisor 编排旧入口，不是 Admin/API 的 subagent CRUD
 - prompt / docs / diagnostics 不再把旧入口描述成长期真相
 
 ### 10.5 Swarm governance

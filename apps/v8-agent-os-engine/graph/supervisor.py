@@ -13,7 +13,7 @@ from .compat import sanitize_message_chain as compat_sanitize_message_chain
 from .compat import sanitize_response_tool_calls as compat_sanitize_response_tool_calls
 from .tool_routing import create_routed_tool_node as tool_routing_create_routed_tool_node
 from .supervisor_builder import build_supervisor_node, build_supervisor_runtime_bundle
-from .supervisor_support import build_agent_runtime_failure_command, create_agent, extract_task_context, resolve_todos
+from .supervisor_support import build_agent_runtime_failure_command, extract_task_context, resolve_todos
 from .workflow_assembly import compile_supervisor_workflow
 
 install_provider_compatibility_patches()
@@ -47,7 +47,6 @@ def create_supervisor_graph(config: EngineConfig, checkpointer=None):
     bundle = build_supervisor_runtime_bundle(
         config=config,
         fetch_skill_instructions_tool=fetch_skill_instructions,
-        create_agent_tool=create_agent,
         build_failure_command=build_agent_runtime_failure_command,
         extract_task_context=extract_task_context,
         resolve_todos=resolve_todos,

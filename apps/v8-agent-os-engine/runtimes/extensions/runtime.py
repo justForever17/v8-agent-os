@@ -1873,10 +1873,13 @@ class ExtensionsRuntimeService:
         self._cached_health: dict[str, Any] | None = None
         self._background_refresh_task: asyncio.Task | None = None
         self._skills_inventory_watcher_task: asyncio.Task | None = None
+        self._mcp_inventory_watcher_task: asyncio.Task | None = None
         self._refresh_lock = asyncio.Lock()
         self._route_cache: dict[str, tuple[float, ExtensionRouteBundle]] = {}
         self._route_cache_ttl_seconds = 20.0
         self._last_skill_inventory_change: dict[str, Any] | None = None
+        self._last_mcp_inventory_change: dict[str, Any] | None = None
+        self._last_inventory_guard_at: float = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._blocked_skill_records: list[dict[str, Any]] = []
         self._mcp_family_profile_cache: dict[str, dict[str, Any]] = {}
@@ -1888,6 +1891,61 @@ class ExtensionsRuntimeService:
     def _clear_dynamic_family_profile_caches(self) -> None:
         self._mcp_family_profile_cache.clear()
         self._plugin_host_family_profile_cache.clear()
+
+    def _skill_inventory_status(self) -> dict[str, Any]:
+        try:
+            return dict(SkillLoader.get_startup_status() or {})
+        except Exception:
+            return {}
+
+    def _mcp_inventory_status(self) -> dict[str, Any]:
+        try:
+            return dict(mcp_manager.get_startup_status() or {})
+        except Exception:
+            return {}
+
+    def _inventory_revision_key(self, skill_inventory: dict[str, Any] | None = None) -> str:
+        skill_status = self._skill_inventory_status()
+        mcp_status = self._mcp_inventory_status()
+        skill_revision = str(
+            (skill_inventory or {}).get("revision")
+            or skill_status.get("revision")
+            or skill_status.get("fingerprint")
+            or "skills:cold"
+        )
+        mcp_revision = str(
+            mcp_status.get("inventoryRevision")
+            or getattr(mcp_manager, "get_inventory_revision", lambda: "mcp:cold")()
+            or "mcp:cold"
+        )
+        return f"skills:{skill_revision}|mcp:{mcp_revision}"
+
+    def _ensure_inventory_freshness_guard(self, *, reason: str = "route") -> None:
+        if self._startup_state == "cold" and self._cached_catalog is None:
+            return
+        now = time.monotonic()
+        if (now - self._last_inventory_guard_at) < 2.0:
+            return
+        self._last_inventory_guard_at = now
+        try:
+            skill_change = SkillLoader.reload_if_changed()
+            if skill_change.get("changed"):
+                self._last_skill_inventory_change = {
+                    **skill_change,
+                    "changedAt": self._now_iso(),
+                    "reason": reason,
+                }
+                self._cached_catalog = None
+                self._cached_health = None
+        except Exception as exc:
+            self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
+            print(f"[ExtensionsRuntime] Skills freshness guard failed: {type(exc).__name__}: {exc}")
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._refresh_mcp_inventory_if_changed(reason=reason),
+                loop,
+            )
 
     def _cache_path(self) -> Path:
         configured = str(os.getenv("V8_AGENT_OS_EXTENSIONS_CACHE_FILE") or "").strip()
@@ -2028,6 +2086,8 @@ class ExtensionsRuntimeService:
                     "rootDescriptors": root_descriptors,
                     "roots": roots,
                     "fingerprint": str(skills_payload.get("fingerprint") or "").strip(),
+                    "revision": str(skills_payload.get("revision") or skills_payload.get("fingerprint") or "").strip(),
+                    "recentSkillDiscovery": list(skills_payload.get("recentSkillDiscovery") or []),
                 }
         return SkillLoader.get_inventory(
             force_refresh=force_refresh,
@@ -2493,6 +2553,8 @@ class ExtensionsRuntimeService:
         root_descriptors = list(skill_inventory.get("rootDescriptors") or list(skills_state.get("rootDescriptors") or []))
         roots = [str(item.get("rootPath") or "") for item in root_descriptors]
         skills_fingerprint = str(skills_state.get("fingerprint") or "").strip()
+        skills_revision = str(skill_inventory.get("revision") or skills_state.get("revision") or skills_fingerprint).strip()
+        recent_skill_discovery = list(skill_inventory.get("recentSkillDiscovery") or skills_state.get("recentSkillDiscovery") or [])
         changed_at = str(
             ((self._last_skill_inventory_change or {}).get("changedAt"))
             or skills_state.get("lastRefreshAt")
@@ -2500,8 +2562,10 @@ class ExtensionsRuntimeService:
         ).strip() or None
         return {
             "fingerprint": skills_fingerprint,
+            "revision": skills_revision,
             "changedAt": changed_at,
             "lastSkillInventoryChange": self._last_skill_inventory_change,
+            "lastMcpInventoryChange": self._last_mcp_inventory_change,
             "summary": {
                 "skillCount": len(skills_sorted),
                 "blockedSkillCount": len(self._recent_blocked_skill_records()),
@@ -2516,6 +2580,8 @@ class ExtensionsRuntimeService:
                 "roots": [str(root) for root in roots],
                 "rootDescriptors": root_descriptors,
                 "fingerprint": skills_fingerprint,
+                "revision": skills_revision,
+                "recentSkillDiscovery": recent_skill_discovery,
                 "changedAt": changed_at,
                 "items": [
                     {
@@ -2536,6 +2602,8 @@ class ExtensionsRuntimeService:
             },
             "mcp": {
                 "servers": servers,
+                "inventoryRevision": str(self._mcp_inventory_status().get("inventoryRevision") or ""),
+                "lastInventoryChange": self._last_mcp_inventory_change,
             },
         }
 
@@ -2577,6 +2645,7 @@ class ExtensionsRuntimeService:
         mcp_init_task: asyncio.Task | None = None,
         force_skill_reload: bool = False,
         force_mcp_reload: bool = False,
+        clear_route_cache: bool = True,
     ) -> dict[str, Any]:
         async with self._refresh_lock:
             self._startup_state = "refreshing"
@@ -2600,7 +2669,8 @@ class ExtensionsRuntimeService:
             self._snapshot_freshness = "live"
             self._last_refresh_at = self._now_iso()
             self._last_refresh_error = None
-            self._route_cache.clear()
+            if clear_route_cache:
+                self._route_cache.clear()
             self._clear_dynamic_family_profile_caches()
             self._persist_cache()
             return self._decorate_health(health)
@@ -2614,7 +2684,7 @@ class ExtensionsRuntimeService:
             "changedAt": self._now_iso(),
             "reason": reason,
         }
-        await self._refresh_runtime_snapshot()
+        await self._refresh_runtime_snapshot(clear_route_cache=False)
         print(
             "[ExtensionsRuntime] Skills inventory changed: "
             f"reason={reason}, "
@@ -2640,7 +2710,6 @@ class ExtensionsRuntimeService:
                     "changedAt": self._now_iso(),
                     "reason": reason,
                 }
-                self._route_cache.clear()
                 self._clear_dynamic_family_profile_caches()
                 self._cached_catalog = None
                 self._cached_health = None
@@ -2666,6 +2735,66 @@ class ExtensionsRuntimeService:
 
         self._skills_inventory_watcher_task = asyncio.create_task(_runner(), name="extensions_runtime:skills_inventory_watcher")
 
+    async def _refresh_mcp_inventory_if_changed(self, *, reason: str = "watcher") -> dict[str, Any]:
+        change = await mcp_manager.reload_if_changed()
+        if not change.get("changed"):
+            return change
+        self._last_mcp_inventory_change = {
+            **change,
+            "changedAt": self._now_iso(),
+            "reason": reason,
+        }
+        await self._refresh_runtime_snapshot(clear_route_cache=False)
+        self._clear_dynamic_family_profile_caches()
+        print(
+            "[ExtensionsRuntime] MCP inventory changed: "
+            f"reason={reason}, "
+            f"servers={change.get('mcpChangedServers') or {}}"
+        )
+        return change
+
+    async def refresh_inventory_if_changed(self, *, reason: str = "manual") -> dict[str, Any]:
+        skill_change = await self._refresh_skill_inventory_if_changed(reason=reason)
+        mcp_change = await self._refresh_mcp_inventory_if_changed(reason=reason)
+        changed = bool(skill_change.get("changed") or mcp_change.get("changed"))
+        if changed:
+            self._cached_catalog = self._build_catalog_live()
+            self._cached_health = self._build_health_live(self._cached_catalog)
+            self._last_refresh_at = self._now_iso()
+            self._persist_cache()
+        return {
+            "changed": changed,
+            "skills": skill_change,
+            "mcp": mcp_change,
+            "revision": self._inventory_revision_key(),
+        }
+
+    def request_mcp_inventory_refresh(self, *, reason: str = "manual") -> None:
+        loop = self._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._refresh_mcp_inventory_if_changed(reason=reason),
+                loop,
+            )
+
+    def _ensure_mcp_inventory_watcher(self) -> None:
+        task = self._mcp_inventory_watcher_task
+        if task and not task.done():
+            return
+
+        async def _runner() -> None:
+            while True:
+                await asyncio.sleep(2.0)
+                try:
+                    await self._refresh_mcp_inventory_if_changed(reason="watcher")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
+                    print(f"[ExtensionsRuntime] MCP inventory watcher failed: {type(exc).__name__}: {exc}")
+
+        self._mcp_inventory_watcher_task = asyncio.create_task(_runner(), name="extensions_runtime:mcp_inventory_watcher")
+
     async def start(
         self,
         *,
@@ -2685,6 +2814,7 @@ class ExtensionsRuntimeService:
 
         if self._background_refresh_task and not self._background_refresh_task.done():
             self._ensure_skill_inventory_watcher()
+            self._ensure_mcp_inventory_watcher()
             return
 
         async def _runner() -> None:
@@ -2700,6 +2830,7 @@ class ExtensionsRuntimeService:
 
         self._background_refresh_task = asyncio.create_task(_runner(), name="extensions_runtime:refresh")
         self._ensure_skill_inventory_watcher()
+        self._ensure_mcp_inventory_watcher()
 
     async def stop(self) -> None:
         self._loop = None
@@ -2711,6 +2842,14 @@ class ExtensionsRuntimeService:
             except asyncio.CancelledError:
                 pass
         self._skills_inventory_watcher_task = None
+        mcp_watcher_task = self._mcp_inventory_watcher_task
+        if mcp_watcher_task and not mcp_watcher_task.done():
+            mcp_watcher_task.cancel()
+            try:
+                await mcp_watcher_task
+            except asyncio.CancelledError:
+                pass
+        self._mcp_inventory_watcher_task = None
         task = self._background_refresh_task
         if task and not task.done():
             task.cancel()
@@ -2816,7 +2955,7 @@ class ExtensionsRuntimeService:
                 "routing": {},
             }
         if refresh:
-            await self.reload()
+            await self.refresh_inventory_if_changed(reason="preview")
         route_bundle = self.build_contextual_route(
             user_query=normalized_query,
             available_tools=list(self.get_mcp_tools()),
@@ -2840,6 +2979,13 @@ class ExtensionsRuntimeService:
                 "routingMode": candidate_summary.get("routingMode"),
                 "skillsRoutingMode": candidate_summary.get("skillsRoutingMode"),
                 "mcpRoutingMode": candidate_summary.get("mcpRoutingMode"),
+                "skillInventoryRevision": candidate_summary.get("skillInventoryRevision"),
+                "mcpInventoryRevision": candidate_summary.get("mcpInventoryRevision"),
+                "skillRefreshMode": candidate_summary.get("skillRefreshMode"),
+                "mcpRefreshMode": candidate_summary.get("mcpRefreshMode"),
+                "recentSkillKeepaliveCount": candidate_summary.get("recentSkillKeepaliveCount"),
+                "mcpChangedServers": candidate_summary.get("mcpChangedServers") or {},
+                "inventoryRefreshDurationMs": candidate_summary.get("inventoryRefreshDurationMs") or {},
                 "modelId": candidate_summary.get("modelId"),
                 "role": candidate_summary.get("role"),
                 "reason": candidate_summary.get("reason"),
@@ -2924,6 +3070,11 @@ class ExtensionsRuntimeService:
             prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id
         )
 
+        self._ensure_inventory_freshness_guard(reason="route")
+        skill_status = self._skill_inventory_status()
+        mcp_status = self._mcp_inventory_status()
+        skill_last_reload = dict(skill_status.get("lastReloadResult") or {})
+        mcp_last_reload = dict(mcp_status.get("lastReloadResult") or {})
         skill_inventory = self._resolve_skill_inventory(
             force_refresh=False,
             prefer_cached_ready_inventory=True,
@@ -2931,6 +3082,13 @@ class ExtensionsRuntimeService:
         )
         skill_entries = list(skill_inventory.get("items") or [])
         skill_root_descriptors = list(skill_inventory.get("rootDescriptors") or [])
+        skill_inventory_revision = str(
+            skill_inventory.get("revision")
+            or skill_status.get("revision")
+            or skill_status.get("fingerprint")
+            or ""
+        )
+        recent_skill_discovery = list(skill_inventory.get("recentSkillDiscovery") or skill_status.get("recentSkillDiscovery") or [])
         ranked_skills = sorted(
             (
                 (
@@ -2985,6 +3143,37 @@ class ExtensionsRuntimeService:
                         theme_fallback_candidates,
                         max(len(skill_stage1_hits) + len(theme_fallback_candidates), effective_skill_stage1_limit),
                     )
+        recent_keepalive_candidates: list[dict[str, Any]] = []
+        recent_skill_keys = {
+            str(item.get("skillId") or item.get("skillName") or item.get("skillRoot") or "").strip()
+            for item in recent_skill_discovery
+            if str(item.get("skillId") or item.get("skillName") or item.get("skillRoot") or "").strip()
+        }
+        if skill_stage1_enabled and recent_skill_keys:
+            ranked_recent = sorted(
+                (
+                    (
+                        _score_skill_entry(
+                            query_text=query_text,
+                            query_tokens=query_tokens,
+                            query_profile=query_profile,
+                            skill=item,
+                        )[0],
+                        str(item.get("name") or item.get("folder") or "").lower(),
+                        item,
+                    )
+                    for item in skill_entries
+                    if str(item.get("skillId") or item.get("skillName") or item.get("skillRoot") or "").strip() in recent_skill_keys
+                ),
+                key=lambda row: (-row[0], row[1]),
+            )
+            recent_keepalive_candidates = [row[2] for row in ranked_recent if row[0] > 0][:_DYNAMIC_THEME_FALLBACK_LIMIT]
+            if recent_keepalive_candidates:
+                skill_stage1_hits = _merge_keepalive_skills(
+                    skill_stage1_hits,
+                    recent_keepalive_candidates,
+                    max(len(skill_stage1_hits) + len(recent_keepalive_candidates), effective_skill_stage1_limit),
+                )
         skill_stage1_hit_count = len(skill_stage1_hits)
         skill_pool = skill_stage1_hits[:effective_skill_stage1_limit] if effective_skill_stage1_limit > 0 else []
         skill_stage1_shortlist = list(skill_pool)
@@ -3604,6 +3793,17 @@ class ExtensionsRuntimeService:
             exposed_mcp_tool_names=exposed_mcp_tool_names,
             candidate_summary={
                 "mode": prefilter_mode,
+                "skillInventoryRevision": skill_inventory_revision,
+                "mcpInventoryRevision": str(mcp_status.get("inventoryRevision") or getattr(mcp_manager, "get_inventory_revision", lambda: "")() or ""),
+                "skillRefreshMode": str(skill_last_reload.get("refreshMode") or ""),
+                "mcpRefreshMode": str(mcp_last_reload.get("refreshMode") or ""),
+                "mcpChangedServers": dict(mcp_last_reload.get("mcpChangedServers") or {}),
+                "recentSkillDiscoveryCount": len(recent_skill_discovery),
+                "recentSkillKeepaliveCount": len(recent_keepalive_candidates),
+                "inventoryRefreshDurationMs": {
+                    "skills": skill_last_reload.get("durationMs"),
+                    "mcp": mcp_last_reload.get("durationMs"),
+                },
                 "skillsRoutingMode": skill_routing_mode,
                 "mcpRoutingMode": mcp_routing_mode,
                 "pluginHostRoutingMode": plugin_host_routing_mode,
@@ -3781,6 +3981,7 @@ class ExtensionsRuntimeService:
     ) -> ExtensionRouteBundle:
         context_payload = self._resolve_event_context()
         session_id = str(context_payload.get("session_id") or "").strip() or "global"
+        self._ensure_inventory_freshness_guard(reason="supervisor_route")
         skill_inventory = self._resolve_skill_inventory(
             force_refresh=False,
             include_scoped=True,
@@ -3796,7 +3997,7 @@ class ExtensionsRuntimeService:
         )
         normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
         tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
-        inventory_revision = str(self._last_refresh_at or "cold")
+        inventory_revision = self._inventory_revision_key(skill_inventory)
         cache_key = "|".join(
             [
                 session_id,
@@ -3882,6 +4083,13 @@ class ExtensionsRuntimeService:
                     "routingMode": route_bundle.candidate_summary.get("routingMode"),
                     "skillsRoutingMode": route_bundle.candidate_summary.get("skillsRoutingMode"),
                     "mcpRoutingMode": route_bundle.candidate_summary.get("mcpRoutingMode"),
+                    "skillInventoryRevision": route_bundle.candidate_summary.get("skillInventoryRevision"),
+                    "mcpInventoryRevision": route_bundle.candidate_summary.get("mcpInventoryRevision"),
+                    "skillRefreshMode": route_bundle.candidate_summary.get("skillRefreshMode"),
+                    "mcpRefreshMode": route_bundle.candidate_summary.get("mcpRefreshMode"),
+                    "recentSkillKeepaliveCount": route_bundle.candidate_summary.get("recentSkillKeepaliveCount"),
+                    "mcpChangedServers": route_bundle.candidate_summary.get("mcpChangedServers"),
+                    "inventoryRefreshDurationMs": route_bundle.candidate_summary.get("inventoryRefreshDurationMs"),
                     "modelId": route_bundle.candidate_summary.get("modelId"),
                     "role": route_bundle.candidate_summary.get("role"),
                     "stage1Enabled": route_bundle.candidate_summary.get("stage1Enabled"),

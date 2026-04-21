@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import uuid
-from typing import Annotated, Any
+from typing import Any
 
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.tools import InjectedToolCallId, StructuredTool
-from langgraph.prebuilt import InjectedState
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command, Send
-from pydantic import BaseModel, Field
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
-from core.delegation_broker import build_minimal_task_brief
-from core.native_tools import delegation_broker
 from .route_context import merge_route_context
 
 def _now_iso() -> str:
@@ -68,99 +63,6 @@ def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
     if len(compact) > limit:
         return compact[: limit - 3].rstrip() + "..."
     return compact
-
-
-def build_delegate_parallel_tool(loaded_agents: list[dict[str, Any]]):
-    agent_directory = {
-        str(agent.get("id") or "").strip(): str(agent.get("name") or agent.get("id") or "").strip()
-        for agent in list(loaded_agents or [])
-        if str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"
-    }
-
-    class ParallelDelegationItem(BaseModel):
-        agent_id: str = Field(description="Registered target agent id.")
-        reason: str = Field(description="Concrete delegated task for that agent.")
-        taskBriefId: str | None = Field(default=None, description="Optional planner task brief id for swarm projection.")
-
-    class DelegateParallelInput(BaseModel):
-        tasks: list[ParallelDelegationItem] = Field(
-            description="Parallel delegation items. Maximum 2 subtasks per call.",
-            min_length=1,
-            max_length=2,
-        )
-
-    def delegate_parallel(
-        tasks: list[dict[str, str]],
-        tool_call_id: Annotated[str, InjectedToolCallId],
-        state: Annotated[dict[str, Any], InjectedState],
-    ) -> Command:
-        if not tasks:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content="Error: delegate_parallel requires at least one subtask.",
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                }
-            )
-
-        if len(tasks) > 2:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content="Error: delegate_parallel supports at most 2 concurrent subtasks.",
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                }
-            )
-
-        normalized_tasks = [
-            {
-                "agent_id": str(item.get("agent_id") or "").strip(),
-                "reason": str(item.get("reason") or "").strip(),
-                "taskBriefId": str(item.get("taskBriefId") or item.get("task_brief_id") or "").strip(),
-            }
-            for item in list(tasks or [])
-        ]
-        invalid_agents = [item["agent_id"] for item in normalized_tasks if item["agent_id"] not in agent_directory]
-        if invalid_agents:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=f"Error: unknown agent ids: {', '.join(invalid_agents)}",
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                }
-            )
-
-        broker_tasks = [
-            build_minimal_task_brief(
-                goal=spec["reason"],
-                task_brief_id=spec.get("taskBriefId") or "",
-                preferred_agent_id=spec["agent_id"],
-                execution_lane_hint="subagent",
-            )
-            for spec in normalized_tasks
-        ]
-        return delegation_broker.func(
-            mode="dispatch",
-            tasks=broker_tasks,
-            tool_call_id=tool_call_id,
-            state={**dict(state or {}), "delegationCompatSource": "delegate_parallel"},
-        )
-
-    return StructuredTool.from_function(
-        func=delegate_parallel,
-        name="delegate_parallel",
-        description="Delegate up to two registered sub-agents concurrently, then join their results back to the supervisor.",
-        args_schema=DelegateParallelInput,
-    )
 
 
 async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str, Any]) -> tuple[list[Any], list[Any], dict[str, Any]]:

@@ -15,7 +15,6 @@ from core.storage import storage
 from erc.capability_registry import capability_registry
 
 from .agent_factories import build_specialist_agent_components
-from .parallel_support import build_delegate_parallel_tool
 from .supervisor_execution import route_supervisor_response
 from .supervisor_routing import build_supervisor_toolset, create_robust_invoke
 from .supervisor_turn import execute_supervisor_turn
@@ -30,14 +29,12 @@ class SupervisorRuntimeBundle:
     robust_invoke: Callable
     supervisor_tools: list[Any]
     agent_nodes_map: dict[str, Callable]
-    delegate_parallel_tool: Any | None = None
 
 
 def build_supervisor_runtime_bundle(
     *,
     config: EngineConfig,
     fetch_skill_instructions_tool,
-    create_agent_tool,
     build_failure_command: Callable,
     extract_task_context: Callable,
     resolve_todos: Callable,
@@ -81,7 +78,7 @@ def build_supervisor_runtime_bundle(
         model_failover_service=model_failover_service,
     )
 
-    handoff_tools, agent_nodes_map = build_specialist_agent_components(
+    agent_nodes_map = build_specialist_agent_components(
         loaded_agents=loaded_agents,
         all_mcp_tools=all_mcp_tools,
         all_plugin_host_tools=plugin_host_tools,
@@ -96,13 +93,9 @@ def build_supervisor_runtime_bundle(
         sanitize_response_tool_calls=sanitize_response_tool_calls,
         fetch_skill_instructions=fetch_skill_instructions_tool,
     )
-    delegate_parallel_tool = build_delegate_parallel_tool(loaded_agents)
 
     supervisor_tools = build_supervisor_toolset(
         fetch_skill_instructions_tool=fetch_skill_instructions_tool,
-        create_agent_tool=create_agent_tool,
-        delegate_parallel_tool=delegate_parallel_tool,
-        handoff_tools=handoff_tools,
         filtered_native_tools=filtered_native_tools,
         all_mcp_tools=all_mcp_tools,
         plugin_host_tools=plugin_host_tools,
@@ -118,7 +111,6 @@ def build_supervisor_runtime_bundle(
         robust_invoke=robust_invoke,
         supervisor_tools=supervisor_tools,
         agent_nodes_map=agent_nodes_map,
-        delegate_parallel_tool=delegate_parallel_tool,
     )
 
 

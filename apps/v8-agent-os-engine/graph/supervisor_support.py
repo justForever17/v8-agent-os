@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import re
 import uuid
-from typing import Optional
 
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import tool
 from langgraph.types import Command
 
-from core.storage import storage
 from .task_context import extract_task_context, resolve_todos
 
 
@@ -31,52 +27,8 @@ def build_agent_runtime_failure_command(*, agent_name: str, exc: Exception, goto
     )
     return Command(goto=goto, update={"messages": [feedback_msg]})
 
-@tool
-def create_agent(
-    name: str,
-    description: str,
-    system_prompt: str,
-    tools: Optional[list[str]] = None,
-    model: Optional[str] = None,
-) -> str:
-    """
-    Create a specialized sub-agent and persist it for reuse in later turns or orchestration flows.
-    """
-    explicit_tools = list(tools or [])
-    tool_mode = "explicit" if explicit_tools else "contextual_auto"
-    if tools is None:
-        tools = []
-    if not model:
-        model = storage.get_default_agent_model_id() or ""
-
-    safe_name = re.sub(r"[^\w\-]", "-", name.replace(" ", "-")).strip("-")
-    safe_name = re.sub(r"-+", "-", safe_name)
-    agent_id = f"{safe_name}-{uuid.uuid4().hex[:4]}" if safe_name else f"agent-{uuid.uuid4().hex[:8]}"
-
-    config_dict = {
-        "id": agent_id,
-        "name": name,
-        "description": description,
-        "model": model,
-        "tools": tools,
-        "tool_mode": tool_mode,
-        "system_prompt": system_prompt,
-        "createdBy": "supervisor",
-    }
-
-    try:
-        storage.save_agent(config_dict)
-        return (
-            f"Successfully created agent '{name}' with ID '{agent_id}' (tool_mode={tool_mode}). "
-            "It will be available for you to delegate tasks to on the NEXT conversation turn."
-        )
-    except Exception as exc:
-        return f"Failed to create agent: {str(exc)}"
-
-
 __all__ = [
     "build_agent_runtime_failure_command",
-    "create_agent",
     "extract_task_context",
     "resolve_todos",
 ]

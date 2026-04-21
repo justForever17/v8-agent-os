@@ -1,22 +1,16 @@
-import hashlib
 import logging
 import platform
-import re
 import uuid
 from pathlib import Path
-from typing import Annotated, Callable
+from typing import Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import InjectedToolCallId, StructuredTool
-from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from pydantic import BaseModel, Field
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
-from core.delegation_broker import build_minimal_task_brief, task_brief_query_text
+from core.delegation_broker import task_brief_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
-from core.native_tools import delegation_broker
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
@@ -273,40 +267,6 @@ def build_contextual_auto_tool_node(
         return await routed(state)
 
     return contextual_tool_node
-
-
-def build_handoff_tool(agent_id: str, agent_name: str, agent_desc: str):
-    class HandoffInput(BaseModel):
-        reason: str = Field(description=f"Detailed instructions, task description, and context for {agent_name} to execute.")
-
-    ascii_id = re.sub(r"[^a-zA-Z0-9_-]", "", agent_id.replace("-", "_")).strip("_")
-    if not ascii_id:
-        ascii_id = hashlib.md5(agent_id.encode()).hexdigest()[:8]
-    safe_tool_name = f"handoff_to_{ascii_id}"
-
-    def handoff_with_ack(
-        reason: str,
-        tool_call_id: Annotated[str, InjectedToolCallId],
-        state: Annotated[dict, InjectedState],
-    ) -> Command:
-        task_brief = build_minimal_task_brief(
-            goal=reason,
-            preferred_agent_id=agent_id,
-            execution_lane_hint="subagent",
-        )
-        return delegation_broker.func(
-            mode="dispatch",
-            tasks=[task_brief],
-            tool_call_id=tool_call_id,
-            state={**dict(state or {}), "delegationCompatSource": safe_tool_name},
-        )
-
-    return StructuredTool.from_function(
-        func=handoff_with_ack,
-        name=safe_tool_name,
-        description=f"Hand off a specialized task to: {agent_name}. Description: {agent_desc}",
-        args_schema=HandoffInput,
-    )
 
 
 def build_agent_node(
@@ -728,7 +688,6 @@ def build_specialist_agent_components(
     sanitize_response_tool_calls: Callable,
     fetch_skill_instructions,
 ):
-    handoff_tools = []
     agent_nodes_map = {}
 
     for agent_data in loaded_agents:
@@ -767,7 +726,6 @@ def build_specialist_agent_components(
             )
             tool_node_func = create_routed_tool_node(tool_node_tools, name=f"{agent_id}_tools", fallback_goto=agent_id) if tool_node_tools else None
 
-        handoff_tools.append(build_handoff_tool(agent_id, agent_name, agent_desc))
         agent_nodes_map[agent_id] = {
             "node_func": build_agent_node(
                 agent_id=agent_id,
@@ -811,4 +769,4 @@ def build_specialist_agent_components(
             ),
         }
 
-    return handoff_tools, agent_nodes_map
+    return agent_nodes_map

@@ -222,6 +222,9 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n",
     ),
     (
+        # Migration sanitizer only: this left-hand block matches older stock
+        # V8_AGENT_OS.md files so they can be rewritten to the brokered
+        # delegation contract below. It is not current prompt truth.
         "## Delegation Discipline\n"
         "- If a task is small and local, solve it directly.\n"
         "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"

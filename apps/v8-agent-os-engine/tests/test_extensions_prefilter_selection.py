@@ -14,6 +14,7 @@ if str(ENGINE_ROOT) not in sys.path:
 
 from core import llm_tree_prefilter
 from runtimes.extensions import runtime as extensions_runtime_module
+from runtimes.extensions.mcp.client import MCPManager
 from runtimes.extensions.runtime import ExtensionsRuntimeService
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 
@@ -2521,6 +2522,165 @@ Use this skill to create and edit presentation decks and PowerPoint slides.
 
             with patch.object(SkillLoader, "_cache_file", return_value=cache_path):
                 self.assertFalse(SkillLoader._load_cached_registry())
+
+    def test_skill_loader_delta_rebuilds_only_changed_entries(self):
+        original_registry = SkillLoader._skills_registry
+        original_manifest = SkillLoader._skills_manifest
+        original_root_signature = SkillLoader._skills_root_signature
+        original_fingerprint = SkillLoader._skills_fingerprint
+        original_revision = SkillLoader._skills_revision
+        try:
+            SkillLoader._skills_registry = {
+                "global:unchanged": {
+                    "skillId": "global:unchanged",
+                    "skillName": "unchanged",
+                    "instructionPath": "C:/skills/unchanged/SKILL.md",
+                    "skillRoot": "C:/skills/unchanged",
+                    "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
+                    "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
+                },
+                "global:updated": {
+                    "skillId": "global:updated",
+                    "skillName": "updated",
+                    "instructionPath": "C:/skills/updated/SKILL.md",
+                    "skillRoot": "C:/skills/updated",
+                    "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
+                    "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
+                },
+                "global:removed": {
+                    "skillId": "global:removed",
+                    "skillName": "removed",
+                    "instructionPath": "C:/skills/removed/SKILL.md",
+                    "skillRoot": "C:/skills/removed",
+                    "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
+                    "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
+                },
+            }
+            unchanged_key = SkillLoader._normalize_path("C:/skills/unchanged/SKILL.md")
+            updated_key = SkillLoader._normalize_path("C:/skills/updated/SKILL.md")
+            removed_key = SkillLoader._normalize_path("C:/skills/removed/SKILL.md")
+            added_key = SkillLoader._normalize_path("C:/skills/added/SKILL.md")
+            SkillLoader._skills_manifest = {
+                unchanged_key: {"mtimeNs": 1, "size": 10},
+                updated_key: {"mtimeNs": 1, "size": 10},
+                removed_key: {"mtimeNs": 1, "size": 10},
+            }
+            SkillLoader._skills_root_signature = "roots:v1"
+            SkillLoader._skills_fingerprint = "old"
+            new_manifest = {
+                unchanged_key: {"mtimeNs": 1, "size": 10, "instructionPath": "C:/skills/unchanged/SKILL.md", "rootPath": "C:/skills/unchanged", "folder": "unchanged"},
+                updated_key: {"mtimeNs": 2, "size": 12, "instructionPath": "C:/skills/updated/SKILL.md", "rootPath": "C:/skills/updated", "folder": "updated"},
+                added_key: {"mtimeNs": 1, "size": 8, "instructionPath": "C:/skills/added/SKILL.md", "rootPath": "C:/skills/added", "folder": "added"},
+            }
+            built_paths: list[str] = []
+
+            def fake_build(*, folder_name, file_path, descriptor, content):  # noqa: ANN001
+                skill_path = str(file_path)
+                built_paths.append(skill_path)
+                name = str(folder_name)
+                return {
+                    "skillId": f"global:{name}",
+                    "skillName": name,
+                    "instructionPath": skill_path,
+                    "skillRoot": str(Path(skill_path).parent),
+                    "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
+                    "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
+                }
+
+            with patch.object(SkillLoader, "_load_cached_registry", return_value=True), patch.object(
+                SkillLoader, "_scan_root_descriptors", return_value=[{"rootPath": "C:/skills", "sourceType": "global", "visibility": "global"}]
+            ), patch.object(
+                SkillLoader, "_root_descriptors_signature", return_value="roots:v1"
+            ), patch.object(
+                SkillLoader, "_compute_manifest", return_value=new_manifest
+            ), patch.object(
+                SkillLoader, "_manifest_fingerprint", return_value="new"
+            ), patch.object(
+                Path, "read_text", return_value="---\nname: fake\n---\nbody"
+            ), patch.object(
+                SkillLoader, "_build_skill_entry", side_effect=fake_build
+            ), patch.object(
+                SkillLoader, "_persist_cache"
+            ):
+                change = SkillLoader.reload_if_changed()
+
+            self.assertTrue(change.get("changed"))
+            self.assertEqual(change.get("refreshMode"), "delta")
+            self.assertEqual(set(change.get("addedSkills") or []), {"global:added"})
+            self.assertEqual(set(change.get("updatedSkills") or []), {"global:updated"})
+            self.assertEqual(set(change.get("removedSkills") or []), {"global:removed"})
+            self.assertEqual(
+                {SkillLoader._normalize_path(path) for path in built_paths},
+                {SkillLoader._normalize_path("C:/skills/updated/SKILL.md"), SkillLoader._normalize_path("C:/skills/added/SKILL.md")},
+            )
+            self.assertIn("global:unchanged", SkillLoader._skills_registry)
+            self.assertNotIn("global:removed", SkillLoader._skills_registry)
+        finally:
+            SkillLoader._skills_registry = original_registry
+            SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_signature = original_root_signature
+            SkillLoader._skills_fingerprint = original_fingerprint
+            SkillLoader._skills_revision = original_revision
+
+
+class MCPManagerDeltaReloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reload_if_changed_only_restarts_changed_servers(self):
+        manager = MCPManager()
+        stable_config = {"command": "node", "args": ["stable.js"]}
+        changed_old_config = {"command": "node", "args": ["old.js"]}
+        changed_new_config = {"command": "node", "args": ["new.js"]}
+        added_config = {"command": "node", "args": ["added.js"]}
+        manager._server_config_fingerprints = {
+            "stable": manager._server_config_fingerprint("stable", stable_config),
+            "changed": manager._server_config_fingerprint("changed", changed_old_config),
+            "removed": manager._server_config_fingerprint("removed", {"command": "node", "args": ["removed.js"]}),
+        }
+        manager._server_state = {
+            "stable": {"status": "connected"},
+            "changed": {"status": "connected"},
+            "removed": {"status": "connected"},
+        }
+        manager._server_tools = {
+            "stable": [_FakeTool("stable_tool", "stable", "stable")],
+            "changed": [_FakeTool("changed_tool", "changed", "changed")],
+            "removed": [_FakeTool("removed_tool", "removed", "removed")],
+        }
+        manager.tools = [
+            *manager._server_tools["stable"],
+            *manager._server_tools["changed"],
+            *manager._server_tools["removed"],
+        ]
+        started: list[str] = []
+        stopped: list[str] = []
+
+        async def fake_start(name, srv_config):  # noqa: ANN001
+            started.append(name)
+            manager._server_tools[name] = [_FakeTool(f"{name}_tool", "tool", name)]
+            manager._set_server_state(name, status="connected", toolCount=1)
+
+        async def fake_stop(name, *, cancel=False):  # noqa: ANN001
+            stopped.append(name)
+
+        with patch("runtimes.extensions.mcp.client.storage.get_mcp_config", return_value={
+            "mcpServers": {
+                "stable": stable_config,
+                "changed": changed_new_config,
+                "added": added_config,
+            }
+        }), patch.object(manager, "_start_server", side_effect=fake_start), patch.object(
+            manager, "_stop_server_task", side_effect=fake_stop
+        ):
+            result = await manager.reload_if_changed()
+
+        self.assertTrue(result.get("changed"))
+        self.assertEqual(set(started), {"changed", "added"})
+        self.assertNotIn("stable", started)
+        self.assertIn("removed", stopped)
+        self.assertEqual(set((result.get("mcpChangedServers") or {}).get("added") or []), {"added"})
+        self.assertEqual(set((result.get("mcpChangedServers") or {}).get("updated") or []), {"changed"})
+        self.assertEqual(set((result.get("mcpChangedServers") or {}).get("removed") or []), {"removed"})
+        self.assertIn("stable", manager._server_config_fingerprints)
+        self.assertNotIn("removed", manager._server_config_fingerprints)
 
 
 if __name__ == "__main__":

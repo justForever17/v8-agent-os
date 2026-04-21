@@ -70,9 +70,6 @@ def create_robust_invoke(
 def build_supervisor_toolset(
     *,
     fetch_skill_instructions_tool,
-    create_agent_tool,
-    delegate_parallel_tool,
-    handoff_tools,
     filtered_native_tools,
     all_mcp_tools,
     plugin_host_tools,

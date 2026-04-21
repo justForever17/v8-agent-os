@@ -23,7 +23,7 @@ from runtimes.memory.project_registry import project_registry_service
 
 
 _PROFILE_LLM_TIMEOUT_SECONDS = 6.0
-_SKILLS_CACHE_SCHEMA_VERSION = 7
+_SKILLS_CACHE_SCHEMA_VERSION = 8
 _PRIMARY_ARTIFACT_LIMIT = 2
 _PRIMARY_OPERATION_LIMIT = 3
 _SECONDARY_HINT_LIMIT = 4
@@ -361,8 +361,13 @@ _THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial"}
 class SkillLoader:
     _skills_registry: dict[str, dict] = {}
     _skills_fingerprint: str = ""
+    _skills_manifest: dict[str, dict[str, Any]] = {}
+    _skills_root_signature: str = ""
+    _skills_revision: str = ""
     _skills_roots: list[Path] = []
     _skills_root_descriptors: list[dict[str, Any]] = []
+    _recent_skill_discovery: list[dict[str, Any]] = []
+    _last_reload_result: dict[str, Any] = {}
     _last_check_at: float = 0.0
     _check_interval_seconds: float = 0.75
     _startup_state: str = "cold"
@@ -1288,6 +1293,126 @@ class SkillLoader:
         return deduped
 
     @classmethod
+    def _root_descriptors_signature(cls, descriptors: list[dict[str, Any]]) -> str:
+        normalized = [
+            {
+                "rootPath": cls._normalize_path(item.get("rootPath")),
+                "sourceType": str(item.get("sourceType") or "global").strip() or "global",
+                "visibility": str(item.get("visibility") or "global").strip() or "global",
+                "workspacePath": cls._normalize_path(item.get("workspacePath")),
+                "workspaceId": str(item.get("workspaceId") or "").strip() or None,
+                "projectId": str(item.get("projectId") or "").strip() or None,
+            }
+            for item in cls._dedupe_root_descriptors(descriptors)
+        ]
+        payload = json.dumps(sorted(normalized, key=lambda item: item["rootPath"]), ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _compute_manifest(cls, descriptors: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        manifest: dict[str, dict[str, Any]] = {}
+        for descriptor in cls._dedupe_root_descriptors(descriptors):
+            root_path = cls._normalize_path(descriptor.get("rootPath"))
+            root = Path(root_path)
+            if not root.exists() or not root.is_dir():
+                continue
+            for skill_file in sorted(root.glob("*/SKILL.md")):
+                try:
+                    stat = skill_file.stat()
+                except OSError:
+                    continue
+                instruction_path = cls._normalize_path(skill_file)
+                skill_root = cls._normalize_path(skill_file.parent)
+                key = instruction_path
+                manifest[key] = {
+                    "key": key,
+                    "instructionPath": instruction_path,
+                    "skillRoot": skill_root,
+                    "folder": skill_file.parent.name,
+                    "rootPath": root_path,
+                    "sourceType": str(descriptor.get("sourceType") or "global").strip() or "global",
+                    "visibility": str(descriptor.get("visibility") or "global").strip() or "global",
+                    "workspacePath": cls._normalize_path(descriptor.get("workspacePath")),
+                    "workspaceId": str(descriptor.get("workspaceId") or "").strip() or None,
+                    "projectId": str(descriptor.get("projectId") or "").strip() or None,
+                    "mtimeNs": int(stat.st_mtime_ns),
+                    "size": int(stat.st_size),
+                }
+        return manifest
+
+    @classmethod
+    def _manifest_fingerprint(cls, descriptors: list[dict[str, Any]], manifest: dict[str, dict[str, Any]]) -> str:
+        digest = hashlib.sha1()
+        digest.update(cls._root_descriptors_signature(descriptors).encode("utf-8"))
+        for key in sorted(manifest):
+            item = manifest[key]
+            digest.update(str(key).encode("utf-8"))
+            digest.update(str(item.get("sourceType") or "").encode("utf-8"))
+            digest.update(str(item.get("visibility") or "").encode("utf-8"))
+            digest.update(str(item.get("rootPath") or "").encode("utf-8"))
+            digest.update(str(item.get("mtimeNs") or "").encode("utf-8"))
+            digest.update(str(item.get("size") or "").encode("utf-8"))
+        return digest.hexdigest()
+
+    @classmethod
+    def _manifest_item_descriptor(cls, manifest_item: dict[str, Any]) -> dict[str, Any]:
+        return cls._build_root_descriptor(
+            root_path=Path(str(manifest_item.get("rootPath") or "")),
+            source_type=str(manifest_item.get("sourceType") or "global").strip() or "global",
+            visibility=str(manifest_item.get("visibility") or "global").strip() or "global",
+            workspace_path=manifest_item.get("workspacePath"),
+            workspace_id=manifest_item.get("workspaceId"),
+            project_id=manifest_item.get("projectId"),
+        )
+
+    @classmethod
+    def _entry_manifest_key(cls, entry: dict[str, Any]) -> str:
+        return cls._normalize_path(entry.get("instructionPath"))
+
+    @classmethod
+    def _remember_recent_skill_discovery(
+        cls,
+        *,
+        added: list[dict[str, Any]],
+        updated: list[dict[str, Any]],
+        refresh_mode: str,
+    ) -> list[dict[str, Any]]:
+        observed_at = cls._now_iso()
+        retained: list[dict[str, Any]] = []
+        cutoff = time.time() - 300
+        for item in cls._recent_skill_discovery:
+            try:
+                item_ts = float(item.get("_observedTs") or 0.0)
+            except (TypeError, ValueError):
+                item_ts = 0.0
+            if item_ts >= cutoff:
+                retained.append(dict(item))
+        for reason, entries in (("added", added), ("updated", updated)):
+            for entry in entries:
+                retained.append(
+                    {
+                        "skillId": str(entry.get("skillId") or ""),
+                        "skillName": str(entry.get("skillName") or entry.get("name") or ""),
+                        "skillRoot": cls._normalize_path(entry.get("skillRoot") or entry.get("path")),
+                        "instructionPath": cls._normalize_path(entry.get("instructionPath")),
+                        "reason": reason,
+                        "refreshMode": refresh_mode,
+                        "observedAt": observed_at,
+                        "_observedTs": time.time(),
+                    }
+                )
+        deduped: dict[str, dict[str, Any]] = {}
+        for item in retained:
+            key = str(item.get("skillId") or item.get("instructionPath") or item.get("skillRoot") or "").strip()
+            if key:
+                deduped[key] = item
+        cls._recent_skill_discovery = list(deduped.values())[-64:]
+        return [
+            {key: value for key, value in item.items() if key != "_observedTs"}
+            for item in cls._recent_skill_discovery
+        ]
+
+    @classmethod
     def _is_valid_capability_profile(cls, profile: Any) -> bool:
         if not isinstance(profile, dict):
             return False
@@ -1341,6 +1466,13 @@ class SkillLoader:
             "version": _SKILLS_CACHE_SCHEMA_VERSION,
             "updatedAt": cls._now_iso(),
             "fingerprint": cls._skills_fingerprint,
+            "revision": cls._skills_revision or cls._skills_fingerprint,
+            "rootSignature": cls._skills_root_signature,
+            "manifest": cls._skills_manifest,
+            "recentSkillDiscovery": [
+                {key: value for key, value in item.items() if key != "_observedTs"}
+                for item in cls._recent_skill_discovery
+            ],
             "roots": [str(root.resolve(strict=False)) for root in cls._skills_roots],
             "rootDescriptors": list(cls._skills_root_descriptors),
             "items": list(cls._skills_registry.values()),
@@ -1439,6 +1571,13 @@ class SkillLoader:
 
         cls._skills_registry = registry
         cls._skills_fingerprint = str(payload.get("fingerprint") or "").strip()
+        cls._skills_revision = str(payload.get("revision") or cls._skills_fingerprint or "").strip()
+        cls._skills_manifest = {
+            str(key): dict(value)
+            for key, value in dict(payload.get("manifest") or {}).items()
+            if str(key).strip() and isinstance(value, dict)
+        }
+        cls._skills_root_signature = str(payload.get("rootSignature") or "").strip()
         cls._skills_roots = [
             Path(candidate)
             for candidate in [str(root or "").strip() for root in list(payload.get("roots") or [])]
@@ -1452,6 +1591,17 @@ class SkillLoader:
                 cls._build_root_descriptor(root_path=root, source_type="global", visibility="global")
                 for root in cls._skills_roots
             ]
+        if not cls._skills_manifest:
+            cls._skills_manifest = cls._compute_manifest(cls._skills_root_descriptors)
+        if not cls._skills_root_signature:
+            cls._skills_root_signature = cls._root_descriptors_signature(cls._skills_root_descriptors)
+        if not cls._skills_revision:
+            cls._skills_revision = cls._manifest_fingerprint(cls._skills_root_descriptors, cls._skills_manifest)
+        cls._recent_skill_discovery = [
+            dict(item)
+            for item in list(payload.get("recentSkillDiscovery") or [])
+            if isinstance(item, dict)
+        ][-64:]
         cls._startup_state = "ready"
         cls._snapshot_freshness = "cached"
         cls._last_refresh_at = str(payload.get("updatedAt") or "").strip() or None
@@ -1575,24 +1725,8 @@ class SkillLoader:
 
     @classmethod
     def _compute_fingerprint(cls, descriptors: list[dict[str, Any]]) -> str:
-        digest = hashlib.sha1()
-        for descriptor in descriptors:
-            root_path = cls._normalize_path(descriptor.get("rootPath"))
-            digest.update(root_path.encode("utf-8"))
-            digest.update(str(descriptor.get("sourceType") or "").encode("utf-8"))
-            digest.update(str(descriptor.get("visibility") or "").encode("utf-8"))
-            digest.update(str(descriptor.get("workspacePath") or "").encode("utf-8"))
-            digest.update(str(descriptor.get("workspaceId") or "").encode("utf-8"))
-            digest.update(str(descriptor.get("projectId") or "").encode("utf-8"))
-            root = Path(root_path)
-            if not root.exists() or not root.is_dir():
-                continue
-            for skill_file in sorted(root.glob("*/SKILL.md")):
-                stat = skill_file.stat()
-                digest.update(str(skill_file.resolve()).encode("utf-8"))
-                digest.update(str(stat.st_mtime_ns).encode("utf-8"))
-                digest.update(str(stat.st_size).encode("utf-8"))
-        return digest.hexdigest()
+        manifest = cls._compute_manifest(descriptors)
+        return cls._manifest_fingerprint(descriptors, manifest)
 
     @classmethod
     def _inventory_snapshot(
@@ -1616,6 +1750,11 @@ class SkillLoader:
             "rootDescriptors": list(descriptors),
             "roots": [str(item.get("rootPath") or "") for item in descriptors],
             "fingerprint": fingerprint,
+            "revision": cls._skills_revision or fingerprint,
+            "recentSkillDiscovery": [
+                {key: value for key, value in item.items() if key != "_observedTs"}
+                for item in cls._recent_skill_discovery
+            ],
         }
 
     @classmethod
@@ -1758,12 +1897,12 @@ class SkillLoader:
         if not force and (now - cls._last_check_at) < cls._check_interval_seconds and cls._skills_registry:
             return
         cls._last_check_at = now
-        descriptors = cls._resolve_root_descriptors(include_scoped=False)
-        fingerprint = cls._compute_fingerprint(descriptors)
-        if not force and fingerprint == cls._skills_fingerprint and cls._skills_registry:
-            cls._skills_root_descriptors = descriptors
-            cls._skills_roots = [Path(item["rootPath"]) for item in descriptors]
+        if not force:
+            cls.reload_if_changed()
             return
+        descriptors = cls._resolve_root_descriptors(include_scoped=False)
+        manifest = cls._compute_manifest(descriptors)
+        fingerprint = cls._manifest_fingerprint(descriptors, manifest)
         cls.reload_skills(root_descriptors=descriptors, fingerprint=fingerprint)
 
     @classmethod
@@ -1781,11 +1920,15 @@ class SkillLoader:
             for root in list(skill_roots or [])
         ] or cls._resolve_root_descriptors(include_scoped=False)
         descriptors = cls._dedupe_root_descriptors(descriptors)
+        manifest = cls._compute_manifest(descriptors)
         registry = cls._scan_root_descriptors(descriptors)
         cls._skills_registry = registry
         cls._skills_root_descriptors = descriptors
         cls._skills_roots = [Path(item["rootPath"]) for item in descriptors]
-        cls._skills_fingerprint = fingerprint or cls._compute_fingerprint(descriptors)
+        cls._skills_manifest = manifest
+        cls._skills_root_signature = cls._root_descriptors_signature(descriptors)
+        cls._skills_fingerprint = fingerprint or cls._manifest_fingerprint(descriptors, manifest)
+        cls._skills_revision = cls._skills_fingerprint
         cls._last_check_at = time.monotonic()
 
     @classmethod
@@ -1912,27 +2055,111 @@ class SkillLoader:
 
     @classmethod
     def reload_if_changed(cls) -> dict[str, Any]:
+        started_at = time.perf_counter()
         descriptors = cls._resolve_root_descriptors(include_scoped=False)
-        fingerprint = cls._compute_fingerprint(descriptors)
+        descriptors = cls._dedupe_root_descriptors(descriptors)
+        manifest = cls._compute_manifest(descriptors)
+        fingerprint = cls._manifest_fingerprint(descriptors, manifest)
+        root_signature = cls._root_descriptors_signature(descriptors)
         if fingerprint == cls._skills_fingerprint and cls._skills_registry:
             cls._skills_root_descriptors = descriptors
             cls._skills_roots = [Path(item["rootPath"]) for item in descriptors]
             cls._last_check_at = time.monotonic()
-            return {
+            result = {
                 "changed": False,
+                "refreshMode": "delta",
                 "fingerprint": fingerprint,
+                "revision": cls._skills_revision or fingerprint,
                 "roots": [str(item.get("rootPath") or "") for item in descriptors],
                 "rootDescriptors": list(descriptors),
                 "addedSkills": [],
                 "removedSkills": [],
                 "updatedSkills": [],
+                "recentSkillDiscovery": [
+                    {key: value for key, value in item.items() if key != "_observedTs"}
+                    for item in cls._recent_skill_discovery
+                ],
+                "durationMs": round((time.perf_counter() - started_at) * 1000, 2),
             }
+            cls._last_reload_result = dict(result)
+            return result
 
         before = {
             skill_id: cls._skill_registry_signature(item)
             for skill_id, item in cls._skills_registry.items()
         }
-        cls.reload_skills(root_descriptors=descriptors, fingerprint=fingerprint)
+        before_by_manifest_key = {
+            cls._entry_manifest_key(item): (skill_id, item)
+            for skill_id, item in cls._skills_registry.items()
+            if cls._entry_manifest_key(item)
+        }
+        full_reload_required = (
+            not cls._skills_registry
+            or not cls._skills_manifest
+            or not cls._skills_root_signature
+            or root_signature != cls._skills_root_signature
+        )
+        refresh_mode = "full" if full_reload_required else "delta"
+        rebuilt_updated_skill_ids: set[str] = set()
+        if full_reload_required:
+            cls.reload_skills(root_descriptors=descriptors, fingerprint=fingerprint)
+        else:
+            old_manifest = dict(cls._skills_manifest)
+            added_keys = sorted(set(manifest) - set(old_manifest))
+            removed_keys = sorted(set(old_manifest) - set(manifest))
+            updated_keys = sorted(
+                key
+                for key in set(manifest).intersection(old_manifest)
+                if (
+                    int(manifest[key].get("mtimeNs") or 0) != int(old_manifest[key].get("mtimeNs") or 0)
+                    or int(manifest[key].get("size") or 0) != int(old_manifest[key].get("size") or 0)
+                )
+            )
+            next_registry = dict(cls._skills_registry)
+            for key in removed_keys:
+                old_entry = before_by_manifest_key.get(key)
+                if old_entry:
+                    next_registry.pop(old_entry[0], None)
+            for key in [*added_keys, *updated_keys]:
+                manifest_item = manifest.get(key)
+                if not manifest_item:
+                    continue
+                skill_file = Path(str(manifest_item.get("instructionPath") or ""))
+                try:
+                    content = skill_file.read_text(encoding="utf-8")
+                except Exception as exc:
+                    print(f"[SkillLoader] Error reading {skill_file}: {exc}")
+                    continue
+                entry = cls._build_skill_entry(
+                    folder_name=str(manifest_item.get("folder") or skill_file.parent.name),
+                    file_path=skill_file,
+                    descriptor=cls._manifest_item_descriptor(manifest_item),
+                    content=content,
+                )
+                if entry is None:
+                    old_entry = before_by_manifest_key.get(key)
+                    if old_entry:
+                        next_registry.pop(old_entry[0], None)
+                    continue
+                old_entry = before_by_manifest_key.get(key)
+                if old_entry and old_entry[0] != str(entry.get("skillId") or ""):
+                    next_registry.pop(old_entry[0], None)
+                next_registry[str(entry.get("skillId"))] = entry
+                if key in updated_keys and str(entry.get("skillId") or ""):
+                    rebuilt_updated_skill_ids.add(str(entry.get("skillId")))
+            cls._skills_registry = next_registry
+            cls._skills_root_descriptors = descriptors
+            cls._skills_roots = [Path(item["rootPath"]) for item in descriptors]
+            cls._skills_manifest = manifest
+            cls._skills_root_signature = root_signature
+            cls._skills_fingerprint = fingerprint
+            cls._skills_revision = fingerprint
+            cls._last_check_at = time.monotonic()
+            cls._persist_cache()
+            cls._startup_state = "ready"
+            cls._snapshot_freshness = "live"
+            cls._last_refresh_at = cls._now_iso()
+            cls._last_refresh_error = None
         after = {
             skill_id: cls._skill_registry_signature(item)
             for skill_id, item in cls._skills_registry.items()
@@ -1940,15 +2167,35 @@ class SkillLoader:
         before_ids = set(before)
         after_ids = set(after)
         shared_ids = before_ids & after_ids
-        return {
+        added_skill_ids = sorted(after_ids - before_ids)
+        signature_updated_skill_ids = {
+            skill_id
+            for skill_id in shared_ids
+            if before.get(skill_id) != after.get(skill_id)
+        }
+        updated_skill_ids = sorted(signature_updated_skill_ids | (rebuilt_updated_skill_ids & shared_ids))
+        recent = cls._remember_recent_skill_discovery(
+            added=[cls._skills_registry[skill_id] for skill_id in added_skill_ids if skill_id in cls._skills_registry],
+            updated=[cls._skills_registry[skill_id] for skill_id in updated_skill_ids if skill_id in cls._skills_registry],
+            refresh_mode=refresh_mode,
+        )
+        if added_skill_ids or updated_skill_ids:
+            cls._persist_cache()
+        result = {
             "changed": True,
+            "refreshMode": refresh_mode,
             "fingerprint": fingerprint,
+            "revision": cls._skills_revision or fingerprint,
             "roots": [str(item.get("rootPath") or "") for item in descriptors],
             "rootDescriptors": list(descriptors),
-            "addedSkills": sorted(after_ids - before_ids),
+            "addedSkills": added_skill_ids,
             "removedSkills": sorted(before_ids - after_ids),
-            "updatedSkills": sorted(skill_id for skill_id in shared_ids if before.get(skill_id) != after.get(skill_id)),
+            "updatedSkills": updated_skill_ids,
+            "recentSkillDiscovery": recent,
+            "durationMs": round((time.perf_counter() - started_at) * 1000, 2),
         }
+        cls._last_reload_result = dict(result)
+        return result
 
     @classmethod
     def reload_skills(
@@ -1997,7 +2244,7 @@ class SkillLoader:
                 if force:
                     await asyncio.to_thread(cls.reload_skills)
                 else:
-                    await asyncio.to_thread(cls.reload_skills)
+                    await asyncio.to_thread(cls.reload_if_changed)
             except Exception as exc:
                 cls._startup_state = "error"
                 cls._last_refresh_error = str(exc).strip() or exc.__class__.__name__
@@ -2030,6 +2277,13 @@ class SkillLoader:
             "lastRefreshError": cls._last_refresh_error,
             "skillCount": len(cls._skills_registry),
             "fingerprint": cls._skills_fingerprint,
+            "revision": cls._skills_revision or cls._skills_fingerprint,
+            "rootSignature": cls._skills_root_signature,
+            "lastReloadResult": dict(cls._last_reload_result or {}),
+            "recentSkillDiscovery": [
+                {key: value for key, value in item.items() if key != "_observedTs"}
+                for item in cls._recent_skill_discovery
+            ],
             "root": roots[0] if roots else "",
             "roots": roots,
             "rootDescriptors": list(descriptors),
@@ -2084,39 +2338,8 @@ class SkillLoader:
             explicit_workspace_path=explicit_workspace_path,
             explicit_project_id=explicit_project_id,
         )
-        entries = list(inventory.get("items") or [])
         normalized_needle = needle.lower()
-        exact_matches: list[dict[str, Any]] = []
-        hint_matches: list[dict[str, Any]] = []
-        fuzzy_scored: list[tuple[int, dict[str, Any]]] = []
         query_variants = cls._skill_match_query_variants(needle)
-        for entry in entries:
-            skill_id = str(entry.get("skillId") or "").strip()
-            skill_name = str(entry.get("skillName") or entry.get("name") or entry.get("folder") or "").strip()
-            folder_name = str(entry.get("folder") or "").strip()
-            skill_root = cls._normalize_path(entry.get("skillRoot") or entry.get("path"))
-            instruction_path = cls._normalize_path(entry.get("instructionPath"))
-            candidates = {
-                skill_id.lower(),
-                skill_name.lower(),
-                folder_name.lower(),
-                skill_root.lower(),
-                instruction_path.lower(),
-            }
-            if normalized_needle in {candidate for candidate in candidates if candidate}:
-                exact_matches.append(entry)
-                continue
-            hint_candidates = {
-                cls._normalize_text(item)
-                for key in ("aliases", "triggers", "keywords", "tags")
-                for item in cls._normalize_hint_items(entry.get(key))
-            }
-            if cls._normalize_text(needle) in {candidate for candidate in hint_candidates if candidate}:
-                hint_matches.append(entry)
-                continue
-            fuzzy_score = cls._score_skill_match_entry(entry, query_variants)
-            if fuzzy_score >= _SKILL_MATCH_FUZZY_MIN_SCORE:
-                fuzzy_scored.append((fuzzy_score, entry))
 
         def _dedupe(entries_to_sort: list[dict[str, Any]]) -> list[dict[str, Any]]:
             deduped: list[dict[str, Any]] = []
@@ -2135,34 +2358,81 @@ class SkillLoader:
                 deduped.append(candidate)
             return deduped
 
-        if exact_matches:
-            return _dedupe(exact_matches)
-        if hint_matches:
-            return _dedupe(hint_matches)
-        if not fuzzy_scored:
-            return []
-
-        fuzzy_scored.sort(
-            key=lambda item: (
-                -item[0],
-                str(item[1].get("skillName") or item[1].get("name") or item[1].get("folder") or "").lower(),
-                str(item[1].get("skillRoot") or item[1].get("path") or "").lower(),
+        def _match(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            exact_matches: list[dict[str, Any]] = []
+            hint_matches: list[dict[str, Any]] = []
+            fuzzy_scored: list[tuple[int, dict[str, Any]]] = []
+            for entry in entries:
+                skill_id = str(entry.get("skillId") or "").strip()
+                skill_name = str(entry.get("skillName") or entry.get("name") or entry.get("folder") or "").strip()
+                folder_name = str(entry.get("folder") or "").strip()
+                skill_root = cls._normalize_path(entry.get("skillRoot") or entry.get("path"))
+                instruction_path = cls._normalize_path(entry.get("instructionPath"))
+                candidates = {
+                    skill_id.lower(),
+                    skill_name.lower(),
+                    folder_name.lower(),
+                    skill_root.lower(),
+                    instruction_path.lower(),
+                }
+                if normalized_needle in {candidate for candidate in candidates if candidate}:
+                    exact_matches.append(entry)
+                    continue
+                hint_candidates = {
+                    cls._normalize_text(item)
+                    for key in ("aliases", "triggers", "keywords", "tags")
+                    for item in cls._normalize_hint_items(entry.get(key))
+                }
+                if cls._normalize_text(needle) in {candidate for candidate in hint_candidates if candidate}:
+                    hint_matches.append(entry)
+                    continue
+                fuzzy_score = cls._score_skill_match_entry(entry, query_variants)
+                if fuzzy_score >= _SKILL_MATCH_FUZZY_MIN_SCORE:
+                    fuzzy_scored.append((fuzzy_score, entry))
+            if exact_matches:
+                return _dedupe(exact_matches)
+            if hint_matches:
+                return _dedupe(hint_matches)
+            if not fuzzy_scored:
+                return []
+            fuzzy_scored.sort(
+                key=lambda item: (
+                    -item[0],
+                    str(item[1].get("skillName") or item[1].get("name") or item[1].get("folder") or "").lower(),
+                    str(item[1].get("skillRoot") or item[1].get("path") or "").lower(),
+                )
             )
-        )
-        top_score = int(fuzzy_scored[0][0])
-        if len(fuzzy_scored) == 1:
+            top_score = int(fuzzy_scored[0][0])
+            if len(fuzzy_scored) == 1:
+                return [fuzzy_scored[0][1]]
+            second_score = int(fuzzy_scored[1][0])
+            if top_score <= 0:
+                return []
+            if top_score < int(round(second_score * _SKILL_MATCH_AMBIGUITY_RATIO)) and (top_score - second_score) <= _SKILL_MATCH_AMBIGUITY_GAP:
+                ambiguous = [
+                    entry
+                    for score, entry in fuzzy_scored
+                    if (top_score - int(score)) <= _SKILL_MATCH_AMBIGUITY_GAP
+                ]
+                return _dedupe(ambiguous[:12])
             return [fuzzy_scored[0][1]]
-        second_score = int(fuzzy_scored[1][0])
-        if top_score <= 0:
+
+        matches = _match(list(inventory.get("items") or []))
+        if matches or force_refresh:
+            return matches
+        change = cls.reload_if_changed()
+        if not change.get("changed"):
             return []
-        if top_score < int(round(second_score * _SKILL_MATCH_AMBIGUITY_RATIO)) and (top_score - second_score) <= _SKILL_MATCH_AMBIGUITY_GAP:
-            ambiguous = [
-                entry
-                for score, entry in fuzzy_scored
-                if (top_score - int(score)) <= _SKILL_MATCH_AMBIGUITY_GAP
-            ]
-            return _dedupe(ambiguous[:12])
-        return [fuzzy_scored[0][1]]
+        refreshed = cls.get_inventory(
+            force_refresh=False,
+            include_scoped=True,
+            runtime_kind=runtime_kind,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
+        return _match(list(refreshed.get("items") or []))
 
 
 @tool
@@ -2208,7 +2478,20 @@ def fetch_skill_instructions(skill_name: str) -> str:
             )
         return "\n".join(lines)
     if not matches:
-        return f"Error: The requested skill '{skill_name}' was not found in the registry."
+        status = SkillLoader.get_startup_status()
+        roots = "\n".join(f"- {item}" for item in list(status.get("roots") or [])[:8]) or "- (no visible skill roots)"
+        recent_items = list(status.get("recentSkillDiscovery") or [])[:8]
+        recent = "\n".join(
+            f"- {item.get('skillName') or item.get('skillId')} | {item.get('reason')} | {item.get('skillRoot')}"
+            for item in recent_items
+        ) or "- (no recent skill discovery)"
+        return (
+            f"Error: The requested skill '{skill_name}' was not found in the registry after a freshness check.\n"
+            f"Skill inventory revision: {status.get('revision') or status.get('fingerprint') or 'unknown'}\n"
+            f"Visible skill roots:\n{roots}\n"
+            f"Recent skill discovery:\n{recent}\n"
+            "If the skill was just installed, confirm that its SKILL.md lives directly under one of the visible skill roots."
+        )
 
     skill = matches[0]
     scan_payload: dict[str, Any] | None = None

@@ -47,7 +47,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
             )
 
     def test_contextual_auto_static_tool_surface_excludes_full_external_tree(self):
-        _handoff_tools, agent_nodes = self._build_components(tool_mode="contextual_auto")
+        agent_nodes = self._build_components(tool_mode="contextual_auto")
 
         tool_names = {getattr(tool, "name", "") for tool in agent_nodes["agent-one"]["tools"]}
 
@@ -60,7 +60,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIsNotNone(agent_nodes["agent-one"]["tool_node_func"])
 
     def test_explicit_static_tool_surface_still_respects_selected_external_tools(self):
-        _handoff_tools, agent_nodes = self._build_components(tool_mode="explicit")
+        agent_nodes = self._build_components(tool_mode="explicit")
 
         tool_names = {getattr(tool, "name", "") for tool in agent_nodes["agent-one"]["tools"]}
 

@@ -5,7 +5,6 @@ import {
     Bot,
     Brain,
     Building2,
-    FolderTree,
     Gauge,
     Globe2,
     LayoutDashboard,
@@ -135,12 +134,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/runtime-governance",
                 icon: Activity,
                 description: "lib.admin.navigation.runtimeGovernanceDescription",
-            },
-            {
-                title: "lib.admin.navigation.k3e8bf507",
-                href: "/admin/context",
-                icon: FolderTree,
-                description: "lib.admin.navigation.k4959020c",
             },
             {
                 title: "lib.admin.navigation.kcef5c2ee",

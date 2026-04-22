@@ -13,7 +13,6 @@ from runtimes.memory.health_service import memory_health_service
 from runtimes.memory.injection_service import injection_service
 from runtimes.memory.knowledge_service import knowledge_service
 from runtimes.memory.profile_service import profile_service
-from runtimes.memory.project_registry import project_registry_service
 from runtimes.memory.recall_service import recall_service
 from runtimes.memory.workflow_service import workflow_memory_service
 from runtimes.memory.workflow_evidence import workflow_evidence_collector
@@ -191,7 +190,6 @@ class MemoryRuntime:
         total_prefs = profile_service.get_preference_count()
         knowledge_count = knowledge_service.get_knowledge_count()
         graph_stats = knowledge_service.get_graph_stats()
-        recent_logs = injection_service.get_recent_logs(days=3)
         health = memory_health_service.check()
         extraction_runs: List[Dict[str, Any]] = []
         recent_memory_runs = db.list_run_records(run_type="memory", limit=40)
@@ -308,7 +306,6 @@ class MemoryRuntime:
                 "count": knowledge_count,
             },
             "graph": graph_stats,
-            "recent_logs": recent_logs,
             "health": health,
             "memoryMap": health.get("memoryMap") or {},
             "extractions": {
@@ -317,9 +314,6 @@ class MemoryRuntime:
             },
             "maintenance": self._build_maintenance_dashboard(recent_memory_runs),
             "workflows": workflow_memory_service.dashboard_summary(),
-            "projects": {
-                "count": len(project_registry_service.list_projects()),
-            },
             "provenance": {
                 "classes": [
                     "human_dialogue",

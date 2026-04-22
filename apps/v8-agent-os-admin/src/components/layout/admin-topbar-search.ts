@@ -35,13 +35,14 @@ const NAV_ENTRIES: AdminTopbarSearchEntry[] = flattenNavItems().map((item, index
 }));
 
 const MEMORY_TAB_ENTRIES: AdminTopbarSearchEntry[] = [
+    { id: "memory-context", title: "components.memory.MemorySectionNav.contextManagement", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=context", aliases: ["context", "context management", "rag context", "上下文管理"] },
     { id: "memory-preferences", title: "components.layout.admin.topbar.search.ka5cb9483", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=preferences", aliases: ["memory preferences", "prefs", "preference"] },
+    { id: "memory-logs", title: "components.memory.MemorySectionNav.logsLedger", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=logs", aliases: ["memory logs", "daily logs", "journal", "日志清单", "daily summaries"] },
     { id: "memory-workflows", title: "components.memory.MemorySectionNav.workflowMemory", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=workflows", aliases: ["workflow memory", "behavior memory", "memory workflows", "workflows"] },
     { id: "memory-knowledge", title: "components.layout.admin.topbar.search.k4a8a8d88", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=knowledge", aliases: ["knowledge base", "knowledge items"] },
     { id: "memory-artifacts", title: "components.layout.admin.topbar.search.k2ed10a6e", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=artifacts", aliases: ["artifact explorer", "artifacts"] },
     { id: "memory-graph", title: "components.layout.admin.topbar.search.k7fe6a3d0", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=graph", aliases: ["knowledge graph", "graph", "entities"] },
     { id: "memory-agent", title: "components.layout.admin.topbar.search.ka46db0a3", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=agent", aliases: ["memory assistant", "assistant"] },
-    { id: "memory-audit", title: "components.layout.admin.topbar.search.k386095fc", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=audit", aliases: ["audit", "logs", "system logs"] },
     { id: "memory-upload", title: "components.layout.admin.topbar.search.kdad82071", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=upload", aliases: ["upload", "documents"] },
     { id: "memory-config", title: "components.layout.admin.topbar.search.k0e1a1cef", subtitle: "components.layout.admin.topbar.search.kd5b4901a", href: "/admin/memory?tab=config", aliases: ["memory config", "config"] },
 ];

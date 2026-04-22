@@ -1,6 +1,8 @@
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Union
 
 from fastapi import APIRouter, Body, HTTPException
@@ -18,6 +20,7 @@ from .models import (
     WorkflowBindingPayload,
 )
 from core.model_control_plane import model_control_plane
+from core.memory_store import MEMORY_ROOT
 from core.realtime_protocol import format_ndjson
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
@@ -43,6 +46,90 @@ def _update_role_binding(role: str, model_id: str | None):
 
 def _get_role_binding(role: str) -> str:
     return str(model_control_plane.get_role_model_id(role) or "").strip()
+
+
+class MemoryLogFilePayload(BaseModel):
+    relativePath: str
+    content: str
+
+
+_MEMORY_DAILY_ROOT = (MEMORY_ROOT / "daily").resolve()
+
+
+def _ensure_memory_daily_root() -> Path:
+    _MEMORY_DAILY_ROOT.mkdir(parents=True, exist_ok=True)
+    return _MEMORY_DAILY_ROOT
+
+
+def _normalize_memory_log_relative_path(relative_path: str) -> str:
+    normalized = str(relative_path or "").strip().replace("\\", "/").strip("/")
+    if not normalized:
+        raise HTTPException(status_code=400, detail="relativePath is required.")
+    if normalized.endswith("/") or not normalized.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail="Only .md files under memory/daily are allowed.")
+    if any(part in {"", ".", ".."} for part in normalized.split("/")):
+        raise HTTPException(status_code=400, detail="Invalid relativePath.")
+    return normalized
+
+
+def _resolve_memory_log_path(relative_path: str) -> Path:
+    normalized = _normalize_memory_log_relative_path(relative_path)
+    root = _ensure_memory_daily_root()
+    target = (root / normalized).resolve()
+    if target != root and root not in target.parents:
+        raise HTTPException(status_code=400, detail="relativePath escaped memory/daily.")
+    if target.suffix.lower() != ".md":
+        raise HTTPException(status_code=400, detail="Only .md files under memory/daily are allowed.")
+    return target
+
+
+def _memory_logs_sort_key(path: Path) -> tuple[int, int, str]:
+    if path.is_dir():
+        return (0, 0, path.name.lower())
+    summary_rank = 0 if path.name.lower() == "summary.md" else 1
+    date_rank = 0
+    if path.name[:10].count("-") == 2:
+        date_rank = -int(path.name[:10].replace("-", ""))
+    return (1, summary_rank, f"{date_rank}:{path.name.lower()}")
+
+
+def _build_memory_log_tree_node(path: Path, root: Path) -> dict:
+    relative_path = "" if path == root else path.relative_to(root).as_posix()
+    if path.is_dir():
+        children = sorted(list(path.iterdir()), key=_memory_logs_sort_key)
+        visible_children = [
+            _build_memory_log_tree_node(child, root)
+            for child in children
+            if child.is_dir() or child.suffix.lower() == ".md"
+        ]
+        return {
+            "id": relative_path or "daily",
+            "name": path.name if path != root else "daily",
+            "kind": "directory",
+            "relativePath": relative_path,
+            "children": visible_children,
+        }
+    return {
+        "id": relative_path,
+        "name": path.name,
+        "kind": "file",
+        "relativePath": relative_path,
+        "children": [],
+    }
+
+
+def _read_memory_log_file(relative_path: str) -> dict:
+    target = _resolve_memory_log_path(relative_path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Memory log file not found.")
+    content = target.read_text(encoding="utf-8")
+    updated_at = datetime.fromtimestamp(target.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return {
+        "relativePath": target.relative_to(_ensure_memory_daily_root()).as_posix(),
+        "content": content,
+        "exists": True,
+        "updatedAt": updated_at,
+    }
 
 
 @router.get("/agents")
@@ -320,6 +407,59 @@ async def get_memory_dashboard():
 async def clear_memory_dashboard_diagnostics():
     try:
         return memory_runtime.clear_diagnostics()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/logs/tree")
+async def get_memory_logs_tree():
+    try:
+        root = _ensure_memory_daily_root()
+        children = sorted(list(root.iterdir()), key=_memory_logs_sort_key)
+        return {
+            "tree": [
+                _build_memory_log_tree_node(child, root)
+                for child in children
+                if child.is_dir() or child.suffix.lower() == ".md"
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/logs/file")
+async def get_memory_logs_file(relative_path: str):
+    try:
+        return _read_memory_log_file(relative_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/memory/logs/file")
+async def save_memory_logs_file(payload: MemoryLogFilePayload):
+    try:
+        target = _resolve_memory_log_path(payload.relativePath)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(payload.content or "", encoding="utf-8")
+        return _read_memory_log_file(payload.relativePath)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/memory/logs/file")
+async def delete_memory_logs_file(relative_path: str):
+    try:
+        target = _resolve_memory_log_path(relative_path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Memory log file not found.")
+        target.unlink()
+        return {"deleted": True, "relativePath": relative_path}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

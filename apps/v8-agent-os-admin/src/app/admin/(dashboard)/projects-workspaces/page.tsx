@@ -285,26 +285,37 @@ export default function ProjectsWorkspacesPage() {
         }
     }, [t, toast]);
 
+    const normalizedDefaultWorkspacePath = workspaceDraft.trim();
     useEffect(() => {
-        if (!workspaceDraft.trim() || !isAbsolutePath(workspaceDraft)) {
+        if (!normalizedDefaultWorkspacePath || !isAbsolutePath(normalizedDefaultWorkspacePath)) {
+            return;
+        }
+        if (!defaultRulesLoading && String(defaultRules?.workspacePath || "").trim() === normalizedDefaultWorkspacePath) {
             return;
         }
         const handle = window.setTimeout(() => {
-            void loadWorkspaceRules(workspaceDraft, "default");
+            void loadWorkspaceRules(normalizedDefaultWorkspacePath, "default");
         }, 180);
         return () => window.clearTimeout(handle);
-    }, [loadWorkspaceRules, workspaceDraft]);
+    }, [defaultRules?.workspacePath, defaultRulesLoading, loadWorkspaceRules, normalizedDefaultWorkspacePath]);
 
-    const expandedProjectPath = expandedProjectId ? projectEditors[expandedProjectId]?.workspacePathDraft || "" : "";
+    const expandedProjectEditor = expandedProjectId ? projectEditors[expandedProjectId] : null;
+    const expandedProjectPath = String(expandedProjectEditor?.workspacePathDraft || "").trim();
+    const expandedProjectLoadedPath = String(expandedProjectEditor?.loadedWorkspacePath || "").trim();
+    const expandedProjectRulesLoading = Boolean(expandedProjectEditor?.rulesLoading);
+    const expandedProjectHasRules = Boolean(expandedProjectEditor?.rules);
     useEffect(() => {
         if (!expandedProjectId || !expandedProjectPath.trim() || !isAbsolutePath(expandedProjectPath)) {
+            return;
+        }
+        if (expandedProjectRulesLoading || (expandedProjectHasRules && expandedProjectLoadedPath === expandedProjectPath)) {
             return;
         }
         const handle = window.setTimeout(() => {
             void loadWorkspaceRules(expandedProjectPath, { projectId: expandedProjectId });
         }, 180);
         return () => window.clearTimeout(handle);
-    }, [expandedProjectId, expandedProjectPath, loadWorkspaceRules]);
+    }, [expandedProjectHasRules, expandedProjectId, expandedProjectLoadedPath, expandedProjectPath, expandedProjectRulesLoading, loadWorkspaceRules]);
 
     const pickFolder = useCallback(async (initialPath: string) => {
         const response = await fetch("/api/workspace/folder-picker", {

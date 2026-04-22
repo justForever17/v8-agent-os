@@ -177,6 +177,33 @@ def _network_openai_memory_budget_tokens() -> int:
         return 1800
 
 
+def _build_artifact_awareness_context(*, memory_runtime, session_id: str | None) -> tuple[str, dict[str, object] | None]:
+    if not session_id:
+        return "", None
+    try:
+        artifacts = memory_runtime.list_artifacts(session_id=session_id, limit=12)
+    except Exception:
+        logger.exception("Failed to collect artifact awareness summary for session %s", session_id)
+        return "", {"artifactCount": 0, "omittedReason": "artifact_lookup_failed"}
+    if not artifacts:
+        return "", {"artifactCount": 0, "omittedReason": "no_recent_artifacts"}
+
+    counts: dict[str, int] = {}
+    for item in artifacts:
+        kind = str(item.get("kind") or "artifact").strip() or "artifact"
+        counts[kind] = counts.get(kind, 0) + 1
+    summary = ", ".join(f"{kind}({count})" for kind, count in sorted(counts.items()))
+    return (
+        "[ARTIFACT AWARENESS]\n"
+        f"Recent artifacts already exist in this session: {summary}. Prefer reusing, citing, or extending those outputs before generating duplicates.\n"
+        "[/ARTIFACT AWARENESS]\n",
+        {
+            "artifactCount": len(artifacts),
+            "kinds": counts,
+        },
+    )
+
+
 def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dict]]:
     facts: list[dict] = []
     lines: list[str] = []
@@ -587,6 +614,10 @@ def build_supervisor_system_content(
     available_tools_context = cached_stable["availableToolsContext"]
     specialist_agents_context = cached_stable["specialistAgentsContext"]
     planner_context = _planner_context(state.get("planner_plan"))
+    artifact_awareness_context, artifact_awareness_diagnostics = _build_artifact_awareness_context(
+        memory_runtime=memory_runtime,
+        session_id=session_id,
+    )
 
     todos_context = ""
     raw_todos = state.get("todos", [])
@@ -668,6 +699,7 @@ def build_supervisor_system_content(
         f"{available_tools_context}\n"
         f"{network_supervisor_context}"
         f"{planner_context}"
+        f"{artifact_awareness_context}"
         f"{todos_context}{memory_context}\n\n"
         f"{workspace_rules_context}"
         f"{env_context}{runtime_guidance}\n"
@@ -682,6 +714,8 @@ def build_supervisor_system_content(
         "available_tools_context": available_tools_context,
         "network_supervisor_context": network_supervisor_context,
         "planner_context": planner_context,
+        "artifact_awareness_context": artifact_awareness_context,
+        "artifact_awareness_diagnostics": artifact_awareness_diagnostics,
         "todos_context": todos_context,
         "workspace_rules_context": workspace_rules_context,
         "env_context": env_context,

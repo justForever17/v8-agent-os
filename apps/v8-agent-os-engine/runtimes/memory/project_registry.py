@@ -36,20 +36,32 @@ class ProjectRegistryService:
     def save_project(self, payload: Dict[str, Any]) -> ProjectDescriptor:
         prepared_payload = dict(payload or {})
         project_id = str(prepared_payload.get("id") or "").strip()
+        resolved_workspace_path = str(
+            prepared_payload.get("workspacePath") or prepared_payload.get("workspace_path") or ""
+        ).strip()
+        resolved_name = self._derive_project_name(
+            name=prepared_payload.get("name"),
+            workspace_path=resolved_workspace_path,
+            project_id=project_id,
+        )
+        prepared_payload["name"] = resolved_name
         if not project_id:
             project_id = self._generate_project_id(
-                name=prepared_payload.get("name"),
-                workspace_path=prepared_payload.get("workspacePath") or prepared_payload.get("workspace_path"),
+                name=resolved_name,
+                workspace_path=resolved_workspace_path,
             )
         prepared_payload["id"] = project_id
         if not str(prepared_payload.get("workspaceId") or "").strip():
             prepared_payload["workspaceId"] = project_id
-        workspace_path = str(
-            prepared_payload.get("workspacePath") or prepared_payload.get("workspace_path") or ""
-        ).strip()
+        workspace_path = resolved_workspace_path
         if not workspace_path:
             workspace_path = str(self._default_project_workspace_path(project_id))
             prepared_payload["workspacePath"] = workspace_path
+            prepared_payload["name"] = self._derive_project_name(
+                name=resolved_name,
+                workspace_path=workspace_path,
+                project_id=project_id,
+            )
         prepared_payload["defaultScope"] = f"project:{project_id}"
 
         try:
@@ -256,6 +268,18 @@ class ProjectRegistryService:
         while f"{slug}-{suffix}" in existing_ids:
             suffix += 1
         return f"{slug}-{suffix}"
+
+    @staticmethod
+    def _derive_project_name(*, name: Any, workspace_path: Any, project_id: Any) -> str:
+        raw_name = str(name or "").strip()
+        if raw_name:
+            return raw_name
+        raw_workspace_path = str(workspace_path or "").strip().rstrip("\\/")
+        workspace_leaf = re.split(r"[\\/]+", raw_workspace_path)[-1] if raw_workspace_path else ""
+        if workspace_leaf:
+            return workspace_leaf
+        fallback_project_id = str(project_id or "").strip()
+        return fallback_project_id or "project"
 
     @staticmethod
     def _default_project_workspace_path(project_id: str) -> Path:

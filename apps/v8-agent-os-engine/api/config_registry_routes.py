@@ -839,7 +839,7 @@ def _build_projects_domain() -> dict[str, Any]:
     return {
         "domain": "projects",
         "title": "项目与工作区",
-        "summary": "管理项目注册表、默认项目和工作区绑定关系。",
+        "summary": "管理默认工作区、项目工作区与绑定关系。",
         "data": {
             "defaultProjectId": storage.get_projects_registry().get("defaultProjectId"),
             "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in _get_project_registry_service().list_projects()],

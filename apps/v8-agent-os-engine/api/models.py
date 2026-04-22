@@ -139,7 +139,7 @@ class ProjectDescriptorPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: Optional[str] = None
-    name: str
+    name: Optional[str] = None
     description: Optional[str] = None
     workspace_id: Optional[str] = Field(default=None, alias="workspaceId")
     workspace_path: Optional[str] = Field(default=None, alias="workspacePath")

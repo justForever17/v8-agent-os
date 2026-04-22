@@ -37,7 +37,7 @@ export const RUNTIME_CONTROL_HREF: Record<string, string> = {
     rpa: "/admin/rpa",
     computer_use: "/admin/desktop-automation",
     desktop_live: "/admin/system-base",
-    workflow: "/admin/memory?tab=projects",
+    workflow: "/admin/memory?tab=workflows",
     network_supervisor: "/admin/network-supervisor-runtime",
 };
 

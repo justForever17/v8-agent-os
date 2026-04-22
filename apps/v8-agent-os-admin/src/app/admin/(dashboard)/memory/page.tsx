@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { BookOpen, Brain, CheckSquare, Database, Edit2, FolderTree, Loader2, Network, RefreshCw, Search, Tag, Trash2, } from "lucide-react";
+import { BookOpen, Brain, CheckSquare, Database, Edit2, Loader2, Network, RefreshCw, Search, Tag, Trash2, Workflow, } from "lucide-react";
 import { ArtifactExplorerPanel } from "@/components/memory/ArtifactExplorerPanel";
 import DocumentUploader from "@/components/memory/DocumentUploader";
 import { EditKnowledgeDialog } from "@/components/memory/EditKnowledgeDialog";
@@ -12,7 +12,6 @@ import MemoryRuntimeDiagnosticsPanel from "@/components/memory/MemoryRuntimeDiag
 import MemorySectionNav, { type MemorySectionKey } from "@/components/memory/MemorySectionNav";
 import MemoryWorkflowsPanel from "@/components/memory/MemoryWorkflowsPanel";
 import { PreferencesManager } from "@/components/memory/PreferencesManager";
-import { ProjectRegistryPanel } from "@/components/memory/ProjectRegistryPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -29,7 +28,7 @@ interface KnowledgeItem {
     scope: string;
     [key: string]: unknown;
 }
-const VALID_TABS = new Set(["preferences", "projects", "knowledge", "workflows", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
+const VALID_TABS = new Set(["preferences", "knowledge", "workflows", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
 export default function MemoryDashboardPage() {
     const { toast } = useToast();
     const t = useT();
@@ -96,6 +95,9 @@ export default function MemoryDashboardPage() {
     useEffect(() => {
         if (requestedTab === "audit") {
             router.replace("/admin/operations-center?tab=advanced");
+        }
+        if (requestedTab === "projects") {
+            router.replace("/admin/memory?tab=workflows");
         }
     }, [requestedTab, router]);
     const handleDeleteKnowledge = useCallback(async (id: string) => {
@@ -241,6 +243,9 @@ export default function MemoryDashboardPage() {
     const stats = useMemo(() => ({
         preferenceCount: data?.preferences?.total || 0,
         preferenceScopes: data?.preferences?.scopes?.length || 0,
+        workflowCandidateCount: data?.workflows?.candidateCount || 0,
+        workflowActiveCount: data?.workflows?.byStatus?.active_hint || 0,
+        workflowHintEventCount: data?.workflows?.hintEventCount || 0,
         knowledgeCount: data?.knowledge?.count || 0,
         graphEntities: data?.graph?.entities || 0,
         graphRelations: data?.graph?.relations || 0,
@@ -250,7 +255,7 @@ export default function MemoryDashboardPage() {
                 <Loader2 className="h-8 w-8 animate-spin"/>
             </div>);
     }
-    if (requestedTab === "audit") {
+    if (requestedTab === "audit" || requestedTab === "projects") {
         return (<div className="flex h-96 items-center justify-center">
                 <Loader2 className="h-8 w-8 animate-spin"/>
             </div>);
@@ -294,12 +299,17 @@ export default function MemoryDashboardPage() {
                 <Card className="border-border/60">
                     <CardHeader className="pb-2">
                         <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                            <FolderTree className="h-4 w-4"/> {t("app.admin.dashboard.memory.page.kaaf4b147")}
+                            <Workflow className="h-4 w-4"/> {t("app.admin.dashboard.memory.page.kaaf4b147")}
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <p className="text-3xl font-bold">{data?.preferences?.scopes?.filter((scope: string) => scope.startsWith("project:")).length || 0}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.memory.page.kcf77b189")}</p>
+                        <p className="text-3xl font-bold">{stats.workflowCandidateCount}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            {t("app.admin.dashboard.memory.page.workflowSummary", {
+            activeCount: stats.workflowActiveCount,
+            hintEventCount: stats.workflowHintEventCount
+        })}
+                        </p>
                     </CardContent>
                 </Card>
 
@@ -333,10 +343,6 @@ export default function MemoryDashboardPage() {
 
                 <TabsContent value="preferences" className="space-y-4">
                     <PreferencesManager />
-                </TabsContent>
-
-                <TabsContent value="projects" className="space-y-4">
-                    <ProjectRegistryPanel />
                 </TabsContent>
 
                 <TabsContent value="knowledge" className="space-y-4">

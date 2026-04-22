@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 
 export type MemorySectionKey =
     | "preferences"
-    | "projects"
     | "knowledge"
     | "workflows"
     | "artifacts"
@@ -19,7 +18,6 @@ export type MemorySectionKey =
 
 const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: string }> = [
     { key: "preferences", href: "/admin/memory?tab=preferences", label: "components.memory.MemorySectionNav.k79d67bc6" },
-    { key: "projects", href: "/admin/memory?tab=projects", label: "components.memory.MemorySectionNav.k4758acb9" },
     { key: "knowledge", href: "/admin/memory?tab=knowledge", label: "components.memory.MemorySectionNav.k4a8a8d88" },
     { key: "workflows", href: "/admin/memory?tab=workflows", label: "components.memory.MemorySectionNav.workflowMemory" },
     { key: "artifacts", href: "/admin/memory?tab=artifacts", label: "Artifacts" },

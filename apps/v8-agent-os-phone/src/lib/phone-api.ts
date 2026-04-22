@@ -47,7 +47,7 @@ type CreateConversationInput = {
 };
 
 type CreateProjectInput = {
-    name: string;
+    name?: string;
     workspacePath?: string;
 };
 

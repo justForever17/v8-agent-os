@@ -56,6 +56,19 @@ function agentsPathForWorkspace(workspacePath: string) {
     return path.join(workspacePath, ".agents", "rules", "AGENTS.md");
 }
 
+async function ensureWorkspaceSkeleton(workspacePath: string) {
+    const agentsRoot = path.join(workspacePath, ".agents");
+    const rulesRoot = path.join(agentsRoot, "rules");
+    const skillsRoot = path.join(agentsRoot, "skills");
+    const agentsFile = agentsPathForWorkspace(workspacePath);
+    await fs.mkdir(rulesRoot, { recursive: true });
+    await fs.mkdir(skillsRoot, { recursive: true });
+    const exists = await fs.stat(agentsFile).then((stat) => stat.isFile()).catch(() => false);
+    if (!exists) {
+        await fs.writeFile(agentsFile, DEFAULT_AGENTS_TEMPLATE, "utf-8");
+    }
+}
+
 function estimatePromptTokens(text: string) {
     const raw = String(text || "");
     if (!raw) {
@@ -168,6 +181,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
+    if (body?.ensureOnly === true) {
+        await ensureWorkspaceSkeleton(workspacePath);
+        return NextResponse.json(await readWorkspaceRules(workspacePath));
+    }
+
     const content = typeof body?.content === "string" ? body.content : DEFAULT_AGENTS_TEMPLATE;
     const budgetDiagnostics = buildBudgetDiagnostics(content);
     if (budgetDiagnostics.estimatedTokens > WORKSPACE_RULES_BUDGET_TOKENS) {
@@ -185,6 +203,7 @@ export async function POST(req: NextRequest) {
     }
 
     const targetPath = agentsPathForWorkspace(workspacePath);
+    await ensureWorkspaceSkeleton(workspacePath);
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, content, "utf-8");
     return NextResponse.json(await readWorkspaceRules(workspacePath));

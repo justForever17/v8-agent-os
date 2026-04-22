@@ -16,7 +16,7 @@ from core import llm_tree_prefilter
 from erc.safety_guardian import safety_guardian
 from runtimes.extensions import runtime as extensions_runtime_module
 from runtimes.extensions.mcp.client import MCPManager
-from runtimes.extensions.runtime import ExtensionsRuntimeService
+from runtimes.extensions.runtime import ExtensionRouteBundle, ExtensionsRuntimeService
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 
 
@@ -931,6 +931,39 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         self.assertEqual(len(payload.get("skillEntries") or []), 4)
         self.assertEqual(payload.get("counts", {}).get("skillStage1ShortlistCount"), 4)
         self.assertEqual(payload.get("counts", {}).get("skillFinalExposedCount"), 4)
+
+    def test_extensions_preview_binds_project_workspace_context(self):
+        service = ExtensionsRuntimeService()
+        captured_context: dict[str, str] = {}
+
+        def fake_route(**kwargs):  # noqa: ANN003
+            captured_context.update(service._resolve_event_context())
+            return ExtensionRouteBundle(
+                prompt_addition="",
+                filtered_tools=[],
+                selected_skill_names=[],
+                selected_skill_ids=[],
+                skill_root_descriptors=[],
+                exposed_mcp_tool_names=[],
+                candidate_summary={"skillRootDescriptors": []},
+            )
+
+        with patch.object(service, "build_contextual_route", side_effect=fake_route):
+            import asyncio
+
+            asyncio.run(
+                service.build_prefilter_preview(
+                    user_query="nuwa",
+                    workspace_path=r"C:\workspaces\test1",
+                    workspace_id="test1",
+                    project_id="project-test1",
+                )
+            )
+
+        self.assertEqual(captured_context.get("workspace_path"), r"C:\workspaces\test1")
+        self.assertEqual(captured_context.get("workspace_id"), "test1")
+        self.assertEqual(captured_context.get("project_id"), "project-test1")
+        self.assertEqual(captured_context.get("runtime_kind"), "extensions_preview")
 
     def test_skill_loader_extracts_hint_fields_and_rule_profile(self):
         with tempfile.TemporaryDirectory() as temp_dir:

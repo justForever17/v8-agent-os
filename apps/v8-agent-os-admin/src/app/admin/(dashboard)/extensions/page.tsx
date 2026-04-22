@@ -153,6 +153,12 @@ type SysModel = {
     };
     providerName?: string;
 };
+type ProjectRecord = {
+    id: string;
+    name?: string;
+    workspaceId?: string;
+    workspacePath?: string;
+};
 type ExtensionsConfigData = {
     prefilterPolicy?: {
         enabled?: boolean;
@@ -539,6 +545,8 @@ export default function ExtensionsPage() {
     const [health, setHealth] = useState<ExtensionHealthResponse | null>(null);
     const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(null);
     const [models, setModels] = useState<SysModel[]>([]);
+    const [projects, setProjects] = useState<ProjectRecord[]>([]);
+    const [previewScope, setPreviewScope] = useState("default");
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -564,11 +572,12 @@ export default function ExtensionsPage() {
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const [catalogResponse, healthResponse, config, modelList] = await Promise.all([
+            const [catalogResponse, healthResponse, config, modelList, projectsPayload] = await Promise.all([
                 fetch("/api/extensions/catalog", { cache: "no-store" }),
                 fetch("/api/extensions/health", { cache: "no-store" }),
                 fetchConfigDomain<ExtensionsConfigData>("extensions"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
+                fetch("/api/projects", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
             ]);
             if (!catalogResponse.ok || !healthResponse.ok) {
                 throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
@@ -581,6 +590,7 @@ export default function ExtensionsPage() {
             setHealth(healthPayload);
             setConfigEnvelope(config);
             setModels(Array.isArray(modelList) ? modelList : []);
+            setProjects(Array.isArray(projectsPayload?.projects) ? projectsPayload.projects : []);
         }
         finally {
             setLoading(false);
@@ -600,6 +610,15 @@ export default function ExtensionsPage() {
     const previewSkillFinalEntries = previewResult?.skillEntries || [];
     const previewMcpStage1Servers = previewResult?.mcpStage1Servers || [];
     const previewMcpFinalServers = previewResult?.mcpServers || previewResult?.mcpFamilies || [];
+    const defaultWorkspacePath = useMemo(() => {
+        const descriptors = catalog?.skills?.rootDescriptors || [];
+        return String(descriptors.find((item) => item.sourceType === "main_workspace")?.workspacePath || "").trim();
+    }, [catalog?.skills?.rootDescriptors]);
+    const selectedPreviewProject = useMemo(() => {
+        if (!previewScope.startsWith("project:")) return null;
+        const id = previewScope.slice("project:".length);
+        return projects.find((project) => project.id === id) || null;
+    }, [previewScope, projects]);
     const prefilterPolicy = (configEnvelope?.data?.prefilterPolicy || {}) as NonNullable<ExtensionsConfigData["prefilterPolicy"]>;
     const skillsPrefilter = (prefilterPolicy.skills || {}) as NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>["skills"]>;
     const mcpPrefilter = (prefilterPolicy.mcp || {}) as NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>["mcp"]>;
@@ -694,6 +713,15 @@ export default function ExtensionsPage() {
         setPreviewedQuery(normalizedQuery);
         try {
             const params = new URLSearchParams({ query: normalizedQuery });
+            if (selectedPreviewProject?.workspacePath) {
+                params.set("workspacePath", selectedPreviewProject.workspacePath);
+                params.set("projectId", selectedPreviewProject.id);
+                if (selectedPreviewProject.workspaceId) {
+                    params.set("workspaceId", selectedPreviewProject.workspaceId);
+                }
+            } else if (defaultWorkspacePath) {
+                params.set("workspacePath", defaultWorkspacePath);
+            }
             const res = await fetch(`/api/extensions/preview?${params.toString()}`, { cache: "no-store" });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
@@ -1006,7 +1034,20 @@ export default function ExtensionsPage() {
                         {t("app.admin.dashboard.extensions.page.k66034ec1")}
                     </div>
 
-                    <div className="flex flex-col gap-3 lg:flex-row">
+                    <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)_120px]">
+                        <Select value={previewScope} onValueChange={setPreviewScope}>
+                            <SelectTrigger className="h-11">
+                                <SelectValue placeholder={isZh ? "选择预览工作区" : "Select preview workspace"} />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="default">{isZh ? "默认工作区" : "Default workspace"}</SelectItem>
+                                {projects.map((project) => (
+                                    <SelectItem key={project.id} value={`project:${project.id}`}>
+                                        {project.name || project.id}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                         <Input value={previewQuery} onChange={(event) => setPreviewQuery(event.target.value)} onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -1017,6 +1058,15 @@ export default function ExtensionsPage() {
                             {previewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : null}
                             {t("app.admin.dashboard.extensions.page.k76932896")}
                         </Button>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-xs leading-5 text-slate-500">
+                        {selectedPreviewProject
+                            ? (isZh
+                                ? `当前预览绑定项目工作区：${selectedPreviewProject.name || selectedPreviewProject.id} · ${selectedPreviewProject.workspacePath || ""}`
+                                : `Preview bound to project workspace: ${selectedPreviewProject.name || selectedPreviewProject.id} · ${selectedPreviewProject.workspacePath || ""}`)
+                            : (isZh
+                                ? `当前预览绑定默认工作区：${defaultWorkspacePath || "未设置"}`
+                                : `Preview bound to default workspace: ${defaultWorkspacePath || "not set"}`)}
                     </div>
 
                     {previewResult ? (<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">

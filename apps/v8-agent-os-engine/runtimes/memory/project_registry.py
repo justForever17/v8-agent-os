@@ -12,6 +12,17 @@ from persistence.repositories.scope_binding_repository import ScopeBindingReposi
 from runtimes.memory.models import ChannelBinding, ProjectDescriptor, WorkflowBinding, WorkspaceProjectBinding
 
 
+DEFAULT_AGENTS_TEMPLATE = "\n".join(
+    [
+        "# Workspace Rules",
+        "",
+        "Add concise runtime instructions for this workspace here.",
+        "Keep this file under 10000 estimated tokens.",
+        "",
+    ]
+)
+
+
 class ProjectRegistryService:
     def __init__(
         self,
@@ -66,6 +77,7 @@ class ProjectRegistryService:
 
         try:
             Path(workspace_path).expanduser().mkdir(parents=True, exist_ok=True)
+            self._ensure_workspace_skeleton(workspace_path)
         except Exception as exc:
             raise RuntimeError(f"Failed to create project workspace directory: {workspace_path}") from exc
 
@@ -250,6 +262,21 @@ class ProjectRegistryService:
                 confidence=1.0,
             )
         )
+
+    @staticmethod
+    def _ensure_workspace_skeleton(workspace_path: str) -> None:
+        normalized_workspace_path = str(workspace_path or "").strip()
+        if not normalized_workspace_path:
+            return
+        workspace_root = Path(normalized_workspace_path).expanduser()
+        agents_root = workspace_root / ".agents"
+        rules_root = agents_root / "rules"
+        skills_root = agents_root / "skills"
+        rules_root.mkdir(parents=True, exist_ok=True)
+        skills_root.mkdir(parents=True, exist_ok=True)
+        agents_file = rules_root / "AGENTS.md"
+        if not agents_file.exists():
+            agents_file.write_text(DEFAULT_AGENTS_TEMPLATE, encoding="utf-8")
 
     def _generate_project_id(self, *, name: Any, workspace_path: Any) -> str:
         raw_name = str(name or "").strip()

@@ -9,9 +9,15 @@ export async function GET(req: NextRequest) {
     const search = req.nextUrl.searchParams;
     const query = search.get("query");
     const refresh = search.get("refresh");
+    const workspacePath = search.get("workspacePath");
+    const workspaceId = search.get("workspaceId");
+    const projectId = search.get("projectId");
     const params = new URLSearchParams();
     if (query) params.set("query", query);
     if (refresh) params.set("refresh", refresh);
+    if (workspacePath) params.set("workspacePath", workspacePath);
+    if (workspaceId) params.set("workspaceId", workspaceId);
+    if (projectId) params.set("projectId", projectId);
     const suffix = params.toString() ? `/extensions/preview?${params.toString()}` : "/extensions/preview";
 
     try {

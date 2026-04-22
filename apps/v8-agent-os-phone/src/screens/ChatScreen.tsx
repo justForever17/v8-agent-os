@@ -1672,7 +1672,7 @@ export default function ChatScreen() {
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
     const [workspaceChooserBusy, setWorkspaceChooserBusy] = useState(false);
-    const [newProjectName, setNewProjectName] = useState("");
+    const [newProjectPath, setNewProjectPath] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -2435,7 +2435,7 @@ export default function ChatScreen() {
             setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
             setWorkspaceChooserVisible(false);
             setWorkspaceInfoOpen(false);
-            setNewProjectName("");
+            setNewProjectPath("");
             clearNewConversationIntent();
             await setActiveConversationId(createdSessionId);
             await loadSessionScope(createdSessionId);
@@ -2450,13 +2450,13 @@ export default function ChatScreen() {
     }, [authorizedFetch, availableProjects, clearNewConversationIntent, loadSessionScope, mainWorkspacePath, setActiveConversationId, t, workspaceChooserBusy]);
 
     const handleCreateProjectConversation = useCallback(async () => {
-        const nextProjectName = newProjectName.trim();
-        if (!nextProjectName || workspaceChooserBusy) {
+        const nextProjectPath = newProjectPath.trim();
+        if (!nextProjectPath || workspaceChooserBusy) {
             return;
         }
         setWorkspaceChooserBusy(true);
         try {
-            const createdProject = await createProject(authorizedFetch, { name: nextProjectName });
+            const createdProject = await createProject(authorizedFetch, { workspacePath: nextProjectPath });
             const createdProjectId = String(createdProject?.id || "").trim();
             if (!createdProjectId) {
                 throw new Error(t("src.screens.chatscreen.project_creation_succeeded_but_returned_no_valid_project_id"));
@@ -2476,7 +2476,7 @@ export default function ChatScreen() {
             setConversations((current) => [createdConversation, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
             setWorkspaceChooserVisible(false);
             setWorkspaceInfoOpen(false);
-            setNewProjectName("");
+            setNewProjectPath("");
             clearNewConversationIntent();
             await setActiveConversationId(createdSessionId);
             await loadSessionScope(createdSessionId);
@@ -2488,7 +2488,7 @@ export default function ChatScreen() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectName, setActiveConversationId, t, workspaceChooserBusy]);
+    }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectPath, setActiveConversationId, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
         const [nextConversations, nextCommands, nextSkills, nextMusic] = await Promise.all([
@@ -3708,7 +3708,7 @@ export default function ChatScreen() {
             setWorkspaceInfoOpen(false);
             setMainWorkspacePath("");
             setProjects([]);
-            setNewProjectName("");
+            setNewProjectPath("");
             return;
         }
         if (activeConversationId) {
@@ -3818,7 +3818,7 @@ export default function ChatScreen() {
         setTaskPlanningMode(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
-        setNewProjectName("");
+        setNewProjectPath("");
         clearNewConversationIntent();
         if (canonicalSessionId === activeConversationIdRef.current) {
             return;
@@ -3848,7 +3848,7 @@ export default function ChatScreen() {
         setTaskPlanningMode(false);
         setWorkspaceInfoOpen(false);
         setWorkspaceChooserVisible(true);
-        setNewProjectName("");
+        setNewProjectPath("");
         setScopeBinding(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
@@ -3872,7 +3872,7 @@ export default function ChatScreen() {
         setTaskPlanningMode(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
-        setNewProjectName("");
+        setNewProjectPath("");
         setScopeBinding(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
@@ -4871,7 +4871,12 @@ export default function ChatScreen() {
                                             <Text style={[styles.workspaceSectionLabel, { color: palette.textMuted }]}>
                                                 {t("src.screens.chatscreen.existing_project_workspaces")}
                                             </Text>
-                                            <View style={styles.workspaceOptionList}>
+                                            <ScrollView
+                                                style={styles.workspaceOptionScrollList}
+                                                contentContainerStyle={styles.workspaceOptionList}
+                                                nestedScrollEnabled
+                                                showsVerticalScrollIndicator
+                                            >
                                                 {availableProjects.length === 0 ? (
                                                     <Text style={[styles.workspaceEmptyText, { color: palette.textMuted }]}>
                                                         {t("src.screens.chatscreen.no_project_workspaces_are_available_yet")}
@@ -4893,7 +4898,7 @@ export default function ChatScreen() {
                                                         </Pressable>
                                                     ))
                                                 )}
-                                            </View>
+                                            </ScrollView>
                                         </View>
 
                                         <View style={[styles.workspaceChooserSection, { borderColor: palette.border }]}>
@@ -4901,13 +4906,13 @@ export default function ChatScreen() {
                                                 {t("src.screens.chatscreen.create_a_project_workspace")}
                                             </Text>
                                             <Text style={[styles.workspaceSectionHint, { color: palette.textMuted }]}>
-                                                {t("src.screens.chatscreen.only_a_project_name_is_needed_here_the_system_creates_the_path_under_v8_agent_os_workspace_projects_automatically")}
+                                                {t("src.screens.chatscreen.enter_an_absolute_project_folder_path_the_folder_name_becomes_the_project_name")}
                                             </Text>
                                             <View style={styles.workspaceCreateRow}>
                                                 <TextInput
-                                                    value={newProjectName}
-                                                    onChangeText={setNewProjectName}
-                                                    placeholder={t("src.screens.chatscreen.enter_a_project_name")}
+                                                    value={newProjectPath}
+                                                    onChangeText={setNewProjectPath}
+                                                    placeholder={t("src.screens.chatscreen.project_folder_path_examples")}
                                                     placeholderTextColor={palette.textSoft}
                                                     style={[styles.workspaceNameInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border }]}
                                                 />
@@ -4916,10 +4921,10 @@ export default function ChatScreen() {
                                                         styles.workspaceCreateButton,
                                                         {
                                                             backgroundColor: palette.primary,
-                                                            opacity: workspaceChooserBusy || newProjectName.trim().length === 0 ? 0.56 : 1,
+                                                            opacity: workspaceChooserBusy || newProjectPath.trim().length === 0 ? 0.56 : 1,
                                                         },
                                                     ]}
-                                                    disabled={workspaceChooserBusy || newProjectName.trim().length === 0}
+                                                    disabled={workspaceChooserBusy || newProjectPath.trim().length === 0}
                                                     onPress={() => void handleCreateProjectConversation()}
                                                 >
                                                     {workspaceChooserBusy ? (
@@ -5651,8 +5656,12 @@ const styles = StyleSheet.create({
         fontSize: 11,
         lineHeight: 17,
     },
+    workspaceOptionScrollList: {
+        maxHeight: 260,
+    },
     workspaceOptionList: {
         gap: 8,
+        paddingRight: 4,
     },
     workspaceOptionCard: {
         borderRadius: 18,

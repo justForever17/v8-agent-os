@@ -54,12 +54,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: "lib.admin.navigation.ke5b09aa7",
             },
             {
-                title: "lib.admin.navigation.k4f3e92b5",
-                href: "/admin/operations-center",
-                icon: Gauge,
-                description: "lib.admin.navigation.kc0233cc5",
-            },
-            {
                 title: "lib.admin.navigation.k6f64cd4f",
                 href: "/admin/users",
                 icon: Users,
@@ -136,6 +130,18 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: "lib.admin.navigation.runtimeGovernanceDescription",
             },
             {
+                title: "lib.admin.navigation.k4f3e92b5",
+                href: "/admin/operations-center",
+                icon: Gauge,
+                description: "lib.admin.navigation.kc0233cc5",
+            },
+            {
+                title: "lib.admin.navigation.k80c93722",
+                href: "/admin/safety-control",
+                icon: ShieldCheck,
+                description: "lib.admin.navigation.ka3de25ee",
+            },
+            {
                 title: "lib.admin.navigation.kcef5c2ee",
                 href: "/admin/audio",
                 icon: Mic,
@@ -152,12 +158,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/projects-workspaces",
                 icon: Building2,
                 description: "lib.admin.navigation.kcf00915a",
-            },
-            {
-                title: "lib.admin.navigation.k80c93722",
-                href: "/admin/safety-control",
-                icon: ShieldCheck,
-                description: "lib.admin.navigation.ka3de25ee",
             },
             {
                 title: "lib.admin.navigation.kdb0e699b",

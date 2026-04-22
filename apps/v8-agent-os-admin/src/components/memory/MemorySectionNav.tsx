@@ -36,7 +36,7 @@ export default function MemorySectionNav({ activeKey }: { activeKey: MemorySecti
     const t = useT();
 
     return (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-2 text-center">
             {MEMORY_SECTION_ITEMS.map((item) => {
                 const active = item.key === activeKey;
                 return (

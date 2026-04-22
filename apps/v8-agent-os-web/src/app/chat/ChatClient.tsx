@@ -373,7 +373,7 @@ export default function ChatClient() {
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
     const [workspaceChooserBusy, setWorkspaceChooserBusy] = useState(false);
-    const [newProjectName, setNewProjectName] = useState("");
+    const [newProjectPath, setNewProjectPath] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeLoading, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);
@@ -1053,7 +1053,7 @@ export default function ChatClient() {
             activeConversationIdRef.current = newConversation.id;
             setActiveConversationId(newConversation.id);
             setWorkspaceChooserVisible(false);
-            setNewProjectName("");
+            setNewProjectPath("");
             window.history.replaceState(null, "", `/chat?id=${newConversation.id}`);
             await loadSessionScope(newConversation.id);
             await refreshConversations();
@@ -1063,8 +1063,8 @@ export default function ChatClient() {
     }, [createConversation, loadSessionScope, mainWorkspacePath, projects, refreshConversations, workspaceChooserBusy]);
 
     const handleCreateProjectConversation = useCallback(async () => {
-        const trimmedName = newProjectName.trim();
-        if (!trimmedName || workspaceChooserBusy) {
+        const trimmedPath = newProjectPath.trim();
+        if (!trimmedPath || workspaceChooserBusy) {
             return;
         }
         setWorkspaceChooserBusy(true);
@@ -1072,7 +1072,7 @@ export default function ChatClient() {
             const res = await fetch("/api/projects", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name: trimmedName }),
+                body: JSON.stringify({ workspacePath: trimmedPath }),
             });
             if (!res.ok) {
                 throw new Error(`Project creation failed: ${res.status}`);
@@ -1094,14 +1094,14 @@ export default function ChatClient() {
             activeConversationIdRef.current = newConversation.id;
             setActiveConversationId(newConversation.id);
             setWorkspaceChooserVisible(false);
-            setNewProjectName("");
+            setNewProjectPath("");
             window.history.replaceState(null, "", `/chat?id=${newConversation.id}`);
             await loadSessionScope(newConversation.id);
             await refreshConversations();
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [createConversation, loadProjects, loadSessionScope, newProjectName, refreshConversations, workspaceChooserBusy]);
+    }, [createConversation, loadProjects, loadSessionScope, newProjectPath, refreshConversations, workspaceChooserBusy]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -1710,8 +1710,8 @@ export default function ChatClient() {
                                                 onClick={() => void createBoundConversation({ kind: "main" })}
                                                 disabled={workspaceChooserBusy || !mainWorkspacePath}
                                             >
-                                                <div className="text-sm font-semibold">{t(lt("主工作区", "Main workspace"))}</div>
-                                                <div className="mt-1 text-xs text-muted-foreground">{mainWorkspacePath || t(lt("正在读取主工作区路径…", "Loading main workspace path..."))}</div>
+                                                <div className="text-sm font-semibold">{t(lt("默认工作区", "Default workspace"))}</div>
+                                                <div className="mt-1 text-xs text-muted-foreground">{mainWorkspacePath || t(lt("正在读取默认工作区路径…", "Loading default workspace path..."))}</div>
                                             </button>
                                             <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
                                                 <div className="text-sm font-semibold">{t(lt("现有项目级工作区", "Existing project workspaces"))}</div>
@@ -1741,20 +1741,20 @@ export default function ChatClient() {
                                             <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
                                                 <div className="text-sm font-semibold">{t(lt("新建项目级工作区", "Create a project workspace"))}</div>
                                                 <div className="mt-1 text-xs text-muted-foreground">
-                                                    {t(lt("这里只填项目名称；系统会在 ~/.v8-agent-os/workspace/projects 下自动创建路径。", "Only a project name is needed here; the system creates the path under ~/.v8-agent-os/workspace/projects automatically."))}
+                                                    {t(lt("填写一个绝对文件夹路径；项目名会自动使用文件夹名称。示例：C:\\\\Work\\\\demo、/Users/me/work/demo、/home/me/work/demo。", "Enter an absolute folder path; the project name is derived from the folder name. Examples: C:\\\\Work\\\\demo, /Users/me/work/demo, /home/me/work/demo."))}
                                                 </div>
                                                 <div className="mt-3 flex flex-col gap-3 sm:flex-row">
                                                     <input
-                                                        value={newProjectName}
-                                                        onChange={(event) => setNewProjectName(event.target.value)}
-                                                        placeholder={t(lt("输入项目名称", "Enter a project name"))}
+                                                        value={newProjectPath}
+                                                        onChange={(event) => setNewProjectPath(event.target.value)}
+                                                        placeholder={t(lt("C:\\\\Work\\\\demo 或 /Users/me/work/demo", "C:\\\\Work\\\\demo or /Users/me/work/demo"))}
                                                         className="h-11 flex-1 rounded-xl border border-border/60 bg-background px-3 text-sm outline-none transition focus:border-primary"
                                                     />
                                                     <Button
                                                         type="button"
                                                         className="h-11 rounded-xl"
                                                         onClick={() => void handleCreateProjectConversation()}
-                                                        disabled={workspaceChooserBusy || newProjectName.trim().length === 0}
+                                                        disabled={workspaceChooserBusy || newProjectPath.trim().length === 0}
                                                     >
                                                         {t(lt("创建并开始", "Create and start"))}
                                                     </Button>
@@ -1855,7 +1855,7 @@ export default function ChatClient() {
                                 />
                             ) : (
                                 <div className="rounded-2xl border border-dashed border-border/60 bg-background/70 px-4 py-3 text-center text-sm text-muted-foreground">
-                                    {t(lt("先选择主工作区或项目级工作区，再开始新对话。", "Choose the main workspace or a project workspace before starting a new conversation."))}
+                                    {t(lt("先选择默认工作区或项目级工作区，再开始新对话。", "Choose the default workspace or a project workspace before starting a new conversation."))}
                                 </div>
                             )}
                         </div>

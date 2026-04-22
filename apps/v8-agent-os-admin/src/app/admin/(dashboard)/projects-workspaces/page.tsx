@@ -171,6 +171,8 @@ export default function ProjectsWorkspacesPage() {
     const [defaultRulesSaving, setDefaultRulesSaving] = useState(false);
     const defaultRulesPathRef = useRef("");
     const defaultRulesDirtyRef = useRef(false);
+    const defaultRulesAttemptedPathRef = useRef("");
+    const projectRulesAttemptedPathRef = useRef<Record<string, string>>({});
 
     const [newProjectPath, setNewProjectPath] = useState("");
     const [creatingProject, setCreatingProject] = useState(false);
@@ -216,6 +218,18 @@ export default function ProjectsWorkspacesPage() {
         if (!workspacePath.trim() || !isAbsolutePath(workspacePath)) {
             return;
         }
+        const normalizedWorkspacePath = workspacePath.trim();
+        if (target === "default") {
+            if (defaultRulesAttemptedPathRef.current === normalizedWorkspacePath) {
+                return;
+            }
+            defaultRulesAttemptedPathRef.current = normalizedWorkspacePath;
+        } else {
+            if (projectRulesAttemptedPathRef.current[target.projectId] === normalizedWorkspacePath) {
+                return;
+            }
+            projectRulesAttemptedPathRef.current[target.projectId] = normalizedWorkspacePath;
+        }
         if (target === "default") {
             setDefaultRulesLoading(true);
         } else {
@@ -228,7 +242,7 @@ export default function ProjectsWorkspacesPage() {
             }));
         }
         try {
-            const response = await fetch(`/api/workspace/agents-rules?workspacePath=${encodeURIComponent(workspacePath)}`, { cache: "no-store" });
+            const response = await fetch(`/api/workspace/agents-rules?workspacePath=${encodeURIComponent(normalizedWorkspacePath)}`, { cache: "no-store" });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
                 throw new Error(payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.rulesLoadFailed"));
@@ -290,6 +304,9 @@ export default function ProjectsWorkspacesPage() {
         if (!normalizedDefaultWorkspacePath || !isAbsolutePath(normalizedDefaultWorkspacePath)) {
             return;
         }
+        if (defaultRulesAttemptedPathRef.current === normalizedDefaultWorkspacePath) {
+            return;
+        }
         if (!defaultRulesLoading && String(defaultRules?.workspacePath || "").trim() === normalizedDefaultWorkspacePath) {
             return;
         }
@@ -306,6 +323,9 @@ export default function ProjectsWorkspacesPage() {
     const expandedProjectHasRules = Boolean(expandedProjectEditor?.rules);
     useEffect(() => {
         if (!expandedProjectId || !expandedProjectPath.trim() || !isAbsolutePath(expandedProjectPath)) {
+            return;
+        }
+        if (projectRulesAttemptedPathRef.current[expandedProjectId] === expandedProjectPath) {
             return;
         }
         if (expandedProjectRulesLoading || (expandedProjectHasRules && expandedProjectLoadedPath === expandedProjectPath)) {
@@ -364,8 +384,24 @@ export default function ProjectsWorkspacesPage() {
                     agent_workspace_path: workspaceDraft.trim(),
                 },
             });
+            const rulesResponse = await fetch("/api/workspace/agents-rules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    workspacePath: workspaceDraft.trim(),
+                    ensureOnly: true,
+                }),
+            });
+            const rulesPayload = await rulesResponse.json().catch(() => ({}));
+            if (!rulesResponse.ok) {
+                throw new Error(rulesPayload?.error || t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveFailed"));
+            }
             setWorkspaceEnvelope(next);
             setWorkspaceDraft(String(next.data.agent_workspace_path || ""));
+            setDefaultRules(rulesPayload);
+            setDefaultRulesDraft(getWorkspaceRulesInitialContent(rulesPayload));
+            setDefaultRulesDirty(false);
+            defaultRulesAttemptedPathRef.current = String(rulesPayload?.workspacePath || workspaceDraft.trim()).trim();
             setWorkspaceSaved(true);
             window.setTimeout(() => setWorkspaceSaved(false), 1800);
             toast({

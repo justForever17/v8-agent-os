@@ -2991,7 +2991,15 @@ class ExtensionsRuntimeService:
     async def reload(self) -> dict[str, Any]:
         return await self._refresh_runtime_snapshot(force_skill_reload=True, force_mcp_reload=True)
 
-    async def build_prefilter_preview(self, *, user_query: str, refresh: bool = False) -> dict[str, Any]:
+    async def build_prefilter_preview(
+        self,
+        *,
+        user_query: str,
+        refresh: bool = False,
+        workspace_path: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         normalized_query = str(user_query or "").strip()
         if not normalized_query:
             return {
@@ -3004,16 +3012,28 @@ class ExtensionsRuntimeService:
                 "counts": {},
                 "routing": {},
             }
-        if refresh:
-            await self.refresh_inventory_if_changed(reason="preview")
-        route_bundle = self.build_contextual_route(
-            user_query=normalized_query,
-            available_tools=list(self.get_mcp_tools()),
-            loaded_agents=None,
-            skill_limit=5,
-            mcp_limit=2,
-            plugin_host_limit=0,
-        )
+        context_token = None
+        if workspace_path or workspace_id or project_id:
+            context_token = self.bind_execution_context(
+                workspace_path=workspace_path,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                runtime_kind="extensions_preview",
+            )
+        try:
+            if refresh:
+                await self.refresh_inventory_if_changed(reason="preview")
+            route_bundle = self.build_contextual_route(
+                user_query=normalized_query,
+                available_tools=list(self.get_mcp_tools()),
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=2,
+                plugin_host_limit=0,
+            )
+        finally:
+            if context_token is not None:
+                self.reset_execution_context(context_token)
         candidate_summary = route_bundle.candidate_summary
         return {
             "queryPreview": _truncate(normalized_query, 160),

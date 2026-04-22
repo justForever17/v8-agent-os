@@ -33,7 +33,13 @@ async def get_extensions_usage_summary(window_hours: int = 24):
 
 
 @router.get("/extensions/preview")
-async def get_extensions_preview(query: str = "", refresh: bool = False):
+async def get_extensions_preview(
+    query: str = "",
+    refresh: bool = False,
+    workspacePath: str | None = None,
+    workspaceId: str | None = None,
+    projectId: str | None = None,
+):
     normalized_query = str(query or "").strip()
     if not normalized_query:
         raise HTTPException(status_code=400, detail="query is required")
@@ -41,6 +47,9 @@ async def get_extensions_preview(query: str = "", refresh: bool = False):
         return await extensions_runtime_service.build_prefilter_preview(
             user_query=normalized_query,
             refresh=bool(refresh),
+            workspace_path=workspacePath,
+            workspace_id=workspaceId,
+            project_id=projectId,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

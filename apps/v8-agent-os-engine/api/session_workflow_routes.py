@@ -174,6 +174,13 @@ async def get_sessions():
     try:
         sessions = []
         for row in db.get_sessions():
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if (
+                bool(metadata.get("hideFromChatHistory"))
+                or str(metadata.get("transport") or "").strip() == "network_supervisor_openai"
+                or str(row.get("id") or "").startswith("network_openai_")
+            ):
+                continue
             workflow_view = {
                 "workflowId": row.get("workflowId"),
                 "rootRunId": row.get("rootRunId"),

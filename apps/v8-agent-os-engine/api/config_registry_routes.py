@@ -13,6 +13,11 @@ from core.audio.audio_config import AudioConfigManager
 from core.audit_logger import audit_logger
 from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
+from core.prompt_budget import (
+    DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
+    DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
+    enforce_prompt_budget,
+)
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from core.system_base import detect_desktop_tools_readiness
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
@@ -92,6 +97,14 @@ def _save_models_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_supervisor_domain() -> dict[str, Any]:
     supervisor_config = storage.get_supervisor_config() or {}
     supervisor_profile = storage.get_supervisor_profile()
+    supervisor_prompt = storage.get_supervisor_prompt()
+    prompt_budget = enforce_prompt_budget(
+        source="V8_AGENT_OS.md",
+        text=supervisor_prompt,
+        budget_tokens=DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
+        truncate=True,
+        omission_reason="supervisor_prompt_runtime_truncated",
+    )
     tool_policy = build_supervisor_tool_policy_snapshot(supervisor_config.get("allowed_tools"))
     delegation = dict(supervisor_config.get("delegation") or {})
     return {
@@ -99,7 +112,8 @@ def _build_supervisor_domain() -> dict[str, Any]:
         "title": "主理人",
         "summary": "设置主理人的系统指令、角色绑定和公开资料。",
         "data": {
-            "systemPrompt": storage.get_supervisor_prompt(),
+            "systemPrompt": supervisor_prompt,
+            "promptBudgetDiagnostics": [prompt_budget.diagnostic()],
             "identity": storage.get_system_identity(),
             "identityBlock": render_system_identity_block(storage.get_system_identity()),
             "allowedTools": tool_policy["allowedTools"],
@@ -134,6 +148,21 @@ def _build_supervisor_domain() -> dict[str, Any]:
 def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
     if "systemPrompt" in data:
+        prompt_budget = enforce_prompt_budget(
+            source="V8_AGENT_OS.md",
+            text=str(data.get("systemPrompt") or ""),
+            budget_tokens=DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
+            truncate=False,
+            omission_reason="supervisor_prompt_save_budget_exceeded",
+        )
+        if prompt_budget.save_rejected:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"V8_AGENT_OS.md 超过 {prompt_budget.budget_tokens} estimated tokens "
+                    f"({prompt_budget.estimated_tokens})，已拒绝保存。"
+                ),
+            )
         storage.write_text("V8_AGENT_OS.md", str(data.get("systemPrompt") or ""))
     if "identity" in data and isinstance(data.get("identity"), dict):
         storage.save_system_base_config({"identity": dict(data.get("identity") or {})})
@@ -479,6 +508,22 @@ def _build_workspace_domain() -> dict[str, Any]:
     workspace_config = storage.get_workspace_config() or {}
     workspace_path = str(workspace_config.get("agent_workspace_path") or "").strip()
     path_status = build_workspace_path_status(workspace_path)
+    agents_md_path = Path(workspace_path).expanduser() / ".agents" / "rules" / "AGENTS.md" if workspace_path else None
+    agents_md_content = ""
+    agents_md_budget: dict[str, object] | None = None
+    if agents_md_path and agents_md_path.is_file():
+        try:
+            agents_md_content = agents_md_path.read_text(encoding="utf-8")
+        except Exception:
+            agents_md_content = ""
+        budget_result = enforce_prompt_budget(
+            source=str(agents_md_path),
+            text=agents_md_content,
+            budget_tokens=DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
+            truncate=True,
+            omission_reason="workspace_agents_md_runtime_truncated",
+        )
+        agents_md_budget = budget_result.diagnostic()
     return {
         "domain": "workspace",
         "title": "工作区",
@@ -486,6 +531,11 @@ def _build_workspace_domain() -> dict[str, Any]:
         "data": {
             **workspace_config,
             "pathStatus": path_status,
+            "agentsRules": {
+                "canonicalPath": str(agents_md_path) if agents_md_path else "",
+                "exists": bool(agents_md_path and agents_md_path.is_file()),
+                "budgetDiagnostics": agents_md_budget,
+            },
         },
         "source": _config_source("workspace"),
         "savePath": _config_save_path("workspace"),

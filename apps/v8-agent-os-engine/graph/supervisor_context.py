@@ -7,6 +7,11 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage
 
 from core.delegation_broker import compact_external_worker_registry_entry
+from core.prompt_budget import (
+    DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
+    DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
+    enforce_prompt_budget,
+)
 from core.storage import storage
 from core.system_base import get_engine_origin
 from core.time_truth import utc_now_iso
@@ -56,22 +61,6 @@ def _normalize_workspace_path(value: str | None) -> str:
 
 
 def _collect_workspace_rules_roots(*, state, session_id: str | None) -> list[dict[str, str]]:
-    roots: list[dict[str, str]] = []
-    seen_workspace_paths: set[str] = set()
-
-    main_workspace_path = _normalize_workspace_path(workspace_resolution_service.get_main_workspace_path())
-    if main_workspace_path:
-        seen_workspace_paths.add(main_workspace_path)
-        roots.append(
-            {
-                "source": "main_workspace",
-                "label": "main workspace",
-                "workspacePath": main_workspace_path,
-                "workspaceId": "",
-                "projectId": "",
-            }
-        )
-
     descriptor = workspace_resolution_service.resolve_workspace_descriptor(
         runtime_kind="chat",
         session_id=session_id,
@@ -80,12 +69,8 @@ def _collect_workspace_rules_roots(*, state, session_id: str | None) -> list[dic
         explicit_project_id=state.get("project_id"),
     )
     scoped_workspace_path = _normalize_workspace_path(str(descriptor.get("workspaceRoot") or ""))
-    if (
-        scoped_workspace_path
-        and scoped_workspace_path not in seen_workspace_paths
-        and bool(descriptor.get("isScopedOverride"))
-    ):
-        roots.append(
+    if scoped_workspace_path and bool(descriptor.get("isScopedOverride")):
+        return [
             {
                 "source": "scoped_workspace",
                 "label": "scoped workspace",
@@ -93,13 +78,26 @@ def _collect_workspace_rules_roots(*, state, session_id: str | None) -> list[dic
                 "workspaceId": str(descriptor.get("workspaceId") or "").strip(),
                 "projectId": str(descriptor.get("projectId") or "").strip(),
             }
-        )
+        ]
 
-    return roots
+    main_workspace_path = _normalize_workspace_path(workspace_resolution_service.get_main_workspace_path())
+    if main_workspace_path:
+        return [
+            {
+                "source": "main_workspace",
+                "label": "main workspace",
+                "workspacePath": main_workspace_path,
+                "workspaceId": "",
+                "projectId": "",
+            }
+        ]
+
+    return []
 
 
-def _build_workspace_rules_context(*, state, session_id: str | None) -> str:
+def _build_workspace_rules_context(*, state, session_id: str | None) -> tuple[str, list[dict[str, object]]]:
     rendered_sections: list[str] = []
+    diagnostics: list[dict[str, object]] = []
     for root in _collect_workspace_rules_roots(state=state, session_id=session_id):
         workspace_path = str(root.get("workspacePath") or "").strip()
         if not workspace_path:
@@ -107,27 +105,76 @@ def _build_workspace_rules_context(*, state, session_id: str | None) -> str:
         rules_dir = Path(workspace_path) / ".agents" / "rules"
         if not rules_dir.exists() or not rules_dir.is_dir():
             continue
-        for rule_path in sorted(rules_dir.glob("*.md"), key=lambda item: item.name.lower()):
-            if not rule_path.is_file():
-                continue
-            content = rule_path.read_text(encoding="utf-8").strip()
-            if not content:
-                continue
-            header_lines = [
-                f"### {rule_path.name}",
-                f"Source: {root.get('label')}",
-                f"Workspace: {workspace_path}",
-                f"Path: {rule_path}",
-            ]
-            if root.get("projectId"):
-                header_lines.append(f"Project ID: {root.get('projectId')}")
-            if root.get("workspaceId"):
-                header_lines.append(f"Workspace ID: {root.get('workspaceId')}")
-            rendered_sections.append("\n".join(header_lines) + "\n\n" + content)
+        rule_path = rules_dir / "AGENTS.md"
+        if not rule_path.is_file():
+            continue
+        content = rule_path.read_text(encoding="utf-8").strip()
+        if not content:
+            diagnostics.append(
+                {
+                    "source": f"workspace:{root.get('source')}:{rule_path}",
+                    "estimatedTokens": 0,
+                    "budgetTokens": DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
+                    "truncated": False,
+                    "saveRejected": False,
+                    "omittedReason": "empty_workspace_agents_md",
+                }
+            )
+            continue
+        budget_result = enforce_prompt_budget(
+            source=f"workspace:{root.get('source')}:{rule_path}",
+            text=content,
+            budget_tokens=DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
+            truncate=True,
+            omission_reason="workspace_agents_md_budget_truncated",
+        )
+        diagnostics.append(budget_result.diagnostic())
+        header_lines = [
+            f"### {rule_path.name}",
+            f"Source: {root.get('label')}",
+            f"Workspace: {workspace_path}",
+            f"Path: {rule_path}",
+        ]
+        if root.get("projectId"):
+            header_lines.append(f"Project ID: {root.get('projectId')}")
+        if root.get("workspaceId"):
+            header_lines.append(f"Workspace ID: {root.get('workspaceId')}")
+        rendered_sections.append("\n".join(header_lines) + "\n\n" + budget_result.text)
 
     if not rendered_sections:
+        return "", diagnostics
+    return "[WORKSPACE RULES]\n" + "\n\n---\n\n".join(rendered_sections) + "\n[/WORKSPACE RULES]\n", diagnostics
+
+
+def render_network_supervisor_context(state) -> str:
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    transport = str(
+        (state or {}).get("transport")
+        or route_context.get("transport")
+        or route_context.get("triggerSource")
+        or ""
+    ).strip()
+    if transport != "network_supervisor_openai":
         return ""
-    return "[WORKSPACE RULES]\n" + "\n\n---\n\n".join(rendered_sections) + "\n[/WORKSPACE RULES]\n"
+    return (
+        "[NETWORK SUPERVISOR CONTEXT]\n"
+        "Surface: OpenAI-compatible API via Admin relay; the caller is an external application, not the V8 phone/web UI.\n"
+        "Do not rely on V8-only ask_user interaction cards, artifact cards, runtime cards, planner cards, or swarm cards being visible to the caller.\n"
+        "Prefer network_* tools first: they are client-provided OpenAI function-calling tools. If they are insufficient and the task truly requires V8OS capability, then fall back to V8OS native tools.\n"
+        "Return externally consumable text, URLs, or standard tool-call results; do not tell the caller to inspect V8 internal panels or cards.\n"
+        "[/NETWORK SUPERVISOR CONTEXT]\n"
+    )
+
+
+def _network_openai_memory_budget_tokens() -> int:
+    try:
+        config = storage.get_network_supervisor_runtime_config()
+        compat = config.get("openaiCompat") if isinstance(config.get("openaiCompat"), dict) else {}
+        memory_tokens = int(compat.get("maxMemoryHintTokens") or 1200)
+        workflow_tokens = int(compat.get("maxWorkflowHintTokens") or 600)
+        return max(0, memory_tokens) + max(0, workflow_tokens)
+    except Exception:
+        return 1800
 
 
 def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dict]]:
@@ -386,12 +433,20 @@ def build_supervisor_system_content(
     os_name = platform.system()
     current_time = utc_now_iso()
     identity_line = render_system_identity_line(storage.get_system_identity())
-    base_prompt = config.system_prompt or storage.get_supervisor_prompt() or (
+    raw_base_prompt = config.system_prompt or storage.get_supervisor_prompt() or (
         "You are the V8 Agent OS AI Application Architect & Assistant.\n"
         "As the orchestration engine, you should delegate complex specialized tasks using `delegation_broker`.\n"
         "Treat planner task briefs as the canonical delegation contract for both local subagents and external workers.\n"
         "Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those route gates and final verification with the supervisor unless a brokered task explicitly grants a narrow surface.\n"
     )
+    base_prompt_budget = enforce_prompt_budget(
+        source="V8_AGENT_OS.md",
+        text=raw_base_prompt,
+        budget_tokens=DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
+        truncate=True,
+        omission_reason="supervisor_prompt_budget_truncated",
+    )
+    base_prompt = base_prompt_budget.text
     supervisor_config = storage.get_supervisor_config() or {}
     external_workers = [
         compact_external_worker_registry_entry(item)
@@ -510,7 +565,19 @@ def build_supervisor_system_content(
         session_id=session_id,
         run_id=state.get("run_id") or state.get("runId"),
     )
-    workspace_rules_context = _build_workspace_rules_context(state=state, session_id=session_id)
+    network_supervisor_context = render_network_supervisor_context(state)
+    memory_budget_diagnostics: list[dict[str, object]] = []
+    if network_supervisor_context and memory_context:
+        memory_budget = enforce_prompt_budget(
+            "network_supervisor_openai.memory_workflow_context",
+            memory_context,
+            _network_openai_memory_budget_tokens(),
+            truncate=True,
+        )
+        memory_context = memory_budget.text
+        memory_budget_diagnostics.append(memory_budget.diagnostic())
+    workspace_rules_context, workspace_rules_diagnostics = _build_workspace_rules_context(state=state, session_id=session_id)
+    prompt_budget_diagnostics = [base_prompt_budget.diagnostic(), *workspace_rules_diagnostics, *memory_budget_diagnostics]
 
     runtime_registry_context = capability_registry.build_supervisor_summary(
         user_query=user_query,
@@ -599,6 +666,7 @@ def build_supervisor_system_content(
         f"{runtime_registry_context}\n\n"
         f"{specialist_agents_context}"
         f"{available_tools_context}\n"
+        f"{network_supervisor_context}"
         f"{planner_context}"
         f"{todos_context}{memory_context}\n\n"
         f"{workspace_rules_context}"
@@ -612,11 +680,13 @@ def build_supervisor_system_content(
         "runtime_registry_context": runtime_registry_context,
         "specialist_agents_context": specialist_agents_context,
         "available_tools_context": available_tools_context,
+        "network_supervisor_context": network_supervisor_context,
         "planner_context": planner_context,
         "todos_context": todos_context,
         "workspace_rules_context": workspace_rules_context,
         "env_context": env_context,
         "group_moderation_directive": group_moderation_directive,
+        "prompt_budget_diagnostics": prompt_budget_diagnostics,
     }
 
 

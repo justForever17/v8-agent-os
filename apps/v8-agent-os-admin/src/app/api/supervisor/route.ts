@@ -25,6 +25,7 @@ type SupervisorRegistryData = {
         supervisorModel?: string | null;
         defaultReplyModel?: string | null;
     };
+    promptBudgetDiagnostics?: Array<Record<string, unknown>>;
 };
 
 export async function GET() {
@@ -42,6 +43,7 @@ export async function GET() {
 
         return NextResponse.json({
             systemPrompt: String(supervisorData.systemPrompt || ""),
+            prompt_budget_diagnostics: supervisorData.promptBudgetDiagnostics ?? [],
             model_id: supervisorData.bindings?.supervisorModel || null,
             binding_source: "config.json#models.roles.supervisor",
             allowed_tools: supervisorData.allowedTools ?? null,
@@ -89,6 +91,7 @@ export async function POST(req: Request) {
         return NextResponse.json({
             success: true,
             systemPrompt,
+            prompt_budget_diagnostics: (data as { data?: SupervisorRegistryData })?.data?.promptBudgetDiagnostics ?? [],
             model_id: model_id ?? null,
             binding_source: "config.json#models.roles.supervisor",
             allowed_tools,

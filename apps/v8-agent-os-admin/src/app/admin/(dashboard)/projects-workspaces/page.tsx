@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, FolderOpen, Loader2, Save } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileText, FolderOpen, Loader2, Save } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -34,6 +34,15 @@ type WorkspacePathStatus = {
 type WorkspaceData = {
     agent_workspace_path?: string;
     pathStatus?: WorkspacePathStatus;
+    agentsRules?: {
+        canonicalPath?: string;
+        exists?: boolean;
+        budgetDiagnostics?: {
+            estimatedTokens?: number;
+            budgetTokens?: number;
+            truncated?: boolean;
+        } | null;
+    };
 };
 
 function formatPathSummary(value?: string) {
@@ -56,6 +65,7 @@ export default function ProjectsWorkspacesPage() {
     const [workspaceDraft, setWorkspaceDraft] = useState("");
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [agentsRuleBusy, setAgentsRuleBusy] = useState(false);
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState("");
 
@@ -108,6 +118,26 @@ export default function ProjectsWorkspacesPage() {
             setError(saveError instanceof Error ? saveError.message : t("app.admin.dashboard.projects.workspaces.page.error.saveFailed"));
         } finally {
             setSaving(false);
+        }
+    };
+    const handleAgentsRuleAction = async (action: "create" | "open") => {
+        setAgentsRuleBusy(true);
+        setError("");
+        try {
+            const response = await fetch("/api/workspace/agents-rules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.detail || payload?.error || t("app.admin.dashboard.projects.workspaces.page.agentsRules.actionFailed"));
+            }
+            await load();
+        } catch (actionError) {
+            setError(actionError instanceof Error ? actionError.message : t("app.admin.dashboard.projects.workspaces.page.agentsRules.actionFailed"));
+        } finally {
+            setAgentsRuleBusy(false);
         }
     };
 
@@ -225,6 +255,46 @@ export default function ProjectsWorkspacesPage() {
                                     {t("app.admin.dashboard.projects.workspaces.page.status.legacyRulePrefix")} {pathStatus.legacyReason}。{t("app.admin.dashboard.projects.workspaces.page.status.legacyRuleSuffix")}
                                 </div>
                             ) : null}
+                        </div>
+                    </div>
+                </ConfigCard>
+
+                <ConfigCard
+                    title="app.admin.dashboard.projects.workspaces.page.agentsRules.title"
+                    description="app.admin.dashboard.projects.workspaces.page.agentsRules.description"
+                    bodyHeight="auto"
+                    bodyScroll="none"
+                >
+                    <div className="space-y-4">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-600">
+                            <div className="flex items-start gap-3">
+                                <FileText className="mt-1 h-4 w-4 shrink-0 text-sky-600" />
+                                <div>
+                                    <div className="font-medium text-slate-900">{workspaceEnvelope.data.agentsRules?.exists ? t("app.admin.dashboard.projects.workspaces.page.agentsRules.exists") : t("app.admin.dashboard.projects.workspaces.page.agentsRules.missing")}</div>
+                                    <div className="mt-1 break-all text-xs text-slate-500">{workspaceEnvelope.data.agentsRules?.canonicalPath || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
+                                    {workspaceEnvelope.data.agentsRules?.budgetDiagnostics ? (
+                                        <div className="mt-2 text-xs text-slate-500">
+                                            {t("app.admin.dashboard.projects.workspaces.page.agentsRules.budget")
+                                                .replace("{estimated}", String(workspaceEnvelope.data.agentsRules.budgetDiagnostics.estimatedTokens ?? 0))
+                                                .replace("{budget}", String(workspaceEnvelope.data.agentsRules.budgetDiagnostics.budgetTokens ?? 10000))}
+                                            {workspaceEnvelope.data.agentsRules.budgetDiagnostics.truncated ? ` ${t("app.admin.dashboard.projects.workspaces.page.agentsRules.truncated")}` : ""}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button variant="outline" disabled={agentsRuleBusy} onClick={() => void handleAgentsRuleAction("create")}>
+                                {agentsRuleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+                                {t("app.admin.dashboard.projects.workspaces.page.agentsRules.create")}
+                            </Button>
+                            <Button disabled={agentsRuleBusy} onClick={() => void handleAgentsRuleAction("open")}>
+                                {agentsRuleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+                                {t("app.admin.dashboard.projects.workspaces.page.agentsRules.open")}
+                            </Button>
+                        </div>
+                        <div className="text-xs leading-5 text-slate-500">
+                            {t("app.admin.dashboard.projects.workspaces.page.agentsRules.scopedHint")}
                         </div>
                     </div>
                 </ConfigCard>

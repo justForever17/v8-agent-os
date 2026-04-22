@@ -48,7 +48,7 @@ system_author: justForever17
 # === 正则 ===
 SCOPE_PATTERN = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 KV_PATTERN = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$', re.MULTILINE)
-_SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:")
+_SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:", "workspace:", "external_api_thread:")
 _DAY_FILENAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 
@@ -77,7 +77,7 @@ class MemoryStore:
         
         # 知识分区目录
         areas_dir = MEMORY_ROOT / "knowledge" / "areas"
-        for area in ["general", "projects", "channels"]:
+        for area in ["general", "projects", "channels", "workspaces", "external_api_threads"]:
             (areas_dir / area).mkdir(parents=True, exist_ok=True)
         
         # 日志目录
@@ -245,6 +245,7 @@ class MemoryStore:
         # Scope 注释
         scope_comments = {
             "global": "# 全局偏好 — 适用于所有场景",
+            "workspace:main": "# 默认工作区专属偏好",
         }
         
         # global 优先，其余排序
@@ -264,6 +265,12 @@ class MemoryStore:
             elif scope.startswith("channel:"):
                 channel_name = scope.split(":", 1)[1]
                 lines.append(f"# 渠道 {channel_name} 专属偏好")
+            elif scope.startswith("workspace:"):
+                workspace_name = scope.split(":", 1)[1]
+                lines.append(f"# 工作区 {workspace_name} 专属偏好")
+            elif scope.startswith("external_api_thread:"):
+                thread_name = scope.split(":", 1)[1]
+                lines.append(f"# 外部 API 线程 {thread_name} 专属偏好")
             
             for key, value in data[scope].items():
                 if not key.startswith("_"):
@@ -299,16 +306,26 @@ class MemoryStore:
         areas_dir = MEMORY_ROOT / "knowledge" / "areas"
         
         if scope.startswith("project:"):
-            project_name = scope.split(":", 1)[1]
+            project_name = self._safe_scope_path_token(scope.split(":", 1)[1])
             path = areas_dir / "projects" / project_name / "items.json"
         elif scope.startswith("channel:"):
-            channel_name = scope.split(":", 1)[1].replace(":", "__")
+            channel_name = self._safe_scope_path_token(scope.split(":", 1)[1])
             path = areas_dir / "channels" / channel_name / "items.json"
+        elif scope.startswith("workspace:"):
+            workspace_name = self._safe_scope_path_token(scope.split(":", 1)[1])
+            path = areas_dir / "workspaces" / workspace_name / "items.json"
+        elif scope.startswith("external_api_thread:"):
+            thread_name = self._safe_scope_path_token(scope.split(":", 1)[1])
+            path = areas_dir / "external_api_threads" / thread_name / "items.json"
         else:
             path = areas_dir / "general" / "items.json"
         
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _safe_scope_path_token(self, value: str) -> str:
+        token = str(value or "").strip().replace(":", "__").replace("/", "_").replace("\\", "_")
+        return token or "default"
     
     def add_knowledge(
         self,

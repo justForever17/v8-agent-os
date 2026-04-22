@@ -27,6 +27,14 @@ _SCOPE_REUSE_ANCHORS = (
 )
 
 
+class ScopeBindingConflictError(RuntimeError):
+    """Raised when a chat session tries to switch its bound workspace/project."""
+
+    def __init__(self, payload: Dict[str, Any]):
+        self.payload = payload
+        super().__init__(payload.get("message") or "Session workspace/project scope is already bound")
+
+
 def _normalize_scope(scope: Optional[str]) -> Optional[str]:
     value = (scope or "").strip()
     return value or None
@@ -108,6 +116,14 @@ def _scope_for_project(project_id: Optional[str]) -> Optional[str]:
     return f"project:{project_id}"
 
 
+def _scope_for_workspace(workspace_id: Optional[str]) -> Optional[str]:
+    token = _normalize_anchor_value(workspace_id)
+    if not token:
+        return None
+    safe = str(token).replace(":", "_").replace("/", "_").replace("\\", "_")
+    return f"workspace:{safe}"
+
+
 def _scope_for_channel(channel_type: Optional[str], remote_id: Optional[str]) -> Optional[str]:
     if not channel_type or not remote_id:
         return None
@@ -128,6 +144,7 @@ def build_scope_chain(
     for item in (
         _scope_for_channel(channel_type, channel_remote_id),
         _scope_for_project(project_id),
+        _scope_for_workspace(workspace_id) if not project_id else None,
         resolved_scope,
     ):
         if item and item not in chain:
@@ -187,13 +204,10 @@ class ScopeResolutionService:
             normalized_scope_mode = "explicit"
 
         normalized_scope_hint = _normalize_scope(scope_hint)
-        # Most clients send scope_hint=global as a default. Treat that as a
-        # neutral hint when concrete workspace/project/workflow anchors exist,
-        # otherwise it masks project workspace bindings and prevents scoped
-        # durable memory from ever being written.
-        neutralize_global_hint = _is_global_scope_hint(normalized_scope_hint) and bool(
-            project_id or workspace_id or workspace_path or workflow_id
-        )
+        # Most clients send scope_hint=global as a default. Treat it as a
+        # neutral hint for chat sessions; otherwise the main workspace keeps
+        # writing durable memory into global and leaks into every project.
+        neutralize_global_hint = _is_global_scope_hint(normalized_scope_hint)
         explicit_requested_scope = (
             None if neutralize_global_hint else normalized_scope_hint
         ) or _scope_for_project(project_id)
@@ -233,6 +247,23 @@ class ScopeResolutionService:
             if force_reresolve:
                 can_reuse_existing_binding = False
                 reuse_evidence["reuse_reason"] = "force_reresolve_requested"
+            elif changed_anchors:
+                conflict_payload = self._scope_conflict_payload(
+                    session_id=session_id,
+                    existing=existing,
+                    requested_anchors=requested_anchors,
+                    changed_anchors=changed_anchors,
+                )
+                self._record_resolution_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    requested_scope=requested_scope,
+                    resolved_scope=existing.resolved_scope,
+                    source="scope_conflict",
+                    confidence=1.0,
+                    evidence=conflict_payload,
+                )
+                raise ScopeBindingConflictError(conflict_payload)
             elif (
                 can_reuse_existing_binding
                 and existing.resolved_scope == "global"
@@ -244,9 +275,29 @@ class ScopeResolutionService:
                     workspace_path=workspace_path,
                 )
                 if workspace_project:
-                    can_reuse_existing_binding = False
-                    reuse_evidence["reuse_reason"] = "workspace_project_binding_available"
-                    reuse_evidence["workspace_registry_match"] = workspace_project.model_dump(exclude_none=True)
+                    conflict_payload = self._scope_conflict_payload(
+                        session_id=session_id,
+                        existing=existing,
+                        requested_anchors=requested_anchors,
+                        changed_anchors={
+                            "resolved_scope": {
+                                "previous": existing.resolved_scope,
+                                "requested": workspace_project.default_scope
+                                or _scope_for_project(workspace_project.project_id),
+                            }
+                        },
+                    )
+                    conflict_payload["workspaceRegistryMatch"] = workspace_project.model_dump(exclude_none=True)
+                    self._record_resolution_event(
+                        session_id=session_id,
+                        run_id=run_id,
+                        requested_scope=requested_scope,
+                        resolved_scope=existing.resolved_scope,
+                        source="scope_conflict",
+                        confidence=1.0,
+                        evidence=conflict_payload,
+                    )
+                    raise ScopeBindingConflictError(conflict_payload)
             if can_reuse_existing_binding:
                 scope_chain = build_scope_chain(
                     resolved_scope=existing.resolved_scope,
@@ -302,7 +353,7 @@ class ScopeResolutionService:
             }
 
         resolved_project: Optional[ProjectDescriptor] = None
-        resolved_scope = "global"
+        resolved_scope = "workspace:main"
         scope_source = "main_workspace_default"
         scope_confidence = 1.0
 
@@ -370,6 +421,11 @@ class ScopeResolutionService:
                             scope_source = "workspace_registry_match"
                             scope_confidence = 0.9
                             evidence["workspace_registry_match"] = workspace_project.model_dump(exclude_none=True)
+                        else:
+                            workspace_id = workspace_id or "main"
+                            resolved_scope = _scope_for_workspace(workspace_id) or "workspace:main"
+                            scope_source = "main_workspace_default"
+                            scope_confidence = 1.0
 
         if not project_id and resolved_project:
             project_id = resolved_project.project_id
@@ -488,6 +544,8 @@ class ScopeResolutionService:
                 return "global", None
             if normalized.startswith("channel:"):
                 return normalized, None
+            if normalized.startswith("workspace:"):
+                return normalized, None
             return normalized, None
 
         if workflow_id:
@@ -506,9 +564,27 @@ class ScopeResolutionService:
             )
             if workspace_project:
                 return workspace_project.default_scope or _scope_for_project(workspace_project.project_id) or "global", workspace_project
-            return "global", None
+            return _scope_for_workspace(workspace_id or "main") or "workspace:main", None
 
-        return "global", None
+        return "workspace:main", None
+
+    def _scope_conflict_payload(
+        self,
+        *,
+        session_id: str,
+        existing: SessionScopeBinding,
+        requested_anchors: Dict[str, Optional[str]],
+        changed_anchors: Dict[str, Dict[str, Optional[str]]],
+    ) -> Dict[str, Any]:
+        return {
+            "error": "scope_conflict",
+            "message": "This chat session is already bound to a workspace/project. Create a new session to use a different workspace/project.",
+            "sessionId": session_id,
+            "currentBinding": existing.metadata_view(),
+            "requestedBinding": {key: value for key, value in requested_anchors.items() if value is not None},
+            "changedAnchors": changed_anchors,
+            "recommendedAction": "create_new_session",
+        }
 
     def _record_resolution_event(
         self,

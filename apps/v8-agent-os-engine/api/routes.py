@@ -14,6 +14,7 @@ from core.runtime.startup_profile import (
     startup_bundle_summary,
 )
 from core.storage import storage
+from core.prompt_budget import DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS, enforce_prompt_budget
 from erc.kernel import erc_kernel
 from runtimes.memory.prompts import (
     render_memory_admin_chat_prompt,
@@ -209,6 +210,18 @@ async def compat_get_prompt(name: str):
 async def compat_save_prompt(name: str, body: dict):
     try:
         if name == "supervisor":
+            budget = enforce_prompt_budget(
+                source="V8_AGENT_OS.md",
+                text=body.get("content", ""),
+                budget_tokens=DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
+                truncate=False,
+                omission_reason="supervisor_prompt_save_budget_exceeded",
+            )
+            if budget.save_rejected:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"V8_AGENT_OS.md exceeds {budget.budget_tokens} estimated tokens ({budget.estimated_tokens}).",
+                )
             storage.write_text("V8_AGENT_OS.md", body.get("content", ""))
             return {"status": "success", "embedded": False}
         if name in {"memory_extraction", "memory_consolidation", "memory_admin_chat", "memory_periodic_summary"}:

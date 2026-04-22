@@ -1438,6 +1438,22 @@ class SkillLoader:
         return str(Path(raw).expanduser().resolve(strict=False))
 
     @classmethod
+    def _path_is_within(cls, child: str | Path | None, parent: str | Path | None) -> bool:
+        child_path = cls._normalize_path(child).rstrip("\\/")
+        parent_path = cls._normalize_path(parent).rstrip("\\/")
+        if not child_path or not parent_path:
+            return False
+        if child_path == parent_path:
+            return True
+        return child_path.startswith(parent_path + "\\") or child_path.startswith(parent_path + "/")
+
+    @classmethod
+    def _entry_belongs_to_root_descriptor(cls, entry: dict[str, Any], descriptor: dict[str, Any]) -> bool:
+        entry_root = cls._normalize_path(entry.get("rootPath") or entry.get("skillRoot") or entry.get("path"))
+        descriptor_root = cls._normalize_path(descriptor.get("rootPath"))
+        return cls._path_is_within(entry_root, descriptor_root)
+
+    @classmethod
     def _build_root_descriptor(
         cls,
         *,
@@ -1923,9 +1939,7 @@ class SkillLoader:
         explicit_project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         descriptors: list[dict[str, Any]] = [cls._global_root_descriptor()]
-        main_descriptor = cls._main_workspace_root_descriptor()
-        if main_descriptor is not None:
-            descriptors.append(main_descriptor)
+        scoped_descriptor = None
         if include_scoped:
             scoped_descriptor = cls._scoped_workspace_root_descriptor(
                 runtime_kind=runtime_kind,
@@ -1934,8 +1948,12 @@ class SkillLoader:
                 explicit_workspace_path=explicit_workspace_path,
                 explicit_project_id=explicit_project_id,
             )
-            if scoped_descriptor is not None:
-                descriptors.append(scoped_descriptor)
+        if scoped_descriptor is not None:
+            descriptors.append(scoped_descriptor)
+        else:
+            main_descriptor = cls._main_workspace_root_descriptor()
+            if main_descriptor is not None:
+                descriptors.append(main_descriptor)
         return cls._dedupe_root_descriptors(descriptors)
 
     @classmethod
@@ -2220,20 +2238,25 @@ class SkillLoader:
             explicit_workspace_path=explicit_workspace_path,
             explicit_project_id=explicit_project_id,
         )
+        visible_base_registry = {
+            skill_id: item
+            for skill_id, item in base_registry.items()
+            if any(cls._entry_belongs_to_root_descriptor(item, descriptor) for descriptor in visible_descriptors)
+        }
         base_paths = {cls._normalize_path(item.get("rootPath")) for item in base_descriptors}
         scoped_descriptors = [
             item for item in visible_descriptors if cls._normalize_path(item.get("rootPath")) not in base_paths
         ]
+        visible_fingerprint = cls._compute_fingerprint(visible_descriptors)
         if not scoped_descriptors:
             return cls._inventory_snapshot(
-                registry=base_registry,
+                registry=visible_base_registry,
                 descriptors=visible_descriptors,
-                fingerprint=base_fingerprint,
+                fingerprint=visible_fingerprint,
             )
         scoped_registry = cls._scan_root_descriptors(scoped_descriptors)
-        merged_registry = dict(base_registry)
+        merged_registry = dict(visible_base_registry)
         merged_registry.update(scoped_registry)
-        visible_fingerprint = cls._compute_fingerprint(visible_descriptors)
         return cls._inventory_snapshot(
             registry=merged_registry,
             descriptors=visible_descriptors,

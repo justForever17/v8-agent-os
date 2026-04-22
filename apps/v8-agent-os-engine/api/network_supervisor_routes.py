@@ -23,6 +23,7 @@ from runtimes.network_supervisor.openai_compat import (
     extract_bearer_token,
     wire_tool_call_id,
 )
+from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
 
 
@@ -51,6 +52,20 @@ def _resolve_openai_scope_headers(request: Request) -> tuple[str | None, str | N
     return project_id, workspace_id, scope_hint, str(config.default_scope_mode or "explicit").strip() or "explicit"
 
 
+def _resolve_openai_external_headers(request: Request) -> tuple[str | None, str | None]:
+    external_thread_id = str(request.headers.get("x-v8-external-thread-id") or "").strip() or None
+    external_user_id = str(request.headers.get("x-v8-external-user-id") or "").strip() or None
+    return external_thread_id, external_user_id
+
+
+def _record_openai_memory_adapter_status(result: dict[str, Any]) -> None:
+    try:
+        network_supervisor_service.record_openai_compat_memory_adapter_status(result)
+    except Exception:
+        # Diagnostics must never break the OpenAI-compatible wire path.
+        pass
+
+
 def _sse_frame(payload: dict[str, object] | str) -> bytes:
     if isinstance(payload, str):
         data = payload
@@ -59,114 +74,182 @@ def _sse_frame(payload: dict[str, object] | str) -> bytes:
     return f"data: {data}\n\n".encode("utf-8")
 
 
-async def _stream_openai_chat_completion(request_payload: dict[str, object], *, chat_request) -> StreamingResponse:
+async def _stream_openai_chat_completion(
+    request_payload: dict[str, object],
+    *,
+    chat_request,
+    project_id: str | None,
+    workspace_id: str | None,
+    scope_hint: str | None,
+    external_thread_id: str | None,
+    external_user_id: str | None,
+) -> StreamingResponse:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
 
     async def _generator():
         run_id = f"run_{uuid.uuid4().hex}"
+        events: list[dict[str, Any]] = []
         emitted_role = False
         emitted_tool_call_ids: set[str] = set()
         tool_calls_seen = False
-        async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
-            if not isinstance(event, dict):
-                continue
-            event_type = str(event.get("type") or "").strip()
-            if event_type == "error":
-                message = str(event.get("error") or "OpenAI compat execution failed")
-                raise RuntimeError(message)
-            if not emitted_role:
-                yield _sse_frame(
-                    {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": chat_request.config.model_name,
-                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        try:
+            async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
+                if not isinstance(event, dict):
+                    continue
+                events.append(event)
+                event_type = str(event.get("type") or "").strip()
+                if event_type == "error":
+                    message = str(event.get("error") or "OpenAI compat execution failed")
+                    failed = {
+                        "adapterStatus": "failed",
+                        "reason": message,
+                        "sourceRuntime": "network_supervisor",
+                        "provenanceClass": "external_api_dialogue",
+                        "memoryPolicy": "compat_minimal",
+                        "externalThreadId": external_thread_id,
+                        "externalUserId": external_user_id,
+                        "projectId": project_id,
+                        "workspaceId": workspace_id,
+                        "scopeHint": scope_hint,
                     }
-                )
-                emitted_role = True
-            if event_type == "text_chunk":
-                content = str(event.get("content") or "")
-                if content:
+                    _record_openai_memory_adapter_status(failed)
+                    raise RuntimeError(message)
+                if not emitted_role:
                     yield _sse_frame(
                         {
                             "id": response_id,
                             "object": "chat.completion.chunk",
                             "created": created,
                             "model": chat_request.config.model_name,
-                            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                         }
                     )
-                continue
-            if event_type == "tool_start":
-                tool_payload = dict(event.get("tool") or {})
-                internal_name = str(tool_payload.get("toolName") or "").strip()
-                wire_name = internal_to_wire.get(internal_name)
-                if not wire_name:
-                    continue
-                internal_tool_call_id = str(tool_payload.get("toolCallId") or "").strip()
-                wire_id = wire_tool_call_id(internal_tool_call_id, wire_name=wire_name)
-                if wire_id in emitted_tool_call_ids:
-                    continue
-                tool_index = len(emitted_tool_call_ids)
-                emitted_tool_call_ids.add(wire_id)
-                tool_calls_seen = True
-                args_payload = tool_payload.get("args")
-                if isinstance(args_payload, str):
-                    arguments = args_payload
-                else:
-                    arguments = json.dumps(args_payload or {}, ensure_ascii=False)
-                yield _sse_frame(
-                    {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": chat_request.config.model_name,
-                        "choices": [
+                    emitted_role = True
+                if event_type == "text_chunk":
+                    content = str(event.get("content") or "")
+                    if content:
+                        yield _sse_frame(
                             {
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": tool_index,
-                                            "id": wire_id,
-                                            "type": "function",
-                                            "function": {"name": wire_name, "arguments": arguments},
-                                        }
-                                    ]
-                                },
-                                "finish_reason": None,
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": chat_request.config.model_name,
+                                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
                             }
-                        ],
-                    }
-                )
-                continue
-            if event_type == "done":
-                finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() == "tool_calls_requested" else "stop"
-                yield _sse_frame(
-                    {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": chat_request.config.model_name,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                    }
-                )
-                yield _sse_frame("[DONE]")
-                return
-        finish_reason = "tool_calls" if tool_calls_seen else "stop"
-        yield _sse_frame(
-            {
-                "id": response_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": chat_request.config.model_name,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                        )
+                    continue
+                if event_type == "tool_start":
+                    tool_payload = dict(event.get("tool") or {})
+                    internal_name = str(tool_payload.get("toolName") or "").strip()
+                    wire_name = internal_to_wire.get(internal_name)
+                    if not wire_name:
+                        continue
+                    internal_tool_call_id = str(tool_payload.get("toolCallId") or "").strip()
+                    wire_id = wire_tool_call_id(internal_tool_call_id, wire_name=wire_name)
+                    if wire_id in emitted_tool_call_ids:
+                        continue
+                    tool_index = len(emitted_tool_call_ids)
+                    emitted_tool_call_ids.add(wire_id)
+                    tool_calls_seen = True
+                    args_payload = tool_payload.get("args")
+                    if isinstance(args_payload, str):
+                        arguments = args_payload
+                    else:
+                        arguments = json.dumps(args_payload or {}, ensure_ascii=False)
+                    yield _sse_frame(
+                        {
+                            "id": response_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": chat_request.config.model_name,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": tool_index,
+                                                "id": wire_id,
+                                                "type": "function",
+                                                "function": {"name": wire_name, "arguments": arguments},
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                if event_type == "done":
+                    finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() == "tool_calls_requested" else "stop"
+                    response_payload = {"choices": [{"finish_reason": finish_reason}]}
+                    result = network_supervisor_memory_adapter.record_openai_compat_delta(
+                        payload=request_payload,
+                        chat_request=chat_request,
+                        run_id=run_id,
+                        events=events,
+                        response_payload=response_payload,
+                        project_id=project_id,
+                        workspace_id=workspace_id,
+                        scope_hint=scope_hint,
+                        external_thread_id=external_thread_id,
+                        external_user_id=external_user_id,
+                    )
+                    _record_openai_memory_adapter_status(result)
+                    yield _sse_frame(
+                        {
+                            "id": response_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": chat_request.config.model_name,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                        }
+                    )
+                    yield _sse_frame("[DONE]")
+                    return
+            finish_reason = "tool_calls" if tool_calls_seen else "stop"
+            response_payload = {"choices": [{"finish_reason": finish_reason}]}
+            result = network_supervisor_memory_adapter.record_openai_compat_delta(
+                payload=request_payload,
+                chat_request=chat_request,
+                run_id=run_id,
+                events=events,
+                response_payload=response_payload,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                scope_hint=scope_hint,
+                external_thread_id=external_thread_id,
+                external_user_id=external_user_id,
+            )
+            _record_openai_memory_adapter_status(result)
+            yield _sse_frame(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": chat_request.config.model_name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                }
+            )
+            yield _sse_frame("[DONE]")
+        except Exception as exc:
+            failed = {
+                "adapterStatus": "failed",
+                "reason": str(exc),
+                "sourceRuntime": "network_supervisor",
+                "provenanceClass": "external_api_dialogue",
+                "memoryPolicy": "compat_minimal",
+                "externalThreadId": external_thread_id,
+                "externalUserId": external_user_id,
+                "projectId": project_id,
+                "workspaceId": workspace_id,
+                "scopeHint": scope_hint,
             }
-        )
-        yield _sse_frame("[DONE]")
+            _record_openai_memory_adapter_status(failed)
+            raise
 
     return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
 
@@ -317,6 +400,7 @@ async def post_network_supervisor_openai_chat_completions(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
+    external_thread_id, external_user_id = _resolve_openai_external_headers(request)
     compat_config = network_supervisor_service.get_config_model().openai_compat
     try:
         chat_request = build_engine_chat_request_from_openai(
@@ -326,12 +410,25 @@ async def post_network_supervisor_openai_chat_completions(
             scope_hint=scope_hint,
             scope_mode=scope_mode,
             max_external_tools=int(compat_config.max_external_tools or 8),
+            max_external_system_tokens=int(compat_config.max_external_system_tokens or 1200),
+            max_external_message_tokens=int(compat_config.max_external_message_tokens or 16000),
+            max_external_tool_description_tokens=int(compat_config.max_external_tool_description_tokens or 800),
+            max_external_tool_schema_bytes=int(compat_config.max_external_tool_schema_bytes or 32768),
+            max_external_tools_payload_tokens=int(compat_config.max_external_tools_payload_tokens or 6000),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if bool(payload.get("stream")):
-        return await _stream_openai_chat_completion(payload, chat_request=chat_request)
+        return await _stream_openai_chat_completion(
+            payload,
+            chat_request=chat_request,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            scope_hint=scope_hint,
+            external_thread_id=external_thread_id,
+            external_user_id=external_user_id,
+        )
 
     run_id = f"run_{uuid.uuid4().hex}"
     events: list[dict[str, Any]] = []
@@ -346,4 +443,17 @@ async def post_network_supervisor_openai_chat_completions(
         events=events,
         external_tools=chat_request.config.external_tools,
     )
+    adapter_result = network_supervisor_memory_adapter.record_openai_compat_delta(
+        payload=payload,
+        chat_request=chat_request,
+        run_id=run_id,
+        events=events,
+        response_payload=response_payload,
+        project_id=project_id,
+        workspace_id=workspace_id,
+        scope_hint=scope_hint,
+        external_thread_id=external_thread_id,
+        external_user_id=external_user_id,
+    )
+    _record_openai_memory_adapter_status(adapter_result)
     return JSONResponse(response_payload)

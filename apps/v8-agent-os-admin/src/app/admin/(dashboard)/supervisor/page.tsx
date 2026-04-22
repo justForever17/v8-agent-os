@@ -32,7 +32,29 @@ interface LockedTool {
     runtimeKind?: string;
     runtimeLabel?: string;
 }
+type PromptBudgetDiagnostic = {
+    source?: string;
+    estimatedTokens?: number;
+    budgetTokens?: number;
+    truncated?: boolean;
+    saveRejected?: boolean;
+    omittedReason?: string;
+};
 const NATIVE_TOOL_SERVER_NAME = "系统原生能力";
+const SUPERVISOR_PROMPT_BUDGET_TOKENS = 10000;
+function estimatePromptTokens(text: string) {
+    let cjk = 0;
+    let otherVisible = 0;
+    for (const char of String(text || "")) {
+        const code = char.charCodeAt(0);
+        if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf) || (code >= 0x3040 && code <= 0x30ff) || (code >= 0xac00 && code <= 0xd7af)) {
+            cjk += 1;
+        } else if (!/\s/.test(char)) {
+            otherVisible += 1;
+        }
+    }
+    return cjk + Math.ceil(otherVisible / 4);
+}
 async function readResponseError(response: Response, fallback: string) {
     const data = await response.json().catch(() => null);
     const detail = typeof data?.detail === "string"
@@ -57,6 +79,7 @@ export default function SupervisorPage() {
     const [mcpTools, setMcpTools] = useState<MCPTool[]>([]);
     const [lockedNativeTools, setLockedNativeTools] = useState<LockedTool[]>([]);
     const [runtimeManagedTools, setRuntimeManagedTools] = useState<LockedTool[]>([]);
+    const [promptBudgetDiagnostics, setPromptBudgetDiagnostics] = useState<PromptBudgetDiagnostic[]>([]);
     const [expandedServers, setExpandedServers] = useState<Record<string, boolean>>({});
     const [testingServers, setTestingServers] = useState<Record<string, boolean>>({});
     const [showManualMcpTools, setShowManualMcpTools] = useState(false);
@@ -105,6 +128,7 @@ export default function SupervisorPage() {
                 const data = await supRes.json();
                 if (data.systemPrompt !== undefined)
                     setSystemPrompt(data.systemPrompt);
+                setPromptBudgetDiagnostics(Array.isArray(data.prompt_budget_diagnostics) ? data.prompt_budget_diagnostics : []);
                 if (data.model_id)
                     setSelectedModelId(data.model_id);
                 else
@@ -155,11 +179,25 @@ export default function SupervisorPage() {
         !runtimeManagedToolNames.has(tool.name)), [mcpTools, runtimeManagedToolNames]);
     const editableMcpToolNames = useMemo(() => new Set(editableMcpTools.map((tool) => tool.name)), [editableMcpTools]);
     const detachedSelectedTools = useMemo(() => selectedTools.filter((toolName) => !editableMcpToolNames.has(toolName)), [editableMcpToolNames, selectedTools]);
+    const promptEstimatedTokens = useMemo(() => estimatePromptTokens(systemPrompt), [systemPrompt]);
+    const promptBudgetOverLimit = promptEstimatedTokens > SUPERVISOR_PROMPT_BUDGET_TOKENS;
+    const promptBudgetNearLimit = promptEstimatedTokens > SUPERVISOR_PROMPT_BUDGET_TOKENS * 0.85;
+    const runtimePromptTruncated = promptBudgetDiagnostics.some((item) => item?.truncated);
     const visionCapableModels = useMemo(() => models.filter((model) => {
         const type = String(model.type || "").toUpperCase();
         return !type || ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes(type);
     }), [models]);
     const handleSave = async () => {
+        if (promptBudgetOverLimit) {
+            toast({
+                variant: "destructive",
+                title: t("app.admin.dashboard.supervisor.page.promptBudget.overTitle"),
+                description: t("app.admin.dashboard.supervisor.page.promptBudget.overDescription")
+                    .replace("{estimated}", String(promptEstimatedTokens))
+                    .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS)),
+            });
+            return;
+        }
         setIsSaving(true);
         let supervisorSaved = false;
         try {
@@ -207,6 +245,10 @@ export default function SupervisorPage() {
                 title: t("app.admin.dashboard.supervisor.page.k86a2d3ea"),
                 description: t("app.admin.dashboard.supervisor.page.k7b317041"),
             });
+            const savedData = await fetch("/api/supervisor").then((response) => response.json()).catch(() => null);
+            if (savedData && Array.isArray(savedData.prompt_budget_diagnostics)) {
+                setPromptBudgetDiagnostics(savedData.prompt_budget_diagnostics);
+            }
         }
         catch (error) {
             console.error("Failed to save supervisor prompt", error);
@@ -373,6 +415,21 @@ export default function SupervisorPage() {
                     <div className="space-y-2">
                         <Label>{t("app.admin.dashboard.supervisor.page.kc2dd0474")}</Label>
                         <p className="text-xs text-muted-foreground mb-2">{t("app.admin.dashboard.supervisor.page.kd096e672")}</p>
+                        <div className={`rounded-md border px-3 py-2 text-xs ${promptBudgetOverLimit ? "border-rose-300 bg-rose-50 text-rose-700" : promptBudgetNearLimit || runtimePromptTruncated ? "border-amber-300 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                            {promptBudgetOverLimit
+                                ? t("app.admin.dashboard.supervisor.page.promptBudget.overStatus")
+                                    .replace("{estimated}", String(promptEstimatedTokens))
+                                    .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS))
+                                : runtimePromptTruncated
+                                    ? t("app.admin.dashboard.supervisor.page.promptBudget.runtimeTruncated")
+                                    : promptBudgetNearLimit
+                                        ? t("app.admin.dashboard.supervisor.page.promptBudget.nearStatus")
+                                            .replace("{estimated}", String(promptEstimatedTokens))
+                                            .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS))
+                                        : t("app.admin.dashboard.supervisor.page.promptBudget.okStatus")
+                                            .replace("{estimated}", String(promptEstimatedTokens))
+                                            .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS))}
+                        </div>
                         <Textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} className="font-mono text-sm min-h-[250px] leading-relaxed resize-y" placeholder={t("app.admin.dashboard.supervisor.page.k59c88769")}/>
                     </div>
 
@@ -534,7 +591,7 @@ export default function SupervisorPage() {
                     </div>
                 </CardContent>
                 <CardFooter className="flex justify-end pt-4 border-t">
-                    <Button onClick={handleSave} disabled={isSaving} size="lg">
+                    <Button onClick={handleSave} disabled={isSaving || promptBudgetOverLimit} size="lg">
                         {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Save className="w-4 h-4 mr-2"/>}
                         {t("app.admin.dashboard.supervisor.page.kaf9b5430")}
                     </Button>

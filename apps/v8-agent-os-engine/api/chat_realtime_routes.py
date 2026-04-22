@@ -2,7 +2,7 @@ import json
 import asyncio
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from .models import ChatRequest
@@ -20,6 +20,7 @@ from core.realtime_protocol import (
 from erc.command_router import runtime_command_router
 from erc.models import RuntimeCommand
 from erc.session_runtime import session_runtime_service
+from runtimes.memory.scope_resolution import ScopeBindingConflictError
 from runtimes.chat.runtime import chat_runtime
 
 
@@ -91,8 +92,23 @@ runtime_command_router.configure(schedule_chat_run=_schedule_chat_run)
 
 
 async def iter_chat_events(request: ChatRequest, transport: str = "http", run_id: str | None = None):
-    async for event in chat_runtime.stream_legacy_events(request, transport=transport, run_id=run_id):
-        yield event
+    try:
+        async for event in chat_runtime.stream_legacy_events(request, transport=transport, run_id=run_id):
+            yield event
+    except ScopeBindingConflictError as exc:
+        yield build_runtime_event(
+            kind="error",
+            topic="scope.conflict",
+            session_id=request.session_id,
+            run_id=run_id or request.resume_run_id,
+            payload=exc.payload,
+            source={
+                "plane": "engine",
+                "component": "chat_runtime",
+                "node": "scope_resolution",
+                "agent_id": None,
+            },
+        )
 
 
 async def event_generator(request: ChatRequest, run_id: str):
@@ -128,7 +144,10 @@ async def chat_submit(request: ChatRequest):
     user_message = None
     execution_request = request
     if not request.resume_run_id:
-        chat_run = chat_runtime.prepare_run_context(request, transport="submit", run_id=run_id)
+        try:
+            chat_run = chat_runtime.prepare_run_context(request, transport="submit", run_id=run_id)
+        except ScopeBindingConflictError as exc:
+            raise HTTPException(status_code=409, detail=exc.payload) from exc
         user_message = chat_runtime.record_request_inputs(chat_run)
         if not user_message:
             user_message = db.get_chat_canonical_message_by_run(

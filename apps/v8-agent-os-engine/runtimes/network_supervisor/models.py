@@ -97,6 +97,13 @@ class NetworkOpenAICompatConfig(BaseModel):
     allow_raw_workspace_path: bool = Field(default=False, alias="allowRawWorkspacePath")
     max_external_tools: int = Field(default=8, alias="maxExternalTools")
     default_scope_mode: str = Field(default="explicit", alias="defaultScopeMode")
+    max_external_system_tokens: int = Field(default=1200, alias="maxExternalSystemTokens")
+    max_external_message_tokens: int = Field(default=16000, alias="maxExternalMessageTokens")
+    max_external_tool_description_tokens: int = Field(default=800, alias="maxExternalToolDescriptionTokens")
+    max_external_tool_schema_bytes: int = Field(default=32768, alias="maxExternalToolSchemaBytes")
+    max_external_tools_payload_tokens: int = Field(default=6000, alias="maxExternalToolsPayloadTokens")
+    max_memory_hint_tokens: int = Field(default=1200, alias="maxMemoryHintTokens")
+    max_workflow_hint_tokens: int = Field(default=600, alias="maxWorkflowHintTokens")
 
 
 class NetworkSupervisorRuntimeConfig(BaseModel):

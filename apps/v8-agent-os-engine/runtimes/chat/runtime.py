@@ -1482,6 +1482,8 @@ class ChatRuntime:
     ) -> ChatRunContext:
         prepared = self.prepare_request(request)
         run_handle = None
+        existing_binding = None
+        scope_result = None
 
         if prepared.is_resume_request:
             run_handle = self.attach_run(prepared.request.resume_run_id or "")
@@ -1504,7 +1506,24 @@ class ChatRuntime:
                     "model": prepared.request.config.model_name,
                     "provider": prepared.request.config.provider,
                     "conversation_id": prepared.conversation_id,
+                    "transport": transport,
+                    "externalSurface": "network_supervisor_openai" if transport == "network_supervisor_openai" else None,
+                    "hideFromChatHistory": bool(transport == "network_supervisor_openai"),
                 },
+            )
+            existing_binding = session_scope_binding_service.get_binding(prepared.session_id)
+            scope_result = scope_resolution_service.resolve(
+                session_id=prepared.session_id,
+                conversation_id=prepared.conversation_id,
+                user_id=prepared.user_id,
+                user_query=prepared.latest_user_content,
+                project_id=prepared.request.project_id,
+                workspace_id=prepared.request.workspace_id,
+                workspace_path=prepared.request.workspace_path,
+                thread_id=prepared.request.thread_id,
+                scope_hint=prepared.request.scope_hint,
+                scope_mode=prepared.request.scope_mode,
+                run_id=run_id,
             )
             run_handle = self.attach_run(run_id) if run_id and db.get_run_record(run_id) else None
             if run_handle is None:
@@ -1518,20 +1537,21 @@ class ChatRuntime:
                     run_id=run_id,
                 )
 
-        existing_binding = session_scope_binding_service.get_binding(prepared.session_id)
-        scope_result = scope_resolution_service.resolve(
-            session_id=prepared.session_id,
-            conversation_id=prepared.conversation_id,
-            user_id=prepared.user_id,
-            user_query=prepared.latest_user_content,
-            project_id=prepared.request.project_id,
-            workspace_id=prepared.request.workspace_id,
-            workspace_path=prepared.request.workspace_path,
-            thread_id=prepared.request.thread_id,
-            scope_hint=prepared.request.scope_hint,
-            scope_mode=prepared.request.scope_mode,
-            run_id=run_handle.run_id,
-        )
+        if scope_result is None:
+            existing_binding = session_scope_binding_service.get_binding(prepared.session_id)
+            scope_result = scope_resolution_service.resolve(
+                session_id=prepared.session_id,
+                conversation_id=prepared.conversation_id,
+                user_id=prepared.user_id,
+                user_query=prepared.latest_user_content,
+                project_id=prepared.request.project_id,
+                workspace_id=prepared.request.workspace_id,
+                workspace_path=prepared.request.workspace_path,
+                thread_id=prepared.request.thread_id,
+                scope_hint=prepared.request.scope_hint,
+                scope_mode=prepared.request.scope_mode,
+                run_id=run_handle.run_id,
+            )
         self._attach_scope_context(
             prepared.lc_messages,
             session_id=prepared.session_id,
@@ -1898,6 +1918,7 @@ class ChatRuntime:
             session_id=chat_run.session_id,
             planner_plan=chat_run.prepared.planner_plan,
             recursion_limit=self._recursion_limit(),
+            transport=chat_run.transport,
         )
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
@@ -1948,6 +1969,7 @@ class ChatRuntime:
             session_id=chat_run.session_id,
             planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
             recursion_limit=self._recursion_limit(),
+            transport=chat_run.transport,
         )
         diagnostics = dict(runner_bundle.diagnostics or {})
         diagnostics.update(continuation_envelope)

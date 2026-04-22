@@ -56,8 +56,10 @@ class SupervisorAgentRunner:
             "supports_graph_interrupt": True,
         }
 
-    def create_state(self, messages, *, planner_plan: dict[str, Any] | None = None):
+    def create_state(self, messages, *, planner_plan: dict[str, Any] | None = None, transport: str | None = None):
         state = AgentState(messages=messages)
+        if transport:
+            state["transport"] = transport
         if isinstance(planner_plan, dict) and planner_plan:
             state["planner_plan"] = planner_plan
         return state
@@ -65,11 +67,11 @@ class SupervisorAgentRunner:
     def build_graph_config(self, session_id: str, *, recursion_limit: int) -> dict:
         return {"configurable": {"thread_id": session_id}, "recursion_limit": recursion_limit}
 
-    async def create_execution_bundle(self, *, config: EngineConfig, messages, session_id: str, planner_plan: dict[str, Any] | None = None, recursion_limit: int):
+    async def create_execution_bundle(self, *, config: EngineConfig, messages, session_id: str, planner_plan: dict[str, Any] | None = None, recursion_limit: int, transport: str | None = None):
         graph, diagnostics = await self.build_graph(config)
         return SupervisorExecutionBundle(
             graph=graph,
-            payload=self.create_state(messages, planner_plan=planner_plan),
+            payload=self.create_state(messages, planner_plan=planner_plan, transport=transport),
             graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),
             mode="start",
             diagnostics=diagnostics,

@@ -755,6 +755,10 @@ def _scope_kind(scope: str) -> str:
         return "project"
     if normalized.startswith("channel:"):
         return "channel"
+    if normalized.startswith("workspace:"):
+        return "workspace"
+    if normalized.startswith("external_api_thread:"):
+        return "external_api_thread"
     return "global"
 
 
@@ -1014,27 +1018,97 @@ def _store_workflow_episodes(
             logger.warning(f"[MemoryAgent] Workflow episode skipped: {exc}")
     return len(stored), stored
 
-def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_scope: str):
-    specific_prefixes = ("project:", "channel:")
-    target_scope = str(effective_memory_scope or "").strip() or "global"
+_GLOBAL_PROMOTION_RE = re.compile(
+    r"(所有项目|全部项目|全局|所有工作区|任何工作区|跨项目|以后都|永远|默认|个人偏好|我的偏好|"
+    r"all projects|global|all workspaces|any workspace|across projects|from now on|always|by default|personal preference|runtime governance|runtime contract)",
+    re.IGNORECASE,
+)
 
-    def _coerce_scope(value: str) -> str:
+
+def _global_promotion_reason(text: str) -> str | None:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+    if _GLOBAL_PROMOTION_RE.search(normalized):
+        return "explicit_global_signal"
+    lowered = normalized.lower()
+    if "v8 agent os" in lowered and any(token in lowered for token in ("runtime", "governance", "contract", "主线", "治理", "契约")):
+        return "v8_runtime_rule"
+    return None
+
+
+def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_scope: str) -> list[dict[str, Any]]:
+    specific_prefixes = ("project:", "channel:", "workspace:", "external_api_thread:")
+    target_scope = str(effective_memory_scope or "").strip() or "global"
+    decisions: list[dict[str, Any]] = []
+
+    def _coerce_scope(value: str, text: str, item_type: str) -> str:
         normalized = (value or "").strip()
         if target_scope == "global":
+            decisions.append(
+                {
+                    "itemType": item_type,
+                    "requestedScope": normalized or None,
+                    "finalScope": "global",
+                    "scopeDecision": "target_global",
+                    "globalPromotionReason": "target_global",
+                }
+            )
             return "global"
+        if normalized == "global":
+            promotion_reason = _global_promotion_reason(text)
+            if promotion_reason:
+                decisions.append(
+                    {
+                        "itemType": item_type,
+                        "requestedScope": normalized,
+                        "finalScope": "global",
+                        "scopeDecision": "global_promoted",
+                        "globalPromotionReason": promotion_reason,
+                    }
+                )
+                return "global"
+            decisions.append(
+                {
+                    "itemType": item_type,
+                    "requestedScope": normalized,
+                    "finalScope": target_scope,
+                    "scopeDecision": "global_rejected_to_current_scope",
+                    "rejectedGlobalReason": "missing_explicit_global_signal",
+                }
+            )
+            return target_scope
         if not normalized or normalized == "global":
             return target_scope
         if normalized.startswith(specific_prefixes) and normalized != target_scope:
+            decisions.append(
+                {
+                    "itemType": item_type,
+                    "requestedScope": normalized,
+                    "finalScope": target_scope,
+                    "scopeDecision": "specific_scope_rebound",
+                    "rejectedGlobalReason": "specific_scope_mismatch",
+                }
+            )
             return target_scope
+        decisions.append(
+            {
+                "itemType": item_type,
+                "requestedScope": normalized,
+                "finalScope": target_scope,
+                "scopeDecision": "current_scope",
+            }
+        )
         return target_scope
 
     for pref in result.preferences:
-        pref.scope = _coerce_scope(pref.scope)
+        pref.scope = _coerce_scope(pref.scope, f"{pref.key} {pref.value}", "preference")
     for fact in result.knowledge:
-        fact.scope = _coerce_scope(fact.scope)
+        fact.scope = _coerce_scope(fact.scope, f"{fact.category} {fact.fact}", "knowledge")
     for workflow in getattr(result, "workflow_episodes", []) or []:
         if workflow.privacy_scope not in {"sensitive"}:
             workflow.privacy_scope = workflow.privacy_scope or "local_runtime"
+    return decisions
 
 def _build_knowledge_graph(
     result: MemoryExtractionResult,
@@ -1157,15 +1231,19 @@ def _effective_memory_scope(binding: Any | None, resolved_scope: str) -> str:
         channel_type = str(getattr(binding, "channel_type", "") or "").strip()
         channel_remote_id = str(getattr(binding, "channel_remote_id", "") or "").strip()
         project_id = str(getattr(binding, "project_id", "") or "").strip()
+        workspace_id = str(getattr(binding, "workspace_id", "") or "").strip()
         if channel_type and channel_remote_id:
             normalized_remote = channel_remote_id.replace(":", "_").replace("/", "_")
             return f"channel:{channel_type}:{normalized_remote}"
         if project_id:
             return f"project:{project_id}"
+        if workspace_id:
+            normalized_workspace = workspace_id.replace(":", "_").replace("/", "_").replace("\\", "_")
+            return f"workspace:{normalized_workspace}"
     normalized_scope = str(resolved_scope or "").strip()
-    if normalized_scope.startswith("channel:") or normalized_scope.startswith("project:"):
+    if normalized_scope.startswith(("channel:", "project:", "workspace:", "external_api_thread:")):
         return normalized_scope
-    return "global"
+    return "workspace:main"
 
 
 def _session_scope_hints(session_id: str) -> Dict[str, Any]:
@@ -1839,7 +1917,7 @@ def analyze_session_memory(
             "parserErrorPreview": extraction_attempt.parser_error_preview or None,
         }
 
-    _align_extraction_scopes(result, effective_memory_scope)
+    scope_decisions = _align_extraction_scopes(result, effective_memory_scope)
     _emit_memory_event(
         run_handle,
         "memory.extraction.completed",
@@ -1859,6 +1937,7 @@ def analyze_session_memory(
             "provenance_class": provenance_class,
             "memory_policy": memory_policy,
             "extractorModel": extraction_attempt.extractor_model or None,
+            "scopeDecisions": scope_decisions[:20],
             "rawOutputPreview": extraction_attempt.raw_output_preview or None,
             "parserErrorPreview": extraction_attempt.parser_error_preview or None,
             "extractionFailureStage": None,

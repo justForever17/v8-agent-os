@@ -41,7 +41,7 @@ from agents.memory_agent import (
     RelationExtraction,
 )
 from runtimes.memory.models import ProjectDescriptor, SessionScopeBinding
-from runtimes.memory.scope_resolution import ScopeResolutionService
+from runtimes.memory.scope_resolution import ScopeBindingConflictError, ScopeResolutionService
 
 
 POLICY = {
@@ -298,12 +298,13 @@ class MemoryDurablePolicyTests(unittest.TestCase):
             (False, "durability_transient"),
         )
 
-    def test_align_scopes_uses_effective_project_scope_without_workspace_scope(self):
+    def test_align_scopes_uses_effective_project_scope_and_requires_explicit_global_promotion(self):
         result = MemoryExtractionResult(
             summary="scope test",
             tags=["scope"],
             preferences=[
                 PreferenceExtraction(scope="global", key="surface", value="os-phone", importance=90, confidence=0.9),
+                PreferenceExtraction(scope="global", key="language", value="所有项目默认使用中文回复。", importance=90, confidence=0.9),
             ],
             knowledge=[
                 KnowledgeExtraction(
@@ -316,10 +317,12 @@ class MemoryDurablePolicyTests(unittest.TestCase):
             ],
         )
 
-        memory_agent._align_extraction_scopes(result, "project:v8")
+        decisions = memory_agent._align_extraction_scopes(result, "project:v8")
 
         self.assertEqual(result.preferences[0].scope, "project:v8")
+        self.assertEqual(result.preferences[1].scope, "global")
         self.assertEqual(result.knowledge[0].scope, "project:v8")
+        self.assertTrue(any(item.get("scopeDecision") == "global_promoted" for item in decisions))
 
     def test_graph_counts_zero_when_no_knowledge_was_persisted(self):
         result = MemoryExtractionResult(
@@ -428,7 +431,7 @@ class MemoryScopeResolutionTests(unittest.TestCase):
         self.assertEqual(result.binding.project_id, "v8")
         self.assertEqual(result.binding.scope_source, "request_explicit")
 
-    def test_default_global_hint_stays_global_for_unbound_main_workspace(self):
+    def test_default_global_hint_resolves_to_main_workspace_scope(self):
         service = ScopeResolutionService(
             project_registry=_FakeProjectRegistry(None),
             binding_service=_FakeBindingService(),
@@ -441,10 +444,11 @@ class MemoryScopeResolutionTests(unittest.TestCase):
             scope_hint="global",
         )
 
-        self.assertEqual(result.binding.resolved_scope, "global")
+        self.assertEqual(result.binding.resolved_scope, "workspace:main")
+        self.assertEqual(result.scope_chain, ["global", "workspace:main"])
         self.assertIsNone(result.binding.project_id)
 
-    def test_cached_global_binding_is_not_reused_when_workspace_project_binding_exists(self):
+    def test_bound_session_rejects_workspace_project_switch(self):
         project = ProjectDescriptor(
             id="v8",
             name="V8",
@@ -466,14 +470,14 @@ class MemoryScopeResolutionTests(unittest.TestCase):
             resolution_repo=_FakeResolutionRepo(),
         )
 
-        result = service.resolve(
-            session_id="session-rebind",
-            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
-            scope_hint="global",
-        )
+        with self.assertRaises(ScopeBindingConflictError) as raised:
+            service.resolve(
+                session_id="session-rebind",
+                workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+                scope_hint="global",
+            )
 
-        self.assertFalse(result.reused_existing_binding)
-        self.assertEqual(result.binding.resolved_scope, "project:v8")
+        self.assertEqual(raised.exception.payload["recommendedAction"], "create_new_session")
 
 
 if __name__ == "__main__":

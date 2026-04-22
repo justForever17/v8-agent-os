@@ -734,6 +734,17 @@ class NetworkSupervisorService:
             "reasons": reasons,
         }
 
+    def record_openai_compat_memory_adapter_status(self, result: dict[str, Any]) -> dict[str, Any]:
+        state = self.read_state()
+        payload = dict(result or {})
+        payload.setdefault("updatedAt", _utc_iso())
+        state["openaiCompatMemoryAdapter"] = payload
+        recent = [dict(item) for item in list(state.get("openaiCompatMemoryAdapterRecent") or []) if isinstance(item, dict)]
+        recent.insert(0, payload)
+        state["openaiCompatMemoryAdapterRecent"] = recent[:10]
+        self.write_state(state)
+        return payload
+
     def status_payload(self) -> dict[str, Any]:
         config = self.get_config_model()
         identity = self._local_identity()
@@ -785,9 +796,22 @@ class NetworkSupervisorService:
                 "baseUrlHint": "http://localhost:9528/api/network-supervisor/openai/v1",
                 "chatCompletionsPath": "/chat/completions",
                 "maxExternalTools": int(config.openai_compat.max_external_tools or 0),
+                "maxExternalSystemTokens": int(config.openai_compat.max_external_system_tokens or 0),
+                "maxExternalMessageTokens": int(config.openai_compat.max_external_message_tokens or 0),
+                "maxExternalToolDescriptionTokens": int(config.openai_compat.max_external_tool_description_tokens or 0),
+                "maxExternalToolSchemaBytes": int(config.openai_compat.max_external_tool_schema_bytes or 0),
+                "maxExternalToolsPayloadTokens": int(config.openai_compat.max_external_tools_payload_tokens or 0),
+                "maxMemoryHintTokens": int(config.openai_compat.max_memory_hint_tokens or 0),
+                "maxWorkflowHintTokens": int(config.openai_compat.max_workflow_hint_tokens or 0),
                 "allowWorkspaceHeaders": bool(config.openai_compat.allow_workspace_headers),
                 "allowRawWorkspacePath": bool(config.openai_compat.allow_raw_workspace_path),
                 "defaultScopeMode": str(config.openai_compat.default_scope_mode or "explicit"),
+                "memoryAdapter": dict(state.get("openaiCompatMemoryAdapter") or {}),
+                "recentMemoryAdapter": [
+                    dict(item)
+                    for item in list(state.get("openaiCompatMemoryAdapterRecent") or [])[:5]
+                    if isinstance(item, dict)
+                ],
             },
             "delegationAvailability": self._delegation_availability_payload(),
             "toolAvailability": {

@@ -88,6 +88,17 @@ class NetworkDelegationConfig(BaseModel):
     default_timeout_seconds: int = Field(default=120, alias="defaultTimeoutSeconds")
 
 
+class NetworkOpenAICompatConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=False)
+    admin_relay_only: bool = Field(default=True, alias="adminRelayOnly")
+    allow_workspace_headers: bool = Field(default=True, alias="allowWorkspaceHeaders")
+    allow_raw_workspace_path: bool = Field(default=False, alias="allowRawWorkspacePath")
+    max_external_tools: int = Field(default=8, alias="maxExternalTools")
+    default_scope_mode: str = Field(default="explicit", alias="defaultScopeMode")
+
+
 class NetworkSupervisorRuntimeConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -97,6 +108,7 @@ class NetworkSupervisorRuntimeConfig(BaseModel):
     trust: NetworkTrustConfig = Field(default_factory=NetworkTrustConfig)
     wake: NetworkWakeConfig = Field(default_factory=NetworkWakeConfig)
     delegation: NetworkDelegationConfig = Field(default_factory=NetworkDelegationConfig)
+    openai_compat: NetworkOpenAICompatConfig = Field(default_factory=NetworkOpenAICompatConfig, alias="openaiCompat")
 
 
 class NetworkPeerMutationPayload(BaseModel):

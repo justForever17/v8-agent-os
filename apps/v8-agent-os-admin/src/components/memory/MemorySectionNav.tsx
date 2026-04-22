@@ -9,6 +9,7 @@ export type MemorySectionKey =
     | "preferences"
     | "projects"
     | "knowledge"
+    | "workflows"
     | "artifacts"
     | "graph"
     | "agent"
@@ -20,6 +21,7 @@ const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: 
     { key: "preferences", href: "/admin/memory?tab=preferences", label: "components.memory.MemorySectionNav.k79d67bc6" },
     { key: "projects", href: "/admin/memory?tab=projects", label: "components.memory.MemorySectionNav.k4758acb9" },
     { key: "knowledge", href: "/admin/memory?tab=knowledge", label: "components.memory.MemorySectionNav.k4a8a8d88" },
+    { key: "workflows", href: "/admin/memory?tab=workflows", label: "components.memory.MemorySectionNav.workflowMemory" },
     { key: "artifacts", href: "/admin/memory?tab=artifacts", label: "Artifacts" },
     { key: "graph", href: "/admin/memory?tab=graph", label: "components.memory.MemorySectionNav.k7fe6a3d0" },
     { key: "agent", href: "/admin/memory?tab=agent", label: "components.memory.MemorySectionNav.k24f221bf" },

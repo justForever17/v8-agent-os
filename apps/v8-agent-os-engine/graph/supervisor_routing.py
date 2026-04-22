@@ -71,6 +71,7 @@ def build_supervisor_toolset(
     *,
     fetch_skill_instructions_tool,
     filtered_native_tools,
+    external_tools=None,
     all_mcp_tools,
     plugin_host_tools,
     supervisor_allowed_tools,
@@ -87,7 +88,7 @@ def build_supervisor_toolset(
         if str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip() == "delegation_broker"
     ]
     remaining_native_tools = [tool_ref for tool_ref in selected_native_tools if tool_ref not in broker_tools]
-    supervisor_tools = [fetch_skill_instructions_tool] + broker_tools + remaining_native_tools
+    supervisor_tools = [fetch_skill_instructions_tool] + broker_tools + remaining_native_tools + list(external_tools or [])
 
     if supervisor_allowed_tools is not None:
         allowed_mcp_tools = [tool for tool in all_mcp_tools if tool.name in supervisor_allowed_tools]

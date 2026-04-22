@@ -76,6 +76,9 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
             "agents.runners.maintenance_runner.memory_runtime.backfill_periodic_summaries",
             return_value={"updatedCount": 1, "touchedRefs": ["memory://year/2026"]},
         ), patch(
+            "agents.runners.maintenance_runner.memory_runtime.run_workflow_maintenance",
+            return_value={"candidateCount": 3, "updatedCount": 1, "activatedCount": 1, "quarantinedCount": 0},
+        ), patch(
             "agents.runners.maintenance_runner.memory_runtime.update_run_metadata",
             side_effect=_capture_update,
         ):
@@ -83,6 +86,8 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
 
         self.assertEqual(result["result"]["summary_backfilled_count"], 2)
         self.assertEqual(result["result"]["legacy_summary_backfilled_count"], 1)
+        self.assertEqual(result["result"]["workflow_candidate_count"], 3)
+        self.assertEqual(result["result"]["workflow_active_hint_count"], 1)
         maintenance_updates = [item for item in update_calls if "memory_maintenance" in item]
         self.assertTrue(maintenance_updates)
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["summaryBackfilledCount"], 2)
@@ -91,6 +96,7 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
             maintenance_updates[0]["memory_maintenance"]["touchedRefs"],
             ["memory://week/2026-W16", "memory://month/2026-04"],
         )
+        self.assertEqual(maintenance_updates[0]["memory_maintenance"]["workflowCandidateCount"], 3)
 
 
 if __name__ == "__main__":

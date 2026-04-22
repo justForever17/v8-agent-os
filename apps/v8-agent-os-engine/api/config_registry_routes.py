@@ -901,9 +901,10 @@ def _build_network_supervisor_runtime_domain() -> dict[str, Any]:
         "reloadRequired": False,
         "warnings": [
             "私钥和 peer token 不会写入 config.json，只会保存到本地 secret 文件。",
+            "OpenAI compat API Key 不写入 config.json，只保存在 network supervisor secret 文件。",
             "首版远程 delegation 仍然是显式能力，不会自动把任务路由到远端节点。",
         ],
-        "advancedFields": ["node", "discovery", "trust", "wake", "delegation"],
+        "advancedFields": ["node", "discovery", "trust", "wake", "delegation", "openaiCompat"],
     }
 
 

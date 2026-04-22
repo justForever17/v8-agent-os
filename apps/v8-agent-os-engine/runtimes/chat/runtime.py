@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, unquote, urlparse
 
-from api.models import ChatRequest
+from api.models import ChatRequest, ChatToolCall
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
 from core.chat_output_extractor import extract_text_and_reasoning
 from core.delegation_broker import (
@@ -71,6 +71,7 @@ from runtimes.memory.scope_resolution import (
     session_scope_binding_service,
 )
 from core.time_truth import utc_now_iso
+from runtimes.network_supervisor.openai_compat import build_external_tool_alias_maps
 
 
 class StreamFilter:
@@ -378,6 +379,13 @@ class ChatRuntime:
         interaction_kind = str(payload.get("interactionKind") or payload.get("interaction_kind") or "").strip().lower()
         return interaction_kind == "ask_user" or approval_kind == "ask_user"
 
+    def _is_external_tool_request(self, request_payload: dict[str, Any] | None) -> bool:
+        payload = request_payload or {}
+        approval_kind = str(payload.get("approvalKind") or payload.get("approval_kind") or "").strip().lower()
+        interaction_kind = str(payload.get("interactionKind") or payload.get("interaction_kind") or "").strip().lower()
+        external_origin = str(payload.get("externalOrigin") or payload.get("external_origin") or "").strip().lower()
+        return interaction_kind == "external_tool" or approval_kind == "external_tool" or external_origin == "network_client"
+
     def _build_ask_user_event(
         self,
         chat_run: ChatRunContext,
@@ -472,11 +480,31 @@ class ChatRuntime:
 
     def _to_langchain_messages(self, request: ChatRequest) -> list[Any]:
         lc_messages: list[Any] = []
+        wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(request.config.external_tools)
         for message in request.messages:
             if message.role == "user":
                 lc_messages.append(HumanMessage(content=message.content))
             elif message.role == "assistant":
-                lc_messages.append(AIMessage(content=message.content))
+                tool_calls_payload: list[dict[str, Any]] = []
+                for item in list(message.tool_calls or []):
+                    if not isinstance(item, ChatToolCall):
+                        continue
+                    function_payload = item.function
+                    tool_name = str(function_payload.name or "").strip()
+                    arguments_text = str(function_payload.arguments or "{}")
+                    try:
+                        parsed_arguments = json.loads(arguments_text) if arguments_text.strip() else {}
+                    except Exception:
+                        parsed_arguments = {}
+                    tool_calls_payload.append(
+                        {
+                            "id": str(item.id or "").strip() or None,
+                            "name": wire_to_internal.get(tool_name, tool_name),
+                            "args": parsed_arguments if isinstance(parsed_arguments, dict) else {},
+                            "type": str(item.type or "tool_call").strip() or "tool_call",
+                        }
+                    )
+                lc_messages.append(AIMessage(content=message.content, tool_calls=tool_calls_payload or None))
             elif message.role == "system":
                 lc_messages.append(SystemMessage(content=message.content))
             elif message.role == "tool":
@@ -484,7 +512,7 @@ class ChatRuntime:
                     ToolMessage(
                         content=message.content,
                         tool_call_id=message.tool_call_id,
-                        name=message.name or "unknown",
+                        name=wire_to_internal.get(str(message.name or "").strip(), message.name or "unknown"),
                     )
                 )
 
@@ -3514,6 +3542,37 @@ class ChatRuntime:
                         },
                     }
                     return emitted_events
+                if self._is_external_tool_request(interrupt_request):
+                    tool_call_id = str(interrupt_request.get("toolCallId") or "").strip()
+                    requested_tool_name = str(
+                        interrupt_request.get("internalAliasName")
+                        or interrupt_request.get("toolName")
+                        or interrupt_request.get("externalWireName")
+                        or ""
+                    ).strip()
+                    if not tool_call_id:
+                        for call in reversed(list(stream_state.tool_calls_buffer or [])):
+                            call_name = str((call or {}).get("name") or "").strip()
+                            call_id = str((call or {}).get("id") or "").strip()
+                            if requested_tool_name and call_name == requested_tool_name and call_id:
+                                tool_call_id = call_id
+                                break
+                            if not requested_tool_name and call_id:
+                                tool_call_id = call_id
+                                break
+                        if tool_call_id:
+                            interrupt_request["toolCallId"] = tool_call_id
+                    chat_run.run_handle.refresh_chat_snapshot()
+                    stream_state.interrupted_signal = {
+                        "command": "external_tool_requested",
+                        "reason": "external_tool",
+                        "payload": {
+                            "tool_call_id": tool_call_id or None,
+                            "external_wire_name": str(interrupt_request.get("externalWireName") or "").strip() or None,
+                            "internal_alias_name": str(interrupt_request.get("internalAliasName") or "").strip() or None,
+                        },
+                    }
+                    return emitted_events
                 approval_kind = interrupt_request.get("approvalKind") or "human_input_required"
                 approval = chat_run.run_handle.request_approval(
                     approval_kind=approval_kind,
@@ -4317,12 +4376,30 @@ class ChatRuntime:
                 node="subagent_swarm",
             )
 
-    def finalize_interrupted_run(self, chat_run: ChatRunContext, interrupted_signal: dict[str, Any]) -> list[dict[str, Any]]:
+    def finalize_interrupted_run(
+        self,
+        chat_run: ChatRunContext,
+        interrupted_signal: dict[str, Any],
+        stream_state: ChatStreamState | None = None,
+    ) -> list[dict[str, Any]]:
         if interrupted_signal.get("command") == "ask_user_requested":
             return [{"type": "done", "status": "waiting_input", "run_id": chat_run.active_run_id}]
         if interrupted_signal.get("command") == "approval_requested":
             status = "waiting_input" if str(interrupted_signal.get("reason") or "").strip().lower() == "ask_user" else "waiting_approval"
             return [{"type": "done", "status": status, "run_id": chat_run.active_run_id}]
+        if interrupted_signal.get("command") == "external_tool_requested":
+            if stream_state is not None:
+                stream_state.active_tool_call_ids.clear()
+                self.persist_final_assistant_message(chat_run, stream_state)
+            chat_run.run_handle.complete(reason="external_tool_requested", node="run_manager")
+            return [
+                {
+                    "type": "done",
+                    "status": "tool_calls_requested",
+                    "run_id": chat_run.active_run_id,
+                    "payload": dict(interrupted_signal.get("payload") or {}),
+                }
+            ]
         if interrupted_signal.get("command") in {"cancel", "interrupt"}:
             try:
                 from core.system_tools.native import _terminate_run_background_commands
@@ -4548,7 +4625,7 @@ class ChatRuntime:
                     )
                     next_heartbeat_at = now + 15.0
             if interrupted_signal and not lane_decision.acquired:
-                for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal):
+                for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
                     yield final_event
                 return
         if not lane_decision.acquired:
@@ -4701,7 +4778,7 @@ class ChatRuntime:
                     continue
 
             if interrupted_signal:
-                for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal):
+                for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
                     yield final_event
                 return
 

@@ -10,6 +10,7 @@ import MemoryAgentChat from "@/components/memory/MemoryAgentChat";
 import MemoryConfigPanel from "@/components/memory/MemoryConfigPanel";
 import MemoryRuntimeDiagnosticsPanel from "@/components/memory/MemoryRuntimeDiagnosticsPanel";
 import MemorySectionNav, { type MemorySectionKey } from "@/components/memory/MemorySectionNav";
+import MemoryWorkflowsPanel from "@/components/memory/MemoryWorkflowsPanel";
 import { PreferencesManager } from "@/components/memory/PreferencesManager";
 import { ProjectRegistryPanel } from "@/components/memory/ProjectRegistryPanel";
 import { Button } from "@/components/ui/button";
@@ -28,7 +29,7 @@ interface KnowledgeItem {
     scope: string;
     [key: string]: unknown;
 }
-const VALID_TABS = new Set(["preferences", "projects", "knowledge", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
+const VALID_TABS = new Set(["preferences", "projects", "knowledge", "workflows", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
 export default function MemoryDashboardPage() {
     const { toast } = useToast();
     const t = useT();
@@ -428,6 +429,10 @@ export default function MemoryDashboardPage() {
                                 {t("app.admin.dashboard.memory.page.ke9fc70e2")}
                             </Button>
                         </div>) : null}
+                </TabsContent>
+
+                <TabsContent value="workflows" className="space-y-4">
+                    {activeTab === "workflows" ? <MemoryWorkflowsPanel /> : null}
                 </TabsContent>
 
                 <TabsContent value="artifacts" className="space-y-4">

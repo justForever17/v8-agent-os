@@ -15,11 +15,15 @@ class InjectionService:
         user_query: str,
         scope: str = "global",
         scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> str:
         return memory_store.build_session_context(
             user_query=user_query,
             scope=scope,
             scope_chain=scope_chain,
+            session_id=session_id,
+            run_id=run_id,
         )
 
     def get_recent_logs(self, *, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:

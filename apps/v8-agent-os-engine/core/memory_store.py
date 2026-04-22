@@ -2099,7 +2099,14 @@ class MemoryStore:
     # Session 初始化（三层注入组装）
     # ==========================================
     
-    def build_session_context(self, user_query: str, scope: str = "global", scope_chain: Optional[List[str]] = None) -> str:
+    def build_session_context(
+        self,
+        user_query: str,
+        scope: str = "global",
+        scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> str:
         """
         构建渐进式 Session 上下文注入文本，结合历史概要、用户偏好、近期详细日志和紧凑前序摘要。
         Returns: 注入到 System Prompt 的文本
@@ -2118,7 +2125,7 @@ class MemoryStore:
 
         passive_context_options = self._resolve_passive_context_options(memory_config=memory_config)
         parts = []
-        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, navigation refs, and compact recent activity hints.")
+        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, procedural workflow hints, navigation refs, and compact recent activity hints.")
 
         # --- Layer 1: 用户画像 ---
         normalized_chain = self._normalize_scope_chain(scope=scope, scope_chain=scope_chain)
@@ -2147,6 +2154,21 @@ class MemoryStore:
                 f"{summary_text}\n"
                 "[/MEMORY SUMMARY]"
             )
+
+        workflow_hints_text = ""
+        try:
+            from runtimes.memory.workflow_service import workflow_memory_service
+
+            workflow_hints_text = workflow_memory_service.build_hints_block(
+                query=user_query,
+                scope_chain=normalized_chain,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        except Exception:
+            workflow_hints_text = ""
+        if workflow_hints_text:
+            parts.append(workflow_hints_text)
 
         memory_map_text = self._format_memory_map_for_injection(
             node_limit=passive_context_options["memoryMapNodeLimit"],

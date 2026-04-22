@@ -171,6 +171,19 @@ def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dic
     )
 
 
+def render_agent_tool_surface_summary(agent: dict) -> str:
+    """Render subagent tool exposure without implying contextual_auto has no tools."""
+
+    if not isinstance(agent, dict):
+        return "tools=unknown"
+    mode = str(agent.get("tool_mode") or agent.get("toolMode") or "").strip() or "contextual_auto"
+    if mode == "contextual_auto":
+        return "tools=dynamic(contextual_auto; selected per taskBrief)"
+    if mode == "explicit":
+        return f"tools=fixed:{len(agent.get('tools') or [])}"
+    return f"tools={mode}"
+
+
 def _annotate_last_human_message(
     messages,
     *,
@@ -399,6 +412,8 @@ def build_supervisor_system_content(
                         "id": str(agent.get("id") or "").strip(),
                         "name": str(agent.get("name") or "").strip(),
                         "description": str(agent.get("description") or "").strip(),
+                        "tool_mode": str(agent.get("tool_mode") or agent.get("toolMode") or "").strip(),
+                        "tools": [str(item) for item in list(agent.get("tools") or [])],
                         "capabilitySnapshot": agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {},
                     }
                     for agent in list(loaded_agents or [])
@@ -443,13 +458,17 @@ def build_supervisor_system_content(
         available_tools_context += "---------------------------------------\n"
 
         specialist_agents_context = "--- SPECIALIST AGENT REGISTRY ---\n"
+        specialist_agents_context += (
+            "Selection should prefer capabilitySnapshot; contextual_auto tools are assigned by "
+            "delegation_broker/contextual route at dispatch.\n"
+        )
         specialist_agents = [agent for agent in loaded_agents if agent.get("id") != "supervisor"]
         if specialist_agents:
             for agent in specialist_agents:
                 capability = _capability_summary(agent)
                 specialist_agents_context += (
                     f"- {agent.get('name') or agent.get('id')} ({agent.get('id')}): "
-                    f"{agent.get('description') or 'No description'} | tools={len(agent.get('tools') or [])}"
+                    f"{agent.get('description') or 'No description'} | {render_agent_tool_surface_summary(agent)}"
                     f"{' | ' + capability if capability else ''}\n"
                 )
         if external_workers:
@@ -488,6 +507,8 @@ def build_supervisor_system_content(
         user_query=user_query,
         scope=current_scope,
         scope_chain=scope_chain,
+        session_id=session_id,
+        run_id=state.get("run_id") or state.get("runId"),
     )
     workspace_rules_context = _build_workspace_rules_context(state=state, session_id=session_id)
 

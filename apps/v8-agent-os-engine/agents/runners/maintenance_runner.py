@@ -447,6 +447,7 @@ class MemoryAgentRunner:
         failed_targets: list[dict[str, str]] = []
         legacy_summary_touched_refs: list[str] = []
         legacy_summary_backfilled_count = 0
+        workflow_maintenance_result: Dict[str, Any] = {}
 
         try:
             for target in targets:
@@ -487,6 +488,16 @@ class MemoryAgentRunner:
                 if str(item).strip()
             ]
             legacy_summary_backfilled_count = int(backfill_result.get("updatedCount") or 0)
+            workflow_maintenance_result = memory_runtime.run_workflow_maintenance() or {}
+            run_handle.emit(
+                "memory.workflow.maintenance.completed",
+                {
+                    "candidate_count": int(workflow_maintenance_result.get("candidateCount") or 0),
+                    "updated_count": int(workflow_maintenance_result.get("updatedCount") or 0),
+                    "activated_count": int(workflow_maintenance_result.get("activatedCount") or 0),
+                    "quarantined_count": int(workflow_maintenance_result.get("quarantinedCount") or 0),
+                },
+            )
         except Exception as exc:
             run_handle.fail(str(exc), node="maintenance_runner")
             raise
@@ -514,6 +525,10 @@ class MemoryAgentRunner:
             "legacySummaryBackfilledCount": legacy_summary_backfilled_count,
             "legacySummaryTouchedRefs": legacy_summary_touched_refs,
             "failedTargets": failed_targets,
+            "workflowCandidateCount": int(workflow_maintenance_result.get("candidateCount") or 0),
+            "workflowCandidateUpdatedCount": int(workflow_maintenance_result.get("updatedCount") or 0),
+            "workflowActiveHintCount": int(workflow_maintenance_result.get("activatedCount") or 0),
+            "workflowQuarantinedCount": int(workflow_maintenance_result.get("quarantinedCount") or 0),
             "summaryHealthBefore": before_health,
             "summaryHealthAfter": after_health,
         }
@@ -527,6 +542,10 @@ class MemoryAgentRunner:
             "summary_stale_count_after": maintenance_meta["summaryStaleCountAfter"],
             "summary_backfilled_count": summary_backfilled_count,
             "legacy_summary_backfilled_count": legacy_summary_backfilled_count,
+            "workflow_candidate_count": maintenance_meta["workflowCandidateCount"],
+            "workflow_candidate_updated_count": maintenance_meta["workflowCandidateUpdatedCount"],
+            "workflow_active_hint_count": maintenance_meta["workflowActiveHintCount"],
+            "workflow_quarantined_count": maintenance_meta["workflowQuarantinedCount"],
             "touched_refs": touched_refs,
             "legacy_summary_touched_refs": legacy_summary_touched_refs,
             "failed_targets": failed_targets,

@@ -27,6 +27,7 @@ from runtimes.chat.runtime import StreamFilter
 from runtimes.memory.prompts import render_memory_admin_chat_prompt
 from runtimes.memory.project_registry import project_registry_service
 from runtimes.memory.runtime import memory_runtime
+from runtimes.memory.workflow_service import WORKFLOW_MEMORY_DEFAULTS
 
 
 router = APIRouter()
@@ -150,6 +151,10 @@ async def get_memory_config():
         config.setdefault("extraction_enabled", True)
         for key, value in MEMORY_DURABLE_POLICY_DEFAULTS.items():
             config.setdefault(key, value)
+        workflow_memory = config.get("workflowMemory")
+        if not isinstance(workflow_memory, dict):
+            workflow_memory = {}
+        config["workflowMemory"] = {**WORKFLOW_MEMORY_DEFAULTS, **workflow_memory}
         config.setdefault("graph_enabled", True)
         config.setdefault("fts_enabled", True)
         config["extraction_model"] = _get_role_binding("extraction")
@@ -230,6 +235,33 @@ async def update_memory_config(config: dict = Body(...)):
                     next_config[key] = max(0.0, min(float(next_config.get(key) or default), 1.0))
                 except (TypeError, ValueError):
                     next_config[key] = default
+        if "workflowMemory" in next_config:
+            workflow_memory = next_config.get("workflowMemory")
+            if not isinstance(workflow_memory, dict):
+                workflow_memory = {}
+            normalized_workflow = {**WORKFLOW_MEMORY_DEFAULTS, **workflow_memory}
+            for key in (
+                "enabled",
+                "hintInjectionEnabled",
+                "progressiveHintsEnabled",
+                "errorfulSuccessRequiresUserAcceptance",
+                "quarantineOnNegativeFeedback",
+                "requireApprovalForSideEffects",
+            ):
+                normalized_workflow[key] = bool(normalized_workflow.get(key))
+            for key, default, minimum, maximum in (
+                ("minSuccessCount", WORKFLOW_MEMORY_DEFAULTS["minSuccessCount"], 1, 10),
+                ("maxInjectedHints", WORKFLOW_MEMORY_DEFAULTS["maxInjectedHints"], 0, 5),
+                ("maxHintChars", WORKFLOW_MEMORY_DEFAULTS["maxHintChars"], 240, 2400),
+                ("maxActiveWorkflowGuidesPerRun", WORKFLOW_MEMORY_DEFAULTS["maxActiveWorkflowGuidesPerRun"], 0, 10),
+            ):
+                try:
+                    normalized_workflow[key] = max(minimum, min(int(normalized_workflow.get(key) or default), maximum))
+                except (TypeError, ValueError):
+                    normalized_workflow[key] = default
+            if not isinstance(normalized_workflow.get("riskTierActivationPolicy"), dict):
+                normalized_workflow["riskTierActivationPolicy"] = WORKFLOW_MEMORY_DEFAULTS["riskTierActivationPolicy"]
+            next_config["workflowMemory"] = normalized_workflow
         storage.save_memory_config(next_config)
         return {"status": "success"}
     except Exception as e:
@@ -288,6 +320,104 @@ async def get_memory_dashboard():
 async def clear_memory_dashboard_diagnostics():
     try:
         return memory_runtime.clear_diagnostics()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/workflows")
+async def list_memory_workflow_candidates(status: str = None, q: str = None, limit: int = 50):
+    try:
+        items = memory_runtime.list_workflow_candidates(status=status, query=q, limit=limit)
+        return {"items": items, "total": len(items)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/workflows/{candidate_id}")
+async def get_memory_workflow_candidate(candidate_id: str):
+    try:
+        candidate = memory_runtime.get_workflow_candidate(candidate_id)
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Workflow candidate not found")
+        return candidate
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/memory/workflows/{candidate_id}")
+async def update_memory_workflow_candidate(candidate_id: str, updates: dict = Body(...)):
+    try:
+        return memory_runtime.update_workflow_candidate(candidate_id, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/memory/workflows/{candidate_id}")
+async def delete_memory_workflow_candidate(candidate_id: str):
+    try:
+        deleted = memory_runtime.delete_workflow_candidate(candidate_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Workflow candidate not found")
+        return {"deleted": True, "id": candidate_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/workflows/{candidate_id}/merge")
+async def merge_memory_workflow_candidates(candidate_id: str, payload: dict = Body(...)):
+    try:
+        source_ids = payload.get("sourceIds") or payload.get("source_ids") or []
+        if not isinstance(source_ids, list):
+            raise HTTPException(status_code=400, detail="sourceIds must be a list")
+        return memory_runtime.merge_workflow_candidates(target_id=candidate_id, source_ids=[str(item) for item in source_ids])
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/workflows/{candidate_id}/episodes")
+async def list_memory_workflow_episodes(candidate_id: str, limit: int = 50):
+    try:
+        return {
+            "items": memory_runtime.list_workflow_episodes(candidate_id=candidate_id, limit=limit),
+            "candidateId": candidate_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/workflows/{candidate_id}/hint-events")
+async def list_memory_workflow_hint_events(candidate_id: str, limit: int = 50):
+    try:
+        return {
+            "items": memory_runtime.list_workflow_hint_events(candidate_id=candidate_id, limit=limit),
+            "candidateId": candidate_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/workflows/{candidate_id}/hint-events")
+async def record_memory_workflow_hint_event(candidate_id: str, payload: dict = Body(...)):
+    try:
+        return memory_runtime.record_workflow_hint_event(
+            candidate_id=candidate_id,
+            query=str(payload.get("query") or ""),
+            hint=payload.get("hint") if isinstance(payload.get("hint"), dict) else {},
+            session_id=payload.get("sessionId") or payload.get("session_id"),
+            run_id=payload.get("runId") or payload.get("run_id"),
+            outcome=str(payload.get("outcome") or "injected"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

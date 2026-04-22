@@ -102,6 +102,25 @@ class RelationExtraction(BaseModel):
     predicate: str = Field(description="Relation predicate (e.g., USES, DEPENDS_ON, PREFERS, IMPLEMENTS)")
     object: str = Field(description="Object entity name")
 
+class WorkflowEpisodeExtraction(BaseModel):
+    task_family: str = Field(description="Reusable workflow family, e.g. 'install and use a V8 skill' or 'debug desktop live bridge'")
+    initial_user_intent: str = Field(default="", description="The user intent that triggered the workflow")
+    canonical_trigger_patterns: List[str] = Field(default_factory=list, description="Short trigger phrases that would match future similar tasks")
+    first_action_signature: str = Field(default="", description="The first useful action that indicates this workflow has started")
+    runtime_lane: str = Field(default="", description="Runtime lane or surface involved, e.g. chat, desktop, memory, extensions")
+    ordered_actions: List[str] = Field(default_factory=list, description="Cleaned successful action chain, not raw trial-and-error")
+    tool_skill_sequence: List[str] = Field(default_factory=list, description="Tools, brokers, skills, or runtimes used in the successful path")
+    failure_markers: List[str] = Field(default_factory=list, description="Wrong turns, failing tools, or confusing signals seen in this episode")
+    user_correction_points: List[str] = Field(default_factory=list, description="User corrections or clarifications that changed the path")
+    final_success_evidence: str = Field(default="", description="Evidence that the workflow finally succeeded or was accepted")
+    user_verdict: str = Field(default="", description="Explicit user acceptance, rejection, or correction if present")
+    side_effect_scope: str = Field(default="", description="Side effects involved, e.g. read-only, writes files, launches app, external network")
+    privacy_scope: str = Field(default="local_runtime", description="Privacy scope: local_runtime | project | global | sensitive")
+    golden_path_steps: List[str] = Field(default_factory=list, description="Cleaned 'do this next time' steps")
+    anti_patterns: List[str] = Field(default_factory=list, description="What not to repeat from the failed or noisy path")
+    verification_steps: List[str] = Field(default_factory=list, description="How to verify this workflow succeeded")
+    confidence: float = Field(default=0.5, description="Confidence score from 0.0 to 1.0")
+
 class MemoryExtractionResult(BaseModel):
     summary: str = Field(description="A concise, one-sentence summary of the core outcome or discussed topic of the session")
     tags: List[str] = Field(description="A list of 3-5 tags describing the session")
@@ -109,6 +128,7 @@ class MemoryExtractionResult(BaseModel):
     knowledge: List[KnowledgeExtraction] = Field(default_factory=list, description="Extracted non-transient semantic facts")
     entities: List[EntityExtraction] = Field(default_factory=list, description="Extracted entities for the knowledge graph")
     relations: List[RelationExtraction] = Field(default_factory=list, description="Extracted relationships between entities")
+    workflow_episodes: List[WorkflowEpisodeExtraction] = Field(default_factory=list, description="Reusable procedural workflow episodes. Only emit when the transcript proves a repeatable action chain with success evidence.")
 
 
 class PeriodicSummaryPayload(BaseModel):
@@ -914,6 +934,86 @@ def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Di
                 logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
     return stored, stored_items
 
+def _store_workflow_episodes(
+    result: MemoryExtractionResult,
+    *,
+    session_id: str,
+    run_handle: Any | None,
+    effective_memory_scope: str,
+    memory_policy: str,
+    evidence_payloads: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[int, List[Dict[str, Any]]]:
+    """Store reusable procedural workflow episodes separately from factual knowledge."""
+    if memory_policy != "durable":
+        return 0, []
+    workflow_items = list(getattr(result, "workflow_episodes", []) or [])
+    evidence_items = list(evidence_payloads or [])
+    if not workflow_items:
+        workflow_items = []
+    if not workflow_items and not evidence_items:
+        return 0, []
+    stored: List[Dict[str, Any]] = []
+    run_id = getattr(run_handle, "run_id", None)
+    payloads: List[tuple[Dict[str, Any], str]] = []
+    for item in evidence_items:
+        if isinstance(item, dict):
+            payloads.append((item, "runtime_evidence"))
+    for item in workflow_items:
+        payload = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        payloads.append((payload, "memory_agent"))
+    for payload, extraction_source in payloads:
+        try:
+            record = memory_runtime.record_workflow_episode(
+                payload=payload,
+                session_id=session_id,
+                run_id=run_id,
+                scope=effective_memory_scope,
+                extraction_source=extraction_source,
+            )
+            episode = record.get("episode") or {}
+            candidate = record.get("candidate") or {}
+            stored.append({"episode": episode, "candidate": candidate})
+            _emit_memory_event(
+                run_handle,
+                "memory.workflow.episode_extracted",
+                {
+                    "session_id": session_id,
+                    "episode_id": episode.get("id"),
+                    "candidate_id": candidate.get("id"),
+                    "task_family": episode.get("task_family"),
+                    "status": episode.get("status"),
+                    "candidate_status": candidate.get("status"),
+                    "extraction_source": extraction_source,
+                    "risk_tier": candidate.get("riskTier") or candidate.get("risk_tier"),
+                },
+            )
+            _emit_memory_event(
+                run_handle,
+                "memory.workflow.candidate_updated",
+                {
+                    "candidate_id": candidate.get("id"),
+                    "task_family": candidate.get("task_family"),
+                    "status": candidate.get("status"),
+                    "success_count": candidate.get("success_count"),
+                    "correction_count": candidate.get("correction_count"),
+                    "negative_feedback_count": candidate.get("negative_feedback_count"),
+                },
+            )
+            if str(candidate.get("status") or "") == "quarantine":
+                _emit_memory_event(
+                    run_handle,
+                    "memory.workflow.quarantined",
+                    {
+                        "candidate_id": candidate.get("id"),
+                        "episode_id": episode.get("id"),
+                        "task_family": candidate.get("task_family"),
+                        "reason": "negative_feedback_or_policy",
+                    },
+                )
+        except Exception as exc:
+            logger.warning(f"[MemoryAgent] Workflow episode skipped: {exc}")
+    return len(stored), stored
+
 def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_scope: str):
     specific_prefixes = ("project:", "channel:")
     target_scope = str(effective_memory_scope or "").strip() or "global"
@@ -932,6 +1032,9 @@ def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_sc
         pref.scope = _coerce_scope(pref.scope)
     for fact in result.knowledge:
         fact.scope = _coerce_scope(fact.scope)
+    for workflow in getattr(result, "workflow_episodes", []) or []:
+        if workflow.privacy_scope not in {"sensitive"}:
+            workflow.privacy_scope = workflow.privacy_scope or "local_runtime"
 
 def _build_knowledge_graph(
     result: MemoryExtractionResult,
@@ -1231,6 +1334,7 @@ def _append_session_log(
         "memory_policy": memory_policy,
         "extracted_preference_count": len(result.preferences),
         "extracted_knowledge_count": len(result.knowledge),
+        "extracted_workflow_episode_count": len(getattr(result, "workflow_episodes", []) or []),
         "persisted_preference_count": len(stored_preference_items),
         "persisted_knowledge_count": len(stored_knowledge_items),
         "persisted_operational_workflow_count": sum(
@@ -1599,6 +1703,30 @@ def analyze_session_memory(
             "result_count": len(past_knowledge) if "past_knowledge" in locals() else 0,
         },
     )
+
+    workflow_evidence_payloads: List[Dict[str, Any]] = []
+    try:
+        workflow_evidence_payloads = memory_runtime.collect_workflow_evidence(
+            session_id=session_id,
+            run_id=parent_run_id,
+        )
+    except Exception as exc:
+        logger.warning(f"[MemoryAgent] Workflow evidence collection failed: {exc}")
+        workflow_evidence_payloads = []
+    _emit_memory_event(
+        run_handle,
+        "memory.workflow.evidence_collected",
+        {
+            "session_id": session_id,
+            "parent_run_id": parent_run_id,
+            "episode_draft_count": len(workflow_evidence_payloads),
+            "evidence_action_count": sum(
+                int(((item.get("evidenceSummary") or {}).get("eventCount")) or 0)
+                for item in workflow_evidence_payloads
+                if isinstance(item, dict)
+            ),
+        },
+    )
     
     # 4. LLM 结构化提取
     try:
@@ -1723,6 +1851,7 @@ def analyze_session_memory(
             "tags": result.tags,
             "preference_count": len(result.preferences),
             "knowledge_count": len(result.knowledge),
+            "workflow_episode_count": len(getattr(result, "workflow_episodes", []) or []),
             "entity_count": len(result.entities),
             "relation_count": len(result.relations),
             "extraction_mode": extraction_mode,
@@ -1742,10 +1871,20 @@ def analyze_session_memory(
     stored_knowledge = 0
     stored_preference_items: List[PreferenceExtraction] = []
     stored_knowledge_items: List[KnowledgeExtraction] = []
+    stored_workflows = 0
+    stored_workflow_records: List[Dict[str, Any]] = []
     graph_stats = {"entities": 0, "relations": 0}
     if memory_policy == "durable":
         stored_preferences, stored_preference_items = _store_preferences(result, policy)
         stored_knowledge, stored_knowledge_items = _store_knowledge(result, session_id, policy)
+        stored_workflows, stored_workflow_records = _store_workflow_episodes(
+            result,
+            session_id=session_id,
+            run_handle=run_handle,
+            effective_memory_scope=effective_memory_scope,
+            memory_policy=memory_policy,
+            evidence_payloads=workflow_evidence_payloads,
+        )
         graph_stats = _build_knowledge_graph(result, stored_knowledge_items=stored_knowledge_items)
     filter_reasons = _filter_reason_summary(
         result,
@@ -1832,8 +1971,8 @@ def analyze_session_memory(
         no_persisted_memory_reason = "daily_summary_only"
     elif memory_policy == "skipped":
         no_persisted_memory_reason = "skipped"
-    elif stored_preferences + stored_knowledge <= 0:
-        extracted_memory_items = len(result.preferences) + len(result.knowledge)
+    elif stored_preferences + stored_knowledge + stored_workflows <= 0:
+        extracted_memory_items = len(result.preferences) + len(result.knowledge) + len(getattr(result, "workflow_episodes", []) or [])
         no_persisted_memory_reason = "policy_filtered" if extracted_memory_items > 0 else "model_empty"
     current_hash = _message_hash(transcript_entries)
     last_entry = transcript_entries[-1] if transcript_entries else {}
@@ -1860,10 +1999,17 @@ def analyze_session_memory(
                 "extractionFailureReason": None,
                 "extractedPreferenceCount": len(result.preferences),
                 "extractedKnowledgeCount": len(result.knowledge),
+                "extractedWorkflowEpisodeCount": len(getattr(result, "workflow_episodes", []) or []),
                 "extractedEntityCount": len(result.entities),
                 "extractedRelationCount": len(result.relations),
                 "persistedPreferenceCount": stored_preferences,
                 "persistedKnowledgeCount": stored_knowledge,
+                "persistedWorkflowEpisodeCount": stored_workflows,
+                "persistedWorkflowCandidateIds": [
+                    ((item.get("candidate") or {}).get("id"))
+                    for item in stored_workflow_records
+                    if isinstance(item, dict)
+                ],
                 "persistedOperationalWorkflowCount": persisted_operational_workflows,
                 "persistedEntityCount": graph_stats["entities"],
                 "persistedRelationCount": graph_stats["relations"],
@@ -1895,10 +2041,12 @@ def analyze_session_memory(
             "relation_count": graph_stats["relations"],
             "extracted_preference_count": len(result.preferences),
             "extracted_knowledge_count": len(result.knowledge),
+            "extracted_workflow_episode_count": len(getattr(result, "workflow_episodes", []) or []),
             "extracted_entity_count": len(result.entities),
             "extracted_relation_count": len(result.relations),
             "persisted_preference_count": stored_preferences,
             "persisted_knowledge_count": stored_knowledge,
+            "persisted_workflow_episode_count": stored_workflows,
             "persisted_operational_workflow_count": persisted_operational_workflows,
             "persisted_entity_count": graph_stats["entities"],
             "persisted_relation_count": graph_stats["relations"],
@@ -1920,6 +2068,7 @@ def analyze_session_memory(
         f"[MemoryAgent] === Complete: "
         f"{len(result.knowledge)} facts, "
         f"{len(result.preferences)} prefs, "
+        f"{len(getattr(result, 'workflow_episodes', []) or [])} workflow episodes, "
         f"{len(result.relations)} relations extracted. ==="
     )
     
@@ -1929,8 +2078,8 @@ def analyze_session_memory(
         status="SUCCESS",
         details=(
             f"Session {session_id[:8]} => extracted {len(result.knowledge)} facts, "
-            f"{len(result.preferences)} prefs, {len(result.relations)} relations; "
-            f"persisted {stored_knowledge} facts, {stored_preferences} prefs, "
+            f"{len(result.preferences)} prefs, {len(getattr(result, 'workflow_episodes', []) or [])} workflow episodes, {len(result.relations)} relations; "
+            f"persisted {stored_knowledge} facts, {stored_preferences} prefs, {stored_workflows} workflows, "
             f"{graph_stats['relations']} graph relations. "
             f"source={transcript['source']}, entries={len(transcript_entries)}, "
             f"seq={transcript['latest_seq']}"
@@ -1952,10 +2101,12 @@ def analyze_session_memory(
         "relation_count": graph_stats["relations"],
         "extracted_preference_count": len(result.preferences),
         "extracted_knowledge_count": len(result.knowledge),
+        "extracted_workflow_episode_count": len(getattr(result, "workflow_episodes", []) or []),
         "extracted_entity_count": len(result.entities),
         "extracted_relation_count": len(result.relations),
         "persisted_preference_count": stored_preferences,
         "persisted_knowledge_count": stored_knowledge,
+        "persisted_workflow_episode_count": stored_workflows,
         "persisted_operational_workflow_count": persisted_operational_workflows,
         "persisted_entity_count": graph_stats["entities"],
         "persisted_relation_count": graph_stats["relations"],

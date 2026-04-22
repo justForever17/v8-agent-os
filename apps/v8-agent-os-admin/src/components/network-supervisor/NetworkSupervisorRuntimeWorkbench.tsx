@@ -65,6 +65,14 @@ type RuntimeConfig = {
         maxConcurrent: number;
         defaultTimeoutSeconds: number;
     };
+    openaiCompat: {
+        enabled: boolean;
+        adminRelayOnly: boolean;
+        allowWorkspaceHeaders: boolean;
+        allowRawWorkspacePath: boolean;
+        maxExternalTools: number;
+        defaultScopeMode: string;
+    };
 };
 type Availability = {
     available: boolean;
@@ -94,6 +102,18 @@ type RuntimeStatus = {
         activeInbound: number;
         trackedCount: number;
     };
+    openaiCompat?: {
+        enabled: boolean;
+        adminRelayOnly: boolean;
+        available: boolean;
+        tokenCount: number;
+        baseUrlHint: string;
+        chatCompletionsPath: string;
+        maxExternalTools: number;
+        allowWorkspaceHeaders: boolean;
+        allowRawWorkspacePath: boolean;
+        defaultScopeMode: string;
+    };
     delegationAvailability: Availability;
     toolAvailability?: {
         delegate_network_task?: Availability;
@@ -114,6 +134,14 @@ type DiagState = {
     note: string;
     task: string;
     result: string;
+};
+type OpenAICompatToken = {
+    id: string;
+    label: string;
+    token: string;
+    fingerprint: string;
+    createdAt?: string | null;
+    source?: string;
 };
 type NetworkSupervisorRuntimeWorkbenchProps = {
     bridgeDiagnostics?: CanonicalConfigDiagnostics;
@@ -137,6 +165,14 @@ const DEFAULT_CONFIG: RuntimeConfig = {
     trust: { enrollmentMode: "manual", allowedScopes: [], trustedPeers: [] },
     wake: { enabled: true, ackTimeoutSeconds: 10 },
     delegation: { enabled: true, maxConcurrent: 2, defaultTimeoutSeconds: 120 },
+    openaiCompat: {
+        enabled: false,
+        adminRelayOnly: true,
+        allowWorkspaceHeaders: true,
+        allowRawWorkspacePath: false,
+        maxExternalTools: 8,
+        defaultScopeMode: "explicit",
+    },
 };
 const EMPTY_STATUS: RuntimeStatus = {
     enabled: false,
@@ -151,6 +187,18 @@ const EMPTY_STATUS: RuntimeStatus = {
     },
     discovery: { lanEnabled: false, wanBootstrapPeers: [], lastAnnounceAt: null, onlinePeerCount: 0, discoveredPeerCount: 0 },
     delegation: { enabled: false, maxConcurrent: 0, activeInbound: 0, trackedCount: 0 },
+    openaiCompat: {
+        enabled: false,
+        adminRelayOnly: true,
+        available: false,
+        tokenCount: 0,
+        baseUrlHint: "http://localhost:9528/api/network-supervisor/openai/v1",
+        chatCompletionsPath: "/chat/completions",
+        maxExternalTools: 8,
+        allowWorkspaceHeaders: true,
+        allowRawWorkspacePath: false,
+        defaultScopeMode: "explicit",
+    },
     delegationAvailability: { available: false, reasons: [] },
     toolAvailability: {},
 };
@@ -189,16 +237,30 @@ function mergeConfig(value?: Partial<RuntimeConfig>): RuntimeConfig {
         trust: { ...DEFAULT_CONFIG.trust, ...(payload.trust || {}) },
         wake: { ...DEFAULT_CONFIG.wake, ...(payload.wake || {}) },
         delegation: { ...DEFAULT_CONFIG.delegation, ...(payload.delegation || {}) },
+        openaiCompat: { ...DEFAULT_CONFIG.openaiCompat, ...(payload.openaiCompat || {}) },
     };
 }
 function normalizeStatus(value: unknown): RuntimeStatus {
     const payload = (value && typeof value === "object") ? value as Partial<RuntimeStatus> : {};
+    const openaiCompat = (payload.openaiCompat || {}) as NonNullable<RuntimeStatus["openaiCompat"]>;
     return {
         ...EMPTY_STATUS,
         ...payload,
         node: { ...EMPTY_STATUS.node, ...(payload.node || {}) },
         discovery: { ...EMPTY_STATUS.discovery, ...(payload.discovery || {}) },
         delegation: { ...EMPTY_STATUS.delegation, ...(payload.delegation || {}) },
+        openaiCompat: {
+            enabled: Boolean(openaiCompat.enabled),
+            adminRelayOnly: openaiCompat.adminRelayOnly !== false,
+            available: Boolean(openaiCompat.available),
+            tokenCount: Number(openaiCompat.tokenCount || 0),
+            baseUrlHint: String(openaiCompat.baseUrlHint || EMPTY_STATUS.openaiCompat?.baseUrlHint || ""),
+            chatCompletionsPath: String(openaiCompat.chatCompletionsPath || EMPTY_STATUS.openaiCompat?.chatCompletionsPath || ""),
+            maxExternalTools: Number(openaiCompat.maxExternalTools || EMPTY_STATUS.openaiCompat?.maxExternalTools || 0),
+            allowWorkspaceHeaders: openaiCompat.allowWorkspaceHeaders !== false,
+            allowRawWorkspacePath: Boolean(openaiCompat.allowRawWorkspacePath),
+            defaultScopeMode: String(openaiCompat.defaultScopeMode || EMPTY_STATUS.openaiCompat?.defaultScopeMode || "explicit"),
+        },
         delegationAvailability: {
             ...EMPTY_STATUS.delegationAvailability,
             ...(payload.delegationAvailability || {}),
@@ -228,11 +290,33 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const [loadError, setLoadError] = React.useState<string | null>(null);
     const [savingConfig, setSavingConfig] = React.useState(false);
     const [savingPeer, setSavingPeer] = React.useState(false);
+    const [tokens, setTokens] = React.useState<OpenAICompatToken[]>([]);
+    const [tokenLabel, setTokenLabel] = React.useState("");
+    const [tokenBusy, setTokenBusy] = React.useState(false);
+    const [adminOrigin, setAdminOrigin] = React.useState("http://localhost:9528");
     const [running, setRunning] = React.useState<"" | "challenge" | "wake" | "delegate">("");
     const docsUrl = locale === "zh-CN"
         ? "https://github.com/justForever17/v8-agent-os/blob/main/docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN_ZH.md"
         : "https://github.com/justForever17/v8-agent-os/blob/main/docs/NETWORK_SUPERVISOR_RUNTIME_IMPLEMENTATION_PLAN.md";
     const availability = status.toolAvailability?.delegate_network_task || status.delegationAvailability;
+    const compatBaseUrl = `${adminOrigin}/api/network-supervisor/openai/v1`;
+    const compatChatUrl = `${compatBaseUrl}/chat/completions`;
+    const primaryToken = tokens[0]?.token || "";
+    const curlExample = `curl ${compatChatUrl} \\
+  -H "Authorization: Bearer ${primaryToken || "<API_KEY>"}" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"model\\":\\"gpt-4o\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
+    const sdkExample = `from openai import OpenAI
+
+client = OpenAI(
+    base_url="${compatBaseUrl}",
+    api_key="${primaryToken || "<API_KEY>"}",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "ping"}],
+)`;
     const portNotices = bridgeDiagnostics?.notices || [];
     const availabilityReason = React.useCallback((reason: string) => {
         switch (reason) {
@@ -266,19 +350,26 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
                 return notice.path;
         }
     }, [t]);
+    React.useEffect(() => {
+        if (typeof window !== "undefined" && window.location?.origin) {
+            setAdminOrigin(window.location.origin);
+        }
+    }, []);
     const loadAll = React.useCallback(async () => {
         setLoading(true);
         setLoadError(null);
         try {
-            const [configRes, statusRes, peerRes] = await Promise.all([
+            const [configRes, statusRes, peerRes, tokenRes] = await Promise.all([
                 fetch("/api/config-registry/network-supervisor-runtime", { cache: "no-store" }),
                 fetch("/api/network-supervisor/status", { cache: "no-store" }),
                 fetch("/api/network-supervisor/peers", { cache: "no-store" }),
+                fetch("/api/network-supervisor/openai/tokens", { cache: "no-store" }),
             ]);
-            const [configData, statusData, peerData] = await Promise.all([
+            const [configData, statusData, peerData, tokenData] = await Promise.all([
                 configRes.json().catch(() => ({})),
                 statusRes.json().catch(() => ({})),
                 peerRes.json().catch(() => ({})),
+                tokenRes.json().catch(() => ({})),
             ]);
             if (!configRes.ok)
                 throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
@@ -286,11 +377,14 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
                 throw new Error(detail(statusData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
             if (!peerRes.ok)
                 throw new Error(detail(peerData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k66ef1038")));
+            if (!tokenRes.ok)
+                throw new Error(detail(tokenData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokensReadFailed")));
             setConfig(mergeConfig((configData as {
                 data?: Partial<RuntimeConfig>;
             }).data));
             setStatus(normalizeStatus(statusData));
             setPeers(normalizePeers(peerData));
+            setTokens(Array.isArray((tokenData as { items?: OpenAICompatToken[] }).items) ? (tokenData as { items: OpenAICompatToken[] }).items : []);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k105089b2");
@@ -319,6 +413,85 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const setDelegation = React.useCallback((patch: Partial<RuntimeConfig["delegation"]>) => {
         setConfig((prev) => ({ ...prev, delegation: { ...prev.delegation, ...patch } }));
     }, []);
+    const setOpenAICompat = React.useCallback((patch: Partial<RuntimeConfig["openaiCompat"]>) => {
+        setConfig((prev) => ({ ...prev, openaiCompat: { ...prev.openaiCompat, ...patch } }));
+    }, []);
+    const copyText = React.useCallback(async (value: string, label: string) => {
+        if (!value) {
+            toast({
+                variant: "destructive",
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopyFailed"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMissingCopyValue"),
+            });
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(value);
+            toast({
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopied"),
+                description: label,
+            });
+        } catch {
+            toast({
+                variant: "destructive",
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopyFailed"),
+                description: value,
+            });
+        }
+    }, [t, toast]);
+    const createCompatToken = React.useCallback(async () => {
+        setTokenBusy(true);
+        try {
+            const response = await fetch("/api/network-supervisor/openai/tokens", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ label: tokenLabel.trim() || "OpenAI compat key" }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(detail(payload, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreateFailed")));
+            }
+            setTokenLabel("");
+            toast({
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreated"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreatedDescription"),
+            });
+            await loadAll();
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreateFailed"),
+                description: error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokenMutationFailed"),
+            });
+        } finally {
+            setTokenBusy(false);
+        }
+    }, [loadAll, t, toast, tokenLabel]);
+    const deleteCompatToken = React.useCallback(async (tokenId: string) => {
+        setTokenBusy(true);
+        try {
+            const response = await fetch(`/api/network-supervisor/openai/tokens/${encodeURIComponent(tokenId)}`, {
+                method: "DELETE",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(detail(payload, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeleteFailed")));
+            }
+            toast({
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeleted"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeletedDescription"),
+            });
+            await loadAll();
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeleteFailed"),
+                description: error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokenMutationFailed"),
+            });
+        } finally {
+            setTokenBusy(false);
+        }
+    }, [loadAll, t, toast]);
     const fillPeerForm = React.useCallback((peer: PeerItem) => {
         setPeerForm({
             peerId: peer.peerId,
@@ -520,8 +693,130 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
                     </div>
                 </ConfigCard>) : null}
 
+            <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTitle"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDescription"} variant="editor" bodyHeight="auto">
+                <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
+                    <div className="space-y-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={config.enabled && config.openaiCompat.enabled ? "default" : "secondary"}>
+                                {config.enabled && config.openaiCompat.enabled ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatReady") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDisabled")}
+                            </Badge>
+                            <Badge variant={tokens.length ? "default" : "secondary"}>
+                                {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokenCount", { count: tokens.length })}
+                            </Badge>
+                            <Badge variant={config.openaiCompat.adminRelayOnly ? "default" : "secondary"}>
+                                {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatAdminRelayOnly")}
+                            </Badge>
+                        </div>
+
+                        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                            <div className="grid gap-2">
+                                <Label htmlFor="openai-compat-base-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatBaseUrl")}</Label>
+                                <div className="flex gap-2">
+                                    <Input id="openai-compat-base-url" readOnly value={compatBaseUrl}/>
+                                    <Button type="button" variant="outline" onClick={() => void copyText(compatBaseUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatBaseUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
+                                </div>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="openai-compat-chat-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatChatUrl")}</Label>
+                                <div className="flex gap-2">
+                                    <Input id="openai-compat-chat-url" readOnly value={compatChatUrl}/>
+                                    <Button type="button" variant="outline" onClick={() => void copyText(compatChatUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatChatUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeys")}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeysDescription")}</div>
+                                </div>
+                                <div className="flex gap-2">
+                                    <Input className="w-48" value={tokenLabel} onChange={(event) => setTokenLabel(event.target.value)} placeholder={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokenLabelPlaceholder")}/>
+                                    <Button type="button" onClick={() => void createCompatToken()} disabled={tokenBusy}>
+                                        {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreateToken")}
+                                    </Button>
+                                </div>
+                            </div>
+                            {tokens.length ? (<div className="space-y-2">
+                                    {tokens.map((token) => (<div key={token.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-medium text-slate-900">{token.label || token.id}</div>
+                                                    <div className="text-xs text-slate-500">{token.fingerprint || "—"}{token.createdAt ? ` · ${token.createdAt}` : ""}</div>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <Button type="button" size="sm" variant="outline" onClick={() => void copyText(token.token, "API Key")}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopyKey")}</Button>
+                                                    <Button type="button" size="sm" variant="outline" onClick={() => void deleteCompatToken(token.id)} disabled={tokenBusy}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeleteKey")}</Button>
+                                                </div>
+                                            </div>
+                                            <Input className="mt-2 font-mono text-xs" readOnly value={token.token}/>
+                                        </div>))}
+                                </div>) : (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatNoToken")}
+                                </div>)}
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnable")}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnableDescription")}</div>
+                                </div>
+                                <Switch checked={config.openaiCompat.enabled} onCheckedChange={(checked) => setOpenAICompat({ enabled: checked })} aria-label="openai-compat-enabled"/>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</div>
+                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")}</div>
+                                </div>
+                                <Switch checked={config.openaiCompat.allowWorkspaceHeaders} onCheckedChange={(checked) => setOpenAICompat({ allowWorkspaceHeaders: checked })} aria-label="openai-compat-workspace-headers"/>
+                            </div>
+                            <div className="flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+                                <div>
+                                    <div className="text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</div>
+                                    <div className="text-xs text-amber-800">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")}</div>
+                                </div>
+                                <Switch checked={config.openaiCompat.allowRawWorkspacePath} onCheckedChange={(checked) => setOpenAICompat({ allowRawWorkspacePath: checked })} aria-label="openai-compat-raw-workspace-path"/>
+                            </div>
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                <div className="space-y-2">
+                                    <Label htmlFor="openai-compat-max-tools">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMaxExternalTools")}</Label>
+                                    <Input id="openai-compat-max-tools" type="number" min={0} value={String(config.openaiCompat.maxExternalTools)} onChange={(event) => setOpenAICompat({ maxExternalTools: Number(event.target.value || 0) })}/>
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="openai-compat-scope-mode">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatScopeMode")}</Label>
+                                    <Input id="openai-compat-scope-mode" value={config.openaiCompat.defaultScopeMode} onChange={(event) => setOpenAICompat({ defaultScopeMode: event.target.value })}/>
+                                </div>
+                            </div>
+                            <Button type="button" onClick={() => {
+                        setConfig((prev) => ({ ...prev, enabled: true, openaiCompat: { ...prev.openaiCompat, enabled: true, adminRelayOnly: true } }));
+                    }}>
+                                {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatQuickEnable")}
+                            </Button>
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCurlExample")}</Label>
+                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{curlExample}</pre>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatSdkExample")}</Label>
+                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{sdkExample}</pre>
+                        </div>
+                        <div className="flex justify-end">
+                            <Button onClick={() => void saveConfig()} disabled={savingConfig}>
+                                {savingConfig ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc225e8a3") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc1f71c38")}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            </ConfigCard>
+
             <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-                <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2fa8f47d"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf44c90c3"} variant="editor" bodyHeight="auto">
+                <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.networkNodeTitle"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.networkNodeDescription"} variant="editor" bodyHeight="auto">
                     <div className="grid gap-5 lg:grid-cols-2">
                         <div className="space-y-4">
                             <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">

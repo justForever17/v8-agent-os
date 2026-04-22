@@ -9,6 +9,8 @@ from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
 )
+from runtimes.memory.workflow_service import workflow_memory_service
+from runtimes.memory.workflow_evidence import workflow_evidence_collector
 
 __all__ = [
     "injection_service",
@@ -20,4 +22,6 @@ __all__ = [
     "recall_service",
     "scope_resolution_service",
     "session_scope_binding_service",
+    "workflow_memory_service",
+    "workflow_evidence_collector",
 ]

@@ -39,6 +39,19 @@ interface MemoryConfig {
     extraction_enabled?: boolean;
     graph_enabled?: boolean;
     fts_enabled?: boolean;
+    workflowMemory?: {
+        enabled?: boolean;
+        hintInjectionEnabled?: boolean;
+        progressiveHintsEnabled?: boolean;
+        minSuccessCount?: number;
+        errorfulSuccessRequiresUserAcceptance?: boolean;
+        maxInjectedHints?: number;
+        maxHintChars?: number;
+        maxActiveWorkflowGuidesPerRun?: number;
+        quarantineOnNegativeFeedback?: boolean;
+        requireApprovalForSideEffects?: boolean;
+        riskTierActivationPolicy?: Record<string, string>;
+    };
     preference_importance_threshold?: number;
     preference_confidence_threshold?: number;
     knowledge_importance_threshold?: number;
@@ -359,6 +372,77 @@ export default function MemoryConfigPanel() {
                                 <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k60bfdf7d")}</p>
                             </div>
                             <Switch checked={config.extraction_enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, extraction_enabled: checked }))}/>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4 rounded-lg border p-4">
+                        <div className="space-y-1">
+                            <h3 className="text-sm font-semibold">{t("components.memory.MemoryConfigPanel.workflowMemory.title")}</h3>
+                            <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.description")}</p>
+                        </div>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.extraction")}</Label>
+                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.extractionDesc")}</p>
+                                </div>
+                                <Switch checked={config.workflowMemory?.enabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), enabled: checked } }))}/>
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.hints")}</Label>
+                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.hintsDesc")}</p>
+                                </div>
+                                <Switch checked={config.workflowMemory?.hintInjectionEnabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), hintInjectionEnabled: checked } }))}/>
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.quarantine")}</Label>
+                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.quarantineDesc")}</p>
+                                </div>
+                                <Switch checked={config.workflowMemory?.quarantineOnNegativeFeedback ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), quarantineOnNegativeFeedback: checked } }))}/>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.progressive")}</Label>
+                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.progressiveDesc")}</p>
+                                </div>
+                                <Switch checked={config.workflowMemory?.progressiveHintsEnabled ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), progressiveHintsEnabled: checked } }))}/>
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApproval")}</Label>
+                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApprovalDesc")}</p>
+                                </div>
+                                <Switch checked={config.workflowMemory?.requireApprovalForSideEffects ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), requireApprovalForSideEffects: checked } }))}/>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxGuides")}</Label>
+                                <Input type="number" value={config.workflowMemory?.maxActiveWorkflowGuidesPerRun ?? 2} onChange={(e) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), maxActiveWorkflowGuidesPerRun: Number(e.target.value) } }))} min={0} max={10}/>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                            <div className="space-y-1.5">
+                                <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.minSuccess")}</Label>
+                                <Input type="number" value={config.workflowMemory?.minSuccessCount ?? 2} onChange={(e) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), minSuccessCount: Number(e.target.value) } }))} min={1} max={10}/>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxHints")}</Label>
+                                <Input type="number" value={config.workflowMemory?.maxInjectedHints ?? 2} onChange={(e) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), maxInjectedHints: Number(e.target.value) } }))} min={0} max={5}/>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxChars")}</Label>
+                                <Input type="number" value={config.workflowMemory?.maxHintChars ?? 900} onChange={(e) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), maxHintChars: Number(e.target.value) } }))} min={240} max={2400} step={50}/>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-between rounded-lg border p-3">
+                            <div className="space-y-1">
+                                <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.errorfulSuccess")}</Label>
+                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.errorfulSuccessDesc")}</p>
+                            </div>
+                            <Switch checked={config.workflowMemory?.errorfulSuccessRequiresUserAcceptance ?? true} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, workflowMemory: { ...(prev.workflowMemory || {}), errorfulSuccessRequiresUserAcceptance: checked } }))}/>
                         </div>
                     </div>
 

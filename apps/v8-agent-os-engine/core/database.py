@@ -376,6 +376,104 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS memory_workflow_episodes (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    run_id TEXT,
+                    scope TEXT DEFAULT 'global',
+                    task_family TEXT,
+                    task_family_signature TEXT NOT NULL,
+                    initial_user_intent TEXT,
+                    first_action_signature TEXT,
+                    runtime_lane TEXT,
+                    ordered_actions_json TEXT,
+                    tool_skill_sequence_json TEXT,
+                    failure_markers_json TEXT,
+                    user_correction_points_json TEXT,
+                    final_success_evidence TEXT,
+                    user_verdict TEXT,
+                    side_effect_scope TEXT,
+                    privacy_scope TEXT,
+                    status TEXT DEFAULT 'candidate',
+                    confidence REAL DEFAULT 0.5,
+                    extraction_source TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS memory_workflow_candidates (
+                    id TEXT PRIMARY KEY,
+                    task_family_signature TEXT NOT NULL UNIQUE,
+                    task_family TEXT,
+                    scope TEXT DEFAULT 'global',
+                    canonical_trigger_patterns_json TEXT,
+                    first_action_triggers_json TEXT,
+                    golden_path_steps_json TEXT,
+                    anti_patterns_json TEXT,
+                    verification_steps_json TEXT,
+                    success_count INTEGER DEFAULT 0,
+                    correction_count INTEGER DEFAULT 0,
+                    negative_feedback_count INTEGER DEFAULT 0,
+                    maturity_score REAL DEFAULT 0,
+                    status TEXT DEFAULT 'candidate',
+                    confidence REAL DEFAULT 0.5,
+                     source_episode_ids_json TEXT,
+                    risk_tier TEXT DEFAULT 'low',
+                    approval_required INTEGER DEFAULT 0,
+                    last_hint_outcome TEXT,
+                    guide_state_json TEXT,
+                    merge_suggestion_json TEXT,
+                    last_seen_at TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS memory_workflow_hint_events (
+                    id TEXT PRIMARY KEY,
+                    candidate_id TEXT,
+                    session_id TEXT,
+                    run_id TEXT,
+                    query TEXT,
+                    injected_hint_json TEXT,
+                    outcome TEXT DEFAULT 'injected',
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (candidate_id) REFERENCES memory_workflow_candidates (id) ON DELETE SET NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS memory_workflow_guide_states (
+                    id TEXT PRIMARY KEY,
+                    candidate_id TEXT,
+                    session_id TEXT,
+                    run_id TEXT,
+                    query TEXT,
+                    state TEXT DEFAULT 'matched',
+                    current_step_index INTEGER DEFAULT 0,
+                    last_event_topic TEXT,
+                    outcome TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (candidate_id) REFERENCES memory_workflow_candidates (id) ON DELETE SET NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS model_invocation_logs (
                     id TEXT PRIMARY KEY,
                     run_id TEXT,
@@ -501,6 +599,16 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ssb_channel_remote ON session_scope_bindings (channel_type, channel_remote_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ssb_status ON session_scope_bindings (status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_extraction_processed_at ON memory_extraction_state (last_processed_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_episodes_session_id ON memory_workflow_episodes (session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_episodes_signature ON memory_workflow_episodes (task_family_signature)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_episodes_created_at ON memory_workflow_episodes (created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_status ON memory_workflow_candidates (status)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_signature ON memory_workflow_candidates (task_family_signature)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_updated_at ON memory_workflow_candidates (updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_hint_events_candidate_id ON memory_workflow_hint_events (candidate_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_hint_events_created_at ON memory_workflow_hint_events (created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_guide_states_candidate_id ON memory_workflow_guide_states (candidate_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_guide_states_session_run ON memory_workflow_guide_states (session_id, run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_scope_resolution_events_session_id ON scope_resolution_events (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_project_descriptors_cache_workspace_id ON project_descriptors_cache (workspace_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_run_id ON model_invocation_logs (run_id)')
@@ -566,6 +674,19 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if canonical_columns and 'finalized_at' not in canonical_columns:
                     conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN finalized_at TIMESTAMP")
+
+                cursor.execute("PRAGMA table_info(memory_workflow_candidates)")
+                workflow_candidate_columns = [row['name'] for row in cursor.fetchall()]
+                if workflow_candidate_columns and 'risk_tier' not in workflow_candidate_columns:
+                    conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN risk_tier TEXT DEFAULT 'low'")
+                if workflow_candidate_columns and 'approval_required' not in workflow_candidate_columns:
+                    conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN approval_required INTEGER DEFAULT 0")
+                if workflow_candidate_columns and 'last_hint_outcome' not in workflow_candidate_columns:
+                    conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN last_hint_outcome TEXT")
+                if workflow_candidate_columns and 'guide_state_json' not in workflow_candidate_columns:
+                    conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN guide_state_json TEXT")
+                if workflow_candidate_columns and 'merge_suggestion_json' not in workflow_candidate_columns:
+                    conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN merge_suggestion_json TEXT")
             except Exception as e:
                 print(f"[Database] Migration note: {e}")
             

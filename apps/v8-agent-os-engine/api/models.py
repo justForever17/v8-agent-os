@@ -1,6 +1,38 @@
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
+
+class ChatToolFunction(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(default="", description="Function/tool name")
+    arguments: str = Field(default="{}", description="JSON-encoded function arguments")
+
+
+class ChatToolCall(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: Optional[str] = Field(default=None, description="Tool call id")
+    type: str = Field(default="function", description="Tool call type")
+    function: ChatToolFunction = Field(default_factory=ChatToolFunction)
+
+
+class ExternalToolFunctionSpec(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(default="", description="Original wire-visible external function name")
+    description: Optional[str] = Field(default=None, description="External function description")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="JSON schema parameters")
+    internal_alias_name: Optional[str] = Field(default=None, alias="internalAliasName")
+
+
+class ExternalToolSpec(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: str = Field(default="function", description="External tool type")
+    function: ExternalToolFunctionSpec = Field(default_factory=ExternalToolFunctionSpec)
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -8,6 +40,7 @@ class ChatMessage(BaseModel):
     content: str = Field(description="Content of the message")
     name: Optional[str] = Field(default=None, description="Name of the tool or user")
     tool_call_id: Optional[str] = Field(default=None, description="ID of the tool call if this is a tool response")
+    tool_calls: Optional[List[ChatToolCall]] = Field(default=None, alias="toolCalls", description="Assistant tool calls")
 
 
 class ToolOutput(BaseModel):
@@ -26,6 +59,7 @@ class EngineConfig(BaseModel):
     base_url: Optional[str] = Field(default=None)
     system_prompt: Optional[str] = Field(default=None, description="The final system prompt to inject")
     allowed_tools: Optional[List[str]] = Field(default=None, description="List of explicitly allowed agent tools")
+    external_tools: Optional[List[ExternalToolSpec]] = Field(default=None, alias="externalTools", description="Per-request external tools exposed via the OpenAI compat branch")
 
 
 class CommandPresetSelection(BaseModel):

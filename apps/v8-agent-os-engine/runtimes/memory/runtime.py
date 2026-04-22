@@ -15,6 +15,8 @@ from runtimes.memory.knowledge_service import knowledge_service
 from runtimes.memory.profile_service import profile_service
 from runtimes.memory.project_registry import project_registry_service
 from runtimes.memory.recall_service import recall_service
+from runtimes.memory.workflow_service import workflow_memory_service
+from runtimes.memory.workflow_evidence import workflow_evidence_collector
 
 
 class MemoryRuntime:
@@ -52,6 +54,15 @@ class MemoryRuntime:
                     "outputs": ["context bundle", "knowledge records"],
                     "examples": ["会话结束提取记忆", "构建上下文注入"],
                     "risk_level": "low",
+                },
+                {
+                    "key": "memory.workflow",
+                    "label": "行为链记忆",
+                    "summary": "维护可验证、可清洗、可渐进注入的重复动作链提示。",
+                    "accepts": ["session evidence", "task query", "candidate edits"],
+                    "outputs": ["workflow episodes", "workflow candidates", "workflow hints"],
+                    "examples": ["会后提取成功动作链", "夜间整理 golden path", "为相似任务注入下一步提示"],
+                    "risk_level": "medium",
                 }
             ],
             "metadata": {
@@ -305,6 +316,7 @@ class MemoryRuntime:
                 "summary": extraction_summary,
             },
             "maintenance": self._build_maintenance_dashboard(recent_memory_runs),
+            "workflows": workflow_memory_service.dashboard_summary(),
             "projects": {
                 "count": len(project_registry_service.list_projects()),
             },
@@ -333,6 +345,9 @@ class MemoryRuntime:
             "skipped": 0,
             "summaryMissing": 0,
             "summaryBackfilled": 0,
+            "workflowCandidates": 0,
+            "workflowActivated": 0,
+            "workflowQuarantined": 0,
         }
 
         for run in recent_memory_runs:
@@ -349,6 +364,9 @@ class MemoryRuntime:
                 summary["skipped"] += 1
             summary["summaryBackfilled"] += int(maintenance_meta.get("summaryBackfilledCount") or 0)
             summary["summaryMissing"] += int(maintenance_meta.get("summaryMissingCountBefore") or 0)
+            summary["workflowCandidates"] += int(maintenance_meta.get("workflowCandidateCount") or 0)
+            summary["workflowActivated"] += int(maintenance_meta.get("workflowActiveHintCount") or 0)
+            summary["workflowQuarantined"] += int(maintenance_meta.get("workflowQuarantinedCount") or 0)
             recent_runs.append(
                 {
                     "runId": run.get("id"),
@@ -361,6 +379,10 @@ class MemoryRuntime:
                     "summaryBackfilledCount": int(maintenance_meta.get("summaryBackfilledCount") or 0),
                     "summaryStaleCountBefore": int(maintenance_meta.get("summaryStaleCountBefore") or 0),
                     "summaryStaleCountAfter": int(maintenance_meta.get("summaryStaleCountAfter") or 0),
+                    "workflowCandidateCount": int(maintenance_meta.get("workflowCandidateCount") or 0),
+                    "workflowCandidateUpdatedCount": int(maintenance_meta.get("workflowCandidateUpdatedCount") or 0),
+                    "workflowActiveHintCount": int(maintenance_meta.get("workflowActiveHintCount") or 0),
+                    "workflowQuarantinedCount": int(maintenance_meta.get("workflowQuarantinedCount") or 0),
                     "touchedRefs": maintenance_meta.get("touchedRefs") or [],
                     "resultReason": maintenance_meta.get("resultReason"),
                 }
@@ -497,11 +519,118 @@ class MemoryRuntime:
         user_query: str,
         scope: str = "global",
         scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> str:
         return injection_service.build_session_context(
             user_query=user_query,
             scope=scope,
             scope_chain=scope_chain,
+            session_id=session_id,
+            run_id=run_id,
+        )
+
+    def record_workflow_episode(
+        self,
+        *,
+        payload: Dict[str, Any],
+        session_id: str,
+        run_id: Optional[str] = None,
+        scope: str = "global",
+        extraction_source: str = "memory_agent",
+    ) -> Dict[str, Any]:
+        episode = workflow_memory_service.normalize_episode_payload(
+            payload,
+            session_id=session_id,
+            run_id=run_id,
+            scope=scope,
+            extraction_source=extraction_source,
+        )
+        return workflow_memory_service.add_episode(episode)
+
+    def collect_workflow_evidence(
+        self,
+        *,
+        session_id: str,
+        run_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return workflow_evidence_collector.collect_session(session_id=session_id, run_id=run_id)
+
+    def run_workflow_maintenance(self) -> Dict[str, Any]:
+        return workflow_memory_service.maintenance_consolidate()
+
+    def build_workflow_hints_block(
+        self,
+        *,
+        query: str,
+        scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> str:
+        return workflow_memory_service.build_hints_block(
+            query=query,
+            scope_chain=scope_chain,
+            session_id=session_id,
+            run_id=run_id,
+        )
+
+    def list_workflow_candidates(
+        self,
+        *,
+        status: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        return workflow_memory_service.list_candidates(status=status, query=query, limit=limit)
+
+    def get_workflow_candidate(self, candidate_id: str) -> Optional[Dict[str, Any]]:
+        return workflow_memory_service.get_candidate(candidate_id)
+
+    def update_workflow_candidate(self, candidate_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        return workflow_memory_service.update_candidate(candidate_id, updates)
+
+    def delete_workflow_candidate(self, candidate_id: str) -> bool:
+        return workflow_memory_service.delete_candidate(candidate_id)
+
+    def merge_workflow_candidates(self, *, target_id: str, source_ids: List[str]) -> Dict[str, Any]:
+        return workflow_memory_service.merge_candidates(target_id, source_ids)
+
+    def list_workflow_episodes(
+        self,
+        *,
+        candidate_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        return workflow_memory_service.list_episodes(candidate_id=candidate_id, session_id=session_id, limit=limit)
+
+    def list_workflow_hint_events(
+        self,
+        *,
+        candidate_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        return workflow_memory_service.list_hint_events(candidate_id=candidate_id, limit=limit)
+
+    def record_workflow_hint_event(
+        self,
+        *,
+        candidate_id: str,
+        query: str,
+        hint: Dict[str, Any],
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        outcome: str = "injected",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return workflow_memory_service.record_hint_event(
+            candidate_id=candidate_id,
+            query=query,
+            hint=hint,
+            session_id=session_id,
+            run_id=run_id,
+            outcome=outcome,
+            metadata=metadata,
         )
 
     def get_recent_logs(self, *, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:

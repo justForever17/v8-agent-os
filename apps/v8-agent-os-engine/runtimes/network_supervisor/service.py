@@ -87,6 +87,7 @@ def _secrets_default() -> dict[str, Any]:
         "publicKeyFingerprint": "",
         "localPeerToken": "",
         "peerTokens": {},
+        "openaiCompatTokens": [],
     }
 
 
@@ -401,6 +402,109 @@ class NetworkSupervisorService:
         if str(token or "").strip() != expected:
             raise HTTPException(status_code=401, detail="Invalid peer token")
 
+    def verify_openai_compat_token(self, token: str | None) -> None:
+        config = self.get_config_model()
+        if not config.enabled or not config.openai_compat.enabled:
+            raise HTTPException(status_code=404, detail="OpenAI compat branch is disabled")
+        provided = str(token or "").strip()
+        if not provided:
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+        candidates = {
+            str(item.get("token") or "").strip()
+            for item in self._openai_compat_token_entries()
+            if str(item.get("token") or "").strip()
+        }
+        if provided not in candidates:
+            raise HTTPException(status_code=401, detail="Invalid compat token")
+
+    def _normalize_openai_compat_token_entry(self, item: Any) -> dict[str, Any] | None:
+        if isinstance(item, str):
+            token = item.strip()
+            if not token:
+                return None
+            fingerprint = _fingerprint(token)
+            return {
+                "id": f"legacy_{fingerprint}",
+                "label": "Legacy compat token",
+                "token": token,
+                "fingerprint": fingerprint,
+                "createdAt": None,
+                "source": "legacy_string",
+            }
+        if not isinstance(item, dict):
+            return None
+        token = str(item.get("token") or "").strip()
+        if not token:
+            return None
+        fingerprint = str(item.get("fingerprint") or "").strip() or _fingerprint(token)
+        token_id = str(item.get("id") or "").strip() or f"oct_{fingerprint}"
+        return {
+            "id": token_id,
+            "label": str(item.get("label") or "").strip() or "OpenAI compat token",
+            "token": token,
+            "fingerprint": fingerprint,
+            "createdAt": str(item.get("createdAt") or "").strip() or None,
+            "source": str(item.get("source") or "").strip() or "managed",
+        }
+
+    def _openai_compat_token_entries(self) -> list[dict[str, Any]]:
+        secrets_payload = self.read_secrets()
+        entries: list[dict[str, Any]] = []
+        seen_tokens: set[str] = set()
+        for item in list(secrets_payload.get("openaiCompatTokens") or []):
+            normalized = self._normalize_openai_compat_token_entry(item)
+            if not normalized:
+                continue
+            token = str(normalized.get("token") or "").strip()
+            if token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+            entries.append(normalized)
+        return entries
+
+    def list_openai_compat_tokens(self) -> dict[str, Any]:
+        return {"items": self._openai_compat_token_entries()}
+
+    def create_openai_compat_token(self, label: str | None = None) -> dict[str, Any]:
+        secrets_payload = self.read_secrets()
+        entries = self._openai_compat_token_entries()
+        token = f"v8oa_{secrets.token_urlsafe(32)}"
+        created_at = _utc_iso()
+        entry = {
+            "id": f"oct_{uuid.uuid4().hex[:12]}",
+            "label": str(label or "").strip() or "OpenAI compat token",
+            "token": token,
+            "fingerprint": _fingerprint(token),
+            "createdAt": created_at,
+            "source": "managed",
+        }
+        entries.append(entry)
+        secrets_payload["openaiCompatTokens"] = entries
+        self.write_secrets(secrets_payload)
+        return entry
+
+    def delete_openai_compat_token(self, token_id: str) -> dict[str, Any]:
+        target = str(token_id or "").strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="Missing token id")
+        secrets_payload = self.read_secrets()
+        entries = self._openai_compat_token_entries()
+        kept = [
+            item
+            for item in entries
+            if target
+            not in {
+                str(item.get("id") or "").strip(),
+                str(item.get("fingerprint") or "").strip(),
+                str(item.get("token") or "").strip(),
+            }
+        ]
+        if len(kept) == len(entries):
+            raise HTTPException(status_code=404, detail="OpenAI compat token not found")
+        secrets_payload["openaiCompatTokens"] = kept
+        self.write_secrets(secrets_payload)
+        return {"deleted": True, "tokenId": target, "remainingCount": len(kept)}
+
     def _merge_discovered_peer(self, payload: dict[str, Any]) -> None:
         state = self.read_state()
         discovered = dict(state.get("discoveredPeers") or {})
@@ -636,6 +740,7 @@ class NetworkSupervisorService:
         state = self.read_state()
         discovered = dict(state.get("discoveredPeers") or {})
         delegations = dict(state.get("delegations") or {})
+        openai_compat_tokens = self._openai_compat_token_entries()
         expiry_seconds = int(config.discovery.peer_expiry_seconds or 60)
         now = _utc_now()
         online_count = 0
@@ -671,6 +776,18 @@ class NetworkSupervisorService:
                 "maxConcurrent": int(config.delegation.max_concurrent or 0),
                 "activeInbound": len([item for item in self._active_inbound_tasks.values() if not item.done()]),
                 "trackedCount": len(delegations),
+            },
+            "openaiCompat": {
+                "enabled": bool(config.openai_compat.enabled),
+                "adminRelayOnly": bool(config.openai_compat.admin_relay_only),
+                "available": bool(config.enabled and config.openai_compat.enabled and openai_compat_tokens),
+                "tokenCount": len(openai_compat_tokens),
+                "baseUrlHint": "http://localhost:9528/api/network-supervisor/openai/v1",
+                "chatCompletionsPath": "/chat/completions",
+                "maxExternalTools": int(config.openai_compat.max_external_tools or 0),
+                "allowWorkspaceHeaders": bool(config.openai_compat.allow_workspace_headers),
+                "allowRawWorkspacePath": bool(config.openai_compat.allow_raw_workspace_path),
+                "defaultScopeMode": str(config.openai_compat.default_scope_mode or "explicit"),
             },
             "delegationAvailability": self._delegation_availability_payload(),
             "toolAvailability": {

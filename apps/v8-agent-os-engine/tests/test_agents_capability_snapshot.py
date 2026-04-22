@@ -1,9 +1,20 @@
 import unittest
 
 from core.agents import AgentConfig, default_subagent_configs, dump_agent_md, parse_agent_md
+from graph.supervisor_context import render_agent_tool_surface_summary
 
 
 class AgentCapabilitySnapshotTests(unittest.TestCase):
+    def test_supervisor_registry_renders_contextual_auto_as_dynamic_tools(self):
+        self.assertEqual(
+            render_agent_tool_surface_summary({"tool_mode": "contextual_auto", "tools": []}),
+            "tools=dynamic(contextual_auto; selected per taskBrief)",
+        )
+        self.assertEqual(
+            render_agent_tool_surface_summary({"tool_mode": "explicit", "tools": ["read_native_file", "web_broker"]}),
+            "tools=fixed:2",
+        )
+
     def test_agent_frontmatter_round_trips_capability_snapshot(self):
         config = AgentConfig(
             id="example-agent",
@@ -37,9 +48,9 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         for agent in defaults:
             self.assertEqual(agent.tool_mode, "contextual_auto")
             self.assertTrue(agent.capabilitySnapshot.get("agentClass"))
-            self.assertIn("Think before coding", agent.system_prompt)
-            self.assertIn("Make surgical changes", agent.system_prompt)
-            self.assertIn("Work from verifiable goals", agent.system_prompt)
+            self.assertIn("delegated task brief", agent.system_prompt)
+            self.assertIn("Keep the solution surgical", agent.system_prompt)
+            self.assertIn("Define evidence before claiming completion", agent.system_prompt)
 
 
 if __name__ == "__main__":

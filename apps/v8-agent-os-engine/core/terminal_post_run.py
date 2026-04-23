@@ -21,6 +21,7 @@ class TerminalPostRunService:
     def __init__(self):
         self._lock = threading.RLock()
         self._dispatched_keys: set[str] = set()
+        self._proof_dispatched_keys: set[str] = set()
 
     def dispatch(self, *, session_id: str, run_id: str, source_component: str) -> bool:
         if not session_id or not run_id:
@@ -33,6 +34,13 @@ class TerminalPostRunService:
             return False
 
         dispatch_key = f"{session_id}:{run_id}"
+        self._schedule_engineering_proof_if_needed(
+            session_id=session_id,
+            run_id=run_id,
+            source_component=source_component,
+            dispatch_key=dispatch_key,
+            run_metadata=dict(run_record.get("metadata") or {}),
+        )
         with self._lock:
             metadata = dict(run_record.get("metadata") or {})
             if metadata.get("memory_terminal_dispatched") or dispatch_key in self._dispatched_keys:
@@ -52,6 +60,63 @@ class TerminalPostRunService:
 
         self._schedule_memory_extraction(session_id=session_id, run_id=run_id, source_component=source_component)
         self._run_non_memory_hooks(session_id=session_id, run_id=run_id)
+        return True
+
+    def _schedule_engineering_proof_if_needed(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        source_component: str,
+        dispatch_key: str,
+        run_metadata: dict,
+    ) -> bool:
+        try:
+            engineering_config = storage.get_engineering_lane_config() or {}
+            if not bool(engineering_config.get("enabled", True)):
+                return False
+            if not bool(engineering_config.get("proofLedgerEnabled", True)):
+                return False
+            if not bool(engineering_config.get("autoProofCollectionEnabled", True)):
+                return False
+        except Exception as exc:
+            logger.warning("Failed to read Engineering Lane config for run %s: %s", run_id, exc)
+            return False
+
+        with self._lock:
+            if run_metadata.get("engineering_proof_terminal_dispatched") or dispatch_key in self._proof_dispatched_keys:
+                return False
+            self._proof_dispatched_keys.add(dispatch_key)
+            try:
+                run_service.update_metadata(
+                    run_id,
+                    {
+                        "engineering_proof_terminal_dispatched": True,
+                        "engineering_proof_terminal_source": source_component,
+                        "engineering_proof_terminal_dispatched_at": _utc_now_iso(),
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist terminal engineering proof marker for %s: %s", run_id, exc)
+
+        def _worker():
+            try:
+                from runtimes.engineering.service import engineering_lane_service
+
+                result = engineering_lane_service.collect_terminal_proof(
+                    session_id=session_id,
+                    run_id=run_id,
+                    source_component=source_component,
+                )
+                logger.info("Engineering proof terminal collection result for run %s: %s", run_id, result.get("status"))
+            except Exception as exc:
+                logger.exception("Engineering proof collection failed for session %s run %s: %s", session_id, run_id, exc)
+
+        threading.Thread(
+            target=_worker,
+            name=f"engineering-proof-{run_id[:12]}",
+            daemon=True,
+        ).start()
         return True
 
     def _schedule_memory_extraction(self, *, session_id: str, run_id: str, source_component: str) -> None:

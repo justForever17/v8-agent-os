@@ -382,6 +382,28 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             },
         },
     },
+    "engineeringLane": {
+        "enabled": True,
+        "triggerMode": "auto",
+        "contextPackBudget": 2400,
+        "evidenceGraphEnabled": True,
+        "evidenceGraphBudget": 1800,
+        "codingPlannerContractEnabled": True,
+        "worksetGovernanceMode": "soft_gate",
+        "maxCriticalFiles": 24,
+        "proofLedgerEnabled": True,
+        "autoProofCollectionEnabled": True,
+        "proofCollectionScope": "engineering_active",
+        "diagnosticsProviders": {
+            "git": True,
+            "command": True,
+            "lspBestEffort": True,
+        },
+        "worksetRiskMode": "read_only",
+        "suppressDailyMemory": True,
+        "suppressMemoryMap": True,
+        "rankedWorkflowPathCount": 3,
+    },
     "supervisor": {
         "allowed_tools": None,
         "profile": {
@@ -1948,6 +1970,76 @@ class StorageManager:
         )
         next_extensions.pop("rerankPolicy", None)
         payload["extensions"] = next_extensions
+        self._write_config_payload(payload)
+
+    # --- Engineering Lane Config Accessors ---
+    def get_engineering_lane_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("engineeringLane") or {}
+        merged = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["engineeringLane"],
+            data if isinstance(data, dict) else {},
+        )
+        trigger_mode = str(merged.get("triggerMode") or "auto").strip().lower()
+        merged["triggerMode"] = trigger_mode if trigger_mode in {"auto", "force", "off"} else "auto"
+        proof_scope = str(merged.get("proofCollectionScope") or "engineering_active").strip().lower()
+        merged["proofCollectionScope"] = proof_scope if proof_scope in {"engineering_active", "force_only", "off"} else "engineering_active"
+        workset_mode = str(merged.get("worksetRiskMode") or "read_only").strip().lower()
+        merged["worksetRiskMode"] = workset_mode if workset_mode in {"read_only", "soft_gate", "off"} else "read_only"
+        governance_mode = str(merged.get("worksetGovernanceMode") or "soft_gate").strip().lower()
+        merged["worksetGovernanceMode"] = governance_mode if governance_mode in {"read_only", "soft_gate", "off"} else "soft_gate"
+        providers = merged.get("diagnosticsProviders") if isinstance(merged.get("diagnosticsProviders"), dict) else {}
+        default_providers = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["diagnosticsProviders"]
+        merged["diagnosticsProviders"] = {
+            "git": bool(providers.get("git", default_providers["git"])),
+            "command": bool(providers.get("command", default_providers["command"])),
+            "lspBestEffort": bool(providers.get("lspBestEffort", default_providers["lspBestEffort"])),
+        }
+        for key, default, minimum, maximum in (
+            ("contextPackBudget", 2400, 800, 12000),
+            ("evidenceGraphBudget", 1800, 600, 10000),
+            ("maxCriticalFiles", 24, 4, 120),
+            ("rankedWorkflowPathCount", 3, 1, 5),
+        ):
+            try:
+                merged[key] = max(minimum, min(int(merged.get(key) or default), maximum))
+            except (TypeError, ValueError):
+                merged[key] = default
+        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap"):
+            merged[key] = bool(merged.get(key))
+        return merged
+
+    def save_engineering_lane_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        current = self.get_engineering_lane_config()
+        next_data = self._deep_merge(current, dict(data or {}))
+        trigger_mode = str(next_data.get("triggerMode") or "auto").strip().lower()
+        next_data["triggerMode"] = trigger_mode if trigger_mode in {"auto", "force", "off"} else "auto"
+        proof_scope = str(next_data.get("proofCollectionScope") or "engineering_active").strip().lower()
+        next_data["proofCollectionScope"] = proof_scope if proof_scope in {"engineering_active", "force_only", "off"} else "engineering_active"
+        workset_mode = str(next_data.get("worksetRiskMode") or "read_only").strip().lower()
+        next_data["worksetRiskMode"] = workset_mode if workset_mode in {"read_only", "soft_gate", "off"} else "read_only"
+        governance_mode = str(next_data.get("worksetGovernanceMode") or "soft_gate").strip().lower()
+        next_data["worksetGovernanceMode"] = governance_mode if governance_mode in {"read_only", "soft_gate", "off"} else "soft_gate"
+        providers = next_data.get("diagnosticsProviders") if isinstance(next_data.get("diagnosticsProviders"), dict) else {}
+        default_providers = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["diagnosticsProviders"]
+        next_data["diagnosticsProviders"] = {
+            "git": bool(providers.get("git", default_providers["git"])),
+            "command": bool(providers.get("command", default_providers["command"])),
+            "lspBestEffort": bool(providers.get("lspBestEffort", default_providers["lspBestEffort"])),
+        }
+        for key, default, minimum, maximum in (
+            ("contextPackBudget", 2400, 800, 12000),
+            ("evidenceGraphBudget", 1800, 600, 10000),
+            ("maxCriticalFiles", 24, 4, 120),
+            ("rankedWorkflowPathCount", 3, 1, 5),
+        ):
+            try:
+                next_data[key] = max(minimum, min(int(next_data.get(key) or default), maximum))
+            except (TypeError, ValueError):
+                next_data[key] = default
+        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap"):
+            next_data[key] = bool(next_data.get(key))
+        payload["engineeringLane"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["engineeringLane"], next_data)
         self._write_config_payload(payload)
         
     # --- Supervisor Config Accessors ---

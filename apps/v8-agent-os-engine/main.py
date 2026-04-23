@@ -127,6 +127,16 @@ def _get_memory_backend_health():
     return _import_module("core.memory.backend_health").inspect_memory_backend
 
 
+def _ensure_default_workflow_memories() -> None:
+    try:
+        service = _import_module("runtimes.memory.workflow_service").workflow_memory_service
+        result = service.ensure_default_workflow_candidates()
+        if result.get("created") or result.get("updated"):
+            print("[Engine] Default workflow memories ensured.", result)
+    except Exception as e:
+        print(f"[Engine] Default workflow memory seeding error (non-fatal): {e}")
+
+
 def _get_silk_toolchain_status():
     status = _import_module("core.plugin_host.silk_codec").silk_toolchain_status
     return status() if callable(status) else status
@@ -287,6 +297,7 @@ async def lifespan(app: FastAPI):
     applied_memory_defaults = storage.ensure_memory_runtime_defaults()
     if applied_memory_defaults:
         print("[Engine] Applied memory runtime defaults:", applied_memory_defaults)
+    _ensure_default_workflow_memories()
     service_flags = _service_flags()
     runtime_health = inspect_engine_runtime()
     print(

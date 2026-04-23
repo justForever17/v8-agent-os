@@ -278,6 +278,275 @@ def _activation_allowed_for_candidate(*, risk_tier: str, current: str) -> Tuple[
     return False, True, "risk_policy_requires_approval"
 
 
+DEFAULT_WORKFLOW_SEED_VERSION = "2026-04-23.1"
+
+
+def _default_workflow_candidate_definitions() -> List[Dict[str, Any]]:
+    """System-seeded workflow memories.
+
+    These are ordinary workflow candidates: once inserted they flow through the
+    same matcher, ranked-path renderer, hint events, outcomes and Admin
+    governance as learned workflows. The seed metadata is only provenance and
+    versioning, not a special runtime path.
+    """
+
+    return [
+        {
+            "id": "mw_seed_v8os_engineering_change_verification",
+            "taskFamilySignature": "seed:v8os:engineering-change-verification",
+            "taskFamily": "V8OS engineering code change verification loop",
+            "scope": "global",
+            "canonicalTriggerPatterns": [
+                "修改代码",
+                "修复代码",
+                "实现功能",
+                "改组件",
+                "debug",
+                "typecheck",
+                "pytest",
+                "npm run build",
+                "回归测试",
+                "code change",
+                "implementation",
+                "refactor",
+            ],
+            "firstActionTriggers": [
+                "git status",
+                "read relevant files",
+                "inspect repo state",
+                "identify write set",
+                "run targeted test",
+            ],
+            "goldenPathSteps": [
+                "先确认 repo 状态、已读文件和计划写集；不要在不了解 dirty worktree 时直接编辑。",
+                "做手术式改动，保持 changed files 窄；若涉及并发 subagent，先隔离 write-set。",
+                "运行最窄的相关验证：单测、typecheck、py_compile、build 或定点脚本，先小后大。",
+                "记录 proof：diff 摘要、验证命令、diagnostics、残余风险；未跑验证不得说 verified。",
+            ],
+            "antiPatterns": [
+                "不要把聊天里的“看起来完成”当成工程完成证据。",
+                "不要在未检查 git status 时覆盖用户已有改动。",
+                "不要为小修复先跑全仓重型验证，除非窄验证无法覆盖风险。",
+            ],
+            "verificationSteps": [
+                "git status --short 能解释新增/修改文件来源。",
+                "至少有一条与改动相关的验证命令或明确说明无法运行。",
+                "Proof Ledger 中 verificationStatus 不能在无证据时标记 verified。",
+            ],
+            "riskTier": "low",
+            "confidence": 0.88,
+            "maturityScore": 0.86,
+            "successCount": 2,
+            "metadata": {
+                "canonicalAnchors": ["code change", "修改代码", "测试", "验证", "typecheck", "pytest", "build"],
+                "actionVariantsByStep": {
+                    "0": ["先运行 git status --short 并标记用户已有改动。", "先读入口文件、测试文件和相关配置，列出 read-set/write-set。"],
+                    "1": ["优先 apply_patch 做小补丁。", "若发现写集冲突，暂停并让 supervisor 重新切片。"],
+                    "2": ["优先跑定点 pytest / py_compile / npm typecheck。", "验证失败时先收集 diagnostics，再改下一轮。"],
+                    "3": ["用 Proof Ledger 口径写清 changed files、commands、result、residual risks。"],
+                },
+                "negativeMatchPatterns": ["生成图片", "生成视频", "写文章", "做ppt", "语音回复"],
+            },
+        },
+        {
+            "id": "mw_seed_v8os_task_alignment_before_execution",
+            "taskFamilySignature": "seed:v8os:task-alignment-before-execution",
+            "taskFamily": "Task-mode alignment before planning or execution",
+            "scope": "global",
+            "canonicalTriggerPatterns": [
+                "任务模式",
+                "帮我规划",
+                "写计划",
+                "拆解任务",
+                "分工",
+                "多阶段",
+                "roadmap",
+                "task mode",
+                "todos",
+                "planner",
+            ],
+            "firstActionTriggers": [
+                "ask_user",
+                "clarify acceptance",
+                "align granularity",
+                "confirm write set",
+            ],
+            "goldenPathSteps": [
+                "如果颗粒度、验收标准、写集或风险不清，先用 ask_user 提 1-3 个聚焦问题对齐，不要急着开写泛计划。",
+                "把用户回答压成 task brief：goal、context、writeSet、behaviorScope、requiredCapabilities、acceptanceContract。",
+                "再决定 direct / delegate / mixed；计划必须服务执行和验收，不做空泛路线图。",
+            ],
+            "antiPatterns": [
+                "不要在信息足够时为了形式主义反复问问题。",
+                "不要把开放式长问卷丢给用户；问题要短、互斥、可决策。",
+                "不要绕过用户明确约束直接开始大范围改动。",
+            ],
+            "verificationSteps": [
+                "task brief 至少包含目标、边界、验收和风险。",
+                "如果选择不提问，需要写清合理假设。",
+            ],
+            "riskTier": "read_only",
+            "confidence": 0.84,
+            "maturityScore": 0.82,
+            "successCount": 2,
+            "metadata": {
+                "canonicalAnchors": ["任务模式", "拆解", "分工", "planner", "todos", "ask_user"],
+                "actionVariantsByStep": {
+                    "0": ["用 ask_user 问清验收标准和范围。", "若用户已给足上下文，直接列出假设并进入 task brief。", "只问会改变执行路线的问题。"],
+                    "1": ["把回答转为 broker-ready task brief。", "列出不做什么和需要保留的用户约束。"],
+                    "2": ["先选 executionStrategy，再决定是否委派。"],
+                },
+                "negativeMatchPatterns": ["闲聊", "解释概念", "生成图片", "翻译一句话"],
+            },
+        },
+        {
+            "id": "mw_seed_v8os_skill_instruction_first",
+            "taskFamilySignature": "seed:v8os:skill-instruction-first",
+            "taskFamily": "Fetch skill instructions before executing named skills",
+            "scope": "global",
+            "canonicalTriggerPatterns": [
+                "使用技能",
+                "用这个skill",
+                "use skill",
+                "女娲技能",
+                "huashu-nuwa",
+                "造skill",
+                "蒸馏",
+                "fetch_skill_instructions",
+            ],
+            "firstActionTriggers": [
+                "fetch_skill_instructions",
+                "read skill instructions",
+                "resolve skill alias",
+            ],
+            "goldenPathSteps": [
+                "先调用 fetch_skill_instructions 读取用户点名或强命中的技能说明；不要凭 description 或记忆直接执行。",
+                "把技能说明压成 task brief：输入、步骤、产物、写集、风险和验收。",
+                "执行前由 supervisor 保留最终验收；需要并行时再委派 subagent，但 subagent 只接收 task brief truth。",
+            ],
+            "antiPatterns": [
+                "不要因为看到技能名就假装已经加载完整 SKILL.md。",
+                "不要把父级 route 候选列表当成技能说明本体。",
+                "不要让 subagent 直接接收完整用户历史代替 task brief。",
+            ],
+            "verificationSteps": [
+                "SYSTEM_CONTENT 或工具记录能看到 fetch_skill_instructions 命中。",
+                "task brief 中显式列出该 skill 的产物和验收标准。",
+            ],
+            "riskTier": "read_only",
+            "confidence": 0.9,
+            "maturityScore": 0.9,
+            "successCount": 2,
+            "metadata": {
+                "canonicalAnchors": ["使用技能", "女娲", "huashu-nuwa", "造skill", "蒸馏", "fetch_skill_instructions"],
+                "actionVariantsByStep": {
+                    "0": ["优先用精确 skill id/name 调 fetch_skill_instructions。", "如果别名命中不确定，查看 resolver 候选和诊断后再执行。"],
+                    "1": ["提取技能输入、步骤、产物、写集、风险和验收。"],
+                    "2": ["supervisor 负责采纳/重试/最终验收；subagent 只做被委派的片段。"],
+                },
+                "negativeMatchPatterns": ["普通技能介绍", "skill列表", "不使用技能"],
+            },
+        },
+        {
+            "id": "mw_seed_v8os_voice_reply_contract",
+            "taskFamilySignature": "seed:v8os:voice-reply-contract",
+            "taskFamily": "V8OS voice reply formatting contract",
+            "scope": "global",
+            "canonicalTriggerPatterns": [
+                "发语音",
+                "语音回复",
+                "用语音说",
+                "朗读",
+                "tts",
+                "voice reply",
+                "audio response",
+            ],
+            "firstActionTriggers": [
+                "voice tag",
+                "plain spoken text",
+                "audio runtime",
+            ],
+            "goldenPathSteps": [
+                "面向语音输出时，用约定的语音标签/语音载荷边界包裹要朗读的内容。",
+                "语音正文保持可朗读：不用 Markdown 表格、代码块、裸 URL、复杂符号或过多括号。",
+                "必要时另给一行短文本摘要，避免把视觉卡片当作语音可消费内容。",
+            ],
+            "antiPatterns": [
+                "不要在语音正文里放代码围栏、表格、emoji 或难读特殊字符。",
+                "不要假设语音端能展示 artifact/runtime card。",
+            ],
+            "verificationSteps": [
+                "语音正文只包含自然语言和少量普通标点。",
+                "视觉链接或文件引用用普通文本摘要替代。",
+            ],
+            "riskTier": "read_only",
+            "confidence": 0.82,
+            "maturityScore": 0.78,
+            "successCount": 2,
+            "metadata": {
+                "canonicalAnchors": ["语音", "voice", "tts", "朗读", "audio"],
+                "actionVariantsByStep": {
+                    "0": ["先生成干净的 spoken text，再交给 audio runtime。", "如果协议要求标签，确保只包裹朗读正文。"],
+                    "1": ["删除 Markdown、代码块、裸 URL 和难读符号。"],
+                    "2": ["给非语音 surface 保留一行可读摘要。"],
+                },
+                "negativeMatchPatterns": ["音频转文字", "语音识别", "分析音频"],
+            },
+        },
+        {
+            "id": "mw_seed_v8os_git_handoff_gate",
+            "taskFamilySignature": "seed:v8os:git-handoff-gate",
+            "taskFamily": "Git commit and handoff readiness gate",
+            "scope": "global",
+            "canonicalTriggerPatterns": [
+                "提交git",
+                "提交代码",
+                "commit",
+                "git commit",
+                "push",
+                "开PR",
+                "pull request",
+                "发布改动",
+            ],
+            "firstActionTriggers": [
+                "git status",
+                "git diff",
+                "verification evidence",
+                "commit message",
+            ],
+            "goldenPathSteps": [
+                "提交前先检查 git status 和 diff，确认只包含本任务相关改动且没有用户未授权改动。",
+                "确认验证证据：至少有定点测试、typecheck、build 或无法运行的明确说明。",
+                "只有用户明确要求提交/推送时才执行 git commit/push；提交信息要概括意图和风险。",
+            ],
+            "antiPatterns": [
+                "不要自动提交用户未要求提交的改动。",
+                "不要把 unrelated dirty files 打进同一个 commit。",
+                "不要在验证失败或未解释风险时宣称 ready to ship。",
+            ],
+            "verificationSteps": [
+                "git status --short 与 diff summary 已检查。",
+                "验证命令和结果已记录。",
+                "commit 范围与用户请求一致。",
+            ],
+            "riskTier": "medium",
+            "confidence": 0.8,
+            "maturityScore": 0.74,
+            "successCount": 2,
+            "metadata": {
+                "canonicalAnchors": ["git", "commit", "提交", "push", "PR", "pull request"],
+                "actionVariantsByStep": {
+                    "0": ["用 git status --short 找出 unrelated dirty files。", "用 git diff --stat 确认提交范围。"],
+                    "1": ["复用本轮 Proof Ledger 验证证据。", "若没跑验证，先补最窄验证或说明无法运行。"],
+                    "2": ["只有用户明确授权时才 git commit。", "若需要 PR，先提交再推送并打开草稿 PR。"],
+                },
+                "sideEffectScope": "git_commit_push_requires_user_intent",
+                "negativeMatchPatterns": ["查看git状态", "解释git", "不要提交"],
+            },
+        },
+    ]
+
+
 class WorkflowMemoryService:
     """Programmatic behavior memory: episodes, candidates, and progressive hints."""
 
@@ -412,6 +681,136 @@ class WorkflowMemoryService:
         candidate = self.upsert_candidate_from_episode(episode)
         self.export_candidate(candidate)
         return {"episode": episode, "candidate": candidate}
+
+    def ensure_default_workflow_candidates(self) -> Dict[str, Any]:
+        """Ensure V8's built-in workflow memories exist as normal candidates.
+
+        The seeds are not injected through a special prompt path. They are
+        persisted in `memory_workflow_candidates` so they can be inspected,
+        edited, quarantined, deleted, and scored exactly like learned workflow
+        memories. If a user replaces a seed with a non-system candidate using
+        the same signature, startup will not overwrite it.
+        """
+
+        now = utc_now_iso()
+        created: List[str] = []
+        updated: List[str] = []
+        skipped: List[str] = []
+        exported: List[str] = []
+        definitions = _default_workflow_candidate_definitions()
+        with db.get_connection() as conn:
+            for raw in definitions:
+                signature = str(raw.get("taskFamilySignature") or "").strip()
+                if not signature:
+                    continue
+                row = conn.execute(
+                    "SELECT * FROM memory_workflow_candidates WHERE task_family_signature = ?",
+                    (signature,),
+                ).fetchone()
+                existing = _row_to_candidate(row) if row else None
+                existing_metadata = existing.get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}
+                existing_source = str(existing_metadata.get("source") or "").strip()
+                if existing and existing_source and existing_source != "system_seed":
+                    skipped.append(str(existing.get("id") or signature))
+                    continue
+                existing_version = str(existing_metadata.get("defaultSeedVersion") or "").strip()
+                if existing and existing_version == DEFAULT_WORKFLOW_SEED_VERSION:
+                    skipped.append(str(existing.get("id") or signature))
+                    continue
+
+                candidate_id = str(raw.get("id") or (existing or {}).get("id") or f"mw_seed_{uuid.uuid4().hex}").strip()
+                metadata = {
+                    **(raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}),
+                    "source": "system_seed",
+                    "defaultSeedVersion": DEFAULT_WORKFLOW_SEED_VERSION,
+                    "seededAt": existing_metadata.get("seededAt") or now,
+                    "updatedFromSeedAt": now,
+                    "hasRuntimeEvidence": True,
+                    "activationAllowed": True,
+                    "activationReason": "system_default_workflow_memory",
+                    "approvalRequired": False,
+                    "riskTier": raw.get("riskTier") or "low",
+                    "provenanceNote": "Built-in workflow memory. It uses the same candidate/hint/outcome pipeline as learned workflows.",
+                }
+                conn.execute(
+                    """
+                    INSERT INTO memory_workflow_candidates
+                    (id, task_family_signature, task_family, scope, canonical_trigger_patterns_json,
+                     first_action_triggers_json, golden_path_steps_json, anti_patterns_json,
+                     verification_steps_json, success_count, correction_count, negative_feedback_count,
+                     maturity_score, status, confidence, source_episode_ids_json, risk_tier, approval_required,
+                     last_hint_outcome, guide_state_json, merge_suggestion_json, last_seen_at,
+                     metadata_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(task_family_signature) DO UPDATE SET
+                        id = excluded.id,
+                        task_family = excluded.task_family,
+                        scope = excluded.scope,
+                        canonical_trigger_patterns_json = excluded.canonical_trigger_patterns_json,
+                        first_action_triggers_json = excluded.first_action_triggers_json,
+                        golden_path_steps_json = excluded.golden_path_steps_json,
+                        anti_patterns_json = excluded.anti_patterns_json,
+                        verification_steps_json = excluded.verification_steps_json,
+                        success_count = excluded.success_count,
+                        correction_count = excluded.correction_count,
+                        negative_feedback_count = excluded.negative_feedback_count,
+                        maturity_score = excluded.maturity_score,
+                        status = excluded.status,
+                        confidence = excluded.confidence,
+                        source_episode_ids_json = excluded.source_episode_ids_json,
+                        risk_tier = excluded.risk_tier,
+                        approval_required = excluded.approval_required,
+                        last_seen_at = excluded.last_seen_at,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        candidate_id,
+                        signature,
+                        raw.get("taskFamily") or "V8OS default workflow memory",
+                        raw.get("scope") or "global",
+                        _json_dump(raw.get("canonicalTriggerPatterns") or []),
+                        _json_dump(raw.get("firstActionTriggers") or []),
+                        _json_dump(raw.get("goldenPathSteps") or []),
+                        _json_dump(raw.get("antiPatterns") or []),
+                        _json_dump(raw.get("verificationSteps") or []),
+                        int(raw.get("successCount") or 2),
+                        0,
+                        0,
+                        float(raw.get("maturityScore") or 0.75),
+                        raw.get("status") or "approved",
+                        float(raw.get("confidence") or 0.8),
+                        _json_dump([f"system_seed:{candidate_id}:{DEFAULT_WORKFLOW_SEED_VERSION}"]),
+                        raw.get("riskTier") or "low",
+                        0,
+                        (existing or {}).get("lastHintOutcome"),
+                        _json_dump((existing or {}).get("guideState") or {}),
+                        _json_dump((existing or {}).get("mergeSuggestion") or {}),
+                        now,
+                        _json_dump(metadata),
+                        (existing or {}).get("created_at") or now,
+                        now,
+                    ),
+                )
+                if existing:
+                    updated.append(candidate_id)
+                else:
+                    created.append(candidate_id)
+        with db.get_connection() as conn:
+            conn.commit()
+        for candidate_id in [*created, *updated]:
+            candidate = self.get_candidate(candidate_id) or {}
+            if candidate:
+                self.export_candidate(candidate)
+                exported.append(candidate_id)
+        return {
+            "seedVersion": DEFAULT_WORKFLOW_SEED_VERSION,
+            "seedCount": len(definitions),
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "exported": exported,
+        }
 
     def _candidate_status_for_counts(
         self,
@@ -849,6 +1248,46 @@ class WorkflowMemoryService:
         data["currentStepIndex"] = int(data.get("current_step_index") or 0)
         return data
 
+    def _terminal_guide_state_for_query(
+        self,
+        *,
+        query: str,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not session_id and not run_id:
+            return None
+        terminal_states = sorted(TERMINAL_GUIDE_STATES)
+        params: List[Any] = list(terminal_states)
+        sql = "SELECT * FROM memory_workflow_guide_states WHERE state IN ({})".format(
+            ",".join("?" for _ in terminal_states)
+        )
+        if session_id:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+        if run_id:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        sql += " ORDER BY updated_at DESC LIMIT 12"
+        query_tokens = _meaningful_tokens(query)
+        with db.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        for row in rows:
+            data = dict(row)
+            state_query = str(data.get("query") or "")
+            if not state_query:
+                continue
+            state_tokens = _meaningful_tokens(state_query)
+            if (
+                query_tokens & state_tokens
+                or _normalized_contains(query, state_query)
+                or _normalized_contains(state_query, query)
+            ):
+                data["metadata"] = _json_load(data.pop("metadata_json", None), {})
+                data["currentStepIndex"] = int(data.get("current_step_index") or 0)
+                return data
+        return None
+
     def _recent_runtime_events(
         self,
         *,
@@ -1114,6 +1553,11 @@ class WorkflowMemoryService:
                 + float(item.get("confidence") or 0)
                 + outcome_delta
             )
+            if metadata.get("source") == "system_seed":
+                # Built-in memories are baseline guidance. Learned or
+                # user-approved candidates with the same anchors should be
+                # allowed to outrank them.
+                score -= 0.6
             enriched = dict(item)
             enriched["_workflowHintDiagnostics"] = {
                 "score": round(score, 4),
@@ -1136,20 +1580,51 @@ class WorkflowMemoryService:
     ) -> str:
         cfg = workflow_memory_config()
         max_guides = int(cfg.get("maxActiveWorkflowGuidesPerRun") or cfg.get("maxInjectedHints") or 2)
+        if self._terminal_guide_state_for_query(query=query, session_id=session_id, run_id=run_id):
+            return ""
+        match_limit = min(int(cfg.get("maxInjectedHints") or 2), max_guides)
+        if session_id or run_id:
+            # Fetch a slightly wider pool so an in-progress guide state can
+            # outrank broad system-seeded baseline memories before we enforce
+            # the per-run active guide cap.
+            match_limit = max(match_limit, int(cfg.get("maxInjectedHints") or 2))
         hints = self.match_hints(
             query=query,
             scope_chain=scope_chain,
-            limit=min(int(cfg.get("maxInjectedHints") or 2), max_guides),
+            limit=match_limit,
         )
         if not hints:
             return ""
         max_chars = int(cfg.get("maxHintChars") or 900)
+        try:
+            ranked_path_count = int(storage.get_engineering_lane_config().get("rankedWorkflowPathCount") or 3)
+        except Exception:
+            ranked_path_count = 3
+        ranked_path_count = max(1, min(ranked_path_count, 5))
         lines = [
             "[WORKFLOW HINTS]",
             "Procedural memory guidance. Use this as a small route aid, not a script.",
         ]
         emitted = 0
+        if session_id or run_id:
+            def _hint_priority(item: Dict[str, Any]) -> Tuple[int, float]:
+                guide_state = self._latest_guide_state(
+                    candidate_id=str(item.get("id") or ""),
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                state = str((guide_state or {}).get("state") or "").strip().lower()
+                diagnostics = item.get("_workflowHintDiagnostics") if isinstance(item.get("_workflowHintDiagnostics"), dict) else {}
+                try:
+                    score = float(diagnostics.get("score") or 0.0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                return (1 if guide_state and state not in TERMINAL_GUIDE_STATES else 0, score)
+
+            hints.sort(key=_hint_priority, reverse=True)
         for item in hints:
+            if emitted >= max_guides:
+                break
             golden = item.get("goldenPathSteps") or []
             anti = item.get("antiPatterns") or []
             verify = item.get("verificationSteps") or []
@@ -1181,9 +1656,15 @@ class WorkflowMemoryService:
                 step_index = 0
             next_step = str(golden[step_index])[:220] if golden else ""
             diagnostics = item.get("_workflowHintDiagnostics") if isinstance(item.get("_workflowHintDiagnostics"), dict) else {}
+            ranked_next_actions = self._ranked_next_actions_for_item(
+                item=item,
+                start_index=step_index,
+                max_paths=ranked_path_count,
+            )
             hint_payload = {
                 "taskFamily": item.get("task_family"),
                 "nextStep": next_step,
+                "rankedNextActions": ranked_next_actions,
                 "avoid": anti[:2],
                 "verify": verify[:2],
                 "confidence": item.get("confidence"),
@@ -1219,6 +1700,15 @@ class WorkflowMemoryService:
                 else:
                     lines.append(f"  Suggested next move (Step {step_index + 1}/{len(golden)}): {next_step}")
                     lines.append("  Adaptation: Keep the goal and verification intent; change concrete actions when the current task differs.")
+                if ranked_next_actions:
+                    lines.append("  Ranked next action paths:")
+                    for action in ranked_next_actions[:ranked_path_count]:
+                        score = action.get("behaviorMatch")
+                        score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else str(score or "n/a")
+                        lines.append(f"    #{action.get('rank')}: match={score_text} · {str(action.get('suggestedAction') or '')[:160]}")
+                        variants = action.get("reasonableVariants") if isinstance(action.get("reasonableVariants"), list) else []
+                        if variants:
+                            lines.append(f"      variants: {'; '.join(str(value)[:80] for value in variants[:2])}")
             if anti:
                 lines.append(f"  Avoid: {'; '.join(str(step)[:120] for step in anti[:2])}")
             if verify:
@@ -1266,6 +1756,58 @@ class WorkflowMemoryService:
         lines.append("[/WORKFLOW HINTS]")
         text = "\n".join(lines)
         return text[:max_chars].rstrip()
+
+    def _ranked_next_actions_for_item(
+        self,
+        *,
+        item: Dict[str, Any],
+        start_index: int,
+        max_paths: int,
+    ) -> List[Dict[str, Any]]:
+        golden = list(item.get("goldenPathSteps") or [])
+        if not golden:
+            return []
+        diagnostics = item.get("_workflowHintDiagnostics") if isinstance(item.get("_workflowHintDiagnostics"), dict) else {}
+        base_score = float(diagnostics.get("score") or item.get("confidence") or 0.0)
+        anti = list(item.get("antiPatterns") or [])
+        verify = list(item.get("verificationSteps") or [])
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        configured_variants = metadata.get("actionVariants") or metadata.get("action_variants") or []
+        variants_by_step = metadata.get("actionVariantsByStep") or metadata.get("action_variants_by_step") or {}
+        if isinstance(variants_by_step, dict):
+            configured_variants = (
+                variants_by_step.get(str(start_index))
+                or variants_by_step.get(start_index)
+                or configured_variants
+            )
+        ranked: List[Dict[str, Any]] = []
+        step = golden[max(0, min(start_index, len(golden) - 1))]
+        variants: List[str] = []
+        if isinstance(configured_variants, list):
+            variants = [str(value)[:180] for value in configured_variants[: max_paths - 1] if str(value).strip()]
+        step_text = str(step or "")
+        if not variants:
+            if "fetch_skill_instructions" in step_text:
+                variants = ["Use exact skill id/name first", "Verify resolver diagnostics before executing the skill"]
+            elif "验证" in step_text or "test" in step_text.lower():
+                variants = ["Run the narrowest relevant verification first", "Escalate only after local signal is clean"]
+            else:
+                variants = ["Adapt the concrete tool/action to current evidence while preserving the verification intent"]
+        current_actions = [step_text, *variants]
+        for offset, action in enumerate(current_actions[:max_paths]):
+            ranked.append(
+                {
+                    "rank": len(ranked) + 1,
+                    "stepIndex": start_index,
+                    "behaviorMatch": round(max(0.05, base_score / (offset + 1)), 4),
+                    "evidence": diagnostics.get("matchedReasons") or [],
+                    "suggestedAction": str(action)[:260],
+                    "reasonableVariants": [value for value in variants[:3] if value != action],
+                    "avoid": anti[:2],
+                    "verify": verify[:2],
+                }
+            )
+        return ranked
 
     def maintenance_consolidate(self) -> Dict[str, Any]:
         candidates = self.list_candidates(limit=500)

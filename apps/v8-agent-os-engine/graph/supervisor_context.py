@@ -166,6 +166,97 @@ def render_network_supervisor_context(state) -> str:
     )
 
 
+def _render_engineering_context(state: dict) -> tuple[str, list[dict[str, object]]]:
+    envelope = state.get("engineering_context") if isinstance(state.get("engineering_context"), dict) else {}
+    trigger = envelope.get("triggerDecision") if isinstance(envelope.get("triggerDecision"), dict) else {}
+    if not trigger.get("active"):
+        return "", []
+    pack = envelope.get("contextPack") if isinstance(envelope.get("contextPack"), dict) else {}
+    repo = pack.get("repoBrief") if isinstance(pack.get("repoBrief"), dict) else {}
+    git_summary = pack.get("gitSummary") if isinstance(pack.get("gitSummary"), dict) else {}
+    evidence_graph = pack.get("evidenceGraphDigest") if isinstance(pack.get("evidenceGraphDigest"), dict) else {}
+    coding_contract = pack.get("codingPlannerContractPreview") if isinstance(pack.get("codingPlannerContractPreview"), dict) else {}
+    soft_gate = pack.get("worksetSoftGateDecision") if isinstance(pack.get("worksetSoftGateDecision"), dict) else {}
+    manifests = pack.get("manifestSummary") if isinstance(pack.get("manifestSummary"), dict) else {}
+    critical_files = pack.get("criticalFiles") if isinstance(pack.get("criticalFiles"), list) else []
+    ranked_paths = pack.get("workflowRankedPaths") if isinstance(pack.get("workflowRankedPaths"), list) else []
+    suppression = pack.get("memorySuppression") if isinstance(pack.get("memorySuppression"), dict) else {}
+    lines = [
+        "--- ENGINEERING CONTEXT PACK ---",
+        "Engineering mode is active. Treat this as compact repo evidence, not full repository context.",
+        f"Trigger: {trigger.get('reason') or 'engineering'}; signals={', '.join(map(str, trigger.get('signals') or [])) or 'n/a'}",
+        f"Repo: {repo.get('repoRoot') or repo.get('workspaceRoot') or 'unknown'}"
+        + (f" @ {repo.get('branch')}" if repo.get("branch") else ""),
+    ]
+    if git_summary.get("statusShort"):
+        lines.append("Git status:")
+        for item in str(git_summary.get("statusShort") or "").splitlines()[:12]:
+            lines.append(f"  {item}")
+    elif git_summary:
+        lines.append("Git status: clean or unavailable.")
+    scripts = manifests.get("packageScripts") if isinstance(manifests.get("packageScripts"), dict) else {}
+    if scripts:
+        lines.append("Likely verification scripts: " + ", ".join(str(key) for key in list(scripts.keys())[:8]))
+    if critical_files:
+        lines.append("Critical file candidates:")
+        for item in critical_files[:8]:
+            if isinstance(item, dict) and item.get("path"):
+                lines.append(f"  - {item.get('path')}")
+    evidence_dirty = evidence_graph.get("dirtyState") if isinstance(evidence_graph.get("dirtyState"), dict) else {}
+    if evidence_graph:
+        lines.append(
+            "Evidence graph: "
+            f"repoDetected={bool(evidence_graph.get('repoDetected'))}, "
+            f"changedFiles={evidence_dirty.get('changedFileCount', 0)}, "
+            f"criticalCandidates={len(evidence_graph.get('criticalFileCandidates') or [])}"
+        )
+    if coding_contract.get("enabled"):
+        lines.append("Coding planner contract:")
+        write_set = list(coding_contract.get("writeSet") or [])[:8]
+        verify = list(coding_contract.get("verificationMatrix") or [])[:4]
+        lines.append("  writeSet: " + (", ".join(map(str, write_set)) if write_set else "missing"))
+        if verify:
+            verify_labels = []
+            for item in verify:
+                if isinstance(item, dict):
+                    verify_labels.append(str(item.get("command") or item.get("kind") or "verification"))
+                else:
+                    verify_labels.append(str(item))
+            lines.append("  verification: " + ", ".join(verify_labels))
+        if coding_contract.get("riskFlags"):
+            lines.append("  risks: " + ", ".join(map(str, list(coding_contract.get("riskFlags") or [])[:6])))
+    if soft_gate.get("warning"):
+        lines.append(
+            "Soft workset gate warning: "
+            + str(soft_gate.get("risk") or "outside_write_set")
+            + ". Confirm or expand writeSet before accepting out-of-scope edits."
+        )
+    if ranked_paths:
+        lines.append("Engineering workflow ranked paths:")
+        for item in ranked_paths[:3]:
+            if isinstance(item, dict):
+                score = item.get("behaviorMatch")
+                score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else str(score or "n/a")
+                lines.append(f"  - match={score_text}: {str(item.get('suggestedAction') or '')[:180]}")
+    if suppression:
+        suppressed = []
+        if suppression.get("suppressDailyMemory"):
+            suppressed.append("daily memory")
+        if suppression.get("suppressMemoryMap"):
+            suppressed.append("memory map")
+        if suppressed:
+            lines.append("Suppressed in engineering mode: " + ", ".join(suppressed) + ". Workflow hints remain as checklist/bias.")
+    lines.append("--------------------------------")
+    diagnostics = [{
+        "source": "engineering_context_pack",
+        "estimatedTokens": envelope.get("contextPackEstimatedTokens"),
+        "budgetTokens": envelope.get("contextPackBudget"),
+        "truncated": bool(envelope.get("contextPackTruncated")),
+        "omittedReason": "",
+    }]
+    return "\n".join(lines) + "\n\n", diagnostics
+
+
 def _network_openai_memory_budget_tokens() -> int:
     try:
         config = storage.get_network_supervisor_runtime_config()
@@ -585,26 +676,32 @@ def build_supervisor_system_content(
         "</environment>\n"
     )
 
+    engineering_context, engineering_budget_diagnostics = _render_engineering_context(state)
+    engineering_envelope = state.get("engineering_context") if isinstance(state.get("engineering_context"), dict) else {}
+    engineering_pack = engineering_envelope.get("contextPack") if isinstance(engineering_envelope.get("contextPack"), dict) else {}
+    engineering_suppression = engineering_pack.get("memorySuppression") if isinstance(engineering_pack.get("memorySuppression"), dict) else {}
     memory_context = memory_runtime.build_session_context(
         user_query=user_query,
         scope=current_scope,
         scope_chain=scope_chain,
         session_id=session_id,
         run_id=state.get("run_id") or state.get("runId"),
+        suppress_daily_memory=bool(engineering_suppression.get("suppressDailyMemory")),
+        suppress_memory_map=bool(engineering_suppression.get("suppressMemoryMap")),
     )
     network_supervisor_context = render_network_supervisor_context(state)
     memory_budget_diagnostics: list[dict[str, object]] = []
     if network_supervisor_context and memory_context:
         memory_budget = enforce_prompt_budget(
-            "network_supervisor_openai.memory_workflow_context",
-            memory_context,
-            _network_openai_memory_budget_tokens(),
+            source="network_supervisor_openai.memory_workflow_context",
+            text=memory_context,
+            budget_tokens=_network_openai_memory_budget_tokens(),
             truncate=True,
         )
         memory_context = memory_budget.text
         memory_budget_diagnostics.append(memory_budget.diagnostic())
     workspace_rules_context, workspace_rules_diagnostics = _build_workspace_rules_context(state=state, session_id=session_id)
-    prompt_budget_diagnostics = [base_prompt_budget.diagnostic(), *workspace_rules_diagnostics, *memory_budget_diagnostics]
+    prompt_budget_diagnostics = [base_prompt_budget.diagnostic(), *workspace_rules_diagnostics, *memory_budget_diagnostics, *engineering_budget_diagnostics]
 
     runtime_registry_context = capability_registry.build_supervisor_summary(
         user_query=user_query,
@@ -698,6 +795,7 @@ def build_supervisor_system_content(
         f"{specialist_agents_context}"
         f"{available_tools_context}\n"
         f"{network_supervisor_context}"
+        f"{engineering_context}"
         f"{planner_context}"
         f"{artifact_awareness_context}"
         f"{todos_context}{memory_context}\n\n"
@@ -713,6 +811,7 @@ def build_supervisor_system_content(
         "specialist_agents_context": specialist_agents_context,
         "available_tools_context": available_tools_context,
         "network_supervisor_context": network_supervisor_context,
+        "engineering_context": engineering_context,
         "planner_context": planner_context,
         "artifact_awareness_context": artifact_awareness_context,
         "artifact_awareness_diagnostics": artifact_awareness_diagnostics,

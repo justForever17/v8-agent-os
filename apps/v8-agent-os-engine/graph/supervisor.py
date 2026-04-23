@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     transport: NotRequired[str]
     planner_plan: NotRequired[dict]
     planner_dispatch_status: NotRequired[dict]
+    engineering_context: NotRequired[dict]
 
 from core.context_orchestrator import context_orchestrator
 

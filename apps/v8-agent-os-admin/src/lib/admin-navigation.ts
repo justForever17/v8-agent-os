@@ -5,6 +5,7 @@ import {
     Bot,
     Brain,
     Building2,
+    Code2,
     Gauge,
     Globe2,
     LayoutDashboard,
@@ -128,6 +129,13 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/runtime-governance",
                 icon: Activity,
                 description: "lib.admin.navigation.runtimeGovernanceDescription",
+            },
+            {
+                title: "lib.admin.navigation.engineeringLaneTitle",
+                href: "/admin/engineering-lane",
+                icon: Code2,
+                description: "lib.admin.navigation.engineeringLaneDescription",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
                 title: "lib.admin.navigation.k4f3e92b5",

@@ -2,6 +2,8 @@ import sqlite3
 import json
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -472,6 +474,34 @@ class DatabaseManager:
                     FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
                 )
             ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS engineering_proof_entries (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    run_id TEXT,
+                    task_brief_id TEXT,
+                    mode TEXT DEFAULT 'dry_run',
+                    patch_intent TEXT,
+                    read_set_json TEXT,
+                    write_set_json TEXT,
+                    changed_files_json TEXT,
+                    commands_json TEXT,
+                    diagnostics_json TEXT,
+                    verification_status TEXT DEFAULT 'unverified',
+                    residual_risks_json TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_session_id ON engineering_proof_entries (session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_run_id ON engineering_proof_entries (run_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_status ON engineering_proof_entries (verification_status)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_created_at ON engineering_proof_entries (created_at DESC)')
 
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS model_invocation_logs (
@@ -1760,6 +1790,106 @@ class DatabaseManager:
                 data["metadata"] = json.loads(data["metadata"]) if data.get("metadata") else {}
                 rows.append(data)
             return rows
+
+    def add_engineering_proof_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        entry_id = str(entry.get("id") or uuid.uuid4())
+
+        def _dump(value: Any) -> str:
+            return json.dumps(to_jsonable(value if value is not None else []), ensure_ascii=False)
+
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                INSERT INTO engineering_proof_entries
+                (id, session_id, run_id, task_brief_id, mode, patch_intent, read_set_json, write_set_json,
+                 changed_files_json, commands_json, diagnostics_json, verification_status, residual_risks_json,
+                 metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    entry_id,
+                    entry.get("session_id") or entry.get("sessionId"),
+                    entry.get("run_id") or entry.get("runId"),
+                    entry.get("task_brief_id") or entry.get("taskBriefId"),
+                    str(entry.get("mode") or "dry_run"),
+                    str(entry.get("patch_intent") or entry.get("patchIntent") or ""),
+                    _dump(entry.get("read_set") if "read_set" in entry else entry.get("readSet")),
+                    _dump(entry.get("write_set") if "write_set" in entry else entry.get("writeSet")),
+                    _dump(entry.get("changed_files") if "changed_files" in entry else entry.get("changedFiles")),
+                    _dump(entry.get("commands")),
+                    _dump(entry.get("diagnostics")),
+                    str(entry.get("verification_status") or entry.get("verificationStatus") or "unverified"),
+                    _dump(entry.get("residual_risks") if "residual_risks" in entry else entry.get("residualRisks")),
+                    _dump(entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        row = self.get_engineering_proof_entry(entry_id)
+        return row or {"id": entry_id}
+
+    def get_engineering_proof_entry(self, entry_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM engineering_proof_entries WHERE id = ?", (entry_id,))
+            row = cursor.fetchone()
+            return self._engineering_proof_row_to_dict(row) if row else None
+
+    def list_engineering_proof_entries(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM engineering_proof_entries WHERE 1=1"
+        params: list[Any] = []
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if run_id:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        if status:
+            query += " AND verification_status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit or 20), 100)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._engineering_proof_row_to_dict(row) for row in cursor.fetchall()]
+
+    def _engineering_proof_row_to_dict(self, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+
+        def _load(key: str, fallback: Any) -> Any:
+            raw = data.pop(key, None)
+            if not raw:
+                return fallback
+            try:
+                return json.loads(raw)
+            except Exception:
+                return fallback
+
+        data["readSet"] = _load("read_set_json", [])
+        data["writeSet"] = _load("write_set_json", [])
+        data["changedFiles"] = _load("changed_files_json", [])
+        data["commands"] = _load("commands_json", [])
+        data["diagnostics"] = _load("diagnostics_json", {})
+        data["residualRisks"] = _load("residual_risks_json", [])
+        data["metadata"] = _load("metadata_json", {})
+        data["taskBriefId"] = data.pop("task_brief_id", None)
+        data["patchIntent"] = data.pop("patch_intent", "")
+        data["verificationStatus"] = data.pop("verification_status", "unverified")
+        data["createdAt"] = data.pop("created_at", None)
+        data["updatedAt"] = data.pop("updated_at", None)
+        data["sessionId"] = data.pop("session_id", None)
+        data["runId"] = data.pop("run_id", None)
+        return data
 
     def clear_memory_runtime_diagnostics(self) -> Dict[str, int]:
         with self.get_connection() as conn:

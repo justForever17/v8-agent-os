@@ -1,0 +1,1507 @@
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+from core.database import db
+from core.prompt_budget import enforce_prompt_budget, estimate_prompt_tokens, truncate_to_estimated_tokens
+from core.storage import storage
+from core.workspace_resolution import workspace_resolution_service
+from runtimes.memory.workflow_service import workflow_memory_service
+
+
+CODE_SIGNAL_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ("code_change", ("code", "implement", "implementation", "patch", "edit", "modify", "fix", "代码", "实现", "修改", "修复", "改")),
+    ("debug_or_error", ("bug", "error", "traceback", "exception", "debug", "报错", "异常", "故障", "排查")),
+    ("refactor_or_architecture", ("refactor", "architecture", "migration", "runtime", "重构", "架构", "迁移", "主链")),
+    ("verification", ("test", "pytest", "typecheck", "tsc", "build", "lint", "验证", "测试", "构建", "编译", "回归")),
+    ("repo_terms", ("repo", "repository", "workspace", "file", "directory", "git", "仓库", "工作区", "文件", "目录")),
+    ("frontend_terms", ("component", "page", "route", "api", "tsx", "react", "next", "组件", "页面", "接口")),
+]
+
+NON_ENGINEERING_PATTERNS = (
+    "生成图片",
+    "生成视频",
+    "写一首",
+    "聊天",
+    "闲聊",
+    "海报",
+    "ppt",
+    "演示稿",
+)
+
+IGNORED_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    "dist",
+    "build",
+    "coverage",
+    ".turbo",
+    ".cache",
+}
+
+MANIFEST_FILES = (
+    "package.json",
+    "pnpm-workspace.yaml",
+    "yarn.lock",
+    "package-lock.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "pytest.ini",
+    "tox.ini",
+    "tsconfig.json",
+    "vitest.config.ts",
+    "vite.config.ts",
+    "next.config.js",
+    "next.config.mjs",
+)
+
+SOURCE_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".json",
+    ".md",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".css",
+    ".scss",
+    ".html",
+}
+
+TEST_FILE_MARKERS = (
+    ".test.",
+    ".spec.",
+    "_test.",
+    "test_",
+    "__tests__",
+    "tests/",
+    "test/",
+)
+
+
+def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(int(value or default), maximum))
+    except (TypeError, ValueError):
+        return default
+
+
+def _run_command(args: list[str], *, cwd: Path, timeout: float = 5.0) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output = (completed.stdout or "").strip()
+        error = (completed.stderr or "").strip()
+        return {
+            "ok": completed.returncode == 0,
+            "returnCode": completed.returncode,
+            "stdout": output[:4000],
+            "stderr": error[:2000],
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _read_text(path: Path, *, limit: int = 12000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:limit]
+    except Exception:
+        return ""
+
+
+def _relative(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root)).replace("\\", "/")
+    except Exception:
+        return str(path)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+VALIDATION_COMMAND_PATTERNS = (
+    "pytest",
+    "py_compile",
+    "tsc",
+    "typecheck",
+    "npm run build",
+    "pnpm build",
+    "yarn build",
+    "npm run test",
+    "pnpm test",
+    "yarn test",
+    "vitest",
+    "lint",
+    "mypy",
+)
+
+
+class EngineeringLaneService:
+    """Engineering Lane Phase 1: dry-run evidence capsule and proof ledger."""
+
+    def get_config(self) -> dict[str, Any]:
+        return storage.get_engineering_lane_config()
+
+    def normalize_mode(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in {"auto", "force", "off"} else "auto"
+
+    def trigger_decision(
+        self,
+        *,
+        user_query: str,
+        mode: str = "auto",
+        workspace_descriptor: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        cfg = self.get_config()
+        normalized_mode = self.normalize_mode(mode)
+        root = Path(str((workspace_descriptor or {}).get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())).expanduser()
+        repo = self._repo_brief(root)
+        signals = self._detect_code_signals(user_query)
+        if not cfg.get("enabled", True):
+            return {
+                "mode": normalized_mode,
+                "active": False,
+                "matched": False,
+                "signals": signals,
+                "repoDetected": bool(repo.get("repoDetected")),
+                "reason": "engineering_lane_disabled",
+            }
+        if normalized_mode == "off":
+            return {
+                "mode": normalized_mode,
+                "active": False,
+                "matched": bool(signals),
+                "signals": signals,
+                "repoDetected": bool(repo.get("repoDetected")),
+                "reason": "request_override_off",
+            }
+        if normalized_mode == "force":
+            return {
+                "mode": normalized_mode,
+                "active": True,
+                "matched": True,
+                "signals": signals or ["force"],
+                "repoDetected": bool(repo.get("repoDetected")),
+                "reason": "request_override_force",
+            }
+
+        trigger_mode = str(cfg.get("triggerMode") or "auto").strip().lower()
+        if trigger_mode == "off":
+            return {
+                "mode": normalized_mode,
+                "active": False,
+                "matched": bool(signals),
+                "signals": signals,
+                "repoDetected": bool(repo.get("repoDetected")),
+                "reason": "config_trigger_off",
+            }
+        if trigger_mode == "force":
+            return {
+                "mode": normalized_mode,
+                "active": True,
+                "matched": True,
+                "signals": signals or ["config_force"],
+                "repoDetected": bool(repo.get("repoDetected")),
+                "reason": "config_trigger_force",
+            }
+
+        active = bool(signals) and bool(repo.get("repoDetected"))
+        return {
+            "mode": normalized_mode,
+            "active": active,
+            "matched": bool(signals),
+            "signals": signals,
+            "repoDetected": bool(repo.get("repoDetected")),
+            "reason": "engineering_signals_and_repo" if active else "no_engineering_signal_or_repo",
+        }
+
+    def build_context_pack(
+        self,
+        *,
+        user_query: str,
+        mode: str = "auto",
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        workspace_path: Optional[str] = None,
+        task_brief: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        descriptor = workspace_resolution_service.resolve_workspace_descriptor(
+            runtime_kind="chat",
+            session_id=session_id,
+            explicit_project_id=project_id,
+            explicit_workspace_id=workspace_id,
+            explicit_workspace_path=workspace_path,
+        )
+        root = Path(str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())).expanduser()
+        cfg = self.get_config()
+        budget = _safe_int(cfg.get("contextPackBudget"), 2400, 800, 12000)
+        trigger = self.trigger_decision(user_query=user_query, mode=mode, workspace_descriptor=descriptor)
+        source_diags: list[dict[str, Any]] = []
+        repo_brief = self._repo_brief(root)
+        rules_digest = self._workspace_rules_digest(root, budget=max(200, budget // 5), diagnostics=source_diags)
+        git_summary = self._git_summary(root)
+        manifests = self._manifest_summary(root)
+        critical_files = self._critical_file_candidates(
+            root,
+            user_query=user_query,
+            limit=_safe_int(cfg.get("maxCriticalFiles"), 24, 4, 120),
+        )
+        workflow_paths = self._ranked_workflow_paths(
+            query=user_query,
+            scope_chain=self._scope_chain_for_descriptor(descriptor),
+            max_paths=_safe_int(cfg.get("rankedWorkflowPathCount"), 3, 1, 5),
+        )
+        evidence_graph_digest = self._evidence_graph_digest(
+            root=root,
+            user_query=user_query,
+            descriptor=descriptor,
+            repo_brief=repo_brief,
+            rules_digest=rules_digest,
+            git_summary=git_summary,
+            manifest_summary=manifests,
+            critical_files=critical_files,
+            workflow_paths=workflow_paths,
+            cfg=cfg,
+        )
+        coding_contract = self._coding_planner_contract_preview(
+            user_query=user_query,
+            task_brief=task_brief,
+            evidence_graph_digest=evidence_graph_digest,
+            critical_files=critical_files,
+            manifest_summary=manifests,
+            git_summary=git_summary,
+            cfg=cfg,
+        )
+        workset_gate = self._workset_soft_gate_decision(
+            changed_files=self._changed_files_from_status(str(git_summary.get("statusShort") or "")),
+            write_set=list(coding_contract.get("writeSet") or []),
+            cfg=cfg,
+        )
+        context_pack = {
+            "repoBrief": repo_brief,
+            "evidenceGraphDigest": evidence_graph_digest,
+            "workspaceRulesDigest": rules_digest,
+            "gitSummary": git_summary,
+            "manifestSummary": manifests,
+            "criticalFiles": critical_files,
+            "taskBrief": task_brief or None,
+            "codingPlannerContractPreview": coding_contract,
+            "worksetSoftGateDecision": workset_gate,
+            "workflowRankedPaths": workflow_paths,
+            "memorySuppression": {
+                "suppressDailyMemory": bool(cfg.get("suppressDailyMemory", True)) and bool(trigger.get("active")),
+                "suppressMemoryMap": bool(cfg.get("suppressMemoryMap", True)) and bool(trigger.get("active")),
+                "workflowHintsRetained": True,
+            },
+            "sourceDiagnostics": source_diags,
+        }
+        raw = json.dumps(context_pack, ensure_ascii=False, default=str)
+        estimated = estimate_prompt_tokens(raw)
+        truncated = False
+        if estimated > budget:
+            truncated = True
+            context_pack = self._shrink_context_pack(context_pack, budget)
+            estimated = estimate_prompt_tokens(json.dumps(context_pack, ensure_ascii=False, default=str))
+        return {
+            "triggerDecision": trigger,
+            "engineeringMode": self.normalize_mode(mode),
+            "workspace": descriptor,
+            "contextPackBudget": budget,
+            "contextPackEstimatedTokens": estimated,
+            "contextPackTruncated": truncated,
+            "contextPack": context_pack,
+            "evidenceGraphDigest": evidence_graph_digest,
+            "codingPlannerContractPreview": coding_contract,
+            "worksetSoftGateDecision": workset_gate,
+            "proofDraft": self._proof_draft(
+                session_id=session_id,
+                run_id=run_id,
+                task_brief=task_brief,
+                context_pack=context_pack,
+                trigger=trigger,
+            ),
+        }
+
+    def dry_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        user_query = str(payload.get("userQuery") or payload.get("user_query") or "").strip()
+        mode = self.normalize_mode(payload.get("engineeringMode") or payload.get("engineering_mode") or "auto")
+        return self.build_context_pack(
+            user_query=user_query,
+            mode=mode,
+            session_id=str(payload.get("sessionId") or payload.get("session_id") or "").strip() or None,
+            run_id=str(payload.get("runId") or payload.get("run_id") or "").strip() or None,
+            project_id=str(payload.get("projectId") or payload.get("project_id") or "").strip() or None,
+            workspace_id=str(payload.get("workspaceId") or payload.get("workspace_id") or "").strip() or None,
+            workspace_path=str(payload.get("workspacePath") or payload.get("workspace_path") or "").strip() or None,
+            task_brief=payload.get("taskBrief") if isinstance(payload.get("taskBrief"), dict) else None,
+        )
+
+    def list_proof_entries(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        normalized_status = str(status or "").strip().lower()
+        return db.list_engineering_proof_entries(
+            session_id=session_id,
+            run_id=run_id,
+            status=normalized_status if normalized_status and normalized_status != "all" else None,
+            limit=limit,
+        )
+
+    def get_proof_entry(self, entry_id: str) -> Optional[dict[str, Any]]:
+        return db.get_engineering_proof_entry(entry_id)
+
+    def add_proof_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        status = str(entry.get("verificationStatus") or entry.get("verification_status") or "planned").strip().lower()
+        if status == "verified" and not entry.get("commands") and not entry.get("diagnostics"):
+            entry = {**entry, "verificationStatus": "unverified"}
+        return db.add_engineering_proof_entry(entry)
+
+    def collect_terminal_proof(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        source_component: str = "terminal_post_run",
+        manual_refresh: bool = False,
+    ) -> dict[str, Any]:
+        cfg = self.get_config()
+        if not bool(cfg.get("enabled", True)) or not bool(cfg.get("proofLedgerEnabled", True)):
+            return {"status": "skipped", "reason": "engineering_proof_disabled"}
+        if not manual_refresh and not bool(cfg.get("autoProofCollectionEnabled", True)):
+            return {"status": "skipped", "reason": "auto_proof_collection_disabled"}
+        proof_scope = str(cfg.get("proofCollectionScope") or "engineering_active").strip().lower()
+        if proof_scope == "off":
+            return {"status": "skipped", "reason": "proof_collection_scope_off"}
+
+        run_record = db.get_run_record(run_id)
+        if not run_record:
+            return {"status": "skipped", "reason": "missing_run_record"}
+        metadata = dict(run_record.get("metadata") or {})
+        trigger = metadata.get("engineeringTriggerDecision") if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}
+        engineering_mode = self.normalize_mode(metadata.get("engineeringMode") or "auto")
+        active = bool(trigger.get("active")) or engineering_mode == "force"
+        if proof_scope == "force_only" and engineering_mode != "force":
+            return {"status": "skipped", "reason": "proof_collection_force_only", "engineeringMode": engineering_mode}
+        if proof_scope == "engineering_active" and not active:
+            return {"status": "skipped", "reason": "engineering_mode_inactive", "engineeringMode": engineering_mode, "triggerDecision": trigger}
+
+        workspace_root = self._workspace_root_from_run_metadata(metadata, session_id=session_id)
+        events = db.get_runtime_events_for_run(run_id, session_id=session_id, limit=1000)
+        tool_starts = self._tool_starts_by_id(events)
+        commands, diagnostics = self._command_evidence_from_events(events, tool_starts=tool_starts, cfg=cfg)
+        git_summary = self._git_summary(workspace_root) if bool((cfg.get("diagnosticsProviders") or {}).get("git", True)) else {}
+        changed_files = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
+        if git_summary:
+            diagnostics.append(self._diagnostic_item(
+                source="git",
+                kind="status",
+                command="git status --short && git diff --stat",
+                return_code=0 if not git_summary.get("statusError") else None,
+                summary=self._git_diagnostic_summary(git_summary, changed_files),
+                raw_preview="\n".join(
+                    part
+                    for part in (
+                        str(git_summary.get("statusShort") or "").strip(),
+                        str(git_summary.get("diffStat") or "").strip(),
+                        str(git_summary.get("stagedDiffStat") or "").strip(),
+                        str(git_summary.get("statusError") or "").strip(),
+                    )
+                    if part
+                ),
+            ))
+        lsp_provider = self._lsp_provider_status(cfg)
+        if lsp_provider:
+            diagnostics.append(lsp_provider)
+
+        task_brief = self._task_brief_from_metadata_or_events(metadata, events)
+        write_set = self._normalize_path_list((task_brief or {}).get("writeSet") if isinstance(task_brief, dict) else [])
+        if not write_set:
+            context_pack = metadata.get("engineeringContextPack") if isinstance(metadata.get("engineeringContextPack"), dict) else {}
+            pack = context_pack.get("contextPack") if isinstance(context_pack.get("contextPack"), dict) else context_pack
+            coding_contract = pack.get("codingPlannerContractPreview") if isinstance(pack.get("codingPlannerContractPreview"), dict) else {}
+            write_set = self._normalize_path_list(coding_contract.get("writeSet") if isinstance(coding_contract, dict) else [])
+        read_set = self._read_set_from_events_or_context(events, metadata)
+        workset_risk = self._workset_risk(changed_files=changed_files, write_set=write_set, cfg=cfg)
+        verification_status = self._verification_status(
+            changed_files=changed_files,
+            commands=commands,
+            diagnostics=diagnostics,
+        )
+        residual_risks = self._residual_risks(
+            verification_status=verification_status,
+            changed_files=changed_files,
+            commands=commands,
+            diagnostics=diagnostics,
+            workset_risk=workset_risk,
+        )
+        patch_intent = self._patch_intent_from_run(session_id=session_id, metadata=metadata, task_brief=task_brief)
+        context_digest = self._context_pack_digest(metadata=metadata, events=events, trigger=trigger)
+        entry = {
+            "sessionId": session_id,
+            "runId": run_id,
+            "taskBriefId": (task_brief or {}).get("taskBriefId") if isinstance(task_brief, dict) else None,
+            "mode": "terminal_auto" if not manual_refresh else "manual_refresh",
+            "patchIntent": patch_intent,
+            "readSet": read_set,
+            "writeSet": write_set,
+            "changedFiles": changed_files,
+            "commands": commands,
+            "diagnostics": {
+                "items": diagnostics,
+                "gitSummary": git_summary,
+                "lspProvider": lsp_provider or {"provider": "disabled"},
+                "worksetRisk": workset_risk,
+                "contextPackDigest": context_digest,
+            },
+            "verificationStatus": verification_status,
+            "residualRisks": residual_risks,
+            "metadata": {
+                "sourceComponent": source_component,
+                "autoCollected": not manual_refresh,
+                "collectedAt": _utc_now_iso(),
+                "engineeringMode": engineering_mode,
+                "triggerDecision": trigger,
+                "workspaceRoot": str(workspace_root),
+                "proofCollectionScope": proof_scope,
+            },
+        }
+        stored = self.add_proof_entry(entry)
+        self._emit_proof_runtime_event(
+            session_id=session_id,
+            run_id=run_id,
+            proof_entry=stored,
+            source_component=source_component,
+            manual_refresh=manual_refresh,
+        )
+        return {"status": "collected", "entry": stored}
+
+    def refresh_proof_from_existing_evidence(self, *, session_id: str, run_id: str) -> dict[str, Any]:
+        return self.collect_terminal_proof(
+            session_id=session_id,
+            run_id=run_id,
+            source_component="engineering_lane_manual_refresh",
+            manual_refresh=True,
+        )
+
+    def _workspace_root_from_run_metadata(self, metadata: dict[str, Any], *, session_id: str) -> Path:
+        descriptor = workspace_resolution_service.resolve_workspace_descriptor(
+            runtime_kind="chat",
+            session_id=session_id,
+            explicit_project_id=str(metadata.get("project_id") or metadata.get("projectId") or "").strip() or None,
+            explicit_workspace_id=str(metadata.get("workspace_id") or metadata.get("workspaceId") or "").strip() or None,
+            explicit_workspace_path=str(metadata.get("workspace_path") or metadata.get("workspacePath") or "").strip() or None,
+        )
+        return Path(str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())).expanduser()
+
+    def _tool_starts_by_id(self, events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        starts: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if str(event.get("topic") or "") != "tool.started":
+                continue
+            tool = self._event_tool_payload(event)
+            key = str(tool.get("toolCallId") or tool.get("toolName") or "").strip()
+            if key:
+                starts[key] = tool
+        return starts
+
+    def _event_tool_payload(self, event: dict[str, Any]) -> dict[str, Any]:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        tool = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+        return dict(tool)
+
+    def _command_evidence_from_events(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        tool_starts: dict[str, dict[str, Any]],
+        cfg: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not bool((cfg.get("diagnosticsProviders") or {}).get("command", True)):
+            return [], []
+        commands: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, Any]] = []
+        for event in events:
+            if str(event.get("topic") or "") != "tool.finished":
+                continue
+            tool = self._event_tool_payload(event)
+            tool_name = str(tool.get("toolName") or "").strip()
+            if tool_name not in {"run_system_command", "command_session_broker"}:
+                continue
+            tool_call_id = str(tool.get("toolCallId") or tool_name).strip()
+            start = tool_starts.get(tool_call_id) or tool_starts.get(tool_name) or {}
+            args = start.get("args") if isinstance(start.get("args"), dict) else {}
+            result = tool.get("result")
+            result_dict = result if isinstance(result, dict) else {}
+            command_text = str(
+                args.get("command")
+                or result_dict.get("command")
+                or result_dict.get("summary")
+                or result_dict.get("runId")
+                or tool_name
+            ).strip()
+            return_code = self._coerce_optional_int(result_dict.get("returnCode"))
+            status_text = str(result_dict.get("status") or result_dict.get("state") or result_dict.get("ok") or "").strip().lower()
+            ok = result_dict.get("ok")
+            if return_code is None and ok is not None:
+                return_code = 0 if bool(ok) else 1
+            is_validation = self._is_validation_command(command_text)
+            summary = self._tool_result_summary(tool_name=tool_name, result=result_dict, return_code=return_code)
+            raw_preview, truncated = self._result_preview(result)
+            command_entry = {
+                "tool": tool_name,
+                "toolCallId": tool_call_id,
+                "command": command_text,
+                "returnCode": return_code,
+                "status": status_text or ("ok" if return_code == 0 else "unknown"),
+                "summary": summary,
+                "isValidation": is_validation,
+                "eventSeq": event.get("seq"),
+            }
+            commands.append(command_entry)
+            severity = "info"
+            if return_code is not None and return_code != 0:
+                severity = "error" if is_validation else "warning"
+            diagnostics.append(self._diagnostic_item(
+                source="command",
+                kind="validation_command" if is_validation else "command",
+                command=command_text,
+                tool=tool_name,
+                return_code=return_code,
+                summary=summary,
+                raw_preview=raw_preview,
+                truncated=truncated,
+                severity=severity,
+            ))
+        return commands, diagnostics
+
+    def _coerce_optional_int(self, value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _is_validation_command(self, command: str) -> bool:
+        text = str(command or "").strip().lower()
+        return any(pattern in text for pattern in VALIDATION_COMMAND_PATTERNS)
+
+    def _tool_result_summary(self, *, tool_name: str, result: dict[str, Any], return_code: Optional[int]) -> str:
+        for key in ("summary", "recommendedNextAction", "reason", "error", "stderrPreview", "stdoutPreview", "finalPreview", "initialPreview"):
+            value = str(result.get(key) or "").strip()
+            if value:
+                return value[:320]
+        if return_code is not None:
+            return f"{tool_name} finished with returnCode={return_code}"
+        return f"{tool_name} finished"
+
+    def _result_preview(self, result: Any, *, limit: int = 1200) -> tuple[str, bool]:
+        try:
+            text = json.dumps(result, ensure_ascii=False, default=str) if not isinstance(result, str) else result
+        except Exception:
+            text = str(result)
+        text = text.strip()
+        if len(text) <= limit:
+            return text, False
+        return text[:limit], True
+
+    def _diagnostic_item(
+        self,
+        *,
+        source: str,
+        kind: str,
+        summary: str,
+        command: Optional[str] = None,
+        tool: Optional[str] = None,
+        return_code: Optional[int] = None,
+        file_refs: Optional[list[str]] = None,
+        severity: Optional[str] = None,
+        raw_preview: str = "",
+        truncated: bool = False,
+    ) -> dict[str, Any]:
+        item = {
+            "source": source,
+            "kind": kind,
+            "summary": str(summary or "")[:500],
+            "returnCode": return_code,
+            "fileRefs": list(file_refs or [])[:20],
+            "severity": severity or "info",
+            "rawPreview": str(raw_preview or "")[:1600],
+            "truncated": bool(truncated),
+        }
+        if command:
+            item["command"] = command
+        if tool:
+            item["tool"] = tool
+        return {key: value for key, value in item.items() if value not in (None, "", [], {})}
+
+    def _git_diagnostic_summary(self, git_summary: dict[str, Any], changed_files: list[str]) -> str:
+        if git_summary.get("statusError"):
+            return f"Git status unavailable: {git_summary.get('statusError')}"
+        if changed_files:
+            return f"{len(changed_files)} changed file(s) detected by git status."
+        return "Git status is clean or no tracked changes were detected."
+
+    def _lsp_provider_status(self, cfg: dict[str, Any]) -> dict[str, Any] | None:
+        if not bool((cfg.get("diagnosticsProviders") or {}).get("lspBestEffort", True)):
+            return None
+        return self._diagnostic_item(
+            source="lsp",
+            kind="provider_status",
+            summary="LSP diagnostics provider is unavailable in this phase; proof collection continues with git/command evidence.",
+            severity="info",
+            raw_preview="provider=unavailable",
+        ) | {"provider": "unavailable"}
+
+    def _task_brief_from_metadata_or_events(self, metadata: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for key in ("taskBrief", "plannerTaskBrief", "engineeringTaskBrief"):
+            value = metadata.get(key)
+            if isinstance(value, dict):
+                return dict(value)
+        for event in events:
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            for key in ("taskBrief", "plannerTaskBrief", "task"):
+                value = payload.get(key)
+                if isinstance(value, dict):
+                    return dict(value)
+            tool = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+            result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+            items = result.get("items") if isinstance(result.get("items"), list) else []
+            for item in items:
+                if isinstance(item, dict) and (item.get("taskBriefId") or item.get("taskGoal")):
+                    return {
+                        "taskBriefId": item.get("taskBriefId"),
+                        "goal": item.get("taskGoal"),
+                        "writeSet": item.get("writeSet") or [],
+                    }
+        return None
+
+    def _read_set_from_events_or_context(self, events: list[dict[str, Any]], metadata: dict[str, Any]) -> list[str]:
+        context = metadata.get("engineeringContextPack") if isinstance(metadata.get("engineeringContextPack"), dict) else {}
+        if isinstance(context.get("contextPack"), dict):
+            context = context.get("contextPack") or {}
+        critical = context.get("criticalFiles") if isinstance(context.get("criticalFiles"), list) else []
+        values = [str(item.get("path") or "") for item in critical if isinstance(item, dict) and item.get("path")]
+        contract = context.get("codingPlannerContractPreview") if isinstance(context.get("codingPlannerContractPreview"), dict) else {}
+        values.extend(str(item or "").strip() for item in list(contract.get("readSet") or []) if str(item or "").strip())
+        if values:
+            return list(dict.fromkeys(values))[:100]
+        reads: list[str] = []
+        for event in events:
+            tool = self._event_tool_payload(event)
+            if str(tool.get("toolName") or "") not in {"read_native_file", "grep_search"}:
+                continue
+            args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+            path = str(args.get("path") or args.get("filePath") or args.get("query") or "").strip()
+            if path:
+                reads.append(path)
+        return list(dict.fromkeys(reads))[:100]
+
+    def _normalize_path_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[str] = []
+        for item in value:
+            text = str(item or "").strip().replace("\\", "/")
+            if text:
+                normalized.append(text)
+        return list(dict.fromkeys(normalized))[:100]
+
+    def _workset_risk(self, *, changed_files: list[str], write_set: list[str], cfg: dict[str, Any]) -> dict[str, Any]:
+        mode = str(cfg.get("worksetGovernanceMode") or cfg.get("worksetRiskMode") or "read_only").strip().lower()
+        if mode == "off":
+            return {"mode": "off", "risk": "not_evaluated"}
+        if not changed_files:
+            return {"mode": mode, "risk": "none", "warning": False, "changedFiles": [], "outsideWriteSet": []}
+        if not write_set:
+            return {
+                "mode": mode,
+                "risk": "unknown_write_set",
+                "warning": mode == "soft_gate",
+                "changedFiles": changed_files,
+                "outsideWriteSet": [],
+                "note": "Task brief writeSet is missing; conflicts cannot be proven safe.",
+                "suggestedAction": "Repair planner contract before accepting concurrent or delegated writes.",
+            }
+        outside = [path for path in changed_files if not self._path_matches_any_write_set(path, write_set)]
+        return {
+            "mode": mode,
+            "risk": "outside_write_set" if outside else "within_write_set",
+            "warning": bool(outside) and mode == "soft_gate",
+            "changedFiles": changed_files,
+            "writeSet": write_set,
+            "outsideWriteSet": outside,
+            "suggestedAction": "Ask supervisor to approve or expand writeSet before accepting out-of-scope changes." if outside else "Continue; current changes are within declared writeSet.",
+        }
+
+    def _path_matches_any_write_set(self, path: str, write_set: list[str]) -> bool:
+        normalized = str(path or "").strip().replace("\\", "/").lstrip("./")
+        for item in write_set:
+            candidate = str(item or "").strip().replace("\\", "/").lstrip("./")
+            if not candidate:
+                continue
+            if candidate in {".", "*", normalized}:
+                return True
+            if candidate.endswith("/"):
+                candidate = candidate.rstrip("/")
+            if normalized == candidate or normalized.startswith(f"{candidate}/"):
+                return True
+        return False
+
+    def _verification_status(self, *, changed_files: list[str], commands: list[dict[str, Any]], diagnostics: list[dict[str, Any]]) -> str:
+        validation_commands = [cmd for cmd in commands if cmd.get("isValidation")]
+        failed_validation = [
+            cmd for cmd in validation_commands
+            if cmd.get("returnCode") is not None and int(cmd.get("returnCode")) != 0
+        ]
+        successful_validation = [
+            cmd for cmd in validation_commands
+            if cmd.get("returnCode") == 0 or str(cmd.get("status") or "").lower() in {"ok", "success", "completed"}
+        ]
+        diagnostic_errors = [
+            item for item in diagnostics
+            if item.get("kind") == "validation_command" and item.get("severity") == "error"
+        ]
+        if failed_validation or diagnostic_errors:
+            return "failed_verification"
+        if changed_files and successful_validation:
+            return "verified"
+        if changed_files:
+            return "unverified"
+        if successful_validation:
+            return "observed_no_change"
+        return "planned"
+
+    def _residual_risks(
+        self,
+        *,
+        verification_status: str,
+        changed_files: list[str],
+        commands: list[dict[str, Any]],
+        diagnostics: list[dict[str, Any]],
+        workset_risk: dict[str, Any],
+    ) -> list[str]:
+        risks: list[str] = []
+        if verification_status == "unverified":
+            risks.append("Code changes were detected but no successful validation command was observed in this run.")
+        if verification_status == "failed_verification":
+            risks.append("A validation command or diagnostic failed; the work cannot be marked verified.")
+        if changed_files and not any(cmd.get("isValidation") for cmd in commands):
+            risks.append("No test/typecheck/build/compile evidence was collected for changed files.")
+        if workset_risk.get("risk") == "unknown_write_set":
+            risks.append("Task brief writeSet is missing, so write-set ownership cannot be proven.")
+        if workset_risk.get("risk") == "outside_write_set":
+            risks.append("Changed files include paths outside the task brief writeSet.")
+        if any(item.get("source") == "lsp" and item.get("provider") == "unavailable" for item in diagnostics):
+            risks.append("LSP diagnostics provider unavailable; proof relies on git and command evidence only.")
+        return list(dict.fromkeys(risks))[:12]
+
+    def _patch_intent_from_run(self, *, session_id: str, metadata: dict[str, Any], task_brief: dict[str, Any] | None) -> str:
+        if isinstance(task_brief, dict):
+            goal = str(task_brief.get("goal") or "").strip()
+            if goal:
+                return goal[:500]
+        for message in reversed(db.get_messages(session_id)):
+            if message.get("role") == "user":
+                content = str(message.get("content") or "").strip()
+                if content:
+                    return content[:500]
+        command_preset = metadata.get("commandPreset") if isinstance(metadata.get("commandPreset"), dict) else {}
+        return str(command_preset.get("name") or "Engineering run evidence collected.").strip()
+
+    def _context_pack_digest(self, *, metadata: dict[str, Any], events: list[dict[str, Any]], trigger: dict[str, Any]) -> dict[str, Any]:
+        event_trigger = {}
+        for event in events:
+            if str(event.get("topic") or "") != "engineering_lane.trigger.decided":
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            event_trigger = payload
+            break
+        context = metadata.get("engineeringContextPack") if isinstance(metadata.get("engineeringContextPack"), dict) else {}
+        if isinstance(context.get("contextPack"), dict):
+            context = context.get("contextPack") or {}
+        return {
+            "triggerDecision": trigger or event_trigger.get("triggerDecision") or {},
+            "contextPackActive": bool(context) or bool(event_trigger.get("contextPackActive")),
+            "criticalFileCount": len(context.get("criticalFiles") or []) if isinstance(context.get("criticalFiles"), list) else None,
+            "evidenceGraphEnabled": bool((context.get("evidenceGraphDigest") or {}).get("enabled")) if isinstance(context.get("evidenceGraphDigest"), dict) else False,
+            "codingPlannerContractEnabled": bool((context.get("codingPlannerContractPreview") or {}).get("enabled")) if isinstance(context.get("codingPlannerContractPreview"), dict) else False,
+            "source": "run_metadata" if context else "runtime_event_digest",
+        }
+
+    def _emit_proof_runtime_event(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        proof_entry: dict[str, Any],
+        source_component: str,
+        manual_refresh: bool,
+    ) -> None:
+        try:
+            db.add_runtime_event({
+                "event_id": str(uuid.uuid4()),
+                "session_id": session_id,
+                "run_id": run_id,
+                "seq": db.get_next_runtime_seq(session_id),
+                "kind": "event",
+                "topic": "engineering.proof.collected",
+                "ts": _utc_now_iso(),
+                "source": {
+                    "plane": "engine",
+                    "component": "engineering_lane",
+                    "node": source_component,
+                    "agent_id": None,
+                },
+                "payload": {
+                    "proofEntryId": proof_entry.get("id"),
+                    "verificationStatus": proof_entry.get("verificationStatus"),
+                    "changedFileCount": len(proof_entry.get("changedFiles") or []),
+                    "diagnosticCount": len(((proof_entry.get("diagnostics") or {}).get("items") or [])),
+                    "manualRefresh": manual_refresh,
+                },
+            })
+        except Exception:
+            # Proof evidence is already persisted; event emission should never break terminal cleanup.
+            return
+
+    def _detect_code_signals(self, text: str) -> list[str]:
+        raw = str(text or "").strip().lower()
+        if not raw:
+            return []
+        if any(pattern in raw for pattern in NON_ENGINEERING_PATTERNS) and not any(marker in raw for marker in ("代码", "code", "repo", "仓库", "组件", "接口")):
+            return []
+        signals: list[str] = []
+        for name, patterns in CODE_SIGNAL_PATTERNS:
+            if any(pattern in raw for pattern in patterns):
+                signals.append(name)
+        return list(dict.fromkeys(signals))
+
+    def _repo_brief(self, root: Path) -> dict[str, Any]:
+        git_root_result = _run_command(["git", "rev-parse", "--show-toplevel"], cwd=root, timeout=3.0)
+        repo_root = git_root_result.get("stdout") if git_root_result.get("ok") else ""
+        branch_result = _run_command(["git", "branch", "--show-current"], cwd=root, timeout=3.0) if repo_root else {}
+        return {
+            "workspaceRoot": str(root),
+            "repoDetected": bool(repo_root),
+            "repoRoot": str(repo_root or ""),
+            "branch": str(branch_result.get("stdout") or "") if branch_result else "",
+        }
+
+    def _workspace_rules_digest(self, root: Path, *, budget: int, diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
+        path = root / ".agents" / "rules" / "AGENTS.md"
+        text = _read_text(path, limit=40000)
+        if not text:
+            diagnostics.append({
+                "source": "workspace.AGENTS.md",
+                "estimatedTokens": 0,
+                "budgetTokens": budget,
+                "truncated": False,
+                "omittedReason": "missing",
+            })
+            return {"path": str(path), "exists": False, "digest": ""}
+        budget_result = enforce_prompt_budget(
+            source="workspace.AGENTS.md",
+            text=text,
+            budget_tokens=budget,
+            truncate=True,
+            omission_reason="engineering_context_pack_rules_truncated",
+        )
+        diagnostics.append(budget_result.diagnostic())
+        return {
+            "path": str(path),
+            "exists": True,
+            "estimatedTokens": budget_result.estimated_tokens,
+            "truncated": budget_result.truncated,
+            "digest": budget_result.text,
+        }
+
+    def _git_summary(self, root: Path) -> dict[str, Any]:
+        status = _run_command(["git", "status", "--short"], cwd=root, timeout=5.0)
+        diff_stat = _run_command(["git", "diff", "--stat"], cwd=root, timeout=5.0)
+        staged_stat = _run_command(["git", "diff", "--cached", "--stat"], cwd=root, timeout=5.0)
+        return {
+            "statusShort": status.get("stdout", "") if status.get("ok") else "",
+            "statusError": status.get("stderr") or status.get("error"),
+            "diffStat": diff_stat.get("stdout", "") if diff_stat.get("ok") else "",
+            "stagedDiffStat": staged_stat.get("stdout", "") if staged_stat.get("ok") else "",
+        }
+
+    def _manifest_summary(self, root: Path) -> dict[str, Any]:
+        found: list[dict[str, Any]] = []
+        scripts: dict[str, Any] = {}
+        for name in MANIFEST_FILES:
+            path = root / name
+            if not path.exists():
+                continue
+            rel = _relative(path, root)
+            found.append({"path": rel, "size": path.stat().st_size if path.exists() else None})
+            if name == "package.json":
+                try:
+                    package = json.loads(_read_text(path, limit=20000) or "{}")
+                    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+                except Exception:
+                    scripts = {}
+        return {
+            "manifests": found,
+            "packageScripts": {key: scripts[key] for key in list(scripts)[:24]} if isinstance(scripts, dict) else {},
+        }
+
+    def _critical_file_candidates(self, root: Path, *, user_query: str, limit: int = 24) -> list[dict[str, Any]]:
+        terms = [term for term in re.split(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", str(user_query or "").lower()) if len(term) >= 3]
+        candidates: list[dict[str, Any]] = []
+        scanned = 0
+        try:
+            iterator = root.rglob("*")
+            for path in iterator:
+                if len(candidates) >= limit or scanned >= 5000:
+                    break
+                scanned += 1
+                if any(part in IGNORED_DIRS for part in path.parts):
+                    continue
+                if not path.is_file():
+                    continue
+                rel = _relative(path, root)
+                lower = rel.lower()
+                score = 0
+                if path.name in MANIFEST_FILES:
+                    score += 5
+                for term in terms:
+                    if term in lower:
+                        score += 2
+                if score <= 0:
+                    continue
+                candidates.append({
+                    "path": rel,
+                    "score": score,
+                    "size": path.stat().st_size if path.exists() else None,
+                })
+        except Exception:
+            return []
+        candidates.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("path") or "")))
+        return candidates[:limit]
+
+    def _scope_chain_for_descriptor(self, descriptor: dict[str, Any]) -> list[str]:
+        project_id = str(descriptor.get("projectId") or "").strip()
+        source = str(descriptor.get("source") or "")
+        if project_id:
+            return ["global", f"project:{project_id}"]
+        if source == "main_workspace" or not descriptor.get("isScopedOverride"):
+            return ["global", "workspace:main"]
+        return ["global"]
+
+    def _ranked_workflow_paths(self, *, query: str, scope_chain: list[str], max_paths: int) -> list[dict[str, Any]]:
+        hints = workflow_memory_service.match_hints(query=query, scope_chain=scope_chain, limit=max_paths)
+        ranked: list[dict[str, Any]] = []
+        for item in hints:
+            golden = list(item.get("goldenPathSteps") or [])
+            anti = list(item.get("antiPatterns") or [])
+            verify = list(item.get("verificationSteps") or [])
+            diagnostics = item.get("_workflowHintDiagnostics") if isinstance(item.get("_workflowHintDiagnostics"), dict) else {}
+            if not golden:
+                continue
+            step = golden[0]
+            actions = [str(step), *self._variants_for_step(item, step, step_index=0)]
+            for index, action in enumerate(actions[:max_paths]):
+                ranked.append({
+                    "workflowId": item.get("id"),
+                    "taskFamily": item.get("task_family"),
+                    "rank": len(ranked) + 1,
+                    "behaviorMatch": max(0.05, float(diagnostics.get("score") or item.get("confidence") or 0) / (index + 1)),
+                    "evidence": diagnostics.get("matchedReasons") or [],
+                    "suggestedAction": str(action)[:260],
+                    "reasonableVariants": [value for value in self._variants_for_step(item, step, step_index=0) if value != action][:3],
+                    "avoid": anti[:2],
+                    "verify": verify[:2],
+                    "confidence": item.get("confidence"),
+                })
+                if len(ranked) >= max_paths:
+                    return ranked
+        return ranked
+
+    def _variants_for_step(self, item: dict[str, Any], step: Any, *, step_index: int = 0) -> list[str]:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        variants = metadata.get("actionVariants") or metadata.get("action_variants") or []
+        variants_by_step = metadata.get("actionVariantsByStep") or metadata.get("action_variants_by_step") or {}
+        if isinstance(variants_by_step, dict):
+            variants = variants_by_step.get(str(step_index)) or variants_by_step.get(step_index) or variants
+        if isinstance(variants, list) and variants:
+            return [str(value)[:120] for value in variants[:3]]
+        text = str(step or "")
+        if "fetch_skill_instructions" in text:
+            return ["Use exact skill id/name first", "If alias is used, verify resolver diagnostics before execution"]
+        if "test" in text.lower() or "验证" in text:
+            return ["Run the narrowest relevant test first", "Escalate to full regression only after local signal is clean"]
+        return ["Keep the goal and verification invariant; adapt the concrete tool/action to current repo evidence"]
+
+    def _evidence_graph_digest(
+        self,
+        *,
+        root: Path,
+        user_query: str,
+        descriptor: dict[str, Any],
+        repo_brief: dict[str, Any],
+        rules_digest: dict[str, Any],
+        git_summary: dict[str, Any],
+        manifest_summary: dict[str, Any],
+        critical_files: list[dict[str, Any]],
+        workflow_paths: list[dict[str, Any]],
+        cfg: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not bool(cfg.get("evidenceGraphEnabled", True)):
+            return {"enabled": False, "repoDetected": bool(repo_brief.get("repoDetected"))}
+        budget = _safe_int(cfg.get("evidenceGraphBudget"), 1800, 600, 10000)
+        inventory = self._file_inventory_digest(root)
+        changed_files = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
+        test_candidates = self._test_candidates(manifest_summary)
+        prior_proof = self._prior_proof_summary(
+            session_id=str(descriptor.get("sessionId") or "").strip() or None,
+            workspace_root=str(root),
+        )
+        digest = {
+            "enabled": True,
+            "repoDetected": bool(repo_brief.get("repoDetected")),
+            "repoRoot": repo_brief.get("repoRoot") or "",
+            "workspaceRoot": str(root),
+            "branch": repo_brief.get("branch") or "",
+            "dirtyState": {
+                "changedFileCount": len(changed_files),
+                "changedFiles": changed_files[:40],
+                "statusPreview": str(git_summary.get("statusShort") or "")[:1600],
+            },
+            "fileInventoryDigest": inventory,
+            "manifestScripts": {
+                "packageManager": self._package_manager_hint(manifest_summary),
+                "testCandidates": test_candidates,
+                "manifests": list(manifest_summary.get("manifests") or [])[:12],
+            },
+            "workspaceRules": {
+                "path": rules_digest.get("path"),
+                "exists": bool(rules_digest.get("exists")),
+                "estimatedTokens": rules_digest.get("estimatedTokens"),
+                "truncated": bool(rules_digest.get("truncated")),
+            },
+            "criticalFileCandidates": critical_files[: _safe_int(cfg.get("maxCriticalFiles"), 24, 4, 120)],
+            "priorProofSummary": prior_proof,
+            "workflowRankedHints": workflow_paths[: _safe_int(cfg.get("rankedWorkflowPathCount"), 3, 1, 5)],
+            "graphSourceDiagnostics": {
+                "ignoredDirs": sorted(IGNORED_DIRS),
+                "budgetTokens": budget,
+                "querySignals": self._detect_code_signals(user_query),
+                "scope": {
+                    "projectId": descriptor.get("projectId"),
+                    "workspaceId": descriptor.get("workspaceId"),
+                    "source": descriptor.get("source"),
+                },
+            },
+        }
+        estimated = estimate_prompt_tokens(json.dumps(digest, ensure_ascii=False, default=str))
+        digest["estimatedTokens"] = estimated
+        digest["budgetTokens"] = budget
+        digest["truncated"] = False
+        if estimated > budget:
+            digest["truncated"] = True
+            digest["criticalFileCandidates"] = list(digest.get("criticalFileCandidates") or [])[:10]
+            digest["workflowRankedHints"] = list(digest.get("workflowRankedHints") or [])[:2]
+            digest["dirtyState"]["statusPreview"] = str(digest["dirtyState"].get("statusPreview") or "")[:600]
+            digest["fileInventoryDigest"]["sampleFiles"] = list(digest["fileInventoryDigest"].get("sampleFiles") or [])[:24]
+            digest["estimatedTokens"] = estimate_prompt_tokens(json.dumps(digest, ensure_ascii=False, default=str))
+        return digest
+
+    def _file_inventory_digest(self, root: Path, *, max_scan: int = 6000) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        samples: list[str] = []
+        total_files = 0
+        scanned = 0
+        try:
+            for path in root.rglob("*"):
+                if scanned >= max_scan:
+                    break
+                scanned += 1
+                if any(part in IGNORED_DIRS for part in path.parts):
+                    continue
+                if not path.is_file():
+                    continue
+                total_files += 1
+                ext = path.suffix.lower() or "(no_ext)"
+                counts[ext] = counts.get(ext, 0) + 1
+                if len(samples) < 60 and (path.suffix.lower() in SOURCE_EXTENSIONS or path.name in MANIFEST_FILES):
+                    samples.append(_relative(path, root))
+        except Exception as exc:
+            return {"totalFiles": total_files, "scanned": scanned, "error": str(exc), "extensions": counts, "sampleFiles": samples}
+        top_extensions = [
+            {"extension": ext, "count": count}
+            for ext, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:12]
+        ]
+        return {
+            "totalFiles": total_files,
+            "scanned": scanned,
+            "scanLimit": max_scan,
+            "truncated": scanned >= max_scan,
+            "extensions": top_extensions,
+            "sampleFiles": samples,
+        }
+
+    def _package_manager_hint(self, manifest_summary: dict[str, Any]) -> str:
+        paths = {str(item.get("path") or "") for item in list(manifest_summary.get("manifests") or []) if isinstance(item, dict)}
+        if "pnpm-workspace.yaml" in paths:
+            return "pnpm"
+        if "yarn.lock" in paths:
+            return "yarn"
+        if "package-lock.json" in paths or "package.json" in paths:
+            return "npm"
+        if "pyproject.toml" in paths:
+            return "python/pyproject"
+        if "requirements.txt" in paths:
+            return "python/requirements"
+        return ""
+
+    def _test_candidates(self, manifest_summary: dict[str, Any]) -> list[dict[str, Any]]:
+        scripts = manifest_summary.get("packageScripts") if isinstance(manifest_summary.get("packageScripts"), dict) else {}
+        candidates: list[dict[str, Any]] = []
+        for key, value in scripts.items():
+            name = str(key or "")
+            command = str(value or "")
+            lowered = f"{name} {command}".lower()
+            if any(marker in lowered for marker in ("test", "typecheck", "tsc", "build", "lint", "vitest", "pytest")):
+                candidates.append({"source": "package.json", "name": name, "command": command[:220]})
+        for item in list(manifest_summary.get("manifests") or []):
+            path = str((item or {}).get("path") or "")
+            if path in {"pytest.ini", "tox.ini", "pyproject.toml"}:
+                candidates.append({"source": path, "name": "pytest", "command": "python -m pytest"})
+            elif path == "tsconfig.json":
+                candidates.append({"source": path, "name": "typecheck", "command": "npm run typecheck or tsc --noEmit"})
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in candidates:
+            key = f"{item.get('name')}::{item.get('command')}"
+            if key not in seen:
+                seen.add(key)
+                deduped.append(item)
+        return deduped[:12]
+
+    def _prior_proof_summary(self, *, session_id: str | None, workspace_root: str) -> dict[str, Any]:
+        entries = db.list_engineering_proof_entries(session_id=session_id, limit=8) if session_id else db.list_engineering_proof_entries(limit=8)
+        status_counts: dict[str, int] = {}
+        recent: list[dict[str, Any]] = []
+        for entry in entries:
+            metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            if workspace_root:
+                entry_workspace = str(metadata.get("workspaceRoot") or "").strip()
+                if entry_workspace and entry_workspace != workspace_root:
+                    continue
+                if not session_id and not entry_workspace:
+                    continue
+            status = str(entry.get("verificationStatus") or "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            recent.append({
+                "id": entry.get("id"),
+                "runId": entry.get("runId"),
+                "verificationStatus": status,
+                "changedFileCount": len(entry.get("changedFiles") or []),
+                "residualRiskCount": len(entry.get("residualRisks") or []),
+            })
+            if len(recent) >= 5:
+                break
+        return {"recentCount": len(recent), "statusCounts": status_counts, "recent": recent}
+
+    def _coding_planner_contract_preview(
+        self,
+        *,
+        user_query: str,
+        task_brief: Optional[dict[str, Any]],
+        evidence_graph_digest: dict[str, Any],
+        critical_files: list[dict[str, Any]],
+        manifest_summary: dict[str, Any],
+        git_summary: dict[str, Any],
+        cfg: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not bool(cfg.get("codingPlannerContractEnabled", True)):
+            return {"enabled": False}
+        max_files = _safe_int(cfg.get("maxCriticalFiles"), 24, 4, 120)
+        critical = [
+            str(item.get("path") or "").strip()
+            for item in critical_files[:max_files]
+            if isinstance(item, dict) and str(item.get("path") or "").strip()
+        ]
+        changed = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
+        read_set = list(dict.fromkeys([*critical[:12], *changed[:12]]))[:max_files]
+        explicit_write_set = self._normalize_path_list((task_brief or {}).get("writeSet") if isinstance(task_brief, dict) else [])
+        write_set = explicit_write_set or self._infer_write_set_from_query(user_query, critical, changed)
+        verification_matrix = self._verification_matrix(manifest_summary)
+        risk_flags: list[str] = []
+        if not critical and not changed:
+            risk_flags.append("critical_files_not_proven")
+        if not write_set:
+            risk_flags.append("write_set_missing")
+        if not verification_matrix:
+            risk_flags.append("verification_candidates_missing")
+        if not evidence_graph_digest.get("repoDetected"):
+            risk_flags.append("repo_not_detected")
+        ownership = self._ownership_plan(write_set=write_set, read_set=read_set)
+        return {
+            "enabled": True,
+            "criticalFiles": read_set[:max_files],
+            "readSet": read_set[:max_files],
+            "writeSet": write_set[:max_files],
+            "ownershipPlan": ownership,
+            "verificationMatrix": verification_matrix,
+            "mergeOrder": self._merge_order(write_set=write_set, verification_matrix=verification_matrix),
+            "riskFlags": list(dict.fromkeys(risk_flags)),
+            "proofExpectations": self._proof_expectations(verification_matrix=verification_matrix, write_set=write_set),
+        }
+
+    def _infer_write_set_from_query(self, user_query: str, critical_files: list[str], changed_files: list[str]) -> list[str]:
+        text = str(user_query or "").lower()
+        write_set: list[str] = []
+        if any(marker in text for marker in ("test", "测试", "spec", "验证")):
+            write_set.extend([path for path in critical_files if any(marker in path.lower() for marker in TEST_FILE_MARKERS)])
+        if any(marker in text for marker in ("admin", "页面", "ui", "frontend", "tsx", "组件")):
+            write_set.extend([path for path in critical_files if any(part in path.lower() for part in ("admin", "src/", "app/", "components/", ".tsx", ".ts"))])
+        if any(marker in text for marker in ("engine", "runtime", "api", "后端", "接口")):
+            write_set.extend([path for path in critical_files if any(part in path.lower() for part in ("apps/v8-agent-os-engine", "api/", "runtimes/", "core/", ".py"))])
+        if changed_files:
+            write_set.extend(changed_files)
+        if not write_set:
+            write_set.extend(critical_files[:6])
+        return list(dict.fromkeys(write_set))[:24]
+
+    def _verification_matrix(self, manifest_summary: dict[str, Any]) -> list[dict[str, Any]]:
+        matrix: list[dict[str, Any]] = []
+        for item in self._test_candidates(manifest_summary):
+            command = str(item.get("command") or "")
+            name = str(item.get("name") or "")
+            kind = "test"
+            lowered = f"{name} {command}".lower()
+            if "typecheck" in lowered or "tsc" in lowered:
+                kind = "typecheck"
+            elif "build" in lowered:
+                kind = "build"
+            elif "lint" in lowered:
+                kind = "lint"
+            matrix.append({
+                "kind": kind,
+                "command": command,
+                "source": item.get("source"),
+                "requiredForVerified": kind in {"test", "typecheck", "build"},
+            })
+        return matrix[:8]
+
+    def _ownership_plan(self, *, write_set: list[str], read_set: list[str]) -> list[dict[str, Any]]:
+        if not write_set:
+            return [{"owner": "supervisor", "scope": "unknown", "mode": "needs_planner_write_set"}]
+        buckets: dict[str, list[str]] = {}
+        for path in write_set:
+            normalized = str(path or "").replace("\\", "/")
+            root = normalized.split("/")[0] if "/" in normalized else normalized
+            if normalized.startswith("apps/") and len(normalized.split("/")) >= 2:
+                root = "/".join(normalized.split("/")[:2])
+            buckets.setdefault(root or ".", []).append(normalized)
+        return [
+            {
+                "owner": "supervisor_or_selected_subagent",
+                "scope": scope,
+                "writeSet": paths[:12],
+                "readSetHint": [path for path in read_set if path.startswith(scope)][:8],
+            }
+            for scope, paths in list(buckets.items())[:8]
+        ]
+
+    def _merge_order(self, *, write_set: list[str], verification_matrix: list[dict[str, Any]]) -> list[str]:
+        order = ["Confirm write-set and ownership before editing"]
+        if write_set:
+            order.append("Apply implementation patch within declared writeSet")
+        else:
+            order.append("Repair planner contract before editing because writeSet is missing")
+        if verification_matrix:
+            order.append("Run or request the narrowest listed verification before claiming verified")
+        else:
+            order.append("Record residual risk if no verification candidate exists")
+        order.append("Update Proof Ledger with diff, diagnostics, and residual risks")
+        return order
+
+    def _proof_expectations(self, *, verification_matrix: list[dict[str, Any]], write_set: list[str]) -> list[str]:
+        expectations = [
+            "Patch intent must name the intended behavior change.",
+            "Proof must include changed files and any commands already run.",
+        ]
+        if write_set:
+            expectations.append("Changed files should stay inside the declared writeSet or trigger a soft-gate warning.")
+        else:
+            expectations.append("Missing writeSet prevents strong ownership proof.")
+        if verification_matrix:
+            expectations.append("Verified status requires a successful test/typecheck/build/compile command from this run.")
+        else:
+            expectations.append("If no verification command is available, mark proof unverified or planned.")
+        return expectations
+
+    def _workset_soft_gate_decision(self, *, changed_files: list[str], write_set: list[str], cfg: dict[str, Any]) -> dict[str, Any]:
+        mode = str(cfg.get("worksetGovernanceMode") or cfg.get("worksetRiskMode") or "soft_gate").strip().lower()
+        if mode == "off":
+            return {"mode": "off", "risk": "not_evaluated", "warning": False}
+        if not changed_files:
+            return {"mode": mode, "risk": "none", "warning": False, "changedFiles": [], "outsideWriteSet": []}
+        if not write_set:
+            return {
+                "mode": mode,
+                "risk": "unknown_write_set",
+                "warning": mode == "soft_gate",
+                "changedFiles": changed_files,
+                "outsideWriteSet": [],
+                "suggestedAction": "Repair planner writeSet before assigning concurrent edits.",
+            }
+        outside = [path for path in changed_files if not self._path_matches_any_write_set(path, write_set)]
+        return {
+            "mode": mode,
+            "risk": "outside_write_set" if outside else "within_write_set",
+            "warning": bool(outside) and mode == "soft_gate",
+            "changedFiles": changed_files,
+            "writeSet": write_set,
+            "outsideWriteSet": outside,
+            "suggestedAction": "Ask supervisor to approve or expand writeSet before accepting out-of-scope changes." if outside else "Continue; current changes are within declared writeSet.",
+        }
+
+    def enrich_planner_plan_with_engineering_contract(self, plan: dict[str, Any], *, engineering_context: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(plan, dict) or not isinstance(engineering_context, dict):
+            return plan
+        trigger = engineering_context.get("triggerDecision") if isinstance(engineering_context.get("triggerDecision"), dict) else {}
+        if not trigger.get("active"):
+            return plan
+        pack = engineering_context.get("contextPack") if isinstance(engineering_context.get("contextPack"), dict) else {}
+        contract = pack.get("codingPlannerContractPreview") if isinstance(pack.get("codingPlannerContractPreview"), dict) else {}
+        evidence = pack.get("evidenceGraphDigest") if isinstance(pack.get("evidenceGraphDigest"), dict) else {}
+        if not contract.get("enabled"):
+            return plan
+        next_plan = dict(plan)
+        next_plan["codingPlannerContract"] = contract
+        next_plan["engineeringEvidenceGraphDigest"] = {
+            "repoDetected": evidence.get("repoDetected"),
+            "repoRoot": evidence.get("repoRoot"),
+            "branch": evidence.get("branch"),
+            "dirtyState": evidence.get("dirtyState"),
+            "criticalFileCount": len(evidence.get("criticalFileCandidates") or []),
+        }
+        risk_flags = [str(item).strip() for item in list(next_plan.get("riskFlags") or []) if str(item).strip()]
+        risk_flags.extend(str(item).strip() for item in list(contract.get("riskFlags") or []) if str(item).strip())
+        next_plan["riskFlags"] = list(dict.fromkeys(risk_flags))
+        enriched_briefs: list[dict[str, Any]] = []
+        for brief in list(next_plan.get("taskBriefs") or []):
+            item = dict(brief or {})
+            if not item.get("writeSet") and contract.get("writeSet"):
+                item["writeSet"] = list(contract.get("writeSet") or [])[:24]
+            item.setdefault("criticalFiles", list(contract.get("criticalFiles") or [])[:24])
+            item.setdefault("readSet", list(contract.get("readSet") or [])[:24])
+            item.setdefault("verificationMatrix", [str(row.get("command") or row.get("kind") or "") for row in list(contract.get("verificationMatrix") or []) if isinstance(row, dict)][:8])
+            item.setdefault("proofExpectations", list(contract.get("proofExpectations") or [])[:8])
+            item["engineeringTaskCapsule"] = {
+                "criticalFiles": list(contract.get("criticalFiles") or [])[:24],
+                "readSet": list(contract.get("readSet") or [])[:24],
+                "writeSet": list(item.get("writeSet") or [])[:24],
+                "verificationContract": list(contract.get("verificationMatrix") or [])[:8],
+                "riskFlags": list(contract.get("riskFlags") or [])[:8],
+                "proofExpectations": list(contract.get("proofExpectations") or [])[:8],
+            }
+            enriched_briefs.append(item)
+        next_plan["taskBriefs"] = enriched_briefs
+        return next_plan
+
+    def _proof_draft(
+        self,
+        *,
+        session_id: Optional[str],
+        run_id: Optional[str],
+        task_brief: Optional[dict[str, Any]],
+        context_pack: dict[str, Any],
+        trigger: dict[str, Any],
+    ) -> dict[str, Any]:
+        git_summary = context_pack.get("gitSummary") if isinstance(context_pack.get("gitSummary"), dict) else {}
+        changed_files = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
+        coding_contract = context_pack.get("codingPlannerContractPreview") if isinstance(context_pack.get("codingPlannerContractPreview"), dict) else {}
+        write_set = (task_brief or {}).get("writeSet") if isinstance(task_brief, dict) else []
+        if not write_set and isinstance(coding_contract, dict):
+            write_set = list(coding_contract.get("writeSet") or [])
+        workset_gate = context_pack.get("worksetSoftGateDecision") if isinstance(context_pack.get("worksetSoftGateDecision"), dict) else {}
+        return {
+            "sessionId": session_id,
+            "runId": run_id,
+            "taskBriefId": (task_brief or {}).get("taskBriefId") if isinstance(task_brief, dict) else None,
+            "mode": "dry_run",
+            "patchIntent": "Engineering Lane dry-run context pack only; no code was changed.",
+            "readSet": [item.get("path") for item in context_pack.get("criticalFiles", []) if isinstance(item, dict)],
+            "writeSet": write_set,
+            "changedFiles": changed_files,
+            "commands": [],
+            "diagnostics": {
+                "triggerDecision": trigger,
+                "gitSummary": git_summary,
+                "evidenceGraphDigest": context_pack.get("evidenceGraphDigest"),
+                "codingPlannerContractPreview": coding_contract,
+                "worksetSoftGateDecision": workset_gate,
+            },
+            "verificationStatus": "planned",
+            "residualRisks": [
+                "Dry-run only; proof cannot be verified until commands or diagnostics are attached.",
+                *(["Soft gate warning: changed files are outside declared writeSet."] if workset_gate.get("risk") == "outside_write_set" else []),
+                *(["WriteSet missing; work ownership cannot be proven."] if workset_gate.get("risk") == "unknown_write_set" else []),
+            ],
+        }
+
+    def _changed_files_from_status(self, status_short: str) -> list[str]:
+        files: list[str] = []
+        for line in status_short.splitlines():
+            if not line.strip():
+                continue
+            candidate = line[2:].strip() if len(line) > 2 else line.strip()
+            if " -> " in candidate:
+                candidate = candidate.split(" -> ")[-1].strip()
+            files.append(candidate)
+        return files[:100]
+
+    def _shrink_context_pack(self, pack: dict[str, Any], budget: int) -> dict[str, Any]:
+        next_pack = dict(pack)
+        if isinstance(next_pack.get("workspaceRulesDigest"), dict):
+            digest = dict(next_pack["workspaceRulesDigest"])
+            digest["digest"] = truncate_to_estimated_tokens(digest.get("digest") or "", max(120, budget // 8))
+            digest["truncated"] = True
+            next_pack["workspaceRulesDigest"] = digest
+        if isinstance(next_pack.get("criticalFiles"), list):
+            next_pack["criticalFiles"] = list(next_pack["criticalFiles"])[:12]
+        if isinstance(next_pack.get("workflowRankedPaths"), list):
+            next_pack["workflowRankedPaths"] = list(next_pack["workflowRankedPaths"])[:3]
+        return next_pack
+
+
+engineering_lane_service = EngineeringLaneService()

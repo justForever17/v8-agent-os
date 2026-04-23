@@ -2123,6 +2123,8 @@ class MemoryStore:
         scope_chain: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        suppress_daily_memory: bool = False,
+        suppress_memory_map: bool = False,
     ) -> str:
         """
         构建渐进式 Session 上下文注入文本，结合历史概要、用户偏好、近期详细日志和紧凑前序摘要。
@@ -2158,7 +2160,7 @@ class MemoryStore:
             )
             
         # --- Layer 2: 摘要主层 ---
-        if passive_context_options["summaryEnabled"]:
+        if passive_context_options["summaryEnabled"] and not suppress_daily_memory:
             summary_text = self._build_memory_summary_for_injection(
                 detailed_days=max_recent_days,
                 scope_chain=normalized_chain,
@@ -2189,7 +2191,7 @@ class MemoryStore:
 
         memory_map_text = self._format_memory_map_for_injection(
             node_limit=passive_context_options["memoryMapNodeLimit"],
-        ) if passive_context_options["memoryMapEnabled"] else ""
+        ) if passive_context_options["memoryMapEnabled"] and not suppress_memory_map else ""
         if memory_map_text:
             parts.append(
                 "[MEMORY MAP]\n"
@@ -2202,7 +2204,7 @@ class MemoryStore:
             days=max_recent_days,
             scope_chain=normalized_chain,
             max_items=passive_context_options["recentActivityTeaserLimit"],
-        ) if passive_context_options["recentActivityTeaserEnabled"] else ""
+        ) if passive_context_options["recentActivityTeaserEnabled"] and not suppress_daily_memory else ""
         if recent_teaser:
             parts.append(
                 f"[RECENT ACTIVITY TEASER]\n"

@@ -66,6 +66,7 @@ from erc.workflow_ledger import workflow_ledger_service
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
+from runtimes.engineering.service import engineering_lane_service
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
@@ -139,6 +140,9 @@ class ChatPreparedRequest:
     planner_dispatch_mode: str = "suggest"
     planner_intent_diagnostics: dict[str, Any] = field(default_factory=dict)
     task_planning_mode: bool = False
+    engineering_mode: str = "auto"
+    engineering_trigger_decision: dict[str, Any] = field(default_factory=dict)
+    engineering_context_pack: dict[str, Any] | None = None
     skill_references: list[dict[str, str]] = field(default_factory=list)
     planner_plan: dict[str, Any] | None = None
 
@@ -207,6 +211,11 @@ class PlannerTaskBriefPayload(BaseModel):
     goal: str = ""
     context: str | dict[str, Any] = ""
     writeSet: list[str] = Field(default_factory=list)
+    criticalFiles: list[str] = Field(default_factory=list)
+    readSet: list[str] = Field(default_factory=list)
+    verificationMatrix: list[str] = Field(default_factory=list)
+    proofExpectations: list[str] = Field(default_factory=list)
+    engineeringTaskCapsule: dict[str, Any] = Field(default_factory=dict)
     behaviorScope: list[str] = Field(default_factory=list)
     requiredCapabilities: list[str] = Field(default_factory=list)
     acceptanceContract: str = ""
@@ -232,6 +241,7 @@ class PlannerPlanPayload(BaseModel):
     taskBriefs: list[PlannerTaskBriefPayload] = Field(default_factory=list)
     globalAcceptanceContract: str = ""
     riskFlags: list[str] = Field(default_factory=list)
+    codingPlannerContract: dict[str, Any] = Field(default_factory=dict)
     qualityFlags: list[str] = Field(default_factory=list)
     repairCount: int = 0
     autoDispatchDecision: dict[str, Any] = Field(default_factory=dict)
@@ -664,6 +674,10 @@ class ChatRuntime:
         normalized = str(value or "").strip().lower()
         return normalized if normalized in {"suggest", "auto", "off"} else "suggest"
 
+    def _normalize_engineering_mode(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in {"auto", "force", "off"} else "auto"
+
     def _detect_planner_intent(self, user_content: str) -> dict[str, Any]:
         text = str(user_content or "").strip().lower()
         if not text:
@@ -726,13 +740,14 @@ class ChatRuntime:
     def _resolve_request_context(
         self,
         request: ChatRequest,
-    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], list[dict[str, str]]]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, list[dict[str, str]]]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
         requested_planner_mode = getattr(request_data, "planner_mode", None) if request_data else None
         planner_dispatch_mode = self._normalize_planner_dispatch_mode(getattr(request_data, "planner_dispatch_mode", None) if request_data else None)
         planner_mode = self._normalize_planner_mode(requested_planner_mode, task_planning_mode=task_planning_mode)
+        engineering_mode = self._normalize_engineering_mode(getattr(request_data, "engineering_mode", None) if request_data else None)
         planner_diagnostics = self._detect_planner_intent(self._latest_user_content(request))
         if planner_mode == "auto":
             task_planning_mode = bool(planner_diagnostics.get("matched"))
@@ -747,7 +762,7 @@ class ChatRuntime:
             if not command_preset:
                 raise RuntimeError(f"Command preset '{command_selection.name}' does not exist.")
 
-        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, self._normalize_skill_references(request)
+        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, self._normalize_skill_references(request)
 
     def _inject_structured_request_context(
         self,
@@ -758,6 +773,7 @@ class ChatRuntime:
         planner_mode: str,
         planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
+        planner_dispatch_mode: str = "suggest",
     ) -> None:
         if not command_preset and not skill_references:
             return
@@ -881,6 +897,11 @@ class ChatRuntime:
             "- preferredAgentId and preferredWorkerType are optional hints, not guesses.\n"
             "- executionLaneHint must be one of: subagent, external_worker, auto.\n"
             "- Keep riskFlags short and concrete.\n"
+            "Engineering lane discipline when EngineeringEvidenceGraph is provided:\n"
+            "- Prefer evidenceGraphDigest over raw guessing for critical files, writeSet, and verification choices.\n"
+            "- Populate codingPlannerContract with criticalFiles, readSet, writeSet, ownershipPlan, verificationMatrix, mergeOrder, riskFlags, and proofExpectations.\n"
+            "- Add engineeringTaskCapsule to each task brief when the task touches code; keep it compact and do not copy full repo evidence.\n"
+            "- If writeSet cannot be proven, say so in riskFlags instead of pretending certainty.\n"
         )
 
     def _fallback_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
@@ -1170,6 +1191,7 @@ class ChatRuntime:
             "taskBriefs": normalized_briefs,
             "globalAcceptanceContract": global_acceptance or str(fallback_plan.get("globalAcceptanceContract") or "").strip(),
             "riskFlags": risk_flags,
+            "codingPlannerContract": payload.get("codingPlannerContract") if isinstance(payload.get("codingPlannerContract"), dict) else dict(fallback_plan.get("codingPlannerContract") or {}),
             "qualityFlags": quality_flags,
             "repairCount": int(payload.get("repairCount") or fallback_plan.get("repairCount") or 0),
             "autoDispatchDecision": payload.get("autoDispatchDecision") if isinstance(payload.get("autoDispatchDecision"), dict) else dict(fallback_plan.get("autoDispatchDecision") or {}),
@@ -1205,6 +1227,19 @@ class ChatRuntime:
                 }
                 for item in list(chat_run.prepared.skill_references or [])
             ],
+            "engineering": {
+                "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
+                "evidenceGraphDigest": (
+                    ((chat_run.prepared.engineering_context_pack or {}).get("contextPack") or {}).get("evidenceGraphDigest")
+                    if isinstance(chat_run.prepared.engineering_context_pack, dict)
+                    else {}
+                ),
+                "codingPlannerContractPreview": (
+                    ((chat_run.prepared.engineering_context_pack or {}).get("contextPack") or {}).get("codingPlannerContractPreview")
+                    if isinstance(chat_run.prepared.engineering_context_pack, dict)
+                    else {}
+                ),
+            },
             "specialists": {
                 "localSubagents": [
                     {
@@ -1259,6 +1294,10 @@ class ChatRuntime:
             plan = fallback_plan
 
         plan = self._validate_and_repair_planner_plan(plan, fallback_plan=fallback_plan)
+        plan = engineering_lane_service.enrich_planner_plan_with_engineering_contract(
+            plan,
+            engineering_context=chat_run.prepared.engineering_context_pack,
+        )
         auto_dispatch_decision = self._decide_planner_auto_dispatch(
             plan,
             registry=registry,
@@ -1311,6 +1350,8 @@ class ChatRuntime:
             ],
             "globalAcceptanceContract": plan.get("globalAcceptanceContract"),
             "riskFlags": list(plan.get("riskFlags") or []),
+            "codingPlannerContract": plan.get("codingPlannerContract") if isinstance(plan.get("codingPlannerContract"), dict) else {},
+            "engineeringEvidenceGraphDigest": plan.get("engineeringEvidenceGraphDigest") if isinstance(plan.get("engineeringEvidenceGraphDigest"), dict) else {},
             "qualityFlags": list(plan.get("qualityFlags") or []),
             "repairCount": int(plan.get("repairCount") or 0),
             "autoDispatchDecision": auto_dispatch_decision,
@@ -1408,7 +1449,7 @@ class ChatRuntime:
         self._ensure_latest_user_content_for_attachments(request, attachments)
         lc_messages = self._to_langchain_messages(request)
         self._inject_uploaded_file_notices(request, lc_messages)
-        command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_intent_diagnostics, skill_references = self._resolve_request_context(request)
+        command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_intent_diagnostics, engineering_mode, skill_references = self._resolve_request_context(request)
         self._inject_structured_request_context(
             lc_messages,
             command_preset=command_preset,
@@ -1435,8 +1476,10 @@ class ChatRuntime:
             command_preset_name=(str(command_preset.get("name") or "").strip() or None) if command_preset else None,
             command_preset_hash=(str(command_preset.get("contentHash") or "").strip() or None) if command_preset else None,
             planner_mode=planner_mode,
+            planner_dispatch_mode=planner_dispatch_mode,
             planner_intent_diagnostics=planner_intent_diagnostics,
             task_planning_mode=task_planning_mode,
+            engineering_mode=engineering_mode,
             skill_references=skill_references,
         )
 
@@ -1558,6 +1601,43 @@ class ChatRuntime:
             user_id=prepared.user_id,
             scope_result=scope_result,
         )
+        try:
+            engineering_pack = engineering_lane_service.build_context_pack(
+                user_query=prepared.latest_user_content,
+                mode=prepared.engineering_mode,
+                session_id=prepared.session_id,
+                run_id=run_handle.run_id,
+                project_id=scope_result.binding.project_id,
+                workspace_id=scope_result.binding.workspace_id,
+                workspace_path=scope_result.binding.workspace_path,
+                task_brief=None,
+            )
+            prepared.engineering_trigger_decision = dict(engineering_pack.get("triggerDecision") or {})
+            if prepared.engineering_trigger_decision.get("active"):
+                prepared.engineering_context_pack = engineering_pack
+            run_service.update_metadata(
+                run_handle.run_id,
+                {
+                    "engineeringMode": prepared.engineering_mode,
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                    **({"engineeringContextPack": dict(engineering_pack)} if prepared.engineering_context_pack else {}),
+                },
+            )
+        except Exception as exc:
+            prepared.engineering_trigger_decision = {
+                "mode": prepared.engineering_mode,
+                "active": False,
+                "matched": False,
+                "reason": "engineering_context_pack_failed",
+                "error": str(exc),
+            }
+            run_service.update_metadata(
+                run_handle.run_id,
+                {
+                    "engineeringMode": prepared.engineering_mode,
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                },
+            )
         preflight_decision = safety_guardian.preflight_runtime(
             runtime_kind="chat",
             trigger_source=transport,
@@ -1593,6 +1673,17 @@ class ChatRuntime:
             agent_id=None,
             node="safety_guardian",
         )
+        if chat_run.prepared.engineering_trigger_decision:
+            chat_run.emit_runtime_event(
+                "engineering_lane.trigger.decided",
+                {
+                    "engineeringMode": chat_run.prepared.engineering_mode,
+                    "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
+                    "contextPackActive": bool(chat_run.prepared.engineering_context_pack),
+                },
+                agent_id=None,
+                node="engineering_lane",
+            )
 
         if chat_run.is_resume_request:
             chat_run.emit_runtime_event(
@@ -1659,6 +1750,11 @@ class ChatRuntime:
             metadata["plannerDispatchMode"] = chat_run.prepared.planner_dispatch_mode
         if chat_run.prepared.task_planning_mode:
             metadata["taskPlanningMode"] = True
+        if getattr(chat_run.prepared, "engineering_mode", "auto") != "auto" or chat_run.prepared.engineering_trigger_decision:
+            metadata["engineeringMode"] = chat_run.prepared.engineering_mode
+            metadata["engineeringTriggerDecision"] = dict(chat_run.prepared.engineering_trigger_decision or {})
+            if isinstance(chat_run.prepared.engineering_context_pack, dict):
+                metadata["engineeringContextPack"] = dict(chat_run.prepared.engineering_context_pack)
         if chat_run.prepared.skill_references:
             metadata["skillReferences"] = list(chat_run.prepared.skill_references)
 
@@ -1692,6 +1788,8 @@ class ChatRuntime:
                 **({"plannerDispatchMode": metadata.get("plannerDispatchMode")} if metadata.get("plannerDispatchMode") else {}),
                 **({"plannerIntentDiagnostics": dict(metadata["plannerIntentDiagnostics"])} if isinstance(metadata.get("plannerIntentDiagnostics"), dict) else {}),
                 **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
+                **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
+                **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
                 **({"attachments": attachments} if attachments else {}),
             }
@@ -1917,6 +2015,7 @@ class ChatRuntime:
             messages=chat_run.lc_messages,
             session_id=chat_run.session_id,
             planner_plan=chat_run.prepared.planner_plan,
+            engineering_context=chat_run.prepared.engineering_context_pack,
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
@@ -1968,6 +2067,7 @@ class ChatRuntime:
             messages=state_messages,
             session_id=chat_run.session_id,
             planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
+            engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )

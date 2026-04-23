@@ -340,6 +340,34 @@ def _save_extensions_domain(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_extensions_domain()
 
 
+def _build_engineering_lane_domain() -> dict[str, Any]:
+    config = storage.get_engineering_lane_config() or {}
+    return {
+        "domain": "engineering-lane",
+        "title": "Engineering Lane",
+        "summary": "工程专用 ContextPack、Proof Ledger 与行为链提示治理。",
+        "data": config,
+        "source": _config_source("engineeringLane"),
+        "savePath": _config_save_path("engineeringLane"),
+        "reloadRequired": False,
+        "warnings": [],
+        "advancedFields": [
+            "triggerMode",
+            "contextPackBudget",
+            "proofLedgerEnabled",
+            "suppressDailyMemory",
+            "suppressMemoryMap",
+            "rankedWorkflowPathCount",
+        ],
+    }
+
+
+def _save_engineering_lane_domain(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload.get("data") or payload or {})
+    storage.save_engineering_lane_config(data)
+    return _build_engineering_lane_domain()
+
+
 def _build_context_domain() -> dict[str, Any]:
     return {
         "domain": "context",
@@ -976,6 +1004,7 @@ DOMAIN_REGISTRY: dict[str, tuple[ConfigBuilder, ConfigSaver]] = {
     "agents": (_build_agents_domain, _save_agents_domain),
     "memory": (_build_memory_domain, _save_memory_domain),
     "extensions": (_build_extensions_domain, _save_extensions_domain),
+    "engineering-lane": (_build_engineering_lane_domain, _save_engineering_lane_domain),
     "context": (_build_context_domain, _save_context_domain),
     "plugin-host": (_build_plugin_host_domain, _save_plugin_host_domain),
     "audio": (_build_audio_domain, _save_audio_domain),

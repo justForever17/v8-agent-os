@@ -80,6 +80,12 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "preferredAgentId": str(payload.get("preferredAgentId") or payload.get("preferred_agent_id") or "").strip(),
         "preferredWorkerType": str(payload.get("preferredWorkerType") or payload.get("preferred_worker_type") or "").strip(),
     }
+    for key in ("criticalFiles", "readSet", "verificationMatrix", "proofExpectations"):
+        normalized[key] = _normalize_scope_values(payload.get(key) or payload.get(key[0].lower() + key[1:]))
+    if isinstance(payload.get("engineeringTaskCapsule"), dict):
+        normalized["engineeringTaskCapsule"] = dict(payload.get("engineeringTaskCapsule") or {})
+    elif isinstance(payload.get("engineering_task_capsule"), dict):
+        normalized["engineeringTaskCapsule"] = dict(payload.get("engineering_task_capsule") or {})
     if normalized["executionLaneHint"] not in {"subagent", "external_worker", "auto"}:
         normalized["executionLaneHint"] = "auto"
     if not normalized["taskBriefId"]:

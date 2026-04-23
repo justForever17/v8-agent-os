@@ -354,6 +354,11 @@ def _build_engineering_lane_domain() -> dict[str, Any]:
         "advancedFields": [
             "triggerMode",
             "contextPackBudget",
+            "evidenceGraphEnabled",
+            "codingPlannerContractEnabled",
+            "worksetGovernanceMode",
+            "worksetObservationEnabled",
+            "workbenchDryRunMatrixEnabled",
             "proofLedgerEnabled",
             "suppressDailyMemory",
             "suppressMemoryMap",

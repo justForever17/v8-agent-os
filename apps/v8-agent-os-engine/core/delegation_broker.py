@@ -173,6 +173,165 @@ _ROUTE_QUERY_NOISE_VALUES = {
 }
 
 
+_ENGINEERING_FILE_EXTENSIONS = (
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".swift",
+    ".cs",
+    ".cpp",
+    ".c",
+    ".h",
+    ".hpp",
+    ".vue",
+    ".svelte",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".md",
+)
+
+_ENGINEERING_TASK_TERMS = {
+    "code",
+    "coding",
+    "implementation",
+    "implement",
+    "debug",
+    "fix",
+    "test",
+    "typecheck",
+    "build",
+    "lint",
+    "refactor",
+    "review",
+    "verify",
+    "architecture",
+    "docs",
+    "documentation",
+    "代码",
+    "实现",
+    "修复",
+    "测试",
+    "验证",
+    "构建",
+    "重构",
+}
+
+_READ_ONLY_ENGINEERING_TERMS = {
+    "review",
+    "audit",
+    "verify",
+    "verification",
+    "validate",
+    "analysis",
+    "inspect",
+    "read_only",
+    "read-only",
+    "diagnose",
+    "reviewer",
+    "verifier",
+    "测试验证",
+    "代码审查",
+    "审查",
+    "审计",
+    "验证",
+    "分析",
+}
+
+_DOC_ONLY_ENGINEERING_TERMS = {
+    "docs",
+    "documentation",
+    "document",
+    "delivery",
+    "writer",
+    "release_notes",
+    "readme",
+    "文档",
+    "交付",
+    "说明",
+}
+
+_WRITE_ENGINEERING_TERMS = {
+    "implement",
+    "implementation",
+    "fix",
+    "edit",
+    "modify",
+    "patch",
+    "refactor",
+    "migration",
+    "write",
+    "代码",
+    "实现",
+    "修改",
+    "修复",
+    "重构",
+    "迁移",
+}
+
+_ROLE_SIGNAL_GROUPS = {
+    "implementation": {
+        "implement",
+        "implementation",
+        "fix",
+        "debug",
+        "refactor",
+        "patch",
+        "code",
+        "coding",
+        "engineer",
+        "实现",
+        "修复",
+        "改代码",
+    },
+    "verification": {
+        "verify",
+        "verification",
+        "test",
+        "typecheck",
+        "build",
+        "lint",
+        "validate",
+        "verifier",
+        "测试",
+        "验证",
+        "构建",
+    },
+    "review": {
+        "review",
+        "audit",
+        "architect",
+        "architecture",
+        "risk",
+        "compare",
+        "代码审查",
+        "审查",
+        "架构",
+        "风险",
+    },
+    "documentation": {
+        "docs",
+        "documentation",
+        "writer",
+        "delivery",
+        "readme",
+        "release",
+        "文档",
+        "交付",
+        "说明",
+    },
+}
+
+
 def _route_query_values(values: Iterable[Any] | None, *, max_items: int = 6) -> list[str]:
     selected: list[str] = []
     for value in _as_string_list(values):
@@ -232,6 +391,206 @@ def task_brief_summary(task_brief: dict[str, Any] | None) -> str:
     if goal and task_id:
         return f"{task_id}: {goal}"
     return goal or task_id
+
+
+def _task_brief_signal_text(task_brief: dict[str, Any] | None) -> str:
+    if not isinstance(task_brief, dict):
+        return ""
+    capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    parts: list[str] = [
+        str(task_brief.get("goal") or ""),
+        _stringify_context(task_brief.get("context")),
+        " ".join(_as_string_list(task_brief.get("behaviorScope"))),
+        " ".join(_as_string_list(task_brief.get("requiredCapabilities"))),
+        " ".join(_as_string_list(task_brief.get("writeSet"))),
+        " ".join(_as_string_list(task_brief.get("criticalFiles"))),
+        " ".join(_as_string_list(task_brief.get("readSet"))),
+        " ".join(_as_string_list(capsule.get("riskFlags"))),
+        " ".join(_as_string_list(capsule.get("proofExpectations"))),
+    ]
+    return " ".join(part for part in parts if part).strip().lower()
+
+
+def infer_engineering_task_role(task_brief: dict[str, Any] | None) -> str:
+    """Infer the engineering role this task most likely needs.
+
+    This is intentionally lightweight; it biases selection, but does not replace
+    capabilitySnapshot matching or preferredAgentId.
+    """
+    text = _task_brief_signal_text(task_brief)
+    if not text:
+        return ""
+    scores: dict[str, int] = {role: 0 for role in _ROLE_SIGNAL_GROUPS}
+    for role, terms in _ROLE_SIGNAL_GROUPS.items():
+        for term in terms:
+            if term and term in text:
+                scores[role] += 1
+    role, score = max(scores.items(), key=lambda item: item[1])
+    return role if score > 0 else ""
+
+
+def _task_is_engineering_like(task_brief: dict[str, Any] | None) -> bool:
+    if not isinstance(task_brief, dict):
+        return False
+    if isinstance(task_brief.get("engineeringTaskCapsule"), dict) and task_brief.get("engineeringTaskCapsule"):
+        return True
+    for key in ("criticalFiles", "readSet", "verificationMatrix", "proofExpectations"):
+        if list(task_brief.get(key) or []):
+            return True
+    paths = _as_string_list(task_brief.get("writeSet")) + _as_string_list(task_brief.get("criticalFiles")) + _as_string_list(task_brief.get("readSet"))
+    if any(str(path).lower().endswith(_ENGINEERING_FILE_EXTENSIONS) or "/" in str(path).replace("\\", "/") for path in paths):
+        return True
+    tokens = set(_tokenize(_task_brief_signal_text(task_brief)))
+    return bool(tokens & _ENGINEERING_TASK_TERMS)
+
+
+def _task_is_read_only_safe(task_brief: dict[str, Any] | None) -> bool:
+    if not isinstance(task_brief, dict):
+        return False
+    scope_tokens = set(
+        _tokenize(
+            " ".join(
+                [
+                    " ".join(_as_string_list(task_brief.get("behaviorScope"))),
+                    " ".join(_as_string_list(task_brief.get("requiredCapabilities"))),
+                ]
+            )
+        )
+    )
+    if scope_tokens & _READ_ONLY_ENGINEERING_TERMS and not (scope_tokens & _WRITE_ENGINEERING_TERMS):
+        return True
+    tokens = set(_tokenize(_task_brief_signal_text(task_brief)))
+    if tokens & _WRITE_ENGINEERING_TERMS:
+        return False
+    if tokens & _READ_ONLY_ENGINEERING_TERMS:
+        return True
+    if tokens & _DOC_ONLY_ENGINEERING_TERMS and not _as_string_list(task_brief.get("writeSet")):
+        return True
+    return False
+
+
+def _normalize_workset_path(value: Any) -> str:
+    normalized = str(value or "").strip().replace("\\", "/").lower()
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    return normalized.rstrip("/") if normalized not in {"", "/"} else normalized
+
+
+def _path_overlaps(left: str, right: str) -> bool:
+    a = _normalize_workset_path(left)
+    b = _normalize_workset_path(right)
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def _normalized_write_set(task_brief: dict[str, Any] | None) -> list[str]:
+    if not isinstance(task_brief, dict):
+        return []
+    capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    values = _as_string_list(task_brief.get("writeSet")) or _as_string_list(capsule.get("writeSet"))
+    return _unique_str_list(values)
+
+
+def engineering_task_capsule(task_brief: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(task_brief, dict):
+        return {}
+    raw_capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    capsule = {
+        "criticalFiles": _unique_str_list(raw_capsule.get("criticalFiles") or task_brief.get("criticalFiles")),
+        "readSet": _unique_str_list(raw_capsule.get("readSet") or task_brief.get("readSet")),
+        "writeSet": _unique_str_list(raw_capsule.get("writeSet") or task_brief.get("writeSet")),
+        "verificationContract": list(raw_capsule.get("verificationContract") or []),
+        "proofExpectations": _unique_str_list(raw_capsule.get("proofExpectations") or task_brief.get("proofExpectations")),
+        "riskFlags": _unique_str_list(raw_capsule.get("riskFlags")),
+    }
+    return {key: value for key, value in capsule.items() if value not in (None, "", [], {})}
+
+
+def build_workset_dispatch_decisions(
+    task_briefs: Iterable[dict[str, Any]] | None,
+    *,
+    auto_dispatch: bool = False,
+    decision_source: str | None = None,
+) -> list[dict[str, Any]]:
+    """Evaluate Engineering Lane write-set safety before broker dispatch."""
+    normalized_tasks = [normalize_task_brief(item, index=index) for index, item in enumerate(list(task_briefs or []))]
+    decisions: list[dict[str, Any]] = []
+    write_owners: list[tuple[int, str, str]] = []
+    source = str(decision_source or ("planner_auto" if auto_dispatch else "supervisor_manual")).strip() or (
+        "planner_auto" if auto_dispatch else "supervisor_manual"
+    )
+
+    for index, task in enumerate(normalized_tasks):
+        task_id = str(task.get("taskBriefId") or f"task-{index + 1}").strip()
+        write_set = _normalized_write_set(task)
+        capsule = engineering_task_capsule(task)
+        engineering_like = _task_is_engineering_like(task)
+        read_only_safe = _task_is_read_only_safe(task)
+        blocked = False
+        warning = False
+        risk: str | None = None
+        reason = "task_has_no_engineering_workset_requirements"
+        repair = ""
+
+        if engineering_like:
+            if write_set:
+                risk = "within_write_set"
+                reason = "declared_write_set_present"
+            elif read_only_safe:
+                risk = "read_only_safe"
+                reason = "read_only_or_doc_only_task_without_write_set"
+            else:
+                risk = "missing_write_set"
+                reason = "engineering_task_missing_write_set"
+                repair = "Repair planner output with a concrete writeSet, or mark the task read-only/review-only before auto-dispatch."
+                blocked = bool(auto_dispatch)
+                warning = True
+
+        decision = {
+            "taskBriefId": task_id,
+            "mode": "auto" if auto_dispatch else "manual",
+            "worksetDecisionSource": source,
+            "blocked": blocked,
+            "warning": warning or blocked,
+            "reason": reason,
+            "writeSet": write_set,
+            "engineeringCapsuleAttached": bool(capsule),
+            "engineeringRole": infer_engineering_task_role(task),
+            "repairSuggestion": repair,
+        }
+        if risk:
+            decision["risk"] = risk
+            decision["correlationStatus"] = risk
+        decisions.append(decision)
+        if engineering_like and write_set and not read_only_safe:
+            for path in write_set:
+                write_owners.append((index, task_id, path))
+
+    conflicts_by_index: dict[int, list[dict[str, Any]]] = {}
+    for left_pos, (left_index, left_task, left_path) in enumerate(write_owners):
+        for right_index, right_task, right_path in write_owners[left_pos + 1 :]:
+            if left_task == right_task:
+                continue
+            if _path_overlaps(left_path, right_path):
+                conflict = {
+                    "tasks": [left_task, right_task],
+                    "paths": [left_path, right_path],
+                }
+                conflicts_by_index.setdefault(left_index, []).append(conflict)
+                conflicts_by_index.setdefault(right_index, []).append(conflict)
+
+    for index, conflicts in conflicts_by_index.items():
+        decision = decisions[index]
+        decision["risk"] = "outside_write_set"
+        decision["warning"] = True
+        decision["blocked"] = bool(auto_dispatch)
+        decision["correlationStatus"] = "outside_write_set"
+        decision["worksetConflictGroup"] = conflicts[:6]
+        decision["reason"] = "parallel_or_batch_write_set_conflict"
+        decision["repairSuggestion"] = "Split conflicting tasks into a dependency chain, assign a single owner, or narrow writeSet before auto-dispatch."
+
+    return decisions
 
 
 def _flatten_snapshot_values(snapshot: dict[str, Any] | None) -> list[str]:
@@ -383,6 +742,26 @@ def score_capability_candidate(
     elif suitability in {"low", "avoid"}:
         score -= 4
         signals.append(f"{suitability_key}:{suitability}")
+
+    engineering_role = infer_engineering_task_role(task_brief)
+    if engineering_role:
+        role_text = " ".join(
+            [
+                agent_class,
+                " ".join(sorted(domain)),
+                " ".join(sorted(artifacts)),
+                " ".join(sorted(operations)),
+                " ".join(_tokenize(candidate_label)),
+                " ".join(_tokenize(description)),
+            ]
+        )
+        role_terms = _ROLE_SIGNAL_GROUPS.get(engineering_role, set())
+        if any(term in role_text for term in role_terms):
+            score += 5
+            signals.append(f"engineeringRole:{engineering_role}")
+        elif engineering_role in {"review", "verification"} and agent_class in {"reviewer", "verifier", "tester", "architect"}:
+            score += 4
+            signals.append(f"engineeringRole:{engineering_role}")
 
     heavy_tokens = _tokenize(" ".join(required))
     text_parts = [

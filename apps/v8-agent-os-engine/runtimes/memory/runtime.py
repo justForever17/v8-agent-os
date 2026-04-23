@@ -578,8 +578,20 @@ class MemoryRuntime:
         status: Optional[str] = None,
         query: Optional[str] = None,
         limit: int = 50,
+        workflow_class: Optional[str] = None,
+        proof_backed: Optional[bool] = None,
+        verification_status: Optional[str] = None,
+        source_runtime: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        return workflow_memory_service.list_candidates(status=status, query=query, limit=limit)
+        return workflow_memory_service.list_candidates(
+            status=status,
+            query=query,
+            limit=limit,
+            workflow_class=workflow_class,
+            proof_backed=proof_backed,
+            verification_status=verification_status,
+            source_runtime=source_runtime,
+        )
 
     def get_workflow_candidate(self, candidate_id: str) -> Optional[Dict[str, Any]]:
         return workflow_memory_service.get_candidate(candidate_id)

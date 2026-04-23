@@ -4425,6 +4425,122 @@ class ChatRuntime:
             node="planner_lane",
         )
 
+    async def emit_engineering_lane_projection(
+        self,
+        chat_run: ChatRunContext,
+        execution_bundle: ChatExecutionBundle | None,
+    ) -> None:
+        if execution_bundle is None:
+            return
+        if not chat_run.prepared.engineering_trigger_decision.get("active"):
+            return
+        try:
+            state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to inspect final graph state for engineering projection in run '%s'",
+                chat_run.active_run_id,
+            )
+            return
+        plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
+        if not plan and isinstance((state or {}).get("planner_plan"), dict):
+            plan = dict((state or {}).get("planner_plan") or {})
+        engineering_pack = chat_run.prepared.engineering_context_pack if isinstance(chat_run.prepared.engineering_context_pack, dict) else {}
+        context_pack = engineering_pack.get("contextPack") if isinstance(engineering_pack.get("contextPack"), dict) else engineering_pack
+        coding_contract = {}
+        if isinstance(plan, dict) and isinstance(plan.get("codingPlannerContract"), dict):
+            coding_contract = dict(plan.get("codingPlannerContract") or {})
+        elif isinstance(context_pack.get("codingPlannerContractPreview"), dict):
+            coding_contract = dict(context_pack.get("codingPlannerContractPreview") or {})
+        if not coding_contract and not plan:
+            return
+
+        results = [dict(item) for item in list((state or {}).get("parallel_results") or []) if isinstance(item, dict)]
+        selected_delegations: list[dict[str, Any]] = []
+        blocked_count = 0
+        warning_count = 0
+        for item in results:
+            decision = engineering_lane_service._normalize_workset_dispatch_decision(  # type: ignore[attr-defined]
+                item.get("worksetDispatchDecision") if isinstance(item.get("worksetDispatchDecision"), dict) else {}
+            )
+            blocked_count += 1 if bool(decision.get("blocked")) else 0
+            warning_count += 1 if bool(decision.get("warning")) else 0
+            selected_delegations.append(
+                {
+                    "delegationId": item.get("delegationId"),
+                    "taskBriefId": item.get("taskBriefId"),
+                    "taskGoal": item.get("taskGoal"),
+                    "targetId": item.get("targetId"),
+                    "targetLabel": item.get("targetLabel") or item.get("agentName"),
+                    "status": item.get("status"),
+                    "worksetDispatchDecision": decision,
+                }
+            )
+
+        task_briefs = [dict(item) for item in list((plan or {}).get("taskBriefs") or []) if isinstance(item, dict)]
+        task_capsules: list[dict[str, Any]] = []
+        for item in task_briefs[:12]:
+            capsule = item.get("engineeringTaskCapsule") if isinstance(item.get("engineeringTaskCapsule"), dict) else {}
+            task_capsules.append(
+                {
+                    "taskBriefId": item.get("taskBriefId"),
+                    "taskGoal": item.get("goal"),
+                    "criticalFiles": list(capsule.get("criticalFiles") or item.get("criticalFiles") or [])[:12],
+                    "readSet": list(capsule.get("readSet") or item.get("readSet") or [])[:12],
+                    "writeSet": list(capsule.get("writeSet") or item.get("writeSet") or [])[:12],
+                    "riskFlags": list(capsule.get("riskFlags") or [])[:8],
+                    "proofExpectations": list(capsule.get("proofExpectations") or item.get("proofExpectations") or [])[:8],
+                    "verificationContract": list(capsule.get("verificationContract") or [])[:8],
+                }
+            )
+
+        ownership_plan = list(coding_contract.get("ownershipPlan") or []) if isinstance(coding_contract, dict) else []
+        critical_files = list(coding_contract.get("criticalFiles") or [])[:12] if isinstance(coding_contract, dict) else []
+        verification_matrix = [
+            {
+                "kind": row.get("kind"),
+                "command": row.get("command"),
+                "requiredForVerified": row.get("requiredForVerified"),
+            }
+            for row in list(coding_contract.get("verificationMatrix") or [])
+            if isinstance(row, dict)
+        ][:8]
+        risk_flags = [str(item).strip() for item in list(coding_contract.get("riskFlags") or (plan or {}).get("riskFlags") or []) if str(item).strip()]
+        proof_expectations = [str(item).strip() for item in list(coding_contract.get("proofExpectations") or []) if str(item).strip()][:8]
+        summary = str((plan or {}).get("planSummary") or "").strip() or "工程契约已投影"
+        summary = f"{summary} · {len(task_capsules)} 个工程任务"
+        if blocked_count > 0:
+            summary += f" · {blocked_count} 个 blocked"
+        elif warning_count > 0:
+            summary += f" · {warning_count} 个 warning"
+
+        chat_run.emit_runtime_event(
+            "engineering.plan.projected",
+            {
+                "planId": (plan or {}).get("planId"),
+                "summary": summary,
+                "engineeringMode": chat_run.prepared.engineering_mode,
+                "taskCount": len(task_capsules),
+                "ownershipCount": len(ownership_plan),
+                "blockedCount": blocked_count,
+                "warningCount": warning_count,
+                "criticalFiles": critical_files,
+                "readSet": list(coding_contract.get("readSet") or [])[:12] if isinstance(coding_contract, dict) else [],
+                "writeSet": list(coding_contract.get("writeSet") or [])[:12] if isinstance(coding_contract, dict) else [],
+                "ownershipPlan": ownership_plan[:8],
+                "verificationMatrix": verification_matrix,
+                "proofExpectations": proof_expectations,
+                "riskFlags": risk_flags[:8],
+                "mergeOrder": list(coding_contract.get("mergeOrder") or [])[:6] if isinstance(coding_contract, dict) else [],
+                "selectedDelegations": selected_delegations[:12],
+                "taskCapsules": task_capsules,
+                "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
+                "traceRef": {"runId": chat_run.active_run_id, "planId": (plan or {}).get("planId")},
+            },
+            agent_id=None,
+            node="engineering_lane",
+        )
+
     async def emit_subagent_swarm_projection(
         self,
         chat_run: ChatRunContext,
@@ -4908,6 +5024,7 @@ class ChatRuntime:
                 yield flushed_event
             await self.reconcile_final_assistant_message(chat_run, stream_state, last_execution_bundle)
             await self.emit_planner_lane_projection(chat_run, last_execution_bundle)
+            await self.emit_engineering_lane_projection(chat_run, last_execution_bundle)
             await self.emit_subagent_swarm_projection(chat_run, last_execution_bundle)
             self.persist_final_assistant_message(chat_run, stream_state)
             self.emit_task_planning_mode_decision(chat_run, stream_state)

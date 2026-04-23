@@ -628,8 +628,11 @@ export function shouldApplyRuntimeEventToMessage(
   if (
     event.runtimeId === "subagent_swarm"
     || event.runtimeId === "planner_lane"
+    || event.runtimeId === "engineering_lane"
     || String(event.topic || "").startsWith("subagent.")
     || String(event.topic || "").startsWith("planner.")
+    || String(event.topic || "").startsWith("engineering.")
+    || String(event.topic || "").startsWith("engineering_lane.")
     || String(event.topic || "").startsWith("chat.planner_mode.")
     || String(event.topic || "").startsWith("chat.task_planning_mode.")
   ) {

@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.types import Command
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
-from core.delegation_broker import task_brief_query_text, task_brief_route_query_text
+from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
 from core.runtime.extensions_runtime import extensions_runtime_service
@@ -274,6 +274,29 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             rendered = _compact_prompt_value(task_brief.get(key))
             if rendered:
                 lines.append(f"- {label}: {rendered}")
+        capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+        role = infer_engineering_task_role(task_brief)
+        if capsule or role:
+            lines.append("")
+            lines.append("Engineering Task Capsule:")
+            if role:
+                lines.append(f"- Engineering Role: {role}")
+            for label, key in (
+                ("Critical Files", "criticalFiles"),
+                ("Read Set", "readSet"),
+                ("Write Set", "writeSet"),
+                ("Verification Contract", "verificationContract"),
+                ("Proof Expectations", "proofExpectations"),
+                ("Risk Flags", "riskFlags"),
+            ):
+                value = capsule.get(key) if capsule else task_brief.get(key)
+                rendered = _compact_prompt_value(value)
+                if rendered:
+                    lines.append(f"- {label}: {rendered}")
+            if role in {"review", "verification"} and not _compact_prompt_value(task_brief.get("writeSet")):
+                lines.append("- Write Discipline: Treat this task as read-only. Do not modify production files unless the supervisor explicitly grants a writeSet.")
+            elif not _compact_prompt_value(task_brief.get("writeSet")) and role:
+                lines.append("- Write Discipline: writeSet is missing. Ask for clarification before editing files.")
     lines.append("</delegated_task_plan>")
     return "\n".join(lines) + "\n"
 

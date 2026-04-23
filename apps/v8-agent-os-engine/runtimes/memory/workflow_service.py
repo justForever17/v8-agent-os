@@ -32,6 +32,14 @@ WORKFLOW_MEMORY_DEFAULTS: Dict[str, Any] = {
         "high": "approval",
         "critical": "quarantine",
     },
+    "engineering": {
+        "enabled": True,
+        "extractFromProofLedger": True,
+        "requireEngineeringModeForInjection": True,
+        "requireVerifiedProofForActivation": True,
+        "learnFailedVerificationAsAntiPattern": True,
+        "minVerifiedSuccessCount": 2,
+    },
 }
 
 ACTIVE_WORKFLOW_STATUSES = {"active_hint", "approved"}
@@ -75,6 +83,23 @@ def workflow_memory_config() -> Dict[str, Any]:
         else:
             policy[tier] = normalized
     cfg["riskTierActivationPolicy"] = {**default_policy, **policy}
+    engineering = cfg.get("engineering")
+    if not isinstance(engineering, dict):
+        engineering = {}
+    engineering_defaults = dict(WORKFLOW_MEMORY_DEFAULTS["engineering"])
+    cfg["engineering"] = {**engineering_defaults, **engineering}
+    for key in (
+        "enabled",
+        "extractFromProofLedger",
+        "requireEngineeringModeForInjection",
+        "requireVerifiedProofForActivation",
+        "learnFailedVerificationAsAntiPattern",
+    ):
+        cfg["engineering"][key] = bool(cfg["engineering"].get(key))
+    try:
+        cfg["engineering"]["minVerifiedSuccessCount"] = max(1, min(int(cfg["engineering"].get("minVerifiedSuccessCount") or 2), 10))
+    except (TypeError, ValueError):
+        cfg["engineering"]["minVerifiedSuccessCount"] = 2
     return cfg
 
 
@@ -220,6 +245,11 @@ def _row_to_episode(row: Any) -> Dict[str, Any]:
     data["toolSkillSequence"] = _json_load(data.pop("tool_skill_sequence_json", None), [])
     data["failureMarkers"] = _json_load(data.pop("failure_markers_json", None), [])
     data["userCorrectionPoints"] = _json_load(data.pop("user_correction_points_json", None), [])
+    data["proofRefs"] = _json_load(data.pop("proof_refs_json", None), [])
+    data["workflowClass"] = data.get("workflow_class") or "general"
+    data["sourceRuntime"] = data.get("source_runtime")
+    data["verificationBacked"] = bool(data.get("verification_backed"))
+    data["worksetRisk"] = data.get("workset_risk")
     data["metadata"] = _json_load(data.pop("metadata_json", None), {})
     return data
 
@@ -237,6 +267,15 @@ def _row_to_candidate(row: Any) -> Dict[str, Any]:
     data["lastHintOutcome"] = data.get("last_hint_outcome")
     data["guideState"] = _json_load(data.pop("guide_state_json", None), {})
     data["mergeSuggestion"] = _json_load(data.pop("merge_suggestion_json", None), {})
+    data["workflowClass"] = data.get("workflow_class") or "general"
+    data["sourceRuntime"] = data.get("source_runtime")
+    data["proofBacked"] = bool(data.get("proof_backed"))
+    data["verificationBacked"] = bool(data.get("verification_backed"))
+    data["lastVerificationStatus"] = data.get("last_verification_status")
+    data["worksetRisk"] = data.get("workset_risk")
+    data["outsideWriteSetCount"] = int(data.get("outside_write_set_count") or 0)
+    data["manualOverrideCount"] = int(data.get("manual_override_count") or 0)
+    data["proofEntryIds"] = _json_load(data.pop("proof_entry_ids_json", None), [])
     data["metadata"] = _json_load(data.pop("metadata_json", None), {})
     return data
 
@@ -596,6 +635,12 @@ class WorkflowMemoryService:
         side_effect_scope = _norm_text(payload.get("sideEffectScope") or payload.get("side_effect_scope"))
         tool_sequence = _as_list(payload.get("toolSkillSequence") or payload.get("toolsOrSkillsUsed") or payload.get("tool_skill_sequence"))
         risk_tier = _norm_text(payload.get("riskTier") or payload.get("risk_tier")) or _risk_tier_from_scope(side_effect_scope, tool_sequence)
+        workflow_class = _norm_text(payload.get("workflowClass") or payload.get("workflow_class")) or "general"
+        source_runtime = _norm_text(payload.get("sourceRuntime") or payload.get("source_runtime"))
+        proof_refs = _as_list(payload.get("proofRefs") or payload.get("proof_refs") or payload.get("proofEntryIds") or payload.get("proof_entry_ids"))
+        verification_status = _norm_text(payload.get("lastVerificationStatus") or payload.get("verificationStatus") or payload.get("verification_status"))
+        verification_backed = bool(payload.get("verificationBacked") or payload.get("verification_backed") or verification_status == "verified")
+        workset_risk = _norm_text(payload.get("worksetRisk") or payload.get("workset_risk"))
         activation_allowed, approval_required, activation_reason = _activation_allowed_for_candidate(
             risk_tier=risk_tier,
             current="candidate",
@@ -621,6 +666,11 @@ class WorkflowMemoryService:
             "status": status,
             "confidence": confidence,
             "extraction_source": extraction_source,
+            "workflow_class": workflow_class,
+            "source_runtime": source_runtime,
+            "proof_refs": proof_refs,
+            "verification_backed": verification_backed,
+            "workset_risk": workset_risk,
             "metadata": {
                 "canonicalTriggerPatterns": triggers,
                 "goldenPathSteps": explicit_golden,
@@ -633,6 +683,15 @@ class WorkflowMemoryService:
                 "activationReason": activation_reason,
                 "approvalRequired": approval_required,
                 "riskTier": risk_tier,
+                "workflowClass": workflow_class,
+                "sourceRuntime": source_runtime,
+                "proofRefs": proof_refs,
+                "verificationBacked": verification_backed,
+                "lastVerificationStatus": verification_status,
+                "worksetRisk": workset_risk,
+                "proofBacked": bool(proof_refs),
+                "outsideWriteSetCount": int(payload.get("outsideWriteSetCount") or payload.get("outside_write_set_count") or 0),
+                "manualOverrideCount": int(payload.get("manualOverrideCount") or payload.get("manual_override_count") or 0),
                 "raw": to_jsonable(payload),
             },
         }
@@ -646,9 +705,10 @@ class WorkflowMemoryService:
                 (id, session_id, run_id, scope, task_family, task_family_signature, initial_user_intent,
                  first_action_signature, runtime_lane, ordered_actions_json, tool_skill_sequence_json,
                  failure_markers_json, user_correction_points_json, final_success_evidence, user_verdict,
-                 side_effect_scope, privacy_scope, status, confidence, extraction_source, metadata_json,
+                 side_effect_scope, privacy_scope, status, confidence, extraction_source, workflow_class,
+                 source_runtime, proof_refs_json, verification_backed, workset_risk, metadata_json,
                  created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM memory_workflow_episodes WHERE id = ?), ?), ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM memory_workflow_episodes WHERE id = ?), ?), ?)
                 """,
                 (
                     episode["id"],
@@ -671,6 +731,11 @@ class WorkflowMemoryService:
                     episode.get("status"),
                     float(episode.get("confidence") or 0.5),
                     episode.get("extraction_source"),
+                    episode.get("workflow_class") or "general",
+                    episode.get("source_runtime"),
+                    _json_dump(episode.get("proof_refs")),
+                    1 if episode.get("verification_backed") else 0,
+                    episode.get("workset_risk"),
                     _json_dump(episode.get("metadata") or {}),
                     episode["id"],
                     now,
@@ -681,6 +746,419 @@ class WorkflowMemoryService:
         candidate = self.upsert_candidate_from_episode(episode)
         self.export_candidate(candidate)
         return {"episode": episode, "candidate": candidate}
+
+    def record_engineering_proof_episode(
+        self,
+        *,
+        proof_entry: Dict[str, Any],
+        workset_observations: Optional[List[Dict[str, Any]]] = None,
+        source_component: str = "engineering_proof_collector",
+    ) -> Dict[str, Any]:
+        """Distill an engineering proof entry into the normal workflow memory chain."""
+
+        cfg = workflow_memory_config()
+        engineering_cfg = cfg.get("engineering") if isinstance(cfg.get("engineering"), dict) else {}
+        if not bool(engineering_cfg.get("enabled", True)) or not bool(engineering_cfg.get("extractFromProofLedger", True)):
+            return {"status": "skipped", "reason": "engineering_workflow_memory_disabled"}
+        if not proof_entry or not proof_entry.get("id"):
+            return {"status": "skipped", "reason": "missing_proof_entry"}
+        mode = str(proof_entry.get("mode") or "").strip().lower()
+        if mode == "dry_run":
+            return {"status": "skipped", "reason": "dry_run_not_learned", "proofEntryId": proof_entry.get("id")}
+
+        metadata = proof_entry.get("metadata") if isinstance(proof_entry.get("metadata"), dict) else {}
+        trigger = metadata.get("triggerDecision") if isinstance(metadata.get("triggerDecision"), dict) else {}
+        engineering_mode = str(metadata.get("engineeringMode") or "").strip().lower()
+        if not (trigger.get("active") or engineering_mode == "force"):
+            return {"status": "skipped", "reason": "engineering_mode_inactive", "proofEntryId": proof_entry.get("id")}
+
+        verification_status = str(proof_entry.get("verificationStatus") or "planned").strip().lower()
+        if verification_status == "failed_verification" and not bool(engineering_cfg.get("learnFailedVerificationAsAntiPattern", True)):
+            return {"status": "skipped", "reason": "failed_verification_learning_disabled", "proofEntryId": proof_entry.get("id")}
+
+        diagnostics = proof_entry.get("diagnostics") if isinstance(proof_entry.get("diagnostics"), dict) else {}
+        workset_correlation = proof_entry.get("worksetCorrelation") if isinstance(proof_entry.get("worksetCorrelation"), dict) else {}
+        if not workset_correlation:
+            workset_correlation = diagnostics.get("worksetCorrelation") if isinstance(diagnostics.get("worksetCorrelation"), dict) else {}
+        workset_risk = str(
+            workset_correlation.get("risk")
+            or (diagnostics.get("worksetRisk") if isinstance(diagnostics.get("worksetRisk"), dict) else {}).get("risk")
+            or ""
+        ).strip()
+        outside_files = _as_list(proof_entry.get("outsideWriteSetFiles") or diagnostics.get("outsideWriteSetFiles") or workset_correlation.get("outsideWriteSetFiles"))
+        manual_override = proof_entry.get("manualOverride") if isinstance(proof_entry.get("manualOverride"), dict) else diagnostics.get("manualOverride")
+        manual_override_present = bool((manual_override or {}).get("present")) if isinstance(manual_override, dict) else bool(manual_override)
+        commands = [item for item in _as_list(proof_entry.get("commands")) if isinstance(item, dict)]
+        diagnostics_items = [item for item in _as_list(diagnostics.get("items")) if isinstance(item, dict)]
+        changed_files = [str(item).strip() for item in _as_list(proof_entry.get("changedFiles")) if str(item).strip()]
+        write_set = [str(item).strip() for item in _as_list(proof_entry.get("writeSet")) if str(item).strip()]
+        file_family = self._engineering_file_family([*changed_files, *write_set])
+        verification_family = self._engineering_verification_family(commands=commands, diagnostics=diagnostics_items, verification_status=verification_status)
+        dominant_tools = self._engineering_dominant_tool_chain(commands=commands)
+        behavior_scope = self._engineering_behavior_scope(proof_entry=proof_entry, file_family=file_family)
+        task_family_parts = " / ".join(part for part in (behavior_scope, verification_family) if part)
+        task_family = f"Engineering workflow: {task_family_parts}" if task_family_parts else "Engineering workflow"
+        signature = self._engineering_task_signature(
+            task_family=task_family,
+            file_family=file_family,
+            verification_family=verification_family,
+            dominant_tools=dominant_tools,
+            behavior_scope=behavior_scope,
+            scope=str(proof_entry.get("scope") or ""),
+        )
+
+        successful_validation = [cmd for cmd in commands if cmd.get("isValidation") and (cmd.get("returnCode") in (0, "0"))]
+        failed_validation = [cmd for cmd in commands if cmd.get("isValidation") and cmd.get("returnCode") not in (None, 0, "0")]
+        residual_risks = [str(item).strip() for item in _as_list(proof_entry.get("residualRisks")) if str(item).strip()]
+        failure_markers: List[str] = []
+        if failed_validation:
+            failure_markers.append("A validation command failed before the final proof state was accepted.")
+        if outside_files:
+            failure_markers.append("Changed files were observed outside the planned writeSet.")
+        if manual_override_present:
+            failure_markers.append("Supervisor manual override was present in the workset decision.")
+        failure_markers.extend(residual_risks[:4])
+
+        verified = verification_status == "verified"
+        status_hint = "success_after_corrections" if verified and failure_markers else "success" if verified else "candidate"
+        final_success = (
+            f"Verified engineering proof via {verification_family}."
+            if verified
+            else ""
+        )
+        anti_patterns = self._engineering_anti_patterns(
+            verification_status=verification_status,
+            failure_markers=failure_markers,
+            workset_risk=workset_risk,
+        )
+        golden_path = self._engineering_golden_path(
+            verification_status=verification_status,
+            behavior_scope=behavior_scope,
+            verification_family=verification_family,
+            workset_risk=workset_risk,
+        )
+        if not verified:
+            golden_path = []
+        payload = {
+            "id": f"mw_ep_eng_{proof_entry.get('id')}",
+            "taskFamily": task_family,
+            "taskFamilySignature": signature,
+            "initialUserIntent": str(proof_entry.get("patchIntent") or task_family)[:500],
+            "canonicalTriggerPatterns": self._engineering_triggers(
+                behavior_scope=behavior_scope,
+                file_family=file_family,
+                verification_family=verification_family,
+                dominant_tools=dominant_tools,
+            ),
+            "firstActionSignature": dominant_tools[0] if dominant_tools else "inspect engineering proof",
+            "runtimeLane": "engineering_lane",
+            "orderedActions": self._engineering_ordered_actions(commands=commands, verification_status=verification_status),
+            "toolSkillSequence": dominant_tools,
+            "failureMarkers": failure_markers,
+            "userCorrectionPoints": ["manual override"] if manual_override_present else [],
+            "finalSuccessEvidence": final_success,
+            "userVerdict": "verified" if verified else verification_status,
+            "sideEffectScope": "engineering_code_change",
+            "privacyScope": "local_runtime",
+            "status": status_hint,
+            "confidence": 0.82 if verified else 0.55,
+            "runtimeEvidence": [
+                {
+                    "proofEntryId": proof_entry.get("id"),
+                    "verificationStatus": verification_status,
+                    "changedFileCount": len(changed_files),
+                    "commandCount": len(commands),
+                    "worksetRisk": workset_risk,
+                }
+            ],
+            "evidenceSource": "proof_ledger",
+            "goldenPathSteps": golden_path,
+            "antiPatterns": anti_patterns,
+            "verificationSteps": self._engineering_verification_steps(verification_family=verification_family, commands=commands),
+            "riskTier": "medium" if workset_risk in {"outside_write_set", "missing_write_set", "unknown_write_set"} or manual_override_present else "low",
+            "workflowClass": "engineering",
+            "sourceRuntime": "engineering_lane",
+            "proofRefs": [proof_entry.get("id")],
+            "verificationBacked": verified,
+            "lastVerificationStatus": verification_status,
+            "worksetRisk": workset_risk,
+            "outsideWriteSetCount": len(outside_files),
+            "manualOverrideCount": 1 if manual_override_present else 0,
+            "metadata": {
+                "worksetObservationIds": [
+                    str(item.get("id"))
+                    for item in list(workset_observations or [])
+                    if isinstance(item, dict) and item.get("id")
+                ][:24],
+                "fileFamily": file_family,
+                "verificationFamily": verification_family,
+                "dominantToolChain": dominant_tools,
+                "sourceComponent": source_component,
+            },
+        }
+        scope = self._scope_for_engineering_proof(proof_entry)
+        session_id = str(proof_entry.get("sessionId") or proof_entry.get("session_id") or "").strip() or None
+        run_id = str(proof_entry.get("runId") or proof_entry.get("run_id") or "").strip() or None
+        episode = self.normalize_episode_payload(
+            payload,
+            session_id=session_id,
+            run_id=run_id,
+            scope=scope,
+            extraction_source="engineering_proof_ledger",
+        )
+        record = self.add_episode(episode)
+        self._emit_engineering_workflow_events(record=record, proof_entry=proof_entry, source_component=source_component)
+        return {
+            "status": "extracted",
+            "proofEntryId": proof_entry.get("id"),
+            "episode": record.get("episode"),
+            "candidate": record.get("candidate"),
+        }
+
+    def _scope_for_engineering_proof(self, proof_entry: Dict[str, Any]) -> str:
+        session_id = str(proof_entry.get("sessionId") or proof_entry.get("session_id") or "").strip()
+        if session_id:
+            try:
+                binding = db.get_session_scope_binding(session_id) or {}
+                resolved = str(binding.get("resolved_scope") or "").strip()
+                if resolved:
+                    return resolved
+            except Exception:
+                pass
+        metadata = proof_entry.get("metadata") if isinstance(proof_entry.get("metadata"), dict) else {}
+        project_id = str(metadata.get("projectId") or metadata.get("project_id") or "").strip()
+        if project_id:
+            safe = project_id.replace(":", "_").replace("/", "_").replace("\\", "_")
+            return f"project:{safe}"
+        return "workspace:main"
+
+    def _engineering_file_family(self, paths: Iterable[Any]) -> str:
+        extensions: set[str] = set()
+        buckets: set[str] = set()
+        for raw in paths:
+            text = str(raw or "").replace("\\", "/").strip()
+            if not text:
+                continue
+            name = text.rsplit("/", 1)[-1]
+            if "." in name:
+                suffix = "." + name.rsplit(".", 1)[-1].lower()
+                if 1 < len(suffix) <= 10:
+                    extensions.add(suffix)
+            lowered = text.lower()
+            for marker, bucket in (
+                ("apps/v8-agent-os-engine", "engine"),
+                ("apps/v8-agent-os-admin", "admin"),
+                ("apps/v8-agent-os-phone", "phone"),
+                ("apps/v8-agent-os-web", "web"),
+                ("packages/", "shared_package"),
+                ("tests/", "tests"),
+                ("docs/", "docs"),
+            ):
+                if marker in lowered:
+                    buckets.add(bucket)
+        parts = [*sorted(buckets)[:4], *sorted(extensions)[:4]]
+        return " ".join(parts) or "repo_files"
+
+    def _engineering_verification_family(self, *, commands: List[Dict[str, Any]], diagnostics: List[Dict[str, Any]], verification_status: str) -> str:
+        families: set[str] = set()
+        for command in commands:
+            text = str(command.get("command") or command.get("summary") or "").lower()
+            if "pytest" in text or "py_compile" in text:
+                families.add("python_validation")
+            if "typecheck" in text or "tsc" in text:
+                families.add("typescript_typecheck")
+            if "npm run build" in text or "pnpm build" in text or "yarn build" in text:
+                families.add("frontend_build")
+            if "test" in text or "vitest" in text:
+                families.add("test_suite")
+        if not families and diagnostics:
+            families.add("diagnostics_review")
+        if not families:
+            families.add(str(verification_status or "proof_review"))
+        return " ".join(sorted(families)[:4])
+
+    def _engineering_dominant_tool_chain(self, *, commands: List[Dict[str, Any]]) -> List[str]:
+        tools: List[str] = []
+        for command in commands:
+            tool = str(command.get("tool") or "").strip()
+            if tool:
+                tools.append(tool)
+            command_text = str(command.get("command") or "").strip().lower()
+            if "pytest" in command_text:
+                tools.append("pytest")
+            elif "py_compile" in command_text:
+                tools.append("py_compile")
+            elif "typecheck" in command_text or "tsc" in command_text:
+                tools.append("typecheck")
+            elif "build" in command_text:
+                tools.append("build")
+        return _uniq(tools, limit=8)
+
+    def _engineering_behavior_scope(self, *, proof_entry: Dict[str, Any], file_family: str) -> str:
+        text = f"{proof_entry.get('patchIntent') or ''} {file_family}".lower()
+        if any(token in text for token in ("review", "审查", "audit")):
+            return "code_review"
+        if any(token in text for token in ("test", "验证", "typecheck", "build")):
+            return "verification"
+        if any(token in text for token in ("doc", "docs", "文档")):
+            return "docs_update"
+        if any(token in text for token in ("fix", "修复", "bug", "error", "报错")):
+            return "bug_fix"
+        if any(token in text for token in ("refactor", "重构", "architecture", "架构")):
+            return "refactor"
+        return "implementation"
+
+    def _engineering_task_signature(
+        self,
+        *,
+        task_family: str,
+        file_family: str,
+        verification_family: str,
+        dominant_tools: List[str],
+        behavior_scope: str,
+        scope: str,
+    ) -> str:
+        canonical = " ".join([task_family, file_family, verification_family, " ".join(dominant_tools), behavior_scope, scope])
+        return _signature_for("engineering workflow", [canonical], behavior_scope)
+
+    def _engineering_triggers(
+        self,
+        *,
+        behavior_scope: str,
+        file_family: str,
+        verification_family: str,
+        dominant_tools: List[str],
+    ) -> List[str]:
+        return _uniq(
+            [
+                "engineering mode",
+                "工程任务",
+                behavior_scope,
+                file_family,
+                verification_family,
+                *dominant_tools,
+            ],
+            limit=16,
+        )
+
+    def _engineering_ordered_actions(self, *, commands: List[Dict[str, Any]], verification_status: str) -> List[str]:
+        actions = ["inspect engineering context and write-set"]
+        if commands:
+            actions.append("execute or observe engineering command evidence")
+        if verification_status == "verified":
+            actions.append("record verified proof ledger outcome")
+        elif verification_status == "failed_verification":
+            actions.append("record failed verification as anti-pattern")
+        else:
+            actions.append("record unverified proof and residual risks")
+        return actions
+
+    def _engineering_golden_path(self, *, verification_status: str, behavior_scope: str, verification_family: str, workset_risk: str) -> List[str]:
+        if verification_status != "verified":
+            return []
+        steps = [
+            "先读取 Engineering ContextPack / planner contract，确认 read-set、write-set 和任务边界。",
+            "只在授权 writeSet 内做最小必要修改；如果需要越界，先让 supervisor 重新确认或记录 override。",
+            f"完成改动后运行与任务匹配的验证链：{verification_family or 'targeted validation'}。",
+            "把 changed files、验证命令、diagnostics、residual risks 写入 Proof Ledger；没有验证证据不得标记 verified。",
+        ]
+        if behavior_scope in {"code_review", "verification", "docs_update"}:
+            steps[1] = "默认保持只读纪律；除非 task brief 明确授权写入，否则不要修改生产代码。"
+        if workset_risk in {"outside_write_set", "missing_write_set", "unknown_write_set"}:
+            steps.insert(2, "若 Proof/Observation 显示 write-set 风险，先修正 task capsule 或记录人工批准原因。")
+        return steps
+
+    def _engineering_anti_patterns(self, *, verification_status: str, failure_markers: List[str], workset_risk: str) -> List[str]:
+        anti = list(failure_markers[:6])
+        if verification_status == "failed_verification":
+            anti.append("不要把失败验证后的聊天总结当成工程完成证据。")
+        if verification_status == "unverified":
+            anti.append("不要在未观察到验证命令时把工程链路升级为 active hint。")
+        if workset_risk in {"outside_write_set", "missing_write_set", "unknown_write_set"}:
+            anti.append("不要把越界写入或缺失 writeSet 的流程沉淀为默认 golden path。")
+        return _uniq(anti, limit=10)
+
+    def _engineering_verification_steps(self, *, verification_family: str, commands: List[Dict[str, Any]]) -> List[str]:
+        validation_labels: List[str] = []
+        for cmd in commands:
+            if not cmd.get("isValidation"):
+                continue
+            text = str(cmd.get("command") or cmd.get("summary") or "").lower()
+            if "pytest" in text or "py_compile" in text:
+                validation_labels.append("复用同类 Python validation，优先选择最窄测试/编译检查。")
+            elif "typecheck" in text or "tsc" in text:
+                validation_labels.append("复用同类 TypeScript typecheck，先跑与改动面匹配的检查。")
+            elif "npm run build" in text or "pnpm build" in text or "yarn build" in text or "build" in text:
+                validation_labels.append("复用同类 frontend build，确认产物构建与类型约束通过。")
+            elif "test" in text or "vitest" in text:
+                validation_labels.append("复用同类 test suite，优先选择覆盖改动面的测试。")
+        if validation_labels:
+            return _uniq(validation_labels, limit=6)
+        return [
+            f"选择与 {verification_family or 'current task'} 匹配的最窄验证命令。",
+            "Proof Ledger 中必须能看到验证结果或明确的未验证风险。",
+        ]
+
+    def _emit_engineering_workflow_events(self, *, record: Dict[str, Any], proof_entry: Dict[str, Any], source_component: str) -> None:
+        try:
+            session_id = str(proof_entry.get("sessionId") or proof_entry.get("session_id") or "").strip()
+            run_id = str(proof_entry.get("runId") or proof_entry.get("run_id") or "").strip()
+            if not session_id:
+                return
+            episode = record.get("episode") if isinstance(record.get("episode"), dict) else {}
+            candidate = record.get("candidate") if isinstance(record.get("candidate"), dict) else {}
+            for topic, payload in (
+                (
+                    "memory.workflow.episode_extracted",
+                    {
+                        "session_id": session_id,
+                        "episode_id": episode.get("id"),
+                        "candidate_id": candidate.get("id"),
+                        "task_family": episode.get("task_family"),
+                        "status": episode.get("status"),
+                        "candidate_status": candidate.get("status"),
+                        "extraction_source": "engineering_proof_ledger",
+                        "risk_tier": candidate.get("riskTier") or candidate.get("risk_tier"),
+                        "workflowClass": "engineering",
+                        "sourceRuntime": "engineering_lane",
+                        "proofEntryId": proof_entry.get("id"),
+                        "verificationStatus": proof_entry.get("verificationStatus"),
+                    },
+                ),
+                (
+                    "memory.workflow.candidate_updated",
+                    {
+                        "candidate_id": candidate.get("id"),
+                        "task_family": candidate.get("task_family"),
+                        "status": candidate.get("status"),
+                        "success_count": candidate.get("success_count"),
+                        "correction_count": candidate.get("correction_count"),
+                        "negative_feedback_count": candidate.get("negative_feedback_count"),
+                        "workflowClass": "engineering",
+                        "sourceRuntime": "engineering_lane",
+                        "proofEntryId": proof_entry.get("id"),
+                        "verificationStatus": proof_entry.get("verificationStatus"),
+                    },
+                ),
+            ):
+                db.add_runtime_event({
+                    "event_id": str(uuid.uuid4()),
+                    "session_id": session_id,
+                    "run_id": run_id or None,
+                    "seq": db.get_next_runtime_seq(session_id),
+                    "kind": "event",
+                    "topic": topic,
+                    "ts": utc_now_iso(),
+                    "source": {
+                        "plane": "engine",
+                        "component": "memory.workflow",
+                        "node": source_component,
+                        "agent_id": None,
+                    },
+                    "payload": payload,
+                })
+        except Exception:
+            return
 
     def ensure_default_workflow_candidates(self) -> Dict[str, Any]:
         """Ensure V8's built-in workflow memories exist as normal candidates.
@@ -891,6 +1369,16 @@ class WorkflowMemoryService:
             correction_count = int((existing or {}).get("correction_count") or 0) + correction_delta
             negative_count = int((existing or {}).get("negative_feedback_count") or 0) + negative_delta
             risk_tier = str(episode_meta.get("riskTier") or (existing or {}).get("riskTier") or (existing or {}).get("risk_tier") or "low")
+            workflow_class = str(episode.get("workflow_class") or episode_meta.get("workflowClass") or (existing or {}).get("workflowClass") or "general").strip() or "general"
+            source_runtime = str(episode.get("source_runtime") or episode_meta.get("sourceRuntime") or (existing or {}).get("sourceRuntime") or "").strip() or None
+            proof_refs = _as_list(episode.get("proof_refs") or episode_meta.get("proofRefs"))
+            proof_entry_ids = _uniq((existing or {}).get("proofEntryIds", []) + proof_refs, limit=100)
+            verification_status = str(episode_meta.get("lastVerificationStatus") or (existing or {}).get("lastVerificationStatus") or "").strip()
+            verification_backed = bool(episode.get("verification_backed") or episode_meta.get("verificationBacked") or (existing or {}).get("verificationBacked"))
+            proof_backed = bool(proof_entry_ids or (existing or {}).get("proofBacked"))
+            workset_risk = str(episode.get("workset_risk") or episode_meta.get("worksetRisk") or (existing or {}).get("worksetRisk") or "").strip()
+            outside_write_set_count = int((existing or {}).get("outsideWriteSetCount") or 0) + int(episode_meta.get("outsideWriteSetCount") or 0)
+            manual_override_count = int((existing or {}).get("manualOverrideCount") or 0) + int(episode_meta.get("manualOverrideCount") or 0)
             activation_allowed, approval_required, activation_reason = _activation_allowed_for_candidate(
                 risk_tier=risk_tier,
                 current=status,
@@ -903,6 +1391,26 @@ class WorkflowMemoryService:
                 risk_tier=risk_tier,
                 has_runtime_evidence=has_runtime_evidence or bool((existing or {}).get("metadata", {}).get("hasRuntimeEvidence")),
             )
+            if workflow_class == "engineering":
+                engineering_cfg = workflow_memory_config().get("engineering") if isinstance(workflow_memory_config().get("engineering"), dict) else {}
+                min_verified = int(engineering_cfg.get("minVerifiedSuccessCount") or 2)
+                risky_workset = workset_risk in {"outside_write_set", "missing_write_set", "unknown_write_set"} or outside_write_set_count > 0 or manual_override_count > 0
+                if verification_status == "failed_verification":
+                    status = "candidate" if status != "quarantine" else status
+                    activation_allowed = False
+                    activation_reason = "failed_verification_never_auto_active"
+                elif engineering_cfg.get("requireVerifiedProofForActivation", True) and not verification_backed:
+                    status = "candidate" if status != "quarantine" else status
+                    activation_allowed = False
+                    activation_reason = "requires_verified_engineering_proof"
+                elif success_count < min_verified and status == "active_hint":
+                    status = "candidate"
+                    activation_reason = "below_min_verified_success_count"
+                if risky_workset and status == "active_hint":
+                    status = "candidate"
+                    activation_allowed = False
+                    approval_required = True
+                    activation_reason = "engineering_workset_risk_requires_approval"
             maturity_score = min(1.0, (success_count / max(1, int(workflow_memory_config().get("minSuccessCount") or 2))) * 0.7 + correction_count * 0.1 - negative_count * 0.4)
             confidence = max(float((existing or {}).get("confidence") or 0.0), float(episode.get("confidence") or 0.5))
             candidate_id = (existing or {}).get("id") or f"mw_cand_{uuid.uuid4().hex}"
@@ -917,6 +1425,15 @@ class WorkflowMemoryService:
                     "approvalRequired": approval_required,
                     "hasRuntimeEvidence": bool(has_runtime_evidence or metadata.get("hasRuntimeEvidence")),
                     "latestRuntimeEvidence": episode_meta.get("runtimeEvidence") or [],
+                    "workflowClass": workflow_class,
+                    "sourceRuntime": source_runtime,
+                    "proofBacked": proof_backed,
+                    "verificationBacked": verification_backed,
+                    "lastVerificationStatus": verification_status,
+                    "worksetRisk": workset_risk,
+                    "outsideWriteSetCount": outside_write_set_count,
+                    "manualOverrideCount": manual_override_count,
+                    "proofEntryIds": proof_entry_ids,
                 }
             )
             conn.execute(
@@ -926,9 +1443,11 @@ class WorkflowMemoryService:
                  first_action_triggers_json, golden_path_steps_json, anti_patterns_json,
                  verification_steps_json, success_count, correction_count, negative_feedback_count,
                  maturity_score, status, confidence, source_episode_ids_json, risk_tier, approval_required,
-                 last_hint_outcome, guide_state_json, merge_suggestion_json, last_seen_at,
+                 last_hint_outcome, guide_state_json, merge_suggestion_json, workflow_class, source_runtime,
+                 proof_backed, verification_backed, last_verification_status, workset_risk,
+                 outside_write_set_count, manual_override_count, proof_entry_ids_json, last_seen_at,
                  metadata_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_family_signature) DO UPDATE SET
                     task_family = excluded.task_family,
                     scope = excluded.scope,
@@ -949,6 +1468,15 @@ class WorkflowMemoryService:
                     last_hint_outcome = excluded.last_hint_outcome,
                     guide_state_json = excluded.guide_state_json,
                     merge_suggestion_json = excluded.merge_suggestion_json,
+                    workflow_class = excluded.workflow_class,
+                    source_runtime = excluded.source_runtime,
+                    proof_backed = excluded.proof_backed,
+                    verification_backed = excluded.verification_backed,
+                    last_verification_status = excluded.last_verification_status,
+                    workset_risk = excluded.workset_risk,
+                    outside_write_set_count = excluded.outside_write_set_count,
+                    manual_override_count = excluded.manual_override_count,
+                    proof_entry_ids_json = excluded.proof_entry_ids_json,
                     last_seen_at = excluded.last_seen_at,
                     metadata_json = excluded.metadata_json,
                     updated_at = excluded.updated_at
@@ -975,6 +1503,15 @@ class WorkflowMemoryService:
                     (existing or {}).get("last_hint_outcome"),
                     _json_dump((existing or {}).get("guideState") or (existing or {}).get("guide_state") or {}),
                     _json_dump((existing or {}).get("mergeSuggestion") or {}),
+                    workflow_class,
+                    source_runtime,
+                    1 if proof_backed else 0,
+                    1 if verification_backed else 0,
+                    verification_status,
+                    workset_risk,
+                    outside_write_set_count,
+                    manual_override_count,
+                    _json_dump(proof_entry_ids),
                     now,
                     _json_dump(metadata),
                     (existing or {}).get("created_at") or now,
@@ -984,12 +1521,34 @@ class WorkflowMemoryService:
             conn.commit()
         return self.get_candidate(candidate_id) or {}
 
-    def list_candidates(self, *, status: Optional[str] = None, query: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_candidates(
+        self,
+        *,
+        status: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 50,
+        workflow_class: Optional[str] = None,
+        proof_backed: Optional[bool] = None,
+        verification_status: Optional[str] = None,
+        source_runtime: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM memory_workflow_candidates WHERE 1=1"
         params: List[Any] = []
         if status:
             sql += " AND status = ?"
             params.append(status)
+        if workflow_class:
+            sql += " AND workflow_class = ?"
+            params.append(workflow_class)
+        if proof_backed is not None:
+            sql += " AND proof_backed = ?"
+            params.append(1 if proof_backed else 0)
+        if verification_status:
+            sql += " AND last_verification_status = ?"
+            params.append(verification_status)
+        if source_runtime:
+            sql += " AND source_runtime = ?"
+            params.append(source_runtime)
         sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(max(1, min(int(limit or 50), 200)))
         with db.get_connection() as conn:
@@ -1354,6 +1913,21 @@ class WorkflowMemoryService:
             "plannerTaskRef": planner_task_ref or None,
         }
 
+    def _engineering_active_from_runtime_events(self, events: Optional[List[Dict[str, Any]]] = None) -> bool:
+        for event in reversed(list(events or [])):
+            topic = str(event.get("topic") or "").strip().lower()
+            source = event.get("source") if isinstance(event.get("source"), dict) else {}
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            runtime_id = str(event.get("runtime_id") or source.get("runtimeId") or payload.get("runtimeId") or "").strip().lower()
+            if runtime_id == "engineering_lane" or topic.startswith("engineering."):
+                if topic == "engineering_lane.trigger.decided":
+                    trigger = payload.get("triggerDecision") if isinstance(payload.get("triggerDecision"), dict) else {}
+                    if bool(trigger.get("active")) or str(payload.get("engineeringMode") or "").strip().lower() == "force":
+                        return True
+                if topic in {"engineering.proof.collected", "engineering.plan.projected"}:
+                    return True
+        return False
+
     def _infer_step_index_from_runtime_events(
         self,
         *,
@@ -1508,7 +2082,14 @@ class WorkflowMemoryService:
             ],
         }
 
-    def match_hints(self, *, query: str, scope_chain: Optional[List[str]] = None, limit: int = 2) -> List[Dict[str, Any]]:
+    def match_hints(
+        self,
+        *,
+        query: str,
+        scope_chain: Optional[List[str]] = None,
+        limit: int = 2,
+        engineering_active: bool = False,
+    ) -> List[Dict[str, Any]]:
         cfg = workflow_memory_config()
         if not cfg.get("enabled") or not cfg.get("hintInjectionEnabled"):
             return []
@@ -1519,6 +2100,10 @@ class WorkflowMemoryService:
         candidates = self.list_candidates(limit=120)
         scored: List[tuple[float, Dict[str, Any]]] = []
         for item in candidates:
+            workflow_class = str(item.get("workflowClass") or item.get("workflow_class") or "general").strip() or "general"
+            engineering_cfg = cfg.get("engineering") if isinstance(cfg.get("engineering"), dict) else {}
+            if workflow_class == "engineering" and bool(engineering_cfg.get("requireEngineeringModeForInjection", True)) and not engineering_active:
+                continue
             if str(item.get("status") or "") not in ACTIVE_WORKFLOW_STATUSES:
                 continue
             scope = str(item.get("scope") or "global")
@@ -1558,6 +2143,8 @@ class WorkflowMemoryService:
                 # user-approved candidates with the same anchors should be
                 # allowed to outrank them.
                 score -= 0.6
+            if engineering_active and workflow_class == "engineering":
+                score += 1.2
             enriched = dict(item)
             enriched["_workflowHintDiagnostics"] = {
                 "score": round(score, 4),
@@ -1588,10 +2175,13 @@ class WorkflowMemoryService:
             # outrank broad system-seeded baseline memories before we enforce
             # the per-run active guide cap.
             match_limit = max(match_limit, int(cfg.get("maxInjectedHints") or 2))
+        recent_events_for_context = self._recent_runtime_events(session_id=session_id, run_id=run_id)
+        engineering_active = self._engineering_active_from_runtime_events(recent_events_for_context)
         hints = self.match_hints(
             query=query,
             scope_chain=scope_chain,
             limit=match_limit,
+            engineering_active=engineering_active,
         )
         if not hints:
             return ""
@@ -1628,7 +2218,7 @@ class WorkflowMemoryService:
             golden = item.get("goldenPathSteps") or []
             anti = item.get("antiPatterns") or []
             verify = item.get("verificationSteps") or []
-            recent_events = self._recent_runtime_events(session_id=session_id, run_id=run_id)
+            recent_events = recent_events_for_context
             planner_context = self._planner_context_from_runtime_events(
                 session_id=session_id,
                 run_id=run_id,

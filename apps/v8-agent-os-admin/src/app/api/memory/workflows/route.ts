@@ -10,7 +10,7 @@ export async function GET(req: Request) {
     try {
         const { searchParams } = new URL(req.url);
         const params = new URLSearchParams();
-        for (const key of ["status", "q", "limit"]) {
+        for (const key of ["status", "q", "limit", "class", "proofBacked", "verificationStatus", "sourceRuntime"]) {
             const value = searchParams.get(key);
             if (value) params.set(key, value);
         }

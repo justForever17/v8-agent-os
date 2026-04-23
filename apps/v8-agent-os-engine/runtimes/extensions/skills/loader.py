@@ -23,7 +23,7 @@ from runtimes.memory.project_registry import project_registry_service
 
 
 _PROFILE_LLM_TIMEOUT_SECONDS = 6.0
-_SKILLS_CACHE_SCHEMA_VERSION = 9
+_SKILLS_CACHE_SCHEMA_VERSION = 10
 _PRIMARY_ARTIFACT_LIMIT = 2
 _PRIMARY_OPERATION_LIMIT = 3
 _SECONDARY_HINT_LIMIT = 4
@@ -1898,6 +1898,39 @@ class SkillLoader:
         )
 
     @classmethod
+    def _registered_project_workspace_root_descriptors(cls) -> list[dict[str, Any]]:
+        descriptors: list[dict[str, Any]] = []
+        main_workspace_path = cls._normalize_path(workspace_resolution_service.get_main_workspace_path())
+        try:
+            projects = list(project_registry_service.list_projects() or [])
+        except Exception:
+            return descriptors
+        for project in projects:
+            workspace_path = cls._normalize_path(getattr(project, "workspace_path", None))
+            if not workspace_path or workspace_path == main_workspace_path:
+                continue
+            descriptors.append(
+                cls._build_root_descriptor(
+                    root_path=Path(workspace_path) / ".agents" / "skills",
+                    source_type="scoped_workspace",
+                    visibility="scoped",
+                    workspace_path=workspace_path,
+                    workspace_id=str(getattr(project, "workspace_id", "") or "").strip() or None,
+                    project_id=str(getattr(project, "project_id", "") or "").strip() or None,
+                )
+            )
+        return cls._dedupe_root_descriptors(descriptors)
+
+    @classmethod
+    def _discovery_root_descriptors(cls) -> list[dict[str, Any]]:
+        descriptors: list[dict[str, Any]] = [cls._global_root_descriptor()]
+        main_descriptor = cls._main_workspace_root_descriptor()
+        if main_descriptor is not None:
+            descriptors.append(main_descriptor)
+        descriptors.extend(cls._registered_project_workspace_root_descriptors())
+        return cls._dedupe_root_descriptors(descriptors)
+
+    @classmethod
     def _scoped_workspace_root_descriptor(
         cls,
         *,
@@ -1968,6 +2001,9 @@ class SkillLoader:
         registry: dict[str, dict],
         descriptors: list[dict[str, Any]],
         fingerprint: str,
+        discovery_revision: str | None = None,
+        changed_roots: list[str] | None = None,
+        scoped_refresh_mode: str | None = None,
     ) -> dict[str, Any]:
         items = sorted(
             list(registry.values()),
@@ -1983,7 +2019,11 @@ class SkillLoader:
             "rootDescriptors": list(descriptors),
             "roots": [str(item.get("rootPath") or "") for item in descriptors],
             "fingerprint": fingerprint,
-            "revision": cls._skills_revision or fingerprint,
+            "revision": fingerprint,
+            "discoveryRevision": str(discovery_revision or cls._skills_revision or fingerprint).strip(),
+            "visibleRootSignature": cls._root_descriptors_signature(descriptors),
+            "changedRoots": list(changed_roots or []),
+            "scopedRefreshMode": str(scoped_refresh_mode or "").strip() or None,
             "recentSkillDiscovery": [
                 {key: value for key, value in item.items() if key != "_observedTs"}
                 for item in cls._recent_skill_discovery
@@ -2151,7 +2191,7 @@ class SkillLoader:
         if not force:
             cls.reload_if_changed()
             return
-        descriptors = cls._resolve_root_descriptors(include_scoped=False)
+        descriptors = cls._discovery_root_descriptors()
         manifest = cls._compute_manifest(descriptors)
         fingerprint = cls._manifest_fingerprint(descriptors, manifest)
         cls.reload_skills(root_descriptors=descriptors, fingerprint=fingerprint)
@@ -2169,7 +2209,7 @@ class SkillLoader:
         descriptors = root_descriptors or [
             cls._build_root_descriptor(root_path=root, source_type="global", visibility="global")
             for root in list(skill_roots or [])
-        ] or cls._resolve_root_descriptors(include_scoped=False)
+        ] or cls._discovery_root_descriptors()
         descriptors = cls._dedupe_root_descriptors(descriptors)
         manifest = cls._compute_manifest(descriptors)
         registry = cls._scan_root_descriptors(descriptors)
@@ -2220,14 +2260,21 @@ class SkillLoader:
             if not cls._skills_registry:
                 cls.ensure_fresh()
 
-        base_descriptors = cls._skills_root_descriptors or cls._resolve_root_descriptors(include_scoped=False)
+        base_descriptors = cls._skills_root_descriptors or cls._discovery_root_descriptors()
         base_registry = dict(cls._skills_registry)
-        base_fingerprint = cls._skills_fingerprint or cls._compute_fingerprint(base_descriptors)
+        default_visible_descriptors = cls._resolve_root_descriptors(include_scoped=False)
+        default_visible_registry = {
+            skill_id: item
+            for skill_id, item in base_registry.items()
+            if any(cls._entry_belongs_to_root_descriptor(item, descriptor) for descriptor in default_visible_descriptors)
+        }
+        default_visible_fingerprint = cls._compute_fingerprint(default_visible_descriptors)
         if not include_scoped:
             return cls._inventory_snapshot(
-                registry=base_registry,
-                descriptors=base_descriptors,
-                fingerprint=base_fingerprint,
+                registry=default_visible_registry,
+                descriptors=default_visible_descriptors,
+                fingerprint=default_visible_fingerprint,
+                discovery_revision=cls._skills_revision or cls._skills_fingerprint,
             )
 
         visible_descriptors = cls._resolve_root_descriptors(
@@ -2253,6 +2300,7 @@ class SkillLoader:
                 registry=visible_base_registry,
                 descriptors=visible_descriptors,
                 fingerprint=visible_fingerprint,
+                discovery_revision=cls._skills_revision or cls._skills_fingerprint,
             )
         scoped_registry = cls._scan_root_descriptors(scoped_descriptors)
         merged_registry = dict(visible_base_registry)
@@ -2261,6 +2309,9 @@ class SkillLoader:
             registry=merged_registry,
             descriptors=visible_descriptors,
             fingerprint=visible_fingerprint,
+            discovery_revision=cls._skills_revision or cls._skills_fingerprint,
+            changed_roots=[str(item.get("rootPath") or "") for item in scoped_descriptors],
+            scoped_refresh_mode="live_overlay",
         )
 
     @classmethod
@@ -2312,7 +2363,7 @@ class SkillLoader:
     @classmethod
     def reload_if_changed(cls) -> dict[str, Any]:
         started_at = time.perf_counter()
-        descriptors = cls._resolve_root_descriptors(include_scoped=False)
+        descriptors = cls._discovery_root_descriptors()
         descriptors = cls._dedupe_root_descriptors(descriptors)
         manifest = cls._compute_manifest(descriptors)
         fingerprint = cls._manifest_fingerprint(descriptors, manifest)
@@ -2467,7 +2518,7 @@ class SkillLoader:
         descriptors = root_descriptors or [
             cls._build_root_descriptor(root_path=root, source_type="global", visibility="global")
             for root in list(skill_roots or [])
-        ] or cls._resolve_root_descriptors(include_scoped=False)
+        ] or cls._discovery_root_descriptors()
         cls.discover_skills(root_descriptors=descriptors, fingerprint=fingerprint)
         cls._persist_cache()
         cls._startup_state = "ready"
@@ -2524,7 +2575,7 @@ class SkillLoader:
 
     @classmethod
     def get_startup_status(cls) -> dict[str, object]:
-        descriptors = cls._skills_root_descriptors or cls._resolve_root_descriptors(include_scoped=False)
+        descriptors = cls._skills_root_descriptors or cls._discovery_root_descriptors()
         roots = [str(item.get("rootPath") or "") for item in descriptors]
         return {
             "startupState": cls._startup_state,

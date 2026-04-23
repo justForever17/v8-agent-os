@@ -1963,12 +1963,17 @@ class ExtensionsRuntimeService:
             or skill_status.get("fingerprint")
             or "skills:cold"
         )
+        visible_root_signature = str(
+            (skill_inventory or {}).get("visibleRootSignature")
+            or skill_status.get("rootSignature")
+            or "roots:cold"
+        )
         mcp_revision = str(
             mcp_status.get("inventoryRevision")
             or getattr(mcp_manager, "get_inventory_revision", lambda: "mcp:cold")()
             or "mcp:cold"
         )
-        return f"skills:{skill_revision}|mcp:{mcp_revision}"
+        return f"skills:{skill_revision}|roots:{visible_root_signature}|mcp:{mcp_revision}"
 
     def _ensure_inventory_freshness_guard(self, *, reason: str = "route") -> None:
         if self._startup_state == "cold" and self._cached_catalog is None:
@@ -2563,8 +2568,22 @@ class ExtensionsRuntimeService:
         self._last_refresh_error = None
         return True
 
-    def _build_catalog_live(self) -> dict[str, Any]:
-        skill_inventory = self._resolve_skill_inventory(force_refresh=False, include_scoped=False)
+    def _build_catalog_live(
+        self,
+        *,
+        workspace_path: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        scoped_catalog = bool(workspace_path or workspace_id or project_id)
+        skill_inventory = self._resolve_skill_inventory(
+            force_refresh=False,
+            include_scoped=scoped_catalog,
+            explicit_workspace_path=workspace_path,
+            explicit_workspace_id=workspace_id,
+            explicit_project_id=project_id,
+            runtime_kind="extensions_catalog" if scoped_catalog else None,
+        )
         skills = list(skill_inventory.get("items") or [])
         skills_sorted = sorted(skills, key=lambda item: str(item.get("name") or "").lower())
         mcp_status = self.get_mcp_status()
@@ -2604,6 +2623,11 @@ class ExtensionsRuntimeService:
         roots = [str(item.get("rootPath") or "") for item in root_descriptors]
         skills_fingerprint = str(skills_state.get("fingerprint") or "").strip()
         skills_revision = str(skill_inventory.get("revision") or skills_state.get("revision") or skills_fingerprint).strip()
+        visible_root_signature = str(
+            skill_inventory.get("visibleRootSignature")
+            or skills_state.get("rootSignature")
+            or ""
+        ).strip()
         recent_skill_discovery = list(skill_inventory.get("recentSkillDiscovery") or skills_state.get("recentSkillDiscovery") or [])
         changed_at = str(
             ((self._last_skill_inventory_change or {}).get("changedAt"))
@@ -2613,9 +2637,16 @@ class ExtensionsRuntimeService:
         return {
             "fingerprint": skills_fingerprint,
             "revision": skills_revision,
+            "visibleRootSignature": visible_root_signature,
             "changedAt": changed_at,
             "lastSkillInventoryChange": self._last_skill_inventory_change,
             "lastMcpInventoryChange": self._last_mcp_inventory_change,
+            "catalogScope": {
+                "mode": "project_workspace" if project_id else ("workspace" if workspace_path or workspace_id else "default_workspace"),
+                "workspacePath": str(workspace_path or "").strip(),
+                "workspaceId": str(workspace_id or "").strip(),
+                "projectId": str(project_id or "").strip(),
+            },
             "summary": {
                 "skillCount": len(skills_sorted),
                 "blockedSkillCount": len(self._recent_blocked_skill_records()),
@@ -2631,6 +2662,10 @@ class ExtensionsRuntimeService:
                 "rootDescriptors": root_descriptors,
                 "fingerprint": skills_fingerprint,
                 "revision": skills_revision,
+                "visibleRootSignature": visible_root_signature,
+                "discoveryRevision": str(skill_inventory.get("discoveryRevision") or skills_revision).strip(),
+                "changedRoots": list(skill_inventory.get("changedRoots") or []),
+                "scopedRefreshMode": skill_inventory.get("scopedRefreshMode"),
                 "recentSkillDiscovery": recent_skill_discovery,
                 "changedAt": changed_at,
                 "items": [
@@ -2980,8 +3015,23 @@ class ExtensionsRuntimeService:
             "mcp": _stage_policy(mcp_policy, default_top=20, default_llm_top=2),
         }
 
-    def build_catalog(self) -> dict[str, Any]:
-        payload = dict(self._cached_catalog or self._build_catalog_live())
+    def build_catalog(
+        self,
+        *,
+        workspace_path: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        scoped_catalog = bool(workspace_path or workspace_id or project_id)
+        payload = dict(
+            self._build_catalog_live(
+                workspace_path=workspace_path,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            )
+            if scoped_catalog
+            else (self._cached_catalog or self._build_catalog_live())
+        )
         return self._decorate_catalog(payload)
 
     def build_health(self) -> dict[str, Any]:
@@ -3050,6 +3100,9 @@ class ExtensionsRuntimeService:
                 "skillsRoutingMode": candidate_summary.get("skillsRoutingMode"),
                 "mcpRoutingMode": candidate_summary.get("mcpRoutingMode"),
                 "skillInventoryRevision": candidate_summary.get("skillInventoryRevision"),
+                "visibleRootSignature": candidate_summary.get("visibleRootSignature"),
+                "changedRoots": candidate_summary.get("changedRoots") or [],
+                "scopedRefreshMode": candidate_summary.get("scopedRefreshMode"),
                 "mcpInventoryRevision": candidate_summary.get("mcpInventoryRevision"),
                 "skillRefreshMode": candidate_summary.get("skillRefreshMode"),
                 "mcpRefreshMode": candidate_summary.get("mcpRefreshMode"),
@@ -3904,6 +3957,9 @@ class ExtensionsRuntimeService:
             candidate_summary={
                 "mode": prefilter_mode,
                 "skillInventoryRevision": skill_inventory_revision,
+                "visibleRootSignature": skill_inventory.get("visibleRootSignature") or skill_inventory_revision,
+                "changedRoots": list(skill_inventory.get("changedRoots") or []),
+                "scopedRefreshMode": skill_inventory.get("scopedRefreshMode"),
                 "mcpInventoryRevision": str(mcp_status.get("inventoryRevision") or getattr(mcp_manager, "get_inventory_revision", lambda: "")() or ""),
                 "skillRefreshMode": str(skill_last_reload.get("refreshMode") or ""),
                 "mcpRefreshMode": str(mcp_last_reload.get("refreshMode") or ""),
@@ -4194,6 +4250,9 @@ class ExtensionsRuntimeService:
                     "skillsRoutingMode": route_bundle.candidate_summary.get("skillsRoutingMode"),
                     "mcpRoutingMode": route_bundle.candidate_summary.get("mcpRoutingMode"),
                     "skillInventoryRevision": route_bundle.candidate_summary.get("skillInventoryRevision"),
+                    "visibleRootSignature": route_bundle.candidate_summary.get("visibleRootSignature"),
+                    "changedRoots": route_bundle.candidate_summary.get("changedRoots") or [],
+                    "scopedRefreshMode": route_bundle.candidate_summary.get("scopedRefreshMode"),
                     "mcpInventoryRevision": route_bundle.candidate_summary.get("mcpInventoryRevision"),
                     "skillRefreshMode": route_bundle.candidate_summary.get("skillRefreshMode"),
                     "mcpRefreshMode": route_bundle.candidate_summary.get("mcpRefreshMode"),

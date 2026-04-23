@@ -1,7 +1,9 @@
 # V8OS Engineering Lane / Code Runtime 深化蓝图
 
 > 目标：让 V8OS 在大项目编码上吸收 Claude Code / IDE 的工程闭环原语，但不做拙劣复制。  
-> 路线：**Hybrid Overlay**。第一阶段不另起完整 runtime，而是在现有 `planner_lane + delegation_broker + subagent_swarm + memory workflow` 之上叠加工程专用 profile、上下文胶囊、证明账本和写集治理；接口按未来可独立 `engineering_lane` 预留。
+> 路线：**Hybrid Overlay**。第一阶段不另起完整执行型 runtime，而是在现有 `planner_lane + delegation_broker + subagent_swarm + memory workflow` 之上叠加工程专用 profile、上下文胶囊、证明账本和写集治理；当前已经具备独立 `engineering_lane` runtime 卡片作为工程治理投影面，但它仍不是独立执行 runtime。
+
+> 当前实现状态（2026-04-23）：`Phase 1 / 2 / 3 / 4A / 4B / 5A / 5B` 已进入主链；`Phase 6: Engineering Workflow Memory` 第一版已启动，采用 proof-backed 扩展现有 workflow memory 主链，不新建第二套 engineering memory 系统。
 
 ## 1. 核心结论
 
@@ -31,7 +33,8 @@ Engineering Lane 的第一阶段采用 Hybrid Overlay：
 - 复用现有 `subagent_swarm`
 - 复用现有 memory workflow
 - 新增工程专用 evidence / capsule / ledger / lock
-- 未来如果证据链稳定，再升级为独立 `engineering_lane` runtime card
+- 当前已具备独立 `engineering_lane` runtime 卡片用于工程治理投影
+- 后续若证据链继续稳定，再决定是否升级为更完整的工程 runtime surface
 
 ### 明确不做
 
@@ -542,7 +545,7 @@ Phone/Web 不做完整 IDE，只显示 compact status：
 - `subagent_swarm` 展示工程 slice 执行
 - `context_governance` 展示 token / scope / diagnostics 治理摘要
 
-未来若 Engineering Lane 证据稳定，再考虑新增独立 `engineering_lane` card。
+当前 Phone/Web 已具备独立 `engineering_lane` runtime 卡片，用于展示工程 contract、preflight、proof 与 diagnostics 的 compact 摘要；后续若证据链继续稳定，再决定是否扩成更完整的工程 surface。
 
 ## 9. 与现有 V8OS 模块的关系
 
@@ -589,7 +592,7 @@ OpenAI compat 支线可使用 Engineering Lane，但外部 wire 不暴露内部 
 - 报告能直接指导实现
 - 不再把“更强 prompt”当主方案
 
-### Phase 1：只读 EngineeringContextPack dry-run
+### Phase 1：只读 EngineeringContextPack dry-run（已落地）
 
 目标：
 
@@ -603,7 +606,7 @@ OpenAI compat 支线可使用 Engineering Lane，但外部 wire 不暴露内部 
 - 无跨 workspace 串入
 - 预算诊断可解释
 
-### Phase 2：Proof Ledger MVP
+### Phase 2：Proof Ledger MVP（已落地）
 
 目标：
 
@@ -615,54 +618,103 @@ OpenAI compat 支线可使用 Engineering Lane，但外部 wire 不暴露内部 
 - 改了代码但未验证时不能显示 verified
 - 测试失败能归属到文件和 task
 
-### Phase 3：Coding Planner Contract
+### Phase 3：Repo Evidence Graph + Coding Planner Contract（已落地）
 
-目标：
-
-- planner 输出 criticalFiles/readSet/writeSet/verificationMatrix
-- direct/delegate/mixed 都有工程解释
+- Repo Evidence Graph Digest 已作为 ContextPack 事实底座进入 dry-run 与 planner enrichment。
+- planner 已能在 Engineering Mode active/force 时携带 codingPlannerContract、engineeringEvidenceGraphDigest 与 taskBrief engineeringTaskCapsule。
+- Soft Gate 已能在 dry-run/proof 中识别 changed files 是否超出 writeSet。
 
 验收：
 
 - 多文件任务不再只给泛 task brief
-- `verificationMatrix` 缺失时阻断自动派发
+- `verificationMatrix` 与 `proofExpectations` 已进入工程任务胶囊
+- `writeSet` 缺失或越界可被诊断，但 Phase 3 还不负责 broker 派发阻断
 
-### Phase 4：Code-aware Delegation Broker
-
-目标：
-
-- 按 capabilitySnapshot + writeSet 分派
-- reviewer/verifier 默认只读
-- write-set 冲突阻断
-
-验收：
-
-- 两个 subagent 写同一文件会被阻断或要求重新切片
-- preferredAgentId 不绕过 write-set lock
-
-### Phase 5：Admin Engineering Workbench
+### Phase 4A：Broker-aware Workset Governance（已落地）
 
 目标：
 
-- 展示 plan、locks、diff、diagnostics、proof、ownership
-- Phone/Web 只显示 compact status
+- `delegation_broker` dispatch 前读取 `taskBrief.engineeringTaskCapsule / writeSet / readSet / verificationMatrix / proofExpectations`
+- 自动派发遇到 writeSet 缺失、并发写集冲突或明显越界风险时阻断并要求修复 planner contract
+- supervisor 手动派发不硬阻断，但返回强 warning，并把风险带入 Proof Ledger
+- 本地 subagent 选择继续以 `capabilitySnapshot` 为主，同时加入 implementation / verification / review / docs 等工程角色偏置
+- subagent SYSTEM_CONTENT 只注入精简 `Engineering Task Capsule`，不注入完整 repo graph
+- reviewer/verifier 默认按只读工程纪律执行，除非 task brief 显式给出 writeSet
 
 验收：
 
-- 用户不看聊天文本也能判断工程状态
+- `planner_auto` 下两个 task 写同一文件会被阻断或要求重新切片
+- 手动 broker dispatch 可继续，但 compact item / swarm projection / Proof Ledger 都能看到 `worksetDispatchDecision`
+- `preferredAgentId` 不隐藏 write-set warning
+- Proof Ledger 后续 outside_write_set 风险能追溯到派发阶段的 `delegationId / taskBriefId / worksetDispatchDecision`
 
-### Phase 6：Engineering Workflow Memory
+### Phase 4B/5A：观测优先 Workset Hardening + Workbench 深化（已具备基础实现，正在收口）
 
 目标：
 
-- 从 proof ledger 提炼重复工程链路
-- 渐进 checklist/bias 注入
+- 不直接 hard lock，而是记录 broker dispatch / dry-run simulation / Proof Ledger 的 workset observation
+- `planner_auto` 继续在 writeSet 缺失、并发冲突、明显越界时阻断；supervisor manual dispatch 只强 warning
+- Proof Ledger 关联 `worksetDispatchDecision / outsideWriteSetFiles / manualOverride / residualRisk`
+- Admin Engineering Workbench 新增 Workset Observation、Broker Preflight、Proof Correlation、Dry-run Matrix 四块
+- Engineering Lane 已把 broker raw risk、proof、observation 与 workbench 展示 risk 全部收口到稳定的 canonical 语义，当前统一以 `within_write_set / outside_write_set / missing_write_set / unknown_write_set / read_only_safe` 作为主治理口径
+- 用真实运行和 dry-run 矩阵校准误报/漏报，再决定是否进入 per-agent lock / hard lock
 
 验收：
 
-- 成功链路有证据
-- 失败绕路进入 anti-pattern
-- 高风险流程不自动 active
+- 同一批 taskBrief 在 auto dispatch 下冲突会阻断，在 manual dispatch 下会 warning 并留下 proof 关联
+- changed files 超出 writeSet 时，Proof Ledger 能显示 outsideWriteSetFiles 与派发阶段 decision
+- Workbench 主体可读化，不要求用户阅读大段 JSON 才能判断风险
+- dry-run 矩阵覆盖单任务、并发不冲突、并发冲突、缺失 writeSet、read-only/reviewer、doc-only、验证成功/失败/缺失
+
+### Phase 5B：执行主链深化 / 独立 Engineering Runtime Surface（主链闭环与 surface 已落地）
+
+目标：
+
+- 让 planner contract、engineering capsule、broker preflight、proof correlation 在真实 dispatch 流里形成稳定闭环
+- 让 Phone/Web 通过独立 `engineering_lane` runtime 卡片展示 compact engineering status，而不是把工程状态挤进其他 runtime 面板
+- 让 Admin Engineering Workbench 成为唯一深治理工作台，而不是第二套终端用户 IDE
+
+验收：
+
+- `worksetDispatchDecision.risk` 在 broker 主链内直接使用 canonical 风险语义，不再依赖 `ready / write_set_conflict / not_engineering` 之类过渡口径
+- 真实 broker dispatch 产生的 preflight decision、manual override、outsideWriteSetFiles 与 residual risks 能稳定进入 proof / observation / workbench
+- Phone/Web 出现独立 `engineering_lane` runtime 卡片，且不会混入 `planner_lane / subagent_swarm / chat` 卡片
+- 用户不看聊天文本，也能通过 engineering runtime card 与 Admin Workbench 判断工程状态
+
+### Phase 6 准入门槛（已满足第一版启动条件）
+
+第一版 `Phase 6: Engineering Workflow Memory` 已按下面前提启动：
+
+- `Proof Ledger` 的 `verificationStatus / residualRisks / outsideWriteSetFiles` 在真实工程 run 中已稳定，不再频繁改字段或改语义
+- `workset observation` 的风险分类误报率可接受，`planner_auto` 阻断与 `supervisor_manual` warning 的边界已固定
+- `EngineeringContextPack / CodingPlannerContract / EngineeringTaskCapsule` 的最小字段集不再频繁漂移
+- Admin `Engineering Lane` 工作台足以让人类稳定判断一条工程链路“值不值得学”，而不是还要依赖聊天文本猜测
+- 项目级 workspace 的 scoped rules / skills / memory 不串区，避免把 workspace 边界问题误学成 workflow
+
+`Phase 6` 继续保持这些硬边界：
+
+- 只从 `proof ledger / workset observation / verification evidence / errorful-success distillation` 学，不从普通聊天总结学
+- 只注入 `ranked checklist / bias`，不灌完整脚本
+- 失败绕路只进入 `anti-pattern`，不进入默认 golden path
+- 高风险流程默认不自动 active
+
+### Phase 6：Engineering Workflow Memory（第一版已启动）
+
+目标：
+
+- 复用现有 `workflow memory` 主链：`episode -> candidate -> guide state -> hint events -> Admin Workflows`
+- 只从 `proof ledger / workset observation / verification evidence / errorful-success distillation` 提炼工程链路
+- 工程候选显式标记 `workflowClass=engineering`、`sourceRuntime=engineering_lane`、`proofBacked` 与 `verificationBacked`
+- 渐进 `ranked checklist / bias` 注入；有 planner 时降级为 `planner_checklist_bias`
+- 主治理入口固定在 `Memory > 行为链记忆`，Engineering Workbench 只做只读联动和跳转
+
+验收：
+
+- verified engineering proof 可生成 proof-backed engineering episode/candidate，并在满足门槛后进入 `active_hint`
+- unverified proof 只能停留 candidate，不自动 active
+- failed verification 只沉淀 anti-pattern / verification warning，不写入 golden path
+- 非工程 run 不注入 engineering workflow
+- scope 默认写入当前 resolved scope，不自动 global promotion
 
 ## 11. 测试与验收矩阵
 
@@ -702,6 +754,21 @@ OpenAI compat 支线可使用 Engineering Lane，但外部 wire 不暴露内部 
 - Admin 能看到工程真相
 - Phone/Web 不被完整 IDE 化
 - planner/subagent 内部原文不污染 supervisor 气泡
+
+### Cross-Link Dry-run Matrix
+
+用于封住 `Engineering Lane` 与其他主链的串味风险。它不是新执行 runtime，也不自动跑验证命令，而是在现有 dry-run 证据上生成一组跨链判定：
+
+- `trigger`：工程请求触发，普通聊天/图片/视频不误触发；`force/off` 覆盖 auto。
+- `workspace`：默认工作区、项目工作区、无 repo、session scope 冲突必须可解释。
+- `memory`：工程模式下 daily/map 抑制，workflow hints 保留；非工程 run 不注入 engineering workflow。
+- `planner`：`CodingPlannerContract` 的 critical files/readSet/writeSet/verification matrix 不缺席；缺 writeSet 时只给保守结论。
+- `broker`：`planner_auto` 冲突阻断，`supervisor_manual` 只 warning，canonical risk 不漂移。
+- `proof`：dry-run 不得标 verified；verified/unverified/failed 的模拟证据要能分开。
+- `runtime_lane`：`engineering_lane` 独立投影，不进入 chat narrative/tool node，也不混入 planner/subagent 卡片。
+- `phase6_learning`：dry-run 不学习；Phase 6 只从 proof-backed terminal run 学，失败验证只进 anti-pattern/quarantine。
+
+Admin `Engineering Lane` 的 `Cross-Link 空运行矩阵` 聚合卡必须能一眼显示 pass/warning/fail、失败原因和跳转到 Workbench/Memory 行为链记忆的 deep link。
 
 ## 12. 关键风险与预防
 
@@ -760,3 +827,117 @@ V8OS 写大项目真正缺的不是“再写一段更强 system prompt”，而�
 Claude Code / IDE 证明了文件、diff、diagnostics、plan gate、teammate mailbox 这些朴素原语非常有效；V8OS 应该把它们提升为 OS 级治理结构，而不是复制 CLI 外壳。
 
 最克制也最强的路线是：**先做 Hybrid Overlay，把工程事实接进现有 runtime 主链；等 proof ledger 与 workset governance 稳定后，再决定是否提升为独立 Engineering Runtime。**
+
+## 14. Phase 4B / 5A / 5B / 6 进展回写（2026-04-23）
+
+### 已落地
+
+- Engineering Lane 已具备：
+  - `EngineeringContextPack`
+  - `Proof Ledger`
+  - `Repo Evidence Graph Digest`
+  - `Coding Planner Contract Preview`
+  - `Soft Gate / observe_auto_block`
+- `delegation_broker` 已能消费工程任务胶囊，并在派发结果里带出：
+  - `worksetDispatchDecision`
+  - `worksetConflictGroup`
+  - `engineeringCapsuleAttached`
+  - `repairSuggestion`
+- `planner_auto` 在写集冲突、缺失 writeSet 等情况下会阻断自动派发；`supervisor_manual` 保留裁量权，但会留下强 warning。
+- `Proof Ledger` 已能关联：
+  - dispatch 阶段 decision
+  - outside write-set
+  - manual override
+  - residual risk
+- `engineering_workset_observations` 已独立持久化，不再只是 proof 附属拼接字段。
+- `Engineering Workflow Memory` 已进入第一版实现：proof collector 结束后可把 verified/unverified/failed engineering proof 蒸馏为现有 workflow memory 的 episode/candidate。
+- workflow candidate 已补齐工程显式字段：
+  - `workflowClass`
+  - `sourceRuntime`
+  - `proofBacked`
+  - `verificationBacked`
+  - `lastVerificationStatus`
+  - `worksetRisk`
+  - `outsideWriteSetCount`
+  - `manualOverrideCount`
+  - `proofEntryIds`
+- Admin `Engineering Lane` 已升级为治理工作台，能看到：
+  - ContextPack
+  - Dry-run Matrix
+  - Cross-Link Dry-run Matrix
+  - Workset Observation
+  - Broker Preflight
+  - Proof Correlation
+  - Diagnostics / Workset Risk
+
+### 正在推进
+
+- `Phase 4B`：
+  - 已具备 observation 持久化与 proof 归因基础，当前重点是持续校准写集治理误报率
+  - 不直接上 hard lock
+- `Phase 5A`：
+  - Workbench 已具备主治理面骨架，继续从“展示面”提升为“治理校准面”
+  - 过滤维度增加到 session/run/taskBrief、decision source、blocked/warning、outside write-set、verification status
+- `Phase 5B`：
+  - 已进入真实 broker 主链，planner contract、engineering capsule、broker dispatch、proof correlation 已形成基础闭环
+  - Phone/Web 已具备独立 `engineering_lane` runtime 卡片，Admin 继续作为唯一深治理工作台
+- `Phase 6`：
+  - 第一版已启动，主线是复用现有 workflow memory，不新建第二套 engineering memory
+  - Memory `行为链记忆` 已支持按 engineering/general、proof-backed、verification status、source runtime 过滤
+  - Engineering Workbench 只做 recent engineering workflow candidates 与学习资格的只读联动，不承接编辑/批准入口
+- `Cross-Link Dry-run Matrix`：
+  - 已在 `/engineering-lane/dry-run` 输出 `crossLinkDryRunMatrix`
+  - 覆盖 trigger / workspace / memory / planner / broker / proof / runtime_lane / phase6_learning 八组
+  - Admin Workbench 已提供聚合卡，JSON 只作为折叠调试面
+
+### Phase 6 第一版已满足的启动条件
+
+- `Proof Ledger` 语义稳定，可作为工程行为记忆的事实底座
+- `outsideWriteSetFiles / manualOverride / decisionSource` 能在 observation 与 proof 两侧稳定对齐
+- Workbench 主视图可读化稳定，不再依赖大段 JSON 才能判断风险
+- scoped workspace 的 rules / skills / memory 隔离稳定，避免把 scope 脏数据学进工程 workflow
+
+### Phase 6 仍需继续校准
+
+- 工程候选的激活阈值仍保持保守：verified + minVerifiedSuccessCount + 风险策略允许后才自动 active
+- failed verification 默认进入 anti-pattern / quarantine，不进入 golden path
+- 工程 workflow 的 global promotion 仍需人工批准或明确通用信号
+- 需要继续用真实工程 run 校准“哪些链路值得学”，避免把一次性排障命令误学成通用流程
+
+### 仍未做
+
+- 不自动运行验证命令
+- 不启动长期 LSP runtime
+- 不把 `engineering_lane` 升级成独立执行 runtime
+- 不把 write-set governance 升级为对 supervisor manual 的 hard block
+
+### 额外治理结论：项目级 workspace skill 发现
+
+这不是单纯的 extensions 小 bug，而是 runtime-governance 级问题。
+
+当前已对齐的事实：
+
+- 发现层采用 registered multiroot watcher：
+  - `global`
+  - `默认工作区`
+  - `已注册项目工作区`
+- 可见层仍保持单工作区真相：
+  - 默认工作区会话：`global + default workspace`
+  - 项目工作区会话：`global + current project workspace`
+- route / preview / catalog 诊断已补齐：
+  - `visibleRootSignature`
+  - `changedRoots`
+  - `scopedRefreshMode`
+  - `skillRootDescriptors`
+
+后续重点不再是“能不能扫到 skill”，而是继续确保：
+
+- 新建会话绑定的 scoped context 一定进入 route 主链
+- 控制面 summary 不再误导用户把默认 catalog 当 scoped truth
+- 项目 A / B 与默认工作区之间的 skills、rules、memory 继续严格隔离
+
+截至本轮，项目级 workspace skill 发现的核心链路已经收口为“已实现事实”：
+
+- 发现层已修：registered multiroot watcher 能扫描 `global + 默认工作区 + 已注册项目工作区`
+- scoped inventory 已修：项目级 skill 会进入当前 project workspace 的可见 inventory，不再停留在扫描日志里
+- preview / route 口径已统一：后续 smoke 与控制面一律以顶层 `skillEntries / skillStage1Entries / skillRootDescriptors / routing.selectedSkills` 为准，不再沿用旧的 `final.skillEntries` 读取方式

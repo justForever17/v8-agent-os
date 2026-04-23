@@ -28,6 +28,15 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Carries structured planning, task briefs, dependencies, and acceptance contracts.",
     },
   },
+  engineering_lane: {
+    id: "engineering_lane",
+    label: { zh: "工程治理", en: "Engineering lane" },
+    shortLabel: { zh: "工程", en: "Eng" },
+    description: {
+      zh: "承接工程上下文胶囊、写集治理、证明账本与诊断摘要。",
+      en: "Carries engineering capsules, workset governance, proof ledgers, and diagnostics digests.",
+    },
+  },
   memory: {
     id: "memory",
     label: { zh: "记忆运行", en: "Memory runtime" },
@@ -123,6 +132,7 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
 export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "chat",
   "planner_lane",
+  "engineering_lane",
   "extensions",
   "computer_use",
   "rpa",
@@ -168,6 +178,16 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
     || normalized.includes("task_plan")
   ) {
     return "planner_lane";
+  }
+  if (
+    normalized === "engineering_lane"
+    || normalized.includes("engineering")
+    || normalized.includes("workset")
+    || normalized.includes("proof_ledger")
+    || normalized.includes("proofledger")
+    || normalized.includes("coding_planner")
+  ) {
+    return "engineering_lane";
   }
   if (
     normalized === "subagent_swarm"

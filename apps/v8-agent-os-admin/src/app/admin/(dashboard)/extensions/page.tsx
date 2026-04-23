@@ -27,6 +27,13 @@ type ExtensionCatalogResponse = {
     lastRefreshAt?: string | null;
     lastRefreshError?: string | null;
     fingerprint?: string | null;
+    visibleRootSignature?: string | null;
+    catalogScope?: {
+        mode?: string;
+        workspacePath?: string;
+        workspaceId?: string;
+        projectId?: string;
+    };
     changedAt?: string | null;
     lastSkillInventoryChange?: {
         reason?: string | null;
@@ -71,6 +78,10 @@ type ExtensionCatalogResponse = {
         }>;
         fingerprint?: string | null;
         changedAt?: string | null;
+        visibleRootSignature?: string | null;
+        discoveryRevision?: string | null;
+        changedRoots?: string[];
+        scopedRefreshMode?: string | null;
         items: Array<{
             skillId?: string;
             name: string;
@@ -572,30 +583,47 @@ export default function ExtensionsPage() {
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const [catalogResponse, healthResponse, config, modelList, projectsPayload] = await Promise.all([
-                fetch("/api/extensions/catalog", { cache: "no-store" }),
+            const [healthResponse, config, modelList, projectsPayload] = await Promise.all([
                 fetch("/api/extensions/health", { cache: "no-store" }),
                 fetchConfigDomain<ExtensionsConfigData>("extensions"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
                 fetch("/api/projects", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
             ]);
-            if (!catalogResponse.ok || !healthResponse.ok) {
+            if (!healthResponse.ok) {
                 throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
             }
-            const [catalogPayload, healthPayload] = await Promise.all([
-                catalogResponse.json(),
-                healthResponse.json(),
-            ] as const);
+            const healthPayload = await healthResponse.json();
+            const projectItems = Array.isArray(projectsPayload?.projects) ? projectsPayload.projects : [];
+            const catalogParams = new URLSearchParams();
+            if (previewScope.startsWith("project:")) {
+                const projectId = previewScope.slice("project:".length);
+                const project = projectItems.find((item: ProjectRecord) => item.id === projectId);
+                if (project?.workspacePath) {
+                    catalogParams.set("workspacePath", project.workspacePath);
+                    catalogParams.set("projectId", project.id);
+                    if (project.workspaceId) {
+                        catalogParams.set("workspaceId", project.workspaceId);
+                    }
+                }
+            }
+            const catalogResponse = await fetch(
+                `/api/extensions/catalog${catalogParams.toString() ? `?${catalogParams.toString()}` : ""}`,
+                { cache: "no-store" },
+            );
+            if (!catalogResponse.ok) {
+                throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
+            }
+            const catalogPayload = await catalogResponse.json();
             setCatalog(catalogPayload);
             setHealth(healthPayload);
             setConfigEnvelope(config);
             setModels(Array.isArray(modelList) ? modelList : []);
-            setProjects(Array.isArray(projectsPayload?.projects) ? projectsPayload.projects : []);
+            setProjects(projectItems);
         }
         finally {
             setLoading(false);
         }
-    }, [t]);
+    }, [previewScope, t]);
     useEffect(() => {
         void loadData();
     }, [loadData]);
@@ -1175,10 +1203,40 @@ export default function ExtensionsPage() {
             <div className="grid auto-rows-fr gap-4 xl:grid-cols-2">
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kec74feaf"} description={"app.admin.dashboard.extensions.page.kcc79174f"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">
                     <div className="space-y-3">
-                        <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+                        <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
                             <div>
                                 {t("app.admin.dashboard.extensions.page.k99bf9749")}
                                 <span className="font-medium break-all text-slate-900">{catalog.skills?.root || "—"}</span>
+                            </div>
+                            <div className="grid gap-2 md:grid-cols-2">
+                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{isZh ? "目录作用域" : "Catalog scope"}</div>
+                                    <div className="mt-1 text-xs text-slate-700">{String(catalog.catalogScope?.mode || "default")}</div>
+                                    {catalog.catalogScope?.projectId ? <div className="mt-1 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{catalog.catalogScope.projectId}</div> : null}
+                                    {catalog.catalogScope?.workspacePath ? <div className="mt-1 break-all text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{catalog.catalogScope.workspacePath}</div> : null}
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{isZh ? "可见根签名" : "Visible root signature"}</div>
+                                    <div className="mt-1 break-all text-xs text-slate-700">{catalog.skills?.visibleRootSignature || catalog.visibleRootSignature || "—"}</div>
+                                    <div className="mt-1 text-[11px] text-slate-500">{isZh ? "发现版本：" : "Discovery revision: "}{String(catalog.skills?.discoveryRevision || "—")}</div>
+                                    <div className="mt-1 text-[11px] text-slate-500">{isZh ? "刷新模式：" : "Refresh mode: "}{String(catalog.skills?.scopedRefreshMode || "base")}</div>
+                                </div>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{isZh ? "变更根" : "Changed roots"}</div>
+                                <div className="mt-2">
+                                    {(catalog.skills?.changedRoots || []).length ? (
+                                        <div className="space-y-1">
+                                            {(catalog.skills?.changedRoots || []).map((root) => (
+                                                <div key={String(root)} className="break-all rounded-lg bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+                                                    {String(root)}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-xs text-slate-500">{isZh ? "当前没有待显示的根变更。" : "No scoped root changes recorded."}</div>
+                                    )}
+                                </div>
                             </div>
                             <div className="space-y-2">
                                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.extensions.page.kcc6ff432")}</div>

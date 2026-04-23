@@ -51,6 +51,28 @@ async def get_engineering_proof_entry(entry_id: str):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/workset-observations")
+async def list_engineering_workset_observations(
+    session_id: Optional[str] = Query(default=None, alias="sessionId"),
+    run_id: Optional[str] = Query(default=None, alias="runId"),
+    task_brief_id: Optional[str] = Query(default=None, alias="taskBriefId"),
+    decision_source: Optional[str] = Query(default=None, alias="decisionSource"),
+    limit: int = Query(default=40, ge=1, le=200),
+):
+    try:
+        return {
+            "items": engineering_lane_service.list_workset_observations(
+                session_id=session_id,
+                run_id=run_id,
+                task_brief_id=task_brief_id,
+                decision_source=decision_source,
+                limit=limit,
+            )
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/proof-ledger")
 async def add_engineering_proof_entry(payload: dict):
     try:

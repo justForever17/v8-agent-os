@@ -1073,6 +1073,56 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 status="failed",
                 actor_label="规划编排",
             )
+        elif topic == "engineering_lane.trigger.decided":
+            trigger = payload.get("triggerDecision") if isinstance(payload.get("triggerDecision"), dict) else {}
+            active = bool(trigger.get("active"))
+            matched = bool(trigger.get("matched"))
+            signals = [str(item).strip() for item in list(trigger.get("signals") or []) if str(item).strip()]
+            if active:
+                summary = "工程模式已激活"
+                if signals:
+                    summary += f" · {', '.join(signals[:3])}"
+            elif matched:
+                summary = "工程模式已评估，但未进入工程主链"
+            else:
+                summary = "工程模式未命中"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="engineering_lane",
+                kind="progress",
+                summary=_truncate_runtime_summary(summary, 120),
+                status="active" if active else "idle",
+                actor_label="工程治理",
+            )
+        elif topic == "engineering.plan.projected":
+            summary = str(payload.get("summary") or "").strip() or "工程契约已投影"
+            blocked_count = int(payload.get("blockedCount") or 0)
+            warning_count = int(payload.get("warningCount") or 0)
+            if blocked_count > 0:
+                status = "blocked"
+            elif warning_count > 0:
+                status = "warning"
+            else:
+                status = "projected"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="engineering_lane",
+                kind="progress",
+                summary=_truncate_runtime_summary(summary, 120),
+                status=status,
+                actor_label="工程治理",
+            )
+        elif topic == "engineering.proof.collected":
+            summary = str(payload.get("summary") or "").strip() or "工程证明已收集"
+            status = str(payload.get("verificationStatus") or payload.get("status") or "planned").strip() or "planned"
+            entry = _runtime_timeline_entry(
+                event,
+                runtime_id="engineering_lane",
+                kind="progress",
+                summary=_truncate_runtime_summary(summary, 120),
+                status=status,
+                actor_label="工程治理",
+            )
         elif topic == "run.lane.queued":
             entry = _runtime_timeline_entry(
                 event,

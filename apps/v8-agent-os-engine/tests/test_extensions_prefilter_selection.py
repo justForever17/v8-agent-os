@@ -965,6 +965,210 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         self.assertEqual(captured_context.get("project_id"), "project-test1")
         self.assertEqual(captured_context.get("runtime_kind"), "extensions_preview")
 
+    def test_extensions_preview_exposes_top_level_scoped_skill_entries_and_routing(self):
+        service = ExtensionsRuntimeService()
+
+        def fake_route(**kwargs):  # noqa: ANN003
+            return ExtensionRouteBundle(
+                prompt_addition="",
+                filtered_tools=[],
+                selected_skill_names=["wechat-account-articles"],
+                selected_skill_ids=["scoped:wechat-account-articles"],
+                skill_root_descriptors=[
+                    {
+                        "rootPath": r"E:\Projects\test1\.agents\skills",
+                        "workspacePath": r"E:\Projects\test1",
+                        "workspaceId": "test1",
+                        "projectId": "project-test1",
+                        "sourceType": "scoped_workspace",
+                        "visibility": "scoped",
+                    }
+                ],
+                exposed_mcp_tool_names=[],
+                candidate_summary={
+                    "mode": "stage1_only",
+                    "routingMode": "stage1_only",
+                    "skillInventoryRevision": "rev:test1",
+                    "visibleRootSignature": "visible:global+project-test1",
+                    "changedRoots": [r"E:\Projects\test1\.agents\skills"],
+                    "scopedRefreshMode": "delta",
+                    "skillStage1Entries": [
+                        {
+                            "id": "wechat-account-articles",
+                            "name": "wechat-account-articles",
+                        }
+                    ],
+                    "skillEntries": [
+                        {
+                            "id": "wechat-account-articles",
+                            "name": "wechat-account-articles",
+                        }
+                    ],
+                    "skillRootDescriptors": [
+                        {
+                            "rootPath": r"E:\Projects\test1\.agents\skills",
+                            "workspacePath": r"E:\Projects\test1",
+                            "workspaceId": "test1",
+                            "projectId": "project-test1",
+                            "sourceType": "scoped_workspace",
+                            "visibility": "scoped",
+                        }
+                    ],
+                    "skills": ["wechat-account-articles"],
+                    "selectedSkillIds": ["scoped:wechat-account-articles"],
+                    "stage1Enabled": {"skills": True, "mcp": True},
+                    "stage1TopK": {"skills": 10, "mcp": 10},
+                    "stage2Enabled": {"skills": False, "mcp": False},
+                    "stage2TopK": {"skills": 5, "mcp": 2},
+                    "llmTimeoutSeconds": {"skills": 10, "mcp": 5},
+                    "skillStage1HitCount": 1,
+                    "skillStage1ShortlistCount": 1,
+                    "skillFinalExposedCount": 1,
+                    "skillInventoryCount": 37,
+                    "skillPoolSize": 37,
+                },
+            )
+
+        with patch.object(service, "build_contextual_route", side_effect=fake_route):
+            import asyncio
+
+            payload = asyncio.run(
+                service.build_prefilter_preview(
+                    user_query="wechat-account-articles",
+                    workspace_path=r"E:\Projects\test1",
+                    workspace_id="test1",
+                    project_id="project-test1",
+                )
+            )
+
+        self.assertEqual(
+            payload.get("skillEntries"),
+            [{"id": "wechat-account-articles", "name": "wechat-account-articles"}],
+        )
+        self.assertEqual(
+            payload.get("skillStage1Entries"),
+            [{"id": "wechat-account-articles", "name": "wechat-account-articles"}],
+        )
+        self.assertEqual(
+            payload.get("skillRootDescriptors"),
+            [
+                {
+                    "rootPath": r"E:\Projects\test1\.agents\skills",
+                    "workspacePath": r"E:\Projects\test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                }
+            ],
+        )
+        self.assertEqual(payload.get("routing", {}).get("selectedSkills"), ["wechat-account-articles"])
+        self.assertEqual(payload.get("routing", {}).get("selectedSkillIds"), ["scoped:wechat-account-articles"])
+        self.assertEqual(payload.get("routing", {}).get("visibleRootSignature"), "visible:global+project-test1")
+
+    def test_supervisor_route_uses_bound_scoped_context_and_exposes_project_skill(self):
+        service = ExtensionsRuntimeService()
+        captured_inventory_kwargs: list[dict[str, object]] = []
+        scoped_inventory = {
+            "items": [
+                {
+                    "skillId": "scoped:wechat-account-articles",
+                    "skillName": "wechat-account-articles",
+                    "name": "wechat-account-articles",
+                    "folder": "wechat-account-articles",
+                    "description": "微信公众号文章调研、选题、写作与复盘工作流。",
+                    "path": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                    "skillRoot": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                    "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": "E:/Projects/test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                    "capabilityProfile": {
+                        "skillClass": "workflow_or_script",
+                        "primaryArtifactTypes": ["article"],
+                        "primaryOperations": ["research", "write"],
+                        "interactionMode": "workflow",
+                        "capabilityConfidence": 0.92,
+                        "profileSource": "rules",
+                        "secondaryArtifactHints": ["wechat", "公众号文章"],
+                        "secondaryOperationHints": [],
+                    },
+                    "themeProfile": {
+                        "primaryThemes": ["content_marketing"],
+                        "secondaryThemeTags": ["wechat_official_account"],
+                        "themeConfidence": 0.86,
+                        "themeSource": "rules",
+                        "themeEvidenceSignals": {},
+                    },
+                }
+            ],
+            "rootDescriptors": [
+                {"rootPath": "C:/Users/sunny/.agents/skills", "sourceType": "global", "visibility": "global"},
+                {
+                    "rootPath": "E:/Projects/test1/.agents/skills",
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": "E:/Projects/test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                },
+            ],
+            "revision": "skills:scoped:test1",
+            "visibleRootSignature": "visible:global+project-test1",
+            "changedRoots": ["E:/Projects/test1/.agents/skills"],
+            "scopedRefreshMode": "delta",
+            "recentSkillDiscovery": [],
+        }
+
+        def fake_resolve_skill_inventory(**kwargs):  # noqa: ANN003
+            captured_inventory_kwargs.append(dict(kwargs))
+            return dict(scoped_inventory)
+
+        prefilter_policy = {
+            "enabled": False,
+            "available": False,
+            "mode": "lexical_only",
+            "modelId": "",
+            "role": "",
+            "reason": "test",
+            "skills": {"stage1Enabled": True, "stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+            "mcp": {"stage1Enabled": True, "stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+        }
+        token = service.bind_execution_context(
+            session_id="session-project-test1",
+            workspace_id="test1",
+            workspace_path=r"E:\Projects\test1",
+            project_id="project-test1",
+            runtime_kind="chat",
+        )
+        try:
+            with patch.object(service, "_ensure_inventory_freshness_guard"), patch.object(
+                service,
+                "_resolve_skill_inventory",
+                side_effect=fake_resolve_skill_inventory,
+            ), patch.object(
+                service,
+                "_resolve_prefilter_policy",
+                return_value=prefilter_policy,
+            ):
+                bundle = service.build_supervisor_route(
+                    user_query="写一个微信公众号文章选题和成稿流程",
+                    supervisor_tools=[],
+                    loaded_agents=[],
+                )
+        finally:
+            service.reset_execution_context(token)
+
+        self.assertGreaterEqual(len(captured_inventory_kwargs), 2)
+        self.assertTrue(any(item.get("explicit_project_id") == "project-test1" for item in captured_inventory_kwargs))
+        self.assertTrue(any(item.get("explicit_workspace_path") == r"E:\Projects\test1" for item in captured_inventory_kwargs))
+        self.assertIn("wechat-account-articles", bundle.selected_skill_names)
+        self.assertEqual(bundle.candidate_summary.get("visibleRootSignature"), "visible:global+project-test1")
+        self.assertEqual(bundle.candidate_summary.get("scopedRefreshMode"), "delta")
+        self.assertTrue(any(item.get("projectId") == "project-test1" for item in bundle.skill_root_descriptors))
+
     def test_skill_loader_extracts_hint_fields_and_rule_profile(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             skill_root = Path(temp_dir) / "pptx"
@@ -2783,6 +2987,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
     def test_skill_loader_delta_rebuilds_only_changed_entries(self):
         original_registry = SkillLoader._skills_registry
         original_manifest = SkillLoader._skills_manifest
+        original_root_descriptors = SkillLoader._skills_root_descriptors
         original_root_signature = SkillLoader._skills_root_signature
         original_fingerprint = SkillLoader._skills_fingerprint
         original_revision = SkillLoader._skills_revision
@@ -2822,6 +3027,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                 updated_key: {"mtimeNs": 1, "size": 10},
                 removed_key: {"mtimeNs": 1, "size": 10},
             }
+            SkillLoader._skills_root_descriptors = [{"rootPath": "C:/skills", "sourceType": "global", "visibility": "global"}]
             SkillLoader._skills_root_signature = "roots:v1"
             SkillLoader._skills_fingerprint = "old"
             new_manifest = {
@@ -2875,6 +3081,92 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         finally:
             SkillLoader._skills_registry = original_registry
             SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_descriptors = original_root_descriptors
+            SkillLoader._skills_root_signature = original_root_signature
+            SkillLoader._skills_fingerprint = original_fingerprint
+            SkillLoader._skills_revision = original_revision
+
+    def test_skill_loader_visible_inventory_keeps_project_skill_out_of_default_scope(self):
+        original_registry = SkillLoader._skills_registry
+        original_manifest = SkillLoader._skills_manifest
+        original_root_descriptors = SkillLoader._skills_root_descriptors
+        original_root_signature = SkillLoader._skills_root_signature
+        original_fingerprint = SkillLoader._skills_fingerprint
+        original_revision = SkillLoader._skills_revision
+        try:
+            global_descriptor = {"rootPath": "C:/Users/sunny/.agents/skills", "sourceType": "global", "visibility": "global"}
+            main_descriptor = {
+                "rootPath": "C:/Users/sunny/.v8-agent-os/workspace/.agents/skills",
+                "sourceType": "main_workspace",
+                "visibility": "global",
+                "workspacePath": "C:/Users/sunny/.v8-agent-os/workspace",
+            }
+            scoped_descriptor = {
+                "rootPath": "E:/Projects/test1/.agents/skills",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": "E:/Projects/test1",
+                "workspaceId": "test1",
+                "projectId": "project-test1",
+            }
+            SkillLoader._skills_registry = {
+                "global:global-skill": {
+                    "skillId": "global:global-skill",
+                    "skillName": "global-skill",
+                    "instructionPath": "C:/Users/sunny/.agents/skills/global-skill/SKILL.md",
+                    "skillRoot": "C:/Users/sunny/.agents/skills/global-skill",
+                    "sourceType": "global",
+                    "visibility": "global",
+                },
+                "main:default-skill": {
+                    "skillId": "main:default-skill",
+                    "skillName": "default-skill",
+                    "instructionPath": "C:/Users/sunny/.v8-agent-os/workspace/.agents/skills/default-skill/SKILL.md",
+                    "skillRoot": "C:/Users/sunny/.v8-agent-os/workspace/.agents/skills/default-skill",
+                    "sourceType": "main_workspace",
+                    "visibility": "global",
+                    "workspacePath": "C:/Users/sunny/.v8-agent-os/workspace",
+                },
+                "scoped:wechat-account-articles": {
+                    "skillId": "scoped:wechat-account-articles",
+                    "skillName": "wechat-account-articles",
+                    "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                    "skillRoot": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": "E:/Projects/test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                },
+            }
+            SkillLoader._skills_manifest = {}
+            SkillLoader._skills_root_descriptors = [global_descriptor, main_descriptor, scoped_descriptor]
+            SkillLoader._skills_root_signature = "roots:global-main-scoped"
+            SkillLoader._skills_fingerprint = "discovery:all"
+            SkillLoader._skills_revision = "discovery:all"
+
+            with patch.object(SkillLoader, "_global_root_descriptor", return_value=global_descriptor), patch.object(
+                SkillLoader, "_main_workspace_root_descriptor", return_value=main_descriptor
+            ), patch.object(SkillLoader, "_scoped_workspace_root_descriptor", return_value=scoped_descriptor):
+                default_inventory = SkillLoader.get_inventory(force_refresh=False, include_scoped=False)
+                scoped_inventory = SkillLoader.get_inventory(
+                    force_refresh=False,
+                    include_scoped=True,
+                    explicit_workspace_path=r"E:\Projects\test1",
+                    explicit_project_id="project-test1",
+                )
+
+            default_names = {item.get("skillName") for item in default_inventory.get("items") or []}
+            scoped_names = {item.get("skillName") for item in scoped_inventory.get("items") or []}
+            self.assertNotIn("wechat-account-articles", default_names)
+            self.assertIn("wechat-account-articles", scoped_names)
+            self.assertNotEqual(default_inventory.get("visibleRootSignature"), scoped_inventory.get("visibleRootSignature"))
+            self.assertIn(scoped_inventory.get("scopedRefreshMode"), (None, "base"))
+            self.assertTrue(any(item.get("projectId") == "project-test1" for item in scoped_inventory.get("rootDescriptors") or []))
+        finally:
+            SkillLoader._skills_registry = original_registry
+            SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_descriptors = original_root_descriptors
             SkillLoader._skills_root_signature = original_root_signature
             SkillLoader._skills_fingerprint = original_fingerprint
             SkillLoader._skills_revision = original_revision

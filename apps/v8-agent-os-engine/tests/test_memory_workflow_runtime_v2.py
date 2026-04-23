@@ -31,6 +31,20 @@ def _workflow_test_config() -> dict:
     }
 
 
+def _engineering_workflow_test_config(**engineering_overrides: object) -> dict:
+    cfg = _workflow_test_config()
+    cfg["engineering"] = {
+        "enabled": True,
+        "extractFromProofLedger": True,
+        "requireEngineeringModeForInjection": True,
+        "requireVerifiedProofForActivation": True,
+        "learnFailedVerificationAsAntiPattern": True,
+        "minVerifiedSuccessCount": 1,
+        **engineering_overrides,
+    }
+    return cfg
+
+
 class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.suffix = uuid.uuid4().hex[:10]
@@ -467,6 +481,162 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
         self.assertEqual(ranked[0].get("id"), helped["id"])
         self.assertNotIn(helped["id"], [item.get("id") for item in suppressed])
         self.assertEqual(quarantined.get("status"), "quarantine")
+
+    def _engineering_proof_entry(self, *, proof_id: str, verification_status: str, extra: dict | None = None) -> dict:
+        entry = {
+            "id": proof_id,
+            "mode": "auto",
+            "patchIntent": "Fix the admin workflow panel and keep proof evidence clean",
+            "verificationStatus": verification_status,
+            "changedFiles": ["apps/v8-agent-os-admin/src/components/memory/MemoryWorkflowsPanel.tsx"],
+            "writeSet": ["apps/v8-agent-os-admin/src/components/memory/"],
+            "commands": [
+                {
+                    "tool": "run_system_command",
+                    "command": "npm run build",
+                    "returnCode": 0 if verification_status == "verified" else 1 if verification_status == "failed_verification" else None,
+                    "isValidation": True,
+                    "summary": "admin build completed" if verification_status == "verified" else "admin build failed",
+                }
+            ],
+            "diagnostics": {
+                "items": [
+                    {
+                        "source": "command",
+                        "kind": "build",
+                        "returnCode": 0 if verification_status == "verified" else 1 if verification_status == "failed_verification" else None,
+                        "summary": "admin build completed" if verification_status == "verified" else "admin build failed",
+                    }
+                ],
+                "worksetCorrelation": {
+                    "risk": "within_write_set",
+                    "outsideWriteSetFiles": [],
+                    "manualOverride": {"present": False},
+                },
+            },
+            "metadata": {
+                "engineeringMode": "auto",
+                "triggerDecision": {"active": True, "reason": "test"},
+            },
+            "residualRisks": [],
+        }
+        if extra:
+            entry.update(extra)
+        return entry
+
+    def test_verified_engineering_proof_creates_active_engineering_candidate(self) -> None:
+        proof_id = f"proof_verified_{self.suffix}"
+        with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_engineering_workflow_test_config()):
+            result = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=self._engineering_proof_entry(proof_id=proof_id, verification_status="verified"),
+                workset_observations=[],
+            )
+        self.episode_ids.append(result["episode"]["id"])
+        self.candidate_ids.append(result["candidate"]["id"])
+
+        candidate = result["candidate"]
+        self.assertEqual(result["status"], "extracted")
+        self.assertEqual(candidate["workflowClass"], "engineering")
+        self.assertEqual(candidate["sourceRuntime"], "engineering_lane")
+        self.assertTrue(candidate["proofBacked"])
+        self.assertTrue(candidate["verificationBacked"])
+        self.assertEqual(candidate["lastVerificationStatus"], "verified")
+        self.assertEqual(candidate["status"], "active_hint")
+        self.assertIn(proof_id, candidate["proofEntryIds"])
+        self.assertTrue(candidate["goldenPathSteps"])
+
+    def test_engineering_verification_steps_do_not_store_absolute_command_paths(self) -> None:
+        proof_id = f"proof_path_sanitized_{self.suffix}"
+        with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_engineering_workflow_test_config()):
+            result = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=self._engineering_proof_entry(
+                    proof_id=proof_id,
+                    verification_status="verified",
+                    extra={
+                        "commands": [
+                            {
+                                "tool": "run_system_command",
+                                "command": "python -m py_compile E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\core\\database.py",
+                                "returnCode": 0,
+                                "isValidation": True,
+                                "summary": "compiled",
+                            }
+                        ]
+                    },
+                ),
+                workset_observations=[],
+            )
+        self.episode_ids.append(result["episode"]["id"])
+        self.candidate_ids.append(result["candidate"]["id"])
+
+        joined = "\n".join(result["candidate"].get("verificationSteps") or [])
+        self.assertNotIn("E:\\Projects", joined)
+        self.assertIn("Python validation", joined)
+
+    def test_unverified_engineering_proof_stays_candidate(self) -> None:
+        proof_id = f"proof_unverified_{self.suffix}"
+        with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_engineering_workflow_test_config()):
+            result = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=self._engineering_proof_entry(
+                    proof_id=proof_id,
+                    verification_status="unverified",
+                    extra={"commands": [], "diagnostics": {"worksetCorrelation": {"risk": "within_write_set"}}},
+                ),
+                workset_observations=[],
+            )
+        self.episode_ids.append(result["episode"]["id"])
+        self.candidate_ids.append(result["candidate"]["id"])
+
+        candidate = result["candidate"]
+        self.assertEqual(candidate["workflowClass"], "engineering")
+        self.assertTrue(candidate["proofBacked"])
+        self.assertFalse(candidate["verificationBacked"])
+        self.assertEqual(candidate["lastVerificationStatus"], "unverified")
+        self.assertEqual(candidate["status"], "candidate")
+        self.assertEqual(candidate["goldenPathSteps"], [])
+
+    def test_failed_engineering_proof_learns_anti_pattern_only(self) -> None:
+        proof_id = f"proof_failed_{self.suffix}"
+        with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_engineering_workflow_test_config()):
+            result = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=self._engineering_proof_entry(proof_id=proof_id, verification_status="failed_verification"),
+                workset_observations=[],
+            )
+        self.episode_ids.append(result["episode"]["id"])
+        self.candidate_ids.append(result["candidate"]["id"])
+
+        candidate = result["candidate"]
+        self.assertEqual(candidate["workflowClass"], "engineering")
+        self.assertEqual(candidate["lastVerificationStatus"], "failed_verification")
+        self.assertIn(candidate["status"], {"candidate", "quarantine"})
+        self.assertEqual(candidate["goldenPathSteps"], [])
+        self.assertTrue(any("失败验证" in item or "failed" in item.lower() for item in candidate["antiPatterns"]))
+
+    def test_engineering_workflow_only_matches_when_engineering_active(self) -> None:
+        proof_id = f"proof_hint_{self.suffix}"
+        with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_engineering_workflow_test_config()):
+            result = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=self._engineering_proof_entry(proof_id=proof_id, verification_status="verified"),
+                workset_observations=[],
+            )
+            candidate_id = result["candidate"]["id"]
+            inactive = workflow_memory_service.match_hints(
+                query="工程任务 admin build 需要验证",
+                scope_chain=["workspace:main"],
+                limit=4,
+                engineering_active=False,
+            )
+            active = workflow_memory_service.match_hints(
+                query="工程任务 admin build 需要验证",
+                scope_chain=["workspace:main"],
+                limit=4,
+                engineering_active=True,
+            )
+        self.episode_ids.append(result["episode"]["id"])
+        self.candidate_ids.append(candidate_id)
+
+        self.assertNotIn(candidate_id, [item.get("id") for item in inactive])
+        self.assertIn(candidate_id, [item.get("id") for item in active])
 
 
 if __name__ == "__main__":

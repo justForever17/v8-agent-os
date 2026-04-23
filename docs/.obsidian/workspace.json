@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_supervisor_plan_pipeline.md",
+                "file": "chatruntime/V8OS_LARGE_PROJECT_CODING_CAPABILITY_GAP_REPORT_ZH.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "2026-04-21_16-04-34_nuwa_einstein_supervisor_plan_pipeline"
+              "title": "V8OS_LARGE_PROJECT_CODING_CAPABILITY_GAP_REPORT_ZH"
             }
           }
         ],
@@ -93,7 +93,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 499.5
+    "width": 457.5
   },
   "right": {
     "id": "aeb60b0322ccdb67",
@@ -200,6 +200,7 @@
   },
   "active": "5f02ea1e820c9b83",
   "lastOpenFiles": [
+    "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_supervisor_plan_pipeline.md",
     "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_subagent_system_content.md",
     "supervisor/SUPERVISOR_SINGLE_TURN_SYSTEM_CONTENT_2026-04-19.md",
     "memoryruntime/2026-04-22_09-33-00_行为记忆链空运行_第3轮_结果反馈后_SYSTEM_CONTENT.md",
@@ -224,7 +225,6 @@
     "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_supervisor_plan_pipeline.md",
     "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_subagent_system_content.md",
     "supervisor/plan/2026-04-21_23-24-06_nuwa_einstein_supervisor_system_content.md",
-    "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_supervisor_plan_pipeline.md",
     "supervisor/plan/2026-04-21_23-20-40_nuwa_einstein_subagent_system_content.md",
     "supervisor/plan/2026-04-21_23-20-40_nuwa_einstein_supervisor_plan_pipeline.md",
     "supervisor/plan/_dry_run_debug.log",

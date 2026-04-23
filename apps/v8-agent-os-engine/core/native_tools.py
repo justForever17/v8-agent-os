@@ -99,6 +99,7 @@ from core.artifact_store import artifact_store
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.database import db
 from core.delegation_broker import (
+    build_workset_dispatch_decisions,
     build_minimal_task_brief,
     choose_best_external_worker,
     choose_best_external_worker_with_diagnostics,
@@ -5754,12 +5755,19 @@ def _delegation_compact_item(
     auto_dispatch_source: str | None = None,
     invocation_id: str | None = None,
     branch_index: int | None = None,
+    workset_dispatch_decision: dict[str, Any] | None = None,
+    workset_conflict_group: list[Any] | None = None,
+    engineering_capsule_attached: bool | None = None,
+    dispatch_blocked_reason: str | None = None,
+    repair_suggestion: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "delegationId": delegation_id,
         "taskBriefId": str(task_brief.get("taskBriefId") or "").strip(),
         "taskGoal": str(task_brief.get("goal") or "").strip(),
+        "writeSet": [str(item).strip() for item in list(task_brief.get("writeSet") or []) if str(item).strip()],
+        "readSet": [str(item).strip() for item in list(task_brief.get("readSet") or []) if str(item).strip()],
         "lane": lane,
         "targetId": target_id,
         "targetLabel": target_label,
@@ -5783,6 +5791,22 @@ def _delegation_compact_item(
         "invocationId": invocation_id,
         "branchIndex": branch_index,
     }
+    if workset_dispatch_decision:
+        decision = dict(workset_dispatch_decision)
+        decision.setdefault("delegationId", delegation_id)
+        decision.setdefault("taskBriefId", item.get("taskBriefId"))
+        item["worksetDispatchDecision"] = decision
+        item["worksetConflictGroup"] = list(workset_conflict_group or decision.get("worksetConflictGroup") or [])
+        item["dispatchBlockedReason"] = dispatch_blocked_reason or (
+            str(decision.get("reason") or "").strip()
+            if bool(decision.get("blocked"))
+            else None
+        )
+        item["repairSuggestion"] = repair_suggestion or str(decision.get("repairSuggestion") or "").strip() or None
+    if engineering_capsule_attached is not None:
+        item["engineeringCapsuleAttached"] = bool(engineering_capsule_attached)
+    if isinstance(task_brief.get("engineeringTaskCapsule"), dict) and task_brief.get("engineeringTaskCapsule"):
+        item["engineeringTaskCapsule"] = task_brief.get("engineeringTaskCapsule")
     if worker_type:
         item["workerType"] = worker_type
     if command_session:
@@ -6189,11 +6213,65 @@ def delegation_broker(
         dispatch_source = str(base_state.get("delegationDispatchSource") or inherited_context.get("delegationDispatchSource") or "").strip()
         compat_source = str(base_state.get("delegationCompatSource") or inherited_context.get("delegationCompatSource") or "").strip()
         auto_dispatch_source = dispatch_source if dispatch_source.startswith("planner_auto") else ""
+        workset_decisions = build_workset_dispatch_decisions(
+            normalized_tasks,
+            auto_dispatch=bool(auto_dispatch_source),
+            decision_source="planner_auto" if auto_dispatch_source else "supervisor_manual",
+        )
+        blocked_decisions = [item for item in workset_decisions if bool(item.get("blocked"))]
+        if blocked_decisions:
+            blocked_items: list[dict[str, Any]] = []
+            for index, task_brief in enumerate(normalized_tasks):
+                decision = workset_decisions[index] if index < len(workset_decisions) else {}
+                lane_hint = str(task_brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
+                blocked_items.append(
+                    _delegation_compact_item(
+                        delegation_id=f"blocked::workset::{str(task_brief.get('taskBriefId') or index)}::{lane_hint}",
+                        task_brief=task_brief,
+                        lane="external_worker" if lane_hint == "external_worker" else "subagent",
+                        target_id=str(task_brief.get("preferredAgentId") or task_brief.get("preferredWorkerType") or "unassigned").strip() or "unassigned",
+                        target_label=str(task_brief.get("preferredAgentId") or task_brief.get("preferredWorkerType") or "unassigned").strip() or "unassigned",
+                        status="blocked",
+                        invocation_id=invocation_id,
+                        branch_index=index,
+                        trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+                        compat_source=compat_source or None,
+                        auto_dispatch_source=auto_dispatch_source or None,
+                        workset_dispatch_decision=decision,
+                        workset_conflict_group=list(decision.get("worksetConflictGroup") or []),
+                        engineering_capsule_attached=bool(decision.get("engineeringCapsuleAttached")),
+                        dispatch_blocked_reason=str(decision.get("reason") or "workset_dispatch_blocked").strip(),
+                        repair_suggestion=str(decision.get("repairSuggestion") or "Repair planner writeSet before automatic dispatch.").strip(),
+                        error="workset_dispatch_blocked",
+                    )
+                )
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_delegation_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=(
+                                    "delegation_broker blocked planner auto-dispatch because Engineering Lane "
+                                    "work-set governance found missing or conflicting write sets."
+                                ),
+                                items=blocked_items,
+                                recommended_next_action="repair_plan",
+                                error="workset_dispatch_blocked",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+            )
         sends: list[Send] = []
         items: list[dict[str, Any]] = []
         parallel_results: list[dict[str, Any]] = []
 
         for index, task_brief in enumerate(normalized_tasks):
+            workset_decision = workset_decisions[index] if index < len(workset_decisions) else {}
             task_query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
             task_goal = str(task_brief.get("goal") or "").strip() or task_query or f"Task {index + 1}"
             lane_hint = str(task_brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
@@ -6273,6 +6351,10 @@ def delegation_broker(
                         match_signals=list(local_diagnostics.get("matchSignals") or []),
                         compat_source=compat_source or None,
                         auto_dispatch_source=auto_dispatch_source or None,
+                        workset_dispatch_decision=workset_decision,
+                        workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
+                        engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+                        repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
                     )
                 )
                 continue
@@ -6304,6 +6386,10 @@ def delegation_broker(
                         match_signals=list(external_diagnostics.get("matchSignals") or []),
                         compat_source=compat_source or None,
                         auto_dispatch_source=auto_dispatch_source or None,
+                        workset_dispatch_decision=workset_decision,
+                        workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
+                        engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+                        repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
                         error="missing_command_template",
                     )
                     items.append(item)
@@ -6357,6 +6443,10 @@ def delegation_broker(
                     match_signals=list(external_diagnostics.get("matchSignals") or []),
                     compat_source=compat_source or None,
                     auto_dispatch_source=auto_dispatch_source or None,
+                    workset_dispatch_decision=workset_decision,
+                    workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
+                    engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+                    repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
                     error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
                 )
                 items.append(worker_item)
@@ -6379,6 +6469,10 @@ def delegation_broker(
                 match_signals=list((external_diagnostics or local_diagnostics).get("matchSignals") or []),
                 compat_source=compat_source or None,
                 auto_dispatch_source=auto_dispatch_source or None,
+                workset_dispatch_decision=workset_decision,
+                workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
+                engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+                repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
                 error="no_matching_target",
             )
             items.append(item)

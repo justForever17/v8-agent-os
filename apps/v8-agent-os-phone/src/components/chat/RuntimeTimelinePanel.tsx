@@ -133,6 +133,49 @@ function getPlannerPlanLabel(activity: PhoneRuntimeStageActivity): { title: stri
     };
 }
 
+function getEngineeringGroupId(activity?: PhoneRuntimeStageActivity): string {
+    if (!activity) return "";
+    const data = readExecutionData(activity);
+    return readString(data.taskBriefId)
+        || readString(data.proofEntryId)
+        || readString(data.planId)
+        || readString((readRecord(data.traceRef)).runId)
+        || activity.id;
+}
+
+function getEngineeringLabel(activity: PhoneRuntimeStageActivity): { title: string; meta: string } {
+    const data = readExecutionData(activity);
+    const worksetDecision = readRecord(data.worksetDispatchDecision);
+    const title = readString(data.taskGoal)
+        || readString(data.patchIntent)
+        || readString(data.planSummary)
+        || readString(data.summary)
+        || activity.summary
+        || "Engineering lane";
+    const verificationStatus = readString(data.verificationStatus);
+    const risk = readString(data.risk) || readString(worksetDecision.risk);
+    const decisionSource = readString(data.worksetDecisionSource) || readString(data.decisionSource) || readString(worksetDecision.worksetDecisionSource);
+    const ownershipCount = Number(data.ownershipCount || (Array.isArray(data.ownershipPlan) ? data.ownershipPlan.length : 0) || 0);
+    const outsideCount = Number(data.outsideWriteSetCount || (Array.isArray(data.outsideWriteSetFiles) ? data.outsideWriteSetFiles.length : 0) || 0);
+    const warningCount = Number(data.warningCount || 0);
+    const blockedCount = Number(data.blockedCount || 0);
+    const metaParts: string[] = [];
+    if (verificationStatus) metaParts.push(verificationStatus);
+    if (risk) metaParts.push(`risk: ${risk}`);
+    if (decisionSource) metaParts.push(decisionSource);
+    if (ownershipCount > 0) metaParts.push(`${ownershipCount} owners`);
+    if (blockedCount > 0) {
+        metaParts.push(`${blockedCount} blocked`);
+    } else if (warningCount > 0) {
+        metaParts.push(`${warningCount} warnings`);
+    }
+    if (outsideCount > 0) metaParts.push(`${outsideCount} outside`);
+    return {
+        title,
+        meta: metaParts.join(" · ") || "engineering governance",
+    };
+}
+
 function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
     const { colors, t, locale } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
@@ -403,23 +446,29 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
 
     const renderActivityItem = useCallback(
         ({ item, index }: { item: PhoneRuntimeStageActivity; index: number }) => {
-            const shouldGroup = effectiveSelectedRuntimeId === "subagent_swarm" || effectiveSelectedRuntimeId === "planner_lane";
+            const shouldGroup = effectiveSelectedRuntimeId === "subagent_swarm" || effectiveSelectedRuntimeId === "planner_lane" || effectiveSelectedRuntimeId === "engineering_lane";
             const currentGroupId = !shouldGroup
                 ? ""
                 : effectiveSelectedRuntimeId === "subagent_swarm"
                     ? getSwarmTaskBriefId(item)
-                    : getPlannerPlanId(item);
+                    : effectiveSelectedRuntimeId === "planner_lane"
+                        ? getPlannerPlanId(item)
+                        : getEngineeringGroupId(item);
             const previousGroupId = !shouldGroup
                 ? ""
                 : effectiveSelectedRuntimeId === "subagent_swarm"
                     ? getSwarmTaskBriefId(visibleActivities[index - 1])
-                    : getPlannerPlanId(visibleActivities[index - 1]);
+                    : effectiveSelectedRuntimeId === "planner_lane"
+                        ? getPlannerPlanId(visibleActivities[index - 1])
+                        : getEngineeringGroupId(visibleActivities[index - 1]);
             const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
             const taskLabel = !showTaskHeader
                 ? null
                 : effectiveSelectedRuntimeId === "subagent_swarm"
                     ? getSwarmTaskLabel(item)
-                    : getPlannerPlanLabel(item);
+                    : effectiveSelectedRuntimeId === "planner_lane"
+                        ? getPlannerPlanLabel(item)
+                        : getEngineeringLabel(item);
             return (
                 <View>
                     {taskLabel ? (

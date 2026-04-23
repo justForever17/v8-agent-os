@@ -29,13 +29,15 @@ type EngineeringLaneConfig = {
     evidenceGraphEnabled: boolean;
     evidenceGraphBudget: number;
     codingPlannerContractEnabled: boolean;
-    worksetGovernanceMode: "soft_gate" | "read_only" | "off";
+    worksetGovernanceMode: "observe_auto_block" | "soft_gate" | "read_only" | "off";
+    worksetObservationEnabled: boolean;
+    workbenchDryRunMatrixEnabled: boolean;
     maxCriticalFiles: number;
     proofLedgerEnabled: boolean;
     autoProofCollectionEnabled: boolean;
     proofCollectionScope: "engineering_active" | "force_only" | "off";
     diagnosticsProviders: DiagnosticsProviders;
-    worksetRiskMode: "soft_gate" | "read_only" | "off";
+    worksetRiskMode: "observe_auto_block" | "soft_gate" | "read_only" | "off";
     suppressDailyMemory: boolean;
     suppressMemoryMap: boolean;
     rankedWorkflowPathCount: number;
@@ -57,6 +59,8 @@ type ProofEntry = {
     id: string;
     sessionId?: string;
     runId?: string;
+    taskBriefId?: string | null;
+    delegationId?: string | null;
     mode?: string;
     patchIntent?: string;
     verificationStatus?: string;
@@ -69,11 +73,77 @@ type ProofEntry = {
         gitSummary?: Record<string, unknown>;
         lspProvider?: Record<string, unknown>;
         worksetRisk?: Record<string, unknown>;
+        worksetDispatchDecision?: Record<string, unknown>;
+        worksetObservation?: Record<string, unknown>;
+        worksetCorrelation?: Record<string, unknown>;
+        outsideWriteSetFiles?: string[];
+        manualOverride?: Record<string, unknown>;
         contextPackDigest?: Record<string, unknown>;
     };
     residualRisks?: string[];
     metadata?: Record<string, unknown>;
+    worksetObservation?: Record<string, unknown>;
+    worksetCorrelation?: Record<string, unknown>;
+    outsideWriteSetFiles?: string[];
+    manualOverride?: Record<string, unknown>;
     createdAt?: string;
+};
+
+type WorksetObservationEntry = {
+    id: string;
+    sessionId?: string | null;
+    runId?: string | null;
+    taskBriefId?: string | null;
+    delegationId?: string | null;
+    decisionSource?: string | null;
+    phase?: string | null;
+    decision?: Record<string, unknown>;
+    warningOrBlockReason?: string | null;
+    manualOverride?: boolean;
+    outsideWriteSetFiles?: string[];
+    correlationStatus?: string | null;
+    metadata?: Record<string, unknown>;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+};
+
+type CrossLinkMatrixScenario = {
+    id?: string;
+    group?: string;
+    label?: string;
+    status?: "pass" | "warning" | "fail" | string;
+    summary?: string;
+    checks?: Array<{ id?: string; status?: string; message?: string; evidence?: unknown }>;
+    learningEligibility?: Record<string, unknown>;
+    deepLinks?: Record<string, string>;
+};
+
+type CrossLinkMatrix = {
+    enabled?: boolean;
+    summary?: {
+        total?: number;
+        pass?: number;
+        warning?: number;
+        fail?: number;
+        groups?: Record<string, { total?: number; pass?: number; warning?: number; fail?: number }>;
+    };
+    scenarios?: CrossLinkMatrixScenario[];
+};
+
+type EngineeringWorkflowCandidate = {
+    id: string;
+    task_family?: string;
+    taskFamily?: string;
+    status?: string;
+    proofBacked?: boolean;
+    verificationBacked?: boolean;
+    lastVerificationStatus?: string;
+    worksetRisk?: string;
+    outsideWriteSetCount?: number;
+    manualOverrideCount?: number;
+    proofEntryIds?: string[];
+    updated_at?: string;
+    updatedAt?: string;
 };
 
 const DEFAULT_CONFIG: EngineeringLaneConfig = {
@@ -83,7 +153,9 @@ const DEFAULT_CONFIG: EngineeringLaneConfig = {
     evidenceGraphEnabled: true,
     evidenceGraphBudget: 1800,
     codingPlannerContractEnabled: true,
-    worksetGovernanceMode: "soft_gate",
+    worksetGovernanceMode: "observe_auto_block",
+    worksetObservationEnabled: true,
+    workbenchDryRunMatrixEnabled: true,
     maxCriticalFiles: 24,
     proofLedgerEnabled: true,
     autoProofCollectionEnabled: true,
@@ -106,11 +178,14 @@ function asConfig(value: unknown): EngineeringLaneConfig {
             raw.proofCollectionScope === "force_only" || raw.proofCollectionScope === "off"
                 ? raw.proofCollectionScope
                 : "engineering_active",
-        worksetRiskMode: raw.worksetRiskMode === "off" ? "off" : (raw.worksetRiskMode === "soft_gate" ? "soft_gate" : "read_only"),
+        worksetRiskMode:
+            raw.worksetRiskMode === "off" || raw.worksetRiskMode === "soft_gate" || raw.worksetRiskMode === "observe_auto_block"
+                ? raw.worksetRiskMode
+                : "read_only",
         worksetGovernanceMode:
-            raw.worksetGovernanceMode === "off" || raw.worksetGovernanceMode === "read_only"
+            raw.worksetGovernanceMode === "off" || raw.worksetGovernanceMode === "read_only" || raw.worksetGovernanceMode === "soft_gate"
                 ? raw.worksetGovernanceMode
-                : "soft_gate",
+                : "observe_auto_block",
         diagnosticsProviders: {
             git: providers.git ?? true,
             command: providers.command ?? true,
@@ -147,6 +222,17 @@ function StatusPill({ value }: { value?: string }) {
     return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{normalized}</span>;
 }
 
+function MatrixStatusPill({ value }: { value?: string }) {
+    const normalized = String(value || "warning");
+    const palette =
+        normalized === "pass"
+            ? "bg-emerald-100 text-emerald-700"
+            : normalized === "fail"
+              ? "bg-rose-100 text-rose-700"
+              : "bg-amber-100 text-amber-700";
+    return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{normalized}</span>;
+}
+
 function FieldList({ items, empty }: { items?: string[]; empty: string }) {
     if (!items?.length) {
         return <p className="text-sm text-slate-500">{empty}</p>;
@@ -162,6 +248,28 @@ function FieldList({ items, empty }: { items?: string[]; empty: string }) {
     );
 }
 
+function normalizeWorksetRisk(value: unknown): string {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "ready" || raw === "within_write_set" || raw === "none") return "within_write_set";
+    if (raw === "write_set_conflict" || raw === "outside_write_set") return "outside_write_set";
+    if (raw === "missing_write_set" || raw === "unknown_write_set" || raw === "read_only_safe" || raw === "not_evaluated") return raw;
+    if (raw === "not_engineering") return "not_evaluated";
+    return "not_evaluated";
+}
+
+function resolveWorksetRisk(proof: ProofEntry | null | undefined): string {
+    if (!proof) return "not_evaluated";
+    return normalizeWorksetRisk(
+        (proof.diagnostics?.worksetRisk as Record<string, unknown> | undefined)?.risk
+            || (proof.worksetCorrelation as Record<string, unknown> | undefined)?.risk
+    );
+}
+
+function resolveObservationRisk(entry: WorksetObservationEntry | null | undefined): string {
+    if (!entry) return "not_evaluated";
+    return normalizeWorksetRisk(entry.correlationStatus || (entry.decision || {}).risk);
+}
+
 export default function EngineeringLanePage() {
     const t = useT();
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<EngineeringLaneConfig> | null>(null);
@@ -174,13 +282,48 @@ export default function EngineeringLanePage() {
     const [dryRunMode, setDryRunMode] = useState<"auto" | "force" | "off">("auto");
     const [dryRunResult, setDryRunResult] = useState<Record<string, unknown> | null>(null);
     const [proofEntries, setProofEntries] = useState<ProofEntry[]>([]);
+    const [worksetObservations, setWorksetObservations] = useState<WorksetObservationEntry[]>([]);
     const [selectedProofId, setSelectedProofId] = useState<string>("");
     const [proofStatusFilter, setProofStatusFilter] = useState("all");
     const [proofSessionFilter, setProofSessionFilter] = useState("");
     const [proofRunFilter, setProofRunFilter] = useState("");
+    const [proofTaskBriefFilter, setProofTaskBriefFilter] = useState("");
+    const [worksetRiskFilter, setWorksetRiskFilter] = useState("all");
+    const [outsideFilter, setOutsideFilter] = useState("all");
+    const [decisionSourceFilter, setDecisionSourceFilter] = useState("all");
+    const [observationStateFilter, setObservationStateFilter] = useState("all");
+    const [engineeringWorkflowCandidates, setEngineeringWorkflowCandidates] = useState<EngineeringWorkflowCandidate[]>([]);
 
     const config = useMemo(() => asConfig(envelope?.data), [envelope]);
-    const selectedProof = proofEntries.find((entry) => entry.id === selectedProofId) || proofEntries[0] || null;
+    const visibleProofEntries = useMemo(() => proofEntries.filter((entry) => {
+        const risk = resolveWorksetRisk(entry);
+        const outsideCount = Array.isArray(entry.outsideWriteSetFiles) ? entry.outsideWriteSetFiles.length : 0;
+        if (proofStatusFilter !== "all" && String(entry.verificationStatus || "") !== proofStatusFilter) return false;
+        if (proofSessionFilter.trim() && String(entry.sessionId || "") !== proofSessionFilter.trim()) return false;
+        if (proofRunFilter.trim() && String(entry.runId || "") !== proofRunFilter.trim()) return false;
+        if (proofTaskBriefFilter.trim() && String(entry.taskBriefId || "") !== proofTaskBriefFilter.trim()) return false;
+        if (worksetRiskFilter !== "all" && risk !== worksetRiskFilter) return false;
+        if (outsideFilter === "outside_only" && outsideCount <= 0) return false;
+        if (outsideFilter === "clean_only" && outsideCount > 0) return false;
+        return true;
+    }), [proofEntries, proofStatusFilter, proofSessionFilter, proofRunFilter, proofTaskBriefFilter, worksetRiskFilter, outsideFilter]);
+    const selectedProof = visibleProofEntries.find((entry) => entry.id === selectedProofId) || visibleProofEntries[0] || proofEntries[0] || null;
+    const visibleWorksetObservations = useMemo(() => worksetObservations.filter((entry) => {
+        if (proofSessionFilter.trim() && String(entry.sessionId || "") !== proofSessionFilter.trim()) return false;
+        if (proofRunFilter.trim() && String(entry.runId || "") !== proofRunFilter.trim()) return false;
+        if (proofTaskBriefFilter.trim() && String(entry.taskBriefId || "") !== proofTaskBriefFilter.trim()) return false;
+        if (decisionSourceFilter !== "all" && String(entry.decisionSource || "") !== decisionSourceFilter) return false;
+        if (observationStateFilter === "blocked_only" && !Boolean((entry.decision || {}).blocked)) return false;
+        if (observationStateFilter === "warning_only" && !Boolean((entry.decision || {}).warning || (entry.decision || {}).blocked)) return false;
+        if (observationStateFilter === "clean_only" && Boolean((entry.decision || {}).warning || (entry.decision || {}).blocked)) return false;
+        if (outsideFilter === "outside_only" && !(entry.outsideWriteSetFiles || []).length) return false;
+        if (outsideFilter === "clean_only" && (entry.outsideWriteSetFiles || []).length) return false;
+        if (worksetRiskFilter !== "all") {
+            const risk = resolveObservationRisk(entry);
+            if (risk !== worksetRiskFilter) return false;
+        }
+        return true;
+    }), [worksetObservations, proofSessionFilter, proofRunFilter, proofTaskBriefFilter, decisionSourceFilter, observationStateFilter, outsideFilter, worksetRiskFilter]);
 
     const load = async () => {
         setLoading(true);
@@ -210,8 +353,27 @@ export default function EngineeringLanePage() {
         }
     };
 
+    const loadWorksetObservations = async () => {
+        const params = new URLSearchParams();
+        params.set("limit", "40");
+        if (proofSessionFilter.trim()) params.set("sessionId", proofSessionFilter.trim());
+        if (proofRunFilter.trim()) params.set("runId", proofRunFilter.trim());
+        if (proofTaskBriefFilter.trim()) params.set("taskBriefId", proofTaskBriefFilter.trim());
+        if (decisionSourceFilter !== "all") params.set("decisionSource", decisionSourceFilter);
+        const response = await fetch(`/api/engineering-lane/workset-observations?${params.toString()}`, { cache: "no-store" });
+        const data = await response.json().catch(() => ({}));
+        setWorksetObservations(Array.isArray(data.items) ? data.items : []);
+    };
+
+    const loadEngineeringWorkflowCandidates = async () => {
+        const params = new URLSearchParams({ class: "engineering", limit: "8" });
+        const response = await fetch(`/api/memory/workflows?${params.toString()}`, { cache: "no-store" });
+        const data = await response.json().catch(() => ({}));
+        setEngineeringWorkflowCandidates(Array.isArray(data.items) ? data.items : []);
+    };
+
     useEffect(() => {
-        void Promise.all([load(), loadProof()]);
+        void Promise.all([load(), loadProof(), loadWorksetObservations(), loadEngineeringWorkflowCandidates()]);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -254,7 +416,7 @@ export default function EngineeringLanePage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sessionId: selectedProof.sessionId, runId: selectedProof.runId }),
             });
-            await loadProof();
+            await Promise.all([loadProof(), loadWorksetObservations()]);
         } finally {
             setRefreshingProof(false);
         }
@@ -265,6 +427,16 @@ export default function EngineeringLanePage() {
     const evidenceGraph = ((dryRunResult?.evidenceGraphDigest || contextPack.evidenceGraphDigest || {}) as Record<string, unknown>);
     const codingPlanner = ((dryRunResult?.codingPlannerContractPreview || contextPack.codingPlannerContractPreview || {}) as Record<string, unknown>);
     const dryRunSoftGate = ((dryRunResult?.worksetSoftGateDecision || contextPack.worksetSoftGateDecision || {}) as Record<string, unknown>);
+    const brokerDispatch = ((dryRunResult?.brokerDispatchSimulation || contextPack.brokerDispatchSimulation || {}) as Record<string, unknown>);
+    const dryRunMatrix = ((dryRunResult?.dryRunMatrix || contextPack.dryRunMatrix || {}) as Record<string, unknown>);
+    const crossLinkMatrix = ((dryRunResult?.crossLinkDryRunMatrix || {}) as CrossLinkMatrix);
+    const crossLinkScenarios = Array.isArray(crossLinkMatrix.scenarios) ? crossLinkMatrix.scenarios : [];
+    const crossLinkGroups = crossLinkScenarios.reduce<Record<string, CrossLinkMatrixScenario[]>>((acc, item) => {
+        const group = String(item.group || "other");
+        acc[group] = acc[group] || [];
+        acc[group].push(item);
+        return acc;
+    }, {});
     const repoBrief = (contextPack.repoBrief || {}) as Record<string, unknown>;
     const gitSummary = (contextPack.gitSummary || {}) as Record<string, unknown>;
     const memorySuppression = (contextPack.memorySuppression || {}) as Record<string, unknown>;
@@ -273,6 +445,9 @@ export default function EngineeringLanePage() {
         : [];
     const diagnostics = selectedProof?.diagnostics?.items || [];
     const worksetRisk = selectedProof?.diagnostics?.worksetRisk || {};
+    const worksetDispatchDecision = selectedProof?.diagnostics?.worksetDispatchDecision || {};
+    const worksetObservation = selectedProof?.worksetObservation || selectedProof?.diagnostics?.worksetObservation || {};
+    const worksetCorrelation = selectedProof?.worksetCorrelation || selectedProof?.diagnostics?.worksetCorrelation || {};
 
     return (
         <AdminPageShell>
@@ -350,6 +525,7 @@ export default function EngineeringLanePage() {
                                 <Select value={config.worksetGovernanceMode} onValueChange={(value) => patchConfig({ worksetGovernanceMode: value as EngineeringLaneConfig["worksetGovernanceMode"], worksetRiskMode: value as EngineeringLaneConfig["worksetRiskMode"] })}>
                                     <SelectTrigger><SelectValue /></SelectTrigger>
                                     <SelectContent>
+                                        <SelectItem value="observe_auto_block">observe_auto_block</SelectItem>
                                         <SelectItem value="soft_gate">soft_gate</SelectItem>
                                         <SelectItem value="read_only">read_only</SelectItem>
                                         <SelectItem value="off">off</SelectItem>
@@ -364,6 +540,8 @@ export default function EngineeringLanePage() {
                                 {[
                                     ["proofLedgerEnabled", "proofLedger"],
                                     ["autoProofCollectionEnabled", "autoProofCollection"],
+                                    ["worksetObservationEnabled", "worksetObservation"],
+                                    ["workbenchDryRunMatrixEnabled", "dryRunMatrix"],
                                     ["suppressDailyMemory", "suppressDaily"],
                                     ["suppressMemoryMap", "suppressMap"],
                                 ].map(([key, label]) => (
@@ -501,11 +679,98 @@ export default function EngineeringLanePage() {
                                         <div className="rounded-xl border border-slate-200 p-4">
                                             <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.softGateTitle")}</h3>
                                             <div className="mt-3 grid gap-2 text-sm text-slate-600">
-                                                <span>risk: {String(dryRunSoftGate.risk || "not_evaluated")}</span>
+                                                <span>risk: {normalizeWorksetRisk(dryRunSoftGate.risk || "not_evaluated")}</span>
                                                 <span>warning: {String(dryRunSoftGate.warning ?? false)}</span>
                                                 <span>{String(dryRunSoftGate.suggestedAction || "")}</span>
                                             </div>
                                             <FieldList items={(Array.isArray(dryRunSoftGate.outsideWriteSet) ? dryRunSoftGate.outsideWriteSet : []).map(String)} empty={t("app.admin.dashboard.engineeringLane.none")} />
+                                        </div>
+                                        <div className="rounded-xl border border-slate-200 p-4">
+                                            <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.brokerDispatchTitle")}</h3>
+                                            <div className="mt-3 grid gap-2 text-sm text-slate-600">
+                                                <span>enabled: {String(brokerDispatch.enabled ?? false)}</span>
+                                                <span>auto blocked: {String(brokerDispatch.autoDispatchBlocked ?? false)}</span>
+                                                <span>action: {String(brokerDispatch.recommendedAction || "-")}</span>
+                                            </div>
+                                            <FieldList
+                                                items={(Array.isArray(brokerDispatch.autoDecisions) ? brokerDispatch.autoDecisions : [])
+                                                    .map((item) => (item && typeof item === "object" ? `${String((item as Record<string, unknown>).taskBriefId || "-")}: ${String((item as Record<string, unknown>).risk || "-")}` : ""))
+                                                    .filter(Boolean)}
+                                                empty={t("app.admin.dashboard.engineeringLane.none")}
+                                            />
+                                        </div>
+                                        <div className="rounded-xl border border-slate-200 p-4 lg:col-span-2">
+                                            <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.dryRunMatrixTitle")}</h3>
+                                            <div className="mt-3 grid gap-2 md:grid-cols-3">
+                                                <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">enabled: {String(dryRunMatrix.enabled ?? false)}</span>
+                                                <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">blocked: {String(dryRunMatrix.blockedScenarioCount ?? 0)}</span>
+                                                <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">warnings: {String(dryRunMatrix.warningScenarioCount ?? 0)}</span>
+                                            </div>
+                                            <div className="mt-3 grid gap-2">
+                                                {(Array.isArray(dryRunMatrix.scenarios) ? dryRunMatrix.scenarios : []).slice(0, 8).map((scenario) => {
+                                                    const item = (scenario || {}) as Record<string, unknown>;
+                                                    return (
+                                                        <div key={String(item.id || item.label)} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-sm">
+                                                            <span className="font-medium text-slate-700">{String(item.label || item.id || "-")}</span>
+                                                            <span className="text-xs text-slate-500">
+                                                                autoBlocked={String(item.autoBlocked ?? false)} · manualWarning={String(item.manualWarning ?? false)} · verification={String(item.simulatedVerificationStatus || "planned")} · {String(item.recommendedAction || "-")}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 lg:col-span-2">
+                                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                                <div>
+                                                    <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
+                                                    <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixDescription")}</p>
+                                                </div>
+                                                <MatrixStatusPill value={Number(crossLinkMatrix.summary?.fail || 0) > 0 ? "fail" : Number(crossLinkMatrix.summary?.warning || 0) > 0 ? "warning" : "pass"} />
+                                            </div>
+                                            <div className="mt-4 grid gap-2 sm:grid-cols-4">
+                                                {[
+                                                    ["total", crossLinkMatrix.summary?.total ?? crossLinkScenarios.length],
+                                                    ["pass", crossLinkMatrix.summary?.pass ?? 0],
+                                                    ["warning", crossLinkMatrix.summary?.warning ?? 0],
+                                                    ["fail", crossLinkMatrix.summary?.fail ?? 0],
+                                                ].map(([label, value]) => (
+                                                    <div key={String(label)} className="rounded-xl border border-white bg-white px-3 py-2">
+                                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{String(label)}</div>
+                                                        <div className="mt-1 text-lg font-semibold text-slate-900">{String(value)}</div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                                                {Object.entries(crossLinkGroups).map(([group, items]) => (
+                                                    <div key={group} className="rounded-xl border border-slate-200 bg-white p-3">
+                                                        <div className="mb-2 flex items-center justify-between gap-2">
+                                                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{group}</span>
+                                                            <span className="text-xs text-slate-500">{items.length}</span>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            {items.map((item) => {
+                                                                const firstIssue = (item.checks || []).find((check) => check.status === "fail" || check.status === "warning");
+                                                                return (
+                                                                    <div key={String(item.id || item.label)} className="rounded-lg border border-slate-100 px-3 py-2">
+                                                                        <div className="flex items-center justify-between gap-2">
+                                                                            <span className="text-sm font-medium text-slate-800">{String(item.label || item.id || "-")}</span>
+                                                                            <MatrixStatusPill value={item.status} />
+                                                                        </div>
+                                                                        <p className="mt-1 text-xs text-slate-500">{String(firstIssue?.message || item.summary || "")}</p>
+                                                                        {item.deepLinks?.workflows ? (
+                                                                            <a className="mt-2 inline-flex text-xs font-medium text-slate-900 underline-offset-4 hover:underline" href={item.deepLinks.workflows}>
+                                                                                {t("app.admin.dashboard.engineeringLane.openMemoryWorkflows")}
+                                                                            </a>
+                                                                        ) : null}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            {crossLinkScenarios.length ? <JsonDebug value={crossLinkMatrix} /> : null}
                                         </div>
                                     </div>
                                     <JsonDebug value={dryRunResult} />
@@ -534,16 +799,55 @@ export default function EngineeringLanePage() {
                                             <SelectItem value="observed_no_change">observed_no_change</SelectItem>
                                         </SelectContent>
                                     </Select>
+                                    <Select value={worksetRiskFilter} onValueChange={setWorksetRiskFilter}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">all workset risks</SelectItem>
+                                            <SelectItem value="within_write_set">within_write_set</SelectItem>
+                                            <SelectItem value="outside_write_set">outside_write_set</SelectItem>
+                                            <SelectItem value="missing_write_set">missing_write_set</SelectItem>
+                                            <SelectItem value="unknown_write_set">unknown_write_set</SelectItem>
+                                            <SelectItem value="read_only_safe">read_only_safe</SelectItem>
+                                            <SelectItem value="not_evaluated">not_evaluated</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <Select value={outsideFilter} onValueChange={setOutsideFilter}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">all drift states</SelectItem>
+                                            <SelectItem value="outside_only">outside write-set only</SelectItem>
+                                            <SelectItem value="clean_only">clean only</SelectItem>
+                                        </SelectContent>
+                                    </Select>
                                     <Input placeholder={t("app.admin.dashboard.engineeringLane.sessionFilter")} value={proofSessionFilter} onChange={(event) => setProofSessionFilter(event.target.value)} />
                                     <Input placeholder={t("app.admin.dashboard.engineeringLane.runFilter")} value={proofRunFilter} onChange={(event) => setProofRunFilter(event.target.value)} />
-                                    <Button variant="outline" onClick={loadProof} disabled={proofLoading}>
+                                    <Input placeholder="taskBriefId" value={proofTaskBriefFilter} onChange={(event) => setProofTaskBriefFilter(event.target.value)} />
+                                    <Select value={decisionSourceFilter} onValueChange={setDecisionSourceFilter}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">all decision sources</SelectItem>
+                                            <SelectItem value="planner_auto">planner_auto</SelectItem>
+                                            <SelectItem value="supervisor_manual">supervisor_manual</SelectItem>
+                                            <SelectItem value="dry_run">dry_run</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <Select value={observationStateFilter} onValueChange={setObservationStateFilter}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">all observation states</SelectItem>
+                                            <SelectItem value="blocked_only">blocked only</SelectItem>
+                                            <SelectItem value="warning_only">warning only</SelectItem>
+                                            <SelectItem value="clean_only">clean only</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <Button variant="outline" onClick={() => void Promise.all([loadProof(), loadWorksetObservations()])} disabled={proofLoading}>
                                         {proofLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                                         {t("app.admin.dashboard.engineeringLane.refreshList")}
                                     </Button>
                                 </div>
-                                {proofEntries.length ? (
+                                {visibleProofEntries.length ? (
                                     <div className="grid gap-3">
-                                        {proofEntries.map((entry) => (
+                                        {visibleProofEntries.map((entry) => (
                                             <button
                                                 key={entry.id}
                                                 type="button"
@@ -614,6 +918,45 @@ export default function EngineeringLanePage() {
                                 )}
                             </ConfigCard>
 
+                            <ConfigCard title="Workset Observation" description="Broker preflight、manual override 与 proof correlation 的独立治理记录。" bodyScroll="auto" bodyHeight={360}>
+                                {visibleWorksetObservations.length ? (
+                                    <div className="space-y-3">
+                                        {visibleWorksetObservations.slice(0, 16).map((entry) => {
+                                            const decision = entry.decision || {};
+                                            const risk = resolveObservationRisk(entry);
+                                            return (
+                                                <div key={entry.id} className="rounded-xl border border-slate-200 p-3">
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="truncate text-sm font-medium text-slate-900">{entry.taskBriefId || entry.delegationId || entry.id}</div>
+                                                            <div className="mt-1 text-xs text-slate-500">{String(entry.phase || "dispatch")} · {String(entry.decisionSource || "planner_auto")}</div>
+                                                        </div>
+                                                        <div className="text-right text-xs text-slate-500">
+                                                            <div>risk: {risk}</div>
+                                                            <div>outside: {(entry.outsideWriteSetFiles || []).length}</div>
+                                                        </div>
+                                                    </div>
+                                                    {entry.warningOrBlockReason ? <p className="mt-2 text-xs text-slate-600">{entry.warningOrBlockReason}</p> : null}
+                                                    {typeof decision["reason"] === "string" && decision["reason"] && decision["reason"] !== entry.warningOrBlockReason ? (
+                                                        <p className="mt-1 text-[11px] text-slate-500">reason={String(decision["reason"])}</p>
+                                                    ) : null}
+                                                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                                        <span>manualOverride={String(Boolean(entry.manualOverride))}</span>
+                                                        {entry.correlationStatus ? <span>correlation={String(entry.correlationStatus)}</span> : null}
+                                                        {entry.metadata?.scenarioId ? <span>scenario={String(entry.metadata.scenarioId)}</span> : null}
+                                                        {entry.metadata?.proofEntryId ? <span>proof={String(entry.metadata.proofEntryId)}</span> : null}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                                        暂无独立 observation 记录。
+                                    </div>
+                                )}
+                            </ConfigCard>
+
                             <div className="grid gap-6 xl:grid-cols-2">
                                 <ConfigCard title="app.admin.dashboard.engineeringLane.diagnosticsTitle" description="app.admin.dashboard.engineeringLane.diagnosticsDescription" bodyScroll="auto" bodyHeight={360}>
                                     {diagnostics.length ? (
@@ -637,10 +980,50 @@ export default function EngineeringLanePage() {
                                 <ConfigCard title="app.admin.dashboard.engineeringLane.worksetTitle" description="app.admin.dashboard.engineeringLane.worksetDescription" bodyScroll="auto" bodyHeight={360}>
                                     {selectedProof ? (
                                         <div className="space-y-4">
-                                            <div className="rounded-xl border border-slate-200 p-4">
-                                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">risk</div>
-                                                <div className="mt-1 text-lg font-semibold text-slate-900">{String(worksetRisk.risk || "not_evaluated")}</div>
-                                                {worksetRisk.note ? <p className="mt-1 text-xs text-slate-500">{String(worksetRisk.note)}</p> : null}
+                                            <div className="grid gap-3 md:grid-cols-3">
+                                                <div className="rounded-xl border border-slate-200 p-4">
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">risk</div>
+                                                    <div className="mt-1 text-lg font-semibold text-slate-900">{resolveWorksetRisk(selectedProof)}</div>
+                                                    {worksetRisk.note ? <p className="mt-1 text-xs text-slate-500">{String(worksetRisk.note)}</p> : null}
+                                                </div>
+                                                <div className="rounded-xl border border-slate-200 p-4">
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">observations</div>
+                                                    <div className="mt-1 text-lg font-semibold text-slate-900">{String(worksetObservation.observationCount ?? 0)}</div>
+                                                    <p className="mt-1 text-xs text-slate-500">warnings {String(worksetCorrelation.warningCount ?? 0)}</p>
+                                                </div>
+                                                <div className="rounded-xl border border-slate-200 p-4">
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">outside</div>
+                                                    <div className="mt-1 text-lg font-semibold text-slate-900">{String((selectedProof.outsideWriteSetFiles || []).length)}</div>
+                                                    <p className="mt-1 text-xs text-slate-500">manual override {String((selectedProof.manualOverride || {}).present ?? false)}</p>
+                                                </div>
+                                            </div>
+                                            <div className="grid gap-4 lg:grid-cols-2">
+                                                <div>
+                                                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Broker Preflight</h4>
+                                                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                                                        <div>source: {String(worksetDispatchDecision.worksetDecisionSource || "—")}</div>
+                                                        <div>risk: {normalizeWorksetRisk(worksetDispatchDecision.risk || "not_evaluated")}</div>
+                                                        <div>blocked: {String(worksetDispatchDecision.blocked ?? false)}</div>
+                                                        <div>warning: {String(worksetDispatchDecision.warning ?? false)}</div>
+                                                        {worksetDispatchDecision.rawRisk ? <div>rawRisk: {String(worksetDispatchDecision.rawRisk)}</div> : null}
+                                                        {worksetDispatchDecision.reason ? <div className="mt-2">{String(worksetDispatchDecision.reason)}</div> : null}
+                                                        {worksetDispatchDecision.repairSuggestion ? <div className="mt-2 text-amber-700">{String(worksetDispatchDecision.repairSuggestion)}</div> : null}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Proof Correlation</h4>
+                                                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                                                        <div>risk: {normalizeWorksetRisk(worksetCorrelation.risk || "not_evaluated")}</div>
+                                                        <div>warnings: {String(worksetCorrelation.warningCount ?? 0)}</div>
+                                                        <div>blocked: {String(worksetCorrelation.blockedCount ?? 0)}</div>
+                                                        <div>matched: {String(Array.isArray(worksetCorrelation.matchedWriteSetFiles) ? worksetCorrelation.matchedWriteSetFiles.length : 0)}</div>
+                                                        {worksetCorrelation.suggestedAction ? <div className="mt-2">{String(worksetCorrelation.suggestedAction)}</div> : null}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">outsideWriteSetFiles</h4>
+                                                <FieldList items={selectedProof.outsideWriteSetFiles || []} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                             <div>
                                                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">readSet</h4>
@@ -650,15 +1033,68 @@ export default function EngineeringLanePage() {
                                                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">writeSet</h4>
                                                 <FieldList items={selectedProof.writeSet} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
-                                            <JsonDebug value={worksetRisk} />
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">{t("app.admin.dashboard.engineeringLane.noProof")}</div>
-                                    )}
-                                </ConfigCard>
+                                    <JsonDebug value={{ worksetRisk, worksetObservation, worksetCorrelation }} />
+                                </div>
+                            ) : (
+                                <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">{t("app.admin.dashboard.engineeringLane.noProof")}</div>
+                            )}
+                        </ConfigCard>
+
+                        <ConfigCard title="app.admin.dashboard.engineeringLane.workflowMemoryTitle" description="app.admin.dashboard.engineeringLane.workflowMemoryDescription" bodyScroll="auto" bodyHeight={360}>
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                        {t("app.admin.dashboard.engineeringLane.workflowMemoryReadOnly")}
+                                    </span>
+                                    <a className="text-xs font-medium text-slate-900 underline-offset-4 hover:underline" href="/admin/memory?tab=workflows">
+                                        {t("app.admin.dashboard.engineeringLane.openMemoryWorkflows")}
+                                    </a>
+                                </div>
+                                {engineeringWorkflowCandidates.length ? (
+                                    <div className="space-y-2">
+                                        {engineeringWorkflowCandidates.map((item) => {
+                                            const eligible = item.status === "active_hint" || item.status === "approved";
+                                            const blockedReason = !item.proofBacked
+                                                ? "not proof-backed"
+                                                : !item.verificationBacked
+                                                  ? "not verification-backed"
+                                                  : item.worksetRisk && ["outside_write_set", "missing_write_set", "unknown_write_set"].includes(item.worksetRisk)
+                                                    ? `workset risk: ${item.worksetRisk}`
+                                                    : eligible
+                                                      ? "eligible"
+                                                      : `status: ${item.status || "candidate"}`;
+                                            return (
+                                                <div key={item.id} className="rounded-xl border border-slate-200 p-3">
+                                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="truncate text-sm font-medium text-slate-900">{item.task_family || item.taskFamily || item.id}</div>
+                                                            <div className="mt-1 font-mono text-[11px] text-slate-500">{item.id}</div>
+                                                        </div>
+                                                        <StatusPill value={item.lastVerificationStatus || item.status} />
+                                                    </div>
+                                                    <div className="mt-2 grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
+                                                        <span>proofBacked={String(Boolean(item.proofBacked))}</span>
+                                                        <span>verificationBacked={String(Boolean(item.verificationBacked))}</span>
+                                                        <span>worksetRisk={item.worksetRisk || "n/a"}</span>
+                                                        <span>proofRefs={(item.proofEntryIds || []).length}</span>
+                                                    </div>
+                                                    <p className={`mt-2 text-xs ${eligible ? "text-emerald-700" : "text-amber-700"}`}>
+                                                        {t("app.admin.dashboard.engineeringLane.learningEligibility")}: {blockedReason}
+                                                    </p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                                        {t("app.admin.dashboard.engineeringLane.noEngineeringWorkflows")}
+                                    </div>
+                                )}
                             </div>
-                        </div>
+                        </ConfigCard>
                     </div>
+                </div>
+            </div>
                 </div>
             </div>
         </AdminPageShell>

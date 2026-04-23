@@ -9,9 +9,17 @@ router = APIRouter()
 
 
 @router.get("/extensions/catalog")
-async def get_extensions_catalog():
+async def get_extensions_catalog(
+    workspacePath: str | None = None,
+    workspaceId: str | None = None,
+    projectId: str | None = None,
+):
     try:
-        return extensions_runtime_service.build_catalog()
+        return extensions_runtime_service.build_catalog(
+            workspace_path=workspacePath,
+            workspace_id=workspaceId,
+            project_id=projectId,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

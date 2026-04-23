@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -39,6 +40,15 @@ type WorkflowCandidate = {
     approval_required?: boolean;
     lastHintOutcome?: string;
     last_hint_outcome?: string;
+    workflowClass?: string;
+    sourceRuntime?: string;
+    proofBacked?: boolean;
+    verificationBacked?: boolean;
+    lastVerificationStatus?: string;
+    worksetRisk?: string;
+    outsideWriteSetCount?: number;
+    manualOverrideCount?: number;
+    proofEntryIds?: string[];
     guideState?: Record<string, unknown>;
     updated_at?: string;
     updatedAt?: string;
@@ -55,6 +65,11 @@ type WorkflowEpisode = {
     userCorrectionPoints?: string[];
     final_success_evidence?: string;
     finalSuccessEvidence?: string;
+    workflowClass?: string;
+    sourceRuntime?: string;
+    verificationBacked?: boolean;
+    worksetRisk?: string;
+    proofRefs?: string[];
     metadata?: Record<string, unknown>;
     created_at?: string;
 };
@@ -131,6 +146,10 @@ export default function MemoryWorkflowsPanel() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [query, setQuery] = useState("");
+    const [workflowClassFilter, setWorkflowClassFilter] = useState("all");
+    const [proofBackedFilter, setProofBackedFilter] = useState("all");
+    const [verificationStatusFilter, setVerificationStatusFilter] = useState("all");
+    const [sourceRuntimeFilter, setSourceRuntimeFilter] = useState("");
     const [candidates, setCandidates] = useState<WorkflowCandidate[]>([]);
     const [selectedId, setSelectedId] = useState<string>("");
     const [selected, setSelected] = useState<WorkflowCandidate | null>(null);
@@ -160,6 +179,10 @@ export default function MemoryWorkflowsPanel() {
         try {
             const params = new URLSearchParams({ limit: "100" });
             if (query.trim()) params.set("q", query.trim());
+            if (workflowClassFilter !== "all") params.set("class", workflowClassFilter);
+            if (proofBackedFilter !== "all") params.set("proofBacked", proofBackedFilter === "true" ? "true" : "false");
+            if (verificationStatusFilter !== "all") params.set("verificationStatus", verificationStatusFilter);
+            if (sourceRuntimeFilter.trim()) params.set("sourceRuntime", sourceRuntimeFilter.trim());
             const res = await fetch(`/api/memory/workflows?${params.toString()}`, { cache: "no-store" });
             if (!res.ok) throw new Error(`Load failed: ${res.status}`);
             const payload = await res.json();
@@ -175,7 +198,7 @@ export default function MemoryWorkflowsPanel() {
         } finally {
             setLoading(false);
         }
-    }, [query, selectedId, t, toast]);
+    }, [proofBackedFilter, query, selectedId, sourceRuntimeFilter, t, toast, verificationStatusFilter, workflowClassFilter]);
 
     const loadSelected = useCallback(async (id: string) => {
         if (!id) {
@@ -292,6 +315,35 @@ export default function MemoryWorkflowsPanel() {
                             <RefreshCw className="h-4 w-4" />
                         </Button>
                     </div>
+                    <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                        <Select value={workflowClassFilter} onValueChange={setWorkflowClassFilter}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">{t("components.memory.MemoryWorkflowsPanel.filter.allClasses")}</SelectItem>
+                                <SelectItem value="general">{t("components.memory.MemoryWorkflowsPanel.filter.general")}</SelectItem>
+                                <SelectItem value="engineering">{t("components.memory.MemoryWorkflowsPanel.filter.engineering")}</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <Select value={proofBackedFilter} onValueChange={setProofBackedFilter}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">{t("components.memory.MemoryWorkflowsPanel.filter.allProof")}</SelectItem>
+                                <SelectItem value="true">{t("components.memory.MemoryWorkflowsPanel.filter.proofBacked")}</SelectItem>
+                                <SelectItem value="false">{t("components.memory.MemoryWorkflowsPanel.filter.notProofBacked")}</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <Select value={verificationStatusFilter} onValueChange={setVerificationStatusFilter}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">{t("components.memory.MemoryWorkflowsPanel.filter.allVerification")}</SelectItem>
+                                <SelectItem value="verified">verified</SelectItem>
+                                <SelectItem value="unverified">unverified</SelectItem>
+                                <SelectItem value="failed_verification">failed_verification</SelectItem>
+                                <SelectItem value="planned">planned</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <Input value={sourceRuntimeFilter} onChange={(event) => setSourceRuntimeFilter(event.target.value)} placeholder={t("components.memory.MemoryWorkflowsPanel.filter.sourceRuntime")} />
+                    </div>
                     <div className="max-h-[640px] space-y-2 overflow-y-auto pr-1">
                         {candidates.length === 0 ? (
                             <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">
@@ -322,6 +374,9 @@ export default function MemoryWorkflowsPanel() {
                                     </div>
                                     <div className="mt-2 flex flex-wrap gap-1">
                                         <Badge variant="outline">{t("components.memory.MemoryWorkflowsPanel.risk")}: {item.riskTier || item.risk_tier || "low"}</Badge>
+                                        <Badge variant="outline">{item.workflowClass || "general"}</Badge>
+                                        {item.proofBacked ? <Badge variant="secondary">proof</Badge> : null}
+                                        {item.lastVerificationStatus ? <Badge variant="outline">{item.lastVerificationStatus}</Badge> : null}
                                         {(item.approvalRequired ?? item.approval_required) ? <Badge variant="secondary">{t("components.memory.MemoryWorkflowsPanel.approvalRequired")}</Badge> : null}
                                     </div>
                                 </button>
@@ -398,6 +453,10 @@ export default function MemoryWorkflowsPanel() {
                                         <Metric label={t("components.memory.MemoryWorkflowsPanel.confidence")} value={Number(selected.confidence ?? 0).toFixed(2)} />
                                         <Metric label={t("components.memory.MemoryWorkflowsPanel.risk")} value={selected.riskTier || selected.risk_tier || "low"} />
                                         <Metric label={t("components.memory.MemoryWorkflowsPanel.lastOutcome")} value={selected.lastHintOutcome || selected.last_hint_outcome || "n/a"} />
+                                        <Metric label={t("components.memory.MemoryWorkflowsPanel.workflowClass")} value={selected.workflowClass || "general"} />
+                                        <Metric label={t("components.memory.MemoryWorkflowsPanel.verificationStatus")} value={selected.lastVerificationStatus || "n/a"} />
+                                        <Metric label={t("components.memory.MemoryWorkflowsPanel.worksetRisk")} value={selected.worksetRisk || "n/a"} />
+                                        <Metric label={t("components.memory.MemoryWorkflowsPanel.proofRefs")} value={selected.proofEntryIds?.length || 0} />
                                     </div>
                                     <div className="mt-4 space-y-3 rounded-md bg-muted/30 p-3">
                                         <div className="flex items-center justify-between gap-2">
@@ -474,6 +533,11 @@ export default function MemoryWorkflowsPanel() {
                                                 {Array.isArray(episode.metadata?.runtimeEvidence) ? (
                                                     <p className="mt-1 text-muted-foreground">
                                                         {t("components.memory.MemoryWorkflowsPanel.rawEvidence")}: {episode.metadata.runtimeEvidence.length}
+                                                    </p>
+                                                ) : null}
+                                                {episode.workflowClass === "engineering" || episode.sourceRuntime ? (
+                                                    <p className="mt-1 text-muted-foreground">
+                                                        {episode.workflowClass || "general"} · {episode.sourceRuntime || "memory"}
                                                     </p>
                                                 ) : null}
                                                 {Array.isArray(episode.failureMarkers) && episode.failureMarkers.length ? (

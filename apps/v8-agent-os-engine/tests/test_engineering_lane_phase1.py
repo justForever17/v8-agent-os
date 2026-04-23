@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+from core.delegation_broker import build_workset_dispatch_decisions, choose_best_local_agent_with_diagnostics
 from core.database import db
 from core.terminal_post_run import TerminalPostRunService
 from runtimes.engineering.service import engineering_lane_service
@@ -34,6 +35,7 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         with db.get_connection() as conn:
             for proof_id in self.proof_ids:
                 conn.execute("DELETE FROM engineering_proof_entries WHERE id = ?", (proof_id,))
+            conn.execute("DELETE FROM engineering_workset_observations WHERE session_id LIKE 'eng-test-%'")
             conn.execute("DELETE FROM runtime_events WHERE session_id LIKE 'eng-test-%'")
             conn.execute("DELETE FROM run_records WHERE session_id LIKE 'eng-test-%'")
             conn.execute("DELETE FROM messages WHERE session_id LIKE 'eng-test-%'")
@@ -116,6 +118,10 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertIn("criticalFiles", contract)
         self.assertIn("verificationMatrix", contract)
         self.assertIn("worksetSoftGateDecision", result)
+        self.assertTrue(result["brokerDispatchSimulation"]["enabled"])
+        self.assertIn("autoDecisions", result["brokerDispatchSimulation"])
+        self.assertTrue(result["dryRunMatrix"]["enabled"])
+        self.assertGreaterEqual(result["dryRunMatrix"]["scenarioCount"], 4)
 
     def test_soft_gate_warns_when_changed_file_outside_write_set(self) -> None:
         temp, root = self._repo()
@@ -159,6 +165,102 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertEqual(enriched["taskBriefs"][0]["writeSet"], ["src/admin-panel.tsx"])
         self.assertIn("engineeringTaskCapsule", enriched["taskBriefs"][0])
         self.assertTrue(enriched["codingPlannerContract"]["enabled"])
+
+    def test_workset_dispatch_blocks_auto_conflicting_write_sets(self) -> None:
+        tasks = [
+            {
+                "taskBriefId": "task-1",
+                "goal": "Implement admin page",
+                "writeSet": ["apps/v8-agent-os-admin/src/page.tsx"],
+                "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-admin/src/page.tsx"]},
+            },
+            {
+                "taskBriefId": "task-2",
+                "goal": "Refactor same admin page",
+                "writeSet": ["apps/v8-agent-os-admin/src/page.tsx"],
+                "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-admin/src/page.tsx"]},
+            },
+        ]
+        decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=True)
+        self.assertTrue(any(item["blocked"] for item in decisions))
+        self.assertTrue(all(item["risk"] == "outside_write_set" for item in decisions))
+
+    def test_workset_dispatch_manual_warns_but_does_not_block(self) -> None:
+        tasks = [
+            {"taskBriefId": "task-1", "goal": "Implement engine fix", "writeSet": ["apps/v8-agent-os-engine/core/foo.py"], "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-engine/core/foo.py"]}},
+            {"taskBriefId": "task-2", "goal": "Debug engine fix", "writeSet": ["apps/v8-agent-os-engine/core/"], "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-engine/core/"]}},
+        ]
+        decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=False)
+        self.assertTrue(any(item["warning"] for item in decisions))
+        self.assertFalse(any(item["blocked"] for item in decisions))
+        self.assertTrue(all(item["worksetDecisionSource"] == "supervisor_manual" for item in decisions))
+
+    def test_workset_dispatch_allows_read_only_task_without_write_set(self) -> None:
+        decisions = build_workset_dispatch_decisions(
+            [
+                {
+                    "taskBriefId": "review-1",
+                    "goal": "Review the implementation for runtime risks",
+                    "behaviorScope": ["review", "read_only"],
+                    "requiredCapabilities": ["code_review"],
+                    "engineeringTaskCapsule": {"readSet": ["apps/v8-agent-os-engine/core/foo.py"]},
+                }
+            ],
+            auto_dispatch=True,
+        )
+        self.assertFalse(decisions[0]["blocked"])
+        self.assertEqual(decisions[0]["risk"], "read_only_safe")
+
+    def test_workset_dispatch_blocks_auto_missing_write_set_for_implementation(self) -> None:
+        decisions = build_workset_dispatch_decisions(
+            [
+                {
+                    "taskBriefId": "impl-1",
+                    "goal": "Implement the engine fix",
+                    "behaviorScope": ["implementation"],
+                    "engineeringTaskCapsule": {"criticalFiles": ["apps/v8-agent-os-engine/core/foo.py"]},
+                }
+            ],
+            auto_dispatch=True,
+        )
+        self.assertTrue(decisions[0]["blocked"])
+        self.assertEqual(decisions[0]["risk"], "missing_write_set")
+
+    def test_engineering_role_bias_prefers_reviewer_for_review_task(self) -> None:
+        task = {
+            "taskBriefId": "review-1",
+            "goal": "Review architecture risks in the patch",
+            "behaviorScope": ["review", "audit"],
+            "requiredCapabilities": ["code_review"],
+            "engineeringTaskCapsule": {"readSet": ["apps/v8-agent-os-engine/core/foo.py"]},
+        }
+        agents = [
+            {
+                "id": "implementation-engineer",
+                "name": "Implementation Engineer",
+                "description": "Implements bounded code changes.",
+                "capabilitySnapshot": {
+                    "agentClass": "implementer",
+                    "domainTags": ["software_engineering"],
+                    "operationCapabilities": ["implement", "debug"],
+                    "plannerSuitability": "high",
+                },
+            },
+            {
+                "id": "code-review-architect",
+                "name": "Code Review Architect",
+                "description": "Reviews architecture risks and maintainability.",
+                "capabilitySnapshot": {
+                    "agentClass": "reviewer",
+                    "domainTags": ["software_engineering", "architecture", "code_review"],
+                    "operationCapabilities": ["review", "audit", "validate_contract"],
+                    "plannerSuitability": "high",
+                },
+            },
+        ]
+        selected, diagnostics = choose_best_local_agent_with_diagnostics(task, agents)
+        self.assertEqual(selected["id"], "code-review-architect")
+        self.assertTrue(any("engineeringRole:review" in signal for signal in diagnostics["matchSignals"]))
 
     def test_proof_ledger_verified_requires_evidence(self) -> None:
         entry = engineering_lane_service.add_proof_entry(
@@ -288,6 +390,165 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertEqual(entry["verificationStatus"], "failed_verification")
         diagnostics = entry["diagnostics"]["items"]
         self.assertTrue(any(item.get("severity") == "error" for item in diagnostics))
+
+    def test_terminal_proof_correlates_workset_observation_and_outside_files(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        (root / "src" / "admin-panel.tsx").write_text("export const value = 5\n", encoding="utf-8")
+        session_id, run_id = self._create_completed_run(root=root, active=True)
+        self._add_tool_events(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name="delegation_broker",
+            command="delegation_broker dispatch",
+            result={
+                "ok": True,
+                "mode": "dispatch",
+                "items": [
+                    {
+                        "delegationId": "delegation-test",
+                        "taskBriefId": "task-docs",
+                        "taskGoal": "Update docs only",
+                        "status": "queued",
+                        "lane": "subagent",
+                        "writeSet": ["docs/"],
+                        "readSet": ["docs/"],
+                        "worksetDispatchDecision": {
+                            "taskBriefId": "task-docs",
+                            "mode": "manual",
+                            "worksetDecisionSource": "supervisor_manual",
+                            "risk": "within_write_set",
+                            "blocked": False,
+                            "warning": True,
+                            "reason": "manual_override_test",
+                            "writeSet": ["docs/"],
+                        },
+                    }
+                ],
+            },
+        )
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config(autoProofCollectionEnabled=True, worksetGovernanceMode="observe_auto_block")):
+            result = engineering_lane_service.collect_terminal_proof(session_id=session_id, run_id=run_id)
+        entry = result["entry"]
+        self.proof_ids.append(entry["id"])
+        self.assertIn("src/admin-panel.tsx", entry["outsideWriteSetFiles"])
+        self.assertTrue(entry["manualOverride"]["present"])
+        self.assertEqual(entry["worksetObservation"]["observationCount"], 1)
+        self.assertEqual(entry["diagnostics"]["worksetDispatchDecision"]["risk"], "within_write_set")
+        self.assertNotIn("rawRisk", entry["diagnostics"]["worksetDispatchDecision"])
+        self.assertEqual(entry["worksetCorrelation"]["risk"], "outside_write_set")
+        observations = engineering_lane_service.list_workset_observations(session_id=session_id, run_id=run_id, limit=10)
+        self.assertTrue(any(item["phase"] == "dispatch" for item in observations))
+        self.assertTrue(any(item["phase"] == "proof_correlation" for item in observations))
+        dispatch_items = [item for item in observations if item["phase"] == "dispatch"]
+        self.assertTrue(any(item["correlationStatus"] == "within_write_set" for item in dispatch_items))
+        self.assertTrue(any("src/admin-panel.tsx" in (item.get("outsideWriteSetFiles") or []) for item in observations if item["phase"] == "proof_correlation"))
+
+    def test_dry_run_persists_workset_observation_matrix(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        session_id = f"eng-test-{uuid.uuid4()}"
+        run_id = f"eng-run-{uuid.uuid4()}"
+        db.create_or_update_session(session_id, "Engineering dry-run test")
+        db.create_run_record(
+            run_id=run_id,
+            session_id=session_id,
+            run_type="chat",
+            status="completed",
+            trigger_source="test",
+            metadata={"workspace_path": str(root)},
+        )
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()), patch(
+            "runtimes.engineering.service.workspace_resolution_service.resolve_workspace_descriptor",
+            return_value={"workspaceRoot": str(root), "source": "main_workspace", "isScopedOverride": False},
+        ), patch("runtimes.engineering.service.workflow_memory_service.match_hints", return_value=[]):
+            result = engineering_lane_service.dry_run(
+                {
+                    "userQuery": "修复 admin panel 并补 typecheck",
+                    "engineeringMode": "force",
+                    "sessionId": session_id,
+                    "runId": run_id,
+                }
+            )
+        self.assertTrue(result["dryRunMatrix"]["enabled"])
+        persisted = result.get("worksetObservations") or []
+        self.assertTrue(any(item["phase"] == "dry_run_dispatch" for item in persisted))
+        self.assertTrue(any(item["phase"] == "dry_run_matrix" for item in persisted))
+        listed = engineering_lane_service.list_workset_observations(session_id=session_id, run_id=run_id, limit=100)
+        self.assertTrue(any(item["phase"] == "dry_run_dispatch" for item in listed))
+        self.assertTrue(any(item["phase"] == "dry_run_matrix" for item in listed))
+
+    def test_dry_run_returns_cross_link_matrix_groups(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()), patch(
+            "runtimes.engineering.service.workspace_resolution_service.resolve_workspace_descriptor",
+            return_value={"workspaceRoot": str(root), "source": "main_workspace", "isScopedOverride": False},
+        ), patch("runtimes.engineering.service.workflow_memory_service.match_hints", return_value=[]):
+            result = engineering_lane_service.dry_run(
+                {
+                    "userQuery": "修复 admin panel 并补 typecheck",
+                    "engineeringMode": "force",
+                }
+            )
+        matrix = result["crossLinkDryRunMatrix"]
+        self.assertTrue(matrix["enabled"])
+        self.assertGreaterEqual(matrix["summary"]["total"], 8)
+        groups = set(matrix["summary"]["groups"].keys())
+        self.assertTrue(
+            {
+                "trigger",
+                "workspace",
+                "memory",
+                "planner",
+                "broker",
+                "proof",
+                "runtime_lane",
+                "phase6_learning",
+            }.issubset(groups)
+        )
+
+    def test_cross_link_matrix_guards_non_engineering_and_dry_run_learning(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()), patch(
+            "runtimes.engineering.service.workspace_resolution_service.resolve_workspace_descriptor",
+            return_value={"workspaceRoot": str(root), "source": "main_workspace", "isScopedOverride": False},
+        ), patch("runtimes.engineering.service.workflow_memory_service.match_hints", return_value=[]):
+            result = engineering_lane_service.dry_run(
+                {
+                    "userQuery": "修复 admin panel 并补 typecheck",
+                    "engineeringMode": "auto",
+                }
+            )
+        scenarios = {str(item.get("id")): item for item in list(result["crossLinkDryRunMatrix"].get("scenarios") or [])}
+        self.assertEqual(scenarios["trigger_non_engineering_guard"]["status"], "pass")
+        self.assertEqual(scenarios["phase6_learning_guard"]["status"], "pass")
+        self.assertEqual(scenarios["phase6_learning_guard"]["learningEligibility"]["status"], "skipped_dry_run")
+        self.assertEqual(scenarios["proof_draft_status"]["proofDraft"]["verificationStatus"], "planned")
+
+    def test_dry_run_matrix_includes_manual_override_and_verification_variants(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()), patch(
+            "runtimes.engineering.service.workspace_resolution_service.resolve_workspace_descriptor",
+            return_value={"workspaceRoot": str(root), "source": "main_workspace", "isScopedOverride": False},
+        ), patch("runtimes.engineering.service.workflow_memory_service.match_hints", return_value=[]):
+            result = engineering_lane_service.dry_run(
+                {
+                    "userQuery": "修复 admin panel 并补 typecheck",
+                    "engineeringMode": "force",
+                }
+            )
+        dry_run_matrix = result["dryRunMatrix"]
+        scenarios = {str(item.get("id")): item for item in list(dry_run_matrix.get("scenarios") or []) if isinstance(item, dict)}
+        self.assertIn("manual_override_conflict", scenarios)
+        self.assertIn("verification_success", scenarios)
+        self.assertIn("verification_failure", scenarios)
+        self.assertIn("verification_missing", scenarios)
+        self.assertEqual(scenarios["verification_success"]["simulatedVerificationStatus"], "verified")
+        self.assertEqual(scenarios["verification_failure"]["simulatedVerificationStatus"], "failed_verification")
+        self.assertEqual(scenarios["verification_missing"]["simulatedVerificationStatus"], "unverified")
 
     def test_terminal_proof_does_not_run_validation_commands(self) -> None:
         temp, root = self._repo()

@@ -358,6 +358,14 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
                 "high": "approval",
                 "critical": "quarantine",
             },
+            "engineering": {
+                "enabled": True,
+                "extractFromProofLedger": True,
+                "requireEngineeringModeForInjection": True,
+                "requireVerifiedProofForActivation": True,
+                "learnFailedVerificationAsAntiPattern": True,
+                "minVerifiedSuccessCount": 2,
+            },
         },
         "graph_enabled": True,
         "fts_enabled": True,
@@ -389,7 +397,9 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "evidenceGraphEnabled": True,
         "evidenceGraphBudget": 1800,
         "codingPlannerContractEnabled": True,
-        "worksetGovernanceMode": "soft_gate",
+        "worksetGovernanceMode": "observe_auto_block",
+        "worksetObservationEnabled": True,
+        "workbenchDryRunMatrixEnabled": True,
         "maxCriticalFiles": 24,
         "proofLedgerEnabled": True,
         "autoProofCollectionEnabled": True,
@@ -1985,8 +1995,8 @@ class StorageManager:
         merged["proofCollectionScope"] = proof_scope if proof_scope in {"engineering_active", "force_only", "off"} else "engineering_active"
         workset_mode = str(merged.get("worksetRiskMode") or "read_only").strip().lower()
         merged["worksetRiskMode"] = workset_mode if workset_mode in {"read_only", "soft_gate", "off"} else "read_only"
-        governance_mode = str(merged.get("worksetGovernanceMode") or "soft_gate").strip().lower()
-        merged["worksetGovernanceMode"] = governance_mode if governance_mode in {"read_only", "soft_gate", "off"} else "soft_gate"
+        governance_mode = str(merged.get("worksetGovernanceMode") or "observe_auto_block").strip().lower()
+        merged["worksetGovernanceMode"] = governance_mode if governance_mode in {"observe_auto_block", "read_only", "soft_gate", "off"} else "observe_auto_block"
         providers = merged.get("diagnosticsProviders") if isinstance(merged.get("diagnosticsProviders"), dict) else {}
         default_providers = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["diagnosticsProviders"]
         merged["diagnosticsProviders"] = {
@@ -2004,7 +2014,7 @@ class StorageManager:
                 merged[key] = max(minimum, min(int(merged.get(key) or default), maximum))
             except (TypeError, ValueError):
                 merged[key] = default
-        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap"):
+        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
             merged[key] = bool(merged.get(key))
         return merged
 
@@ -2018,8 +2028,8 @@ class StorageManager:
         next_data["proofCollectionScope"] = proof_scope if proof_scope in {"engineering_active", "force_only", "off"} else "engineering_active"
         workset_mode = str(next_data.get("worksetRiskMode") or "read_only").strip().lower()
         next_data["worksetRiskMode"] = workset_mode if workset_mode in {"read_only", "soft_gate", "off"} else "read_only"
-        governance_mode = str(next_data.get("worksetGovernanceMode") or "soft_gate").strip().lower()
-        next_data["worksetGovernanceMode"] = governance_mode if governance_mode in {"read_only", "soft_gate", "off"} else "soft_gate"
+        governance_mode = str(next_data.get("worksetGovernanceMode") or "observe_auto_block").strip().lower()
+        next_data["worksetGovernanceMode"] = governance_mode if governance_mode in {"observe_auto_block", "read_only", "soft_gate", "off"} else "observe_auto_block"
         providers = next_data.get("diagnosticsProviders") if isinstance(next_data.get("diagnosticsProviders"), dict) else {}
         default_providers = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["diagnosticsProviders"]
         next_data["diagnosticsProviders"] = {
@@ -2037,7 +2047,7 @@ class StorageManager:
                 next_data[key] = max(minimum, min(int(next_data.get(key) or default), maximum))
             except (TypeError, ValueError):
                 next_data[key] = default
-        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap"):
+        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
             next_data[key] = bool(next_data.get(key))
         payload["engineeringLane"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["engineeringLane"], next_data)
         self._write_config_payload(payload)

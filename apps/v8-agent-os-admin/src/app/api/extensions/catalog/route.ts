@@ -9,7 +9,16 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const { response, data } = await proxyEngineJson("/extensions/catalog");
+        const search = req.nextUrl.searchParams;
+        const params = new URLSearchParams();
+        const workspacePath = search.get("workspacePath");
+        const workspaceId = search.get("workspaceId");
+        const projectId = search.get("projectId");
+        if (workspacePath) params.set("workspacePath", workspacePath);
+        if (workspaceId) params.set("workspaceId", workspaceId);
+        if (projectId) params.set("projectId", projectId);
+        const target = `/extensions/catalog${params.toString() ? `?${params.toString()}` : ""}`;
+        const { response, data } = await proxyEngineJson(target);
         return NextResponse.json(data, { status: response.status });
     } catch (error) {
         console.error("[Extensions Catalog] Failed to load catalog:", error);

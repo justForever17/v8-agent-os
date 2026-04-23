@@ -399,6 +399,11 @@ class DatabaseManager:
                     status TEXT DEFAULT 'candidate',
                     confidence REAL DEFAULT 0.5,
                     extraction_source TEXT,
+                    workflow_class TEXT DEFAULT 'general',
+                    source_runtime TEXT,
+                    proof_refs_json TEXT,
+                    verification_backed INTEGER DEFAULT 0,
+                    workset_risk TEXT,
                     metadata_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -430,6 +435,15 @@ class DatabaseManager:
                     last_hint_outcome TEXT,
                     guide_state_json TEXT,
                     merge_suggestion_json TEXT,
+                    workflow_class TEXT DEFAULT 'general',
+                    source_runtime TEXT,
+                    proof_backed INTEGER DEFAULT 0,
+                    verification_backed INTEGER DEFAULT 0,
+                    last_verification_status TEXT,
+                    workset_risk TEXT,
+                    outside_write_set_count INTEGER DEFAULT 0,
+                    manual_override_count INTEGER DEFAULT 0,
+                    proof_entry_ids_json TEXT,
                     last_seen_at TEXT,
                     metadata_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -502,6 +516,33 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_run_id ON engineering_proof_entries (run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_status ON engineering_proof_entries (verification_status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_proof_entries_created_at ON engineering_proof_entries (created_at DESC)')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS engineering_workset_observations (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    run_id TEXT,
+                    task_brief_id TEXT,
+                    delegation_id TEXT,
+                    decision_source TEXT DEFAULT 'planner_auto',
+                    phase TEXT DEFAULT 'dispatch',
+                    decision_json TEXT,
+                    warning_or_block_reason TEXT,
+                    manual_override INTEGER DEFAULT 0,
+                    outside_write_set_files_json TEXT,
+                    correlation_status TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_workset_observations_session_id ON engineering_workset_observations (session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_workset_observations_run_id ON engineering_workset_observations (run_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_workset_observations_task_brief_id ON engineering_workset_observations (task_brief_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_engineering_workset_observations_created_at ON engineering_workset_observations (created_at DESC)')
 
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS model_invocation_logs (
@@ -717,6 +758,33 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN guide_state_json TEXT")
                 if workflow_candidate_columns and 'merge_suggestion_json' not in workflow_candidate_columns:
                     conn.execute("ALTER TABLE memory_workflow_candidates ADD COLUMN merge_suggestion_json TEXT")
+                for column_name, ddl in (
+                    ("workflow_class", "ALTER TABLE memory_workflow_candidates ADD COLUMN workflow_class TEXT DEFAULT 'general'"),
+                    ("source_runtime", "ALTER TABLE memory_workflow_candidates ADD COLUMN source_runtime TEXT"),
+                    ("proof_backed", "ALTER TABLE memory_workflow_candidates ADD COLUMN proof_backed INTEGER DEFAULT 0"),
+                    ("verification_backed", "ALTER TABLE memory_workflow_candidates ADD COLUMN verification_backed INTEGER DEFAULT 0"),
+                    ("last_verification_status", "ALTER TABLE memory_workflow_candidates ADD COLUMN last_verification_status TEXT"),
+                    ("workset_risk", "ALTER TABLE memory_workflow_candidates ADD COLUMN workset_risk TEXT"),
+                    ("outside_write_set_count", "ALTER TABLE memory_workflow_candidates ADD COLUMN outside_write_set_count INTEGER DEFAULT 0"),
+                    ("manual_override_count", "ALTER TABLE memory_workflow_candidates ADD COLUMN manual_override_count INTEGER DEFAULT 0"),
+                    ("proof_entry_ids_json", "ALTER TABLE memory_workflow_candidates ADD COLUMN proof_entry_ids_json TEXT"),
+                ):
+                    if workflow_candidate_columns and column_name not in workflow_candidate_columns:
+                        conn.execute(ddl)
+                cursor.execute("PRAGMA table_info(memory_workflow_episodes)")
+                workflow_episode_columns = [row['name'] for row in cursor.fetchall()]
+                for column_name, ddl in (
+                    ("workflow_class", "ALTER TABLE memory_workflow_episodes ADD COLUMN workflow_class TEXT DEFAULT 'general'"),
+                    ("source_runtime", "ALTER TABLE memory_workflow_episodes ADD COLUMN source_runtime TEXT"),
+                    ("proof_refs_json", "ALTER TABLE memory_workflow_episodes ADD COLUMN proof_refs_json TEXT"),
+                    ("verification_backed", "ALTER TABLE memory_workflow_episodes ADD COLUMN verification_backed INTEGER DEFAULT 0"),
+                    ("workset_risk", "ALTER TABLE memory_workflow_episodes ADD COLUMN workset_risk TEXT"),
+                ):
+                    if workflow_episode_columns and column_name not in workflow_episode_columns:
+                        conn.execute(ddl)
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_episodes_class ON memory_workflow_episodes (workflow_class)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_class ON memory_workflow_candidates (workflow_class)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_source_runtime ON memory_workflow_candidates (source_runtime)')
             except Exception as e:
                 print(f"[Database] Migration note: {e}")
             
@@ -1885,6 +1953,122 @@ class DatabaseManager:
         data["taskBriefId"] = data.pop("task_brief_id", None)
         data["patchIntent"] = data.pop("patch_intent", "")
         data["verificationStatus"] = data.pop("verification_status", "unverified")
+        data["createdAt"] = data.pop("created_at", None)
+        data["updatedAt"] = data.pop("updated_at", None)
+        data["sessionId"] = data.pop("session_id", None)
+        data["runId"] = data.pop("run_id", None)
+        return data
+
+    def upsert_engineering_workset_observation(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        entry_id = str(entry.get("id") or uuid.uuid4())
+
+        def _dump(value: Any, fallback: Any) -> str:
+            return json.dumps(to_jsonable(value if value is not None else fallback), ensure_ascii=False)
+
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                INSERT INTO engineering_workset_observations
+                (id, session_id, run_id, task_brief_id, delegation_id, decision_source, phase, decision_json,
+                 warning_or_block_reason, manual_override, outside_write_set_files_json, correlation_status,
+                 metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    run_id = excluded.run_id,
+                    task_brief_id = excluded.task_brief_id,
+                    delegation_id = excluded.delegation_id,
+                    decision_source = excluded.decision_source,
+                    phase = excluded.phase,
+                    decision_json = excluded.decision_json,
+                    warning_or_block_reason = excluded.warning_or_block_reason,
+                    manual_override = excluded.manual_override,
+                    outside_write_set_files_json = excluded.outside_write_set_files_json,
+                    correlation_status = excluded.correlation_status,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                ''',
+                (
+                    entry_id,
+                    entry.get("session_id") or entry.get("sessionId"),
+                    entry.get("run_id") or entry.get("runId"),
+                    entry.get("task_brief_id") or entry.get("taskBriefId"),
+                    entry.get("delegation_id") or entry.get("delegationId"),
+                    str(entry.get("decision_source") or entry.get("decisionSource") or "planner_auto"),
+                    str(entry.get("phase") or "dispatch"),
+                    _dump(entry.get("decision"), {}),
+                    str(entry.get("warning_or_block_reason") or entry.get("warningOrBlockReason") or ""),
+                    1 if bool(entry.get("manual_override") or entry.get("manualOverride")) else 0,
+                    _dump(entry.get("outside_write_set_files") if "outside_write_set_files" in entry else entry.get("outsideWriteSetFiles"), []),
+                    str(entry.get("correlation_status") or entry.get("correlationStatus") or ""),
+                    _dump(entry.get("metadata"), {}),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        row = self.get_engineering_workset_observation(entry_id)
+        return row or {"id": entry_id}
+
+    def get_engineering_workset_observation(self, entry_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM engineering_workset_observations WHERE id = ?", (entry_id,))
+            row = cursor.fetchone()
+            return self._engineering_workset_observation_row_to_dict(row) if row else None
+
+    def list_engineering_workset_observations(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        task_brief_id: Optional[str] = None,
+        decision_source: Optional[str] = None,
+        limit: int = 40,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM engineering_workset_observations WHERE 1=1"
+        params: list[Any] = []
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if run_id:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        if task_brief_id:
+            query += " AND task_brief_id = ?"
+            params.append(task_brief_id)
+        if decision_source:
+            query += " AND decision_source = ?"
+            params.append(decision_source)
+        query += " ORDER BY updated_at DESC, created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit or 40), 200)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._engineering_workset_observation_row_to_dict(row) for row in cursor.fetchall()]
+
+    def _engineering_workset_observation_row_to_dict(self, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+
+        def _load(key: str, fallback: Any) -> Any:
+            raw = data.pop(key, None)
+            if not raw:
+                return fallback
+            try:
+                return json.loads(raw)
+            except Exception:
+                return fallback
+
+        data["taskBriefId"] = data.pop("task_brief_id", None)
+        data["delegationId"] = data.pop("delegation_id", None)
+        data["decisionSource"] = data.pop("decision_source", "planner_auto")
+        data["decision"] = _load("decision_json", {})
+        data["warningOrBlockReason"] = data.pop("warning_or_block_reason", "")
+        data["manualOverride"] = bool(data.pop("manual_override", 0))
+        data["outsideWriteSetFiles"] = _load("outside_write_set_files_json", [])
+        data["correlationStatus"] = data.pop("correlation_status", "")
+        data["metadata"] = _load("metadata_json", {})
         data["createdAt"] = data.pop("created_at", None)
         data["updatedAt"] = data.pop("updated_at", None)
         data["sessionId"] = data.pop("session_id", None)

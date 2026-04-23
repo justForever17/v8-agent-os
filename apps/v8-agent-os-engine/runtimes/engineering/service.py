@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.database import db
+from core.delegation_broker import build_workset_dispatch_decisions, normalize_task_brief
 from core.prompt_budget import enforce_prompt_budget, estimate_prompt_tokens, truncate_to_estimated_tokens
 from core.storage import storage
 from core.workspace_resolution import workspace_resolution_service
@@ -305,6 +306,16 @@ class EngineeringLaneService:
             write_set=list(coding_contract.get("writeSet") or []),
             cfg=cfg,
         )
+        broker_dispatch_simulation = self._broker_dispatch_simulation(
+            user_query=user_query,
+            task_brief=task_brief,
+            coding_contract=coding_contract,
+        )
+        dry_run_matrix = self._dry_run_matrix(
+            user_query=user_query,
+            task_brief=task_brief,
+            coding_contract=coding_contract,
+        )
         context_pack = {
             "repoBrief": repo_brief,
             "evidenceGraphDigest": evidence_graph_digest,
@@ -315,6 +326,8 @@ class EngineeringLaneService:
             "taskBrief": task_brief or None,
             "codingPlannerContractPreview": coding_contract,
             "worksetSoftGateDecision": workset_gate,
+            "brokerDispatchSimulation": broker_dispatch_simulation,
+            "dryRunMatrix": dry_run_matrix,
             "workflowRankedPaths": workflow_paths,
             "memorySuppression": {
                 "suppressDailyMemory": bool(cfg.get("suppressDailyMemory", True)) and bool(trigger.get("active")),
@@ -341,6 +354,8 @@ class EngineeringLaneService:
             "evidenceGraphDigest": evidence_graph_digest,
             "codingPlannerContractPreview": coding_contract,
             "worksetSoftGateDecision": workset_gate,
+            "brokerDispatchSimulation": broker_dispatch_simulation,
+            "dryRunMatrix": dry_run_matrix,
             "proofDraft": self._proof_draft(
                 session_id=session_id,
                 run_id=run_id,
@@ -353,16 +368,415 @@ class EngineeringLaneService:
     def dry_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         user_query = str(payload.get("userQuery") or payload.get("user_query") or "").strip()
         mode = self.normalize_mode(payload.get("engineeringMode") or payload.get("engineering_mode") or "auto")
-        return self.build_context_pack(
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip() or None
+        run_id = str(payload.get("runId") or payload.get("run_id") or "").strip() or None
+        result = self.build_context_pack(
             user_query=user_query,
             mode=mode,
-            session_id=str(payload.get("sessionId") or payload.get("session_id") or "").strip() or None,
-            run_id=str(payload.get("runId") or payload.get("run_id") or "").strip() or None,
+            session_id=session_id,
+            run_id=run_id,
             project_id=str(payload.get("projectId") or payload.get("project_id") or "").strip() or None,
             workspace_id=str(payload.get("workspaceId") or payload.get("workspace_id") or "").strip() or None,
             workspace_path=str(payload.get("workspacePath") or payload.get("workspace_path") or "").strip() or None,
             task_brief=payload.get("taskBrief") if isinstance(payload.get("taskBrief"), dict) else None,
         )
+        persisted = self._record_dry_run_observations(
+            result=result,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        result["worksetObservations"] = persisted
+        result["crossLinkDryRunMatrix"] = self._cross_link_dry_run_matrix(
+            result=result,
+            user_query=user_query,
+            mode=mode,
+            payload=payload,
+            persisted_observations=persisted,
+        )
+        return result
+
+    def _cross_link_dry_run_matrix(
+        self,
+        *,
+        result: dict[str, Any],
+        user_query: str,
+        mode: str,
+        payload: dict[str, Any],
+        persisted_observations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        context_pack = result.get("contextPack") if isinstance(result.get("contextPack"), dict) else {}
+        trigger = result.get("triggerDecision") if isinstance(result.get("triggerDecision"), dict) else {}
+        workspace = result.get("workspace") if isinstance(result.get("workspace"), dict) else {}
+        evidence = result.get("evidenceGraphDigest") if isinstance(result.get("evidenceGraphDigest"), dict) else {}
+        coding_contract = result.get("codingPlannerContractPreview") if isinstance(result.get("codingPlannerContractPreview"), dict) else {}
+        broker = result.get("brokerDispatchSimulation") if isinstance(result.get("brokerDispatchSimulation"), dict) else {}
+        dry_run_matrix = result.get("dryRunMatrix") if isinstance(result.get("dryRunMatrix"), dict) else {}
+        proof = result.get("proofDraft") if isinstance(result.get("proofDraft"), dict) else {}
+        memory_suppression = context_pack.get("memorySuppression") if isinstance(context_pack.get("memorySuppression"), dict) else {}
+        ranked_paths = list(context_pack.get("workflowRankedPaths") or []) if isinstance(context_pack.get("workflowRankedPaths"), list) else []
+        normalized_mode = self.normalize_mode(mode)
+        non_engineering_guard = self.trigger_decision(
+            user_query="帮我生成一张产品海报图片",
+            mode="auto",
+            workspace_descriptor=workspace,
+        )
+        workspace_scope = {
+            "source": workspace.get("source"),
+            "projectId": workspace.get("projectId"),
+            "workspaceId": workspace.get("workspaceId"),
+            "workspaceRoot": workspace.get("workspaceRoot"),
+            "scopeChain": self._scope_chain_for_descriptor(workspace),
+            "repoDetected": bool(evidence.get("repoDetected") or trigger.get("repoDetected")),
+        }
+        persisted_phases = {str(item.get("phase") or "") for item in persisted_observations if isinstance(item, dict)}
+        canonical_risks = {"within_write_set", "outside_write_set", "missing_write_set", "unknown_write_set", "read_only_safe", "not_evaluated"}
+        broker_decisions = [
+            item
+            for key in ("autoDecisions", "manualDecisions")
+            for item in list(broker.get(key) or [])
+            if isinstance(item, dict)
+        ]
+        matrix_scenarios = [item for item in list(dry_run_matrix.get("scenarios") or []) if isinstance(item, dict)]
+
+        def check(check_id: str, status: str, message: str, evidence_value: Any = None) -> dict[str, Any]:
+            normalized_status = status if status in {"pass", "warning", "fail"} else "warning"
+            item = {"id": check_id, "status": normalized_status, "message": message}
+            if evidence_value not in (None, "", [], {}):
+                item["evidence"] = evidence_value
+            return item
+
+        def status_for(checks: list[dict[str, Any]]) -> str:
+            if any(item.get("status") == "fail" for item in checks):
+                return "fail"
+            if any(item.get("status") == "warning" for item in checks):
+                return "warning"
+            return "pass"
+
+        def scenario(
+            scenario_id: str,
+            group: str,
+            label: str,
+            checks: list[dict[str, Any]],
+            *,
+            details: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            failed = [item for item in checks if item.get("status") == "fail"]
+            warnings = [item for item in checks if item.get("status") == "warning"]
+            status = status_for(checks)
+            return {
+                "id": scenario_id,
+                "group": group,
+                "label": label,
+                "status": status,
+                "summary": (failed or warnings or checks[:1])[0].get("message") if checks else status,
+                "checks": checks,
+                "triggerDecision": trigger,
+                "workspaceScope": workspace_scope,
+                "memorySuppression": memory_suppression,
+                "workflowHintEligibility": {
+                    "requiresEngineeringActive": True,
+                    "eligible": bool(trigger.get("active")),
+                    "rankedPathCount": len(ranked_paths),
+                    "deliveryMode": "planner_checklist_bias" if bool((coding_contract or {}).get("enabled")) else "direct_guide",
+                },
+                "codingPlannerContract": {
+                    "enabled": bool(coding_contract.get("enabled")),
+                    "criticalFileCount": len(coding_contract.get("criticalFiles") or []),
+                    "readSetCount": len(coding_contract.get("readSet") or []),
+                    "writeSetCount": len(coding_contract.get("writeSet") or []),
+                    "verificationCount": len(coding_contract.get("verificationMatrix") or []),
+                    "riskFlags": list(coding_contract.get("riskFlags") or []),
+                },
+                "brokerPreflight": {
+                    "enabled": bool(broker.get("enabled")),
+                    "autoDispatchBlocked": bool(broker.get("autoDispatchBlocked")),
+                    "decisionCount": len(broker_decisions),
+                    "recommendedAction": broker.get("recommendedAction"),
+                },
+                "proofDraft": {
+                    "verificationStatus": proof.get("verificationStatus"),
+                    "changedFileCount": len(proof.get("changedFiles") or []),
+                    "residualRiskCount": len(proof.get("residualRisks") or []),
+                    "mode": proof.get("mode"),
+                },
+                "worksetObservation": {
+                    "persistedCount": len(persisted_observations),
+                    "phases": sorted(phase for phase in persisted_phases if phase),
+                },
+                "runtimeLaneProjection": {
+                    "runtimeId": "engineering_lane",
+                    "messageLifecycleExcluded": True,
+                    "separateFrom": ["planner_lane", "subagent_swarm", "chat"],
+                },
+                "learningEligibility": {
+                    "status": "skipped_dry_run",
+                    "reason": "Dry-run matrix must not create durable engineering workflow candidates.",
+                    "phase6SourceRequired": ["proof_ledger", "workset_observation", "verification_evidence"],
+                },
+                "deepLinks": {
+                    "workbench": "/admin/engineering-lane",
+                    "workflows": "/admin/memory?tab=workflows&class=engineering",
+                },
+                "details": details or {},
+            }
+
+        expected_active = False
+        if normalized_mode == "force":
+            expected_active = True
+        elif normalized_mode == "off":
+            expected_active = False
+        else:
+            expected_active = bool(trigger.get("matched")) and bool(trigger.get("repoDetected"))
+
+        scenarios = [
+            scenario(
+                "trigger_current_request",
+                "trigger",
+                "当前请求触发判定",
+                [
+                    check(
+                        "trigger_consistency",
+                        "pass" if bool(trigger.get("active")) == expected_active else "fail",
+                        "Engineering trigger decision is consistent with mode, repo, and code signals.",
+                        {"mode": normalized_mode, "expectedActive": expected_active, "actualActive": bool(trigger.get("active"))},
+                    ),
+                ],
+            ),
+            scenario(
+                "trigger_non_engineering_guard",
+                "trigger",
+                "非工程请求误触发防线",
+                [
+                    check(
+                        "media_request_inactive",
+                        "pass" if not bool(non_engineering_guard.get("active")) else "fail",
+                        "Image/video style request must not activate Engineering Lane in auto mode.",
+                        non_engineering_guard,
+                    )
+                ],
+            ),
+            scenario(
+                "workspace_scope_truth",
+                "workspace",
+                "Workspace / Repo / Scope 单选真相",
+                [
+                    check(
+                        "scope_chain_present",
+                        "pass" if workspace_scope["scopeChain"] else "warning",
+                        "Resolved scope chain is visible for dry-run diagnostics.",
+                        workspace_scope,
+                    ),
+                    check(
+                        "repo_detected_when_active",
+                        "pass" if (not bool(trigger.get("active")) or bool(workspace_scope["repoDetected"])) else "warning",
+                        "Active engineering mode should normally have a detected repo; no-repo is allowed but diagnostic.",
+                        workspace_scope,
+                    ),
+                ],
+            ),
+            scenario(
+                "memory_engineering_suppression",
+                "memory",
+                "工程模式记忆抑制与 workflow 保留",
+                [
+                    check(
+                        "daily_map_suppressed_when_active",
+                        "pass"
+                        if (not bool(trigger.get("active")) or (bool(memory_suppression.get("suppressDailyMemory")) and bool(memory_suppression.get("suppressMemoryMap"))))
+                        else "fail",
+                        "Engineering mode must suppress daily/map memory while keeping workflow hints.",
+                        memory_suppression,
+                    ),
+                    check(
+                        "workflow_hints_retained",
+                        "pass" if bool(memory_suppression.get("workflowHintsRetained")) else "fail",
+                        "Workflow hints remain available for ranked checklist/bias.",
+                        memory_suppression,
+                    ),
+                ],
+            ),
+            scenario(
+                "workflow_hint_eligibility",
+                "memory",
+                "工程行为链注入资格",
+                [
+                    check(
+                        "engineering_only",
+                        "pass",
+                        "Engineering workflow hints are eligible only when engineering trigger is active/force.",
+                        {"triggerActive": bool(trigger.get("active")), "rankedPathCount": len(ranked_paths)},
+                    ),
+                    check(
+                        "ranked_paths_available",
+                        "pass" if ranked_paths or not bool(trigger.get("active")) else "warning",
+                        "No ranked workflow path is available; this is acceptable but weakens Phase 6 validation coverage.",
+                        {"rankedPathCount": len(ranked_paths)},
+                    ),
+                ],
+            ),
+            scenario(
+                "coding_planner_contract",
+                "planner",
+                "Coding Planner Contract 完整性",
+                [
+                    check(
+                        "contract_enabled",
+                        "pass" if bool(coding_contract.get("enabled")) else "fail",
+                        "Coding planner contract should be produced for engineering dry-runs.",
+                        coding_contract,
+                    ),
+                    check(
+                        "write_set_present",
+                        "pass" if list(coding_contract.get("writeSet") or []) else "warning",
+                        "writeSet is missing or empty; broker auto-dispatch should be conservative.",
+                        {"writeSet": coding_contract.get("writeSet"), "riskFlags": coding_contract.get("riskFlags")},
+                    ),
+                ],
+            ),
+            scenario(
+                "broker_preflight_canonical",
+                "broker",
+                "Broker Preflight canonical risk",
+                [
+                    check(
+                        "broker_enabled",
+                        "pass" if bool(broker.get("enabled")) else "fail",
+                        "Broker simulation should be available when coding contract exists.",
+                        broker,
+                    ),
+                    check(
+                        "canonical_risks",
+                        "pass" if all(str(item.get("risk") or "not_evaluated") in canonical_risks for item in broker_decisions) else "fail",
+                        "All broker decisions must use canonical workset risk values.",
+                        [item.get("risk") for item in broker_decisions],
+                    ),
+                    check(
+                        "auto_block_visible",
+                        "warning" if bool(broker.get("autoDispatchBlocked")) else "pass",
+                        "Auto dispatch block is visible and should lead to plan repair.",
+                        {"autoDispatchBlocked": broker.get("autoDispatchBlocked"), "recommendedAction": broker.get("recommendedAction")},
+                    ),
+                ],
+            ),
+            scenario(
+                "broker_matrix_variants",
+                "broker",
+                "Broker 多场景矩阵覆盖",
+                [
+                    check(
+                        "matrix_scenario_count",
+                        "pass" if len(matrix_scenarios) >= 8 else "fail",
+                        "Dry-run matrix should cover single, parallel, conflict, missing-writeSet, read-only, doc-only, and verification variants.",
+                        {"scenarioCount": len(matrix_scenarios)},
+                    ),
+                    check(
+                        "conflict_case_present",
+                        "pass" if any(str(item.get("id")) == "parallel_conflict" for item in matrix_scenarios) else "fail",
+                        "Parallel write-set conflict scenario must be present.",
+                    ),
+                ],
+            ),
+            scenario(
+                "proof_draft_status",
+                "proof",
+                "Proof Draft 空运行边界",
+                [
+                    check(
+                        "dry_run_not_verified",
+                        "pass" if str(proof.get("verificationStatus") or "") in {"planned", "unverified"} else "fail",
+                        "Dry-run proof must not claim verified because no validation command is executed.",
+                        proof,
+                    ),
+                    check(
+                        "no_commands_executed",
+                        "pass" if not list(proof.get("commands") or []) else "fail",
+                        "Dry-run must not run validation commands.",
+                        {"commands": proof.get("commands")},
+                    ),
+                ],
+            ),
+            scenario(
+                "workset_observation_persisted",
+                "proof",
+                "Workset Observation 落账",
+                [
+                    check(
+                        "observations_persisted",
+                        "pass" if persisted_observations else "warning",
+                        "Dry-run should leave observation records when workset observation is enabled.",
+                        {"count": len(persisted_observations), "phases": sorted(persisted_phases)},
+                    ),
+                    check(
+                        "matrix_phase_present",
+                        "pass" if "dry_run_matrix" in persisted_phases else "warning",
+                        "Dry-run matrix observations should be distinguishable from dispatch preview observations.",
+                        sorted(persisted_phases),
+                    ),
+                ],
+            ),
+            scenario(
+                "engineering_runtime_lane_projection",
+                "runtime_lane",
+                "engineering_lane 独立投影",
+                [
+                    check(
+                        "lane_id_declared",
+                        "pass",
+                        "Engineering evidence should project to engineering_lane, not chat/planner/subagent cards.",
+                        {"runtimeId": "engineering_lane"},
+                    ),
+                    check(
+                        "message_lifecycle_excluded",
+                        "pass",
+                        "engineering_lane events are expected to be excluded from normal chat narrative/tool nodes.",
+                    ),
+                ],
+            ),
+            scenario(
+                "phase6_learning_guard",
+                "phase6_learning",
+                "Phase 6 学习资格守门",
+                [
+                    check(
+                        "dry_run_not_learned",
+                        "pass",
+                        "Dry-run matrix never creates durable workflow memory; Phase 6 learns only from proof-backed terminal runs.",
+                    ),
+                    check(
+                        "verification_variants_present",
+                        "pass"
+                        if {"verification_success", "verification_failure", "verification_missing"}.issubset({str(item.get("id")) for item in matrix_scenarios})
+                        else "fail",
+                        "Verified/unverified/failed verification variants must be represented before learning policy is trusted.",
+                    ),
+                ],
+            ),
+        ]
+        group_summary: dict[str, dict[str, int]] = {}
+        for item in scenarios:
+            group = str(item.get("group") or "other")
+            bucket = group_summary.setdefault(group, {"total": 0, "pass": 0, "warning": 0, "fail": 0})
+            status = str(item.get("status") or "warning")
+            bucket["total"] += 1
+            bucket[status if status in {"pass", "warning", "fail"} else "warning"] += 1
+        return {
+            "enabled": True,
+            "generatedAt": _utc_now_iso(),
+            "input": {
+                "userQuery": user_query,
+                "engineeringMode": normalized_mode,
+                "sessionId": payload.get("sessionId") or payload.get("session_id"),
+                "runId": payload.get("runId") or payload.get("run_id"),
+            },
+            "summary": {
+                "total": len(scenarios),
+                "pass": sum(1 for item in scenarios if item.get("status") == "pass"),
+                "warning": sum(1 for item in scenarios if item.get("status") == "warning"),
+                "fail": sum(1 for item in scenarios if item.get("status") == "fail"),
+                "groups": group_summary,
+            },
+            "scenarios": scenarios,
+        }
 
     def list_proof_entries(
         self,
@@ -373,21 +787,59 @@ class EngineeringLaneService:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         normalized_status = str(status or "").strip().lower()
-        return db.list_engineering_proof_entries(
+        return [
+            self._decorate_proof_entry(entry)
+            for entry in db.list_engineering_proof_entries(
             session_id=session_id,
             run_id=run_id,
             status=normalized_status if normalized_status and normalized_status != "all" else None,
             limit=limit,
-        )
+            )
+        ]
 
     def get_proof_entry(self, entry_id: str) -> Optional[dict[str, Any]]:
-        return db.get_engineering_proof_entry(entry_id)
+        entry = db.get_engineering_proof_entry(entry_id)
+        return self._decorate_proof_entry(entry) if entry else None
 
     def add_proof_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         status = str(entry.get("verificationStatus") or entry.get("verification_status") or "planned").strip().lower()
         if status == "verified" and not entry.get("commands") and not entry.get("diagnostics"):
             entry = {**entry, "verificationStatus": "unverified"}
-        return db.add_engineering_proof_entry(entry)
+        return self._decorate_proof_entry(db.add_engineering_proof_entry(entry))
+
+    def _decorate_workset_observation(self, entry: dict[str, Any]) -> dict[str, Any]:
+        data = dict(entry or {})
+        decision = self._normalize_workset_dispatch_decision(data.get("decision") if isinstance(data.get("decision"), dict) else {})
+        if decision:
+            data["decision"] = decision
+        data["decisionSource"] = str(data.get("decisionSource") or decision.get("decisionSource") or decision.get("worksetDecisionSource") or "").strip() or None
+        data["correlationStatus"] = str(data.get("correlationStatus") or decision.get("correlationStatus") or decision.get("risk") or "not_evaluated")
+        if not data.get("warningOrBlockReason"):
+            data["warningOrBlockReason"] = str(decision.get("reason") or decision.get("repairSuggestion") or "").strip() or None
+        data["manualOverride"] = bool(data.get("manualOverride")) or bool(decision.get("manualOverride"))
+        data["outsideWriteSetFiles"] = self._normalize_path_list(data.get("outsideWriteSetFiles") or [])
+        return data
+
+    def list_workset_observations(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        task_brief_id: Optional[str] = None,
+        decision_source: Optional[str] = None,
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        normalized_source = str(decision_source or "").strip().lower()
+        return [
+            self._decorate_workset_observation(entry)
+            for entry in db.list_engineering_workset_observations(
+                session_id=session_id,
+                run_id=run_id,
+                task_brief_id=task_brief_id,
+                decision_source=normalized_source if normalized_source and normalized_source != "all" else None,
+                limit=limit,
+            )
+        ]
 
     def collect_terminal_proof(
         self,
@@ -420,6 +872,7 @@ class EngineeringLaneService:
 
         workspace_root = self._workspace_root_from_run_metadata(metadata, session_id=session_id)
         events = db.get_runtime_events_for_run(run_id, session_id=session_id, limit=1000)
+        workset_observations = self._workset_observations_from_events(events)
         tool_starts = self._tool_starts_by_id(events)
         commands, diagnostics = self._command_evidence_from_events(events, tool_starts=tool_starts, cfg=cfg)
         git_summary = self._git_summary(workspace_root) if bool((cfg.get("diagnosticsProviders") or {}).get("git", True)) else {}
@@ -455,6 +908,18 @@ class EngineeringLaneService:
             write_set = self._normalize_path_list(coding_contract.get("writeSet") if isinstance(coding_contract, dict) else [])
         read_set = self._read_set_from_events_or_context(events, metadata)
         workset_risk = self._workset_risk(changed_files=changed_files, write_set=write_set, cfg=cfg)
+        workset_dispatch_decision = self._normalize_workset_dispatch_decision(
+            task_brief.get("worksetDispatchDecision") if isinstance(task_brief, dict) and isinstance(task_brief.get("worksetDispatchDecision"), dict) else {}
+        )
+        if not workset_dispatch_decision and workset_observations:
+            first_decision = workset_observations[0].get("worksetDispatchDecision")
+            workset_dispatch_decision = self._normalize_workset_dispatch_decision(first_decision if isinstance(first_decision, dict) else {})
+        workset_correlation = self._workset_correlation(
+            changed_files=changed_files,
+            write_set=write_set,
+            workset_risk=workset_risk,
+            observations=workset_observations,
+        )
         verification_status = self._verification_status(
             changed_files=changed_files,
             commands=commands,
@@ -484,6 +949,15 @@ class EngineeringLaneService:
                 "gitSummary": git_summary,
                 "lspProvider": lsp_provider or {"provider": "disabled"},
                 "worksetRisk": workset_risk,
+                "worksetDispatchDecision": workset_dispatch_decision,
+                "worksetObservation": {
+                    "enabled": bool(cfg.get("worksetObservationEnabled", True)),
+                    "observationCount": len(workset_observations),
+                    "items": workset_observations[:24],
+                },
+                "worksetCorrelation": workset_correlation,
+                "outsideWriteSetFiles": list(workset_correlation.get("outsideWriteSetFiles") or []),
+                "manualOverride": workset_correlation.get("manualOverride") or {},
                 "contextPackDigest": context_digest,
             },
             "verificationStatus": verification_status,
@@ -496,9 +970,20 @@ class EngineeringLaneService:
                 "triggerDecision": trigger,
                 "workspaceRoot": str(workspace_root),
                 "proofCollectionScope": proof_scope,
+                "delegationId": workset_dispatch_decision.get("delegationId") if workset_dispatch_decision else None,
+                "worksetObservationCount": len(workset_observations),
             },
         }
         stored = self.add_proof_entry(entry)
+        persisted_observations = self._record_terminal_workset_observations(
+            session_id=session_id,
+            run_id=run_id,
+            task_brief_id=str((task_brief or {}).get("taskBriefId") or "").strip() or None,
+            proof_entry_id=str(stored.get("id") or "").strip() or None,
+            observations=workset_observations,
+            correlation=workset_correlation,
+            dispatch_decision=workset_dispatch_decision,
+        )
         self._emit_proof_runtime_event(
             session_id=session_id,
             run_id=run_id,
@@ -506,7 +991,21 @@ class EngineeringLaneService:
             source_component=source_component,
             manual_refresh=manual_refresh,
         )
-        return {"status": "collected", "entry": stored}
+        workflow_memory_result: dict[str, Any] = {"status": "skipped", "reason": "not_attempted"}
+        try:
+            workflow_memory_result = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=stored,
+                workset_observations=persisted_observations,
+                source_component=source_component,
+            )
+        except Exception as exc:
+            workflow_memory_result = {"status": "failed", "reason": str(exc), "proofEntryId": stored.get("id")}
+        return {
+            "status": "collected",
+            "entry": stored,
+            "worksetObservationCount": len(persisted_observations),
+            "workflowMemory": workflow_memory_result,
+        }
 
     def refresh_proof_from_existing_evidence(self, *, session_id: str, run_id: str) -> dict[str, Any]:
         return self.collect_terminal_proof(
@@ -515,6 +1014,363 @@ class EngineeringLaneService:
             source_component="engineering_lane_manual_refresh",
             manual_refresh=True,
         )
+
+    def _decorate_proof_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        data = dict(entry or {})
+        diagnostics = data.get("diagnostics") if isinstance(data.get("diagnostics"), dict) else {}
+        workset_observation = diagnostics.get("worksetObservation") if isinstance(diagnostics.get("worksetObservation"), dict) else {}
+        workset_correlation = diagnostics.get("worksetCorrelation") if isinstance(diagnostics.get("worksetCorrelation"), dict) else {}
+        workset_risk = diagnostics.get("worksetRisk") if isinstance(diagnostics.get("worksetRisk"), dict) else {}
+        workset_dispatch_decision = self._normalize_workset_dispatch_decision(
+            diagnostics.get("worksetDispatchDecision") if isinstance(diagnostics.get("worksetDispatchDecision"), dict) else {}
+        )
+        if workset_risk:
+            workset_risk = dict(workset_risk)
+            workset_risk["risk"] = self._normalize_workset_risk(workset_risk.get("risk"))
+            diagnostics["worksetRisk"] = workset_risk
+        if workset_correlation:
+            workset_correlation = dict(workset_correlation)
+            workset_correlation["risk"] = self._normalize_workset_risk(workset_correlation.get("risk"))
+            diagnostics["worksetCorrelation"] = workset_correlation
+        if workset_dispatch_decision:
+            diagnostics["worksetDispatchDecision"] = workset_dispatch_decision
+        observation_items = list(workset_observation.get("items") or []) if isinstance(workset_observation, dict) else []
+        if observation_items:
+            workset_observation = dict(workset_observation)
+            workset_observation["items"] = [
+                {
+                    **dict(item or {}),
+                    "risk": self._normalize_workset_risk((item or {}).get("risk")),
+                    "worksetDispatchDecision": self._normalize_workset_dispatch_decision(
+                        (item or {}).get("worksetDispatchDecision") if isinstance((item or {}).get("worksetDispatchDecision"), dict) else {}
+                    ),
+                }
+                for item in observation_items
+                if isinstance(item, dict)
+            ]
+            diagnostics["worksetObservation"] = workset_observation
+        data["diagnostics"] = diagnostics
+        data["worksetObservation"] = workset_observation
+        data["worksetCorrelation"] = workset_correlation
+        data["outsideWriteSetFiles"] = list(diagnostics.get("outsideWriteSetFiles") or workset_correlation.get("outsideWriteSetFiles") or [])
+        data["manualOverride"] = diagnostics.get("manualOverride") if isinstance(diagnostics.get("manualOverride"), dict) else {}
+        return data
+
+    def _workset_observation_id(
+        self,
+        *,
+        session_id: Optional[str],
+        run_id: Optional[str],
+        task_brief_id: Optional[str],
+        delegation_id: Optional[str],
+        decision_source: str,
+        phase: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        stable_parts = [
+            str(session_id or "").strip(),
+            str(run_id or "").strip(),
+            str(task_brief_id or "").strip(),
+            str(delegation_id or "").strip(),
+            str(decision_source or "").strip(),
+            str(phase or "").strip(),
+            str((metadata or {}).get("scenarioId") or "").strip(),
+            str((metadata or {}).get("proofEntryId") or "").strip(),
+        ]
+        if any(stable_parts[:4]):
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, "::".join(stable_parts)))
+        return str(uuid.uuid4())
+
+    def _persist_workset_observation(
+        self,
+        *,
+        session_id: Optional[str],
+        run_id: Optional[str],
+        task_brief_id: Optional[str],
+        delegation_id: Optional[str],
+        decision_source: str,
+        phase: str,
+        decision: dict[str, Any],
+        warning_or_block_reason: str = "",
+        manual_override: bool = False,
+        outside_write_set_files: list[str] | None = None,
+        correlation_status: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_session_id = str(session_id or "").strip() or None
+        normalized_run_id = str(run_id or "").strip() or None
+        if normalized_session_id and not db.get_session(normalized_session_id):
+            normalized_session_id = None
+        if normalized_run_id and not db.get_run_record(normalized_run_id):
+            normalized_run_id = None
+        observation_id = self._workset_observation_id(
+            session_id=normalized_session_id,
+            run_id=normalized_run_id,
+            task_brief_id=task_brief_id,
+            delegation_id=delegation_id,
+            decision_source=decision_source,
+            phase=phase,
+            metadata=metadata,
+        )
+        return db.upsert_engineering_workset_observation(
+            {
+                "id": observation_id,
+                "sessionId": normalized_session_id,
+                "runId": normalized_run_id,
+                "taskBriefId": task_brief_id,
+                "delegationId": delegation_id,
+                "decisionSource": decision_source,
+                "phase": phase,
+                "decision": decision,
+                "warningOrBlockReason": warning_or_block_reason,
+                "manualOverride": manual_override,
+                "outsideWriteSetFiles": list(outside_write_set_files or []),
+                "correlationStatus": correlation_status,
+                "metadata": metadata or {},
+            }
+        )
+
+    def _record_dry_run_observations(
+        self,
+        *,
+        result: dict[str, Any],
+        session_id: Optional[str],
+        run_id: Optional[str],
+    ) -> list[dict[str, Any]]:
+        cfg = self.get_config()
+        if not bool(cfg.get("worksetObservationEnabled", True)):
+            return []
+        persisted: list[dict[str, Any]] = []
+        broker_dispatch = result.get("brokerDispatchSimulation") if isinstance(result.get("brokerDispatchSimulation"), dict) else {}
+        for mode_key, phase in (("autoDecisions", "dry_run_dispatch"), ("manualDecisions", "dry_run_dispatch")):
+            for decision in list(broker_dispatch.get(mode_key) or []):
+                if not isinstance(decision, dict):
+                    continue
+                normalized_decision = self._normalize_workset_dispatch_decision(decision)
+                persisted.append(
+                    self._persist_workset_observation(
+                        session_id=session_id,
+                        run_id=run_id,
+                        task_brief_id=str(normalized_decision.get("taskBriefId") or "").strip() or None,
+                        delegation_id=None,
+                        decision_source=str(normalized_decision.get("worksetDecisionSource") or "dry_run"),
+                        phase=phase,
+                        decision=normalized_decision,
+                        warning_or_block_reason=str(normalized_decision.get("reason") or normalized_decision.get("repairSuggestion") or "").strip(),
+                        manual_override=bool(normalized_decision.get("manualOverride")),
+                        outside_write_set_files=[],
+                        correlation_status=str(normalized_decision.get("correlationStatus") or normalized_decision.get("risk") or "not_evaluated"),
+                        metadata={"simulation": "broker_dispatch", "dispatchMode": "manual" if mode_key.startswith("manual") else "auto"},
+                    )
+                )
+        dry_run_matrix = result.get("dryRunMatrix") if isinstance(result.get("dryRunMatrix"), dict) else {}
+        for scenario in list(dry_run_matrix.get("scenarios") or []):
+            if not isinstance(scenario, dict):
+                continue
+            scenario_id = str(scenario.get("id") or "").strip()
+            scenario_label = str(scenario.get("label") or scenario_id).strip()
+            for mode_key in ("autoDecisions", "manualDecisions"):
+                for decision in list(scenario.get(mode_key) or []):
+                    if not isinstance(decision, dict):
+                        continue
+                    normalized_decision = self._normalize_workset_dispatch_decision(decision)
+                    persisted.append(
+                        self._persist_workset_observation(
+                            session_id=session_id,
+                            run_id=run_id,
+                            task_brief_id=str(normalized_decision.get("taskBriefId") or "").strip() or None,
+                            delegation_id=None,
+                            decision_source=str(normalized_decision.get("worksetDecisionSource") or "dry_run"),
+                            phase="dry_run_matrix",
+                            decision=normalized_decision,
+                            warning_or_block_reason=str(normalized_decision.get("reason") or normalized_decision.get("repairSuggestion") or "").strip(),
+                            manual_override=bool(normalized_decision.get("manualOverride")),
+                            outside_write_set_files=[],
+                            correlation_status=str(normalized_decision.get("correlationStatus") or normalized_decision.get("risk") or "not_evaluated"),
+                            metadata={
+                                "simulation": "dry_run_matrix",
+                                "scenarioId": scenario_id,
+                                "scenarioLabel": scenario_label,
+                                "dispatchMode": "manual" if mode_key.startswith("manual") else "auto",
+                                "recommendedAction": str(scenario.get("recommendedAction") or "").strip(),
+                            },
+                        )
+                    )
+        return persisted
+
+    def _record_terminal_workset_observations(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        task_brief_id: Optional[str],
+        proof_entry_id: Optional[str],
+        observations: list[dict[str, Any]],
+        correlation: dict[str, Any],
+        dispatch_decision: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        cfg = self.get_config()
+        if not bool(cfg.get("worksetObservationEnabled", True)):
+            return []
+        persisted: list[dict[str, Any]] = []
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            decision = self._normalize_workset_dispatch_decision(
+                item.get("worksetDispatchDecision") if isinstance(item.get("worksetDispatchDecision"), dict) else {}
+            )
+            persisted.append(
+                self._persist_workset_observation(
+                    session_id=session_id,
+                    run_id=run_id,
+                    task_brief_id=str(item.get("taskBriefId") or task_brief_id or "").strip() or None,
+                    delegation_id=str(item.get("delegationId") or "").strip() or None,
+                    decision_source=str(item.get("worksetDecisionSource") or dispatch_decision.get("worksetDecisionSource") or "supervisor_manual"),
+                    phase="dispatch",
+                    decision=decision or item,
+                    warning_or_block_reason=str((decision or {}).get("reason") or item.get("repairSuggestion") or item.get("risk") or "").strip(),
+                    manual_override=bool(item.get("manualOverride")),
+                    outside_write_set_files=[],
+                    correlation_status=str((decision or {}).get("correlationStatus") or (decision or {}).get("risk") or "not_evaluated"),
+                    metadata={
+                        "proofEntryId": proof_entry_id,
+                        "lane": str(item.get("lane") or "").strip(),
+                        "targetId": str(item.get("targetId") or "").strip(),
+                        "status": str(item.get("status") or "").strip(),
+                        "eventSeq": item.get("eventSeq"),
+                    },
+                )
+            )
+        persisted.append(
+            self._persist_workset_observation(
+                session_id=session_id,
+                run_id=run_id,
+                task_brief_id=task_brief_id,
+                delegation_id=str(dispatch_decision.get("delegationId") or "").strip() or None,
+                decision_source=str(dispatch_decision.get("worksetDecisionSource") or "planner_auto"),
+                phase="proof_correlation",
+                decision=correlation,
+                warning_or_block_reason=str(correlation.get("risk") or "").strip(),
+                manual_override=bool((correlation.get("manualOverride") or {}).get("present")),
+                outside_write_set_files=[str(item).strip() for item in list(correlation.get("outsideWriteSetFiles") or []) if str(item).strip()],
+                correlation_status=str(correlation.get("risk") or "not_evaluated"),
+                metadata={"proofEntryId": proof_entry_id, "warningCount": correlation.get("warningCount"), "blockedCount": correlation.get("blockedCount")},
+            )
+        )
+        return persisted
+
+    def _parse_tool_result_dict(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _workset_observations_from_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        observations: list[dict[str, Any]] = []
+        for event in events:
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            tool = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+            tool_name = str(tool.get("toolName") or "").strip()
+            result = self._parse_tool_result_dict(tool.get("result"))
+            if tool_name != "delegation_broker" and not result.get("items"):
+                continue
+            items = result.get("items") if isinstance(result.get("items"), list) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                decision = self._normalize_workset_dispatch_decision(
+                    item.get("worksetDispatchDecision") if isinstance(item.get("worksetDispatchDecision"), dict) else {}
+                )
+                if not decision:
+                    continue
+                source = str(decision.get("worksetDecisionSource") or item.get("autoDispatchSource") or "").strip()
+                if not source:
+                    source = "planner_auto" if str(item.get("autoDispatchSource") or "").startswith("planner_auto") else "supervisor_manual"
+                warning = bool(decision.get("warning"))
+                blocked = bool(decision.get("blocked")) or str(item.get("status") or "") == "blocked"
+                observations.append(
+                    {
+                        "taskBriefId": str(item.get("taskBriefId") or decision.get("taskBriefId") or "").strip(),
+                        "delegationId": str(item.get("delegationId") or decision.get("delegationId") or "").strip(),
+                        "lane": str(item.get("lane") or "").strip(),
+                        "targetId": str(item.get("targetId") or item.get("agentId") or "").strip(),
+                        "status": str(item.get("status") or "").strip(),
+                        "worksetDecisionSource": source,
+                        "risk": str(decision.get("risk") or "").strip(),
+                        "blocked": blocked,
+                        "warning": warning or blocked,
+                        "manualOverride": bool(decision.get("manualOverride")) or (source == "supervisor_manual" and warning and not blocked),
+                        "writeSet": self._normalize_path_list(item.get("writeSet") or decision.get("writeSet") or []),
+                        "readSet": self._normalize_path_list(item.get("readSet") or []),
+                        "worksetDispatchDecision": decision,
+                        "repairSuggestion": str(item.get("repairSuggestion") or decision.get("repairSuggestion") or "").strip(),
+                        "eventSeq": event.get("seq"),
+                    }
+                )
+        return observations[:100]
+
+    def _workset_correlation(
+        self,
+        *,
+        changed_files: list[str],
+        write_set: list[str],
+        workset_risk: dict[str, Any],
+        observations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        outside = set(str(item).strip() for item in list(workset_risk.get("outsideWriteSet") or []) if str(item).strip())
+        matched = set()
+        manual_overrides: list[dict[str, Any]] = []
+        observed_write_sets: list[str] = []
+        for observation in observations:
+            observed_write_set = self._normalize_path_list(observation.get("writeSet") or [])
+            observed_write_sets.extend(observed_write_set)
+            if bool(observation.get("manualOverride")):
+                manual_overrides.append(
+                    {
+                        "delegationId": observation.get("delegationId"),
+                        "taskBriefId": observation.get("taskBriefId"),
+                        "risk": observation.get("risk"),
+                        "reason": (observation.get("worksetDispatchDecision") or {}).get("reason"),
+                    }
+                )
+        if changed_files and observed_write_sets:
+            for path in changed_files:
+                if self._path_matches_any_write_set(path, observed_write_sets):
+                    matched.add(path)
+                    outside.discard(path)
+                else:
+                    outside.add(path)
+        if not observations and changed_files and write_set:
+            for path in changed_files:
+                if self._path_matches_any_write_set(path, write_set):
+                    matched.add(path)
+        return {
+            "enabled": True,
+            "changedFileCount": len(changed_files),
+            "observationCount": len(observations),
+            "warningCount": sum(1 for item in observations if bool(item.get("warning"))),
+            "blockedCount": sum(1 for item in observations if bool(item.get("blocked"))),
+            "outsideWriteSetFiles": sorted(outside),
+            "matchedWriteSetFiles": sorted(matched),
+            "manualOverride": {
+                "present": bool(manual_overrides),
+                "items": manual_overrides[:12],
+            },
+            "risk": "outside_write_set" if outside else self._normalize_workset_risk(workset_risk.get("risk")),
+            "suggestedAction": (
+                "Review manual overrides or repair task writeSets before accepting the work."
+                if outside or manual_overrides
+                else "No observed write-set drift."
+            ),
+        }
 
     def _workspace_root_from_run_metadata(self, metadata: dict[str, Any], *, session_id: str) -> Path:
         descriptor = workspace_resolution_service.resolve_workspace_descriptor(
@@ -706,6 +1562,9 @@ class EngineeringLaneService:
                         "taskBriefId": item.get("taskBriefId"),
                         "goal": item.get("taskGoal"),
                         "writeSet": item.get("writeSet") or [],
+                        "readSet": item.get("readSet") or [],
+                        "engineeringTaskCapsule": item.get("engineeringTaskCapsule") if isinstance(item.get("engineeringTaskCapsule"), dict) else {},
+                        "worksetDispatchDecision": item.get("worksetDispatchDecision") if isinstance(item.get("worksetDispatchDecision"), dict) else {},
                     }
         return None
 
@@ -740,17 +1599,63 @@ class EngineeringLaneService:
                 normalized.append(text)
         return list(dict.fromkeys(normalized))[:100]
 
+    def _normalize_workset_risk(self, value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"ready", "within_write_set", "none"}:
+            return "within_write_set"
+        if raw in {"write_set_conflict", "outside_write_set"}:
+            return "outside_write_set"
+        if raw in {"missing_write_set", "unknown_write_set", "read_only_safe", "not_evaluated"}:
+            return raw
+        if raw == "not_engineering":
+            return "not_evaluated"
+        return "not_evaluated"
+
+    def _normalize_workset_dispatch_decision(self, decision: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(decision, dict):
+            return {}
+        normalized = dict(decision)
+        raw_risk = str(normalized.get("risk") or "").strip()
+        normalized_risk = self._normalize_workset_risk(raw_risk)
+        decision_source = str(
+            normalized.get("decisionSource")
+            or normalized.get("worksetDecisionSource")
+            or "supervisor_manual"
+        ).strip() or "supervisor_manual"
+        blocked = bool(normalized.get("blocked"))
+        warning = bool(normalized.get("warning")) or blocked
+        manual_override = bool(normalized.get("manualOverride")) or (decision_source == "supervisor_manual" and warning and not blocked)
+        normalized["risk"] = normalized_risk
+        normalized["decisionSource"] = decision_source
+        normalized["worksetDecisionSource"] = decision_source
+        normalized["blocked"] = blocked
+        normalized["warning"] = warning
+        normalized["manualOverride"] = manual_override
+        normalized["correlationStatus"] = str(normalized.get("correlationStatus") or normalized_risk)
+        if raw_risk and raw_risk != normalized_risk:
+            normalized["rawRisk"] = raw_risk
+        return normalized
+
     def _workset_risk(self, *, changed_files: list[str], write_set: list[str], cfg: dict[str, Any]) -> dict[str, Any]:
         mode = str(cfg.get("worksetGovernanceMode") or cfg.get("worksetRiskMode") or "read_only").strip().lower()
         if mode == "off":
             return {"mode": "off", "risk": "not_evaluated"}
         if not changed_files:
-            return {"mode": mode, "risk": "none", "warning": False, "changedFiles": [], "outsideWriteSet": []}
+            return {
+                "mode": mode,
+                "risk": "within_write_set",
+                "warning": False,
+                "changedFiles": [],
+                "outsideWriteSet": [],
+                "note": "No changed files were observed in this run.",
+                "suggestedAction": "No write-set drift observed.",
+            }
+        warning_mode = mode in {"soft_gate", "observe_auto_block"}
         if not write_set:
             return {
                 "mode": mode,
                 "risk": "unknown_write_set",
-                "warning": mode == "soft_gate",
+                "warning": warning_mode,
                 "changedFiles": changed_files,
                 "outsideWriteSet": [],
                 "note": "Task brief writeSet is missing; conflicts cannot be proven safe.",
@@ -760,7 +1665,7 @@ class EngineeringLaneService:
         return {
             "mode": mode,
             "risk": "outside_write_set" if outside else "within_write_set",
-            "warning": bool(outside) and mode == "soft_gate",
+            "warning": bool(outside) and warning_mode,
             "changedFiles": changed_files,
             "writeSet": write_set,
             "outsideWriteSet": outside,
@@ -872,6 +1777,18 @@ class EngineeringLaneService:
         manual_refresh: bool,
     ) -> None:
         try:
+            diagnostics = proof_entry.get("diagnostics") if isinstance(proof_entry.get("diagnostics"), dict) else {}
+            workset_decision = diagnostics.get("worksetDispatchDecision") if isinstance(diagnostics.get("worksetDispatchDecision"), dict) else {}
+            outside_write_set_files = [str(item).strip() for item in list(proof_entry.get("outsideWriteSetFiles") or diagnostics.get("outsideWriteSetFiles") or []) if str(item).strip()]
+            residual_risks = [str(item).strip() for item in list(proof_entry.get("residualRisks") or []) if str(item).strip()]
+            verification_status = str(proof_entry.get("verificationStatus") or "planned").strip() or "planned"
+            risk = str(workset_decision.get("risk") or "").strip()
+            summary = f"工程证明已收集 · {verification_status}"
+            changed_file_count = len(proof_entry.get("changedFiles") or [])
+            if changed_file_count > 0:
+                summary += f" · {changed_file_count} 个变更文件"
+            if outside_write_set_files:
+                summary += f" · {len(outside_write_set_files)} 个越界文件"
             db.add_runtime_event({
                 "event_id": str(uuid.uuid4()),
                 "session_id": session_id,
@@ -887,9 +1804,18 @@ class EngineeringLaneService:
                     "agent_id": None,
                 },
                 "payload": {
+                    "summary": summary,
                     "proofEntryId": proof_entry.get("id"),
+                    "taskBriefId": proof_entry.get("taskBriefId"),
+                    "patchIntent": proof_entry.get("patchIntent"),
                     "verificationStatus": proof_entry.get("verificationStatus"),
-                    "changedFileCount": len(proof_entry.get("changedFiles") or []),
+                    "status": verification_status,
+                    "risk": risk,
+                    "decisionSource": workset_decision.get("worksetDecisionSource") or workset_decision.get("decisionSource"),
+                    "outsideWriteSetFiles": outside_write_set_files,
+                    "outsideWriteSetCount": len(outside_write_set_files),
+                    "residualRiskCount": len(residual_risks),
+                    "changedFileCount": changed_file_count,
                     "diagnosticCount": len(((proof_entry.get("diagnostics") or {}).get("items") or [])),
                     "manualRefresh": manual_refresh,
                 },
@@ -1373,12 +2299,20 @@ class EngineeringLaneService:
         if mode == "off":
             return {"mode": "off", "risk": "not_evaluated", "warning": False}
         if not changed_files:
-            return {"mode": mode, "risk": "none", "warning": False, "changedFiles": [], "outsideWriteSet": []}
+            return {
+                "mode": mode,
+                "risk": "within_write_set",
+                "warning": False,
+                "changedFiles": [],
+                "outsideWriteSet": [],
+                "suggestedAction": "No write-set drift observed.",
+            }
+        warning_mode = mode in {"soft_gate", "observe_auto_block"}
         if not write_set:
             return {
                 "mode": mode,
                 "risk": "unknown_write_set",
-                "warning": mode == "soft_gate",
+                "warning": warning_mode,
                 "changedFiles": changed_files,
                 "outsideWriteSet": [],
                 "suggestedAction": "Repair planner writeSet before assigning concurrent edits.",
@@ -1387,7 +2321,7 @@ class EngineeringLaneService:
         return {
             "mode": mode,
             "risk": "outside_write_set" if outside else "within_write_set",
-            "warning": bool(outside) and mode == "soft_gate",
+            "warning": bool(outside) and warning_mode,
             "changedFiles": changed_files,
             "writeSet": write_set,
             "outsideWriteSet": outside,
@@ -1437,6 +2371,198 @@ class EngineeringLaneService:
             enriched_briefs.append(item)
         next_plan["taskBriefs"] = enriched_briefs
         return next_plan
+
+    def _broker_dispatch_simulation(
+        self,
+        *,
+        user_query: str,
+        task_brief: Optional[dict[str, Any]],
+        coding_contract: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(coding_contract, dict) or not coding_contract.get("enabled"):
+            return {"enabled": False, "reason": "coding_planner_contract_unavailable"}
+        if isinstance(task_brief, dict) and task_brief:
+            tasks = [normalize_task_brief(task_brief)]
+        else:
+            tasks = [
+                normalize_task_brief(
+                    {
+                        "taskBriefId": "engineering-preview-task-1",
+                        "goal": user_query or "Engineering task preview",
+                        "writeSet": list(coding_contract.get("writeSet") or []),
+                        "criticalFiles": list(coding_contract.get("criticalFiles") or []),
+                        "readSet": list(coding_contract.get("readSet") or []),
+                        "verificationMatrix": [
+                            str(row.get("command") or row.get("kind") or "")
+                            for row in list(coding_contract.get("verificationMatrix") or [])
+                            if isinstance(row, dict)
+                        ],
+                        "proofExpectations": list(coding_contract.get("proofExpectations") or []),
+                        "behaviorScope": ["implementation"] if coding_contract.get("writeSet") else ["review"],
+                        "engineeringTaskCapsule": {
+                            "criticalFiles": list(coding_contract.get("criticalFiles") or []),
+                            "readSet": list(coding_contract.get("readSet") or []),
+                            "writeSet": list(coding_contract.get("writeSet") or []),
+                            "verificationContract": list(coding_contract.get("verificationMatrix") or []),
+                            "proofExpectations": list(coding_contract.get("proofExpectations") or []),
+                            "riskFlags": list(coding_contract.get("riskFlags") or []),
+                        },
+                    }
+                )
+            ]
+        auto_decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=True, decision_source="dry_run")
+        manual_decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=False, decision_source="dry_run")
+        return {
+            "enabled": True,
+            "taskCount": len(tasks),
+            "autoDispatchBlocked": any(bool(item.get("blocked")) for item in auto_decisions),
+            "autoDecisions": auto_decisions,
+            "manualDecisions": manual_decisions,
+            "recommendedAction": "repair_plan" if any(bool(item.get("blocked")) for item in auto_decisions) else "dispatch_allowed",
+        }
+
+    def _dry_run_matrix(
+        self,
+        *,
+        user_query: str,
+        task_brief: Optional[dict[str, Any]],
+        coding_contract: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(coding_contract, dict) or not coding_contract.get("enabled"):
+            return {"enabled": False, "reason": "coding_planner_contract_unavailable", "scenarios": []}
+        base_write_set = list(coding_contract.get("writeSet") or []) or ["apps/v8-agent-os-engine/core/example.py"]
+        base_read_set = list(coding_contract.get("readSet") or coding_contract.get("criticalFiles") or [])[:8]
+        verification = [
+            str(row.get("command") or row.get("kind") or "")
+            for row in list(coding_contract.get("verificationMatrix") or [])
+            if isinstance(row, dict)
+        ][:4]
+
+        def task(task_id: str, goal: str, write_set: list[str] | None, behavior: list[str]) -> dict[str, Any]:
+            payload = {
+                "taskBriefId": task_id,
+                "goal": goal,
+                "readSet": base_read_set,
+                "behaviorScope": behavior,
+                "verificationMatrix": verification,
+                "proofExpectations": list(coding_contract.get("proofExpectations") or [])[:6],
+                "engineeringTaskCapsule": {
+                    "criticalFiles": list(coding_contract.get("criticalFiles") or [])[:12],
+                    "readSet": base_read_set,
+                    "writeSet": list(write_set or []),
+                    "verificationContract": list(coding_contract.get("verificationMatrix") or [])[:4],
+                    "proofExpectations": list(coding_contract.get("proofExpectations") or [])[:6],
+                    "riskFlags": list(coding_contract.get("riskFlags") or [])[:6],
+                },
+            }
+            if write_set is not None:
+                payload["writeSet"] = list(write_set)
+            return normalize_task_brief(payload)
+
+        def simulated_verification(changed_files: list[str], commands: list[dict[str, Any]]) -> str:
+            return self._verification_status(
+                changed_files=changed_files,
+                commands=commands,
+                diagnostics=[],
+            )
+
+        same_path = base_write_set[0]
+        sibling_path = f"{same_path.rstrip('/')}.test" if "." in same_path.rsplit("/", 1)[-1] else f"{same_path.rstrip('/')}/tests"
+        scenarios = [
+            {
+                "id": "single_task",
+                "label": "single task",
+                "tasks": [task("single-1", user_query or "Implement focused engineering fix", base_write_set, ["implementation"])],
+            },
+            {
+                "id": "parallel_non_conflict",
+                "label": "parallel non-conflict",
+                "tasks": [
+                    task("impl-1", "Implement code slice", [same_path], ["implementation"]),
+                    task("test-1", "Add verification slice", [sibling_path], ["verification"]),
+                ],
+            },
+            {
+                "id": "parallel_conflict",
+                "label": "parallel conflict",
+                "tasks": [
+                    task("impl-1", "Implement code slice", [same_path], ["implementation"]),
+                    task("impl-2", "Refactor same file", [same_path], ["implementation"]),
+                ],
+            },
+            {
+                "id": "missing_write_set",
+                "label": "missing writeSet",
+                "tasks": [task("missing-1", "Implement without declared writeSet", None, ["implementation"])],
+            },
+            {
+                "id": "read_only_review",
+                "label": "read-only reviewer",
+                "tasks": [task("review-1", "Review implementation risks", [], ["review", "read_only"])],
+            },
+            {
+                "id": "doc_only",
+                "label": "doc-only task",
+                "tasks": [task("docs-1", "Document behavior and residual risks", ["docs/"], ["documentation"])],
+            },
+            {
+                "id": "manual_override_conflict",
+                "label": "manual override conflict",
+                "tasks": [
+                    task("override-1", "Implement engine slice", [same_path], ["implementation"]),
+                    task("override-2", "Supervisor manually delegates same file anyway", [same_path], ["implementation"]),
+                ],
+            },
+            {
+                "id": "verification_success",
+                "label": "verification success",
+                "tasks": [task("verify-ok-1", "Implement and validate targeted fix", [same_path], ["implementation"])],
+                "simulatedVerificationStatus": simulated_verification(
+                    [same_path],
+                    [{"isValidation": True, "returnCode": 0, "status": "ok", "command": "python -m py_compile sample.py"}],
+                ),
+            },
+            {
+                "id": "verification_failure",
+                "label": "verification failure",
+                "tasks": [task("verify-fail-1", "Implement but validation fails", [same_path], ["implementation"])],
+                "simulatedVerificationStatus": simulated_verification(
+                    [same_path],
+                    [{"isValidation": True, "returnCode": 1, "status": "error", "command": "npm run build"}],
+                ),
+            },
+            {
+                "id": "verification_missing",
+                "label": "verification missing",
+                "tasks": [task("verify-missing-1", "Implement without validation evidence", [same_path], ["implementation"])],
+                "simulatedVerificationStatus": simulated_verification([same_path], []),
+            },
+        ]
+        rendered: list[dict[str, Any]] = []
+        for scenario in scenarios:
+            tasks = list(scenario["tasks"])
+            auto_decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=True, decision_source="dry_run")
+            manual_decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=False, decision_source="dry_run")
+            rendered.append(
+                {
+                    "id": scenario["id"],
+                    "label": scenario["label"],
+                    "taskCount": len(tasks),
+                    "autoBlocked": any(bool(item.get("blocked")) for item in auto_decisions),
+                    "manualWarning": any(bool(item.get("warning")) for item in manual_decisions),
+                    "autoDecisions": auto_decisions,
+                    "manualDecisions": manual_decisions,
+                    "simulatedVerificationStatus": scenario.get("simulatedVerificationStatus") or "planned",
+                    "recommendedAction": "repair_plan" if any(bool(item.get("blocked")) for item in auto_decisions) else "dispatch_allowed",
+                }
+            )
+        return {
+            "enabled": True,
+            "scenarioCount": len(rendered),
+            "blockedScenarioCount": sum(1 for item in rendered if bool(item.get("autoBlocked"))),
+            "warningScenarioCount": sum(1 for item in rendered if bool(item.get("manualWarning"))),
+            "scenarios": rendered,
+        }
 
     def _proof_draft(
         self,

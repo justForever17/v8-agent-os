@@ -17,7 +17,7 @@ import {
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
 import { ContentDispatcher } from "./ContentDispatcher";
-import { Activity, AlertTriangle, Blocks, Bot, Box, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, TerminalSquare, Workflow, X } from "lucide-react";
+import { Activity, AlertTriangle, Blocks, Bot, Box, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, TerminalSquare, Workflow, X } from "lucide-react";
 
 interface RuntimeTimelinePanelProps {
     isOpen: boolean;
@@ -36,6 +36,7 @@ interface RuntimeTimelinePanelProps {
 const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>> = {
     chat: Bot,
     planner_lane: Route,
+    engineering_lane: Code2,
     extensions: Blocks,
     automation: Workflow,
     memory: Database,
@@ -130,6 +131,49 @@ function getPlannerPlanLabel(activity: RuntimeStageActivity): { title: string; m
     return {
         title,
         meta: metaParts.join(" · "),
+    };
+}
+
+function getEngineeringGroupId(activity?: RuntimeStageActivity): string {
+    if (!activity) return "";
+    const data = readExecutionData(activity);
+    return readString(data.taskBriefId)
+        || readString(data.proofEntryId)
+        || readString(data.planId)
+        || readString((readRecord(data.traceRef)).runId)
+        || activity.id;
+}
+
+function getEngineeringLabel(activity: RuntimeStageActivity): { title: string; meta: string } {
+    const data = readExecutionData(activity);
+    const worksetDecision = readRecord(data.worksetDispatchDecision);
+    const title = readString(data.taskGoal)
+        || readString(data.patchIntent)
+        || readString(data.planSummary)
+        || readString(data.summary)
+        || activity.summary
+        || "Engineering lane";
+    const verificationStatus = readString(data.verificationStatus);
+    const risk = readString(data.risk) || readString(worksetDecision.risk);
+    const decisionSource = readString(data.worksetDecisionSource) || readString(data.decisionSource) || readString(worksetDecision.worksetDecisionSource);
+    const ownershipCount = Number(data.ownershipCount || (Array.isArray(data.ownershipPlan) ? data.ownershipPlan.length : 0) || 0);
+    const outsideCount = Number(data.outsideWriteSetCount || (Array.isArray(data.outsideWriteSetFiles) ? data.outsideWriteSetFiles.length : 0) || 0);
+    const warningCount = Number(data.warningCount || 0);
+    const blockedCount = Number(data.blockedCount || 0);
+    const metaParts: string[] = [];
+    if (verificationStatus) metaParts.push(verificationStatus);
+    if (risk) metaParts.push(`risk: ${risk}`);
+    if (decisionSource) metaParts.push(decisionSource);
+    if (ownershipCount > 0) metaParts.push(`${ownershipCount} owners`);
+    if (blockedCount > 0) {
+        metaParts.push(`${blockedCount} blocked`);
+    } else if (warningCount > 0) {
+        metaParts.push(`${warningCount} warnings`);
+    }
+    if (outsideCount > 0) metaParts.push(`${outsideCount} outside`);
+    return {
+        title,
+        meta: metaParts.join(" · ") || "engineering governance",
     };
 }
 
@@ -526,23 +570,29 @@ export function RuntimeTimelinePanel({
                                 <div className={cn("space-y-3", activities.length > 0 ? "md:mt-4" : "")}>
                                     {activities.length > 0 ? (
                                         activities.map((activity, index) => {
-                                            const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane";
+                                            const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane" || runtimeId === "engineering_lane";
                                             const currentGroupId = !shouldGroup
                                                 ? ""
                                                 : runtimeId === "subagent_swarm"
                                                     ? getSwarmTaskBriefId(activity)
-                                                    : getPlannerPlanId(activity);
+                                                    : runtimeId === "planner_lane"
+                                                        ? getPlannerPlanId(activity)
+                                                        : getEngineeringGroupId(activity);
                                             const previousGroupId = !shouldGroup
                                                 ? ""
                                                 : runtimeId === "subagent_swarm"
                                                     ? getSwarmTaskBriefId(activities[index - 1])
-                                                    : getPlannerPlanId(activities[index - 1]);
+                                                    : runtimeId === "planner_lane"
+                                                        ? getPlannerPlanId(activities[index - 1])
+                                                        : getEngineeringGroupId(activities[index - 1]);
                                             const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
                                             const taskLabel = !showTaskHeader
                                                 ? null
                                                 : runtimeId === "subagent_swarm"
                                                     ? getSwarmTaskLabel(activity)
-                                                    : getPlannerPlanLabel(activity);
+                                                    : runtimeId === "planner_lane"
+                                                        ? getPlannerPlanLabel(activity)
+                                                        : getEngineeringLabel(activity);
                                             return (
                                                 <div key={activity.id} className="space-y-2.5">
                                                     {taskLabel && (

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Union
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
@@ -465,9 +465,28 @@ async def delete_memory_logs_file(relative_path: str):
 
 
 @router.get("/memory/workflows")
-async def list_memory_workflow_candidates(status: str = None, q: str = None, limit: int = 50):
+async def list_memory_workflow_candidates(
+    status: str = None,
+    q: str = None,
+    limit: int = 50,
+    workflow_class: str = Query(default=None, alias="class"),
+    proof_backed: str = Query(default=None, alias="proofBacked"),
+    verification_status: str = Query(default=None, alias="verificationStatus"),
+    source_runtime: str = Query(default=None, alias="sourceRuntime"),
+):
     try:
-        items = memory_runtime.list_workflow_candidates(status=status, query=q, limit=limit)
+        proof_filter = None
+        if proof_backed is not None:
+            proof_filter = str(proof_backed).strip().lower() in {"1", "true", "yes"}
+        items = memory_runtime.list_workflow_candidates(
+            status=status,
+            query=q,
+            limit=limit,
+            workflow_class=workflow_class,
+            proof_backed=proof_filter,
+            verification_status=verification_status,
+            source_runtime=source_runtime,
+        )
         return {"items": items, "total": len(items)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

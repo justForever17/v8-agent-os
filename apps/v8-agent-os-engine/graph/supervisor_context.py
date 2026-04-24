@@ -60,7 +60,26 @@ def _normalize_workspace_path(value: str | None) -> str:
     return str(Path(raw).expanduser()) if raw else ""
 
 
+def _is_workspace_less_network_transport(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    route_context = state.get("current_route_context")
+    transport = str(
+        state.get("transport")
+        or (route_context.get("transport") if isinstance(route_context, dict) else "")
+        or ""
+    ).strip()
+    if transport != "network_supervisor_openai":
+        return False
+    explicit_workspace_id = str(state.get("workspace_id") or "").strip()
+    explicit_workspace_path = _normalize_workspace_path(state.get("workspace_path"))
+    explicit_project_id = str(state.get("project_id") or "").strip()
+    return not (explicit_workspace_id or explicit_workspace_path or explicit_project_id)
+
+
 def _collect_workspace_rules_roots(*, state, session_id: str | None) -> list[dict[str, str]]:
+    if _is_workspace_less_network_transport(state):
+        return []
     descriptor = workspace_resolution_service.resolve_workspace_descriptor(
         runtime_kind="chat",
         session_id=session_id,

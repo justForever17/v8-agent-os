@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -40,6 +41,7 @@ from agents.memory_agent import (
     PreferenceExtraction,
     RelationExtraction,
 )
+from core import memory_store as memory_store_module
 from runtimes.memory.models import ProjectDescriptor, SessionScopeBinding
 from runtimes.memory.scope_resolution import ScopeBindingConflictError, ScopeResolutionService
 
@@ -478,6 +480,58 @@ class MemoryScopeResolutionTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.payload["recommendedAction"], "create_new_session")
+
+
+class MemoryStoreGovernanceTests(unittest.TestCase):
+    def test_preference_overwrite_uses_latest_value_for_same_scope_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.update_preference("favorite_shoe_brand", "阿迪达斯", scope="workspace:main")
+                store.update_preference("favorite_shoe_brand", "耐克", scope="workspace:main")
+
+                merged = store.load_preferences(
+                    scope="workspace:main",
+                    scope_chain=["global", "workspace:main"],
+                )
+                raw = store._load_raw_preferences()
+                memory_text = store.memory_path.read_text(encoding="utf-8")
+
+        self.assertEqual(merged["favorite_shoe_brand"], "耐克")
+        self.assertEqual(raw["workspace:main"]["favorite_shoe_brand"], "耐克")
+        self.assertNotIn("阿迪达斯", memory_text)
+
+    def test_project_scope_preferences_do_not_bleed_across_projects(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.update_preference("preferred_framework", "React", scope="project:project-a")
+                store.update_preference("preferred_framework", "Vue", scope="project:project-b")
+                store.update_preference("language", "zh-CN", scope="global")
+
+                project_a = store.load_preferences(
+                    scope="project:project-a",
+                    scope_chain=["global", "project:project-a"],
+                )
+                project_b = store.load_preferences(
+                    scope="project:project-b",
+                    scope_chain=["global", "project:project-b"],
+                )
+
+        self.assertEqual(project_a["preferred_framework"], "React")
+        self.assertEqual(project_b["preferred_framework"], "Vue")
+        self.assertEqual(project_a["language"], "zh-CN")
+        self.assertEqual(project_b["language"], "zh-CN")
 
 
 if __name__ == "__main__":

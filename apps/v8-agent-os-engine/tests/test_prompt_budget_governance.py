@@ -108,6 +108,9 @@ class PromptBudgetGovernanceTests(unittest.TestCase):
                 "_skills_registry": SkillLoader._skills_registry,
                 "_skills_root_descriptors": SkillLoader._skills_root_descriptors,
                 "_skills_fingerprint": SkillLoader._skills_fingerprint,
+                "_skills_revision": SkillLoader._skills_revision,
+                "_root_inventory_states": SkillLoader._root_inventory_states,
+                "_visible_inventory_cache": SkillLoader._visible_inventory_cache,
             }
             try:
                 SkillLoader._skills_registry = {
@@ -128,6 +131,46 @@ class PromptBudgetGovernanceTests(unittest.TestCase):
                 }
                 SkillLoader._skills_root_descriptors = [global_desc, main_desc]
                 SkillLoader._skills_fingerprint = "base"
+                SkillLoader._skills_revision = "base-revision"
+                SkillLoader._visible_inventory_cache = {}
+                SkillLoader._root_inventory_states = {
+                    str(global_skills_root): {
+                        "rootPath": str(global_skills_root),
+                        "descriptor": dict(global_desc),
+                        "descriptorSignature": "global",
+                        "rootRevision": "global-revision",
+                        "manifest": {},
+                        "registry": {
+                            "global:1": {
+                                "skillId": "global:1",
+                                "skillName": "global-only",
+                                "rootPath": str(global_skill),
+                                "instructionPath": str(global_skill / "SKILL.md"),
+                                "sourceType": "global",
+                            }
+                        },
+                        "lastScanAt": "2026-04-24T00:00:00Z",
+                        "dirty": False,
+                    },
+                    str(main / ".agents" / "skills"): {
+                        "rootPath": str(main / ".agents" / "skills"),
+                        "descriptor": dict(main_desc),
+                        "descriptorSignature": "main",
+                        "rootRevision": "main-revision",
+                        "manifest": {},
+                        "registry": {
+                            "main:1": {
+                                "skillId": "main:1",
+                                "skillName": "main-only",
+                                "rootPath": str(main_skill),
+                                "instructionPath": str(main_skill / "SKILL.md"),
+                                "sourceType": "main_workspace",
+                            }
+                        },
+                        "lastScanAt": "2026-04-24T00:00:00Z",
+                        "dirty": False,
+                    },
+                }
 
                 def fake_resolve_descriptors(*, include_scoped=False, **_kwargs):  # noqa: ANN003
                     return [global_desc, scoped_desc] if include_scoped else [global_desc, main_desc]
@@ -160,6 +203,9 @@ class PromptBudgetGovernanceTests(unittest.TestCase):
                 SkillLoader._skills_registry = old_state["_skills_registry"]
                 SkillLoader._skills_root_descriptors = old_state["_skills_root_descriptors"]
                 SkillLoader._skills_fingerprint = old_state["_skills_fingerprint"]
+                SkillLoader._skills_revision = old_state["_skills_revision"]
+                SkillLoader._root_inventory_states = old_state["_root_inventory_states"]
+                SkillLoader._visible_inventory_cache = old_state["_visible_inventory_cache"]
 
         self.assertIn("scoped rules", content)
         self.assertNotIn("main rules", content)
@@ -171,6 +217,65 @@ class PromptBudgetGovernanceTests(unittest.TestCase):
         self.assertIn("global-only", inventory_names)
         self.assertIn("scoped-only", inventory_names)
         self.assertNotIn("main-only", inventory_names)
+
+    def test_workspace_less_network_api_omits_default_workspace_rules(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "main"
+            rules = workspace / ".agents" / "rules"
+            rules.mkdir(parents=True)
+            (rules / "AGENTS.md").write_text("main agents rules", encoding="utf-8")
+
+            descriptor = {
+                "workspaceRoot": str(workspace),
+                "mainWorkspacePath": str(workspace),
+                "isScopedOverride": False,
+            }
+            with patch.object(workspace_resolution_service, "get_main_workspace_path", return_value=str(workspace)), patch.object(
+                workspace_resolution_service,
+                "resolve_workspace_descriptor",
+                return_value=descriptor,
+            ):
+                content, diagnostics = _build_workspace_rules_context(
+                    state={"transport": "network_supervisor_openai"},
+                    session_id="network-session",
+                )
+
+        self.assertEqual(content, "")
+        self.assertEqual(diagnostics, [])
+
+    def test_network_api_with_explicit_project_workspace_still_injects_scoped_rules(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main = Path(temp_dir) / "main"
+            scoped = Path(temp_dir) / "project"
+            (main / ".agents" / "rules").mkdir(parents=True)
+            (scoped / ".agents" / "rules").mkdir(parents=True)
+            (main / ".agents" / "rules" / "AGENTS.md").write_text("main rules", encoding="utf-8")
+            (scoped / ".agents" / "rules" / "AGENTS.md").write_text("scoped rules", encoding="utf-8")
+
+            descriptor = {
+                "workspaceRoot": str(scoped),
+                "mainWorkspacePath": str(main),
+                "isScopedOverride": True,
+                "workspaceId": "project-workspace",
+                "projectId": "project-1",
+            }
+            with patch.object(workspace_resolution_service, "get_main_workspace_path", return_value=str(main)), patch.object(
+                workspace_resolution_service,
+                "resolve_workspace_descriptor",
+                return_value=descriptor,
+            ):
+                content, diagnostics = _build_workspace_rules_context(
+                    state={
+                        "transport": "network_supervisor_openai",
+                        "workspace_id": "project-workspace",
+                        "project_id": "project-1",
+                    },
+                    session_id="network-session",
+                )
+
+        self.assertIn("scoped rules", content)
+        self.assertNotIn("main rules", content)
+        self.assertEqual(len(diagnostics), 1)
 
 
 if __name__ == "__main__":

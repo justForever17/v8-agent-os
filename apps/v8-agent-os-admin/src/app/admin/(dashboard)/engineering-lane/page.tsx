@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Code2, Loader2, Play, RefreshCw, Save } from "lucide-react";
 
@@ -248,6 +249,41 @@ function FieldList({ items, empty }: { items?: string[]; empty: string }) {
     );
 }
 
+function SummaryCard({ label, value, hint, tone = "slate" }: { label: string; value: string; hint?: string; tone?: "slate" | "emerald" | "amber" | "rose" }) {
+    const toneClass =
+        tone === "emerald"
+            ? "border-emerald-200 bg-emerald-50/70 text-emerald-900"
+            : tone === "amber"
+              ? "border-amber-200 bg-amber-50/70 text-amber-900"
+              : tone === "rose"
+                ? "border-rose-200 bg-rose-50/70 text-rose-900"
+                : "border-slate-200 bg-white text-slate-900";
+    return (
+        <div className={`rounded-2xl border p-4 ${toneClass}`}>
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+            <div className="mt-2 text-2xl font-semibold">{value}</div>
+            {hint ? <p className="mt-2 text-sm text-slate-600">{hint}</p> : null}
+        </div>
+    );
+}
+
+function AdvancedPanel({ title, description, children, defaultOpen = false }: { title: string; description?: string; children: ReactNode; defaultOpen?: boolean }) {
+    return (
+        <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <summary className="cursor-pointer list-none">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <h3 className="text-base font-semibold text-slate-950">{title}</h3>
+                        {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">Advanced</span>
+                </div>
+            </summary>
+            <div className="mt-4 border-t border-slate-100 pt-4">{children}</div>
+        </details>
+    );
+}
+
 function normalizeWorksetRisk(value: unknown): string {
     const raw = String(value || "").trim().toLowerCase();
     if (raw === "ready" || raw === "within_write_set" || raw === "none") return "within_write_set";
@@ -448,6 +484,28 @@ export default function EngineeringLanePage() {
     const worksetDispatchDecision = selectedProof?.diagnostics?.worksetDispatchDecision || {};
     const worksetObservation = selectedProof?.worksetObservation || selectedProof?.diagnostics?.worksetObservation || {};
     const worksetCorrelation = selectedProof?.worksetCorrelation || selectedProof?.diagnostics?.worksetCorrelation || {};
+    const selectedRisk = resolveWorksetRisk(selectedProof);
+    const latestObservation = visibleWorksetObservations[0] || worksetObservations[0] || null;
+    const latestObservationRisk = resolveObservationRisk(latestObservation);
+    const matrixSummary = crossLinkMatrix.summary || {};
+    const matrixTotal = Number(matrixSummary.total ?? crossLinkScenarios.length ?? 0);
+    const matrixPass = Number(matrixSummary.pass ?? crossLinkScenarios.filter((item) => item.status === "pass").length);
+    const matrixWarning = Number(matrixSummary.warning ?? crossLinkScenarios.filter((item) => item.status === "warning").length);
+    const matrixFail = Number(matrixSummary.fail ?? crossLinkScenarios.filter((item) => item.status === "fail").length);
+    const matrixTone = matrixFail > 0 ? "rose" : matrixWarning > 0 ? "amber" : matrixTotal > 0 ? "emerald" : "slate";
+    const topMatrixIssues = crossLinkScenarios
+        .map((item) => {
+            const issue = (item.checks || []).find((check) => check.status === "fail" || check.status === "warning");
+            if (issue) return `${String(item.group || "matrix")}/${String(item.label || item.id || "-")}: ${String(issue.message || item.summary || "")}`;
+            if (item.status === "fail" || item.status === "warning") return `${String(item.group || "matrix")}/${String(item.label || item.id || "-")}: ${String(item.summary || item.status || "")}`;
+            return "";
+        })
+        .filter(Boolean)
+        .slice(0, 5);
+    const dryRunProofDraft = (dryRunResult?.proofDraft || {}) as Record<string, unknown>;
+    const learningEligibility = (dryRunResult?.learningEligibility || {}) as Record<string, unknown>;
+    const dryRunBrokerRisk = normalizeWorksetRisk(dryRunSoftGate.risk || (brokerDispatch as Record<string, unknown>).risk || "not_evaluated");
+    const healthTone = !config.enabled ? "slate" : selectedRisk === "outside_write_set" || selectedRisk === "missing_write_set" ? "amber" : "emerald";
 
     return (
         <AdminPageShell>
@@ -463,6 +521,216 @@ export default function EngineeringLanePage() {
                 }
             />
 
+            <div className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <SummaryCard
+                        label={t("app.admin.dashboard.engineeringLane.healthOverview")}
+                        value={config.enabled ? "Enabled" : "Off"}
+                        hint={`${t("app.admin.dashboard.engineeringLane.triggerMode")}: ${config.triggerMode}`}
+                        tone={healthTone}
+                    />
+                    <SummaryCard
+                        label={t("app.admin.dashboard.engineeringLane.recentProofStatus")}
+                        value={selectedProof?.verificationStatus || "none"}
+                        hint={`${t("app.admin.dashboard.engineeringLane.residualRisks")}: ${String(selectedProof?.residualRisks?.length || 0)}`}
+                        tone={selectedProof?.verificationStatus === "verified" ? "emerald" : selectedProof?.verificationStatus === "failed_verification" ? "rose" : "amber"}
+                    />
+                    <SummaryCard
+                        label={t("app.admin.dashboard.engineeringLane.recentWorksetRisk")}
+                        value={latestObservationRisk !== "not_evaluated" ? latestObservationRisk : selectedRisk}
+                        hint={`outside: ${String((selectedProof?.outsideWriteSetFiles || latestObservation?.outsideWriteSetFiles || []).length)}`}
+                        tone={selectedRisk === "outside_write_set" || latestObservationRisk === "outside_write_set" ? "amber" : "slate"}
+                    />
+                    <SummaryCard
+                        label={t("app.admin.dashboard.engineeringLane.matrixSummaryTitle")}
+                        value={matrixTotal ? `${matrixPass}/${matrixTotal}` : "not run"}
+                        hint={matrixTotal ? `warn ${matrixWarning} · fail ${matrixFail}` : t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote")}
+                        tone={matrixTone}
+                    />
+                </div>
+
+                <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)]">
+                    <ConfigCard
+                        title="app.admin.dashboard.engineeringLane.basicConfigTitle"
+                        description="app.admin.dashboard.engineeringLane.basicConfigDescription"
+                        bodyHeight="auto"
+                        footer={envelope ? <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={Boolean(envelope.reloadRequired)} /> : null}
+                    >
+                        {loading ? (
+                            <div className="flex items-center gap-2 text-sm text-slate-500">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                {t("app.admin.dashboard.engineeringLane.loading")}
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between rounded-2xl border border-slate-200 p-4">
+                                    <div>
+                                        <Label>{t("app.admin.dashboard.engineeringLane.enabled")}</Label>
+                                        <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.enabledHint")}</p>
+                                    </div>
+                                    <Switch checked={config.enabled} onCheckedChange={(enabled) => patchConfig({ enabled })} />
+                                </div>
+                                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
+                                    <div className="space-y-2">
+                                        <Label>{t("app.admin.dashboard.engineeringLane.triggerMode")}</Label>
+                                        <Select value={config.triggerMode} onValueChange={(value) => patchConfig({ triggerMode: value as EngineeringLaneConfig["triggerMode"] })}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="auto">auto</SelectItem>
+                                                <SelectItem value="force">force</SelectItem>
+                                                <SelectItem value="off">off</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="flex items-center justify-between rounded-2xl border border-slate-200 p-4">
+                                        <div>
+                                            <Label>{t("app.admin.dashboard.engineeringLane.autoProofCollection")}</Label>
+                                            <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.autoProofCollectionHint")}</p>
+                                        </div>
+                                        <Switch checked={config.autoProofCollectionEnabled} onCheckedChange={(autoProofCollectionEnabled) => patchConfig({ autoProofCollectionEnabled })} />
+                                    </div>
+                                </div>
+                                <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                    <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+                                        {t("app.admin.dashboard.engineeringLane.advancedConfigTitle")}
+                                    </summary>
+                                    <p className="mt-2 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.advancedConfigDescription")}</p>
+                                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <Label>{t("app.admin.dashboard.engineeringLane.contextBudget")}</Label>
+                                            <Input type="number" value={config.contextPackBudget} onChange={(event) => patchConfig({ contextPackBudget: Number(event.target.value) })} />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label>{t("app.admin.dashboard.engineeringLane.evidenceGraphBudget")}</Label>
+                                            <Input type="number" value={config.evidenceGraphBudget} onChange={(event) => patchConfig({ evidenceGraphBudget: Number(event.target.value) })} />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label>{t("app.admin.dashboard.engineeringLane.worksetGovernanceMode")}</Label>
+                                            <Select value={config.worksetGovernanceMode} onValueChange={(value) => patchConfig({ worksetGovernanceMode: value as EngineeringLaneConfig["worksetGovernanceMode"], worksetRiskMode: value as EngineeringLaneConfig["worksetRiskMode"] })}>
+                                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="observe_auto_block">observe_auto_block</SelectItem>
+                                                    <SelectItem value="soft_gate">soft_gate</SelectItem>
+                                                    <SelectItem value="read_only">read_only</SelectItem>
+                                                    <SelectItem value="off">off</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label>{t("app.admin.dashboard.engineeringLane.rankedPathCount")}</Label>
+                                            <Input type="number" min={1} max={5} value={config.rankedWorkflowPathCount} onChange={(event) => patchConfig({ rankedWorkflowPathCount: Number(event.target.value) })} />
+                                        </div>
+                                        {([
+                                            ["evidenceGraphEnabled", "evidenceGraphEnabled"],
+                                            ["codingPlannerContractEnabled", "codingPlannerContractEnabled"],
+                                            ["proofLedgerEnabled", "proofLedger"],
+                                            ["worksetObservationEnabled", "worksetObservation"],
+                                            ["workbenchDryRunMatrixEnabled", "dryRunMatrix"],
+                                            ["suppressDailyMemory", "suppressDaily"],
+                                            ["suppressMemoryMap", "suppressMap"],
+                                        ] as const).map(([key, label]) => (
+                                            <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
+                                                <div>
+                                                    <Label>{t(`app.admin.dashboard.engineeringLane.${label}`)}</Label>
+                                                    <p className="mt-1 text-xs text-slate-500">{t(`app.admin.dashboard.engineeringLane.${label}Hint`)}</p>
+                                                </div>
+                                                <Switch checked={Boolean(config[key])} onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)} />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            </div>
+                        )}
+                    </ConfigCard>
+
+                    <div className="space-y-6">
+                        <ConfigCard
+                            title="app.admin.dashboard.engineeringLane.dryRunDiagnosticTitle"
+                            description="app.admin.dashboard.engineeringLane.dryRunDiagnosticDescription"
+                            bodyHeight="auto"
+                        >
+                            <div className="space-y-4">
+                                <div className="grid gap-3 lg:grid-cols-[1fr_160px]">
+                                    <Textarea className="min-h-[96px]" value={dryRunText} onChange={(event) => setDryRunText(event.target.value)} />
+                                    <div className="space-y-3">
+                                        <Select value={dryRunMode} onValueChange={(value) => setDryRunMode(value as "auto" | "force" | "off")}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="auto">auto</SelectItem>
+                                                <SelectItem value="force">force</SelectItem>
+                                                <SelectItem value="off">off</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <Button className="w-full" onClick={runDryRun} disabled={running || !dryRunText.trim()}>
+                                            {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                                            {t("app.admin.dashboard.engineeringLane.runDryRun")}
+                                        </Button>
+                                    </div>
+                                </div>
+                                {dryRunResult ? (
+                                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                        <SummaryCard label="trigger" value={String(triggerDecision.active ?? false)} hint={String(triggerDecision.reason || "")} tone={triggerDecision.active ? "emerald" : "slate"} />
+                                        <SummaryCard label="scope" value={repoBrief.repoDetected ? "repo" : "no repo"} hint={String(repoBrief.workspaceRoot || repoBrief.repoRoot || "-")} />
+                                        <SummaryCard
+                                            label="memory"
+                                            value={memorySuppression.suppressDailyMemory || memorySuppression.suppressMemoryMap ? "suppressed" : "normal"}
+                                            hint={`workflow=${String(memorySuppression.workflowHintsRetained ?? true)}`}
+                                            tone="amber"
+                                        />
+                                        <SummaryCard label="broker risk" value={dryRunBrokerRisk} hint={String(dryRunSoftGate.suggestedAction || brokerDispatch.recommendedAction || "-")} tone={dryRunBrokerRisk === "outside_write_set" || dryRunBrokerRisk === "missing_write_set" ? "amber" : "slate"} />
+                                        <SummaryCard label="proof" value={String(dryRunProofDraft.verificationStatus || "planned")} hint={String(dryRunProofDraft.reason || "")} />
+                                        <SummaryCard label="learning" value={String(learningEligibility.status || learningEligibility.eligible || "dry-run only")} hint={String(learningEligibility.reason || t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote"))} />
+                                    </div>
+                                ) : (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                                        <Code2 className="mb-3 h-5 w-5" />
+                                        {t("app.admin.dashboard.engineeringLane.noDryRun")}
+                                    </div>
+                                )}
+                                {dryRunResult && (matrixTotal > 0 || topMatrixIssues.length > 0) ? (
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div>
+                                                <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
+                                                <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote")}</p>
+                                            </div>
+                                            <MatrixStatusPill value={matrixFail > 0 ? "fail" : matrixWarning > 0 ? "warning" : "pass"} />
+                                        </div>
+                                        <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-slate-700">total {matrixTotal}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-emerald-700">pass {matrixPass}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-amber-700">warn {matrixWarning}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-rose-700">fail {matrixFail}</span>
+                                        </div>
+                                        {topMatrixIssues.length ? (
+                                            <div className="mt-3 space-y-2">
+                                                {topMatrixIssues.map((issue) => (
+                                                    <div key={issue} className="rounded-xl border border-amber-100 bg-white px-3 py-2 text-xs text-amber-800">
+                                                        {issue}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                ) : null}
+                            </div>
+                        </ConfigCard>
+
+                        <ConfigCard title="app.admin.dashboard.engineeringLane.recentRiskTitle" description="app.admin.dashboard.engineeringLane.recentRiskDescription" bodyHeight="auto">
+                            <div className="grid gap-3 md:grid-cols-3">
+                                <SummaryCard label="verification" value={selectedProof?.verificationStatus || "none"} hint={selectedProof?.runId || selectedProof?.createdAt || "-"} />
+                                <SummaryCard label="workset" value={selectedRisk} hint={`changed ${String(selectedProof?.changedFiles?.length || 0)}`} tone={selectedRisk === "outside_write_set" ? "amber" : "slate"} />
+                                <SummaryCard label="workflow memory" value={String(engineeringWorkflowCandidates.length)} hint={t("app.admin.dashboard.engineeringLane.workflowMemoryReadOnly")} />
+                            </div>
+                        </ConfigCard>
+                    </div>
+                </div>
+            </div>
+
+            <AdvancedPanel
+                title={t("app.admin.dashboard.engineeringLane.advancedDiagnosticsTitle")}
+                description={t("app.admin.dashboard.engineeringLane.advancedDiagnosticsDescription")}
+            >
             <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
                 <ConfigCard
                     title="app.admin.dashboard.engineeringLane.configTitle"
@@ -1097,6 +1365,7 @@ export default function EngineeringLanePage() {
             </div>
                 </div>
             </div>
+            </AdvancedPanel>
         </AdminPageShell>
     );
 }

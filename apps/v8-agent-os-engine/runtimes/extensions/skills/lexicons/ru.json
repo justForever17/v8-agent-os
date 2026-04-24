@@ -1,0 +1,12 @@
+{
+  "locale": "ru",
+  "version": 1,
+  "querySynonyms": {
+    "статья": ["article", "document"],
+    "код": ["code", "coding"]
+  },
+  "artifactIntentSynonyms": {
+    "document": ["статья"],
+    "code": ["код"]
+  }
+}

@@ -176,12 +176,15 @@ _OPERATION_RULES: dict[str, tuple[str, ...]] = {
     "create": (
         "create",
         "creation",
+        "creating",
         "generate",
         "generated",
         "generating",
         "build",
         "draft",
         "make",
+        "publish",
+        "publishing",
         "写",
         "生成",
         "创建",
@@ -293,12 +296,21 @@ _PRIMARY_THEME_RULES: dict[str, tuple[str, ...]] = {
         "creator",
         "media",
         "内容",
+        "wechat",
+        "weixin",
+        "official account",
+        "public account",
+        "公众号",
+        "微信公众号",
         "视频",
         "youtube",
         "thumbnail",
         "hook",
         "retention",
         "attention",
+        "publishing",
+        "publish",
+        "图文",
         "短视频",
         "创作者",
     ),
@@ -309,6 +321,8 @@ _PRIMARY_THEME_RULES: dict[str, tuple[str, ...]] = {
         "沟通",
         "storytelling",
         "表达",
+        "article",
+        "articles",
         "文章",
         "copywriting",
         "文风",
@@ -374,6 +388,20 @@ _SECONDARY_THEME_RULES: dict[str, tuple[str, ...]] = {
     "inversion": ("逆向思考", "inversion"),
     "specific_knowledge": ("特定知识", "specific knowledge"),
     "creator_growth": ("creator growth", "内容增长", "retention", "thumbnail", "hook", "ctr"),
+    "social_publishing": (
+        "social publishing",
+        "wechat",
+        "weixin",
+        "official account",
+        "public account",
+        "公众号",
+        "微信公众号",
+        "公众号文章",
+        "微信文章",
+        "图文",
+        "publishing",
+        "publish",
+    ),
     "organizational_design": ("组织设计", "organizational design", "组织效率"),
     "attention_arbitrage": ("attention arbitrage", "注意力套利", "注意力经济"),
     "cognitive_bias": ("认知偏误", "bias", "biases", "lollapalooza"),
@@ -386,6 +414,7 @@ _SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {
     "inversion": ("decision_quality",),
     "specific_knowledge": ("wealth_money", "career_learning"),
     "creator_growth": ("content_media", "startup_growth"),
+    "social_publishing": ("content_media", "writing_communication"),
     "organizational_design": ("organization_leadership",),
     "attention_arbitrage": ("content_media", "wealth_money"),
     "cognitive_bias": ("decision_quality",),
@@ -401,12 +430,15 @@ class SkillLoader:
     _skills_manifest: dict[str, dict[str, Any]] = {}
     _skills_root_signature: str = ""
     _skills_revision: str = ""
+    _root_inventory_states: dict[str, dict[str, Any]] = {}
+    _visible_inventory_cache: dict[str, dict[str, Any]] = {}
     _skills_roots: list[Path] = []
     _skills_root_descriptors: list[dict[str, Any]] = []
     _recent_skill_discovery: list[dict[str, Any]] = []
     _last_reload_result: dict[str, Any] = {}
     _last_check_at: float = 0.0
     _check_interval_seconds: float = 0.75
+    _dirty_root_paths: set[str] = set()
     _startup_state: str = "cold"
     _snapshot_freshness: str = "cold"
     _last_refresh_at: str | None = None
@@ -843,12 +875,60 @@ class SkillLoader:
                 skill_class = "methodology_or_tutorial"
             elif has_templates or has_examples:
                 skill_class = "methodology_or_tutorial"
+        if skill_class == "workflow_or_script":
+            document_evidence_terms = {
+                str(term or "").strip().lower()
+                for term in list(artifact_matches_all.get("document") or [])
+                if str(term or "").strip()
+            }
+            if (
+                "create" in primary_operations
+                and artifact_scores_all.get("document", 0.0) >= 2.0
+                and document_evidence_terms.intersection(
+                    {"article", "document", "doc", "docx", "md", "markdown", "report", "html", "文章", "文档", "报告"}
+                )
+            ):
+                primary_artifact_types = ["document", *[item for item in primary_artifact_types if item != "document"]]
+                primary_artifact_types = primary_artifact_types[:_PRIMARY_ARTIFACT_LIMIT]
+        if skill_class == "workflow_or_script" and not primary_artifact_types:
+            should_promote_artifact = bool(
+                "create" in primary_operations
+                or artifact_scores_all.get("document", 0.0) >= 2.0
+                or artifact_scores_all.get("video", 0.0) >= 2.0
+                or artifact_scores_all.get("image", 0.0) >= 2.0
+                or artifact_scores_all.get("presentation", 0.0) >= 2.0
+                or artifact_scores_all.get("audio", 0.0) >= 2.0
+                or has_templates
+                or has_assets
+            )
+            if should_promote_artifact:
+                promoted_artifacts = [
+                    item
+                    for item in cls._select_primary_keys(
+                        scores=artifact_scores_all,
+                        max_items=_PRIMARY_ARTIFACT_LIMIT,
+                        minimum=2.0,
+                        dominance_ratio=0.55,
+                    )
+                    if item != "skill"
+                ]
+                if (
+                    "create" in primary_operations
+                    and artifact_scores_all.get("document", 0.0) >= 2.0
+                    and document_evidence_terms.intersection(
+                        {"article", "document", "doc", "docx", "md", "markdown", "report", "html", "文章", "文档", "报告"}
+                    )
+                ):
+                    promoted_artifacts = ["document", *[item for item in promoted_artifacts if item != "document"]]
+                    promoted_artifacts = promoted_artifacts[:_PRIMARY_ARTIFACT_LIMIT]
+                if promoted_artifacts:
+                    primary_artifact_types = promoted_artifacts
         if skill_class == "skill_authoring":
             if "skill" not in primary_artifact_types:
                 primary_artifact_types = ["skill", *primary_artifact_types][:_PRIMARY_ARTIFACT_LIMIT]
             if "create" not in primary_operations:
                 primary_operations = ["create", *primary_operations][:_PRIMARY_OPERATION_LIMIT]
-        if skill_class in {"advisor_or_perspective", "methodology_or_tutorial", "workflow_or_script", "integration_or_tooling"}:
+        if skill_class in {"advisor_or_perspective", "methodology_or_tutorial", "integration_or_tooling"}:
             primary_artifact_types = []
         interaction_mode = cls._derive_interaction_mode(
             primary_artifact_types=primary_artifact_types,
@@ -1838,6 +1918,7 @@ class SkillLoader:
         cls._last_refresh_at = str(payload.get("updatedAt") or "").strip() or None
         cls._last_refresh_error = None
         cls._last_check_at = time.monotonic()
+        cls._rebuild_root_inventory_states_from_registry()
         return True
 
     @classmethod
@@ -1990,6 +2071,242 @@ class SkillLoader:
         return cls._dedupe_root_descriptors(descriptors)
 
     @classmethod
+    def resolve_root_descriptors(
+        cls,
+        *,
+        include_scoped: bool = False,
+        runtime_kind: str | None = None,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return cls._resolve_root_descriptors(
+            include_scoped=include_scoped,
+            runtime_kind=runtime_kind,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
+
+    @classmethod
+    def _root_manifest_fingerprint(
+        cls,
+        descriptor: dict[str, Any],
+        manifest: dict[str, dict[str, Any]],
+    ) -> str:
+        return cls._manifest_fingerprint([descriptor], manifest)
+
+    @classmethod
+    def _descriptor_cache_key(cls, descriptor: dict[str, Any]) -> str:
+        return cls._normalize_path(descriptor.get("rootPath"))
+
+    @classmethod
+    def _compute_root_manifest(cls, descriptor: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        manifest: dict[str, dict[str, Any]] = {}
+        normalized_descriptor = cls._dedupe_root_descriptors([descriptor])
+        if not normalized_descriptor:
+            return manifest
+        root_descriptor = normalized_descriptor[0]
+        root_path = cls._normalize_path(root_descriptor.get("rootPath"))
+        root = Path(root_path)
+        if not root.exists() or not root.is_dir():
+            return manifest
+        for skill_file in sorted(root.glob("*/SKILL.md")):
+            try:
+                stat = skill_file.stat()
+            except OSError:
+                continue
+            instruction_path = cls._normalize_path(skill_file)
+            skill_root = cls._normalize_path(skill_file.parent)
+            manifest[instruction_path] = {
+                "key": instruction_path,
+                "instructionPath": instruction_path,
+                "skillRoot": skill_root,
+                "folder": skill_file.parent.name,
+                "rootPath": root_path,
+                "sourceType": str(root_descriptor.get("sourceType") or "global").strip() or "global",
+                "visibility": str(root_descriptor.get("visibility") or "global").strip() or "global",
+                "workspacePath": cls._normalize_path(root_descriptor.get("workspacePath")),
+                "workspaceId": str(root_descriptor.get("workspaceId") or "").strip() or None,
+                "projectId": str(root_descriptor.get("projectId") or "").strip() or None,
+                "mtimeNs": int(stat.st_mtime_ns),
+                "size": int(stat.st_size),
+            }
+        return manifest
+
+    @classmethod
+    def _scan_single_root_descriptor(cls, descriptor: dict[str, Any]) -> dict[str, dict]:
+        return cls._scan_root_descriptors([descriptor])
+
+    @classmethod
+    def _visible_root_revision_key(cls, descriptors: list[dict[str, Any]]) -> str:
+        normalized_descriptors = cls._dedupe_root_descriptors(descriptors)
+        payload: list[dict[str, Any]] = []
+        for descriptor in normalized_descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            state = cls._root_inventory_states.get(root_path) or {}
+            payload.append(
+                {
+                    "rootPath": root_path,
+                    "rootRevision": str(state.get("rootRevision") or ""),
+                    "descriptorSignature": str(state.get("descriptorSignature") or ""),
+                }
+            )
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _visible_inventory_cache_key(cls, descriptors: list[dict[str, Any]]) -> str:
+        return "|".join([cls._root_descriptors_signature(descriptors), cls._visible_root_revision_key(descriptors)])
+
+    @classmethod
+    def _dirty_root_paths_for_descriptors(cls, descriptors: list[dict[str, Any]]) -> list[str]:
+        dirty: list[str] = []
+        for descriptor in cls._dedupe_root_descriptors(descriptors):
+            root_path = cls._descriptor_cache_key(descriptor)
+            if root_path and root_path in cls._dirty_root_paths:
+                dirty.append(root_path)
+        return dirty
+
+    @classmethod
+    def _invalidate_visible_inventory_cache(cls, changed_root_paths: set[str] | None = None) -> None:
+        if not changed_root_paths:
+            cls._visible_inventory_cache.clear()
+            return
+        normalized_changed = {
+            cls._normalize_path(item)
+            for item in list(changed_root_paths or set())
+            if cls._normalize_path(item)
+        }
+        if not normalized_changed:
+            return
+        stale_keys: list[str] = []
+        for cache_key, snapshot in cls._visible_inventory_cache.items():
+            cache_root_paths = {
+                cls._descriptor_cache_key(descriptor)
+                for descriptor in list((snapshot or {}).get("rootDescriptors") or [])
+                if cls._descriptor_cache_key(descriptor)
+            }
+            if cache_root_paths.intersection(normalized_changed):
+                stale_keys.append(cache_key)
+        for cache_key in stale_keys:
+            cls._visible_inventory_cache.pop(cache_key, None)
+
+    @classmethod
+    def _rebuild_root_inventory_states_from_registry(cls) -> None:
+        descriptors = cls._dedupe_root_descriptors(cls._skills_root_descriptors)
+        states: dict[str, dict[str, Any]] = {}
+        for descriptor in descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            if not root_path:
+                continue
+            manifest = {
+                key: dict(value)
+                for key, value in cls._skills_manifest.items()
+                if cls._normalize_path((value or {}).get("rootPath")) == root_path
+            }
+            registry = {
+                skill_id: dict(item)
+                for skill_id, item in cls._skills_registry.items()
+                if cls._normalize_path((item or {}).get("rootPath")) == root_path
+            }
+            states[root_path] = {
+                "descriptor": dict(descriptor),
+                "descriptorSignature": cls._root_descriptors_signature([descriptor]),
+                "manifest": manifest,
+                "registry": registry,
+                "rootRevision": cls._root_manifest_fingerprint(descriptor, manifest),
+                "lastScanAt": cls._now_iso(),
+                "dirty": False,
+            }
+        cls._root_inventory_states = states
+        cls._dirty_root_paths = set()
+        cls._invalidate_visible_inventory_cache()
+
+    @classmethod
+    def _rebuild_aggregate_registry_from_root_states(
+        cls,
+        *,
+        descriptors: list[dict[str, Any]],
+        changed_root_paths: set[str] | None = None,
+    ) -> None:
+        normalized_descriptors = cls._dedupe_root_descriptors(descriptors)
+        registry: dict[str, dict] = {}
+        manifest: dict[str, dict[str, Any]] = {}
+        roots: list[Path] = []
+        revision_payload: list[dict[str, str]] = []
+        for descriptor in normalized_descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            if not root_path:
+                continue
+            state = cls._root_inventory_states.get(root_path)
+            if not state:
+                continue
+            roots.append(Path(root_path))
+            manifest.update({str(key): dict(value) for key, value in dict(state.get("manifest") or {}).items()})
+            registry.update({str(key): dict(value) for key, value in dict(state.get("registry") or {}).items()})
+            revision_payload.append(
+                {
+                    "rootPath": root_path,
+                    "rootRevision": str(state.get("rootRevision") or ""),
+                    "descriptorSignature": str(state.get("descriptorSignature") or ""),
+                }
+            )
+        revision_text = json.dumps(revision_payload, ensure_ascii=False, sort_keys=True)
+        cls._skills_registry = registry
+        cls._skills_root_descriptors = normalized_descriptors
+        cls._skills_roots = roots
+        cls._skills_manifest = manifest
+        cls._skills_root_signature = cls._root_descriptors_signature(normalized_descriptors)
+        cls._skills_fingerprint = cls._manifest_fingerprint(normalized_descriptors, manifest)
+        cls._skills_revision = hashlib.sha1(revision_text.encode("utf-8")).hexdigest()
+        cls._invalidate_visible_inventory_cache(changed_root_paths)
+
+    @classmethod
+    def _build_visible_inventory_from_descriptors(
+        cls,
+        *,
+        descriptors: list[dict[str, Any]],
+        discovery_revision: str | None = None,
+        changed_roots: list[str] | None = None,
+        scoped_refresh_mode: str | None = None,
+        visible_registry_cache_hit: bool = False,
+        exclude_root_paths: set[str] | None = None,
+    ) -> dict[str, Any]:
+        normalized_descriptors = cls._dedupe_root_descriptors(descriptors)
+        excluded = {cls._normalize_path(item) for item in list(exclude_root_paths or set()) if cls._normalize_path(item)}
+        registry: dict[str, dict] = {}
+        fingerprint_payload: list[dict[str, str]] = []
+        for descriptor in normalized_descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            if not root_path or root_path in excluded:
+                continue
+            state = cls._root_inventory_states.get(root_path) or {}
+            registry.update({str(key): dict(value) for key, value in dict(state.get("registry") or {}).items()})
+            fingerprint_payload.append(
+                {
+                    "rootPath": root_path,
+                    "rootRevision": str(state.get("rootRevision") or ""),
+                }
+            )
+        snapshot = cls._inventory_snapshot(
+            registry=registry,
+            descriptors=[descriptor for descriptor in normalized_descriptors if cls._descriptor_cache_key(descriptor) not in excluded],
+            fingerprint=hashlib.sha1(
+                json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            discovery_revision=discovery_revision,
+            changed_roots=changed_roots,
+            scoped_refresh_mode=scoped_refresh_mode,
+        )
+        snapshot["visibleRootRevisionKey"] = cls._visible_root_revision_key(snapshot.get("rootDescriptors") or [])
+        snapshot["visibleRegistryCacheHit"] = bool(visible_registry_cache_hit)
+        snapshot["dirtyVisibleRoots"] = cls._dirty_root_paths_for_descriptors(snapshot.get("rootDescriptors") or [])
+        return snapshot
+
+    @classmethod
     def _compute_fingerprint(cls, descriptors: list[dict[str, Any]]) -> str:
         manifest = cls._compute_manifest(descriptors)
         return cls._manifest_fingerprint(descriptors, manifest)
@@ -2004,7 +2321,9 @@ class SkillLoader:
         discovery_revision: str | None = None,
         changed_roots: list[str] | None = None,
         scoped_refresh_mode: str | None = None,
+        visible_registry_cache_hit: bool = False,
     ) -> dict[str, Any]:
+        normalized_descriptors = cls._dedupe_root_descriptors(descriptors)
         items = sorted(
             list(registry.values()),
             key=lambda item: (
@@ -2016,12 +2335,17 @@ class SkillLoader:
         return {
             "registry": dict(registry),
             "items": items,
-            "rootDescriptors": list(descriptors),
-            "roots": [str(item.get("rootPath") or "") for item in descriptors],
+            "rootDescriptors": list(normalized_descriptors),
+            "roots": [str(item.get("rootPath") or "") for item in normalized_descriptors],
             "fingerprint": fingerprint,
             "revision": fingerprint,
             "discoveryRevision": str(discovery_revision or cls._skills_revision or fingerprint).strip(),
-            "visibleRootSignature": cls._root_descriptors_signature(descriptors),
+            "visibleRootSignature": cls._root_descriptors_signature(normalized_descriptors),
+            "visibleRootRevisionKey": cls._visible_root_revision_key(normalized_descriptors),
+            "visibleRegistryCacheHit": bool(visible_registry_cache_hit),
+            "dirtyVisibleRoots": cls._dirty_root_paths_for_descriptors(normalized_descriptors),
+            "inventoryReadyState": cls._startup_state,
+            "snapshotFreshness": cls._snapshot_freshness,
             "changedRoots": list(changed_roots or []),
             "scopedRefreshMode": str(scoped_refresh_mode or "").strip() or None,
             "recentSkillDiscovery": [
@@ -2221,6 +2545,7 @@ class SkillLoader:
         cls._skills_fingerprint = fingerprint or cls._manifest_fingerprint(descriptors, manifest)
         cls._skills_revision = cls._skills_fingerprint
         cls._last_check_at = time.monotonic()
+        cls._rebuild_root_inventory_states_from_registry()
 
     @classmethod
     def _summarize_skill_structure(cls, skill_root: Path) -> list[str]:
@@ -2242,6 +2567,208 @@ class SkillLoader:
         return items
 
     @classmethod
+    def _resolve_inventory_descriptors(
+        cls,
+        *,
+        include_scoped: bool,
+        runtime_kind: str | None = None,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return cls._resolve_root_descriptors(
+            include_scoped=include_scoped,
+            runtime_kind=runtime_kind,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
+
+    @classmethod
+    def _tracked_root_paths(cls) -> set[str]:
+        return {
+            cls._descriptor_cache_key(descriptor)
+            for descriptor in cls._dedupe_root_descriptors(cls._skills_root_descriptors or cls._discovery_root_descriptors())
+            if cls._descriptor_cache_key(descriptor)
+        }
+
+    @classmethod
+    def _update_startup_freshness_state(cls) -> None:
+        if cls._dirty_root_paths:
+            cls._startup_state = "refreshing" if cls._skills_registry else "cold"
+            cls._snapshot_freshness = "cached" if cls._skills_registry else "cold"
+            return
+        cls._startup_state = "ready"
+        cls._snapshot_freshness = "live"
+
+    @classmethod
+    def refresh_root_descriptors_if_changed(
+        cls,
+        descriptors: list[dict[str, Any]],
+        *,
+        compare_existing: bool = False,
+        timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        normalized_descriptors = cls._dedupe_root_descriptors(descriptors)
+        current_root_paths = {
+            cls._descriptor_cache_key(descriptor)
+            for descriptor in normalized_descriptors
+            if cls._descriptor_cache_key(descriptor)
+        }
+        tracked_root_paths = cls._tracked_root_paths()
+        before = {
+            skill_id: cls._skill_registry_signature(item)
+            for skill_id, item in cls._skills_registry.items()
+        }
+        before_by_manifest_key = {
+            cls._entry_manifest_key(item): (skill_id, item)
+            for skill_id, item in cls._skills_registry.items()
+            if cls._entry_manifest_key(item)
+        }
+        next_states = {
+            str(root_path): {
+                key: (
+                    {str(item_key): dict(item_value) for item_key, item_value in dict(value).items()}
+                    if key in {"manifest", "registry"}
+                    else dict(value)
+                    if isinstance(value, dict)
+                    else value
+                )
+                for key, value in dict(state).items()
+            }
+            for root_path, state in cls._root_inventory_states.items()
+        }
+        dirty_root_paths = set(cls._dirty_root_paths)
+        changed_root_paths: set[str] = set()
+        timed_out_root_paths: set[str] = set()
+
+        for index, descriptor in enumerate(normalized_descriptors):
+            root_path = cls._descriptor_cache_key(descriptor)
+            if not root_path:
+                continue
+            if timeout_ms is not None and ((time.perf_counter() - started_at) * 1000) >= timeout_ms:
+                timed_out_root_paths.add(root_path)
+                dirty_root_paths.add(root_path)
+                for remaining_descriptor in normalized_descriptors[index + 1 :]:
+                    remaining_root_path = cls._descriptor_cache_key(remaining_descriptor)
+                    if remaining_root_path:
+                        timed_out_root_paths.add(remaining_root_path)
+                        dirty_root_paths.add(remaining_root_path)
+                break
+            state = next_states.get(root_path) or {}
+            descriptor_signature = cls._root_descriptors_signature([descriptor])
+            manifest = cls._compute_root_manifest(descriptor)
+            root_revision = cls._root_manifest_fingerprint(descriptor, manifest)
+            tracked_root = root_path in tracked_root_paths or compare_existing
+            changed = (
+                not state
+                or str(state.get("rootRevision") or "") != root_revision
+                or str(state.get("descriptorSignature") or "") != descriptor_signature
+            )
+            if not tracked_root and not state:
+                continue
+            if not changed:
+                dirty_root_paths.discard(root_path)
+                continue
+            registry = cls._scan_single_root_descriptor(descriptor)
+            next_states[root_path] = {
+                "descriptor": dict(descriptor),
+                "descriptorSignature": descriptor_signature,
+                "manifest": manifest,
+                "registry": registry,
+                "rootRevision": root_revision,
+                "lastScanAt": cls._now_iso(),
+                "dirty": False,
+            }
+            dirty_root_paths.discard(root_path)
+            changed_root_paths.add(root_path)
+
+        removed_root_paths: set[str] = set()
+        if compare_existing:
+            previous_paths = {
+                cls._descriptor_cache_key(descriptor)
+                for descriptor in cls._dedupe_root_descriptors(cls._skills_root_descriptors or [])
+                if cls._descriptor_cache_key(descriptor)
+            }
+            removed_root_paths = {
+                root_path
+                for root_path in previous_paths
+                if root_path and root_path not in current_root_paths
+            }
+            for root_path in removed_root_paths:
+                next_states.pop(root_path, None)
+                dirty_root_paths.discard(root_path)
+            changed_root_paths.update(removed_root_paths)
+
+        aggregate_descriptors = (
+            normalized_descriptors
+            if compare_existing
+            else cls._dedupe_root_descriptors(cls._skills_root_descriptors or cls._discovery_root_descriptors())
+        )
+        aggregate_root_signature = cls._root_descriptors_signature(aggregate_descriptors)
+        aggregate_changed = bool(changed_root_paths) or aggregate_root_signature != cls._skills_root_signature
+        if aggregate_changed:
+            cls._root_inventory_states = next_states
+            cls._dirty_root_paths = dirty_root_paths
+            cls._rebuild_aggregate_registry_from_root_states(
+                descriptors=aggregate_descriptors,
+                changed_root_paths=changed_root_paths or removed_root_paths,
+            )
+        else:
+            cls._root_inventory_states = next_states
+            cls._dirty_root_paths = dirty_root_paths
+        cls._last_check_at = time.monotonic()
+
+        after = {
+            skill_id: cls._skill_registry_signature(item)
+            for skill_id, item in cls._skills_registry.items()
+        }
+        before_ids = set(before)
+        after_ids = set(after)
+        shared_ids = before_ids & after_ids
+        added_skill_ids = sorted(after_ids - before_ids)
+        updated_skill_ids = sorted(
+            skill_id
+            for skill_id in shared_ids
+            if before.get(skill_id) != after.get(skill_id)
+        )
+        removed_skill_ids = sorted(before_ids - after_ids)
+        recent = cls._remember_recent_skill_discovery(
+            added=[cls._skills_registry[skill_id] for skill_id in added_skill_ids if skill_id in cls._skills_registry],
+            updated=[cls._skills_registry[skill_id] for skill_id in updated_skill_ids if skill_id in cls._skills_registry],
+            refresh_mode="full" if compare_existing and not before else "delta",
+        )
+        if aggregate_changed:
+            cls._persist_cache()
+            cls._last_refresh_at = cls._now_iso()
+            cls._last_refresh_error = None
+        cls._update_startup_freshness_state()
+
+        result = {
+            "changed": bool(aggregate_changed),
+            "refreshMode": "full" if compare_existing and not before else "delta",
+            "fingerprint": cls._skills_fingerprint,
+            "revision": cls._skills_revision or cls._skills_fingerprint,
+            "roots": [str(item.get("rootPath") or "") for item in aggregate_descriptors],
+            "rootDescriptors": list(aggregate_descriptors),
+            "changedRoots": sorted(changed_root_paths),
+            "dirtyRoots": sorted(dirty_root_paths),
+            "inventoryReadyState": cls._startup_state,
+            "addedSkills": added_skill_ids,
+            "removedSkills": removed_skill_ids,
+            "updatedSkills": updated_skill_ids,
+            "recentSkillDiscovery": recent,
+            "timedOut": bool(timed_out_root_paths),
+            "timedOutRoots": sorted(timed_out_root_paths),
+            "durationMs": round((time.perf_counter() - started_at) * 1000, 2),
+        }
+        cls._last_reload_result = dict(result)
+        return result
+
+    @classmethod
     def get_inventory(
         cls,
         *,
@@ -2252,6 +2779,7 @@ class SkillLoader:
         explicit_workspace_id: str | None = None,
         explicit_workspace_path: str | None = None,
         explicit_project_id: str | None = None,
+        exclude_root_paths: set[str] | None = None,
     ) -> dict[str, Any]:
         if force_refresh:
             cls.ensure_fresh()
@@ -2260,59 +2788,103 @@ class SkillLoader:
             if not cls._skills_registry:
                 cls.ensure_fresh()
 
-        base_descriptors = cls._skills_root_descriptors or cls._discovery_root_descriptors()
-        base_registry = dict(cls._skills_registry)
-        default_visible_descriptors = cls._resolve_root_descriptors(include_scoped=False)
-        default_visible_registry = {
-            skill_id: item
-            for skill_id, item in base_registry.items()
-            if any(cls._entry_belongs_to_root_descriptor(item, descriptor) for descriptor in default_visible_descriptors)
-        }
-        default_visible_fingerprint = cls._compute_fingerprint(default_visible_descriptors)
-        if not include_scoped:
-            return cls._inventory_snapshot(
-                registry=default_visible_registry,
-                descriptors=default_visible_descriptors,
-                fingerprint=default_visible_fingerprint,
-                discovery_revision=cls._skills_revision or cls._skills_fingerprint,
-            )
-
-        visible_descriptors = cls._resolve_root_descriptors(
-            include_scoped=True,
+        visible_descriptors = cls._resolve_inventory_descriptors(
+            include_scoped=include_scoped,
             runtime_kind=runtime_kind,
             session_id=session_id,
             explicit_workspace_id=explicit_workspace_id,
             explicit_workspace_path=explicit_workspace_path,
             explicit_project_id=explicit_project_id,
         )
-        visible_base_registry = {
-            skill_id: item
-            for skill_id, item in base_registry.items()
-            if any(cls._entry_belongs_to_root_descriptor(item, descriptor) for descriptor in visible_descriptors)
+        normalized_visible_descriptors = cls._dedupe_root_descriptors(visible_descriptors)
+        excluded_root_paths = {
+            cls._normalize_path(item)
+            for item in list(exclude_root_paths or set())
+            if cls._normalize_path(item)
         }
-        base_paths = {cls._normalize_path(item.get("rootPath")) for item in base_descriptors}
-        scoped_descriptors = [
-            item for item in visible_descriptors if cls._normalize_path(item.get("rootPath")) not in base_paths
+        tracked_root_paths = set(cls._root_inventory_states)
+        missing_descriptors = [
+            descriptor
+            for descriptor in normalized_visible_descriptors
+            if cls._descriptor_cache_key(descriptor) not in tracked_root_paths
         ]
-        visible_fingerprint = cls._compute_fingerprint(visible_descriptors)
-        if not scoped_descriptors:
-            return cls._inventory_snapshot(
-                registry=visible_base_registry,
-                descriptors=visible_descriptors,
-                fingerprint=visible_fingerprint,
-                discovery_revision=cls._skills_revision or cls._skills_fingerprint,
+        discovery_revision = cls._skills_revision or cls._skills_fingerprint
+
+        if not missing_descriptors:
+            visible_cache_key = (
+                cls._visible_inventory_cache_key(normalized_visible_descriptors)
+                if not excluded_root_paths
+                else ""
             )
-        scoped_registry = cls._scan_root_descriptors(scoped_descriptors)
-        merged_registry = dict(visible_base_registry)
-        merged_registry.update(scoped_registry)
-        return cls._inventory_snapshot(
-            registry=merged_registry,
-            descriptors=visible_descriptors,
-            fingerprint=visible_fingerprint,
-            discovery_revision=cls._skills_revision or cls._skills_fingerprint,
-            changed_roots=[str(item.get("rootPath") or "") for item in scoped_descriptors],
+            if visible_cache_key and visible_cache_key in cls._visible_inventory_cache:
+                cached_snapshot = dict(cls._visible_inventory_cache.get(visible_cache_key) or {})
+                cached_snapshot["visibleRegistryCacheHit"] = True
+                cached_snapshot["dirtyVisibleRoots"] = cls._dirty_root_paths_for_descriptors(
+                    cached_snapshot.get("rootDescriptors") or []
+                )
+                return cached_snapshot
+            snapshot = cls._build_visible_inventory_from_descriptors(
+                descriptors=normalized_visible_descriptors,
+                discovery_revision=discovery_revision,
+                visible_registry_cache_hit=False,
+                exclude_root_paths=excluded_root_paths,
+            )
+            if visible_cache_key:
+                cls._visible_inventory_cache[visible_cache_key] = dict(snapshot)
+            return snapshot
+
+        base_descriptors = [
+            descriptor
+            for descriptor in normalized_visible_descriptors
+            if cls._descriptor_cache_key(descriptor) in tracked_root_paths
+        ]
+        base_snapshot = cls._build_visible_inventory_from_descriptors(
+            descriptors=base_descriptors,
+            discovery_revision=discovery_revision,
             scoped_refresh_mode="live_overlay",
+            exclude_root_paths=excluded_root_paths,
         )
+        merged_registry = dict(base_snapshot.get("registry") or {})
+        missing_root_paths: list[str] = []
+        fingerprint_payload: list[dict[str, str]] = [
+            {
+                "rootPath": cls._descriptor_cache_key(descriptor),
+                "rootRevision": str(
+                    (cls._root_inventory_states.get(cls._descriptor_cache_key(descriptor)) or {}).get("rootRevision") or ""
+                ),
+            }
+            for descriptor in base_descriptors
+            if cls._descriptor_cache_key(descriptor)
+        ]
+        for descriptor in missing_descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            if not root_path or root_path in excluded_root_paths:
+                continue
+            live_registry = cls._scan_single_root_descriptor(descriptor)
+            merged_registry.update(live_registry)
+            missing_root_paths.append(root_path)
+            fingerprint_payload.append(
+                {
+                    "rootPath": root_path,
+                    "rootRevision": cls._root_manifest_fingerprint(
+                        descriptor,
+                        cls._compute_root_manifest(descriptor),
+                    ),
+                }
+            )
+        snapshot = cls._inventory_snapshot(
+            registry=merged_registry,
+            descriptors=[descriptor for descriptor in normalized_visible_descriptors if cls._descriptor_cache_key(descriptor) not in excluded_root_paths],
+            fingerprint=hashlib.sha1(
+                json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            discovery_revision=discovery_revision,
+            changed_roots=missing_root_paths,
+            scoped_refresh_mode="live_overlay",
+            visible_registry_cache_hit=False,
+        )
+        snapshot["dirtyVisibleRoots"] = cls._dirty_root_paths_for_descriptors(snapshot.get("rootDescriptors") or [])
+        return snapshot
 
     @classmethod
     def get_all_skills(
@@ -2362,147 +2934,12 @@ class SkillLoader:
 
     @classmethod
     def reload_if_changed(cls) -> dict[str, Any]:
-        started_at = time.perf_counter()
         descriptors = cls._discovery_root_descriptors()
-        descriptors = cls._dedupe_root_descriptors(descriptors)
-        manifest = cls._compute_manifest(descriptors)
-        fingerprint = cls._manifest_fingerprint(descriptors, manifest)
-        root_signature = cls._root_descriptors_signature(descriptors)
-        if fingerprint == cls._skills_fingerprint and cls._skills_registry:
-            cls._skills_root_descriptors = descriptors
-            cls._skills_roots = [Path(item["rootPath"]) for item in descriptors]
-            cls._last_check_at = time.monotonic()
-            result = {
-                "changed": False,
-                "refreshMode": "delta",
-                "fingerprint": fingerprint,
-                "revision": cls._skills_revision or fingerprint,
-                "roots": [str(item.get("rootPath") or "") for item in descriptors],
-                "rootDescriptors": list(descriptors),
-                "addedSkills": [],
-                "removedSkills": [],
-                "updatedSkills": [],
-                "recentSkillDiscovery": [
-                    {key: value for key, value in item.items() if key != "_observedTs"}
-                    for item in cls._recent_skill_discovery
-                ],
-                "durationMs": round((time.perf_counter() - started_at) * 1000, 2),
-            }
-            cls._last_reload_result = dict(result)
-            return result
-
-        before = {
-            skill_id: cls._skill_registry_signature(item)
-            for skill_id, item in cls._skills_registry.items()
-        }
-        before_by_manifest_key = {
-            cls._entry_manifest_key(item): (skill_id, item)
-            for skill_id, item in cls._skills_registry.items()
-            if cls._entry_manifest_key(item)
-        }
-        full_reload_required = (
-            not cls._skills_registry
-            or not cls._skills_manifest
-            or not cls._skills_root_signature
-            or root_signature != cls._skills_root_signature
+        return cls.refresh_root_descriptors_if_changed(
+            descriptors,
+            compare_existing=True,
+            timeout_ms=None,
         )
-        refresh_mode = "full" if full_reload_required else "delta"
-        rebuilt_updated_skill_ids: set[str] = set()
-        if full_reload_required:
-            cls.reload_skills(root_descriptors=descriptors, fingerprint=fingerprint)
-        else:
-            old_manifest = dict(cls._skills_manifest)
-            added_keys = sorted(set(manifest) - set(old_manifest))
-            removed_keys = sorted(set(old_manifest) - set(manifest))
-            updated_keys = sorted(
-                key
-                for key in set(manifest).intersection(old_manifest)
-                if (
-                    int(manifest[key].get("mtimeNs") or 0) != int(old_manifest[key].get("mtimeNs") or 0)
-                    or int(manifest[key].get("size") or 0) != int(old_manifest[key].get("size") or 0)
-                )
-            )
-            next_registry = dict(cls._skills_registry)
-            for key in removed_keys:
-                old_entry = before_by_manifest_key.get(key)
-                if old_entry:
-                    next_registry.pop(old_entry[0], None)
-            for key in [*added_keys, *updated_keys]:
-                manifest_item = manifest.get(key)
-                if not manifest_item:
-                    continue
-                skill_file = Path(str(manifest_item.get("instructionPath") or ""))
-                try:
-                    content = skill_file.read_text(encoding="utf-8")
-                except Exception as exc:
-                    print(f"[SkillLoader] Error reading {skill_file}: {exc}")
-                    continue
-                entry = cls._build_skill_entry(
-                    folder_name=str(manifest_item.get("folder") or skill_file.parent.name),
-                    file_path=skill_file,
-                    descriptor=cls._manifest_item_descriptor(manifest_item),
-                    content=content,
-                )
-                if entry is None:
-                    old_entry = before_by_manifest_key.get(key)
-                    if old_entry:
-                        next_registry.pop(old_entry[0], None)
-                    continue
-                old_entry = before_by_manifest_key.get(key)
-                if old_entry and old_entry[0] != str(entry.get("skillId") or ""):
-                    next_registry.pop(old_entry[0], None)
-                next_registry[str(entry.get("skillId"))] = entry
-                if key in updated_keys and str(entry.get("skillId") or ""):
-                    rebuilt_updated_skill_ids.add(str(entry.get("skillId")))
-            cls._skills_registry = next_registry
-            cls._skills_root_descriptors = descriptors
-            cls._skills_roots = [Path(item["rootPath"]) for item in descriptors]
-            cls._skills_manifest = manifest
-            cls._skills_root_signature = root_signature
-            cls._skills_fingerprint = fingerprint
-            cls._skills_revision = fingerprint
-            cls._last_check_at = time.monotonic()
-            cls._persist_cache()
-            cls._startup_state = "ready"
-            cls._snapshot_freshness = "live"
-            cls._last_refresh_at = cls._now_iso()
-            cls._last_refresh_error = None
-        after = {
-            skill_id: cls._skill_registry_signature(item)
-            for skill_id, item in cls._skills_registry.items()
-        }
-        before_ids = set(before)
-        after_ids = set(after)
-        shared_ids = before_ids & after_ids
-        added_skill_ids = sorted(after_ids - before_ids)
-        signature_updated_skill_ids = {
-            skill_id
-            for skill_id in shared_ids
-            if before.get(skill_id) != after.get(skill_id)
-        }
-        updated_skill_ids = sorted(signature_updated_skill_ids | (rebuilt_updated_skill_ids & shared_ids))
-        recent = cls._remember_recent_skill_discovery(
-            added=[cls._skills_registry[skill_id] for skill_id in added_skill_ids if skill_id in cls._skills_registry],
-            updated=[cls._skills_registry[skill_id] for skill_id in updated_skill_ids if skill_id in cls._skills_registry],
-            refresh_mode=refresh_mode,
-        )
-        if added_skill_ids or updated_skill_ids:
-            cls._persist_cache()
-        result = {
-            "changed": True,
-            "refreshMode": refresh_mode,
-            "fingerprint": fingerprint,
-            "revision": cls._skills_revision or fingerprint,
-            "roots": [str(item.get("rootPath") or "") for item in descriptors],
-            "rootDescriptors": list(descriptors),
-            "addedSkills": added_skill_ids,
-            "removedSkills": sorted(before_ids - after_ids),
-            "updatedSkills": updated_skill_ids,
-            "recentSkillDiscovery": recent,
-            "durationMs": round((time.perf_counter() - started_at) * 1000, 2),
-        }
-        cls._last_reload_result = dict(result)
-        return result
 
     @classmethod
     def reload_skills(
@@ -2582,10 +3019,14 @@ class SkillLoader:
             "snapshotFreshness": cls._snapshot_freshness,
             "lastRefreshAt": cls._last_refresh_at,
             "lastRefreshError": cls._last_refresh_error,
+            "backgroundRefreshInProgress": bool(cls._background_refresh_in_progress),
             "skillCount": len(cls._skills_registry),
             "fingerprint": cls._skills_fingerprint,
             "revision": cls._skills_revision or cls._skills_fingerprint,
             "rootSignature": cls._skills_root_signature,
+            "visibleRootRevisionKey": cls._visible_root_revision_key(descriptors),
+            "visibleInventoryCacheSize": len(cls._visible_inventory_cache),
+            "dirtyRoots": sorted(cls._dirty_root_paths),
             "lastReloadResult": dict(cls._last_reload_result or {}),
             "recentSkillDiscovery": [
                 {key: value for key, value in item.items() if key != "_observedTs"}

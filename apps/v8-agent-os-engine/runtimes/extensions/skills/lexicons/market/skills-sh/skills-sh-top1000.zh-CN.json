@@ -1,0 +1,2527 @@
+{
+  "locale": "zh-CN",
+  "version": 1,
+  "layer": "market",
+  "provider": "skills-sh",
+  "selectionTarget": 1000,
+  "selectionCount": 1000,
+  "querySynonyms": {
+    "落地页": [
+      "landing",
+      "pages",
+      "marketing",
+      "page",
+      "design",
+      "product"
+    ],
+    "设计系统": [
+      "design",
+      "systems",
+      "component",
+      "patterns",
+      "tailwind",
+      "shadcn"
+    ],
+    "数据提取": [
+      "data",
+      "extraction",
+      "agent-browser",
+      "browser",
+      "automation",
+      "connect"
+    ],
+    "图生视频": [
+      "image",
+      "to",
+      "video",
+      "infsh",
+      "falai",
+      "still"
+    ],
+    "数据库迁移": [
+      "database",
+      "migration",
+      "migrations",
+      "sequelize",
+      "rollback",
+      "orms"
+    ],
+    "单元测试": [
+      "unit",
+      "testing",
+      "test",
+      "tests",
+      "vite",
+      "vitest"
+    ],
+    "定价策略": [
+      "pricing",
+      "strategy",
+      "analysis",
+      "what",
+      "value",
+      "your"
+    ],
+    "文档工作流": [
+      "documentation",
+      "workflows",
+      "design",
+      "patterns",
+      "components",
+      "identify"
+    ],
+    "技术写作": [
+      "technical",
+      "writing",
+      "documentation",
+      "audience",
+      "architecture",
+      "runbooks"
+    ],
+    "文生视频": [
+      "text",
+      "to",
+      "video",
+      "google",
+      "fast",
+      "audio"
+    ],
+    "视频剪辑": [
+      "video",
+      "editing",
+      "code",
+      "infsh",
+      "processing",
+      "python"
+    ],
+    "会议纪要": [
+      "meeting",
+      "notes",
+      "token",
+      "whiteboard",
+      "note",
+      "lark-cli"
+    ],
+    "金融分析": [
+      "financial",
+      "analysis",
+      "stock",
+      "screening",
+      "valuation",
+      "akshare"
+    ],
+    "YouTube缩略图": [
+      "youtube",
+      "thumbnails",
+      "video",
+      "thumbnail",
+      "120px",
+      "belt"
+    ],
+    "视频封面图": [
+      "youtube",
+      "thumbnails",
+      "video",
+      "thumbnail",
+      "120px",
+      "belt"
+    ],
+    "缩略图设计": [
+      "thumbnail",
+      "design",
+      "image",
+      "120px",
+      "youtube",
+      "belt"
+    ],
+    "封面图设计": [
+      "thumbnail",
+      "design",
+      "image",
+      "120px",
+      "youtube",
+      "belt"
+    ],
+    "社媒发布": [
+      "social",
+      "publishing",
+      "wonda",
+      "edit",
+      "auth",
+      "video"
+    ],
+    "产品营销": [
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "your",
+      "before"
+    ],
+    "代理产品营销": [
+      "agents",
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "content"
+    ],
+    "代理产品": [
+      "agents",
+      "product",
+      "what",
+      "context",
+      "marketing",
+      "before"
+    ],
+    "前端设计": [
+      "frontend",
+      "design",
+      "context",
+      "that",
+      "what",
+      "aesthetic"
+    ],
+    "测试策略": [
+      "testing",
+      "strategies",
+      "tests",
+      "test",
+      "unit",
+      "integration"
+    ],
+    "页面内容": [
+      "page",
+      "content",
+      "search",
+      "results",
+      "scrape",
+      "json"
+    ],
+    "写作代码": [
+      "writing",
+      "code",
+      "docs",
+      "react",
+      "your",
+      "modules"
+    ],
+    "音频视频": [
+      "audio",
+      "video",
+      "gemini",
+      "expo",
+      "react",
+      "user"
+    ],
+    "培训数据": [
+      "training",
+      "data",
+      "docs",
+      "before",
+      "references",
+      "neon"
+    ],
+    "文本文本": [
+      "text",
+      "flags",
+      "search",
+      "azure",
+      "speech",
+      "command"
+    ],
+    "代理工作流": [
+      "agent",
+      "workflows",
+      "context",
+      "agents",
+      "code",
+      "crawl"
+    ],
+    "视频音频": [
+      "video",
+      "audio",
+      "what",
+      "remotion",
+      "frame",
+      "when"
+    ],
+    "文本图片": [
+      "text",
+      "images",
+      "scripts",
+      "chrome",
+      "posts",
+      "search"
+    ],
+    "图片视频": [
+      "images",
+      "videos",
+      "scripts",
+      "chrome",
+      "posts",
+      "text"
+    ],
+    "技术SEO": [
+      "technical",
+      "seo",
+      "content",
+      "meta",
+      "optimization",
+      "pages"
+    ],
+    "文章产品": [
+      "article",
+      "product",
+      "meta",
+      "optimization",
+      "schema",
+      "rich"
+    ],
+    "单元集成": [
+      "unit",
+      "integration",
+      "testing",
+      "tests",
+      "test",
+      "code"
+    ],
+    "合规文档": [
+      "compliance",
+      "document",
+      "azure",
+      "issues",
+      "health",
+      "logs"
+    ],
+    "图片文本": [
+      "image",
+      "text",
+      "user",
+      "step",
+      "image-text",
+      "posts"
+    ],
+    "客户研究": [
+      "customer",
+      "research",
+      "what",
+      "before",
+      "mode",
+      "your"
+    ],
+    "审查合规": [
+      "review",
+      "compliance",
+      "azure",
+      "vault",
+      "expiration",
+      "resource"
+    ],
+    "内容策略": [
+      "content",
+      "strategy",
+      "context",
+      "what",
+      "searchable",
+      "shareable"
+    ],
+    "设计审查": [
+      "design",
+      "review",
+      "questions",
+      "simple",
+      "visual",
+      "ideas"
+    ],
+    "社媒内容": [
+      "social",
+      "content",
+      "what",
+      "brand",
+      "engagement",
+      "your"
+    ],
+    "定价页面": [
+      "pricing",
+      "pages",
+      "analysis",
+      "marketing",
+      "what",
+      "product"
+    ],
+    "页面定价页面": [
+      "pages",
+      "pricing",
+      "analysis",
+      "what",
+      "marketing",
+      "product"
+    ],
+    "页面定价": [
+      "pages",
+      "pricing",
+      "analysis",
+      "marketing",
+      "what",
+      "product"
+    ],
+    "落地页面定价页面": [
+      "pages",
+      "landing",
+      "pricing",
+      "analysis",
+      "what",
+      "marketing"
+    ],
+    "落地页面定价": [
+      "landing",
+      "pages",
+      "pricing",
+      "analysis",
+      "what",
+      "marketing"
+    ],
+    "页面博客": [
+      "pages",
+      "blog",
+      "your",
+      "page",
+      "conversion",
+      "recommendations"
+    ],
+    "页面营销": [
+      "pages",
+      "marketing",
+      "product",
+      "context",
+      "ideas",
+      "stage"
+    ],
+    "文本内容": [
+      "text",
+      "content",
+      "safety",
+      "modelarmor",
+      "testing",
+      "website"
+    ],
+    "自动化工作流": [
+      "automation",
+      "workflows",
+      "lead",
+      "what",
+      "marketing",
+      "sales"
+    ],
+    "设计文档": [
+      "design",
+      "documentation",
+      "before",
+      "spacing",
+      "that",
+      "final"
+    ],
+    "数据数据": [
+      "data",
+      "storage",
+      "blob",
+      "list",
+      "azure",
+      "table"
+    ],
+    "落地页面设计": [
+      "landing",
+      "page",
+      "design",
+      "logo",
+      "belt",
+      "pages"
+    ],
+    "YouTube缩略图设计": [
+      "youtube",
+      "thumbnail",
+      "design",
+      "video",
+      "image",
+      "120px"
+    ],
+    "ReactReact": [
+      "react",
+      "vite",
+      "production",
+      "server",
+      "rolldown",
+      "reference"
+    ],
+    "设计测试": [
+      "design",
+      "testing",
+      "agent",
+      "find",
+      "when",
+      "specialized"
+    ],
+    "营销页面": [
+      "marketing",
+      "pages",
+      "context",
+      "font",
+      "typography",
+      "hierarchy"
+    ],
+    "文章内容": [
+      "article",
+      "content",
+      "user",
+      "backend",
+      "type",
+      "style"
+    ],
+    "语音客户": [
+      "voice",
+      "customer",
+      "marketing",
+      "what",
+      "product",
+      "before"
+    ],
+    "代码代理": [
+      "code",
+      "agent",
+      "interact",
+      "firecrawl",
+      "scrape",
+      "design"
+    ],
+    "审查规范": [
+      "review",
+      "spec",
+      "design",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "产品页面": [
+      "product",
+      "pages",
+      "your",
+      "schema",
+      "rich",
+      "results"
+    ],
+    "文档内容": [
+      "document",
+      "content",
+      "google",
+      "request",
+      "docs",
+      "method"
+    ],
+    "迁移策略": [
+      "migration",
+      "strategies",
+      "design",
+      "database",
+      "patterns",
+      "components"
+    ],
+    "图片剪辑": [
+      "image",
+      "editing",
+      "google",
+      "falai",
+      "fast",
+      "lora"
+    ],
+    "数据库集成": [
+      "database",
+      "integration",
+      "express",
+      "error",
+      "node.js",
+      "backend"
+    ],
+    "代码测试": [
+      "code",
+      "testing",
+      "plans",
+      "each",
+      "into",
+      "file"
+    ],
+    "落地页面营销": [
+      "landing",
+      "pages",
+      "marketing",
+      "context",
+      "product",
+      "agents"
+    ],
+    "系统文本": [
+      "systems",
+      "text",
+      "docs",
+      "e.g.",
+      "apis",
+      "openai"
+    ],
+    "代码代码": [
+      "code",
+      "interact",
+      "firecrawl",
+      "scrape",
+      "prompt",
+      "page"
+    ],
+    "管理数据库": [
+      "management",
+      "database",
+      "authentication",
+      "postgres",
+      "azure",
+      "server"
+    ],
+    "SEO": [
+      "seo",
+      "meta",
+      "robots",
+      "content",
+      "optimization",
+      "technical"
+    ],
+    "写作代码审查": [
+      "writing",
+      "code",
+      "review",
+      "performance",
+      "react",
+      "optimization"
+    ],
+    "微信官方": [
+      "wechat",
+      "official",
+      "article",
+      "user",
+      "image-text",
+      "posts"
+    ],
+    "内容文本": [
+      "content",
+      "text",
+      "edit",
+      "read",
+      "python",
+      "presentation.pptx"
+    ],
+    "文本图片视频": [
+      "text",
+      "images",
+      "videos",
+      "scripts",
+      "chrome",
+      "posts"
+    ],
+    "合规代理策略": [
+      "compliance",
+      "agent",
+      "policies",
+      "gateway",
+      "azure",
+      "model"
+    ],
+    "合规代理": [
+      "compliance",
+      "agent",
+      "gateway",
+      "azure",
+      "model",
+      "token"
+    ],
+    "代理策略": [
+      "agent",
+      "policies",
+      "gateway",
+      "azure",
+      "model",
+      "token"
+    ],
+    "数据库数据": [
+      "database",
+      "data",
+      "azure",
+      "explorer",
+      "time",
+      "analytics"
+    ],
+    "页面页面": [
+      "page",
+      "reader",
+      "text",
+      "pages",
+      "pdfreader",
+      "writer"
+    ],
+    "集成测试": [
+      "integration",
+      "testing",
+      "test",
+      "functions",
+      "tests",
+      "config"
+    ],
+    "幻灯片演示文稿": [
+      "slides",
+      "presentations",
+      "presentation",
+      "request",
+      "method",
+      "presentation."
+    ],
+    "营销内容": [
+      "marketing",
+      "content",
+      "context",
+      "font",
+      "typography",
+      "hierarchy"
+    ],
+    "研究工作流": [
+      "research",
+      "workflows",
+      "search",
+      "tvly",
+      "results",
+      "json"
+    ],
+    "演示文稿设计": [
+      "presentations",
+      "design",
+      "read",
+      "text",
+      "content",
+      "python"
+    ],
+    "剪辑演示文稿": [
+      "editing",
+      "presentations",
+      "read",
+      "text",
+      "content",
+      "python"
+    ],
+    "产品营销文档": [
+      "product",
+      "marketing",
+      "documentation",
+      "what",
+      "before",
+      "page"
+    ],
+    "营销文档": [
+      "marketing",
+      "documentation",
+      "what",
+      "product",
+      "before",
+      "page"
+    ],
+    "测试工作流": [
+      "testing",
+      "workflows",
+      "issues",
+      "session",
+      "systematically",
+      "explore"
+    ],
+    "公开数据": [
+      "public",
+      "data",
+      "wechat",
+      "convex",
+      "component",
+      "tables"
+    ],
+    "代码迁移": [
+      "code",
+      "migration",
+      "azure",
+      "assessment",
+      "source",
+      "cloud"
+    ],
+    "React测试": [
+      "react",
+      "testing",
+      "find",
+      "agent",
+      "when",
+      "specialized"
+    ],
+    "审查数据库": [
+      "reviews",
+      "database",
+      "performance",
+      "query",
+      "optimization",
+      "rule"
+    ],
+    "组合博客": [
+      "portfolios",
+      "blogs",
+      "design",
+      "mobile",
+      "color",
+      "rules"
+    ],
+    "设计React": [
+      "design",
+      "react",
+      "mobile",
+      "color",
+      "rules",
+      "patterns"
+    ],
+    "数据库设计": [
+      "database",
+      "design",
+      "mobile",
+      "color",
+      "rules",
+      "patterns"
+    ],
+    "规范文档审查": [
+      "spec",
+      "documentation",
+      "review",
+      "design",
+      "questions",
+      "simple"
+    ],
+    "规范文档": [
+      "spec",
+      "documentation",
+      "design",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "方案设计演示文稿规范": [
+      "proposals",
+      "design",
+      "presentation",
+      "spec",
+      "questions",
+      "simple"
+    ],
+    "方案设计演示文稿": [
+      "proposals",
+      "design",
+      "presentation",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "方案设计": [
+      "proposals",
+      "design",
+      "questions",
+      "simple",
+      "visual",
+      "ideas"
+    ],
+    "演示文稿规范文档审查": [
+      "presentation",
+      "spec",
+      "documentation",
+      "review",
+      "design",
+      "questions"
+    ],
+    "演示文稿规范文档": [
+      "presentation",
+      "spec",
+      "documentation",
+      "design",
+      "questions",
+      "simple"
+    ],
+    "演示文稿规范": [
+      "presentation",
+      "spec",
+      "design",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "文档审查": [
+      "documentation",
+      "review",
+      "design",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "设计演示文稿规范文档": [
+      "design",
+      "presentation",
+      "spec",
+      "documentation",
+      "questions",
+      "simple"
+    ],
+    "设计演示文稿规范": [
+      "design",
+      "presentation",
+      "spec",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "设计演示文稿": [
+      "design",
+      "presentation",
+      "questions",
+      "simple",
+      "visual",
+      "ideas"
+    ],
+    "接口设计": [
+      "design",
+      "resource",
+      "rest",
+      "response",
+      "resources",
+      "graphql"
+    ],
+    "设计数据": [
+      "design",
+      "data",
+      "swiftui",
+      "apis",
+      "code",
+      "performance"
+    ],
+    "策略设计": [
+      "strategy",
+      "design",
+      "testing",
+      "order",
+      "unit",
+      "discount"
+    ],
+    "内容页面": [
+      "content",
+      "page",
+      "font",
+      "context",
+      "typography",
+      "hierarchy"
+    ],
+    "营销产品": [
+      "marketing",
+      "product",
+      "what",
+      "tracking",
+      "data",
+      "context"
+    ],
+    "图片音频视频": [
+      "images",
+      "audio",
+      "video",
+      "gemini",
+      "firebase",
+      "requires"
+    ],
+    "图片音频": [
+      "images",
+      "audio",
+      "gemini",
+      "firebase",
+      "requires",
+      "vertex"
+    ],
+    "页面数据": [
+      "pages",
+      "data",
+      "cloudflare",
+      "limits",
+      "workers",
+      "product"
+    ],
+    "工作流内容": [
+      "workflows",
+      "content",
+      "what",
+      "social",
+      "brand",
+      "engagement"
+    ],
+    "写作单元": [
+      "writing",
+      "unit",
+      "test",
+      "testing",
+      "tests",
+      "code"
+    ],
+    "营销自动化": [
+      "marketing",
+      "automation",
+      "what",
+      "sequence",
+      "email",
+      "nurture"
+    ],
+    "写作集成代码": [
+      "writing",
+      "integration",
+      "code",
+      "when",
+      "product",
+      "search"
+    ],
+    "写作集成": [
+      "writing",
+      "integration",
+      "when",
+      "product",
+      "page",
+      "search"
+    ],
+    "集成代码": [
+      "integration",
+      "code",
+      "when",
+      "product",
+      "page",
+      "search"
+    ],
+    "工作流数据": [
+      "workflows",
+      "data",
+      "schema",
+      "migrations",
+      "convex",
+      "existing"
+    ],
+    "SEO策略": [
+      "seo",
+      "strategy",
+      "pages",
+      "data",
+      "what",
+      "content"
+    ],
+    "研究设计": [
+      "research",
+      "design",
+      "pages",
+      "data",
+      "what",
+      "content"
+    ],
+    "规范合规": [
+      "spec",
+      "compliance",
+      "review",
+      "context",
+      "tasks",
+      "shape"
+    ],
+    "审查规范合规": [
+      "review",
+      "spec",
+      "compliance",
+      "context",
+      "tasks",
+      "shape"
+    ],
+    "营销策略": [
+      "marketing",
+      "strategies",
+      "ideas",
+      "stage",
+      "product",
+      "context"
+    ],
+    "工作流自动化": [
+      "automation",
+      "scripts",
+      "docker",
+      "development",
+      "help",
+      "test"
+    ],
+    "代理报告": [
+      "agent",
+      "reports",
+      "command",
+      "output",
+      "claim",
+      "verification"
+    ],
+    "定价研究": [
+      "pricing",
+      "research",
+      "analysis",
+      "what",
+      "value",
+      "your"
+    ],
+    "方案规范": [
+      "proposals",
+      "specs",
+      "user",
+      "context",
+      "when",
+      "through"
+    ],
+    "文档方案规范": [
+      "documentation",
+      "proposals",
+      "specs",
+      "user",
+      "context",
+      "when"
+    ],
+    "文档方案": [
+      "documentation",
+      "proposals",
+      "user",
+      "context",
+      "when",
+      "through"
+    ],
+    "邮件博客": [
+      "email",
+      "blog",
+      "launch",
+      "product",
+      "launches",
+      "feature"
+    ],
+    "文本策略": [
+      "text",
+      "strategy",
+      "sequence",
+      "email",
+      "nurture",
+      "what"
+    ],
+    "接口文档": [
+      "documentation",
+      "users",
+      "schema",
+      "description",
+      "openapi",
+      "type"
+    ],
+    "审查客户": [
+      "reviews",
+      "customer",
+      "competitor",
+      "product",
+      "pages",
+      "your"
+    ],
+    "定价审查客户": [
+      "pricing",
+      "reviews",
+      "customer",
+      "analysis",
+      "competitor",
+      "product"
+    ],
+    "定价审查": [
+      "pricing",
+      "reviews",
+      "analysis",
+      "competitor",
+      "product",
+      "pages"
+    ],
+    "内容博客": [
+      "content",
+      "blog",
+      "site",
+      "page",
+      "hierarchy",
+      "navigation"
+    ],
+    "产品页面博客": [
+      "product",
+      "pages",
+      "blog",
+      "content",
+      "your",
+      "google"
+    ],
+    "定价演示文稿": [
+      "pricing",
+      "presentation",
+      "analysis",
+      "upgrade",
+      "value",
+      "before"
+    ],
+    "工作流测试": [
+      "workflows",
+      "testing",
+      "prompt",
+      "example",
+      "selection",
+      "reasoning"
+    ],
+    "SEO技术": [
+      "seo",
+      "technical",
+      "website",
+      "rules",
+      "content",
+      "audit"
+    ],
+    "代理集成": [
+      "agent",
+      "integration",
+      "firebase",
+      "setup",
+      "references",
+      "review"
+    ],
+    "页面React": [
+      "page",
+      "react",
+      "hosting",
+      "content",
+      "static",
+      "dynamic"
+    ],
+    "文章发布": [
+      "article",
+      "publishing",
+      "scripts",
+      "chrome",
+      "text",
+      "images"
+    ],
+    "迁移文档工作流": [
+      "migration",
+      "documentation",
+      "workflows",
+      "patterns",
+      "design",
+      "components"
+    ],
+    "迁移文档": [
+      "migration",
+      "documentation",
+      "patterns",
+      "design",
+      "components",
+      "identify"
+    ],
+    "迁移集成": [
+      "migration",
+      "integration",
+      "version",
+      "next.js",
+      "upgrade",
+      "codemods"
+    ],
+    "文档官方": [
+      "documentation",
+      "official",
+      "wechat",
+      "version",
+      "next.js",
+      "upgrade"
+    ],
+    "图片SEO": [
+      "image",
+      "seo",
+      "meta",
+      "robots",
+      "content",
+      "optimization"
+    ],
+    "测试单元": [
+      "testing",
+      "unit",
+      "order",
+      "items",
+      "const",
+      "total"
+    ],
+    "屏幕剪辑设计文档": [
+      "screen",
+      "editing",
+      "design",
+      "documentation",
+      "stitch",
+      "screens"
+    ],
+    "屏幕剪辑设计": [
+      "screen",
+      "editing",
+      "design",
+      "stitch",
+      "screens",
+      "into"
+    ],
+    "屏幕剪辑": [
+      "screen",
+      "editing",
+      "design",
+      "stitch",
+      "screens",
+      "into"
+    ],
+    "剪辑设计文档工作流": [
+      "editing",
+      "design",
+      "documentation",
+      "workflows",
+      "stitch",
+      "screens"
+    ],
+    "剪辑设计文档": [
+      "editing",
+      "design",
+      "documentation",
+      "stitch",
+      "screens",
+      "screen"
+    ],
+    "剪辑设计": [
+      "editing",
+      "design",
+      "stitch",
+      "screens",
+      "screen",
+      "into"
+    ],
+    "设计屏幕剪辑设计": [
+      "design",
+      "screen",
+      "editing",
+      "stitch",
+      "screens",
+      "into"
+    ],
+    "设计屏幕剪辑": [
+      "design",
+      "screen",
+      "editing",
+      "stitch",
+      "screens",
+      "into"
+    ],
+    "设计屏幕": [
+      "design",
+      "screen",
+      "stitch",
+      "screens",
+      "editing",
+      "into"
+    ],
+    "设计文档工作流": [
+      "design",
+      "documentation",
+      "workflows",
+      "stitch",
+      "screens",
+      "screen"
+    ],
+    "文章图片文本": [
+      "articles",
+      "image",
+      "text",
+      "user",
+      "image-text",
+      "posts"
+    ],
+    "文章图片": [
+      "articles",
+      "image",
+      "user",
+      "image-text",
+      "posts",
+      "input"
+    ],
+    "工作流技术SEO": [
+      "workflows",
+      "technical",
+      "seo",
+      "search",
+      "engines",
+      "optimization"
+    ],
+    "工作流技术": [
+      "workflows",
+      "technical",
+      "search",
+      "engines",
+      "optimization",
+      "meta"
+    ],
+    "设计合规": [
+      "design",
+      "compliance",
+      "references",
+      "code",
+      "swift",
+      "review"
+    ],
+    "博客社媒": [
+      "blog",
+      "social",
+      "infsh",
+      "competitor",
+      "research",
+      "input"
+    ],
+    "幻灯片图片": [
+      "slide",
+      "images",
+      "user",
+      "into",
+      "deck",
+      "slides"
+    ],
+    "数据库测试": [
+      "database",
+      "testing",
+      "test",
+      "tests",
+      "code",
+      "python"
+    ],
+    "数据迁移": [
+      "data",
+      "migrations",
+      "profile",
+      "scope",
+      "feat",
+      "when"
+    ],
+    "演示文稿数据": [
+      "presentation",
+      "data",
+      "request",
+      "slides",
+      "method",
+      "presentation."
+    ],
+    "设计设计": [
+      "design",
+      "logo",
+      "landing",
+      "belt",
+      "page",
+      "pages"
+    ],
+    "页面文档文章博客": [
+      "pages",
+      "documentation",
+      "articles",
+      "blog",
+      "defuddle",
+      "markdown"
+    ],
+    "页面文档文章": [
+      "pages",
+      "documentation",
+      "articles",
+      "defuddle",
+      "markdown",
+      "parse"
+    ],
+    "页面文档": [
+      "pages",
+      "documentation",
+      "defuddle",
+      "markdown",
+      "parse",
+      "output"
+    ],
+    "文档文章博客": [
+      "documentation",
+      "articles",
+      "blog",
+      "defuddle",
+      "markdown",
+      "parse"
+    ],
+    "文档文章": [
+      "documentation",
+      "articles",
+      "defuddle",
+      "markdown",
+      "parse",
+      "output"
+    ],
+    "文章博客": [
+      "articles",
+      "blog",
+      "defuddle",
+      "markdown",
+      "parse",
+      "output"
+    ],
+    "视频代理": [
+      "video",
+      "agent",
+      "user",
+      "pexo",
+      "delivery",
+      "reply"
+    ],
+    "代码代码代码代码": [
+      "code",
+      "interact",
+      "firecrawl",
+      "scrape"
+    ],
+    "代码代码代码": [
+      "code",
+      "interact",
+      "firecrawl",
+      "scrape",
+      "prompt",
+      "click"
+    ],
+    "会议会议": [
+      "meeting",
+      "token",
+      "whiteboard",
+      "note",
+      "lark-cli",
+      "docs"
+    ],
+    "邮件代码": [
+      "email",
+      "code",
+      "issues",
+      "session",
+      "systematically",
+      "explore"
+    ],
+    "代码邮件": [
+      "codes",
+      "email",
+      "totp",
+      "backup",
+      "code",
+      "better-auth"
+    ],
+    "报告会议": [
+      "reports",
+      "meeting",
+      "method",
+      "schema",
+      "inspect",
+      "resource"
+    ],
+    "测试设计": [
+      "testing",
+      "design",
+      "find",
+      "agent",
+      "when",
+      "specialized"
+    ],
+    "React测试设计": [
+      "react",
+      "testing",
+      "design",
+      "find",
+      "agent",
+      "when"
+    ],
+    "代理代理": [
+      "agents",
+      "agent",
+      "serena",
+      "frontend",
+      "backend",
+      "setup"
+    ],
+    "代理内容": [
+      "agent",
+      "content",
+      "answers",
+      "personality",
+      "answer",
+      "post"
+    ],
+    "自动化代理": [
+      "automation",
+      "agent",
+      "agent-browser",
+      "browser",
+      "command",
+      "content"
+    ],
+    "管理数据": [
+      "management",
+      "data",
+      "spring",
+      "dependency",
+      "boot",
+      "injection"
+    ],
+    "文档剪辑": [
+      "document",
+      "editing",
+      "content",
+      "google",
+      "copy",
+      "team"
+    ],
+    "设计社媒": [
+      "design",
+      "social",
+      "built-in",
+      "logo",
+      "references",
+      "brand"
+    ],
+    "邮件社媒": [
+      "email",
+      "social",
+      "page",
+      "conversion",
+      "pages",
+      "recommendations"
+    ],
+    "技术文档": [
+      "technical",
+      "documentation",
+      "audience",
+      "architecture",
+      "runbooks",
+      "writing"
+    ],
+    "图片图片": [
+      "image",
+      "images",
+      "falai",
+      "fast",
+      "lora",
+      "pruna"
+    ],
+    "剪辑文本": [
+      "editing",
+      "text",
+      "falai",
+      "fast",
+      "image",
+      "lora"
+    ],
+    "文本文本页面": [
+      "text",
+      "page",
+      "reader",
+      "pages",
+      "pdfreader",
+      "writer"
+    ],
+    "文本页面": [
+      "text",
+      "page",
+      "reader",
+      "pages",
+      "pdfreader",
+      "writer"
+    ],
+    "视频视频": [
+      "videos",
+      "video",
+      "google",
+      "fast",
+      "audio",
+      "p-video"
+    ],
+    "设计数据库": [
+      "design",
+      "database",
+      "schema",
+      "data",
+      "migration",
+      "default"
+    ],
+    "代码React": [
+      "code",
+      "react",
+      "testing",
+      "test",
+      "functions",
+      "tests"
+    ],
+    "语音客户审查": [
+      "voice",
+      "customer",
+      "reviews",
+      "what",
+      "marketing",
+      "product"
+    ],
+    "客户审查": [
+      "customer",
+      "reviews",
+      "what",
+      "marketing",
+      "product",
+      "before"
+    ],
+    "测试策略设计": [
+      "testing",
+      "strategy",
+      "design",
+      "order",
+      "unit",
+      "discount"
+    ],
+    "测试文档": [
+      "testing",
+      "documentation",
+      "code",
+      "review",
+      "security",
+      "performance"
+    ],
+    "官方文档": [
+      "official",
+      "documentation",
+      "wechat",
+      "server",
+      "cloud",
+      "into"
+    ],
+    "系统设计": [
+      "systems",
+      "designs",
+      "patterns",
+      "references",
+      "interfaces",
+      "concurrent"
+    ],
+    "写作策略": [
+      "writing",
+      "strategies",
+      "technical",
+      "documentation",
+      "audience",
+      "architecture"
+    ],
+    "技术文档规范": [
+      "technical",
+      "documentation",
+      "specs",
+      "audience",
+      "architecture",
+      "runbooks"
+    ],
+    "文档规范": [
+      "documentation",
+      "specs",
+      "technical",
+      "audience",
+      "architecture",
+      "runbooks"
+    ],
+    "规范代码": [
+      "specs",
+      "code",
+      "users",
+      "schema",
+      "description",
+      "openapi"
+    ],
+    "页面落地页面": [
+      "pages",
+      "landing",
+      "page",
+      "design",
+      "mobile",
+      "color"
+    ],
+    "页面落地": [
+      "pages",
+      "landing",
+      "design",
+      "mobile",
+      "color",
+      "rules"
+    ],
+    "设计规范": [
+      "designs",
+      "specs",
+      "design",
+      "questions",
+      "simple",
+      "visual"
+    ],
+    "策略单元": [
+      "strategies",
+      "unit",
+      "patterns",
+      "core",
+      "apis",
+      "servers"
+    ],
+    "图片视频音频": [
+      "images",
+      "videos",
+      "audio",
+      "video",
+      "script",
+      "storyboard"
+    ],
+    "图片图片剪辑": [
+      "image",
+      "editing",
+      "video",
+      "script",
+      "storyboard",
+      "seedance"
+    ],
+    "React前端数据库": [
+      "react",
+      "frontends",
+      "database",
+      "lighthouse",
+      "sendtoanalytics",
+      "data"
+    ],
+    "React前端": [
+      "react",
+      "frontends",
+      "lighthouse",
+      "sendtoanalytics",
+      "data",
+      "performance"
+    ],
+    "前端数据库": [
+      "frontends",
+      "database",
+      "lighthouse",
+      "sendtoanalytics",
+      "data",
+      "performance"
+    ],
+    "剪辑策略": [
+      "editing",
+      "strategy",
+      "what",
+      "design",
+      "complexity",
+      "context"
+    ],
+    "技术页面": [
+      "technical",
+      "page",
+      "on-page",
+      "optimization",
+      "content",
+      "schema"
+    ],
+    "页面技术页面": [
+      "pages",
+      "technical",
+      "page",
+      "on-page",
+      "optimization",
+      "content"
+    ],
+    "页面技术": [
+      "pages",
+      "technical",
+      "on-page",
+      "optimization",
+      "content",
+      "schema"
+    ],
+    "公开财务数据": [
+      "public",
+      "financial",
+      "data",
+      "wechat",
+      "stock",
+      "screening"
+    ],
+    "公开财务": [
+      "public",
+      "financial",
+      "wechat",
+      "stock",
+      "screening",
+      "valuation"
+    ],
+    "财务估值": [
+      "financial",
+      "valuation",
+      "finance",
+      "stock",
+      "screening",
+      "akshare"
+    ],
+    "财务数据": [
+      "financial",
+      "data",
+      "stock",
+      "screening",
+      "valuation",
+      "akshare"
+    ],
+    "内容SEO": [
+      "content",
+      "seo",
+      "marketing",
+      "ideas",
+      "stage",
+      "product"
+    ],
+    "自动化页面": [
+      "automation",
+      "pages",
+      "interact",
+      "scrape",
+      "firecrawl",
+      "click"
+    ],
+    "工作流测试图片": [
+      "workflows",
+      "testing",
+      "image",
+      "copy",
+      "deployment",
+      "node"
+    ],
+    "测试图片": [
+      "testing",
+      "image",
+      "copy",
+      "deployment",
+      "node",
+      "builder"
+    ],
+    "React代码": [
+      "react",
+      "code",
+      "stitch",
+      "designs",
+      "width",
+      "page"
+    ],
+    "内容营销": [
+      "content",
+      "marketing",
+      "models",
+      "mental",
+      "psychology",
+      "principles"
+    ],
+    "营销内容页面": [
+      "marketing",
+      "content",
+      "page",
+      "font",
+      "context",
+      "typography"
+    ],
+    "设计单元": [
+      "design",
+      "units",
+      "plans",
+      "each",
+      "into",
+      "file"
+    ],
+    "文档代码审查": [
+      "documentation",
+      "code",
+      "review",
+      "wants",
+      "help",
+      "agent"
+    ],
+    "文档代码": [
+      "documentation",
+      "code",
+      "wants",
+      "help",
+      "agent",
+      "bunx"
+    ],
+    "客户数据": [
+      "customer",
+      "data",
+      "what",
+      "product",
+      "paid",
+      "existing"
+    ],
+    "幻灯片幻灯片": [
+      "slides",
+      "slide",
+      "user",
+      "shape",
+      "content",
+      "critical"
+    ],
+    "数据幻灯片": [
+      "data",
+      "slide",
+      "slides",
+      "user",
+      "shape",
+      "content"
+    ],
+    "单元测试集成测试": [
+      "testing",
+      "unit",
+      "integration",
+      "test",
+      "functions",
+      "tests"
+    ],
+    "单元测试集成": [
+      "unit",
+      "testing",
+      "integration",
+      "test",
+      "functions",
+      "tests"
+    ],
+    "测试集成测试": [
+      "testing",
+      "integration",
+      "test",
+      "functions",
+      "tests",
+      "config"
+    ],
+    "测试集成": [
+      "testing",
+      "integration",
+      "test",
+      "functions",
+      "tests",
+      "config"
+    ],
+    "邮件简报": [
+      "email",
+      "newsletter",
+      "document",
+      "popup",
+      "user",
+      "context"
+    ],
+    "视频内容": [
+      "video",
+      "content",
+      "what",
+      "social",
+      "brand",
+      "engagement"
+    ],
+    "规范合规审查": [
+      "spec",
+      "compliance",
+      "review",
+      "context",
+      "tasks",
+      "shape"
+    ],
+    "合规审查": [
+      "compliance",
+      "review",
+      "context",
+      "tasks",
+      "shape",
+      "task"
+    ],
+    "单元集成测试": [
+      "unit",
+      "integration",
+      "testing",
+      "patterns",
+      "core",
+      "apis"
+    ],
+    "策略单元集成测试": [
+      "strategies",
+      "unit",
+      "integration",
+      "testing",
+      "patterns",
+      "core"
+    ],
+    "策略单元集成": [
+      "strategies",
+      "unit",
+      "integration",
+      "patterns",
+      "core",
+      "apis"
+    ],
+    "视频邮件": [
+      "video",
+      "email",
+      "marketing",
+      "ideas",
+      "stage",
+      "product"
+    ],
+    "迁移内容": [
+      "migrations",
+      "content",
+      "marketing",
+      "ideas",
+      "stage",
+      "product"
+    ]
+  },
+  "artifactIntentSynonyms": {},
+  "operationIntentSynonyms": {},
+  "primaryThemeSynonyms": {
+    "startup_growth": [
+      "落地页",
+      "产品营销",
+      "代理产品营销",
+      "技术SEO",
+      "落地页面定价页面",
+      "落地页面定价",
+      "页面营销",
+      "落地页面设计",
+      "营销页面",
+      "落地页面营销",
+      "SEO",
+      "营销内容",
+      "产品营销文档",
+      "营销文档",
+      "营销产品",
+      "营销自动化",
+      "SEO策略",
+      "营销策略",
+      "SEO技术",
+      "图片SEO",
+      "工作流技术SEO",
+      "页面落地页面",
+      "页面落地",
+      "内容SEO",
+      "内容营销",
+      "营销内容页面",
+      "营销短",
+      "集成营销",
+      "邮件营销",
+      "SEO技术内容",
+      "页面SEO",
+      "落地页面设计设计",
+      "技术SEO页面",
+      "SEO页面",
+      "社媒SEO策略",
+      "社媒SEO"
+    ],
+    "product_strategy": [
+      "设计系统",
+      "定价策略",
+      "缩略图设计",
+      "封面图设计",
+      "前端设计",
+      "内容策略",
+      "设计审查",
+      "定价页面",
+      "页面定价页面",
+      "页面定价",
+      "落地页面定价页面",
+      "落地页面定价",
+      "设计文档",
+      "测试策略",
+      "落地页面设计",
+      "YouTube缩略图设计",
+      "设计测试",
+      "演示文稿设计",
+      "设计React",
+      "数据库设计",
+      "方案设计演示文稿规范",
+      "方案设计演示文稿",
+      "方案设计",
+      "设计演示文稿规范文档",
+      "设计演示文稿规范",
+      "设计演示文稿",
+      "接口设计",
+      "设计数据",
+      "策略设计",
+      "研究设计",
+      "定价研究",
+      "文本策略",
+      "定价审查客户",
+      "定价审查",
+      "定价演示文稿",
+      "屏幕剪辑设计文档",
+      "屏幕剪辑设计",
+      "剪辑设计文档工作流",
+      "剪辑设计文档",
+      "剪辑设计",
+      "设计屏幕剪辑设计",
+      "设计屏幕剪辑",
+      "设计屏幕",
+      "设计文档工作流",
+      "设计合规",
+      "设计设计",
+      "测试设计",
+      "React测试设计"
+    ],
+    "content_media": [
+      "图生视频",
+      "文生视频",
+      "视频剪辑",
+      "YouTube缩略图",
+      "视频封面图",
+      "缩略图设计",
+      "封面图设计",
+      "社媒发布",
+      "产品营销",
+      "代理产品营销",
+      "页面内容",
+      "音频视频",
+      "视频音频",
+      "技术SEO",
+      "内容策略",
+      "社媒内容",
+      "页面博客",
+      "页面营销",
+      "文本内容",
+      "YouTube缩略图设计",
+      "营销页面",
+      "文章内容",
+      "文档内容",
+      "落地页面营销",
+      "SEO",
+      "微信官方",
+      "内容文本",
+      "营销内容",
+      "内容页面",
+      "营销产品",
+      "图片音频视频",
+      "工作流内容",
+      "SEO策略",
+      "营销策略",
+      "图片视频",
+      "邮件博客",
+      "内容博客",
+      "产品页面博客",
+      "SEO技术",
+      "文章发布",
+      "图片SEO",
+      "工作流技术SEO",
+      "博客社媒",
+      "页面文档文章博客",
+      "文档文章博客",
+      "文章博客",
+      "视频代理",
+      "代理内容"
+    ],
+    "engineering_ai": [
+      "数据库迁移",
+      "单元测试",
+      "前端设计",
+      "测试策略",
+      "写作代码",
+      "代理工作流",
+      "单元集成",
+      "自动化工作流",
+      "ReactReact",
+      "设计测试",
+      "代码代理",
+      "迁移策略",
+      "数据库集成",
+      "代码测试",
+      "代码代码",
+      "写作代码审查",
+      "合规代理策略",
+      "合规代理",
+      "代理策略",
+      "集成测试",
+      "测试工作流",
+      "代码迁移",
+      "React测试",
+      "设计React",
+      "接口设计",
+      "营销自动化",
+      "写作集成代码",
+      "写作集成",
+      "集成代码",
+      "工作流自动化",
+      "代理报告",
+      "接口文档",
+      "工作流测试",
+      "代理集成",
+      "页面React",
+      "迁移文档工作流",
+      "迁移文档",
+      "迁移集成",
+      "测试单元",
+      "数据库测试",
+      "视频代理",
+      "代码代码代码代码",
+      "代码代码代码",
+      "邮件代码",
+      "测试设计",
+      "React测试设计",
+      "代理代理",
+      "代理内容"
+    ],
+    "writing_communication": [
+      "文档工作流",
+      "技术写作",
+      "YouTube缩略图",
+      "视频封面图",
+      "社媒发布",
+      "写作代码",
+      "社媒内容",
+      "页面博客",
+      "设计文档",
+      "审查规范",
+      "写作代码审查",
+      "微信官方",
+      "产品营销文档",
+      "营销文档",
+      "规范文档审查",
+      "规范文档",
+      "方案设计演示文稿规范",
+      "演示文稿规范文档审查",
+      "演示文稿规范文档",
+      "演示文稿规范",
+      "文档审查",
+      "设计演示文稿规范文档",
+      "设计演示文稿规范",
+      "写作单元",
+      "写作集成代码",
+      "写作集成",
+      "规范合规",
+      "审查规范合规",
+      "文档方案规范",
+      "文档方案",
+      "邮件博客",
+      "接口文档",
+      "内容博客",
+      "产品页面博客",
+      "迁移文档工作流",
+      "迁移文档",
+      "文档官方",
+      "屏幕剪辑设计文档",
+      "剪辑设计文档工作流",
+      "剪辑设计文档",
+      "设计文档工作流",
+      "博客社媒",
+      "页面文档文章博客",
+      "页面文档文章",
+      "页面文档",
+      "文档文章博客",
+      "文档文章",
+      "文章博客"
+    ],
+    "finance_research": [
+      "金融分析",
+      "客户研究",
+      "研究工作流",
+      "研究设计",
+      "定价研究",
+      "公开财务数据",
+      "公开财务",
+      "财务估值",
+      "财务数据",
+      "研究数据",
+      "页面研究",
+      "管理交易"
+    ],
+    "career_learning": [
+      "培训数据"
+    ],
+    "organization_leadership": [
+      "合规文档",
+      "审查合规",
+      "管理数据库",
+      "合规代理策略",
+      "合规代理",
+      "规范合规",
+      "设计合规",
+      "管理数据",
+      "合规审查",
+      "管理社媒",
+      "管理短",
+      "管理交易"
+    ],
+    "culture_humanities": [
+      "审查合规",
+      "设计审查",
+      "审查规范",
+      "规范文档审查",
+      "演示文稿规范文档审查",
+      "文档审查",
+      "审查规范合规",
+      "规范合规审查",
+      "合规审查",
+      "审查会议",
+      "代理审查",
+      "审查屏幕",
+      "审查定价",
+      "内容审查",
+      "审查代码",
+      "审查审查"
+    ]
+  },
+  "secondaryThemeSynonyms": {
+    "financial_analysis": [
+      "金融分析",
+      "公开财务数据",
+      "公开财务",
+      "财务估值",
+      "财务数据",
+      "管理交易"
+    ],
+    "social_publishing": [
+      "YouTube缩略图",
+      "视频封面图",
+      "社媒发布",
+      "社媒内容",
+      "YouTube缩略图设计",
+      "微信官方",
+      "博客社媒",
+      "设计社媒",
+      "邮件社媒",
+      "邮件简报",
+      "营销简报",
+      "集成营销简报",
+      "管理社媒",
+      "内容简报",
+      "产品社媒",
+      "内容YouTube",
+      "社媒SEO策略",
+      "社媒SEO",
+      "内容博客社媒SEO",
+      "内容博客社媒",
+      "博客社媒SEO策略",
+      "博客社媒SEO",
+      "YouTube视频"
+    ],
+    "creator_growth": [
+      "YouTube缩略图",
+      "视频封面图",
+      "缩略图设计",
+      "封面图设计",
+      "技术SEO",
+      "YouTube缩略图设计",
+      "SEO",
+      "SEO策略",
+      "SEO技术",
+      "图片SEO",
+      "工作流技术SEO",
+      "内容SEO",
+      "SEO技术内容",
+      "页面SEO",
+      "技术SEO页面",
+      "SEO页面",
+      "内容YouTube",
+      "社媒SEO策略",
+      "社媒SEO",
+      "内容博客社媒SEO",
+      "博客社媒SEO策略",
+      "博客社媒SEO",
+      "YouTube视频"
+    ],
+    "attention_arbitrage": [
+      "缩略图设计",
+      "封面图设计",
+      "社媒发布",
+      "产品营销",
+      "代理产品营销",
+      "技术SEO",
+      "社媒内容",
+      "页面营销",
+      "营销页面",
+      "落地页面营销",
+      "SEO",
+      "营销内容",
+      "产品营销文档",
+      "营销文档",
+      "营销产品",
+      "营销自动化",
+      "SEO策略",
+      "营销策略",
+      "SEO技术",
+      "图片SEO",
+      "工作流技术SEO",
+      "博客社媒",
+      "设计社媒",
+      "邮件社媒",
+      "内容SEO",
+      "内容营销",
+      "营销内容页面",
+      "营销短",
+      "营销简报",
+      "集成营销简报",
+      "集成营销",
+      "邮件营销自动化",
+      "邮件营销",
+      "SEO技术内容",
+      "页面SEO",
+      "产品社媒",
+      "技术SEO页面",
+      "SEO页面",
+      "内容博客社媒"
+    ],
+    "organizational_design": [
+      "合规文档",
+      "审查合规",
+      "管理数据库",
+      "合规代理策略",
+      "合规代理",
+      "规范合规",
+      "审查规范合规",
+      "设计合规",
+      "管理数据",
+      "规范合规审查",
+      "合规审查",
+      "管理社媒",
+      "管理短",
+      "管理交易"
+    ]
+  },
+  "secondaryThemePrimaryMap": {
+    "social_publishing": [
+      "content_media",
+      "writing_communication"
+    ],
+    "creator_growth": [
+      "content_media",
+      "startup_growth"
+    ],
+    "financial_analysis": [
+      "finance_research"
+    ],
+    "medical_review": [
+      "healthcare_medical"
+    ],
+    "cultural_analysis": [
+      "culture_humanities",
+      "writing_communication"
+    ],
+    "organizational_design": [
+      "organization_leadership"
+    ],
+    "attention_arbitrage": [
+      "content_media",
+      "startup_growth"
+    ]
+  },
+  "documentSubIntentSynonyms": {},
+  "skillDocumentSubIntentSynonyms": {},
+  "artifactProfileAnchors": {},
+  "sourceManifestSignature": "skills-sh:b8c7982a04aa83a7"
+}

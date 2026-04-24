@@ -1,0 +1,12 @@
+{
+  "locale": "ko",
+  "version": 1,
+  "querySynonyms": {
+    "위챗": ["wechat", "official account"],
+    "문서": ["document", "documentation"]
+  },
+  "artifactIntentSynonyms": {
+    "document": ["문서"],
+    "code": ["코드"]
+  }
+}

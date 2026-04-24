@@ -3,7 +3,7 @@
 > 目标：让 V8OS 在大项目编码上吸收 Claude Code / IDE 的工程闭环原语，但不做拙劣复制。  
 > 路线：**Hybrid Overlay**。第一阶段不另起完整执行型 runtime，而是在现有 `planner_lane + delegation_broker + subagent_swarm + memory workflow` 之上叠加工程专用 profile、上下文胶囊、证明账本和写集治理；当前已经具备独立 `engineering_lane` runtime 卡片作为工程治理投影面，但它仍不是独立执行 runtime。
 
-> 当前实现状态（2026-04-23）：`Phase 1 / 2 / 3 / 4A / 4B / 5A / 5B` 已进入主链；`Phase 6: Engineering Workflow Memory` 第一版已启动，采用 proof-backed 扩展现有 workflow memory 主链，不新建第二套 engineering memory 系统。
+> 当前实现状态（2026-04-23）：`Phase 1 / 2 / 3 / 4A / 4B / 5A / 5B` 已进入主链；`Phase 6: Engineering Workflow Memory` 第一版已启动，采用 proof-backed 扩展现有 workflow memory 主链，不新建第二套 engineering memory 系统。尚未“全部封板”的部分是跨链验收与治理体验：4B/5A/5B 仍需要更多真实 run 校准误报/漏报，Phase 6 仍需要验证不会从普通聊天学习工程链路、不会跨 workspace 串 scope、不会把 failed verification 写入 golden path。
 
 ## 1. 核心结论
 
@@ -768,7 +768,7 @@ OpenAI compat 支线可使用 Engineering Lane，但外部 wire 不暴露内部 
 - `runtime_lane`：`engineering_lane` 独立投影，不进入 chat narrative/tool node，也不混入 planner/subagent 卡片。
 - `phase6_learning`：dry-run 不学习；Phase 6 只从 proof-backed terminal run 学，失败验证只进 anti-pattern/quarantine。
 
-Admin `Engineering Lane` 的 `Cross-Link 空运行矩阵` 聚合卡必须能一眼显示 pass/warning/fail、失败原因和跳转到 Workbench/Memory 行为链记忆的 deep link。
+Admin `Engineering Lane` 只在普通视图显示 `Cross-Link 空运行矩阵` 摘要：总数、pass/warning/fail、最高风险场景和最近运行时间。完整矩阵属于开发者排雷/回归诊断，不是普通用户主功能，应默认收在“高级工程诊断”里，避免把内部验收矩阵变成控制面的认知负担。
 
 ## 12. 关键风险与预防
 
@@ -888,7 +888,14 @@ Claude Code / IDE 证明了文件、diff、diagnostics、plan gate、teammate ma
 - `Cross-Link Dry-run Matrix`：
   - 已在 `/engineering-lane/dry-run` 输出 `crossLinkDryRunMatrix`
   - 覆盖 trigger / workspace / memory / planner / broker / proof / runtime_lane / phase6_learning 八组
-  - Admin Workbench 已提供聚合卡，JSON 只作为折叠调试面
+  - Admin 普通治理视图只展示摘要与最高风险，完整矩阵默认收在高级诊断折叠区，JSON 只作为调试面
+
+### 当前仍未封板的 MVP 事项
+
+- `Phase 4B / 5A / 5B` 需要继续用真实工程 run 校准 workset observation、proof correlation 与 Workbench 结论，重点看误报/漏报，而不是继续扩 prompt。
+- `Phase 6` 需要继续验证工程 workflow 只从 proof-backed terminal run 学习：普通聊天不学、非工程 run 不注入、failed verification 只进 anti-pattern/quarantine、项目 A/B/default 不串 scope。
+- `Cross-Link Dry-run Matrix` 是内置排雷工具，不应被当成普通用户必须理解的功能；Admin 只保留摘要，高级诊断用于开发者排障。
+- 仍未做且当前刻意不做：自动补跑验证命令、长期 LSP Runtime、manual hard lock、独立执行型 Code Runtime、把 Engineering Workbench 做成完整 IDE。
 
 ### Phase 6 第一版已满足的启动条件
 

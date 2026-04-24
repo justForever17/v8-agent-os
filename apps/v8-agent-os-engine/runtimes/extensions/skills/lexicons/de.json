@@ -1,0 +1,12 @@
+{
+  "locale": "de",
+  "version": 1,
+  "querySynonyms": {
+    "dokument": ["document", "documentation"],
+    "code": ["code", "coding"]
+  },
+  "artifactIntentSynonyms": {
+    "document": ["dokument"],
+    "code": ["code"]
+  }
+}

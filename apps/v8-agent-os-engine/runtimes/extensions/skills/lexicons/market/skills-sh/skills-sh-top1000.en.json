@@ -1,0 +1,4257 @@
+{
+  "locale": "en",
+  "version": 1,
+  "layer": "market",
+  "provider": "skills-sh",
+  "selectionTarget": 1000,
+  "selectionCount": 1000,
+  "querySynonyms": {
+    "landing pages": [
+      "landing",
+      "pages",
+      "marketing",
+      "page",
+      "design",
+      "product"
+    ],
+    "landing page": [
+      "landing",
+      "pages",
+      "marketing",
+      "page",
+      "design",
+      "product"
+    ],
+    "design systems": [
+      "design",
+      "systems",
+      "component",
+      "patterns",
+      "tailwind",
+      "shadcn"
+    ],
+    "design system": [
+      "design",
+      "systems",
+      "component",
+      "patterns",
+      "tailwind",
+      "shadcn"
+    ],
+    "data extraction": [
+      "data",
+      "extraction",
+      "agent-browser",
+      "browser",
+      "automation",
+      "connect"
+    ],
+    "image to video": [
+      "image",
+      "to",
+      "video",
+      "infsh",
+      "falai",
+      "still"
+    ],
+    "database migration": [
+      "database",
+      "migration",
+      "migrations",
+      "sequelize",
+      "rollback",
+      "orms"
+    ],
+    "unit testing": [
+      "unit",
+      "testing",
+      "test",
+      "tests",
+      "vite",
+      "vitest"
+    ],
+    "pricing strategy": [
+      "pricing",
+      "strategy",
+      "analysis",
+      "what",
+      "value",
+      "your"
+    ],
+    "documentation workflows": [
+      "documentation",
+      "workflows",
+      "design",
+      "patterns",
+      "components",
+      "identify"
+    ],
+    "documentation workflow": [
+      "documentation",
+      "workflows",
+      "design",
+      "patterns",
+      "components",
+      "identify"
+    ],
+    "database migrations": [
+      "database",
+      "migrations",
+      "auth",
+      "authentication",
+      "framework",
+      "existing"
+    ],
+    "technical writing": [
+      "technical",
+      "writing",
+      "documentation",
+      "audience",
+      "architecture",
+      "runbooks"
+    ],
+    "slide deck": [
+      "slide",
+      "deck",
+      "theme",
+      "themes",
+      "apply",
+      "font"
+    ],
+    "text to video": [
+      "text",
+      "to",
+      "video",
+      "google",
+      "fast",
+      "audio"
+    ],
+    "video editing": [
+      "video",
+      "editing",
+      "code",
+      "infsh",
+      "processing",
+      "python"
+    ],
+    "code reviews": [
+      "code",
+      "reviews",
+      "team",
+      "review",
+      "feedback",
+      "knowledge"
+    ],
+    "presentation decks": [
+      "presentation",
+      "decks",
+      "theme",
+      "themes",
+      "apply",
+      "font"
+    ],
+    "presentation deck": [
+      "presentation",
+      "decks",
+      "theme",
+      "themes",
+      "apply",
+      "font"
+    ],
+    "wechat official account": [
+      "wechat",
+      "official",
+      "account",
+      "article",
+      "user",
+      "image-text"
+    ],
+    "wechat official accounts": [
+      "wechat",
+      "official",
+      "accounts",
+      "article",
+      "user",
+      "image-text"
+    ],
+    "official accounts": [
+      "official",
+      "accounts",
+      "wechat",
+      "user",
+      "image-text",
+      "posts"
+    ],
+    "short videos": [
+      "short",
+      "videos",
+      "user",
+      "pexo",
+      "video",
+      "delivery"
+    ],
+    "meeting notes": [
+      "meeting",
+      "notes",
+      "token",
+      "whiteboard",
+      "note",
+      "lark-cli"
+    ],
+    "meeting note": [
+      "meeting",
+      "notes",
+      "token",
+      "whiteboard",
+      "note",
+      "lark-cli"
+    ],
+    "financial analysis": [
+      "financial",
+      "analysis",
+      "stock",
+      "screening",
+      "valuation",
+      "akshare"
+    ],
+    "financial analysi": [
+      "financial",
+      "analysis",
+      "stock",
+      "screening",
+      "valuation",
+      "akshare"
+    ],
+    "slide decks": [
+      "slide",
+      "decks",
+      "theme",
+      "themes",
+      "apply",
+      "font"
+    ],
+    "youtube thumbnails": [
+      "youtube",
+      "thumbnails",
+      "video",
+      "thumbnail",
+      "120px",
+      "belt"
+    ],
+    "youtube thumbnail": [
+      "youtube",
+      "thumbnails",
+      "video",
+      "thumbnail",
+      "120px",
+      "belt"
+    ],
+    "thumbnail design": [
+      "thumbnail",
+      "design",
+      "image",
+      "120px",
+      "youtube",
+      "belt"
+    ],
+    "wechat article": [
+      "wechat",
+      "article",
+      "user",
+      "image-text",
+      "posts",
+      "input"
+    ],
+    "social publishing": [
+      "social",
+      "publishing",
+      "wonda",
+      "edit",
+      "auth",
+      "video"
+    ],
+    "when to": [
+      "when",
+      "to",
+      "code",
+      "patterns",
+      "azure",
+      "user"
+    ],
+    "do not": [
+      "do",
+      "not",
+      "code",
+      "user",
+      "azure",
+      "when"
+    ],
+    "you are": [
+      "you",
+      "are",
+      "what",
+      "design",
+      "product",
+      "that"
+    ],
+    "when user": [
+      "when",
+      "user",
+      "azure",
+      "claude",
+      "code",
+      "file"
+    ],
+    "ask user": [
+      "ask",
+      "user",
+      "azure",
+      "context",
+      "image",
+      "design"
+    ],
+    "you must": [
+      "you",
+      "must",
+      "design",
+      "context",
+      "user",
+      "what"
+    ],
+    "before proceeding": [
+      "before",
+      "proceeding",
+      "design",
+      "context",
+      "what",
+      "azure"
+    ],
+    "if you": [
+      "if",
+      "you",
+      "user",
+      "that",
+      "what",
+      "code"
+    ],
+    "to avoid": [
+      "to",
+      "avoid",
+      "context",
+      "what",
+      "performance",
+      "code"
+    ],
+    "goal is": [
+      "goal",
+      "is",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "google workspace": [
+      "google",
+      "workspace",
+      "drive",
+      "method",
+      "calendar",
+      "sheets"
+    ],
+    "is not": [
+      "is",
+      "not",
+      "user",
+      "azure",
+      "search",
+      "design"
+    ],
+    "quick start": [
+      "quick",
+      "start",
+      "firecrawl",
+      "belt",
+      "infsh",
+      "three"
+    ],
+    "goal is to": [
+      "goal",
+      "is",
+      "to",
+      "what",
+      "product",
+      "context"
+    ],
+    "gws shared": [
+      "gws",
+      "shared",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "quick reference": [
+      "quick",
+      "reference",
+      "azure",
+      "resource",
+      "performance",
+      "patterns"
+    ],
+    "you need": [
+      "you",
+      "need",
+      "code",
+      "firecrawl",
+      "search",
+      "when"
+    ],
+    "md exists": [
+      "md",
+      "exists",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "md exist": [
+      "md",
+      "exists",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "must be": [
+      "must",
+      "be",
+      "user",
+      "azure",
+      "azure-prepare",
+      "deployment"
+    ],
+    "security rules": [
+      "security",
+      "rules",
+      "gmail",
+      "method",
+      "user",
+      "calendar"
+    ],
+    "security rule": [
+      "security",
+      "rules",
+      "gmail",
+      "method",
+      "user",
+      "calendar"
+    ],
+    "product marketing context": [
+      "product",
+      "marketing",
+      "context",
+      "what",
+      "content",
+      "your"
+    ],
+    "your goal is to": [
+      "your",
+      "goal",
+      "is",
+      "to",
+      "what",
+      "product"
+    ],
+    "your goal is": [
+      "your",
+      "goal",
+      "is",
+      "what",
+      "product",
+      "context"
+    ],
+    "your goal": [
+      "your",
+      "goal",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "product marketing": [
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "your",
+      "before"
+    ],
+    "can be": [
+      "can",
+      "be",
+      "design",
+      "that",
+      "user",
+      "context"
+    ],
+    "if user": [
+      "if",
+      "user",
+      "azure",
+      "project",
+      "when",
+      "image"
+    ],
+    "marketing context": [
+      "marketing",
+      "context",
+      "what",
+      "product",
+      "that",
+      "content"
+    ],
+    "to task": [
+      "to",
+      "task",
+      "what",
+      "product",
+      "marketing",
+      "content"
+    ],
+    "anti patterns": [
+      "anti",
+      "patterns",
+      "design",
+      "context",
+      "what",
+      "that"
+    ],
+    "anti pattern": [
+      "anti",
+      "patterns",
+      "design",
+      "context",
+      "what",
+      "that"
+    ],
+    "context first": [
+      "context",
+      "first",
+      "what",
+      "product",
+      "marketing",
+      "that"
+    ],
+    "read it": [
+      "read",
+      "it",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "agents product marketing context": [
+      "agents",
+      "product",
+      "marketing",
+      "context",
+      "what",
+      "content"
+    ],
+    "agent product marketing context": [
+      "agents",
+      "product",
+      "marketing",
+      "context",
+      "what",
+      "content"
+    ],
+    "agents product marketing": [
+      "agents",
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "content"
+    ],
+    "agent product marketing": [
+      "agents",
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "content"
+    ],
+    "agents product": [
+      "agents",
+      "product",
+      "what",
+      "context",
+      "marketing",
+      "before"
+    ],
+    "agent product": [
+      "agents",
+      "product",
+      "what",
+      "context",
+      "marketing",
+      "before"
+    ],
+    "error handling": [
+      "error",
+      "handling",
+      "patterns",
+      "code",
+      "what",
+      "performance"
+    ],
+    "if missing": [
+      "if",
+      "missing",
+      "gmail",
+      "method",
+      "user",
+      "calendar"
+    ],
+    "design context": [
+      "design",
+      "context",
+      "what",
+      "that",
+      "visual",
+      "spacing"
+    ],
+    "before asking": [
+      "before",
+      "asking",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "older setups": [
+      "older",
+      "setups",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "older setup": [
+      "older",
+      "setups",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "md older setups": [
+      "md",
+      "older",
+      "setups",
+      "what",
+      "product",
+      "context"
+    ],
+    "md older setup": [
+      "md",
+      "older",
+      "setups",
+      "what",
+      "product",
+      "context"
+    ],
+    "md older": [
+      "md",
+      "older",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "claude product marketing context": [
+      "claude",
+      "product",
+      "marketing",
+      "context",
+      "what",
+      "content"
+    ],
+    "claude product marketing": [
+      "claude",
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "content"
+    ],
+    "claude product": [
+      "claude",
+      "product",
+      "what",
+      "context",
+      "marketing",
+      "before"
+    ],
+    "it before": [
+      "it",
+      "before",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "global flags": [
+      "global",
+      "flags",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "global flag": [
+      "global",
+      "flags",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "if not": [
+      "if",
+      "not",
+      "what",
+      "product",
+      "context",
+      "azure"
+    ],
+    "need to": [
+      "need",
+      "to",
+      "what",
+      "search",
+      "code",
+      "data"
+    ],
+    "set up": [
+      "set",
+      "up",
+      "user",
+      "agent",
+      "deployment",
+      "azure"
+    ],
+    "to ensure": [
+      "to",
+      "ensure",
+      "page",
+      "when",
+      "project",
+      "what"
+    ],
+    "rather than": [
+      "rather",
+      "than",
+      "code",
+      "before",
+      "what",
+      "design"
+    ],
+    "specific to": [
+      "specific",
+      "to",
+      "what",
+      "product",
+      "marketing",
+      "page"
+    ],
+    "that context": [
+      "that",
+      "context",
+      "what",
+      "product",
+      "marketing",
+      "content"
+    ],
+    "setups read it before": [
+      "setups",
+      "read",
+      "it",
+      "before",
+      "what",
+      "product"
+    ],
+    "setup read it before": [
+      "setups",
+      "read",
+      "it",
+      "before",
+      "what",
+      "product"
+    ],
+    "setups read it": [
+      "setups",
+      "read",
+      "it",
+      "what",
+      "product",
+      "context"
+    ],
+    "setup read it": [
+      "setups",
+      "read",
+      "it",
+      "what",
+      "product",
+      "context"
+    ],
+    "setups read": [
+      "setups",
+      "read",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "setup read": [
+      "setups",
+      "read",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "read it before": [
+      "read",
+      "it",
+      "before",
+      "what",
+      "product",
+      "context"
+    ],
+    "product marketing context first": [
+      "product",
+      "marketing",
+      "context",
+      "first",
+      "what",
+      "content"
+    ],
+    "older setups read it": [
+      "older",
+      "setups",
+      "read",
+      "it",
+      "what",
+      "product"
+    ],
+    "older setup read it": [
+      "older",
+      "setups",
+      "read",
+      "it",
+      "what",
+      "product"
+    ],
+    "older setups read": [
+      "older",
+      "setups",
+      "read",
+      "what",
+      "product",
+      "context"
+    ],
+    "older setup read": [
+      "older",
+      "setups",
+      "read",
+      "what",
+      "product",
+      "context"
+    ],
+    "md older setups read": [
+      "md",
+      "older",
+      "setups",
+      "read",
+      "what",
+      "product"
+    ],
+    "md older setup read": [
+      "md",
+      "older",
+      "setups",
+      "read",
+      "what",
+      "product"
+    ],
+    "md exists or": [
+      "md",
+      "exists",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "md exist or": [
+      "md",
+      "exists",
+      "what",
+      "product",
+      "marketing",
+      "context"
+    ],
+    "marketing context first": [
+      "marketing",
+      "context",
+      "first",
+      "what",
+      "product",
+      "content"
+    ],
+    "check product marketing context": [
+      "check",
+      "product",
+      "marketing",
+      "context",
+      "what",
+      "content"
+    ],
+    "check product marketing": [
+      "check",
+      "product",
+      "marketing",
+      "what",
+      "context",
+      "content"
+    ],
+    "check product": [
+      "check",
+      "product",
+      "what",
+      "context",
+      "marketing",
+      "before"
+    ],
+    "wants to": [
+      "wants",
+      "to",
+      "azure",
+      "user",
+      "when",
+      "resource"
+    ],
+    "want to": [
+      "wants",
+      "to",
+      "azure",
+      "user",
+      "when",
+      "resource"
+    ],
+    "not already": [
+      "not",
+      "already",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "user wants": [
+      "user",
+      "wants",
+      "azure",
+      "resource",
+      "application",
+      "code"
+    ],
+    "user want": [
+      "user",
+      "wants",
+      "azure",
+      "resource",
+      "application",
+      "code"
+    ],
+    "you are expert": [
+      "you",
+      "are",
+      "expert",
+      "what",
+      "design",
+      "product"
+    ],
+    "are expert": [
+      "are",
+      "expert",
+      "what",
+      "product",
+      "design",
+      "that"
+    ],
+    "across all": [
+      "across",
+      "all",
+      "search",
+      "that",
+      "azure",
+      "design"
+    ],
+    "before asking questions": [
+      "before",
+      "asking",
+      "questions",
+      "what",
+      "product",
+      "context"
+    ],
+    "before asking question": [
+      "before",
+      "asking",
+      "questions",
+      "what",
+      "product",
+      "context"
+    ],
+    "asking questions": [
+      "asking",
+      "questions",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "asking question": [
+      "asking",
+      "questions",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "missing run": [
+      "missing",
+      "run",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "if missing run": [
+      "if",
+      "missing",
+      "run",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "to azure": [
+      "to",
+      "azure",
+      "application",
+      "user",
+      "resource",
+      "resources"
+    ],
+    "to execute": [
+      "to",
+      "execute",
+      "google",
+      "drive",
+      "gmail",
+      "calendar"
+    ],
+    "frontend design": [
+      "frontend",
+      "design",
+      "context",
+      "that",
+      "what",
+      "aesthetic"
+    ],
+    "azure prepare": [
+      "azure",
+      "prepare",
+      "deployment",
+      "azure-prepare",
+      "application",
+      "infrastructure"
+    ],
+    "read it before asking": [
+      "read",
+      "it",
+      "before",
+      "asking",
+      "what",
+      "product"
+    ],
+    "it before asking questions": [
+      "it",
+      "before",
+      "asking",
+      "questions",
+      "what",
+      "product"
+    ],
+    "it before asking question": [
+      "it",
+      "before",
+      "asking",
+      "questions",
+      "what",
+      "product"
+    ],
+    "it before asking": [
+      "it",
+      "before",
+      "asking",
+      "what",
+      "product",
+      "context"
+    ],
+    "md auth": [
+      "md",
+      "auth",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "gws shared skill": [
+      "gws",
+      "shared",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "run gws": [
+      "run",
+      "gws",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "code examples": [
+      "code",
+      "examples",
+      "performance",
+      "patterns",
+      "architecture",
+      "data"
+    ],
+    "code example": [
+      "code",
+      "examples",
+      "performance",
+      "patterns",
+      "architecture",
+      "data"
+    ],
+    "to identify": [
+      "to",
+      "identify",
+      "design",
+      "context",
+      "optimization",
+      "user"
+    ],
+    "information not": [
+      "information",
+      "not",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "md auth global flags": [
+      "md",
+      "auth",
+      "global",
+      "flags",
+      "gmail",
+      "calendar"
+    ],
+    "md auth global flag": [
+      "md",
+      "auth",
+      "global",
+      "flags",
+      "gmail",
+      "calendar"
+    ],
+    "md auth global": [
+      "md",
+      "auth",
+      "global",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "global flags security rules": [
+      "global",
+      "flags",
+      "security",
+      "rules",
+      "gmail",
+      "calendar"
+    ],
+    "global flag security rule": [
+      "global",
+      "flags",
+      "security",
+      "rules",
+      "gmail",
+      "calendar"
+    ],
+    "global flags security": [
+      "global",
+      "flags",
+      "security",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "global flag security": [
+      "global",
+      "flags",
+      "security",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "flags security rules": [
+      "flags",
+      "security",
+      "rules",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "flag security rule": [
+      "flags",
+      "security",
+      "rules",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "flags security": [
+      "flags",
+      "security",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "flag security": [
+      "flags",
+      "security",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "auth global flags security": [
+      "auth",
+      "global",
+      "flags",
+      "security",
+      "gmail",
+      "calendar"
+    ],
+    "auth global flag security": [
+      "auth",
+      "global",
+      "flags",
+      "security",
+      "gmail",
+      "calendar"
+    ],
+    "auth global flags": [
+      "auth",
+      "global",
+      "flags",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "auth global flag": [
+      "auth",
+      "global",
+      "flags",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "auth global": [
+      "auth",
+      "global",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "not already covered": [
+      "not",
+      "already",
+      "covered",
+      "what",
+      "product",
+      "context"
+    ],
+    "already covered": [
+      "already",
+      "covered",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "run gws to it": [
+      "run",
+      "gws",
+      "to",
+      "it",
+      "gmail",
+      "calendar"
+    ],
+    "run gws to": [
+      "run",
+      "gws",
+      "to",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "missing run gws to": [
+      "missing",
+      "run",
+      "gws",
+      "to",
+      "gmail",
+      "calendar"
+    ],
+    "missing run gws": [
+      "missing",
+      "run",
+      "gws",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "if missing run gws": [
+      "if",
+      "missing",
+      "run",
+      "gws",
+      "gmail",
+      "calendar"
+    ],
+    "gws to it": [
+      "gws",
+      "to",
+      "it",
+      "gmail",
+      "method",
+      "calendar"
+    ],
+    "gws to": [
+      "gws",
+      "to",
+      "gmail",
+      "method",
+      "calendar",
+      "user"
+    ],
+    "that context only ask": [
+      "that",
+      "context",
+      "only",
+      "ask",
+      "what",
+      "product"
+    ],
+    "that context only": [
+      "that",
+      "context",
+      "only",
+      "what",
+      "product",
+      "marketing"
+    ],
+    "only ask information not": [
+      "only",
+      "ask",
+      "information",
+      "not",
+      "what",
+      "product"
+    ],
+    "only ask information": [
+      "only",
+      "ask",
+      "information",
+      "what",
+      "product",
+      "context"
+    ],
+    "only ask": [
+      "only",
+      "ask",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "information not already covered": [
+      "information",
+      "not",
+      "already",
+      "covered",
+      "what",
+      "product"
+    ],
+    "information not already": [
+      "information",
+      "not",
+      "already",
+      "what",
+      "product",
+      "context"
+    ],
+    "context only ask information": [
+      "context",
+      "only",
+      "ask",
+      "information",
+      "what",
+      "product"
+    ],
+    "context only ask": [
+      "context",
+      "only",
+      "ask",
+      "what",
+      "product",
+      "marketing"
+    ],
+    "context only": [
+      "context",
+      "only",
+      "what",
+      "product",
+      "marketing",
+      "that"
+    ],
+    "ask information not already": [
+      "ask",
+      "information",
+      "not",
+      "already",
+      "what",
+      "product"
+    ],
+    "ask information not": [
+      "ask",
+      "information",
+      "not",
+      "what",
+      "product",
+      "context"
+    ],
+    "ask information": [
+      "ask",
+      "information",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "specific to task": [
+      "specific",
+      "to",
+      "task",
+      "what",
+      "product",
+      "content"
+    ],
+    "not already covered specific": [
+      "not",
+      "already",
+      "covered",
+      "specific",
+      "what",
+      "product"
+    ],
+    "covered specific to task": [
+      "covered",
+      "specific",
+      "to",
+      "task",
+      "what",
+      "product"
+    ],
+    "covered specific to": [
+      "covered",
+      "specific",
+      "to",
+      "what",
+      "product",
+      "content"
+    ],
+    "covered specific": [
+      "covered",
+      "specific",
+      "what",
+      "product",
+      "marketing",
+      "content"
+    ],
+    "already covered specific to": [
+      "already",
+      "covered",
+      "specific",
+      "to",
+      "what",
+      "product"
+    ],
+    "already covered specific": [
+      "already",
+      "covered",
+      "specific",
+      "what",
+      "product",
+      "content"
+    ],
+    "load following": [
+      "load",
+      "following",
+      "google",
+      "drive",
+      "calendar",
+      "gmail"
+    ],
+    "gws gmail": [
+      "gws",
+      "gmail",
+      "message",
+      "drive",
+      "google",
+      "body"
+    ],
+    "step step": [
+      "step",
+      "data",
+      "azure",
+      "authentication",
+      "react",
+      "agent"
+    ],
+    "before execution": [
+      "before",
+      "execution",
+      "google",
+      "drive",
+      "user",
+      "file"
+    ],
+    "to help": [
+      "to",
+      "help",
+      "what",
+      "product",
+      "context",
+      "marketing"
+    ],
+    "gws drive": [
+      "gws",
+      "drive",
+      "google",
+      "sheets",
+      "file",
+      "files"
+    ],
+    "access to": [
+      "access",
+      "to",
+      "user",
+      "stitch",
+      "azure",
+      "command"
+    ],
+    "should be": [
+      "should",
+      "be",
+      "design",
+      "code",
+      "that",
+      "user"
+    ],
+    "lark shared": [
+      "lark",
+      "shared",
+      "token",
+      "lark-cli",
+      "user",
+      "wiki"
+    ],
+    "real time": [
+      "real",
+      "time",
+      "agent",
+      "claude",
+      "agents",
+      "services"
+    ],
+    "mcp server": [
+      "mcp",
+      "server",
+      "claude",
+      "azure",
+      "search",
+      "stitch"
+    ],
+    "performance optimization": [
+      "performance",
+      "optimization",
+      "data",
+      "patterns",
+      "references",
+      "react"
+    ],
+    "context gathering": [
+      "context",
+      "gathering",
+      "design",
+      "what",
+      "visual",
+      "spacing"
+    ],
+    "does not": [
+      "does",
+      "not",
+      "user",
+      "when",
+      "code",
+      "azure"
+    ],
+    "to prevent": [
+      "to",
+      "prevent",
+      "test",
+      "context",
+      "tests",
+      "async"
+    ],
+    "user wants to": [
+      "user",
+      "wants",
+      "to",
+      "azure",
+      "application",
+      "deployment"
+    ],
+    "user want to": [
+      "user",
+      "wants",
+      "to",
+      "azure",
+      "application",
+      "deployment"
+    ],
+    "execute recipe": [
+      "execute",
+      "recipe",
+      "google",
+      "drive",
+      "gmail",
+      "calendar"
+    ],
+    "to find": [
+      "to",
+      "find",
+      "search",
+      "code",
+      "what",
+      "data"
+    ],
+    "must read": [
+      "must",
+      "read",
+      "token",
+      "lark-cli",
+      "user",
+      "critical"
+    ],
+    "what you": [
+      "what",
+      "you",
+      "design",
+      "that",
+      "context",
+      "user"
+    ],
+    "to when": [
+      "to",
+      "when",
+      "azure",
+      "github",
+      "user",
+      "code"
+    ],
+    "user to": [
+      "user",
+      "to",
+      "image",
+      "backend",
+      "files",
+      "input"
+    ],
+    "to your": [
+      "to",
+      "your",
+      "method",
+      "resource",
+      "marketing",
+      "user"
+    ],
+    "lark shared skill": [
+      "lark",
+      "shared",
+      "token",
+      "lark-cli",
+      "wiki",
+      "user"
+    ],
+    "at time": [
+      "at",
+      "time",
+      "user",
+      "image",
+      "backend",
+      "markdown"
+    ],
+    "across multiple": [
+      "across",
+      "multiple",
+      "data",
+      "native",
+      "performance",
+      "azure"
+    ],
+    "gathering protocol": [
+      "gathering",
+      "protocol",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "context gathering protocol": [
+      "context",
+      "gathering",
+      "protocol",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "plain text": [
+      "plain",
+      "text",
+      "user",
+      "image",
+      "gmail",
+      "backend"
+    ],
+    "state management": [
+      "state",
+      "management",
+      "react",
+      "data",
+      "patterns",
+      "components"
+    ],
+    "azure validate": [
+      "azure",
+      "validate",
+      "azure-prepare",
+      "deployment",
+      "validation",
+      "deployment-plan.md"
+    ],
+    "to execute recipe": [
+      "to",
+      "execute",
+      "recipe",
+      "google",
+      "drive",
+      "gmail"
+    ],
+    "load following to execute": [
+      "load",
+      "following",
+      "to",
+      "execute",
+      "google",
+      "drive"
+    ],
+    "load following to": [
+      "load",
+      "following",
+      "to",
+      "google",
+      "drive",
+      "gmail"
+    ],
+    "following to execute recipe": [
+      "following",
+      "to",
+      "execute",
+      "recipe",
+      "google",
+      "drive"
+    ],
+    "following to execute": [
+      "following",
+      "to",
+      "execute",
+      "google",
+      "drive",
+      "gmail"
+    ],
+    "following to": [
+      "following",
+      "to",
+      "google",
+      "drive",
+      "gmail",
+      "calendar"
+    ],
+    "browser automation": [
+      "browser",
+      "automation",
+      "agent-browser",
+      "page",
+      "chrome",
+      "open"
+    ],
+    "files to": [
+      "files",
+      "to",
+      "file",
+      "drive",
+      "guidelines",
+      "project"
+    ],
+    "file to": [
+      "files",
+      "to",
+      "file",
+      "drive",
+      "guidelines",
+      "project"
+    ],
+    "when you": [
+      "when",
+      "you",
+      "code",
+      "agent",
+      "microsoft",
+      "user"
+    ],
+    "design principles": [
+      "design",
+      "principles",
+      "context",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "design principle": [
+      "design",
+      "principles",
+      "context",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "when user wants": [
+      "when",
+      "user",
+      "wants",
+      "azure",
+      "deployment",
+      "application"
+    ],
+    "when user want": [
+      "when",
+      "user",
+      "wants",
+      "azure",
+      "deployment",
+      "application"
+    ],
+    "source truth": [
+      "source",
+      "truth",
+      "product",
+      "data",
+      "stitch",
+      "design"
+    ],
+    "check if": [
+      "check",
+      "if",
+      "azure",
+      "deploy",
+      "project",
+      "context"
+    ],
+    "core principles": [
+      "core",
+      "principles",
+      "what",
+      "context",
+      "before",
+      "that"
+    ],
+    "core principle": [
+      "core",
+      "principles",
+      "what",
+      "context",
+      "before",
+      "that"
+    ],
+    "current state": [
+      "current",
+      "state",
+      "what",
+      "context",
+      "user",
+      "design"
+    ],
+    "multi step": [
+      "multi",
+      "step",
+      "code",
+      "browser",
+      "firecrawl",
+      "scrape"
+    ],
+    "gws schema": [
+      "gws",
+      "schema",
+      "method",
+      "user",
+      "resource",
+      "request"
+    ],
+    "such as": [
+      "such",
+      "as",
+      "user",
+      "when",
+      "azure",
+      "vmss"
+    ],
+    "azure mcp": [
+      "azure",
+      "mcp",
+      "resource",
+      "resources",
+      "list",
+      "query"
+    ],
+    "azure deploy": [
+      "azure",
+      "deploy",
+      "deployment",
+      "azure-prepare",
+      "status",
+      "azure-validate"
+    ],
+    "when to when": [
+      "when",
+      "to",
+      "user",
+      "azure",
+      "agent",
+      "github"
+    ],
+    "no design": [
+      "no",
+      "design",
+      "context",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "must run": [
+      "must",
+      "run",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "back to": [
+      "back",
+      "to",
+      "azure",
+      "user",
+      "claude",
+      "code"
+    ],
+    "to user": [
+      "to",
+      "user",
+      "code",
+      "what",
+      "azure",
+      "application"
+    ],
+    "if no design": [
+      "if",
+      "no",
+      "design",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "critical must": [
+      "critical",
+      "must",
+      "token",
+      "read",
+      "lark-cli",
+      "user"
+    ],
+    "to end": [
+      "to",
+      "end",
+      "test",
+      "tests",
+      "testing",
+      "code"
+    ],
+    "rate limiting": [
+      "rate",
+      "limiting",
+      "model",
+      "token",
+      "database",
+      "express"
+    ],
+    "gws calendar": [
+      "gws",
+      "calendar",
+      "google",
+      "event",
+      "drive",
+      "events"
+    ],
+    "is to help": [
+      "is",
+      "to",
+      "help",
+      "what",
+      "product",
+      "context"
+    ],
+    "goal is to help": [
+      "goal",
+      "is",
+      "to",
+      "help",
+      "what",
+      "product"
+    ],
+    "when user wants to": [
+      "when",
+      "user",
+      "wants",
+      "to",
+      "azure",
+      "deployment"
+    ],
+    "when user want to": [
+      "when",
+      "user",
+      "wants",
+      "to",
+      "azure",
+      "deployment"
+    ],
+    "gws binary": [
+      "gws",
+      "binary",
+      "google",
+      "events",
+      "method",
+      "gmail"
+    ],
+    "five core": [
+      "five",
+      "core",
+      "azure",
+      "time",
+      "gateway",
+      "model"
+    ],
+    "you want": [
+      "you",
+      "want",
+      "when",
+      "what",
+      "firecrawl",
+      "user"
+    ],
+    "you have": [
+      "you",
+      "have",
+      "what",
+      "content",
+      "your",
+      "product"
+    ],
+    "critical must read": [
+      "critical",
+      "must",
+      "read",
+      "token",
+      "user",
+      "lark-cli"
+    ],
+    "before any": [
+      "before",
+      "any",
+      "azure",
+      "user",
+      "github",
+      "code"
+    ],
+    "to google": [
+      "to",
+      "google",
+      "events",
+      "drive",
+      "file",
+      "sheets"
+    ],
+    "before writing": [
+      "before",
+      "writing",
+      "code",
+      "product",
+      "project",
+      "docs"
+    ],
+    "to inspect": [
+      "to",
+      "inspect",
+      "user",
+      "method",
+      "resource",
+      "read"
+    ],
+    "yet you": [
+      "yet",
+      "you",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "inspect method": [
+      "inspect",
+      "method",
+      "user",
+      "resource",
+      "request",
+      "list"
+    ],
+    "no design context exists": [
+      "no",
+      "design",
+      "context",
+      "exists",
+      "what",
+      "spacing"
+    ],
+    "no design context exist": [
+      "no",
+      "design",
+      "context",
+      "exists",
+      "what",
+      "spacing"
+    ],
+    "no design context": [
+      "no",
+      "design",
+      "context",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "if no design context": [
+      "if",
+      "no",
+      "design",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "design context exists": [
+      "design",
+      "context",
+      "exists",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "design context exist": [
+      "design",
+      "context",
+      "exists",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "context exists": [
+      "context",
+      "exists",
+      "design",
+      "what",
+      "visual",
+      "spacing"
+    ],
+    "context exist": [
+      "context",
+      "exists",
+      "design",
+      "what",
+      "visual",
+      "spacing"
+    ],
+    "run impeccable": [
+      "run",
+      "impeccable",
+      "context",
+      "design",
+      "what",
+      "that"
+    ],
+    "impeccable teach": [
+      "impeccable",
+      "teach",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "if any": [
+      "if",
+      "any",
+      "context",
+      "what",
+      "design",
+      "azure"
+    ],
+    "required default": [
+      "required",
+      "default",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "core concepts": [
+      "core",
+      "concepts",
+      "patterns",
+      "ipv6",
+      "gmgn-cli",
+      "data"
+    ],
+    "core concept": [
+      "core",
+      "concepts",
+      "patterns",
+      "ipv6",
+      "gmgn-cli",
+      "data"
+    ],
+    "patterns including": [
+      "patterns",
+      "including",
+      "design",
+      "writing",
+      "tests",
+      "testing"
+    ],
+    "pattern including": [
+      "patterns",
+      "including",
+      "design",
+      "writing",
+      "tests",
+      "testing"
+    ],
+    "schema to": [
+      "schema",
+      "to",
+      "method",
+      "user",
+      "resource",
+      "read"
+    ],
+    "to existing": [
+      "to",
+      "existing",
+      "azure",
+      "project",
+      "deployment",
+      "github"
+    ],
+    "proceeding if": [
+      "proceeding",
+      "if",
+      "context",
+      "design",
+      "what",
+      "their"
+    ],
+    "before proceeding if": [
+      "before",
+      "proceeding",
+      "if",
+      "context",
+      "design",
+      "what"
+    ],
+    "environment variables": [
+      "environment",
+      "variables",
+      "auth",
+      "database",
+      "secret",
+      "user"
+    ],
+    "environment variable": [
+      "environment",
+      "variables",
+      "auth",
+      "database",
+      "secret",
+      "user"
+    ],
+    "to make": [
+      "to",
+      "make",
+      "user",
+      "them",
+      "quantitative",
+      "text"
+    ],
+    "gws sheets": [
+      "gws",
+      "sheets",
+      "sheet",
+      "spreadsheet",
+      "google",
+      "read"
+    ],
+    "gws sheet": [
+      "gws",
+      "sheets",
+      "sheet",
+      "spreadsheet",
+      "google",
+      "read"
+    ],
+    "exists yet": [
+      "exists",
+      "yet",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "exist yet": [
+      "exists",
+      "yet",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "you must run": [
+      "you",
+      "must",
+      "run",
+      "design",
+      "context",
+      "what"
+    ],
+    "ai agent": [
+      "ai",
+      "agent",
+      "evaluation",
+      "user",
+      "context",
+      "deployment"
+    ],
+    "you must run impeccable": [
+      "you",
+      "must",
+      "run",
+      "impeccable",
+      "design",
+      "context"
+    ],
+    "yet you must run": [
+      "yet",
+      "you",
+      "must",
+      "run",
+      "design",
+      "context"
+    ],
+    "yet you must": [
+      "yet",
+      "you",
+      "must",
+      "design",
+      "context",
+      "what"
+    ],
+    "teach first": [
+      "teach",
+      "first",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "run impeccable teach first": [
+      "run",
+      "impeccable",
+      "teach",
+      "first",
+      "design",
+      "context"
+    ],
+    "run impeccable teach": [
+      "run",
+      "impeccable",
+      "teach",
+      "design",
+      "context",
+      "what"
+    ],
+    "protocol before proceeding": [
+      "protocol",
+      "before",
+      "proceeding",
+      "design",
+      "context",
+      "what"
+    ],
+    "protocol before": [
+      "protocol",
+      "before",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "principles anti patterns context": [
+      "principles",
+      "anti",
+      "patterns",
+      "context",
+      "design",
+      "what"
+    ],
+    "principle anti pattern context": [
+      "principles",
+      "anti",
+      "patterns",
+      "context",
+      "design",
+      "what"
+    ],
+    "principles anti patterns": [
+      "principles",
+      "anti",
+      "patterns",
+      "design",
+      "context",
+      "what"
+    ],
+    "principle anti pattern": [
+      "principles",
+      "anti",
+      "patterns",
+      "design",
+      "context",
+      "what"
+    ],
+    "principles anti": [
+      "principles",
+      "anti",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "principle anti": [
+      "principles",
+      "anti",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "preparation invoke impeccable": [
+      "preparation",
+      "invoke",
+      "impeccable",
+      "design",
+      "context",
+      "what"
+    ],
+    "preparation invoke": [
+      "preparation",
+      "invoke",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "patterns context gathering protocol": [
+      "patterns",
+      "context",
+      "gathering",
+      "protocol",
+      "design",
+      "what"
+    ],
+    "pattern context gathering protocol": [
+      "patterns",
+      "context",
+      "gathering",
+      "protocol",
+      "design",
+      "what"
+    ],
+    "patterns context gathering": [
+      "patterns",
+      "context",
+      "gathering",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "pattern context gathering": [
+      "patterns",
+      "context",
+      "gathering",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "patterns context": [
+      "patterns",
+      "context",
+      "design",
+      "what",
+      "visual",
+      "spacing"
+    ],
+    "pattern context": [
+      "patterns",
+      "context",
+      "design",
+      "what",
+      "visual",
+      "spacing"
+    ],
+    "must run impeccable teach": [
+      "must",
+      "run",
+      "impeccable",
+      "teach",
+      "design",
+      "context"
+    ],
+    "must run impeccable": [
+      "must",
+      "run",
+      "impeccable",
+      "design",
+      "context",
+      "what"
+    ],
+    "invoke impeccable": [
+      "invoke",
+      "impeccable",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "impeccable teach first": [
+      "impeccable",
+      "teach",
+      "first",
+      "design",
+      "context",
+      "what"
+    ],
+    "follow protocol before proceeding": [
+      "follow",
+      "protocol",
+      "before",
+      "proceeding",
+      "design",
+      "context"
+    ],
+    "follow protocol before": [
+      "follow",
+      "protocol",
+      "before",
+      "design",
+      "context",
+      "what"
+    ],
+    "follow protocol": [
+      "follow",
+      "protocol",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "exists yet you must": [
+      "exists",
+      "yet",
+      "you",
+      "must",
+      "design",
+      "context"
+    ],
+    "exist yet you must": [
+      "exists",
+      "yet",
+      "you",
+      "must",
+      "design",
+      "context"
+    ],
+    "exists yet you": [
+      "exists",
+      "yet",
+      "you",
+      "design",
+      "context",
+      "what"
+    ],
+    "exist yet you": [
+      "exists",
+      "yet",
+      "you",
+      "design",
+      "context",
+      "what"
+    ],
+    "design principles anti patterns": [
+      "design",
+      "principles",
+      "anti",
+      "patterns",
+      "context",
+      "what"
+    ],
+    "design principle anti pattern": [
+      "design",
+      "principles",
+      "anti",
+      "patterns",
+      "context",
+      "what"
+    ],
+    "design principles anti": [
+      "design",
+      "principles",
+      "anti",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "design principle anti": [
+      "design",
+      "principles",
+      "anti",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "design context exists yet": [
+      "design",
+      "context",
+      "exists",
+      "yet",
+      "what",
+      "spacing"
+    ],
+    "design context exist yet": [
+      "design",
+      "context",
+      "exists",
+      "yet",
+      "what",
+      "spacing"
+    ],
+    "context exists yet you": [
+      "context",
+      "exists",
+      "yet",
+      "you",
+      "design",
+      "what"
+    ],
+    "context exist yet you": [
+      "context",
+      "exists",
+      "yet",
+      "you",
+      "design",
+      "what"
+    ],
+    "context exists yet": [
+      "context",
+      "exists",
+      "yet",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "context exist yet": [
+      "context",
+      "exists",
+      "yet",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "contains design principles anti": [
+      "contains",
+      "design",
+      "principles",
+      "anti",
+      "context",
+      "what"
+    ],
+    "contain design principle anti": [
+      "contains",
+      "design",
+      "principles",
+      "anti",
+      "context",
+      "what"
+    ],
+    "contains design principles": [
+      "contains",
+      "design",
+      "principles",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "contain design principle": [
+      "contains",
+      "design",
+      "principles",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "contains design": [
+      "contains",
+      "design",
+      "context",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "contain design": [
+      "contains",
+      "design",
+      "context",
+      "what",
+      "spacing",
+      "before"
+    ],
+    "anti patterns context gathering": [
+      "anti",
+      "patterns",
+      "context",
+      "gathering",
+      "design",
+      "what"
+    ],
+    "anti pattern context gathering": [
+      "anti",
+      "patterns",
+      "context",
+      "gathering",
+      "design",
+      "what"
+    ],
+    "anti patterns context": [
+      "anti",
+      "patterns",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "anti pattern context": [
+      "anti",
+      "patterns",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "code to": [
+      "code",
+      "to",
+      "azure",
+      "azure-prepare",
+      "user",
+      "status"
+    ],
+    "resource method": [
+      "resource",
+      "method",
+      "user",
+      "list",
+      "read",
+      "operations"
+    ],
+    "see also": [
+      "see",
+      "also",
+      "text",
+      "calendar",
+      "json",
+      "firecrawl"
+    ],
+    "type safe": [
+      "type",
+      "safe",
+      "database",
+      "types",
+      "genkit",
+      "secret"
+    ],
+    "end to end": [
+      "end",
+      "to",
+      "test",
+      "tests",
+      "testing",
+      "code"
+    ],
+    "end to": [
+      "end",
+      "to",
+      "test",
+      "tests",
+      "testing",
+      "code"
+    ],
+    "you re": [
+      "you",
+      "re",
+      "test",
+      "user",
+      "your",
+      "code"
+    ],
+    "method flags": [
+      "method",
+      "flags",
+      "user",
+      "resource",
+      "list",
+      "read"
+    ],
+    "method flag": [
+      "method",
+      "flags",
+      "user",
+      "resource",
+      "list",
+      "read"
+    ],
+    "ask user to": [
+      "ask",
+      "user",
+      "to",
+      "image",
+      "backend",
+      "markdown"
+    ],
+    "gws schema to": [
+      "gws",
+      "schema",
+      "to",
+      "method",
+      "user",
+      "resource"
+    ],
+    "mcp azure": [
+      "mcp",
+      "azure",
+      "resource",
+      "resources",
+      "query",
+      "cost"
+    ],
+    "user asks": [
+      "user",
+      "asks",
+      "when",
+      "azure",
+      "code",
+      "claude"
+    ],
+    "platform specific": [
+      "platform",
+      "specific",
+      "flutter",
+      "code",
+      "native",
+      "performance"
+    ],
+    "not provided": [
+      "not",
+      "provided",
+      "what",
+      "product",
+      "marketing",
+      "content"
+    ],
+    "before starting": [
+      "before",
+      "starting",
+      "what",
+      "your",
+      "customer",
+      "that"
+    ],
+    "to apply": [
+      "to",
+      "apply",
+      "when",
+      "gsap",
+      "performance",
+      "react"
+    ],
+    "flags flag": [
+      "flags",
+      "flag",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "flag flag": [
+      "flags",
+      "flag",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "user is": [
+      "user",
+      "is",
+      "azure",
+      "when",
+      "them",
+      "quantitative"
+    ],
+    "to get": [
+      "to",
+      "get",
+      "what",
+      "agent",
+      "project",
+      "context"
+    ],
+    "you can": [
+      "you",
+      "can",
+      "user",
+      "content",
+      "them",
+      "test"
+    ],
+    "mandatory preparation invoke impeccable": [
+      "mandatory",
+      "preparation",
+      "invoke",
+      "impeccable",
+      "design",
+      "context"
+    ],
+    "mandatory preparation invoke": [
+      "mandatory",
+      "preparation",
+      "invoke",
+      "design",
+      "context",
+      "what"
+    ],
+    "mandatory preparation": [
+      "mandatory",
+      "preparation",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "third party": [
+      "third",
+      "party",
+      "code",
+      "user",
+      "data",
+      "design"
+    ],
+    "resource method flags": [
+      "resource",
+      "method",
+      "flags",
+      "user",
+      "read",
+      "request"
+    ],
+    "resource method flag": [
+      "resource",
+      "method",
+      "flags",
+      "user",
+      "read",
+      "request"
+    ],
+    "priority order": [
+      "priority",
+      "order",
+      "user",
+      "image",
+      "scripts",
+      "backend"
+    ],
+    "text to": [
+      "text",
+      "to",
+      "write",
+      "search",
+      "azure",
+      "speech"
+    ],
+    "ask if": [
+      "ask",
+      "if",
+      "what",
+      "product",
+      "marketing",
+      "content"
+    ],
+    "it contains": [
+      "it",
+      "contains",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "it contain": [
+      "it",
+      "contains",
+      "context",
+      "design",
+      "what",
+      "spacing"
+    ],
+    "flag required": [
+      "flag",
+      "required",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "agent browser": [
+      "agent",
+      "browser",
+      "agent-browser",
+      "open",
+      "snapshot",
+      "session"
+    ],
+    "driven development": [
+      "driven",
+      "development",
+      "test",
+      "tests",
+      "code",
+      "review"
+    ],
+    "google calendar": [
+      "google",
+      "calendar",
+      "events",
+      "event",
+      "time",
+      "timezone"
+    ],
+    "schema to inspect": [
+      "schema",
+      "to",
+      "inspect",
+      "user",
+      "method",
+      "resource"
+    ],
+    "gws schema to inspect": [
+      "gws",
+      "schema",
+      "to",
+      "inspect",
+      "resource",
+      "access"
+    ],
+    "you need to": [
+      "you",
+      "need",
+      "to",
+      "search",
+      "scrape",
+      "firecrawl"
+    ],
+    "default description": [
+      "default",
+      "description",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "usage gws": [
+      "usage",
+      "gws",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "required default description": [
+      "required",
+      "default",
+      "description",
+      "gmail",
+      "text",
+      "calendar"
+    ],
+    "flags flag required default": [
+      "flags",
+      "flag",
+      "required",
+      "default",
+      "gmail",
+      "text"
+    ],
+    "flag flag required default": [
+      "flags",
+      "flag",
+      "required",
+      "default",
+      "gmail",
+      "text"
+    ],
+    "flags flag required": [
+      "flags",
+      "flag",
+      "required",
+      "gmail",
+      "text",
+      "calendar"
+    ],
+    "flag flag required": [
+      "flags",
+      "flag",
+      "required",
+      "gmail",
+      "text",
+      "calendar"
+    ],
+    "flag required default description": [
+      "flag",
+      "required",
+      "default",
+      "description",
+      "gmail",
+      "text"
+    ],
+    "flag required default": [
+      "flag",
+      "required",
+      "default",
+      "gmail",
+      "text",
+      "calendar"
+    ],
+    "examples gws": [
+      "examples",
+      "gws",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "example gws": [
+      "examples",
+      "gws",
+      "gmail",
+      "text",
+      "calendar",
+      "html"
+    ],
+    "to add": [
+      "to",
+      "add",
+      "user",
+      "azure",
+      "project",
+      "file"
+    ],
+    "your project": [
+      "your",
+      "project",
+      "when",
+      "context",
+      "shadcn",
+      "files"
+    ],
+    "dry run": [
+      "dry",
+      "run",
+      "gmail",
+      "html",
+      "body",
+      "data"
+    ],
+    "proceeding if no": [
+      "proceeding",
+      "if",
+      "no",
+      "context",
+      "design",
+      "what"
+    ],
+    "before proceeding if no": [
+      "before",
+      "proceeding",
+      "if",
+      "no",
+      "context",
+      "design"
+    ],
+    "to new": [
+      "to",
+      "new",
+      "stitch",
+      "design",
+      "design.md",
+      "semantic"
+    ],
+    "protocol before proceeding if": [
+      "protocol",
+      "before",
+      "proceeding",
+      "if",
+      "context",
+      "design"
+    ],
+    "proceeding if no design": [
+      "proceeding",
+      "if",
+      "no",
+      "design",
+      "context",
+      "what"
+    ],
+    "preparation invoke impeccable it": [
+      "preparation",
+      "invoke",
+      "impeccable",
+      "it",
+      "context",
+      "design"
+    ],
+    "it contains design principles": [
+      "it",
+      "contains",
+      "design",
+      "principles",
+      "context",
+      "what"
+    ],
+    "it contain design principle": [
+      "it",
+      "contains",
+      "design",
+      "principles",
+      "context",
+      "what"
+    ],
+    "it contains design": [
+      "it",
+      "contains",
+      "design",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "it contain design": [
+      "it",
+      "contains",
+      "design",
+      "context",
+      "what",
+      "spacing"
+    ],
+    "invoke impeccable it contains": [
+      "invoke",
+      "impeccable",
+      "it",
+      "contains",
+      "context",
+      "design"
+    ],
+    "invoke impeccable it contain": [
+      "invoke",
+      "impeccable",
+      "it",
+      "contains",
+      "context",
+      "design"
+    ],
+    "invoke impeccable it": [
+      "invoke",
+      "impeccable",
+      "it",
+      "context",
+      "design",
+      "what"
+    ]
+  },
+  "artifactIntentSynonyms": {},
+  "operationIntentSynonyms": {},
+  "primaryThemeSynonyms": {
+    "engineering_ai": [
+      "code review",
+      "database migration",
+      "unit testing",
+      "code reviews",
+      "frontend design",
+      "code examples",
+      "browser automation",
+      "azure deploy",
+      "ai agent",
+      "code to",
+      "agent browser",
+      "claude code",
+      "deploy to",
+      "source code",
+      "validate azure deploy",
+      "azure validate azure deploy",
+      "agent runtime",
+      "react vue",
+      "as code",
+      "frontend design context",
+      "python typescript",
+      "input exposed current agent",
+      "exposed current agent runtime",
+      "exposed current agent",
+      "current agent runtime",
+      "current agent",
+      "testing strategies",
+      "react next",
+      "infrastructure code",
+      "any code",
+      "react native",
+      "to deploy",
+      "react components",
+      "writing code",
+      "before any code",
+      "testing deployment",
+      "multi agent",
+      "before deployment",
+      "based deployment",
+      "code is",
+      "code blocks",
+      "javascript typescript",
+      "integration tests",
+      "deployment workflows",
+      "llm optimized",
+      "source code to",
+      "vs code",
+      "testing patterns"
+    ],
+    "culture_humanities": [
+      "code review",
+      "to review",
+      "quick review",
+      "azure quick review",
+      "review before",
+      "each review",
+      "healthy review",
+      "before each review",
+      "review logs",
+      "requesting code review",
+      "review compliance",
+      "review logs analyze metrics",
+      "review logs analyze",
+      "resource health review logs",
+      "resource health review",
+      "health review logs analyze",
+      "health review logs",
+      "health review",
+      "check resource health review",
+      "review compliance assessment",
+      "quick review compliance assessment",
+      "quick review compliance",
+      "azure quick review compliance",
+      "azqr azure quick review",
+      "design review",
+      "review refactoring",
+      "code review refactoring",
+      "receiving code review",
+      "caveman review",
+      "services azure quick review",
+      "core philosophy",
+      "review against",
+      "design philosophy",
+      "source before each review",
+      "review ensuring",
+      "each review ensuring",
+      "before each review ensuring",
+      "review one",
+      "review identify",
+      "review to",
+      "swiftui code review",
+      "review spec",
+      "review after each",
+      "review after",
+      "plan review",
+      "code review excellence",
+      "review requires",
+      "session context history"
+    ],
+    "startup_growth": [
+      "landing pages",
+      "landing page",
+      "product marketing context",
+      "product marketing",
+      "marketing context",
+      "agents product marketing context",
+      "agents product marketing",
+      "claude product marketing context",
+      "claude product marketing",
+      "product marketing context first",
+      "marketing context first",
+      "check product marketing context",
+      "check product marketing",
+      "assessment check product marketing",
+      "conversion rate",
+      "starting check product marketing",
+      "marketing copy",
+      "conversion rates",
+      "seo audit",
+      "programmatic seo",
+      "technical seo",
+      "marketing ideas",
+      "marketing psychology",
+      "seo geo",
+      "landing pages pricing pages",
+      "landing pages pricing",
+      "homepages landing pages pricing",
+      "homepages landing pages",
+      "homepages landing",
+      "onboarding cro",
+      "skill creator",
+      "ai seo",
+      "slack gif creator",
+      "conversion converts source code",
+      "conversion converts source",
+      "conversion converts",
+      "code conversion converts source",
+      "code conversion converts",
+      "code conversion",
+      "before any code conversion",
+      "any code conversion converts",
+      "any code conversion",
+      "product marketing context files",
+      "marketing context files to",
+      "marketing context files",
+      "pages marketing",
+      "seo optimized",
+      "onboarding flows"
+    ],
+    "product_strategy": [
+      "design systems",
+      "pricing strategy",
+      "thumbnail design",
+      "design system",
+      "design context",
+      "frontend design",
+      "design principles",
+      "no design",
+      "if no design",
+      "no design context exists",
+      "no design context",
+      "if no design context",
+      "design context exists",
+      "design principles anti patterns",
+      "design principles anti",
+      "design context exists yet",
+      "contains design principles anti",
+      "contains design principles",
+      "contains design",
+      "proceeding if no design",
+      "it contains design principles",
+      "it contains design",
+      "impeccable it contains design",
+      "responsive design",
+      "design patterns",
+      "design tokens",
+      "frontend design context",
+      "visual design",
+      "stitch design",
+      "schema design",
+      "web design guidelines",
+      "provides design",
+      "design optimize",
+      "test design",
+      "design architecture",
+      "structured design",
+      "ui ux pro max",
+      "guidelines design",
+      "core design",
+      "design md",
+      "features pricing",
+      "existing design",
+      "design thinking",
+      "design accessibility",
+      "design decisions",
+      "design thinking before coding",
+      "design thinking before",
+      "content strategy"
+    ],
+    "content_media": [
+      "image to video",
+      "text to video",
+      "video editing",
+      "wechat official account",
+      "wechat official accounts",
+      "youtube thumbnails",
+      "youtube thumbnail",
+      "thumbnail design",
+      "wechat article",
+      "social publishing",
+      "product marketing context",
+      "product marketing",
+      "marketing context",
+      "agents product marketing context",
+      "agents product marketing",
+      "claude product marketing context",
+      "claude product marketing",
+      "product marketing context first",
+      "marketing context first",
+      "check product marketing context",
+      "check product marketing",
+      "assessment check product marketing",
+      "content to",
+      "page content",
+      "starting check product marketing",
+      "content safety",
+      "content type",
+      "blog posts",
+      "audio video",
+      "content into",
+      "content requires",
+      "content extraction",
+      "marketing copy",
+      "content that",
+      "social media",
+      "full content",
+      "video audio",
+      "full page content",
+      "social proof",
+      "seo audit",
+      "programmatic seo",
+      "technical seo",
+      "marketing ideas",
+      "analyze content",
+      "content structure",
+      "content strategy",
+      "marketing psychology",
+      "uploading blob content"
+    ],
+    "writing_communication": [
+      "documentation workflows",
+      "technical writing",
+      "wechat official account",
+      "wechat official accounts",
+      "youtube thumbnails",
+      "youtube thumbnail",
+      "wechat article",
+      "social publishing",
+      "before writing",
+      "writing code",
+      "documentation to",
+      "email password",
+      "blog posts",
+      "email address",
+      "email to",
+      "before writing code",
+      "social media",
+      "writing plans",
+      "reference documentation",
+      "documentation mcp",
+      "standup report",
+      "email sequence",
+      "email to task",
+      "mcp documentation",
+      "mcp azure mcp documentation",
+      "documentation mcp azure mcp",
+      "documentation mcp azure",
+      "azure mcp documentation",
+      "social proof",
+      "azure documentation",
+      "sdk documentation",
+      "microsoft documentation",
+      "documentation search",
+      "markdown documentation",
+      "writing any",
+      "permissions azure documentation",
+      "desired permissions azure documentation",
+      "markdown documentation resource inventory",
+      "markdown documentation resource",
+      "documentation resource inventory tables",
+      "documentation resource inventory",
+      "documentation resource",
+      "creates markdown documentation resource",
+      "creates markdown documentation",
+      "microsoft learn documentation",
+      "learn documentation",
+      "documentation specific",
+      "before writing any"
+    ],
+    "finance_research": [
+      "financial analysis",
+      "customer research",
+      "analysis research",
+      "to research",
+      "research competitor",
+      "research before",
+      "china stock analysis",
+      "user before execution research",
+      "research unfold",
+      "research before generating load",
+      "research before generating",
+      "phase analysis research unfold",
+      "phase analysis research",
+      "execution research before generating",
+      "execution research before",
+      "execution research",
+      "before execution research before",
+      "before execution research",
+      "as phase analysis research",
+      "analysis research unfold",
+      "research phase user wants",
+      "research phase user",
+      "research phase",
+      "prepare invokes during research",
+      "invokes during research phase",
+      "invokes during research",
+      "during research phase user",
+      "during research phase",
+      "during research",
+      "research workflows",
+      "number formatting financial models",
+      "number formatting financial",
+      "formatting financial models blue",
+      "formatting financial models",
+      "formatting financial",
+      "financial models blue inputs",
+      "financial models blue",
+      "financial models",
+      "coding number formatting financial",
+      "research design internal linking",
+      "research design internal",
+      "research design",
+      "pattern research design internal",
+      "pattern research design",
+      "pattern research",
+      "keyword pattern research design",
+      "keyword pattern research",
+      "covering keyword pattern research"
+    ],
+    "organization_leadership": [
+      "state management",
+      "session management",
+      "azure compliance",
+      "lifecycle management",
+      "mandatory compliance",
+      "guidance mandatory compliance",
+      "authoritative guidance mandatory compliance",
+      "token management",
+      "secret management",
+      "core operations",
+      "batch operations",
+      "secrets management",
+      "package manager",
+      "management across",
+      "team members",
+      "resource management",
+      "team collaboration",
+      "management reader monitoring reader",
+      "management reader monitoring",
+      "management reader",
+      "cost management reader monitoring",
+      "cost management reader",
+      "cost management",
+      "azure cost management",
+      "mandatory compliance document is",
+      "mandatory compliance document",
+      "guidance mandatory compliance document",
+      "compliance document is official",
+      "compliance document is",
+      "compliance document",
+      "management apim",
+      "bulk operations",
+      "credential management",
+      "review compliance",
+      "management server",
+      "permissions client credential management",
+      "management across web spas",
+      "management across web",
+      "credential management across web",
+      "credential management across",
+      "client credential management across",
+      "client credential management",
+      "review compliance assessment",
+      "quick review compliance assessment",
+      "quick review compliance",
+      "compliance scanning key vault",
+      "compliance scanning key",
+      "compliance scanning"
+    ],
+    "healthcare_medical": [
+      "resource health",
+      "check resource health",
+      "health checks",
+      "systematic diagnosis remediation azure",
+      "systematic diagnosis remediation",
+      "systematic diagnosis",
+      "symptoms check resource health",
+      "starts health probes invocation",
+      "starts health probes",
+      "starts health",
+      "resource health review logs",
+      "resource health review",
+      "pulls cold starts health",
+      "monitor resource health",
+      "health review logs analyze",
+      "health review logs",
+      "health review",
+      "health probes invocation failures",
+      "health probes invocation",
+      "health probes",
+      "diagnosis remediation azure production",
+      "diagnosis remediation azure",
+      "diagnosis remediation",
+      "cold starts health probes",
+      "cold starts health",
+      "check resource health review",
+      "health match error",
+      "health match",
+      "resource health checks",
+      "troubleshooting document quick diagnosis",
+      "systematic diagnosis flow applens",
+      "systematic diagnosis flow",
+      "starts health probes port",
+      "start systematic diagnosis flow",
+      "start systematic diagnosis",
+      "start health probe issues",
+      "start health probe",
+      "start health",
+      "rules start systematic diagnosis",
+      "resource health is azure",
+      "resource health is",
+      "resource health before deep",
+      "resource health before",
+      "quick diagnosis flow identify",
+      "quick diagnosis flow",
+      "quick diagnosis",
+      "pull cold start health",
+      "health probes port mismatches"
+    ],
+    "career_learning": [
+      "training data",
+      "machine learning",
+      "your training",
+      "relying training data",
+      "relying training",
+      "your training data",
+      "machine learning core discover",
+      "machine learning core",
+      "learning core discover resources",
+      "learning core discover",
+      "learning core",
+      "detection machine learning core",
+      "detection machine learning",
+      "anomaly detection machine learning",
+      "learning hpc web tier",
+      "learning hpc web",
+      "learning hpc",
+      "gpu deep learning hpc",
+      "gpu deep learning",
+      "deep learning hpc web",
+      "deep learning hpc",
+      "deep learning",
+      "database gpu deep learning",
+      "product education",
+      "resume failure covers common",
+      "resume failure covers",
+      "resume failure",
+      "progress monitoring automatic resume",
+      "monitoring automatic resume failure",
+      "monitoring automatic resume",
+      "automatic resume failure covers",
+      "automatic resume failure",
+      "automatic resume",
+      "learning real",
+      "user education retention emphasizes",
+      "user education retention",
+      "user education",
+      "post launch user education",
+      "launch user education retention",
+      "launch user education",
+      "education retention emphasizes treating",
+      "education retention emphasizes",
+      "education retention",
+      "your training data contains",
+      "training data contains obsolete",
+      "training data contains",
+      "retrieval over pre training",
+      "pre training"
+    ]
+  },
+  "secondaryThemeSynonyms": {
+    "social_publishing": [
+      "wechat official account",
+      "wechat official accounts",
+      "youtube thumbnails",
+      "youtube thumbnail",
+      "wechat article",
+      "social publishing",
+      "social media",
+      "social proof",
+      "social content",
+      "youtube thumbnail design",
+      "baoyu post to wechat",
+      "social media content",
+      "wechat official",
+      "social proof loss aversion",
+      "social proof loss",
+      "frameworks confirmation bias social",
+      "confirmation bias social proof",
+      "confirmation bias social",
+      "bias social proof loss",
+      "bias social proof",
+      "bias social",
+      "social media content scheduling",
+      "expert social media content",
+      "expert social media",
+      "expert social",
+      "social stores borrowed channels",
+      "social stores borrowed",
+      "social stores",
+      "rented channels social stores",
+      "rented channels social",
+      "community rented channels social",
+      "channels social stores borrowed",
+      "channels social stores",
+      "channels social",
+      "social proof urgency identity",
+      "social proof urgency",
+      "point outcome social proof",
+      "point outcome social",
+      "pain point outcome social",
+      "outcome social proof urgency",
+      "outcome social proof",
+      "outcome social",
+      "social auth deferrable fields",
+      "social auth deferrable",
+      "social auth",
+      "password name social auth",
+      "password name social",
+      "name social auth deferrable"
+    ],
+    "financial_analysis": [
+      "financial analysis",
+      "china stock analysis",
+      "number formatting financial models",
+      "number formatting financial",
+      "formatting financial models blue",
+      "formatting financial models",
+      "formatting financial",
+      "financial models blue inputs",
+      "financial models blue",
+      "financial models",
+      "coding number formatting financial",
+      "trading status",
+      "tag trading status",
+      "tag trading",
+      "league event tag trading",
+      "event tag trading status",
+      "event tag trading",
+      "valuation multiples ev ebitda",
+      "valuation multiples ev",
+      "valuation multiples",
+      "these guidelines financial models",
+      "these guidelines financial",
+      "override these guidelines financial",
+      "guidelines financial models color",
+      "guidelines financial models",
+      "guidelines financial",
+      "financial models color coding",
+      "financial models color",
+      "0x valuation multiples ev",
+      "0x valuation multiples",
+      "0x valuation",
+      "than financial dashboards who",
+      "than financial dashboards",
+      "than financial",
+      "financial dashboards who audience",
+      "financial dashboards who",
+      "financial dashboards",
+      "bolder than financial dashboards",
+      "bolder than financial",
+      "be bolder than financial",
+      "yield debt ratio financial",
+      "valuation modeling",
+      "valuation methods automated financial",
+      "valuation methods automated",
+      "valuation methods",
+      "valuation industry comparison risks",
+      "valuation industry comparison",
+      "valuation industry"
+    ],
+    "creator_growth": [
+      "youtube thumbnails",
+      "youtube thumbnail",
+      "thumbnail design",
+      "seo audit",
+      "programmatic seo",
+      "technical seo",
+      "seo geo",
+      "skill creator",
+      "ai seo",
+      "slack gif creator",
+      "seo optimized",
+      "youtube thumbnail design",
+      "seo traffic",
+      "traditional seo",
+      "seo",
+      "thumbnail xml unpacking advanced",
+      "thumbnail xml unpacking",
+      "thumbnail xml",
+      "text extraction thumbnail xml",
+      "text extraction thumbnail",
+      "inspection text extraction thumbnail",
+      "extraction thumbnail xml unpacking",
+      "extraction thumbnail xml",
+      "extraction thumbnail",
+      "seo issues",
+      "seo auditing framework covering",
+      "seo auditing framework",
+      "seo auditing",
+      "seo you are expert",
+      "seo you are",
+      "seo you",
+      "seo 10",
+      "seo strategy",
+      "uniqueness technical seo search",
+      "uniqueness technical seo",
+      "technical seo search intent",
+      "technical seo search",
+      "seo search intent matching",
+      "seo search intent",
+      "seo search",
+      "seo optimized pages at",
+      "seo optimized pages",
+      "content uniqueness technical seo",
+      "user education retention emphasizes",
+      "user education retention",
+      "retention emphasizes treating launches",
+      "retention emphasizes treating",
+      "retention emphasizes"
+    ],
+    "attention_arbitrage": [
+      "thumbnail design",
+      "social publishing",
+      "product marketing context",
+      "product marketing",
+      "marketing context",
+      "agents product marketing context",
+      "agents product marketing",
+      "claude product marketing context",
+      "claude product marketing",
+      "product marketing context first",
+      "marketing context first",
+      "check product marketing context",
+      "check product marketing",
+      "assessment check product marketing",
+      "starting check product marketing",
+      "marketing copy",
+      "social media",
+      "social proof",
+      "seo audit",
+      "programmatic seo",
+      "technical seo",
+      "marketing ideas",
+      "marketing psychology",
+      "social content",
+      "seo geo",
+      "ai seo",
+      "product marketing context files",
+      "marketing context files to",
+      "marketing context files",
+      "pages marketing",
+      "seo optimized",
+      "marketing pages",
+      "seo traffic",
+      "planning check product marketing",
+      "social media content",
+      "landing pages marketing",
+      "traditional seo",
+      "seo",
+      "what purpose marketing",
+      "purpose marketing",
+      "marketing content",
+      "thumbnail xml unpacking advanced",
+      "thumbnail xml unpacking",
+      "thumbnail xml",
+      "text extraction thumbnail xml",
+      "text extraction thumbnail",
+      "inspection text extraction thumbnail",
+      "extraction thumbnail xml unpacking"
+    ],
+    "organizational_design": [
+      "state management",
+      "session management",
+      "azure compliance",
+      "lifecycle management",
+      "mandatory compliance",
+      "guidance mandatory compliance",
+      "authoritative guidance mandatory compliance",
+      "token management",
+      "secret management",
+      "core operations",
+      "batch operations",
+      "secrets management",
+      "management across",
+      "resource management",
+      "management reader monitoring reader",
+      "management reader monitoring",
+      "management reader",
+      "cost management reader monitoring",
+      "cost management reader",
+      "cost management",
+      "azure cost management",
+      "mandatory compliance document is",
+      "mandatory compliance document",
+      "guidance mandatory compliance document",
+      "compliance document is official",
+      "compliance document is",
+      "compliance document",
+      "management apim",
+      "bulk operations",
+      "credential management",
+      "review compliance",
+      "management server",
+      "permissions client credential management",
+      "management across web spas",
+      "management across web",
+      "credential management across web",
+      "credential management across",
+      "client credential management across",
+      "client credential management",
+      "review compliance assessment",
+      "quick review compliance assessment",
+      "quick review compliance",
+      "compliance scanning key vault",
+      "compliance scanning key",
+      "compliance scanning",
+      "compliance assessment",
+      "azure quick review compliance",
+      "azure compliance scanning key"
+    ],
+    "medical_review": [
+      "systematic diagnosis remediation azure",
+      "systematic diagnosis remediation",
+      "systematic diagnosis",
+      "diagnosis remediation azure production",
+      "diagnosis remediation azure",
+      "diagnosis remediation",
+      "troubleshooting document quick diagnosis",
+      "systematic diagnosis flow applens",
+      "systematic diagnosis flow",
+      "start systematic diagnosis flow",
+      "start systematic diagnosis",
+      "rules start systematic diagnosis",
+      "quick diagnosis flow identify",
+      "quick diagnosis flow",
+      "quick diagnosis",
+      "document quick diagnosis flow",
+      "document quick diagnosis",
+      "diagnosis flow identify symptoms",
+      "diagnosis flow identify",
+      "diagnosis flow applens mcp",
+      "diagnosis flow applens",
+      "diagnosis flow",
+      "troubleshooting docs diagnosis identify",
+      "troubleshooting docs diagnosis",
+      "stated proceed diagnosis ask",
+      "stated proceed diagnosis",
+      "proceed diagnosis ask later",
+      "proceed diagnosis ask",
+      "proceed diagnosis",
+      "not stated proceed diagnosis",
+      "learn troubleshooting docs diagnosis",
+      "docs diagnosis identify sdk",
+      "docs diagnosis identify",
+      "docs diagnosis",
+      "diagnosis identify sdk version",
+      "diagnosis identify sdk",
+      "diagnosis identify",
+      "diagnosis ask later if",
+      "diagnosis ask later",
+      "diagnosis ask",
+      "structured diagnosis",
+      "resolution structured diagnosis",
+      "error resolution structured diagnosis",
+      "symptom based patching diagnostic",
+      "symptom based patching",
+      "symptom based",
+      "blocks symptom based patching",
+      "blocks symptom based"
+    ],
+    "cultural_analysis": [
+      "session context history",
+      "context history",
+      "algorithmic art",
+      "raw art deco geometric",
+      "raw art deco",
+      "raw art",
+      "magazine brutalist raw art",
+      "brutalist raw art deco",
+      "brutalist raw art",
+      "art deco geometric soft",
+      "art deco geometric",
+      "art deco",
+      "history configuration changes",
+      "history configuration",
+      "grained audit history configuration",
+      "grained audit history",
+      "fine grained audit history",
+      "audit history configuration changes",
+      "audit history configuration",
+      "audit history",
+      "your session context history",
+      "session context history you",
+      "history you construct exactly",
+      "history you construct",
+      "history you",
+      "context history you construct",
+      "context history you",
+      "than session history categorizes",
+      "than session history",
+      "session history categorizes feedback",
+      "session history categorizes",
+      "session history",
+      "rather than session history",
+      "history categorizes feedback into",
+      "history categorizes feedback",
+      "history categorizes",
+      "art movement next phase",
+      "art movement next",
+      "art movement",
+      "art gallery airy",
+      "art gallery",
+      "sessions automatic history streaming",
+      "sessions automatic history",
+      "history streaming responses real",
+      "history streaming responses",
+      "history streaming",
+      "chat sessions automatic history",
+      "automatic history streaming responses"
+    ]
+  },
+  "secondaryThemePrimaryMap": {
+    "social_publishing": [
+      "content_media",
+      "writing_communication"
+    ],
+    "creator_growth": [
+      "content_media",
+      "startup_growth"
+    ],
+    "financial_analysis": [
+      "finance_research"
+    ],
+    "medical_review": [
+      "healthcare_medical"
+    ],
+    "cultural_analysis": [
+      "culture_humanities",
+      "writing_communication"
+    ],
+    "organizational_design": [
+      "organization_leadership"
+    ],
+    "attention_arbitrage": [
+      "content_media",
+      "startup_growth"
+    ]
+  },
+  "documentSubIntentSynonyms": {},
+  "skillDocumentSubIntentSynonyms": {},
+  "artifactProfileAnchors": {},
+  "sourceManifestSignature": "skills-sh:b8c7982a04aa83a7"
+}

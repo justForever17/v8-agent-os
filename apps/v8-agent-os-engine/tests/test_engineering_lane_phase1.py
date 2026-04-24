@@ -478,6 +478,26 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertTrue(any(item["phase"] == "dry_run_dispatch" for item in listed))
         self.assertTrue(any(item["phase"] == "dry_run_matrix" for item in listed))
 
+    def test_dry_run_without_bound_session_does_not_persist_orphan_observations(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        before = engineering_lane_service.list_workset_observations(limit=200)
+        before_ids = {str(item.get("id")) for item in before if isinstance(item, dict)}
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()), patch(
+            "runtimes.engineering.service.workspace_resolution_service.resolve_workspace_descriptor",
+            return_value={"workspaceRoot": str(root), "source": "main_workspace", "isScopedOverride": False},
+        ), patch("runtimes.engineering.service.workflow_memory_service.match_hints", return_value=[]):
+            result = engineering_lane_service.dry_run(
+                {
+                    "userQuery": "修复 admin panel 并补 typecheck",
+                    "engineeringMode": "force",
+                }
+            )
+        self.assertEqual(result.get("worksetObservations"), [])
+        after = engineering_lane_service.list_workset_observations(limit=200)
+        after_ids = {str(item.get("id")) for item in after if isinstance(item, dict)}
+        self.assertEqual(before_ids, after_ids)
+
     def test_dry_run_returns_cross_link_matrix_groups(self) -> None:
         temp, root = self._repo()
         self.addCleanup(temp.cleanup)

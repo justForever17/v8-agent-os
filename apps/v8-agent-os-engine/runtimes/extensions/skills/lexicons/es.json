@@ -1,0 +1,12 @@
+{
+  "locale": "es",
+  "version": 1,
+  "querySynonyms": {
+    "documento": ["document", "documentation"],
+    "video": ["video", "videos"]
+  },
+  "artifactIntentSynonyms": {
+    "document": ["documento"],
+    "video": ["video"]
+  }
+}

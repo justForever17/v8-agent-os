@@ -30,6 +30,7 @@ from erc.models import RuntimeSource
 from erc.runtime_context import get_runtime_context
 from erc.runtime_registry import runtime_registry
 from runtimes.extensions.mcp.client import mcp_manager
+from runtimes.extensions.skills.lexicons import get_extension_lexicon_registry
 from runtimes.extensions.skills.loader import SkillLoader
 
 
@@ -76,421 +77,49 @@ _PLUGIN_HOST_LIVE_INVENTORY_SOURCES = {"gateway_rpc", "plugin_source_scan", "dur
 _DYNAMIC_PROFILE_CACHE_LIMIT = 256
 _DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS = 6.0
 _DYNAMIC_THEME_FALLBACK_LIMIT = 2
-_PLUGIN_HOST_QUERY_HINTS = {
-    "openclaw",
-    "pluginhost",
-    "plugin_host",
-    "plugin-host",
-    "plugin host",
-    "channel",
-    "channels",
-    "bridge",
-    "gateway",
-    "feishu",
-    "lark",
-    "wechat",
-    "weixin",
-    "slack",
-    "discord",
-    "telegram",
-    "line",
-    "teams",
-    "whatsapp",
-    "飞书",
-    "微信",
-    "插件宿主",
-    "桥接",
-    "渠道",
-}
-_CROSS_RUNTIME_ESCAPE_TOKENS = {
-    "blocker",
-    "blocked",
-    "blocking",
-    "stale",
-    "stuck",
-    "retry",
-    "fallback",
-    "switch",
-    "handoff",
-    "delegate",
-    "delegation",
-    "parallel",
-    "error",
-    "errors",
-    "failed",
-    "failure",
-    "cannot",
-    "cant",
-    "missing",
-    "auth",
-    "unauthorized",
-    "permission",
-    "权限",
-    "授权",
-    "失败",
-    "错误",
-    "卡住",
-    "阻塞",
-    "并发",
-    "切换",
-    "降级",
-}
 _EXTENSION_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
     "v8_agent_os_extensions_runtime_context",
     default={},
 )
-_EXTENSION_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "视频": ("video", "videos"),
-    "生成": ("generate", "generation", "create", "creation"),
-    "图像": ("image", "images", "picture", "pictures"),
-    "图片": ("image", "images", "picture", "pictures"),
-    "文档": ("doc", "docs", "documentation", "library"),
-    "word": ("doc", "docx", "document", "office document"),
-    "docs": ("documentation", "spec", "design doc", "decision doc", "proposal", "rfc", "prd"),
-    "演示稿": ("presentation", "ppt", "pptx", "slides", "powerpoint"),
-    "代码": ("code", "coding"),
-    "邮件": ("mail", "email"),
-    "头像": ("avatar", "avatars", "talking-head"),
-    "音频": ("audio", "sound", "voice"),
-    "语音": ("voice", "audio", "speech"),
-    "设计": ("design", "designer"),
-    "界面": ("ui", "interface"),
-    "动画": ("animation", "animated"),
-}
-_QUERY_ARTIFACT_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "presentation": ("ppt", "pptx", "presentation", "slide", "slides", "deck", "幻灯片", "演示稿", "演示文稿"),
-    "video": ("视频", "video", "videos", "video generation", "短片", "动画视频"),
-    "image": ("图片", "图像", "image", "images", "picture", "poster", "illustration"),
-    "document": (
-        "文档",
-        "document",
-        "documentation",
-        "doc",
-        "docs",
-        "docx",
-        "word",
-        "word document",
-        "markdown",
-        "md",
-        "report",
-        "article",
-        "spec",
-        "design doc",
-        "decision doc",
-        "rfc",
-        "prd",
-        "proposal",
-        "技术文档",
-        "方案",
-    ),
-    "pdf": ("pdf",),
-    "spreadsheet": ("excel", "xlsx", "xls", "csv", "spreadsheet", "表格", "表单"),
-    "audio": ("音频", "语音", "audio", "voice", "speech"),
-    "code": ("代码", "脚本", "code", "script", "scripts"),
-    "skill": (
-        "skill",
-        "人物skill",
-        "人物 skill",
-        "造skill",
-        "造 skill",
-        "蒸馏",
-        "create skill",
-        "generate skill",
-        "persona skill",
-    ),
-}
-_QUERY_OPERATION_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "create": ("生成", "创建", "制作", "做", "写", "generate", "create", "build", "draft", "make"),
-    "edit": ("编辑", "修改", "调整", "edit", "revise", "modify", "update"),
-    "analyze": ("分析", "检查", "评估", "审阅", "analyze", "analysis", "review", "audit"),
-    "convert": ("转换", "转成", "导出", "convert", "transform", "export"),
-    "search": ("搜索", "检索", "查找", "查询", "search", "find", "lookup", "query"),
-    "guide": ("教程", "指南", "最佳实践", "guide", "tutorial", "best practice"),
-    "advise": ("建议", "视角", "顾问", "advise", "advisor", "perspective"),
-}
-_QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "decision_quality": (
-        "决策质量",
-        "decision quality",
-        "认知偏误",
-        "bias",
-        "biases",
-        "判断力",
-        "判断",
-        "第一性原理",
-        "first principles",
-        "逆向思考",
-        "inversion",
-    ),
-    "wealth_money": (
-        "赚钱",
-        "财富",
-        "wealth",
-        "money",
-        "投资",
-        "资本配置",
-        "杠杆",
-        "leverage",
-        "specific knowledge",
-        "特定知识",
-    ),
-    "startup_growth": (
-        "增长",
-        "growth",
-        "创业",
-        "startup",
-        "商业化",
-        "monetization",
-        "traction",
-        "distribution",
-        "增长策略",
-        "growth strategy",
-        "用户增长",
-        "渠道增长",
-        "acquisition",
-        "conversion",
-        "growth loop",
-        "gtm",
-    ),
-    "product_strategy": (
-        "产品战略",
-        "product strategy",
-        "产品",
-        "product",
-        "定位",
-        "positioning",
-        "roadmap",
-        "成本结构",
-        "cost structure",
-        "垂直整合",
-        "vertical integration",
-    ),
-    "engineering_ai": (
-        "ai",
-        "人工智能",
-        "machine learning",
-        "机器学习",
-        "llm",
-        "engineering",
-        "software",
-        "代码",
-        "神经网络",
-    ),
-    "content_media": (
-        "内容",
-        "content",
-        "视频增长",
-        "thumbnail",
-        "hook",
-        "retention",
-        "attention",
-        "创作者",
-        "creator",
-        "youtube",
-    ),
-    "writing_communication": (
-        "写作",
-        "writing",
-        "沟通",
-        "communication",
-        "storytelling",
-        "copywriting",
-        "表达",
-    ),
-    "organization_leadership": (
-        "组织",
-        "leadership",
-        "组织效率",
-        "团队效率",
-        "团队管理",
-        "管理",
-        "管理者",
-        "manager",
-        "management",
-        "culture",
-        "hire",
-        "hiring",
-        "talent",
-        "org design",
-        "组织协同",
-        "组织设计",
-        "人才密度",
-    ),
-    "career_learning": (
-        "学习",
-        "learning",
-        "职业",
-        "career",
-        "education",
-        "成长",
-        "学习方法",
-    ),
-    "negotiation_persuasion": (
-        "谈判",
-        "negotiation",
-        "说服",
-        "说服力",
-        "persuasion",
-        "convince",
-        "pitch",
-        "objection",
-        "objection handling",
-        "narrative",
-        "framing",
-        "influence",
-        "激励结构",
-        "incentive",
-        "incentive alignment",
-        "attention arbitrage",
-        "注意力套利",
-    ),
-}
-_QUERY_DOCUMENT_SUBINTENT_SYNONYMS: dict[str, dict[str, int]] = {
-    "office_document": {
-        "word": 4,
-        "word document": 5,
-        "word文档": 5,
-        "docx": 5,
-        ".docx": 5,
-        "doc": 3,
-        ".doc": 4,
-        "office document": 5,
-    },
-    "documentation": {
-        "docs": 4,
-        "documentation": 5,
-        "spec": 4,
-        "design doc": 5,
-        "decision doc": 5,
-        "rfc": 4,
-        "prd": 4,
-        "proposal": 4,
-        "技术文档": 5,
-        "方案": 3,
-    },
-}
-_QUERY_SECONDARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "first_principles": ("第一性原理", "first principles"),
-    "cost_structure": ("成本结构", "cost structure", "idiot index", "白痴指数"),
-    "inversion": ("逆向思考", "inversion"),
-    "specific_knowledge": ("特定知识", "specific knowledge"),
-    "creator_growth": ("creator growth", "内容增长", "retention", "thumbnail", "hook", "ctr"),
-    "organizational_design": ("组织设计", "organizational design", "组织效率"),
-    "attention_arbitrage": ("attention arbitrage", "注意力套利", "注意力经济"),
-    "cognitive_bias": ("认知偏误", "bias", "biases", "lollapalooza"),
-    "leverage": ("杠杆", "leverage"),
-    "talent_density": ("人才密度", "talent density"),
-}
-_SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {
-    "first_principles": ("decision_quality", "product_strategy"),
-    "cost_structure": ("product_strategy", "wealth_money"),
-    "inversion": ("decision_quality",),
-    "specific_knowledge": ("wealth_money", "career_learning"),
-    "creator_growth": ("content_media", "startup_growth"),
-    "organizational_design": ("organization_leadership",),
-    "attention_arbitrage": ("content_media", "wealth_money"),
-    "cognitive_bias": ("decision_quality",),
-    "leverage": ("wealth_money", "startup_growth"),
-    "talent_density": ("organization_leadership",),
-}
 _THEME_HEAVY_CLASSES = {"advisor_or_perspective", "methodology_or_tutorial", "skill_authoring"}
 _THEME_FALLBACK_TARGETS = {"organization_leadership", "startup_growth", "negotiation_persuasion"}
-_META_ADVISORY_HINTS: tuple[str, ...] = (
-    "模糊需求",
-    "思维顾问",
-    "diagnostic recommendation",
-    "perspective recommendation",
-    "诊断推荐",
-    "生成人物skill",
-    "人物skill",
-    "造skill",
-    "造人",
-)
-_FAMILY_ADVISORY_HINTS: tuple[str, ...] = (
-    "advisor",
-    "advisory",
-    "perspective",
-    "framework",
-    "guide",
-    "tutorial",
-    "strategy",
-    "methodology",
-    "analysis",
-    "analyst",
-    "playbook",
-    "coauthor",
-    "collaboration",
-    "knowledge",
-    "knowledge base",
-    "knowledge-base",
-    "wiki",
-    "decision",
-    "negotiation",
-    "说服",
-    "顾问",
-    "视角",
-    "框架",
-    "方法论",
-    "策略",
-    "协作",
-    "知识库",
-    "知识协作",
-)
-_INTEGRATION_OR_TOOLING_HINTS: tuple[str, ...] = (
-    "api",
-    "connector",
-    "bridge",
-    "channel",
-    "channels",
-    "integration",
-    "tooling",
-    "query",
-    "lookup",
-    "search",
-    "fetch",
-    "retrieve",
-    "sync",
-    "upload",
-    "download",
-    "send",
-    "plugin",
-    "gateway",
-    "mcp",
-    "插件",
-    "桥接",
-    "渠道",
-    "查询",
-    "检索",
-    "搜索",
-    "同步",
-)
-_SKILL_DOCUMENT_SUBINTENT_SYNONYMS: dict[str, dict[str, int]] = {
-    "office_document": {
-        "docx": 5,
-        ".docx": 5,
-        "word": 4,
-        "word document": 5,
-        "professional documents": 4,
-        "tracked changes": 4,
-        "comments": 2,
-    },
-    "documentation": {
-        "documentation": 5,
-        "docs": 4,
-        "proposal": 4,
-        "spec": 4,
-        "design doc": 5,
-        "decision doc": 5,
-        "rfc": 4,
-        "prd": 4,
-        "internal communication": 4,
-        "status report": 4,
-        "project update": 4,
-        "leadership update": 4,
-        "faq": 3,
-        "cloud docs": 3,
-    },
-}
+_QUERY_ANALYSIS_CACHE_LIMIT = 512
+_QUERY_ANALYSIS_CACHE: dict[str, tuple[tuple[str, ...], dict[str, Any]]] = {}
+_EXTENSION_LEXICON_REGISTRY = get_extension_lexicon_registry()
+_EXTENSION_LEXICON_SIGNATURE = "lexicon:uninitialized"
+_EXTENSION_LEXICON_CORE_SIGNATURE = "lexicon-core:uninitialized"
+_EXTENSION_LEXICON_LOCALES: tuple[str, ...] = ()
+_EXTENSION_LEXICON_LOAD_ERRORS: tuple[str, ...] = ()
+_MARKET_LEXICON_SIGNATURE = "lexicon-market:uninitialized"
+_MARKET_LEXICON_ENABLED = False
+_MARKET_LEXICON_LOCALES: tuple[str, ...] = ()
+_MARKET_LEXICON_LOAD_ERRORS: tuple[str, ...] = ()
+_PLUGIN_HOST_QUERY_HINTS: tuple[str, ...] = ()
+_CROSS_RUNTIME_ESCAPE_TOKENS: tuple[str, ...] = ()
+_EXTENSION_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_EXTENSION_QUERY_SYNONYMS_EXACT: dict[str, tuple[str, ...]] = {}
+_EXTENSION_QUERY_SYNONYMS_PHRASE: dict[str, tuple[str, ...]] = {}
+_QUERY_ARTIFACT_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_QUERY_OPERATION_INTENT_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_QUERY_SECONDARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {}
+_QUERY_DOCUMENT_SUBINTENT_SYNONYMS: dict[str, dict[str, int]] = {}
+_META_ADVISORY_HINTS: tuple[str, ...] = ()
+_FAMILY_ADVISORY_HINTS: tuple[str, ...] = ()
+_INTEGRATION_OR_TOOLING_HINTS: tuple[str, ...] = ()
+_SKILL_DOCUMENT_SUBINTENT_SYNONYMS: dict[str, dict[str, int]] = {}
+_MARKET_QUERY_SYNONYMS_EXACT: dict[str, tuple[str, ...]] = {}
+_MARKET_QUERY_SYNONYMS_PHRASE: dict[str, tuple[str, ...]] = {}
+_MARKET_QUERY_PRIMARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_MARKET_QUERY_SECONDARY_THEME_SYNONYMS: dict[str, tuple[str, ...]] = {}
+_MARKET_SECONDARY_THEME_PRIMARY_MAP: dict[str, tuple[str, ...]] = {}
+_CANONICAL_FAMILIES: dict[str, tuple[str, ...]] = {}
+_CANONICAL_FAMILY_PARENTS: dict[str, tuple[str, ...]] = {}
+_SKILL_CANONICAL_FAMILY_CACHE_LIMIT = 1024
+_SKILL_CANONICAL_FAMILY_CACHE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+_INVENTORY_FRESHNESS_PREVIEW = "preview_best_effort"
+_INVENTORY_FRESHNESS_GUARDED = "agent_launch_guarded"
 _PROFILE_INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="v8-ext-profile",
@@ -505,15 +134,153 @@ _ARTIFACT_MISMATCH_GROUPS: dict[str, set[str]] = {
     "audio": {"presentation", "spreadsheet", "document", "skill"},
     "skill": {"presentation", "video", "image", "document", "pdf", "spreadsheet", "audio", "code"},
 }
-_ARTIFACT_PROFILE_ANCHORS: dict[str, set[str]] = {
-    "presentation": {"ppt", "pptx", ".ppt", ".pptx", "powerpoint"},
-    "document": {"doc", "docx", ".doc", ".docx", "word"},
-    "pdf": {"pdf", ".pdf"},
-    "spreadsheet": {"xls", "xlsx", "csv", ".xls", ".xlsx", ".csv", "excel"},
-    "video": {"video", "videos"},
-    "image": {"image", "images", "poster", "illustration"},
-    "audio": {"audio", "voice", "speech", "podcast"},
-}
+_ARTIFACT_PROFILE_ANCHORS: dict[str, set[str]] = {}
+
+
+def _clear_query_analysis_cache() -> None:
+    _QUERY_ANALYSIS_CACHE.clear()
+    _SKILL_CANONICAL_FAMILY_CACHE.clear()
+
+
+def _apply_extension_lexicon_state(state: dict[str, Any]) -> None:
+    global _EXTENSION_LEXICON_SIGNATURE
+    global _EXTENSION_LEXICON_CORE_SIGNATURE
+    global _EXTENSION_LEXICON_LOCALES
+    global _EXTENSION_LEXICON_LOAD_ERRORS
+    global _MARKET_LEXICON_SIGNATURE
+    global _MARKET_LEXICON_ENABLED
+    global _MARKET_LEXICON_LOCALES
+    global _MARKET_LEXICON_LOAD_ERRORS
+    global _PLUGIN_HOST_QUERY_HINTS
+    global _CROSS_RUNTIME_ESCAPE_TOKENS
+    global _EXTENSION_QUERY_SYNONYMS
+    global _EXTENSION_QUERY_SYNONYMS_EXACT
+    global _EXTENSION_QUERY_SYNONYMS_PHRASE
+    global _QUERY_ARTIFACT_INTENT_SYNONYMS
+    global _QUERY_OPERATION_INTENT_SYNONYMS
+    global _QUERY_PRIMARY_THEME_SYNONYMS
+    global _QUERY_SECONDARY_THEME_SYNONYMS
+    global _SECONDARY_THEME_PRIMARY_MAP
+    global _QUERY_DOCUMENT_SUBINTENT_SYNONYMS
+    global _META_ADVISORY_HINTS
+    global _FAMILY_ADVISORY_HINTS
+    global _INTEGRATION_OR_TOOLING_HINTS
+    global _SKILL_DOCUMENT_SUBINTENT_SYNONYMS
+    global _ARTIFACT_PROFILE_ANCHORS
+    global _MARKET_QUERY_SYNONYMS_EXACT
+    global _MARKET_QUERY_SYNONYMS_PHRASE
+    global _MARKET_QUERY_PRIMARY_THEME_SYNONYMS
+    global _MARKET_QUERY_SECONDARY_THEME_SYNONYMS
+    global _MARKET_SECONDARY_THEME_PRIMARY_MAP
+    global _CANONICAL_FAMILIES
+    global _CANONICAL_FAMILY_PARENTS
+
+    _EXTENSION_LEXICON_SIGNATURE = str(state.get("signature") or "lexicon:empty").strip() or "lexicon:empty"
+    _EXTENSION_LEXICON_CORE_SIGNATURE = (
+        str(state.get("coreSignature") or _EXTENSION_LEXICON_SIGNATURE).strip() or _EXTENSION_LEXICON_SIGNATURE
+    )
+    _EXTENSION_LEXICON_LOCALES = tuple(str(item).strip() for item in list(state.get("locales") or []) if str(item).strip())
+    _EXTENSION_LEXICON_LOAD_ERRORS = tuple(
+        str(item).strip() for item in list(state.get("loadErrors") or []) if str(item).strip()
+    )
+    _MARKET_LEXICON_SIGNATURE = str(state.get("marketSignature") or "lexicon-market:empty").strip() or "lexicon-market:empty"
+    _MARKET_LEXICON_ENABLED = bool(state.get("marketEnabled"))
+    _MARKET_LEXICON_LOCALES = tuple(
+        str(item).strip() for item in list(state.get("marketLocales") or []) if str(item).strip()
+    )
+    _MARKET_LEXICON_LOAD_ERRORS = tuple(
+        str(item).strip() for item in list(state.get("marketLoadErrors") or []) if str(item).strip()
+    )
+    _PLUGIN_HOST_QUERY_HINTS = tuple(state.get("pluginHostQueryHints") or ())
+    _CROSS_RUNTIME_ESCAPE_TOKENS = tuple(state.get("crossRuntimeEscapeTokens") or ())
+    _EXTENSION_QUERY_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(state.get("querySynonyms") or {}).items()
+    }
+    _EXTENSION_QUERY_SYNONYMS_EXACT = {
+        key: tuple(values)
+        for key, values in dict(state.get("querySynonymsExact") or {}).items()
+    }
+    _EXTENSION_QUERY_SYNONYMS_PHRASE = {
+        key: tuple(values)
+        for key, values in dict(state.get("querySynonymsPhrase") or {}).items()
+    }
+    _QUERY_ARTIFACT_INTENT_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(state.get("artifactIntentSynonyms") or {}).items()
+    }
+    _QUERY_OPERATION_INTENT_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(state.get("operationIntentSynonyms") or {}).items()
+    }
+    _QUERY_PRIMARY_THEME_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(state.get("primaryThemeSynonyms") or {}).items()
+    }
+    _QUERY_SECONDARY_THEME_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(state.get("secondaryThemeSynonyms") or {}).items()
+    }
+    _SECONDARY_THEME_PRIMARY_MAP = {
+        key: tuple(values)
+        for key, values in dict(state.get("secondaryThemePrimaryMap") or {}).items()
+    }
+    _QUERY_DOCUMENT_SUBINTENT_SYNONYMS = {
+        key: {name: int(weight) for name, weight in dict(values).items()}
+        for key, values in dict(state.get("documentSubIntentSynonyms") or {}).items()
+    }
+    _META_ADVISORY_HINTS = tuple(state.get("metaAdvisoryHints") or ())
+    _FAMILY_ADVISORY_HINTS = tuple(state.get("familyAdvisoryHints") or ())
+    _INTEGRATION_OR_TOOLING_HINTS = tuple(state.get("integrationOrToolingHints") or ())
+    _SKILL_DOCUMENT_SUBINTENT_SYNONYMS = {
+        key: {name: int(weight) for name, weight in dict(values).items()}
+        for key, values in dict(state.get("skillDocumentSubIntentSynonyms") or {}).items()
+    }
+    _ARTIFACT_PROFILE_ANCHORS = {
+        key: set(values)
+        for key, values in dict(state.get("artifactProfileAnchors") or {}).items()
+    }
+    market_state = dict(state.get("market") or {})
+    _MARKET_QUERY_SYNONYMS_EXACT = {
+        key: tuple(values)
+        for key, values in dict(market_state.get("querySynonymsExact") or {}).items()
+    }
+    _MARKET_QUERY_SYNONYMS_PHRASE = {
+        key: tuple(values)
+        for key, values in dict(market_state.get("querySynonymsPhrase") or {}).items()
+    }
+    _MARKET_QUERY_PRIMARY_THEME_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(market_state.get("primaryThemeSynonyms") or {}).items()
+    }
+    _MARKET_QUERY_SECONDARY_THEME_SYNONYMS = {
+        key: tuple(values)
+        for key, values in dict(market_state.get("secondaryThemeSynonyms") or {}).items()
+    }
+    _MARKET_SECONDARY_THEME_PRIMARY_MAP = {
+        key: tuple(values)
+        for key, values in dict(market_state.get("secondaryThemePrimaryMap") or {}).items()
+    }
+    _CANONICAL_FAMILIES = {
+        key: tuple(values)
+        for key, values in dict(state.get("canonicalFamilies") or {}).items()
+    }
+    _CANONICAL_FAMILY_PARENTS = {
+        key: tuple(values)
+        for key, values in dict(state.get("canonicalFamilyParents") or {}).items()
+    }
+
+
+def _ensure_extension_lexicon_state() -> dict[str, Any]:
+    state = _EXTENSION_LEXICON_REGISTRY.ensure_fresh()
+    signature = str(state.get("signature") or "lexicon:empty").strip() or "lexicon:empty"
+    if signature != _EXTENSION_LEXICON_SIGNATURE:
+        _apply_extension_lexicon_state(state)
+        _clear_query_analysis_cache()
+    return state
+
+
+_ensure_extension_lexicon_state()
 
 
 @dataclass(slots=True)
@@ -602,15 +369,282 @@ def _expand_query_token_variants(query_tokens: list[str]) -> list[str]:
     return _unique_preserve_order(expanded)
 
 
+def _expand_query_tokens_with_synonyms(
+    *,
+    query_text: str,
+    base_tokens: list[str],
+    exact_map: dict[str, tuple[str, ...]],
+    phrase_map: dict[str, tuple[str, ...]],
+) -> tuple[list[str], list[str]]:
+    matched_terms: list[str] = []
+    expanded: list[str] = list(base_tokens)
+    for token in list(base_tokens):
+        synonyms = exact_map.get(token, ())
+        if not synonyms:
+            continue
+        matched_terms.append(token)
+        expanded.extend(synonyms)
+    for hint, synonyms in phrase_map.items():
+        if hint not in query_text:
+            continue
+        matched_terms.append(hint)
+        expanded.extend(synonyms)
+    return _unique_preserve_order(expanded), _unique_preserve_order(matched_terms)
+
+
+def _collect_market_query_enrichment(
+    *,
+    query_text: str,
+    query_tokens: list[str],
+) -> dict[str, Any]:
+    if not _MARKET_LEXICON_ENABLED:
+        return {
+            "matchedTerms": [],
+            "expandedTokens": [],
+            "primaryThemeHints": [],
+            "secondaryThemeHints": [],
+            "contributionScore": 0,
+        }
+    expanded_tokens, matched_terms = _expand_query_tokens_with_synonyms(
+        query_text=query_text,
+        base_tokens=query_tokens,
+        exact_map=_MARKET_QUERY_SYNONYMS_EXACT,
+        phrase_map=_MARKET_QUERY_SYNONYMS_PHRASE,
+    )
+    added_tokens = [token for token in expanded_tokens if token not in query_tokens]
+    primary_theme_hints = [
+        key
+        for key, synonyms in _MARKET_QUERY_PRIMARY_THEME_SYNONYMS.items()
+        if any(_query_matches_synonym(query_text, query_tokens, str(synonym)) for synonym in synonyms)
+    ]
+    secondary_theme_hints = [
+        key
+        for key, synonyms in _MARKET_QUERY_SECONDARY_THEME_SYNONYMS.items()
+        if any(_query_matches_synonym(query_text, query_tokens, str(synonym)) for synonym in synonyms)
+    ]
+    for tag in list(secondary_theme_hints):
+        for implied_theme in _MARKET_SECONDARY_THEME_PRIMARY_MAP.get(tag, ()):
+            if implied_theme not in primary_theme_hints:
+                primary_theme_hints.append(implied_theme)
+    contribution_score = (2 * len(matched_terms)) + len(added_tokens) + len(primary_theme_hints)
+    return {
+        "matchedTerms": matched_terms,
+        "expandedTokens": added_tokens,
+        "primaryThemeHints": _unique_preserve_order(primary_theme_hints),
+        "secondaryThemeHints": _unique_preserve_order(secondary_theme_hints),
+        "contributionScore": int(contribution_score),
+    }
+
+
+def _canonical_family_depth(family: str, _seen: set[str] | None = None) -> int:
+    normalized_family = _normalize_text_for_match(family)
+    if not normalized_family:
+        return 0
+    seen = set(_seen or set())
+    if normalized_family in seen:
+        return 0
+    seen.add(normalized_family)
+    parents = _CANONICAL_FAMILY_PARENTS.get(normalized_family, ())
+    if not parents:
+        return 1
+    return 1 + max(_canonical_family_depth(parent, seen) for parent in parents)
+
+
+def _sort_canonical_families(families: Iterable[str]) -> list[str]:
+    ranked = {
+        _normalize_text_for_match(family)
+        for family in families
+        if _normalize_text_for_match(family)
+    }
+    return sorted(ranked, key=lambda item: (-_canonical_family_depth(item), item))
+
+
+def _expand_canonical_families(families: Iterable[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _visit(family: str) -> None:
+        normalized_family = _normalize_text_for_match(family)
+        if not normalized_family or normalized_family in seen:
+            return
+        seen.add(normalized_family)
+        ordered.append(normalized_family)
+        for parent in _CANONICAL_FAMILY_PARENTS.get(normalized_family, ()):
+            _visit(parent)
+
+    for family in _sort_canonical_families(families):
+        _visit(family)
+    return ordered
+
+
+def _detect_query_canonical_families(query_text: str, query_tokens: list[str]) -> tuple[list[str], list[str]]:
+    direct_matches = [
+        family
+        for family, synonyms in _CANONICAL_FAMILIES.items()
+        if any(_query_matches_synonym(query_text, query_tokens, str(synonym)) for synonym in synonyms)
+    ]
+    ordered_direct = _sort_canonical_families(direct_matches)
+    return ordered_direct, _expand_canonical_families(ordered_direct)
+
+
+def _skill_canonical_families(skill: dict[str, Any]) -> tuple[list[str], list[str]]:
+    skill_id = str(skill.get("skillId") or skill.get("skillRoot") or skill.get("skillName") or skill.get("name") or skill.get("folder") or "").strip()
+    text_corpus = _skill_text_corpus(skill)
+    text_fingerprint = hashlib.sha1(text_corpus.encode("utf-8")).hexdigest()
+    cache_key = f"{_EXTENSION_LEXICON_SIGNATURE}|{skill_id}|{text_fingerprint}"
+    cached = _SKILL_CANONICAL_FAMILY_CACHE.get(cache_key)
+    if cached is not None:
+        direct_families, expanded_families = cached
+        return list(direct_families), list(expanded_families)
+
+    direct_matches = [
+        family
+        for family, synonyms in _CANONICAL_FAMILIES.items()
+        if any(_text_matches_phrase(text_corpus, str(synonym)) for synonym in synonyms)
+    ]
+    ordered_direct = _sort_canonical_families(direct_matches)
+    expanded_families = _expand_canonical_families(ordered_direct)
+    _SKILL_CANONICAL_FAMILY_CACHE[cache_key] = (tuple(ordered_direct), tuple(expanded_families))
+    if len(_SKILL_CANONICAL_FAMILY_CACHE) > _SKILL_CANONICAL_FAMILY_CACHE_LIMIT:
+        oldest_key = next(iter(_SKILL_CANONICAL_FAMILY_CACHE))
+        _SKILL_CANONICAL_FAMILY_CACHE.pop(oldest_key, None)
+    return ordered_direct, expanded_families
+
+
+def _skill_matches_query_canonical_family(skill: dict[str, Any], query_profile: dict[str, Any]) -> bool:
+    query_families = set(_normalize_profile_items(query_profile.get("canonicalFamilies")))
+    if not query_families:
+        return False
+    _direct_skill_families, skill_families = _skill_canonical_families(skill)
+    return bool(query_families.intersection(set(skill_families)))
+
+
+def _skill_query_canonical_family_match(skill: dict[str, Any], query_profile: dict[str, Any]) -> dict[str, Any]:
+    query_direct = set(_normalize_profile_items(query_profile.get("directCanonicalFamilies")))
+    query_expanded = set(_normalize_profile_items(query_profile.get("canonicalFamilies")))
+    if not query_expanded:
+        return {
+            "matched": False,
+            "matchedFamilies": [],
+            "directMatchedFamilies": [],
+            "exactDirectMatchedFamilies": [],
+            "bestFamily": None,
+            "bestDepth": 0,
+        }
+    skill_direct_families, skill_expanded_families = _skill_canonical_families(skill)
+    skill_direct = set(skill_direct_families)
+    skill_expanded = set(skill_expanded_families)
+    exact_direct_overlap = _sort_canonical_families(query_direct.intersection(skill_direct))
+    direct_overlap = _sort_canonical_families(query_direct.intersection(skill_expanded))
+    expanded_overlap = _sort_canonical_families(query_expanded.intersection(skill_expanded))
+    best_family = (
+        exact_direct_overlap[0]
+        if exact_direct_overlap
+        else direct_overlap[0]
+        if direct_overlap
+        else expanded_overlap[0]
+        if expanded_overlap
+        else None
+    )
+    return {
+        "matched": bool(expanded_overlap),
+        "matchedFamilies": expanded_overlap,
+        "directMatchedFamilies": direct_overlap,
+        "exactDirectMatchedFamilies": exact_direct_overlap,
+        "bestFamily": best_family,
+        "bestDepth": _canonical_family_depth(best_family) if best_family else 0,
+    }
+
+
 def _query_tokens_for_extensions(text: str) -> list[str]:
-    expanded = _expand_query_token_variants(_tokenize(text))
+    _ensure_extension_lexicon_state()
+    base_tokens = _expand_query_token_variants(_tokenize(text))
     query_text = str(text or "").strip().lower()
-    for token in list(expanded):
-        expanded.extend(_EXTENSION_QUERY_SYNONYMS.get(token, ()))
-    for hint, synonyms in _EXTENSION_QUERY_SYNONYMS.items():
-        if hint in query_text:
-            expanded.extend(synonyms)
-    return _unique_preserve_order(expanded)
+    core_tokens, _matched_terms = _expand_query_tokens_with_synonyms(
+        query_text=query_text,
+        base_tokens=base_tokens,
+        exact_map=_EXTENSION_QUERY_SYNONYMS_EXACT,
+        phrase_map=_EXTENSION_QUERY_SYNONYMS_PHRASE,
+    )
+    market_enrichment = _collect_market_query_enrichment(
+        query_text=query_text,
+        query_tokens=core_tokens,
+    )
+    return _unique_preserve_order([*core_tokens, *list(market_enrichment.get("expandedTokens") or [])])
+
+
+def _clone_query_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "artifactIntent": profile.get("artifactIntent"),
+        "artifactIntents": list(profile.get("artifactIntents") or []),
+        "directCanonicalFamilies": list(profile.get("directCanonicalFamilies") or []),
+        "canonicalFamilies": list(profile.get("canonicalFamilies") or []),
+        "primaryCanonicalFamily": profile.get("primaryCanonicalFamily"),
+        "shortCanonicalNarrowing": bool(profile.get("shortCanonicalNarrowing")),
+        "documentSubIntent": profile.get("documentSubIntent"),
+        "operationIntent": profile.get("operationIntent"),
+        "operationIntents": list(profile.get("operationIntents") or []),
+        "primaryThemeIntents": list(profile.get("primaryThemeIntents") or []),
+        "secondaryThemeHints": list(profile.get("secondaryThemeHints") or []),
+        "marketPrimaryThemeHints": list(profile.get("marketPrimaryThemeHints") or []),
+        "marketSecondaryThemeHints": list(profile.get("marketSecondaryThemeHints") or []),
+        "marketLexiconHitTerms": list(profile.get("marketLexiconHitTerms") or []),
+        "marketLexiconContributionScore": int(profile.get("marketLexiconContributionScore") or 0),
+        "topicTokens": list(profile.get("topicTokens") or []),
+    }
+
+
+def _analyze_extensions_query(text: str) -> tuple[list[str], dict[str, Any], bool, dict[str, Any], dict[str, Any]]:
+    lexicon_state = _ensure_extension_lexicon_state()
+    normalized_query = " ".join(str(text or "").strip().lower().split())
+    cache_key = f"{_EXTENSION_LEXICON_SIGNATURE}|{normalized_query}"
+    cached = _QUERY_ANALYSIS_CACHE.get(cache_key)
+    if cached is not None:
+        cached_tokens, cached_profile = cached
+        cloned_profile = _clone_query_profile(cached_profile)
+        market_state = {
+            "matchedTerms": list(cloned_profile.get("marketLexiconHitTerms") or []),
+            "expandedTokens": [],
+            "primaryThemeHints": list(cloned_profile.get("marketPrimaryThemeHints") or []),
+            "secondaryThemeHints": list(cloned_profile.get("marketSecondaryThemeHints") or []),
+            "contributionScore": int(cloned_profile.get("marketLexiconContributionScore") or 0),
+        }
+        return list(cached_tokens), cloned_profile, True, lexicon_state, market_state
+
+    raw_query_text = str(text or "")
+    normalized_lower = raw_query_text.strip().lower()
+    base_tokens = _expand_query_token_variants(_tokenize(raw_query_text))
+    core_tokens, _core_hit_terms = _expand_query_tokens_with_synonyms(
+        query_text=normalized_lower,
+        base_tokens=base_tokens,
+        exact_map=_EXTENSION_QUERY_SYNONYMS_EXACT,
+        phrase_map=_EXTENSION_QUERY_SYNONYMS_PHRASE,
+    )
+    market_enrichment = _collect_market_query_enrichment(
+        query_text=normalized_lower,
+        query_tokens=core_tokens,
+    )
+    query_tokens = _unique_preserve_order([*core_tokens, *list(market_enrichment.get("expandedTokens") or [])])
+    query_profile = _detect_query_intents(raw_query_text, core_tokens)
+    direct_canonical_families, canonical_families = _detect_query_canonical_families(raw_query_text, core_tokens)
+    query_profile["directCanonicalFamilies"] = direct_canonical_families
+    query_profile["canonicalFamilies"] = canonical_families
+    query_profile["primaryCanonicalFamily"] = direct_canonical_families[0] if direct_canonical_families else None
+    query_profile["shortCanonicalNarrowing"] = bool(
+        direct_canonical_families
+        and not query_profile.get("artifactIntents")
+        and not query_profile.get("operationIntents")
+        and len(_tokenize(raw_query_text)) <= 1
+    )
+    query_profile["marketPrimaryThemeHints"] = list(market_enrichment.get("primaryThemeHints") or [])
+    query_profile["marketSecondaryThemeHints"] = list(market_enrichment.get("secondaryThemeHints") or [])
+    query_profile["marketLexiconHitTerms"] = list(market_enrichment.get("matchedTerms") or [])
+    query_profile["marketLexiconContributionScore"] = int(market_enrichment.get("contributionScore") or 0)
+    _QUERY_ANALYSIS_CACHE[cache_key] = (tuple(query_tokens), _clone_query_profile(query_profile))
+    if len(_QUERY_ANALYSIS_CACHE) > _QUERY_ANALYSIS_CACHE_LIMIT:
+        oldest_key = next(iter(_QUERY_ANALYSIS_CACHE))
+        _QUERY_ANALYSIS_CACHE.pop(oldest_key, None)
+    return query_tokens, query_profile, False, lexicon_state, market_enrichment
 
 
 def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
@@ -638,12 +672,12 @@ def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
     office_document_score = _weighted_query_hit_score(
         lowered,
         query_tokens,
-        _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["office_document"],
+        _QUERY_DOCUMENT_SUBINTENT_SYNONYMS.get("office_document", {}),
     )
     documentation_score = _weighted_query_hit_score(
         lowered,
         query_tokens,
-        _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["documentation"],
+        _QUERY_DOCUMENT_SUBINTENT_SYNONYMS.get("documentation", {}),
     )
     document_sub_intent: str | None = None
     if office_document_score > documentation_score and office_document_score > 0:
@@ -684,6 +718,10 @@ def _detect_query_intents(text: str, query_tokens: list[str]) -> dict[str, Any]:
     return {
         "artifactIntent": artifact_intents[0] if artifact_intents else None,
         "artifactIntents": artifact_intents,
+        "directCanonicalFamilies": [],
+        "canonicalFamilies": [],
+        "primaryCanonicalFamily": None,
+        "shortCanonicalNarrowing": False,
         "documentSubIntent": document_sub_intent,
         "operationIntent": operation_intents[0] if operation_intents else None,
         "operationIntents": operation_intents,
@@ -775,8 +813,8 @@ def _skill_text_corpus(skill: dict[str, Any]) -> str:
 
 def _detect_skill_document_subintent(skill: dict[str, Any]) -> str | None:
     text = _skill_text_corpus(skill)
-    office_score = _weighted_text_hit_score(text, _SKILL_DOCUMENT_SUBINTENT_SYNONYMS["office_document"])
-    documentation_score = _weighted_text_hit_score(text, _SKILL_DOCUMENT_SUBINTENT_SYNONYMS["documentation"])
+    office_score = _weighted_text_hit_score(text, _SKILL_DOCUMENT_SUBINTENT_SYNONYMS.get("office_document", {}))
+    documentation_score = _weighted_text_hit_score(text, _SKILL_DOCUMENT_SUBINTENT_SYNONYMS.get("documentation", {}))
     if office_score > documentation_score and office_score > 0:
         return "office_document"
     if documentation_score > office_score and documentation_score > 0:
@@ -930,6 +968,9 @@ def _score_skill_entry(
     operation_intents = _normalize_profile_items(query_profile.get("operationIntents"))
     primary_theme_intents = _normalize_profile_items(query_profile.get("primaryThemeIntents"))
     secondary_theme_hints = _normalize_profile_items(query_profile.get("secondaryThemeHints"))
+    market_primary_theme_hints = _normalize_profile_items(query_profile.get("marketPrimaryThemeHints"))
+    market_secondary_theme_hints = _normalize_profile_items(query_profile.get("marketSecondaryThemeHints"))
+    canonical_family_match = _skill_query_canonical_family_match(skill, query_profile)
     topic_tokens = list(query_profile.get("topicTokens") or [])
     document_sub_intent = str(query_profile.get("documentSubIntent") or "").strip().lower() or None
     no_artifact_anchor = not artifact_intents
@@ -966,6 +1007,25 @@ def _score_skill_entry(
     if skill_authoring_query and skill_authoring_candidate:
         score += 30
         has_query_signal = True
+    if canonical_family_match["matched"]:
+        matched_families = list(canonical_family_match.get("matchedFamilies") or [])
+        direct_matches = list(canonical_family_match.get("directMatchedFamilies") or [])
+        exact_direct_matches = list(canonical_family_match.get("exactDirectMatchedFamilies") or [])
+        family_bonus = 12 + min(int(canonical_family_match.get("bestDepth") or 0) * 4, 12)
+        family_bonus += min(len(matched_families), 2) * 2
+        if direct_matches:
+            family_bonus += 10
+        if exact_direct_matches:
+            family_bonus += 8
+        score += family_bonus
+        has_query_signal = True
+        if str(skill.get("sourceType") or "").strip() == "scoped_workspace":
+            scoped_family_boost = 12
+            if direct_matches:
+                scoped_family_boost += 6
+            if exact_direct_matches:
+                scoped_family_boost += 6
+            score += scoped_family_boost
     if "document" in artifact_intents and document_sub_intent:
         skill_document_sub_intent = _detect_skill_document_subintent(skill)
         if skill_document_sub_intent == document_sub_intent:
@@ -1029,6 +1089,15 @@ def _score_skill_entry(
         if matched_secondary_tags:
             has_query_signal = True
             score += 3 + len(matched_secondary_tags)
+
+    if score > 0 and market_primary_theme_hints:
+        weak_market_primary_matches = [item for item in market_primary_theme_hints if item in primary_themes or item in implied_primary_themes]
+        if weak_market_primary_matches:
+            score += 2 + min(len(weak_market_primary_matches), 2)
+    if score > 0 and market_secondary_theme_hints:
+        weak_market_secondary_matches = [item for item in market_secondary_theme_hints if item in secondary_theme_tags]
+        if weak_market_secondary_matches:
+            score += 1 + min(len(weak_market_secondary_matches), 2)
 
     if topic_tokens:
         topic_score = _score_text(
@@ -1188,8 +1257,8 @@ def _select_profile_keys(
 
 
 def _detect_text_document_subintent_hints(text: str) -> list[str]:
-    office_score = _weighted_text_hit_score(text, _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["office_document"])
-    documentation_score = _weighted_text_hit_score(text, _QUERY_DOCUMENT_SUBINTENT_SYNONYMS["documentation"])
+    office_score = _weighted_text_hit_score(text, _QUERY_DOCUMENT_SUBINTENT_SYNONYMS.get("office_document", {}))
+    documentation_score = _weighted_text_hit_score(text, _QUERY_DOCUMENT_SUBINTENT_SYNONYMS.get("documentation", {}))
     hints: list[str] = []
     if office_score > 0 and office_score >= documentation_score:
         hints.append("office_document")
@@ -1625,6 +1694,7 @@ def _build_skill_rerank_document(skill: dict[str, Any]) -> str:
 
 
 def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
+    direct_canonical_families, canonical_families = _skill_canonical_families(skill)
     return {
         "skillId": str(skill.get("skillId") or "").strip(),
         "skillName": str(skill.get("skillName") or skill.get("name") or skill.get("folder") or "").strip(),
@@ -1651,6 +1721,8 @@ def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
         "triggers": [str(item).strip() for item in list(skill.get("triggers") or []) if str(item).strip()],
         "keywords": [str(item).strip() for item in list(skill.get("keywords") or []) if str(item).strip()],
         "tags": [str(item).strip() for item in list(skill.get("tags") or []) if str(item).strip()],
+        "directCanonicalFamilies": direct_canonical_families,
+        "canonicalFamilies": canonical_families,
         "capabilityProfile": dict(skill.get("capabilityProfile") or {}),
         "themeProfile": dict(skill.get("themeProfile") or {}),
     }
@@ -1968,39 +2040,139 @@ class ExtensionsRuntimeService:
             or skill_status.get("rootSignature")
             or "roots:cold"
         )
+        visible_root_revision_key = str(
+            (skill_inventory or {}).get("visibleRootRevisionKey")
+            or skill_status.get("visibleRootRevisionKey")
+            or visible_root_signature
+        )
         mcp_revision = str(
             mcp_status.get("inventoryRevision")
             or getattr(mcp_manager, "get_inventory_revision", lambda: "mcp:cold")()
             or "mcp:cold"
         )
-        return f"skills:{skill_revision}|roots:{visible_root_signature}|mcp:{mcp_revision}"
+        return (
+            f"skills:{skill_revision}|roots:{visible_root_signature}"
+            f"|visible:{visible_root_revision_key}|mcp:{mcp_revision}"
+        )
 
-    def _ensure_inventory_freshness_guard(self, *, reason: str = "route") -> None:
-        if self._startup_state == "cold" and self._cached_catalog is None:
-            return
-        now = time.monotonic()
-        if (now - self._last_inventory_guard_at) < 2.0:
-            return
-        self._last_inventory_guard_at = now
-        try:
-            skill_change = SkillLoader.reload_if_changed()
-            if skill_change.get("changed"):
-                self._last_skill_inventory_change = {
-                    **skill_change,
-                    "changedAt": self._now_iso(),
-                    "reason": reason,
-                }
-                self._cached_catalog = None
-                self._cached_health = None
-        except Exception as exc:
-            self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
-            print(f"[ExtensionsRuntime] Skills freshness guard failed: {type(exc).__name__}: {exc}")
-        loop = self._loop
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self._refresh_mcp_inventory_if_changed(reason=reason),
-                loop,
-            )
+    def _resolve_visible_skill_descriptors(
+        self,
+        *,
+        include_scoped: bool,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+        runtime_kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return SkillLoader.resolve_root_descriptors(
+            include_scoped=include_scoped,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+            runtime_kind=runtime_kind,
+        )
+
+    def _apply_inventory_freshness_mode(
+        self,
+        *,
+        freshness_mode: str,
+        reason: str,
+        include_scoped: bool,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+        runtime_kind: str | None = None,
+    ) -> dict[str, Any]:
+        skill_context = self._resolve_skill_loader_context(
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+            runtime_kind=runtime_kind,
+        )
+        visible_descriptors = self._resolve_visible_skill_descriptors(
+            include_scoped=include_scoped,
+            session_id=skill_context.get("session_id"),
+            explicit_workspace_id=skill_context.get("explicit_workspace_id"),
+            explicit_workspace_path=skill_context.get("explicit_workspace_path"),
+            explicit_project_id=skill_context.get("explicit_project_id"),
+            runtime_kind=skill_context.get("runtime_kind"),
+        )
+        skill_status = self._skill_inventory_status()
+        dirty_visible_roots = list(
+            SkillLoader._dirty_root_paths_for_descriptors(visible_descriptors)  # noqa: SLF001
+        )
+        snapshot_freshness = str(skill_status.get("snapshotFreshness") or "cold")
+        inventory_ready_state = str(skill_status.get("startupState") or "cold")
+        barrier_applied = freshness_mode == _INVENTORY_FRESHNESS_GUARDED
+        wait_budget_ms = 0
+        wait_started_at = time.perf_counter()
+
+        if barrier_applied:
+            if inventory_ready_state == "cold" or not skill_status.get("skillCount"):
+                wait_budget_ms = 1200
+            elif dirty_visible_roots or inventory_ready_state == "refreshing" or snapshot_freshness != "live":
+                wait_budget_ms = 800
+
+            deadline = time.perf_counter() + (wait_budget_ms / 1000.0) if wait_budget_ms > 0 else 0.0
+            if wait_budget_ms > 0 and skill_status.get("backgroundRefreshInProgress"):
+                while time.perf_counter() < deadline:
+                    current_status = self._skill_inventory_status()
+                    if not current_status.get("backgroundRefreshInProgress"):
+                        break
+                    time.sleep(0.05)
+                skill_status = self._skill_inventory_status()
+                inventory_ready_state = str(skill_status.get("startupState") or inventory_ready_state or "cold")
+                snapshot_freshness = str(skill_status.get("snapshotFreshness") or snapshot_freshness or "cold")
+                dirty_visible_roots = list(
+                    SkillLoader._dirty_root_paths_for_descriptors(visible_descriptors)  # noqa: SLF001
+                )
+
+            if wait_budget_ms > 0 and (
+                inventory_ready_state in {"cold", "refreshing"} or dirty_visible_roots
+            ):
+                remaining_ms = max(0, int((deadline - time.perf_counter()) * 1000))
+                if remaining_ms > 0:
+                    skill_change = SkillLoader.refresh_root_descriptors_if_changed(
+                        visible_descriptors,
+                        compare_existing=False,
+                        timeout_ms=remaining_ms,
+                    )
+                    if skill_change.get("changed"):
+                        self._last_skill_inventory_change = {
+                            **skill_change,
+                            "changedAt": self._now_iso(),
+                            "reason": reason,
+                        }
+                        self._cached_catalog = None
+                        self._cached_health = None
+                skill_status = self._skill_inventory_status()
+                inventory_ready_state = str(skill_status.get("startupState") or inventory_ready_state or "cold")
+                snapshot_freshness = str(skill_status.get("snapshotFreshness") or snapshot_freshness or "cold")
+                dirty_visible_roots = list(
+                    SkillLoader._dirty_root_paths_for_descriptors(visible_descriptors)  # noqa: SLF001
+                )
+
+        inventory_barrier_wait_ms = round((time.perf_counter() - wait_started_at) * 1000, 2) if barrier_applied else 0.0
+        inventory_barrier_timed_out = bool(barrier_applied and wait_budget_ms > 0 and dirty_visible_roots)
+        exclude_root_paths = set(dirty_visible_roots) if inventory_barrier_timed_out else set()
+        return {
+            "skillContext": skill_context,
+            "visibleDescriptors": visible_descriptors,
+            "visibleRootSignature": SkillLoader._root_descriptors_signature(visible_descriptors),  # noqa: SLF001
+            "visibleRootRevisionKey": SkillLoader._visible_root_revision_key(visible_descriptors),  # noqa: SLF001
+            "inventoryReadyState": inventory_ready_state,
+            "snapshotFreshness": snapshot_freshness,
+            "inventoryBarrierApplied": barrier_applied,
+            "inventoryBarrierWaitMs": inventory_barrier_wait_ms,
+            "inventoryBarrierTimedOut": inventory_barrier_timed_out,
+            "dirtyVisibleRoots": dirty_visible_roots,
+            "excludeRootPaths": exclude_root_paths,
+            "waitBudgetMs": wait_budget_ms,
+        }
 
     def _cache_path(self) -> Path:
         configured = str(os.getenv("V8_AGENT_OS_EXTENSIONS_CACHE_FILE") or "").strip()
@@ -2106,6 +2278,7 @@ class ExtensionsRuntimeService:
         explicit_workspace_path: str | None = None,
         explicit_project_id: str | None = None,
         runtime_kind: str | None = None,
+        exclude_root_paths: set[str] | None = None,
     ) -> dict[str, Any]:
         skill_context = self._resolve_skill_loader_context(
             session_id=session_id,
@@ -2152,6 +2325,7 @@ class ExtensionsRuntimeService:
             explicit_workspace_id=skill_context.get("explicit_workspace_id"),
             explicit_workspace_path=skill_context.get("explicit_workspace_path"),
             explicit_project_id=skill_context.get("explicit_project_id"),
+            exclude_root_paths=exclude_root_paths,
         )
 
     def list_skills(
@@ -3080,6 +3254,7 @@ class ExtensionsRuntimeService:
                 skill_limit=5,
                 mcp_limit=2,
                 plugin_host_limit=0,
+                freshness_mode=_INVENTORY_FRESHNESS_PREVIEW,
             )
         finally:
             if context_token is not None:
@@ -3109,6 +3284,22 @@ class ExtensionsRuntimeService:
                 "recentSkillKeepaliveCount": candidate_summary.get("recentSkillKeepaliveCount"),
                 "mcpChangedServers": candidate_summary.get("mcpChangedServers") or {},
                 "inventoryRefreshDurationMs": candidate_summary.get("inventoryRefreshDurationMs") or {},
+                "lexiconSignature": candidate_summary.get("lexiconSignature"),
+                "lexiconCoreSignature": candidate_summary.get("lexiconCoreSignature"),
+                "lexiconLocales": candidate_summary.get("lexiconLocales") or [],
+                "lexiconLoadErrors": candidate_summary.get("lexiconLoadErrors") or [],
+                "marketLexiconEnabled": candidate_summary.get("marketLexiconEnabled"),
+                "marketLexiconSignature": candidate_summary.get("marketLexiconSignature"),
+                "marketLexiconLocales": candidate_summary.get("marketLexiconLocales") or [],
+                "marketLexiconLoadErrors": candidate_summary.get("marketLexiconLoadErrors") or [],
+                "marketLexiconHitTerms": candidate_summary.get("marketLexiconHitTerms") or [],
+                "marketLexiconContributionScore": candidate_summary.get("marketLexiconContributionScore"),
+                "queryAnalysisCacheHit": candidate_summary.get("queryAnalysisCacheHit"),
+                "directCanonicalFamilies": candidate_summary.get("directCanonicalFamilies") or [],
+                "canonicalFamilies": candidate_summary.get("canonicalFamilies") or [],
+                "primaryCanonicalFamily": candidate_summary.get("primaryCanonicalFamily"),
+                "shortCanonicalNarrowing": candidate_summary.get("shortCanonicalNarrowing"),
+                "shortCanonicalNarrowingApplied": candidate_summary.get("shortCanonicalNarrowingApplied"),
                 "modelId": candidate_summary.get("modelId"),
                 "role": candidate_summary.get("role"),
                 "reason": candidate_summary.get("reason"),
@@ -3164,10 +3355,12 @@ class ExtensionsRuntimeService:
         skill_limit: int = 5,
         mcp_limit: int = 2,
         plugin_host_limit: int = 8,
+        freshness_mode: str = _INVENTORY_FRESHNESS_GUARDED,
+        _pre_resolved_skill_inventory: dict[str, Any] | None = None,
+        _pre_resolved_inventory_freshness: dict[str, Any] | None = None,
     ) -> ExtensionRouteBundle:
         query_text = str(user_query or "").strip()
-        query_tokens = _query_tokens_for_extensions(query_text)
-        query_profile = _detect_query_intents(query_text, query_tokens)
+        query_tokens, query_profile, query_analysis_cache_hit, lexicon_state, market_enrichment = _analyze_extensions_query(query_text)
         context_payload = self._resolve_event_context()
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
         prefilter_policy = self._resolve_prefilter_policy()
@@ -3193,15 +3386,27 @@ class ExtensionsRuntimeService:
             prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id
         )
 
-        self._ensure_inventory_freshness_guard(reason="route")
         skill_status = self._skill_inventory_status()
         mcp_status = self._mcp_inventory_status()
         skill_last_reload = dict(skill_status.get("lastReloadResult") or {})
         mcp_last_reload = dict(mcp_status.get("lastReloadResult") or {})
-        skill_inventory = self._resolve_skill_inventory(
+        inventory_freshness = dict(_pre_resolved_inventory_freshness or {})
+        if not inventory_freshness:
+            inventory_freshness = self._apply_inventory_freshness_mode(
+                freshness_mode=freshness_mode,
+                reason="route" if freshness_mode == _INVENTORY_FRESHNESS_GUARDED else "preview",
+                include_scoped=True,
+            )
+        skill_inventory = _pre_resolved_skill_inventory or self._resolve_skill_inventory(
             force_refresh=False,
             prefer_cached_ready_inventory=True,
             include_scoped=True,
+            session_id=str((inventory_freshness.get("skillContext") or {}).get("session_id") or "").strip() or None,
+            explicit_workspace_id=str((inventory_freshness.get("skillContext") or {}).get("explicit_workspace_id") or "").strip() or None,
+            explicit_workspace_path=str((inventory_freshness.get("skillContext") or {}).get("explicit_workspace_path") or "").strip() or None,
+            explicit_project_id=str((inventory_freshness.get("skillContext") or {}).get("explicit_project_id") or "").strip() or None,
+            runtime_kind=str((inventory_freshness.get("skillContext") or {}).get("runtime_kind") or "").strip() or None,
+            exclude_root_paths=set(inventory_freshness.get("excludeRootPaths") or set()),
         )
         skill_entries = list(skill_inventory.get("items") or [])
         skill_root_descriptors = list(skill_inventory.get("rootDescriptors") or [])
@@ -3229,6 +3434,7 @@ class ExtensionsRuntimeService:
             key=lambda row: (-int(bool(row[1])), -row[0], row[3].lower()),
         )
         skill_stage1_hits = [row[4] for row in ranked_skills if row[0] > 0] if skill_stage1_enabled else []
+        short_canonical_narrowing_applied = False
         theme_fallback_candidates: list[dict[str, Any]] = []
         if (
             skill_stage1_enabled
@@ -3297,6 +3503,15 @@ class ExtensionsRuntimeService:
                     recent_keepalive_candidates,
                     max(len(skill_stage1_hits) + len(recent_keepalive_candidates), effective_skill_stage1_limit),
                 )
+        if skill_stage1_enabled and bool(query_profile.get("shortCanonicalNarrowing")):
+            narrowed_skill_stage1_hits = [
+                item
+                for item in skill_stage1_hits
+                if _skill_matches_query_canonical_family(item, query_profile)
+            ]
+            if narrowed_skill_stage1_hits:
+                short_canonical_narrowing_applied = True
+                skill_stage1_hits = narrowed_skill_stage1_hits
         skill_stage1_hit_count = len(skill_stage1_hits)
         skill_pool = skill_stage1_hits[:effective_skill_stage1_limit] if effective_skill_stage1_limit > 0 else []
         skill_stage1_shortlist = list(skill_pool)
@@ -3958,6 +4173,27 @@ class ExtensionsRuntimeService:
                 "mode": prefilter_mode,
                 "skillInventoryRevision": skill_inventory_revision,
                 "visibleRootSignature": skill_inventory.get("visibleRootSignature") or skill_inventory_revision,
+                "visibleRootRevisionKey": skill_inventory.get("visibleRootRevisionKey"),
+                "visibleRegistryCacheHit": bool(skill_inventory.get("visibleRegistryCacheHit")),
+                "inventoryReadyState": str(
+                    inventory_freshness.get("inventoryReadyState")
+                    or skill_inventory.get("inventoryReadyState")
+                    or skill_status.get("startupState")
+                    or "cold"
+                ),
+                "snapshotFreshness": str(
+                    inventory_freshness.get("snapshotFreshness")
+                    or skill_status.get("snapshotFreshness")
+                    or "cold"
+                ),
+                "inventoryBarrierApplied": bool(inventory_freshness.get("inventoryBarrierApplied")),
+                "inventoryBarrierWaitMs": inventory_freshness.get("inventoryBarrierWaitMs"),
+                "inventoryBarrierTimedOut": bool(inventory_freshness.get("inventoryBarrierTimedOut")),
+                "dirtyVisibleRoots": list(
+                    inventory_freshness.get("dirtyVisibleRoots")
+                    or skill_inventory.get("dirtyVisibleRoots")
+                    or []
+                ),
                 "changedRoots": list(skill_inventory.get("changedRoots") or []),
                 "scopedRefreshMode": skill_inventory.get("scopedRefreshMode"),
                 "mcpInventoryRevision": str(mcp_status.get("inventoryRevision") or getattr(mcp_manager, "get_inventory_revision", lambda: "")() or ""),
@@ -3978,6 +4214,17 @@ class ExtensionsRuntimeService:
                 "reason": prefilter_reason or None,
                 "prefilterTimedOut": bool(any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state))),
                 "prefilterCacheHit": bool(any(bool(state.get("cacheHit")) for state in (skill_state, mcp_state, plugin_host_state))),
+                "queryAnalysisCacheHit": query_analysis_cache_hit,
+                "lexiconSignature": str(lexicon_state.get("signature") or _EXTENSION_LEXICON_SIGNATURE),
+                "lexiconCoreSignature": str(lexicon_state.get("coreSignature") or _EXTENSION_LEXICON_CORE_SIGNATURE),
+                "lexiconLocales": list(lexicon_state.get("locales") or _EXTENSION_LEXICON_LOCALES),
+                "lexiconLoadErrors": list(lexicon_state.get("loadErrors") or _EXTENSION_LEXICON_LOAD_ERRORS),
+                "marketLexiconEnabled": bool(lexicon_state.get("marketEnabled") or _MARKET_LEXICON_ENABLED),
+                "marketLexiconSignature": str(lexicon_state.get("marketSignature") or _MARKET_LEXICON_SIGNATURE),
+                "marketLexiconLocales": list(lexicon_state.get("marketLocales") or _MARKET_LEXICON_LOCALES),
+                "marketLexiconLoadErrors": list(lexicon_state.get("marketLoadErrors") or _MARKET_LEXICON_LOAD_ERRORS),
+                "marketLexiconHitTerms": list(market_enrichment.get("matchedTerms") or []),
+                "marketLexiconContributionScore": int(market_enrichment.get("contributionScore") or 0),
                 "stage1Enabled": {
                     "skills": skill_stage1_enabled,
                     "mcp": mcp_stage1_enabled,
@@ -4004,6 +4251,11 @@ class ExtensionsRuntimeService:
                 "artifactIntent": query_profile.get("artifactIntent"),
                 "documentSubIntent": query_profile.get("documentSubIntent"),
                 "operationIntent": query_profile.get("operationIntent"),
+                "directCanonicalFamilies": list(query_profile.get("directCanonicalFamilies") or []),
+                "canonicalFamilies": list(query_profile.get("canonicalFamilies") or []),
+                "primaryCanonicalFamily": query_profile.get("primaryCanonicalFamily"),
+                "shortCanonicalNarrowing": bool(query_profile.get("shortCanonicalNarrowing")),
+                "shortCanonicalNarrowingApplied": short_canonical_narrowing_applied,
                 "primaryThemeIntents": list(query_profile.get("primaryThemeIntents") or []),
                 "secondaryThemeHints": list(query_profile.get("secondaryThemeHints") or []),
                 "rankingSignals": {
@@ -4147,9 +4399,9 @@ class ExtensionsRuntimeService:
     ) -> ExtensionRouteBundle:
         context_payload = self._resolve_event_context()
         session_id = str(context_payload.get("session_id") or "").strip() or "global"
-        self._ensure_inventory_freshness_guard(reason="supervisor_route")
-        skill_inventory = self._resolve_skill_inventory(
-            force_refresh=False,
+        inventory_freshness = self._apply_inventory_freshness_mode(
+            freshness_mode=_INVENTORY_FRESHNESS_GUARDED,
+            reason="supervisor_route",
             include_scoped=True,
             session_id=str(context_payload.get("session_id") or "").strip() or None,
             explicit_workspace_id=str(context_payload.get("workspace_id") or "").strip() or None,
@@ -4157,10 +4409,17 @@ class ExtensionsRuntimeService:
             explicit_project_id=str(context_payload.get("project_id") or "").strip() or None,
             runtime_kind=str(context_payload.get("runtime_kind") or "chat").strip() or "chat",
         )
-        has_scoped_roots = any(
-            str(item.get("sourceType") or "").strip() == "scoped_workspace"
-            for item in list(skill_inventory.get("rootDescriptors") or [])
+        skill_inventory = self._resolve_skill_inventory(
+            force_refresh=False,
+            include_scoped=True,
+            session_id=str((inventory_freshness.get("skillContext") or {}).get("session_id") or "").strip() or None,
+            explicit_workspace_id=str((inventory_freshness.get("skillContext") or {}).get("explicit_workspace_id") or "").strip() or None,
+            explicit_workspace_path=str((inventory_freshness.get("skillContext") or {}).get("explicit_workspace_path") or "").strip() or None,
+            explicit_project_id=str((inventory_freshness.get("skillContext") or {}).get("explicit_project_id") or "").strip() or None,
+            runtime_kind=str((inventory_freshness.get("skillContext") or {}).get("runtime_kind") or "chat").strip() or "chat",
+            exclude_root_paths=set(inventory_freshness.get("excludeRootPaths") or set()),
         )
+        lexicon_signature = str(_ensure_extension_lexicon_state().get("signature") or _EXTENSION_LEXICON_SIGNATURE)
         normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
         tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
         inventory_revision = self._inventory_revision_key(skill_inventory)
@@ -4177,10 +4436,12 @@ class ExtensionsRuntimeService:
                 str(mcp_limit),
                 str(plugin_host_limit),
                 tool_signature,
+                lexicon_signature,
             ]
         )
         now = time.monotonic()
-        cached = None if has_scoped_roots else self._route_cache.get(cache_key)
+        cache_allowed = not bool(inventory_freshness.get("inventoryBarrierTimedOut"))
+        cached = self._route_cache.get(cache_key) if cache_allowed else None
         if cached and (now - cached[0]) <= self._route_cache_ttl_seconds:
             return cached[1]
 
@@ -4191,8 +4452,11 @@ class ExtensionsRuntimeService:
             skill_limit=skill_limit,
             mcp_limit=mcp_limit,
             plugin_host_limit=plugin_host_limit,
+            freshness_mode=_INVENTORY_FRESHNESS_GUARDED,
+            _pre_resolved_skill_inventory=skill_inventory,
+            _pre_resolved_inventory_freshness=inventory_freshness,
         )
-        if not has_scoped_roots:
+        if cache_allowed:
             self._route_cache[cache_key] = (now, bundle)
             if len(self._route_cache) > 128:
                 stale_keys = sorted(self._route_cache.items(), key=lambda item: item[1][0])[:32]
@@ -4259,6 +4523,22 @@ class ExtensionsRuntimeService:
                     "recentSkillKeepaliveCount": route_bundle.candidate_summary.get("recentSkillKeepaliveCount"),
                     "mcpChangedServers": route_bundle.candidate_summary.get("mcpChangedServers"),
                     "inventoryRefreshDurationMs": route_bundle.candidate_summary.get("inventoryRefreshDurationMs"),
+                    "lexiconSignature": route_bundle.candidate_summary.get("lexiconSignature"),
+                    "lexiconCoreSignature": route_bundle.candidate_summary.get("lexiconCoreSignature"),
+                    "lexiconLocales": route_bundle.candidate_summary.get("lexiconLocales") or [],
+                    "lexiconLoadErrors": route_bundle.candidate_summary.get("lexiconLoadErrors") or [],
+                    "marketLexiconEnabled": route_bundle.candidate_summary.get("marketLexiconEnabled"),
+                    "marketLexiconSignature": route_bundle.candidate_summary.get("marketLexiconSignature"),
+                    "marketLexiconLocales": route_bundle.candidate_summary.get("marketLexiconLocales") or [],
+                    "marketLexiconLoadErrors": route_bundle.candidate_summary.get("marketLexiconLoadErrors") or [],
+                    "marketLexiconHitTerms": route_bundle.candidate_summary.get("marketLexiconHitTerms") or [],
+                    "marketLexiconContributionScore": route_bundle.candidate_summary.get("marketLexiconContributionScore"),
+                    "queryAnalysisCacheHit": route_bundle.candidate_summary.get("queryAnalysisCacheHit"),
+                    "directCanonicalFamilies": route_bundle.candidate_summary.get("directCanonicalFamilies") or [],
+                    "canonicalFamilies": route_bundle.candidate_summary.get("canonicalFamilies") or [],
+                    "primaryCanonicalFamily": route_bundle.candidate_summary.get("primaryCanonicalFamily"),
+                    "shortCanonicalNarrowing": route_bundle.candidate_summary.get("shortCanonicalNarrowing"),
+                    "shortCanonicalNarrowingApplied": route_bundle.candidate_summary.get("shortCanonicalNarrowingApplied"),
                     "modelId": route_bundle.candidate_summary.get("modelId"),
                     "role": route_bundle.candidate_summary.get("role"),
                     "stage1Enabled": route_bundle.candidate_summary.get("stage1Enabled"),

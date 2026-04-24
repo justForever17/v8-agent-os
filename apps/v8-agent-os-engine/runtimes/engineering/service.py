@@ -1140,6 +1140,15 @@ class EngineeringLaneService:
         cfg = self.get_config()
         if not bool(cfg.get("worksetObservationEnabled", True)):
             return []
+        normalized_session_id = str(session_id or "").strip() or None
+        normalized_run_id = str(run_id or "").strip() or None
+        # Admin and API dry-runs commonly run without a real session/run binding.
+        # Skipping persistence here prevents orphan dry-run observations from
+        # polluting governance diagnostics with unscoped records.
+        if not normalized_session_id or not normalized_run_id:
+            return []
+        if not db.get_session(normalized_session_id) or not db.get_run_record(normalized_run_id):
+            return []
         persisted: list[dict[str, Any]] = []
         broker_dispatch = result.get("brokerDispatchSimulation") if isinstance(result.get("brokerDispatchSimulation"), dict) else {}
         for mode_key, phase in (("autoDecisions", "dry_run_dispatch"), ("manualDecisions", "dry_run_dispatch")):
@@ -1149,8 +1158,8 @@ class EngineeringLaneService:
                 normalized_decision = self._normalize_workset_dispatch_decision(decision)
                 persisted.append(
                     self._persist_workset_observation(
-                        session_id=session_id,
-                        run_id=run_id,
+                        session_id=normalized_session_id,
+                        run_id=normalized_run_id,
                         task_brief_id=str(normalized_decision.get("taskBriefId") or "").strip() or None,
                         delegation_id=None,
                         decision_source=str(normalized_decision.get("worksetDecisionSource") or "dry_run"),
@@ -1176,8 +1185,8 @@ class EngineeringLaneService:
                     normalized_decision = self._normalize_workset_dispatch_decision(decision)
                     persisted.append(
                         self._persist_workset_observation(
-                            session_id=session_id,
-                            run_id=run_id,
+                            session_id=normalized_session_id,
+                            run_id=normalized_run_id,
                             task_brief_id=str(normalized_decision.get("taskBriefId") or "").strip() or None,
                             delegation_id=None,
                             decision_source=str(normalized_decision.get("worksetDecisionSource") or "dry_run"),

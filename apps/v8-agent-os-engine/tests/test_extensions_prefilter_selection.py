@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import runpy
 import sys
 import time
 import tempfile
@@ -17,6 +19,7 @@ from erc.safety_guardian import safety_guardian
 from runtimes.extensions import runtime as extensions_runtime_module
 from runtimes.extensions.mcp.client import MCPManager
 from runtimes.extensions.runtime import ExtensionRouteBundle, ExtensionsRuntimeService
+from runtimes.extensions.skills.lexicons import ExtensionLexiconRegistry
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 
 
@@ -1117,6 +1120,7 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             ],
             "revision": "skills:scoped:test1",
             "visibleRootSignature": "visible:global+project-test1",
+            "visibleRootRevisionKey": "visible-rev:test1",
             "changedRoots": ["E:/Projects/test1/.agents/skills"],
             "scopedRefreshMode": "delta",
             "recentSkillDiscovery": [],
@@ -1143,8 +1147,28 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             project_id="project-test1",
             runtime_kind="chat",
         )
+        inventory_freshness = {
+            "skillContext": {
+                "session_id": "session-project-test1",
+                "explicit_workspace_id": "test1",
+                "explicit_workspace_path": r"E:\Projects\test1",
+                "explicit_project_id": "project-test1",
+                "runtime_kind": "chat",
+            },
+            "visibleDescriptors": list(scoped_inventory.get("rootDescriptors") or []),
+            "visibleRootSignature": "visible:global+project-test1",
+            "visibleRootRevisionKey": "visible-rev:test1",
+            "inventoryReadyState": "ready",
+            "snapshotFreshness": "live",
+            "inventoryBarrierApplied": True,
+            "inventoryBarrierWaitMs": 0,
+            "inventoryBarrierTimedOut": False,
+            "dirtyVisibleRoots": [],
+            "excludeRootPaths": set(),
+            "waitBudgetMs": 0,
+        }
         try:
-            with patch.object(service, "_ensure_inventory_freshness_guard"), patch.object(
+            with patch.object(service, "_apply_inventory_freshness_mode", return_value=dict(inventory_freshness)), patch.object(
                 service,
                 "_resolve_skill_inventory",
                 side_effect=fake_resolve_skill_inventory,
@@ -1161,11 +1185,13 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         finally:
             service.reset_execution_context(token)
 
-        self.assertGreaterEqual(len(captured_inventory_kwargs), 2)
-        self.assertTrue(any(item.get("explicit_project_id") == "project-test1" for item in captured_inventory_kwargs))
-        self.assertTrue(any(item.get("explicit_workspace_path") == r"E:\Projects\test1" for item in captured_inventory_kwargs))
+        self.assertEqual(len(captured_inventory_kwargs), 1)
+        self.assertEqual(captured_inventory_kwargs[0].get("explicit_project_id"), "project-test1")
+        self.assertEqual(captured_inventory_kwargs[0].get("explicit_workspace_path"), r"E:\Projects\test1")
+        self.assertEqual(captured_inventory_kwargs[0].get("exclude_root_paths"), set())
         self.assertIn("wechat-account-articles", bundle.selected_skill_names)
         self.assertEqual(bundle.candidate_summary.get("visibleRootSignature"), "visible:global+project-test1")
+        self.assertEqual(bundle.candidate_summary.get("visibleRootRevisionKey"), "visible-rev:test1")
         self.assertEqual(bundle.candidate_summary.get("scopedRefreshMode"), "delta")
         self.assertTrue(any(item.get("projectId") == "project-test1" for item in bundle.skill_root_descriptors))
 
@@ -2938,6 +2964,33 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         self.assertNotEqual(profile.get("skillClass"), "advisor_or_perspective")
         self.assertIn("video", list(profile.get("primaryArtifactTypes") or []))
 
+    def test_rule_profile_keeps_primary_document_artifact_for_workflow_publishers(self):
+        profile = SkillLoader._derive_capability_profile(
+            name="wechat-account-articles",
+            description=(
+                "End-to-end workflow for creating WeChat Official Account articles. "
+                "Handles copywriting and HTML generation, and returns a publish-ready article."
+            ),
+            body=(
+                "This workflow creates a draft.html and output.html article package, "
+                "gathers screenshots, writes copy, and generates final HTML for publication."
+            ),
+            folder="wechat-account-articles",
+            available_files=["assets/template.html", "scripts/process_html.py", "draft.html", "output.html"],
+            aliases=[],
+            triggers=["公众号文章"],
+            keywords=["wechat", "article", "html"],
+            tags=["workflow"],
+            has_scripts=True,
+            has_templates=True,
+            has_examples=False,
+            has_assets=True,
+        )
+
+        self.assertEqual(profile.get("skillClass"), "workflow_or_script")
+        self.assertIn("document", list(profile.get("primaryArtifactTypes") or []))
+        self.assertIn("create", list(profile.get("primaryOperations") or []))
+
     def test_safety_guardian_does_not_block_skill_read_on_template_like_noise(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             skill_root = Path(temp_dir) / "huashu-nuwa"
@@ -2991,6 +3044,9 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         original_root_signature = SkillLoader._skills_root_signature
         original_fingerprint = SkillLoader._skills_fingerprint
         original_revision = SkillLoader._skills_revision
+        original_root_states = SkillLoader._root_inventory_states
+        original_visible_cache = SkillLoader._visible_inventory_cache
+        original_dirty_root_paths = SkillLoader._dirty_root_paths
         try:
             SkillLoader._skills_registry = {
                 "global:unchanged": {
@@ -2998,6 +3054,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                     "skillName": "unchanged",
                     "instructionPath": "C:/skills/unchanged/SKILL.md",
                     "skillRoot": "C:/skills/unchanged",
+                    "rootPath": "C:/skills",
                     "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
                     "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
                 },
@@ -3006,6 +3063,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                     "skillName": "updated",
                     "instructionPath": "C:/skills/updated/SKILL.md",
                     "skillRoot": "C:/skills/updated",
+                    "rootPath": "C:/skills",
                     "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
                     "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
                 },
@@ -3014,6 +3072,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                     "skillName": "removed",
                     "instructionPath": "C:/skills/removed/SKILL.md",
                     "skillRoot": "C:/skills/removed",
+                    "rootPath": "C:/skills",
                     "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
                     "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
                 },
@@ -3023,45 +3082,61 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
             removed_key = SkillLoader._normalize_path("C:/skills/removed/SKILL.md")
             added_key = SkillLoader._normalize_path("C:/skills/added/SKILL.md")
             SkillLoader._skills_manifest = {
-                unchanged_key: {"mtimeNs": 1, "size": 10},
-                updated_key: {"mtimeNs": 1, "size": 10},
-                removed_key: {"mtimeNs": 1, "size": 10},
+                unchanged_key: {"mtimeNs": 1, "size": 10, "rootPath": "C:/skills", "instructionPath": "C:/skills/unchanged/SKILL.md", "folder": "unchanged"},
+                updated_key: {"mtimeNs": 1, "size": 10, "rootPath": "C:/skills", "instructionPath": "C:/skills/updated/SKILL.md", "folder": "updated"},
+                removed_key: {"mtimeNs": 1, "size": 10, "rootPath": "C:/skills", "instructionPath": "C:/skills/removed/SKILL.md", "folder": "removed"},
             }
             SkillLoader._skills_root_descriptors = [{"rootPath": "C:/skills", "sourceType": "global", "visibility": "global"}]
             SkillLoader._skills_root_signature = "roots:v1"
             SkillLoader._skills_fingerprint = "old"
-            new_manifest = {
-                unchanged_key: {"mtimeNs": 1, "size": 10, "instructionPath": "C:/skills/unchanged/SKILL.md", "rootPath": "C:/skills/unchanged", "folder": "unchanged"},
-                updated_key: {"mtimeNs": 2, "size": 12, "instructionPath": "C:/skills/updated/SKILL.md", "rootPath": "C:/skills/updated", "folder": "updated"},
-                added_key: {"mtimeNs": 1, "size": 8, "instructionPath": "C:/skills/added/SKILL.md", "rootPath": "C:/skills/added", "folder": "added"},
+            SkillLoader._skills_revision = "old"
+            SkillLoader._root_inventory_states = {
+                SkillLoader._normalize_path("C:/skills"): {
+                    "descriptor": {"rootPath": "C:/skills", "sourceType": "global", "visibility": "global"},
+                    "descriptorSignature": "roots:v1",
+                    "manifest": {key: dict(value) for key, value in SkillLoader._skills_manifest.items()},
+                    "registry": {key: dict(value) for key, value in SkillLoader._skills_registry.items()},
+                    "rootRevision": "root:old",
+                    "lastScanAt": "2026-04-24T00:00:00+00:00",
+                    "dirty": False,
+                }
             }
-            built_paths: list[str] = []
-
-            def fake_build(*, folder_name, file_path, descriptor, content):  # noqa: ANN001
-                skill_path = str(file_path)
-                built_paths.append(skill_path)
-                name = str(folder_name)
-                return {
-                    "skillId": f"global:{name}",
-                    "skillName": name,
-                    "instructionPath": skill_path,
-                    "skillRoot": str(Path(skill_path).parent),
+            SkillLoader._visible_inventory_cache = {}
+            SkillLoader._dirty_root_paths = set()
+            new_manifest = {
+                unchanged_key: {"mtimeNs": 1, "size": 10, "instructionPath": "C:/skills/unchanged/SKILL.md", "rootPath": "C:/skills", "folder": "unchanged"},
+                updated_key: {"mtimeNs": 2, "size": 12, "instructionPath": "C:/skills/updated/SKILL.md", "rootPath": "C:/skills", "folder": "updated"},
+                added_key: {"mtimeNs": 1, "size": 8, "instructionPath": "C:/skills/added/SKILL.md", "rootPath": "C:/skills", "folder": "added"},
+            }
+            new_root_registry = {
+                "global:unchanged": dict(SkillLoader._skills_registry["global:unchanged"]),
+                "global:updated": {
+                    **dict(SkillLoader._skills_registry["global:updated"]),
+                    "description": "updated skill after root-aware refresh",
+                },
+                "global:added": {
+                    "skillId": "global:added",
+                    "skillName": "added",
+                    "instructionPath": "C:/skills/added/SKILL.md",
+                    "skillRoot": "C:/skills/added",
+                    "rootPath": "C:/skills",
                     "capabilityProfile": {"skillClass": "workflow_or_script", "primaryArtifactTypes": [], "primaryOperations": [], "interactionMode": "guided", "capabilityConfidence": 0.7, "profileSource": "rules"},
                     "themeProfile": {"primaryThemes": [], "secondaryThemeTags": [], "themeConfidence": 0.0, "themeSource": "rules", "themeEvidenceSignals": {}},
-                }
+                },
+            }
 
-            with patch.object(SkillLoader, "_load_cached_registry", return_value=True), patch.object(
-                SkillLoader, "_scan_root_descriptors", return_value=[{"rootPath": "C:/skills", "sourceType": "global", "visibility": "global"}]
+            with patch.object(
+                SkillLoader,
+                "_discovery_root_descriptors",
+                return_value=[{"rootPath": "C:/skills", "sourceType": "global", "visibility": "global"}],
             ), patch.object(
                 SkillLoader, "_root_descriptors_signature", return_value="roots:v1"
             ), patch.object(
-                SkillLoader, "_compute_manifest", return_value=new_manifest
+                SkillLoader, "_compute_root_manifest", return_value=new_manifest
             ), patch.object(
-                SkillLoader, "_manifest_fingerprint", return_value="new"
+                SkillLoader, "_root_manifest_fingerprint", return_value="root:new"
             ), patch.object(
-                Path, "read_text", return_value="---\nname: fake\n---\nbody"
-            ), patch.object(
-                SkillLoader, "_build_skill_entry", side_effect=fake_build
+                SkillLoader, "_scan_single_root_descriptor", return_value=new_root_registry
             ), patch.object(
                 SkillLoader, "_persist_cache"
             ):
@@ -3072,10 +3147,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
             self.assertEqual(set(change.get("addedSkills") or []), {"global:added"})
             self.assertEqual(set(change.get("updatedSkills") or []), {"global:updated"})
             self.assertEqual(set(change.get("removedSkills") or []), {"global:removed"})
-            self.assertEqual(
-                {SkillLoader._normalize_path(path) for path in built_paths},
-                {SkillLoader._normalize_path("C:/skills/updated/SKILL.md"), SkillLoader._normalize_path("C:/skills/added/SKILL.md")},
-            )
+            self.assertEqual(set(change.get("changedRoots") or []), {SkillLoader._normalize_path("C:/skills")})
             self.assertIn("global:unchanged", SkillLoader._skills_registry)
             self.assertNotIn("global:removed", SkillLoader._skills_registry)
         finally:
@@ -3085,6 +3157,9 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
             SkillLoader._skills_root_signature = original_root_signature
             SkillLoader._skills_fingerprint = original_fingerprint
             SkillLoader._skills_revision = original_revision
+            SkillLoader._root_inventory_states = original_root_states
+            SkillLoader._visible_inventory_cache = original_visible_cache
+            SkillLoader._dirty_root_paths = original_dirty_root_paths
 
     def test_skill_loader_visible_inventory_keeps_project_skill_out_of_default_scope(self):
         original_registry = SkillLoader._skills_registry
@@ -3093,6 +3168,9 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         original_root_signature = SkillLoader._skills_root_signature
         original_fingerprint = SkillLoader._skills_fingerprint
         original_revision = SkillLoader._skills_revision
+        original_root_states = SkillLoader._root_inventory_states
+        original_visible_cache = SkillLoader._visible_inventory_cache
+        original_dirty_root_paths = SkillLoader._dirty_root_paths
         try:
             global_descriptor = {"rootPath": "C:/Users/sunny/.agents/skills", "sourceType": "global", "visibility": "global"}
             main_descriptor = {
@@ -3117,6 +3195,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                     "skillRoot": "C:/Users/sunny/.agents/skills/global-skill",
                     "sourceType": "global",
                     "visibility": "global",
+                    "rootPath": "C:/Users/sunny/.agents/skills",
                 },
                 "main:default-skill": {
                     "skillId": "main:default-skill",
@@ -3126,6 +3205,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                     "sourceType": "main_workspace",
                     "visibility": "global",
                     "workspacePath": "C:/Users/sunny/.v8-agent-os/workspace",
+                    "rootPath": "C:/Users/sunny/.v8-agent-os/workspace/.agents/skills",
                 },
                 "scoped:wechat-account-articles": {
                     "skillId": "scoped:wechat-account-articles",
@@ -3137,6 +3217,7 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
                     "workspacePath": "E:/Projects/test1",
                     "workspaceId": "test1",
                     "projectId": "project-test1",
+                    "rootPath": "E:/Projects/test1/.agents/skills",
                 },
             }
             SkillLoader._skills_manifest = {}
@@ -3144,6 +3225,9 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
             SkillLoader._skills_root_signature = "roots:global-main-scoped"
             SkillLoader._skills_fingerprint = "discovery:all"
             SkillLoader._skills_revision = "discovery:all"
+            SkillLoader._rebuild_root_inventory_states_from_registry()
+            SkillLoader._visible_inventory_cache = {}
+            SkillLoader._dirty_root_paths = set()
 
             with patch.object(SkillLoader, "_global_root_descriptor", return_value=global_descriptor), patch.object(
                 SkillLoader, "_main_workspace_root_descriptor", return_value=main_descriptor
@@ -3170,6 +3254,887 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
             SkillLoader._skills_root_signature = original_root_signature
             SkillLoader._skills_fingerprint = original_fingerprint
             SkillLoader._skills_revision = original_revision
+            SkillLoader._root_inventory_states = original_root_states
+            SkillLoader._visible_inventory_cache = original_visible_cache
+            SkillLoader._dirty_root_paths = original_dirty_root_paths
+
+    def test_extensions_runtime_expands_common_chinese_query_domains(self):
+        wechat_tokens = extensions_runtime_module._query_tokens_for_extensions("公众号文章")
+        wechat_profile = extensions_runtime_module._detect_query_intents("公众号文章", wechat_tokens)
+        self.assertIn("wechat-account-article", wechat_tokens)
+        self.assertIn("wechat-account", wechat_tokens)
+        self.assertIn("article", wechat_tokens)
+        self.assertIn("document", wechat_profile.get("artifactIntents") or [])
+
+        finance_tokens = extensions_runtime_module._query_tokens_for_extensions("财报分析")
+        finance_profile = extensions_runtime_module._detect_query_intents("财报分析", finance_tokens)
+        self.assertIn("finance", finance_tokens)
+        self.assertIn("analyze", finance_profile.get("operationIntents") or [])
+        self.assertIn("finance_research", finance_profile.get("primaryThemeIntents") or [])
+
+        code_tokens = extensions_runtime_module._query_tokens_for_extensions("代码审查")
+        code_profile = extensions_runtime_module._detect_query_intents("代码审查", code_tokens)
+        self.assertIn("code", code_profile.get("artifactIntents") or [])
+        self.assertIn("analyze", code_profile.get("operationIntents") or [])
+
+        medical_tokens = extensions_runtime_module._query_tokens_for_extensions("医学检查报告解读")
+        medical_profile = extensions_runtime_module._detect_query_intents("医学检查报告解读", medical_tokens)
+        self.assertIn("document", medical_profile.get("artifactIntents") or [])
+        self.assertIn("healthcare_medical", medical_profile.get("primaryThemeIntents") or [])
+
+    def test_extension_lexicon_registry_fail_soft_on_invalid_optional_locale(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "en.json").write_text(
+                '{"locale":"en","querySynonyms":{"wechat":["weixin","official account"]}}',
+                encoding="utf-8",
+            )
+            (root / "zh-CN.json").write_text(
+                '{"locale":"zh-CN","querySynonyms":{"公众号":["wechat","official account"]}}',
+                encoding="utf-8",
+            )
+            (root / "ru.json").write_text("{invalid json", encoding="utf-8")
+
+            registry = ExtensionLexiconRegistry(root_dir=root)
+            snapshot = registry.ensure_fresh()
+
+        self.assertEqual(snapshot.get("locales"), ["en", "zh-CN"])
+        self.assertTrue(any("ru.json" in item for item in snapshot.get("loadErrors") or []))
+        self.assertIn("公众号", snapshot.get("querySynonyms") or {})
+        self.assertIn("wechat", snapshot.get("querySynonymsExact") or {})
+
+    def test_extension_lexicon_registry_loads_market_layer_without_polluting_core_layer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "en.json").write_text(
+                '{"locale":"en","querySynonyms":{"wechat":["official account","article"]}}',
+                encoding="utf-8",
+            )
+            (root / "zh-CN.json").write_text(
+                '{"locale":"zh-CN","querySynonyms":{"公众号":["wechat","article"]}}',
+                encoding="utf-8",
+            )
+            provider_dir = root / "market" / "skills-sh"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            (provider_dir / "manifest.json").write_text(
+                json.dumps({"provider": "skills-sh", "locales": ["en", "zh-CN"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (provider_dir / "skills-sh-top1000.en.json").write_text(
+                json.dumps(
+                    {
+                        "locale": "en",
+                        "querySynonyms": {"hyperframes": ["website", "animation", "video"]},
+                        "primaryThemeSynonyms": {"content_media": ["hyperframes website"]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (provider_dir / "skills-sh-top1000.zh-CN.json").write_text(
+                json.dumps(
+                    {
+                        "locale": "zh-CN",
+                        "querySynonyms": {"超帧": ["hyperframes", "website", "animation"]},
+                        "primaryThemeSynonyms": {"content_media": ["超帧网站"]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            registry = ExtensionLexiconRegistry(root_dir=root)
+            snapshot = registry.ensure_fresh()
+
+        self.assertEqual(snapshot.get("locales"), ["en", "zh-CN"])
+        self.assertTrue(snapshot.get("marketEnabled"))
+        self.assertIn("skills-sh", [item.get("provider") for item in snapshot.get("marketProviders") or []])
+        self.assertEqual((snapshot.get("market") or {}).get("locales"), ["en", "zh-CN"])
+        self.assertIn("hyperframes", (snapshot.get("market") or {}).get("querySynonymsExact") or {})
+        self.assertNotIn("hyperframes", snapshot.get("querySynonymsExact") or {})
+
+    def test_skills_sh_market_builder_keeps_priority_translation_aliases(self):
+        builder = runpy.run_path(
+            str(
+                ENGINE_ROOT
+                / "runtimes"
+                / "extensions"
+                / "skills"
+                / "lexicons"
+                / "market"
+                / "skills-sh"
+                / "build_skills_sh_market_lexicons.py"
+            )
+        )
+        SkillEntry = builder["SkillEntry"]
+        manifest, en_payload, zh_payload = builder["_build_market_lexicons"](
+            [
+                SkillEntry(
+                    key="demo::wechat",
+                    source="demo",
+                    skill_id="wechat-publisher",
+                    name="wechat-publisher",
+                    detail_url="https://example.test/wechat",
+                    score=1_800_000,
+                    views={"all-time": {"rank": 1, "installs": 100000, "change": 0}},
+                    summary_text="Publish articles and image-text posts to WeChat Official Accounts via browser automation.",
+                    skill_text="Create a WeChat article and official account post workflow.",
+                )
+            ]
+        )
+
+        self.assertEqual(manifest.get("provider"), "skills-sh")
+        self.assertIn("wechat official accounts", dict(en_payload.get("querySynonyms") or {}))
+        self.assertIn("wechat official account", dict(en_payload.get("querySynonyms") or {}))
+        self.assertIn("official accounts", dict(en_payload.get("querySynonyms") or {}))
+        self.assertEqual(zh_payload.get("locale"), "zh-CN")
+
+    def test_market_lexicon_phrase_bridge_is_weak_weight_helper(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "scoped:hyperframes-website",
+                "name": "hyperframes-website",
+                "folder": "hyperframes-website",
+                "description": "Create hyperframes website animations and landing page motion systems for campaigns.",
+                "path": "E:/Projects/test1/.agents/skills/hyperframes-website",
+                "skillName": "hyperframes-website",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": "E:/Projects/test1",
+                "projectId": "test1",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "en.json").write_text(
+                '{"locale":"en","querySynonyms":{"wechat":["official account","article"]}}',
+                encoding="utf-8",
+            )
+            (root / "zh-CN.json").write_text(
+                '{"locale":"zh-CN","querySynonyms":{"公众号":["wechat","article"]}}',
+                encoding="utf-8",
+            )
+            provider_dir = root / "market" / "skills-sh"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            (provider_dir / "manifest.json").write_text(
+                json.dumps({"provider": "skills-sh", "locales": ["en", "zh-CN"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (provider_dir / "skills-sh-top1000.en.json").write_text(
+                json.dumps(
+                    {
+                        "locale": "en",
+                        "querySynonyms": {"hyperframes": ["website", "animation", "landing"]},
+                        "primaryThemeSynonyms": {"content_media": ["hyperframes website"]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (provider_dir / "skills-sh-top1000.zh-CN.json").write_text(
+                json.dumps(
+                    {
+                        "locale": "zh-CN",
+                        "querySynonyms": {"超帧": ["hyperframes", "website", "animation", "landing"]},
+                        "primaryThemeSynonyms": {"content_media": ["超帧网站"]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            registry = ExtensionLexiconRegistry(root_dir=root)
+            old_registry = extensions_runtime_module._EXTENSION_LEXICON_REGISTRY
+            try:
+                extensions_runtime_module._EXTENSION_LEXICON_REGISTRY = registry
+                extensions_runtime_module._apply_extension_lexicon_state(registry.ensure_fresh())
+                extensions_runtime_module._QUERY_ANALYSIS_CACHE.clear()
+
+                with patch.object(
+                    service,
+                    "_resolve_prefilter_policy",
+                    return_value={
+                        "enabled": False,
+                        "available": False,
+                        "mode": "lexical_shortlist",
+                        "modelId": None,
+                        "role": None,
+                        "reason": "disabled",
+                        "skills": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                        "mcp": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+                    },
+                ), patch.object(
+                    service,
+                    "_resolve_skill_inventory",
+                    return_value={"items": skills, "rootDescriptors": []},
+                ):
+                    bundle = service.build_contextual_route(
+                        user_query="超帧",
+                        available_tools=[],
+                        loaded_agents=None,
+                        skill_limit=5,
+                        mcp_limit=0,
+                        plugin_host_limit=0,
+                    )
+                    query_tokens, query_profile, _cache_hit, _lexicon_state, market_state = extensions_runtime_module._analyze_extensions_query("超帧")
+            finally:
+                extensions_runtime_module._EXTENSION_LEXICON_REGISTRY = old_registry
+                extensions_runtime_module._apply_extension_lexicon_state(old_registry.ensure_fresh())
+                extensions_runtime_module._QUERY_ANALYSIS_CACHE.clear()
+
+        self.assertIn("hyperframes-website", bundle.selected_skill_names)
+        self.assertTrue(bundle.candidate_summary.get("marketLexiconEnabled"))
+        self.assertEqual(bundle.candidate_summary.get("marketLexiconHitTerms"), ["超帧"])
+        self.assertGreater(int(bundle.candidate_summary.get("marketLexiconContributionScore") or 0), 0)
+        self.assertIn("hyperframes", query_tokens)
+        self.assertIn("website", query_tokens)
+        self.assertIsNone(query_profile.get("artifactIntent"))
+        self.assertEqual(market_state.get("matchedTerms"), ["超帧"])
+
+    def test_workspace_wechat_article_skill_matches_chinese_alias_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:wechat-article-writer",
+                "name": "wechat-article-writer",
+                "folder": "wechat-article-writer",
+                "description": "公众号文章自动化写作流程。当用户提到写公众号、微信文章、自媒体写作、内容创作时使用。",
+                "path": "C:/Users/sunny/.agents/skills/wechat-article-writer",
+                "skillName": "wechat-article-writer",
+                "sourceType": "global",
+                "visibility": "global",
+            },
+            {
+                "skillId": "global:wechat-studio",
+                "name": "wechat-studio",
+                "folder": "wechat-studio",
+                "description": "微信公众号内容生产工作台，覆盖选题、排版、封面图、发布前检查与运营协作。",
+                "path": "C:/Users/sunny/.agents/skills/wechat-studio",
+                "skillName": "wechat-studio",
+                "sourceType": "global",
+                "visibility": "global",
+            },
+            {
+                "skillId": "scoped:wechat-account-articles",
+                "name": "wechat-account-articles",
+                "folder": "wechat-account-articles",
+                "description": "End-to-end workflow for creating WeChat Official Account articles for open-source projects or tech concepts. Handles research, visual asset auditing, copywriting, and HTML generation.",
+                "path": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                "skillName": "wechat-account-articles",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": "E:/Projects/test1",
+                "projectId": "test1",
+            },
+            {
+                "skillId": "global:doc-coauthoring",
+                "name": "doc-coauthoring",
+                "folder": "doc-coauthoring",
+                "description": "Guide users through structured workflow for co-authoring documentation and proposals.",
+                "path": "C:/Users/sunny/.agents/skills/doc-coauthoring",
+                "skillName": "doc-coauthoring",
+                "sourceType": "global",
+                "visibility": "global",
+            },
+            {
+                "skillId": "global:skill-creator",
+                "name": "skill-creator",
+                "folder": "skill-creator",
+                "description": "Guide for creating effective skills and reusable agent workflows.",
+                "path": "C:/Users/sunny/.agents/skills/skill-creator",
+                "skillName": "skill-creator",
+                "sourceType": "global",
+                "visibility": "global",
+            },
+            {
+                "skillId": "global:huashu-speech-coach",
+                "name": "huashu-speech-coach",
+                "folder": "huashu-speech-coach",
+                "description": "演讲与分享教练，帮助准备培训、讲课、分享和演讲结构。",
+                "path": "C:/Users/sunny/.agents/skills/huashu-speech-coach",
+                "skillName": "huashu-speech-coach",
+                "sourceType": "global",
+                "visibility": "global",
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical_shortlist",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+                "skills": {"stage1TopK": 10, "llmEnabled": True, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 20, "llmEnabled": True, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            for query in ("微信", "公众号", "公众号文章", "微信公众号", "公众号写作", "公众号发文", "开源项目公众号文章"):
+                with self.subTest(query=query):
+                    bundle = service.build_contextual_route(
+                        user_query=query,
+                        available_tools=[],
+                        loaded_agents=None,
+                        skill_limit=5,
+                        mcp_limit=0,
+                        plugin_host_limit=0,
+                    )
+                    self.assertIn("wechat-account-articles", bundle.selected_skill_names)
+                    self.assertEqual(bundle.selected_skill_names[0], "wechat-account-articles")
+                    self.assertIn("zh-CN", bundle.candidate_summary.get("lexiconLocales") or [])
+                    self.assertIn("en", bundle.candidate_summary.get("lexiconLocales") or [])
+                    self.assertEqual(
+                        bundle.candidate_summary.get("primaryCanonicalFamily"),
+                        "wechat" if query == "微信" else "wechat-account" if query in {"公众号", "微信公众号"} else "wechat-account-article" if query == "开源项目公众号文章" else "wechat-account-writing" if query in {"公众号写作", "公众号发文"} else "wechat-account-article",
+                    )
+                    self.assertTrue(bundle.candidate_summary.get("canonicalFamilies"))
+
+            short_query_bundle = service.build_contextual_route(
+                user_query="微信",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+            self.assertTrue(short_query_bundle.candidate_summary.get("shortCanonicalNarrowing"))
+            self.assertTrue(short_query_bundle.candidate_summary.get("shortCanonicalNarrowingApplied"))
+            self.assertEqual(
+                set(short_query_bundle.selected_skill_names),
+                {"wechat-account-articles", "wechat-article-writer", "wechat-studio"},
+            )
+            self.assertNotIn("skill-creator", short_query_bundle.selected_skill_names)
+            self.assertNotIn("huashu-speech-coach", short_query_bundle.selected_skill_names)
+
+    def test_extensions_runtime_query_analysis_cache_hits_on_repeat_queries(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "scoped:wechat-account-articles",
+                "name": "wechat-account-articles",
+                "folder": "wechat-account-articles",
+                "description": "End-to-end workflow for creating WeChat Official Account articles for open-source projects or tech concepts.",
+                "path": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                "skillName": "wechat-account-articles",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": "E:/Projects/test1",
+                "projectId": "test1",
+            }
+        ]
+        extensions_runtime_module._QUERY_ANALYSIS_CACHE.clear()
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": False,
+                "available": False,
+                "mode": "lexical_shortlist",
+                "modelId": None,
+                "role": None,
+                "reason": "disabled",
+                "skills": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            first_bundle = service.build_contextual_route(
+                user_query="公众号文章",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+            second_bundle = service.build_contextual_route(
+                user_query="公众号文章",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertFalse(first_bundle.candidate_summary.get("queryAnalysisCacheHit"))
+        self.assertTrue(second_bundle.candidate_summary.get("queryAnalysisCacheHit"))
+
+    def test_extensions_preview_reports_dirty_visible_roots_without_barrier(self):
+        service = ExtensionsRuntimeService()
+        root_path = SkillLoader._normalize_path(r"E:\Projects\test1\.agents\skills")
+        visible_descriptors = [
+            {
+                "rootPath": root_path,
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": r"E:\Projects\test1",
+                "workspaceId": "test1",
+                "projectId": "project-test1",
+            }
+        ]
+        skill_context = {
+            "session_id": "session-project-test1",
+            "explicit_workspace_id": "test1",
+            "explicit_workspace_path": r"E:\Projects\test1",
+            "explicit_project_id": "project-test1",
+            "runtime_kind": "chat",
+        }
+        with patch.object(service, "_resolve_skill_loader_context", return_value=dict(skill_context)), patch.object(
+            service,
+            "_resolve_visible_skill_descriptors",
+            return_value=list(visible_descriptors),
+        ), patch.object(
+            service,
+            "_skill_inventory_status",
+            return_value={
+                "startupState": "ready",
+                "snapshotFreshness": "live",
+                "backgroundRefreshInProgress": False,
+                "skillCount": 37,
+            },
+        ), patch.object(
+            SkillLoader,
+            "_dirty_root_paths_for_descriptors",
+            return_value=[root_path],
+        ), patch.object(
+            SkillLoader,
+            "refresh_root_descriptors_if_changed",
+        ) as refresh_mock:
+            result = service._apply_inventory_freshness_mode(
+                freshness_mode=extensions_runtime_module._INVENTORY_FRESHNESS_PREVIEW,
+                reason="prefilter_preview",
+                include_scoped=True,
+                session_id="session-project-test1",
+                explicit_workspace_id="test1",
+                explicit_workspace_path=r"E:\Projects\test1",
+                explicit_project_id="project-test1",
+                runtime_kind="chat",
+            )
+
+        self.assertFalse(result.get("inventoryBarrierApplied"))
+        self.assertFalse(result.get("inventoryBarrierTimedOut"))
+        self.assertEqual(result.get("inventoryBarrierWaitMs"), 0.0)
+        self.assertEqual(result.get("inventoryReadyState"), "ready")
+        self.assertEqual(result.get("snapshotFreshness"), "live")
+        self.assertEqual(result.get("dirtyVisibleRoots"), [root_path])
+        self.assertEqual(result.get("excludeRootPaths"), set())
+        refresh_mock.assert_not_called()
+
+    def test_guarded_inventory_timeout_fail_closes_dirty_visible_roots(self):
+        service = ExtensionsRuntimeService()
+        root_path = SkillLoader._normalize_path(r"E:\Projects\test1\.agents\skills")
+        visible_descriptors = [
+            {
+                "rootPath": root_path,
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": r"E:\Projects\test1",
+                "workspaceId": "test1",
+                "projectId": "project-test1",
+            }
+        ]
+        skill_context = {
+            "session_id": "session-project-test1",
+            "explicit_workspace_id": "test1",
+            "explicit_workspace_path": r"E:\Projects\test1",
+            "explicit_project_id": "project-test1",
+            "runtime_kind": "chat",
+        }
+        dirty_side_effect = [[root_path], [root_path]]
+        with patch.object(service, "_resolve_skill_loader_context", return_value=dict(skill_context)), patch.object(
+            service,
+            "_resolve_visible_skill_descriptors",
+            return_value=list(visible_descriptors),
+        ), patch.object(
+            service,
+            "_skill_inventory_status",
+            return_value={
+                "startupState": "ready",
+                "snapshotFreshness": "live",
+                "backgroundRefreshInProgress": False,
+                "skillCount": 37,
+            },
+        ), patch.object(
+            SkillLoader,
+            "_dirty_root_paths_for_descriptors",
+            side_effect=dirty_side_effect,
+        ), patch.object(
+            SkillLoader,
+            "refresh_root_descriptors_if_changed",
+            return_value={"changed": False, "timedOut": True, "timedOutRoots": [root_path]},
+        ) as refresh_mock:
+            result = service._apply_inventory_freshness_mode(
+                freshness_mode=extensions_runtime_module._INVENTORY_FRESHNESS_GUARDED,
+                reason="supervisor_route",
+                include_scoped=True,
+                session_id="session-project-test1",
+                explicit_workspace_id="test1",
+                explicit_workspace_path=r"E:\Projects\test1",
+                explicit_project_id="project-test1",
+                runtime_kind="chat",
+            )
+
+        self.assertTrue(result.get("inventoryBarrierApplied"))
+        self.assertTrue(result.get("inventoryBarrierTimedOut"))
+        self.assertEqual(result.get("dirtyVisibleRoots"), [root_path])
+        self.assertEqual(result.get("excludeRootPaths"), {root_path})
+        self.assertEqual(result.get("waitBudgetMs"), 800)
+        self.assertGreater(result.get("inventoryBarrierWaitMs") or 0, 0)
+        refresh_mock.assert_called_once()
+        refresh_kwargs = refresh_mock.call_args.kwargs
+        self.assertEqual(refresh_kwargs.get("compare_existing"), False)
+        self.assertGreater(int(refresh_kwargs.get("timeout_ms") or 0), 0)
+
+    def test_skill_loader_visible_inventory_cache_hits_on_repeat_scoped_inventory(self):
+        original_registry = SkillLoader._skills_registry
+        original_manifest = SkillLoader._skills_manifest
+        original_root_descriptors = SkillLoader._skills_root_descriptors
+        original_root_signature = SkillLoader._skills_root_signature
+        original_fingerprint = SkillLoader._skills_fingerprint
+        original_revision = SkillLoader._skills_revision
+        original_root_states = SkillLoader._root_inventory_states
+        original_visible_cache = SkillLoader._visible_inventory_cache
+        original_dirty_root_paths = SkillLoader._dirty_root_paths
+        try:
+            global_descriptor = {
+                "rootPath": "C:/Users/sunny/.agents/skills",
+                "sourceType": "global",
+                "visibility": "global",
+            }
+            scoped_descriptor = {
+                "rootPath": "E:/Projects/test1/.agents/skills",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": "E:/Projects/test1",
+                "workspaceId": "test1",
+                "projectId": "project-test1",
+            }
+            SkillLoader._skills_registry = {
+                "global:wechat-studio": {
+                    "skillId": "global:wechat-studio",
+                    "skillName": "wechat-studio",
+                    "instructionPath": "C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md",
+                    "skillRoot": "C:/Users/sunny/.agents/skills/wechat-studio",
+                    "sourceType": "global",
+                    "visibility": "global",
+                    "rootPath": "C:/Users/sunny/.agents/skills",
+                },
+                "scoped:wechat-account-articles": {
+                    "skillId": "scoped:wechat-account-articles",
+                    "skillName": "wechat-account-articles",
+                    "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                    "skillRoot": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": "E:/Projects/test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                    "rootPath": "E:/Projects/test1/.agents/skills",
+                },
+            }
+            SkillLoader._skills_manifest = {}
+            SkillLoader._skills_root_descriptors = [global_descriptor, scoped_descriptor]
+            SkillLoader._skills_root_signature = SkillLoader._root_descriptors_signature([global_descriptor, scoped_descriptor])
+            SkillLoader._skills_fingerprint = "skills:cache"
+            SkillLoader._skills_revision = "skills:cache"
+            SkillLoader._visible_inventory_cache = {}
+            SkillLoader._dirty_root_paths = set()
+            SkillLoader._rebuild_root_inventory_states_from_registry()
+
+            with patch.object(
+                SkillLoader,
+                "_resolve_inventory_descriptors",
+                return_value=[global_descriptor, scoped_descriptor],
+            ):
+                first_inventory = SkillLoader.get_inventory(force_refresh=False, include_scoped=True)
+                second_inventory = SkillLoader.get_inventory(force_refresh=False, include_scoped=True)
+
+            self.assertFalse(first_inventory.get("visibleRegistryCacheHit"))
+            self.assertTrue(second_inventory.get("visibleRegistryCacheHit"))
+            self.assertEqual(
+                {item.get("skillName") for item in list(second_inventory.get("items") or [])},
+                {"wechat-studio", "wechat-account-articles"},
+            )
+            self.assertEqual(second_inventory.get("dirtyVisibleRoots"), [])
+        finally:
+            SkillLoader._skills_registry = original_registry
+            SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_descriptors = original_root_descriptors
+            SkillLoader._skills_root_signature = original_root_signature
+            SkillLoader._skills_fingerprint = original_fingerprint
+            SkillLoader._skills_revision = original_revision
+            SkillLoader._root_inventory_states = original_root_states
+            SkillLoader._visible_inventory_cache = original_visible_cache
+            SkillLoader._dirty_root_paths = original_dirty_root_paths
+
+    def test_skill_loader_root_aware_reload_keeps_unrelated_visible_cache(self):
+        original_registry = SkillLoader._skills_registry
+        original_manifest = SkillLoader._skills_manifest
+        original_root_descriptors = SkillLoader._skills_root_descriptors
+        original_root_signature = SkillLoader._skills_root_signature
+        original_fingerprint = SkillLoader._skills_fingerprint
+        original_revision = SkillLoader._skills_revision
+        original_root_states = SkillLoader._root_inventory_states
+        original_visible_cache = SkillLoader._visible_inventory_cache
+        original_dirty_root_paths = SkillLoader._dirty_root_paths
+        try:
+            global_descriptor = {"rootPath": "C:/Users/sunny/.agents/skills", "sourceType": "global", "visibility": "global"}
+            scoped_descriptor = {
+                "rootPath": "E:/Projects/test1/.agents/skills",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspacePath": "E:/Projects/test1",
+                "workspaceId": "test1",
+                "projectId": "project-test1",
+            }
+            SkillLoader._skills_registry = {
+                "global:wechat-studio": {
+                    "skillId": "global:wechat-studio",
+                    "skillName": "wechat-studio",
+                    "instructionPath": "C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md",
+                    "skillRoot": "C:/Users/sunny/.agents/skills/wechat-studio",
+                    "sourceType": "global",
+                    "visibility": "global",
+                    "rootPath": "C:/Users/sunny/.agents/skills",
+                },
+                "scoped:wechat-account-articles": {
+                    "skillId": "scoped:wechat-account-articles",
+                    "skillName": "wechat-account-articles",
+                    "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                    "skillRoot": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": "E:/Projects/test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                    "rootPath": "E:/Projects/test1/.agents/skills",
+                },
+            }
+            global_root_path = SkillLoader._normalize_path(global_descriptor["rootPath"])
+            scoped_root_path = SkillLoader._normalize_path(scoped_descriptor["rootPath"])
+            SkillLoader._skills_manifest = {
+                SkillLoader._normalize_path("C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md"): {
+                    "mtimeNs": 1,
+                    "size": 10,
+                    "rootPath": global_descriptor["rootPath"],
+                    "instructionPath": "C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md",
+                    "folder": "wechat-studio",
+                },
+                SkillLoader._normalize_path("E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md"): {
+                    "mtimeNs": 1,
+                    "size": 10,
+                    "rootPath": scoped_descriptor["rootPath"],
+                    "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                    "folder": "wechat-account-articles",
+                },
+            }
+            SkillLoader._skills_root_descriptors = [global_descriptor, scoped_descriptor]
+            SkillLoader._skills_root_signature = SkillLoader._root_descriptors_signature([global_descriptor, scoped_descriptor])
+            SkillLoader._skills_fingerprint = "skills:old"
+            SkillLoader._skills_revision = "skills:old"
+            SkillLoader._rebuild_root_inventory_states_from_registry()
+            SkillLoader._root_inventory_states[global_root_path]["rootRevision"] = "root:global-old"
+            SkillLoader._root_inventory_states[scoped_root_path]["rootRevision"] = "root:scoped-old"
+            global_cache_key = SkillLoader._visible_inventory_cache_key([global_descriptor])
+            scoped_cache_key = SkillLoader._visible_inventory_cache_key([global_descriptor, scoped_descriptor])
+            SkillLoader._visible_inventory_cache = {
+                global_cache_key: {"rootDescriptors": [global_descriptor], "items": [{"skillName": "wechat-studio"}]},
+                scoped_cache_key: {
+                    "rootDescriptors": [global_descriptor, scoped_descriptor],
+                    "items": [{"skillName": "wechat-studio"}, {"skillName": "wechat-account-articles"}],
+                },
+            }
+            SkillLoader._dirty_root_paths = {scoped_root_path}
+            scoped_manifest = {
+                SkillLoader._normalize_path("E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md"): {
+                    "mtimeNs": 2,
+                    "size": 12,
+                    "rootPath": scoped_descriptor["rootPath"],
+                    "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                    "folder": "wechat-account-articles",
+                }
+            }
+            with patch.object(
+                SkillLoader,
+                "_discovery_root_descriptors",
+                return_value=[global_descriptor, scoped_descriptor],
+            ), patch.object(
+                SkillLoader,
+                "_compute_root_manifest",
+                side_effect=lambda descriptor: (
+                    {SkillLoader._normalize_path("C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md"): dict(SkillLoader._skills_manifest[SkillLoader._normalize_path('C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md')])}
+                    if SkillLoader._normalize_path(descriptor.get("rootPath")) == global_root_path
+                    else dict(scoped_manifest)
+                ),
+            ), patch.object(
+                SkillLoader,
+                "_root_manifest_fingerprint",
+                side_effect=lambda descriptor, manifest: "root:global-old"
+                if SkillLoader._normalize_path(descriptor.get("rootPath")) == global_root_path
+                else "root:scoped-new",
+            ), patch.object(
+                SkillLoader,
+                "_scan_single_root_descriptor",
+                side_effect=lambda descriptor: (
+                    {"global:wechat-studio": dict(SkillLoader._skills_registry["global:wechat-studio"])}
+                    if SkillLoader._normalize_path(descriptor.get("rootPath")) == global_root_path
+                    else {"scoped:wechat-account-articles": dict(SkillLoader._skills_registry["scoped:wechat-account-articles"])}
+                ),
+            ), patch.object(
+                SkillLoader,
+                "_persist_cache",
+            ):
+                change = SkillLoader.reload_if_changed()
+
+            self.assertEqual(set(change.get("changedRoots") or []), {scoped_root_path})
+            self.assertIn(global_cache_key, SkillLoader._visible_inventory_cache)
+            self.assertNotIn(scoped_cache_key, SkillLoader._visible_inventory_cache)
+        finally:
+            SkillLoader._skills_registry = original_registry
+            SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_descriptors = original_root_descriptors
+            SkillLoader._skills_root_signature = original_root_signature
+            SkillLoader._skills_fingerprint = original_fingerprint
+            SkillLoader._skills_revision = original_revision
+            SkillLoader._root_inventory_states = original_root_states
+            SkillLoader._visible_inventory_cache = original_visible_cache
+            SkillLoader._dirty_root_paths = original_dirty_root_paths
+
+    def test_supervisor_route_fail_closes_dirty_visible_root_on_barrier_timeout(self):
+        service = ExtensionsRuntimeService()
+        captured_inventory_kwargs: list[dict[str, object]] = []
+        project_root = SkillLoader._normalize_path(r"E:\Projects\test1\.agents\skills")
+        inventory_freshness = {
+            "skillContext": {
+                "session_id": "session-project-test1",
+                "explicit_workspace_id": "test1",
+                "explicit_workspace_path": r"E:\Projects\test1",
+                "explicit_project_id": "project-test1",
+                "runtime_kind": "chat",
+            },
+            "visibleDescriptors": [
+                {"rootPath": "C:/Users/sunny/.agents/skills", "sourceType": "global", "visibility": "global"},
+                {
+                    "rootPath": project_root,
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": r"E:\Projects\test1",
+                    "workspaceId": "test1",
+                    "projectId": "project-test1",
+                },
+            ],
+            "visibleRootSignature": "visible:global+project-test1",
+            "visibleRootRevisionKey": "visible-rev:test1",
+            "inventoryReadyState": "refreshing",
+            "snapshotFreshness": "cached",
+            "inventoryBarrierApplied": True,
+            "inventoryBarrierWaitMs": 800,
+            "inventoryBarrierTimedOut": True,
+            "dirtyVisibleRoots": [project_root],
+            "excludeRootPaths": {project_root},
+            "waitBudgetMs": 800,
+        }
+        prefilter_policy = {
+            "enabled": False,
+            "available": False,
+            "mode": "lexical_only",
+            "modelId": "",
+            "role": "",
+            "reason": "test",
+            "skills": {"stage1Enabled": True, "stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+            "mcp": {"stage1Enabled": True, "stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+        }
+
+        def fake_resolve_skill_inventory(**kwargs):  # noqa: ANN003
+            captured_inventory_kwargs.append(dict(kwargs))
+            excluded = {SkillLoader._normalize_path(item) for item in list(kwargs.get("exclude_root_paths") or set())}
+            items = [
+                {
+                    "skillId": "global:wechat-studio",
+                    "skillName": "wechat-studio",
+                    "name": "wechat-studio",
+                    "folder": "wechat-studio",
+                    "description": "微信公众号运营工作台",
+                    "path": "C:/Users/sunny/.agents/skills/wechat-studio",
+                    "skillRoot": "C:/Users/sunny/.agents/skills/wechat-studio",
+                    "instructionPath": "C:/Users/sunny/.agents/skills/wechat-studio/SKILL.md",
+                    "sourceType": "global",
+                    "visibility": "global",
+                }
+            ]
+            if project_root not in excluded:
+                items.append(
+                    {
+                        "skillId": "scoped:wechat-account-articles",
+                        "skillName": "wechat-account-articles",
+                        "name": "wechat-account-articles",
+                        "folder": "wechat-account-articles",
+                        "description": "微信公众号文章调研、选题、写作与复盘工作流。",
+                        "path": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                        "skillRoot": "E:/Projects/test1/.agents/skills/wechat-account-articles",
+                        "instructionPath": "E:/Projects/test1/.agents/skills/wechat-account-articles/SKILL.md",
+                        "sourceType": "scoped_workspace",
+                        "visibility": "scoped",
+                        "workspacePath": r"E:\Projects\test1",
+                        "workspaceId": "test1",
+                        "projectId": "project-test1",
+                    }
+                )
+            return {
+                "items": items,
+                "rootDescriptors": list(inventory_freshness.get("visibleDescriptors") or []),
+                "revision": "skills:scoped:test1",
+                "visibleRootSignature": "visible:global+project-test1",
+                "visibleRootRevisionKey": "visible-rev:test1",
+                "changedRoots": [project_root],
+                "scopedRefreshMode": "delta",
+                "dirtyVisibleRoots": [project_root],
+                "inventoryReadyState": "refreshing",
+                "snapshotFreshness": "cached",
+            }
+
+        token = service.bind_execution_context(
+            session_id="session-project-test1",
+            workspace_id="test1",
+            workspace_path=r"E:\Projects\test1",
+            project_id="project-test1",
+            runtime_kind="chat",
+        )
+        try:
+            with patch.object(service, "_apply_inventory_freshness_mode", return_value=dict(inventory_freshness)), patch.object(
+                service,
+                "_resolve_skill_inventory",
+                side_effect=fake_resolve_skill_inventory,
+            ), patch.object(
+                service,
+                "_resolve_prefilter_policy",
+                return_value=prefilter_policy,
+            ):
+                bundle = service.build_supervisor_route(
+                    user_query="写一个公众号文章提纲",
+                    supervisor_tools=[],
+                    loaded_agents=[],
+                )
+        finally:
+            service.reset_execution_context(token)
+
+        self.assertEqual(len(captured_inventory_kwargs), 1)
+        self.assertEqual(captured_inventory_kwargs[0].get("exclude_root_paths"), {project_root})
+        self.assertNotIn("wechat-account-articles", bundle.selected_skill_names)
+        self.assertIn("wechat-studio", bundle.selected_skill_names)
+        self.assertTrue(bundle.candidate_summary.get("inventoryBarrierTimedOut"))
+        self.assertEqual(bundle.candidate_summary.get("dirtyVisibleRoots"), [project_root])
+        self.assertEqual(bundle.candidate_summary.get("snapshotFreshness"), "cached")
 
 
 class MCPManagerDeltaReloadTests(unittest.IsolatedAsyncioTestCase):

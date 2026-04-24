@@ -1,0 +1,12 @@
+{
+  "locale": "ja",
+  "version": 1,
+  "querySynonyms": {
+    "ウィーチャット": ["wechat"],
+    "記事": ["article", "document"]
+  },
+  "artifactIntentSynonyms": {
+    "document": ["記事"],
+    "audio": ["音声"]
+  }
+}

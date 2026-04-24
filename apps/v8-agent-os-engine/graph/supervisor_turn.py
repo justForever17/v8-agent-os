@@ -9,7 +9,24 @@ from .no_progress_breaker import apply_no_progress_breaker
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from core.context.delegation import build_delegation_context
 from core.runtime.extensions_runtime import extensions_runtime_service
+from core.runtime.reflex_gate import (
+    render_gate_prompt_addition,
+    render_reflex_prompt_addition,
+    runtime_evidence_feedback_service,
+    runtime_preflight_gate,
+    runtime_reflex_service,
+)
 from core.system_tools.baseline import select_baseline_system_tool_names
+
+
+def _last_memory_session_context_diagnostics() -> dict:
+    try:
+        from core.memory.store import memory_store
+
+        diagnostics = getattr(memory_store, "_last_session_context_diagnostics", {}) or {}
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    except Exception:
+        return {}
 
 
 def _attach_route_context_to_response(response, *, user_query: str, route_bundle, selected_tools) -> None:
@@ -86,6 +103,25 @@ def execute_supervisor_turn(
         filtered_supervisor_tools = route_bundle.filtered_tools
         extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
 
+        reflex_decision = runtime_reflex_service.evaluate(
+            user_query=user_query,
+            scope=current_scope,
+            scope_chain=scope_chain,
+            session_id=session_id,
+            route_bundle=route_bundle,
+            state=state,
+        )
+        gate_decision = runtime_preflight_gate.evaluate(
+            user_query=user_query,
+            scope=current_scope,
+            scope_chain=scope_chain,
+            session_id=session_id,
+            route_bundle=route_bundle,
+            state=state,
+        )
+        reflex_prompt_addition = render_reflex_prompt_addition(reflex_decision)
+        gate_prompt_addition = render_gate_prompt_addition(gate_decision)
+
         prompt_started_at = time.perf_counter()
         context_bundle = build_supervisor_system_content(
             state=state,
@@ -99,9 +135,22 @@ def execute_supervisor_turn(
             supervisor_tools=filtered_supervisor_tools,
             memory_runtime=memory_runtime,
             extension_prompt_addition=route_bundle.prompt_addition,
+            reflex_prompt_addition=reflex_prompt_addition,
+            gate_prompt_addition=gate_prompt_addition,
         )
         prompt_duration_ms = round((time.perf_counter() - prompt_started_at) * 1000, 2)
         system_content = context_bundle["system_content"]
+        memory_diagnostics = _last_memory_session_context_diagnostics()
+        evidence_feedback_packet = runtime_evidence_feedback_service.record(
+            session_id=session_id,
+            run_id=state.get("run_id") or state.get("runId"),
+            scope=current_scope,
+            reflex_decision=reflex_decision,
+            gate_decision=gate_decision,
+            memory_diagnostics=memory_diagnostics,
+            route_bundle=route_bundle,
+            state=state,
+        )
 
         passive_rag_started_at = time.perf_counter()
         prepared_messages = apply_passive_rag_injection(
@@ -133,6 +182,9 @@ def execute_supervisor_turn(
                 "selectedPluginHostToolCount": len(route_bundle.candidate_summary.get("pluginHostTools") or []),
                 "scope": current_scope,
                 "sessionId": session_id,
+                "runtimeReflex": reflex_decision.as_dict(),
+                "runtimeGate": gate_decision.as_dict(),
+                "evidenceFeedback": evidence_feedback_packet.as_dict(),
             }
         )
 

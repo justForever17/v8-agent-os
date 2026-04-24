@@ -486,6 +486,8 @@ def build_supervisor_system_content(
     supervisor_tools: list,
     memory_runtime,
     extension_prompt_addition: str = "",
+    reflex_prompt_addition: str = "",
+    gate_prompt_addition: str = "",
 ):
     def _planner_context(plan: dict | None) -> str:
         if not isinstance(plan, dict) or not plan:
@@ -820,6 +822,7 @@ def build_supervisor_system_content(
         f"{todos_context}{memory_context}\n\n"
         f"{workspace_rules_context}"
         f"{env_context}{runtime_guidance}\n"
+        f"{reflex_prompt_addition}{gate_prompt_addition}"
         f"{extension_prompt_addition}{group_moderation_directive}"
     )
 
@@ -838,6 +841,8 @@ def build_supervisor_system_content(
         "workspace_rules_context": workspace_rules_context,
         "env_context": env_context,
         "group_moderation_directive": group_moderation_directive,
+        "reflex_prompt_addition": reflex_prompt_addition,
+        "gate_prompt_addition": gate_prompt_addition,
         "prompt_budget_diagnostics": prompt_budget_diagnostics,
     }
 

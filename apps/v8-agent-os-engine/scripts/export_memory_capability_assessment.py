@@ -48,6 +48,8 @@ DOCS_ROOT = REPO_ROOT / "docs" / "chatruntime"
 OUTPUT_ROOT = DOCS_ROOT / "memory_capability_reports"
 RUNBOOK_PATH = DOCS_ROOT / "ASSESSMENT_DIAGNOSTICS_RUNBOOK_ZH.md"
 EVALS_ROOT = ENGINE_ROOT / "tests" / "evals"
+LONGMEMEVAL_HARNESS_ROOT = EVALS_ROOT / "longmemeval"
+LONGMEMEVAL_OFFICIAL_REPO = "https://github.com/xiaowu0162/LongMemEval"
 
 
 def _run_real_eval_suite() -> dict[str, Any]:
@@ -75,6 +77,26 @@ def _run_real_eval_suite() -> dict[str, Any]:
             "failedCases": ["eval_suite_failed"],
             "riskFindings": [{"id": "eval_suite_failed", "details": str(exc)}],
         }
+
+
+def _longmemeval_official_harness_status() -> dict[str, Any]:
+    adapter_ready = (LONGMEMEVAL_HARNESS_ROOT / "harness.py").exists()
+    smoke_test_ready = (LONGMEMEVAL_HARNESS_ROOT / "test_longmemeval_harness.py").exists()
+    return {
+        "officialRepo": LONGMEMEVAL_OFFICIAL_REPO,
+        "adapterPath": str(LONGMEMEVAL_HARNESS_ROOT),
+        "adapterReady": adapter_ready,
+        "smokeTestReady": smoke_test_ready,
+        "supportedSplits": ["oracle", "longmemeval_s_cleaned", "longmemeval_m_cleaned"],
+        "officialScore": None,
+        "officialScoreAvailable": False,
+        "status": "adapter_ready_not_officially_scored" if adapter_ready else "adapter_missing",
+        "notes": [
+            "V8OS internal eval scores are not LongMemEval official scores.",
+            "Generate question_id/hypothesis JSONL with the adapter, then run LongMemEval src/evaluation/evaluate_qa.py for official scoring.",
+            "Report model, data version, split, date, and whether cleaned data was used when publishing a score.",
+        ],
+    }
 
 
 def _now_stamp() -> str:
@@ -456,10 +478,12 @@ def _build_report(results: dict[str, Any]) -> str:
         f"- 真实 eval 通过率: `{round(results['realEvalSummary']['passRate'] * 100, 2)}%`",
         f"- 真实 eval P0 全通过: `{'是' if results['realEvalSummary']['p0Passed'] else '否'}`",
         f"- 硬门槛达成: `{'是' if results['scoreSummary']['gateReached'] else '否'}`",
+        f"- LongMemEval 官方成绩: `{'未产生' if not results['officialHarnessStatus']['officialScoreAvailable'] else results['officialHarnessStatus']['officialScore']}`",
         "",
         "## 总体判断",
         "",
         "- 当前报告采用双层评分：守门评分保留当前结构/配置自检，最终结论优先看 `tests/evals` 的真实可复跑评测。",
+        "- LongMemEval 只显示 official harness 接入状态；未运行官方 `evaluate_qa.py` 前，不将任何内部结果表述为官方成绩。",
         "- 同 key 覆写、语义 key 归一、项目隔离、external API 隔离已经进入可执行通过状态。",
         "- 未达门槛时，优先排查真实 eval 失败项，其次排查 durable policy 是否仍停留在旧低阈值模板，以及 workflow learning 是否缺少更多 proof-backed 成功样本。",
         "",
@@ -470,6 +494,17 @@ def _build_report(results: dict[str, Any]) -> str:
         f"- passed: `{results['realEvalSummary'].get('passed', 0)}`",
         f"- failed: `{results['realEvalSummary'].get('failed', 0)}`",
         f"- failedCases: `{json.dumps(results['realEvalSummary'].get('failedCases', []), ensure_ascii=False)}`",
+        "",
+        "## LongMemEval Official Harness",
+        "",
+        f"- officialRepo: `{results['officialHarnessStatus']['officialRepo']}`",
+        f"- adapterPath: `{results['officialHarnessStatus']['adapterPath']}`",
+        f"- status: `{results['officialHarnessStatus']['status']}`",
+        f"- adapterReady: `{results['officialHarnessStatus']['adapterReady']}`",
+        f"- smokeTestReady: `{results['officialHarnessStatus']['smokeTestReady']}`",
+        f"- officialScoreAvailable: `{results['officialHarnessStatus']['officialScoreAvailable']}`",
+        f"- supportedSplits: `{', '.join(results['officialHarnessStatus']['supportedSplits'])}`",
+        "- 发布任何 LongMemEval 分数前，必须记录模型、数据版本、split、评估日期和官方评估日志路径。",
         "",
         "## 逐项结果",
         "",
@@ -557,6 +592,7 @@ def main() -> None:
     internal_total = sum(item["internal"] for item in scorecard)
     public_score, internal_score = _public_internal_score(public_total, internal_total)
     real_eval_summary = _run_real_eval_suite()
+    official_harness_status = _longmemeval_official_harness_status()
     eval_gate_reached = bool(real_eval_summary.get("p0Passed")) and float(real_eval_summary.get("passRate") or 0.0) >= 0.95
     gate_reached = public_score >= 9.8 and internal_score >= 9.0 and eval_gate_reached
 
@@ -578,6 +614,7 @@ def main() -> None:
             "realEvalGateReached": eval_gate_reached,
         },
         "realEvalSummary": real_eval_summary,
+        "officialHarnessStatus": official_harness_status,
         "harshQuestionMatrix": _harsh_question_matrix(),
     }
     markdown = _build_report(results)

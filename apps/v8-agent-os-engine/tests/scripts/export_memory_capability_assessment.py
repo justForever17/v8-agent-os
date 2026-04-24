@@ -11,7 +11,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 
-ENGINE_ROOT = Path(__file__).resolve().parents[1]
+ENGINE_ROOT = Path(__file__).resolve().parents[2]
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -564,7 +564,7 @@ def _build_report(results: dict[str, Any]) -> str:
         [
             "## 可复跑入口",
             "",
-            "- 运行脚本: `E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\.venv\\Scripts\\python.exe E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\scripts\\export_memory_capability_assessment.py`",
+            "- 运行脚本: `E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\.venv\\Scripts\\python.exe E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\tests\\scripts\\export_memory_capability_assessment.py`",
         ]
     )
     return "\n".join(lines) + "\n"

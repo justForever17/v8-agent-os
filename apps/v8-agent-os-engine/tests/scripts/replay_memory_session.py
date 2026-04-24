@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-ENGINE_ROOT = Path(__file__).resolve().parents[1]
+ENGINE_ROOT = Path(__file__).resolve().parents[2]
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 

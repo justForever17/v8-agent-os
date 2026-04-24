@@ -11,7 +11,7 @@ from unittest.mock import patch
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 
-ENGINE_ROOT = Path(__file__).resolve().parents[1]
+ENGINE_ROOT = Path(__file__).resolve().parents[2]
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -597,7 +597,7 @@ def _build_report(results: dict[str, Any]) -> str:
             "",
             "## 可复跑入口",
             "",
-            "- 运行脚本: `E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\.venv\\Scripts\\python.exe E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\scripts\\export_context_management_assessment.py`",
+            "- 运行脚本: `E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\.venv\\Scripts\\python.exe E:\\Projects\\v8chat\\v8-agent-os\\apps\\v8-agent-os-engine\\tests\\scripts\\export_context_management_assessment.py`",
             f"- 统一运行说明: `{RUNBOOK_PATH}`",
         ]
     )

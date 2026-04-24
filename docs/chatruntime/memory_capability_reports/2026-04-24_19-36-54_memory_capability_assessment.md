@@ -160,4 +160,4 @@
 
 ## 可复跑入口
 
-- 运行脚本: `E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\scripts\export_memory_capability_assessment.py`
+- 运行脚本: `E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\tests\scripts\export_memory_capability_assessment.py`

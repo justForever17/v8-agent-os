@@ -185,6 +185,9 @@
   },
   "active": "abc38cb20d37f2a7",
   "lastOpenFiles": [
+    "PLUGIN_HOST/OPENCLAW_4_8_PLUGIN_HOST_ADOPTION_ZH.md",
+    "PLUGIN_HOST",
+    "新建文件夹",
     "chatruntime/memory_capability_reports/2026-04-24_21-32-20_memory_capability_assessment.md",
     "supervisor/SUPERVISOR_SINGLE_TURN_SYSTEM_CONTENT_2026-04-19.md",
     "chatruntime/memory_capability_reports/2026-04-24_21-32-20_memory_capability_assessment.json",
@@ -216,10 +219,7 @@
     "chatruntime/system_content_stress_reports/2026-04-24_11-30-55_system_content_stress_report.md",
     "chatruntime/system_content_stress_reports/2026-04-24_11-28-55_network_api_supervisor_system_content.md",
     "chatruntime/system_content_stress_reports/2026-04-24_11-28-55_daily_chat_supervisor_system_content.md",
-    "chatruntime/system_content_stress_reports/2026-04-24_11-28-55_daily_chat_subagent_system_content.md",
     "runtime-governance",
-    "supervisor/plan/_dry_run_debug.log",
-    "memoryruntime",
-    "supervisor/plan"
+    "supervisor/plan/_dry_run_debug.log"
   ]
 }

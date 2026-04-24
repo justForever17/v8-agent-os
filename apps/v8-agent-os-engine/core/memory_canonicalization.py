@@ -8,21 +8,81 @@ _PREFERENCE_KEY_ALIASES: dict[str, str] = {
     "shoe_brand_preference": "favorite_shoe_brand",
     "preferred_shoe_brand": "favorite_shoe_brand",
     "shoe_brand_like": "favorite_shoe_brand",
+    "favorite_brand": "favorite_brand",
+    "brand_preference": "favorite_brand",
+    "preferred_brand": "favorite_brand",
+    "preferred_model": "preferred_ai_model",
+    "model_preference": "preferred_ai_model",
+    "ai_model_preference": "preferred_ai_model",
+    "llm_preference": "preferred_ai_model",
+    "provider_preference": "preferred_ai_provider",
+    "model_provider_preference": "preferred_ai_provider",
+    "ai_provider_preference": "preferred_ai_provider",
     "preferred_language": "language_preference",
     "response_language": "language_preference",
     "reply_language": "language_preference",
     "writing_language": "language_preference",
     "tone_preference": "response_tone_preference",
     "reply_tone": "response_tone_preference",
+    "response_tone": "response_tone_preference",
+    "communication_tone": "response_tone_preference",
     "coding_language_preference": "preferred_programming_language",
+    "programming_language_preference": "preferred_programming_language",
+    "preferred_coding_language": "preferred_programming_language",
+    "framework_preference": "preferred_framework",
+    "preferred_frontend_framework": "preferred_framework",
+    "preferred_backend_framework": "preferred_framework",
+    "library_preference": "preferred_library",
+    "editor_preference": "preferred_editor",
+    "ide_preference": "preferred_editor",
+    "preferred_ide": "preferred_editor",
+    "package_manager_preference": "preferred_package_manager",
+    "preferred_pm": "preferred_package_manager",
+    "os_preference": "preferred_operating_system",
+    "platform_preference": "preferred_operating_system",
+    "theme_preference": "ui_theme_preference",
+    "ui_preference": "ui_theme_preference",
+    "communication_channel_preference": "preferred_communication_channel",
+    "channel_preference": "preferred_communication_channel",
 }
 
 _KNOWLEDGE_CATEGORY_ALIASES: dict[str, str] = {
+    "api integration": "api_integration",
+    "api_integration": "api_integration",
+    "api contract": "api_contract",
+    "api_contract": "api_contract",
+    "business rule": "business_logic",
+    "business_rule": "business_logic",
     "business logic": "business_logic",
+    "business_logic": "business_logic",
+    "deployment": "deployment_ops",
+    "deploy": "deployment_ops",
+    "ops": "operations",
+    "operations": "operations",
+    "operational": "operations",
     "runtime contract": "runtime_contract",
+    "runtime_contract": "runtime_contract",
     "runtime governance": "runtime_governance",
+    "runtime_governance": "runtime_governance",
     "operational workflow": "operational_workflow",
+    "operational_workflow": "operational_workflow",
+    "project convention": "project_convention",
+    "project_convention": "project_convention",
+    "repo convention": "project_convention",
+    "repo_convention": "project_convention",
+    "repository convention": "project_convention",
+    "repository_convention": "project_convention",
+    "security policy": "security",
+    "security_policy": "security",
+    "data policy": "data_governance",
+    "data_policy": "data_governance",
+    "test strategy": "testing_strategy",
+    "test_strategy": "testing_strategy",
+    "testing": "testing_strategy",
     "code style": "code_style",
+    "code_style": "code_style",
+    "coding style": "code_style",
+    "coding_style": "code_style",
 }
 
 
@@ -48,10 +108,30 @@ def canonicalize_preference_key(raw_key: str) -> str:
     tokens = set(part for part in normalized.split("_") if part)
     if {"shoe", "brand"} <= tokens and tokens & {"preference", "preferred", "favorite", "like"}:
         return "favorite_shoe_brand"
+    if "brand" in tokens and tokens & {"preference", "preferred", "favorite", "like"}:
+        return "favorite_brand"
+    if tokens & {"model", "llm"} and tokens & {"preference", "preferred", "favorite"}:
+        return "preferred_ai_model"
+    if "provider" in tokens and tokens & {"preference", "preferred", "favorite", "model", "ai"}:
+        return "preferred_ai_provider"
     if "language" in tokens and tokens & {"preference", "preferred", "response", "reply", "writing"}:
         return "language_preference"
     if "tone" in tokens and tokens & {"preference", "reply", "response"}:
         return "response_tone_preference"
+    if "framework" in tokens and tokens & {"preference", "preferred", "favorite"}:
+        return "preferred_framework"
+    if "library" in tokens and tokens & {"preference", "preferred", "favorite"}:
+        return "preferred_library"
+    if tokens & {"editor", "ide"} and tokens & {"preference", "preferred", "favorite"}:
+        return "preferred_editor"
+    if "package" in tokens and "manager" in tokens and tokens & {"preference", "preferred", "favorite"}:
+        return "preferred_package_manager"
+    if tokens & {"os", "platform"} and tokens & {"preference", "preferred", "favorite"}:
+        return "preferred_operating_system"
+    if "theme" in tokens and tokens & {"preference", "preferred", "favorite", "ui"}:
+        return "ui_theme_preference"
+    if "channel" in tokens and tokens & {"communication", "preference", "preferred", "favorite"}:
+        return "preferred_communication_channel"
     return normalized
 
 

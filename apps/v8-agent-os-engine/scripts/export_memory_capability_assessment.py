@@ -47,6 +47,34 @@ REPO_ROOT = ENGINE_ROOT.parents[1]
 DOCS_ROOT = REPO_ROOT / "docs" / "chatruntime"
 OUTPUT_ROOT = DOCS_ROOT / "memory_capability_reports"
 RUNBOOK_PATH = DOCS_ROOT / "ASSESSMENT_DIAGNOSTICS_RUNBOOK_ZH.md"
+EVALS_ROOT = ENGINE_ROOT / "tests" / "evals"
+
+
+def _run_real_eval_suite() -> dict[str, Any]:
+    if not EVALS_ROOT.exists():
+        return {
+            "available": False,
+            "passRate": 0.0,
+            "p0Passed": False,
+            "failedCases": ["eval_suite_missing"],
+            "riskFindings": [{"id": "eval_suite_missing", "details": str(EVALS_ROOT)}],
+        }
+    if str(EVALS_ROOT) not in sys.path:
+        sys.path.insert(0, str(EVALS_ROOT))
+    try:
+        from memory_eval_matrix import run_memory_eval_matrix
+
+        result = run_memory_eval_matrix()
+        result["available"] = True
+        return result
+    except Exception as exc:
+        return {
+            "available": True,
+            "passRate": 0.0,
+            "p0Passed": False,
+            "failedCases": ["eval_suite_failed"],
+            "riskFindings": [{"id": "eval_suite_failed", "details": str(exc)}],
+        }
 
 
 def _now_stamp() -> str:
@@ -131,7 +159,7 @@ def _check_semantic_key_drift() -> dict[str, Any]:
         "evidenceType": "executed",
         "details": {
             "keys": keys,
-            "note": "当前系统不会自动把语义相近的不同 key 归并成同一偏好。",
+            "note": "canonical registry 会把明确同义 key 归并到同一偏好键，避免长期注入面并存冲突。",
         },
     }
 
@@ -425,13 +453,23 @@ def _build_report(results: dict[str, Any]) -> str:
         "",
         f"- 对外 benchmark 映射分: `{results['scoreSummary']['publicScore']}/10`",
         f"- 内部 runtime-first 苛刻治理分: `{results['scoreSummary']['internalScore']}/10`",
+        f"- 真实 eval 通过率: `{round(results['realEvalSummary']['passRate'] * 100, 2)}%`",
+        f"- 真实 eval P0 全通过: `{'是' if results['realEvalSummary']['p0Passed'] else '否'}`",
         f"- 硬门槛达成: `{'是' if results['scoreSummary']['gateReached'] else '否'}`",
         "",
         "## 总体判断",
         "",
-        "- 当前评分以真实执行证据为主，不再沿用旧的静态保守分档。",
+        "- 当前报告采用双层评分：守门评分保留当前结构/配置自检，最终结论优先看 `tests/evals` 的真实可复跑评测。",
         "- 同 key 覆写、语义 key 归一、项目隔离、external API 隔离已经进入可执行通过状态。",
-        "- 未达门槛时，优先排查 durable policy 是否仍停留在旧低阈值模板，以及 workflow learning 是否缺少更多 proof-backed 成功样本。",
+        "- 未达门槛时，优先排查真实 eval 失败项，其次排查 durable policy 是否仍停留在旧低阈值模板，以及 workflow learning 是否缺少更多 proof-backed 成功样本。",
+        "",
+        "## 真实 Eval Suite",
+        "",
+        f"- eval 目录: `{EVALS_ROOT}`",
+        f"- caseCount: `{results['realEvalSummary'].get('caseCount', 0)}`",
+        f"- passed: `{results['realEvalSummary'].get('passed', 0)}`",
+        f"- failed: `{results['realEvalSummary'].get('failed', 0)}`",
+        f"- failedCases: `{json.dumps(results['realEvalSummary'].get('failedCases', []), ensure_ascii=False)}`",
         "",
         "## 逐项结果",
         "",
@@ -518,7 +556,9 @@ def main() -> None:
     public_total = sum(item["public"] for item in scorecard)
     internal_total = sum(item["internal"] for item in scorecard)
     public_score, internal_score = _public_internal_score(public_total, internal_total)
-    gate_reached = public_score >= 9.8 and internal_score >= 9.0
+    real_eval_summary = _run_real_eval_suite()
+    eval_gate_reached = bool(real_eval_summary.get("p0Passed")) and float(real_eval_summary.get("passRate") or 0.0) >= 0.95
+    gate_reached = public_score >= 9.8 and internal_score >= 9.0 and eval_gate_reached
 
     results = {
         "generatedAt": stamp,
@@ -535,7 +575,9 @@ def main() -> None:
             "internalScore": internal_score,
             "gateReached": gate_reached,
             "gateTarget": {"public": 9.8, "internal": 9.0},
+            "realEvalGateReached": eval_gate_reached,
         },
+        "realEvalSummary": real_eval_summary,
         "harshQuestionMatrix": _harsh_question_matrix(),
     }
     markdown = _build_report(results)

@@ -66,6 +66,7 @@ class MemoryStore:
         self.memory_path = MEMORY_ROOT / "MEMORY.md"
         self._preferences_cache: Optional[Dict[str, Dict[str, str]]] = None
         self._cache_mtime: float = 0.0
+        self._last_session_context_diagnostics: Dict[str, Any] = {}
         self._ensure_structure()
     
     # ==========================================
@@ -1751,7 +1752,149 @@ class MemoryStore:
                 1,
                 12,
             ),
+            "knowledgeGraphSummaryEnabled": _resolve_bool("passive_knowledge_graph_summary_enabled", True),
+            "knowledgeGraphSummaryMaxRelations": _resolve_int(
+                "passive_knowledge_graph_summary_max_relations",
+                5,
+                1,
+                12,
+            ),
+            "knowledgeGraphSummaryMaxChars": _resolve_int(
+                "passive_knowledge_graph_summary_max_chars",
+                720,
+                240,
+                2000,
+            ),
         }
+
+    def _build_knowledge_graph_summary_for_injection(
+        self,
+        *,
+        query: str,
+        scope: str,
+        scope_chain: List[str],
+        max_relations: int,
+        max_chars: int,
+    ) -> tuple[str, Dict[str, Any]]:
+        diagnostics: Dict[str, Any] = {
+            "graphSummaryInjected": False,
+            "graphSummaryRelationCount": 0,
+            "graphSummarySeedEntities": [],
+            "graphSummaryTrimmed": False,
+            "graphSummaryRejectReason": "",
+        }
+        if not str(query or "").strip():
+            diagnostics["graphSummaryRejectReason"] = "empty_query"
+            return "", diagnostics
+
+        try:
+            preview = self._execute_unified_recall(
+                query=query,
+                limit=max(max_relations, 3),
+                scope=scope,
+                scopes=scope_chain,
+            )
+        except Exception as exc:
+            diagnostics["graphSummaryRejectReason"] = f"recall_failed:{exc}"
+            return "", diagnostics
+
+        recall_diagnostics = dict(preview.get("diagnostics") or {})
+        diagnostics["graphSummarySeedEntities"] = list(recall_diagnostics.get("graph_entities") or [])
+        if recall_diagnostics.get("graph_reject_reason"):
+            diagnostics["graphSummaryRejectReason"] = str(recall_diagnostics.get("graph_reject_reason") or "")
+
+        graph_items = [
+            item for item in list(preview.get("accepted_items") or [])
+            if str(item.get("source") or "").find("graph") >= 0
+            or str(item.get("category") or "") == "graph_context"
+        ]
+        if not graph_items:
+            if not diagnostics["graphSummaryRejectReason"]:
+                diagnostics["graphSummaryRejectReason"] = "no_accepted_graph_items"
+            return "", diagnostics
+
+        lines: List[str] = []
+        seen: set[str] = set()
+        for item in graph_items:
+            fact = str(item.get("fact") or "").strip()
+            fact = re.sub(r"^\[Graph Context\]\s*", "", fact).strip()
+            if not fact or fact in seen:
+                continue
+            seen.add(fact)
+            lines.append(f"- {fact}")
+            if len(lines) >= max_relations:
+                break
+        summary = "\n".join(lines).strip()
+        if not summary:
+            diagnostics["graphSummaryRejectReason"] = "empty_graph_summary"
+            return "", diagnostics
+
+        if len(summary) > max_chars:
+            summary = summary[: max_chars - 3].rstrip() + "..."
+            diagnostics["graphSummaryTrimmed"] = True
+        diagnostics["graphSummaryInjected"] = True
+        diagnostics["graphSummaryRelationCount"] = len(lines)
+        diagnostics["graphSummaryRejectReason"] = ""
+        return summary, diagnostics
+
+    def _build_memory_consistency_note_for_injection(
+        self,
+        *,
+        active_preferences: Dict[str, str],
+        passive_text: str,
+    ) -> tuple[str, Dict[str, Any]]:
+        diagnostics: Dict[str, Any] = {
+            "consistencyNoteInjected": False,
+            "consistencyConflicts": [],
+        }
+        if not active_preferences or not passive_text:
+            return "", diagnostics
+
+        value_hints: Dict[str, List[str]] = {
+            "favorite_shoe_brand": ["阿迪达斯", "adidas", "耐克", "nike"],
+        }
+        haystack = str(passive_text or "")
+        haystack_lower = haystack.lower()
+        conflicts: List[Dict[str, str]] = []
+        for key, current_value in active_preferences.items():
+            canonical_key = canonicalize_preference_key(key)
+            candidates = value_hints.get(canonical_key) or []
+            if not candidates:
+                continue
+            current = str(current_value or "").strip()
+            current_lower = current.lower()
+            for candidate in candidates:
+                candidate_text = str(candidate or "").strip()
+                if not candidate_text:
+                    continue
+                if candidate_text.lower() == current_lower or candidate_text == current:
+                    continue
+                if candidate_text.lower() in haystack_lower:
+                    conflicts.append(
+                        {
+                            "key": canonical_key,
+                            "currentValue": current,
+                            "staleValue": candidate_text,
+                        }
+                    )
+                    break
+
+        if not conflicts:
+            return "", diagnostics
+
+        lines = [
+            "[MEMORY CONSISTENCY NOTE]",
+            "Canonical active preferences are authoritative when older summaries disagree:",
+        ]
+        for conflict in conflicts[:4]:
+            lines.append(
+                f"- {conflict['key']}: use current value \"{conflict['currentValue']}\"; "
+                f"older summary mentions \"{conflict['staleValue']}\"."
+            )
+        lines.append("[/MEMORY CONSISTENCY NOTE]")
+        diagnostics["consistencyNoteInjected"] = True
+        diagnostics["consistencyConflicts"] = conflicts
+        return "\n".join(lines), diagnostics
 
     def _format_memory_map_for_injection(self, anchor_date: Optional[str] = None, *, node_limit: int = 4) -> str:
         memory_map = self.build_memory_map(anchor_date=anchor_date)
@@ -2240,12 +2383,21 @@ class MemoryStore:
             max_context_tokens = 2000
 
         passive_context_options = self._resolve_passive_context_options(memory_config=memory_config)
+        session_context_diagnostics: Dict[str, Any] = {
+            "graphSummaryInjected": False,
+            "graphSummaryRelationCount": 0,
+            "graphSummarySeedEntities": [],
+            "graphSummaryTrimmed": False,
+            "consistencyNoteInjected": False,
+            "consistencyConflicts": [],
+        }
         parts = []
-        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, procedural workflow hints, navigation refs, and compact recent activity hints.")
+        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, knowledge graph summaries, procedural workflow hints, navigation refs, and compact recent activity hints.")
 
         # --- Layer 1: 用户画像 ---
         normalized_chain = self._normalize_scope_chain(scope=scope, scope_chain=scope_chain)
-        prefs_text = self.format_preferences_for_injection(scope, scope_chain=normalized_chain)
+        active_preferences = self.load_preferences(scope, scope_chain=normalized_chain)
+        prefs_text = "\n".join(f"- {key}: {value}" for key, value in active_preferences.items())
         if prefs_text:
             parts.append(
                 "[USER PROFILE]\n"
@@ -2269,6 +2421,23 @@ class MemoryStore:
                 "[MEMORY SUMMARY]\n"
                 f"{summary_text}\n"
                 "[/MEMORY SUMMARY]"
+            )
+
+        graph_summary_text = ""
+        if passive_context_options["knowledgeGraphSummaryEnabled"]:
+            graph_summary_text, graph_diagnostics = self._build_knowledge_graph_summary_for_injection(
+                query=user_query,
+                scope=scope,
+                scope_chain=normalized_chain,
+                max_relations=passive_context_options["knowledgeGraphSummaryMaxRelations"],
+                max_chars=passive_context_options["knowledgeGraphSummaryMaxChars"],
+            )
+            session_context_diagnostics.update(graph_diagnostics)
+        if graph_summary_text:
+            parts.append(
+                "[KNOWLEDGE GRAPH SUMMARY]\n"
+                f"{graph_summary_text}\n"
+                "[/KNOWLEDGE GRAPH SUMMARY]"
             )
 
         workflow_hints_text = ""
@@ -2310,6 +2479,17 @@ class MemoryStore:
                 "[/RECENT ACTIVITY TEASER]"
             )
 
+        passive_audit_text = "\n\n".join(
+            item for item in (summary_text, memory_map_text, recent_teaser) if item
+        )
+        consistency_note, consistency_diagnostics = self._build_memory_consistency_note_for_injection(
+            active_preferences=active_preferences,
+            passive_text=passive_audit_text,
+        )
+        session_context_diagnostics.update(consistency_diagnostics)
+        if consistency_note:
+            parts.append(consistency_note)
+
         rendered_parts: List[str] = []
         remaining_tokens = max_context_tokens
         for part in parts:
@@ -2321,6 +2501,7 @@ class MemoryStore:
             if remaining_tokens <= 0:
                 break
 
+        self._last_session_context_diagnostics = session_context_diagnostics
         return "\n\n".join(rendered_parts)
 
     def _normalize_scope_chain(self, *, scope: str = "global", scope_chain: Optional[List[str]] = None) -> List[str]:

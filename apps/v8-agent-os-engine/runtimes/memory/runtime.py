@@ -188,6 +188,8 @@ class MemoryRuntime:
         prefs = profile_service.list_preferences()
         scopes = profile_service.list_scopes()
         total_prefs = profile_service.get_preference_count()
+        quarantined_global_preferences = profile_service.list_global_preference_quarantine()
+        quarantined_global_knowledge = knowledge_service.list_recent_knowledge(scope="global", limit=200, status="quarantined")
         knowledge_count = knowledge_service.get_knowledge_count()
         graph_stats = knowledge_service.get_graph_stats()
         health = memory_health_service.check()
@@ -296,6 +298,7 @@ class MemoryRuntime:
                 "scopes": scopes,
                 "total": total_prefs,
                 "data": prefs,
+                "globalQuarantineCount": len(quarantined_global_preferences),
                 "canonicalLongTermScopes": [
                     "global",
                     "project:{id}",
@@ -304,6 +307,7 @@ class MemoryRuntime:
             },
             "knowledge": {
                 "count": knowledge_count,
+                "globalQuarantineCount": len(quarantined_global_knowledge),
             },
             "graph": graph_stats,
             "health": health,
@@ -393,6 +397,7 @@ class MemoryRuntime:
             "preferences": profile_service.list_preferences(),
             "scopes": profile_service.list_scopes(),
             "total": profile_service.get_preference_count(),
+            "globalQuarantine": profile_service.list_global_preference_quarantine(),
         }
 
     def load_preferences(
@@ -409,8 +414,20 @@ class MemoryRuntime:
     def delete_preference(self, *, key: str, scope: str = "global") -> bool:
         return profile_service.delete_preference(key=key, scope=scope)
 
-    def list_knowledge(self, *, scope: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        return knowledge_service.list_recent_knowledge(scope=scope, limit=limit)
+    def restore_global_preference_quarantine(self, *, record_id: str) -> Optional[Dict[str, object]]:
+        return profile_service.restore_global_preference_quarantine(record_id=record_id)
+
+    def delete_global_preference_quarantine(self, *, record_id: str) -> bool:
+        return profile_service.delete_global_preference_quarantine(record_id=record_id)
+
+    def list_knowledge(
+        self,
+        *,
+        scope: Optional[str] = None,
+        limit: int = 50,
+        status: str = "active",
+    ) -> List[Dict[str, Any]]:
+        return knowledge_service.list_recent_knowledge(scope=scope, limit=limit, status=status)
 
     def get_knowledge_count(self) -> int:
         return knowledge_service.get_knowledge_count()
@@ -467,6 +484,9 @@ class MemoryRuntime:
 
     def delete_knowledge(self, *, fact_id: str) -> bool:
         return knowledge_service.delete_knowledge(fact_id=fact_id)
+
+    def restore_knowledge(self, *, fact_id: str) -> bool:
+        return knowledge_service.restore_knowledge(fact_id=fact_id)
 
     def get_graph_stats(self) -> Dict[str, Any]:
         return knowledge_service.get_graph_stats()

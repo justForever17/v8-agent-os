@@ -1399,10 +1399,10 @@ class WorkflowMemoryService:
                     status = "candidate" if status != "quarantine" else status
                     activation_allowed = False
                     activation_reason = "failed_verification_never_auto_active"
-                elif engineering_cfg.get("requireVerifiedProofForActivation", True) and not verification_backed:
+                elif engineering_cfg.get("requireVerifiedProofForActivation", True) and not (verification_backed and proof_backed):
                     status = "candidate" if status != "quarantine" else status
                     activation_allowed = False
-                    activation_reason = "requires_verified_engineering_proof"
+                    activation_reason = "requires_verified_proof_backed_engineering_evidence"
                 elif success_count < min_verified and status == "active_hint":
                     status = "candidate"
                     activation_reason = "below_min_verified_success_count"

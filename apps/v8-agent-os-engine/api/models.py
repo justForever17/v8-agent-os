@@ -216,6 +216,12 @@ class PreferenceMutationPayload(BaseModel):
     value: Optional[str] = None
 
 
+class PreferenceQuarantineMutationPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    record_id: str = Field(alias="recordId")
+
+
 class GraphEntityPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

@@ -40,6 +40,8 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
             rejected_by_run_id=None,
         )
         update_calls: list[dict] = []
+        quarantined_preferences: list[tuple[str, str, str]] = []
+        quarantined_knowledge: list[str] = []
 
         def _capture_update(_run_id: str, updates: dict) -> None:
             update_calls.append(updates)
@@ -81,6 +83,24 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         ), patch(
             "agents.runners.maintenance_runner.memory_runtime.update_run_metadata",
             side_effect=_capture_update,
+        ), patch(
+            "agents.runners.maintenance_runner.memory_store_module.memory_store.get_scope_preferences_raw",
+            return_value={
+                "favorite_shoe_brand": "耐克",
+                "favorite_download_path": r"C:\Users\sunny\Downloads",
+            },
+        ), patch(
+            "agents.runners.maintenance_runner.memory_store_module.memory_store.quarantine_global_preference",
+            side_effect=lambda key, value, reason, metadata=None: quarantined_preferences.append((key, value, reason)),
+        ), patch(
+            "agents.runners.maintenance_runner.knowledge_db.get_all_knowledge",
+            return_value=[
+                {"id": "kg_global_path", "scope": "global", "fact": r"默认导出目录位于 C:\Users\sunny\Downloads", "category": "workspace"},
+                {"fact_id": "kg_project_ok", "scope": "project:v8", "fact": "项目使用 React", "category": "architecture"},
+            ],
+        ), patch(
+            "agents.runners.maintenance_runner.knowledge_db.quarantine_knowledge",
+            side_effect=lambda fact_id: (quarantined_knowledge.append(fact_id) or True),
         ):
             result = asyncio.run(memory_agent_runner.run_maintenance(trigger_source="CRON"))
 
@@ -92,6 +112,10 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         self.assertTrue(maintenance_updates)
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["summaryBackfilledCount"], 2)
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["legacySummaryBackfilledCount"], 1)
+        self.assertEqual(result["result"]["global_quarantined_preference_count"], 1)
+        self.assertEqual(result["result"]["global_quarantined_knowledge_count"], 1)
+        self.assertEqual(quarantined_preferences[0][0], "favorite_download_path")
+        self.assertEqual(quarantined_knowledge, ["kg_global_path"])
         self.assertEqual(
             maintenance_updates[0]["memory_maintenance"]["touchedRefs"],
             ["memory://week/2026-W16", "memory://month/2026-04"],

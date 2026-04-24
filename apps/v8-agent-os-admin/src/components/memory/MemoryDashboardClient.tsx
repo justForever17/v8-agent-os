@@ -27,6 +27,7 @@ interface KnowledgeItem {
     fact: string;
     category: string;
     scope: string;
+    status?: string;
     [key: string]: unknown;
 }
 const VALID_TABS = new Set(["context", "preferences", "logs", "knowledge", "workflows", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
@@ -41,6 +42,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
     const [searchResults, setSearchResults] = useState<KnowledgeItem[]>([]);
     const [searching, setSearching] = useState(false);
     const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]);
+    const [quarantinedGlobalKnowledge, setQuarantinedGlobalKnowledge] = useState<KnowledgeItem[]>([]);
     const [editTarget, setEditTarget] = useState<KnowledgeItem | null>(null);
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -71,12 +73,19 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
     }, [t, toast]);
     const loadKnowledge = useCallback(async () => {
         try {
-            const res = await fetch("/api/memory/knowledge", { cache: "no-store" });
-            if (!res.ok) {
-                throw new Error(`Knowledge failed: ${res.status}`);
+            const [activeRes, quarantinedRes] = await Promise.all([
+                fetch("/api/memory/knowledge", { cache: "no-store" }),
+                fetch("/api/memory/knowledge?scope=global&status=quarantined&limit=100", { cache: "no-store" }),
+            ]);
+            if (!activeRes.ok) {
+                throw new Error(`Knowledge failed: ${activeRes.status}`);
             }
-            const json = await res.json();
-            setKnowledge(json.items || []);
+            if (!quarantinedRes.ok) {
+                throw new Error(`Quarantined knowledge failed: ${quarantinedRes.status}`);
+            }
+            const [activeJson, quarantinedJson] = await Promise.all([activeRes.json(), quarantinedRes.json()]);
+            setKnowledge(activeJson.items || []);
+            setQuarantinedGlobalKnowledge(quarantinedJson.items || []);
         }
         catch (err) {
             console.error("Failed to load knowledge:", err);
@@ -100,6 +109,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                 throw new Error(`Delete failed: ${res.status}`);
             }
             setKnowledge((prev) => prev.filter((k) => k.id !== id));
+            setQuarantinedGlobalKnowledge((prev) => prev.filter((k) => k.id !== id));
             setSearchResults((prev) => prev.filter((k) => k.id !== id));
         }
         catch (err) {
@@ -115,6 +125,27 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         setEditTarget(item);
         setEditDialogOpen(true);
     }, []);
+    const handleRestoreKnowledge = useCallback(async (item: KnowledgeItem) => {
+        try {
+            const res = await fetch(`/api/memory/knowledge/${item.id}/restore`, { method: "POST" });
+            if (!res.ok) {
+                throw new Error(`Restore failed: ${res.status}`);
+            }
+            await loadKnowledge();
+            toast({
+                title: "已恢复全局知识",
+                description: `${item.id} 已从隔离区恢复到 active。`,
+            });
+        }
+        catch (err) {
+            console.error("Restore knowledge failed:", err);
+            toast({
+                title: "恢复失败",
+                description: "无法恢复该条全局隔离知识。",
+                variant: "destructive",
+            });
+        }
+    }, [loadKnowledge, toast]);
     const handleSaveKnowledge = useCallback(async (id: string, updated: {
         fact: string;
         category: string;
@@ -376,6 +407,42 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                                 </div>) : null}
                         </CardContent>
                     </Card>
+
+                    {quarantinedGlobalKnowledge.length > 0 ? (
+                        <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
+                            <CardHeader>
+                                <CardTitle className="text-lg">全局高风险知识隔离区 ({quarantinedGlobalKnowledge.length})</CardTitle>
+                                <CardDescription>
+                                    这里展示被自动隔离的 global knowledge。你可以恢复到 active，或直接彻底删除。
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="max-h-[280px] space-y-2 overflow-y-auto">
+                                    {quarantinedGlobalKnowledge.map((item) => (
+                                        <div key={item.id} className="group flex items-start gap-3 rounded-lg border border-amber-500/20 bg-background/80 p-3">
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm">{item.fact}</p>
+                                                <div className="mt-1 flex items-center gap-2">
+                                                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-xs text-amber-700 dark:text-amber-300">{item.scope}</span>
+                                                    <span className="text-xs text-muted-foreground">{item.category}</span>
+                                                    <span className="font-mono text-[10px] text-muted-foreground/40">{item.id}</span>
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                                <Button variant="outline" size="sm" onClick={() => void handleRestoreKnowledge(item)}>
+                                                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                                                    恢复
+                                                </Button>
+                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => void handleDeleteKnowledge(item.id)}>
+                                                    <Trash2 className="h-4 w-4"/>
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    ) : null}
 
                     <Card className="border-border/60">
                         <CardHeader>

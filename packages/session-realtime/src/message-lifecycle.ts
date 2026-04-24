@@ -1032,6 +1032,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       topic: typeof eventData.topic === "string" ? eventData.topic : undefined,
       status: typeof eventData.status === "string" ? eventData.status : undefined,
       reason: typeof eventData.label === "string" ? eventData.label : undefined,
+      requestInfo: eventData,
       timestamp: Date.now(),
       ...nextActiveAgentProfile,
     });

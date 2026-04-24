@@ -126,6 +126,14 @@ function isTodoLikeExecutionNode(node: UiExecutionNode) {
     );
 }
 
+function isNoticeableContextGovernance(requestInfo: unknown) {
+    if (!requestInfo || typeof requestInfo !== "object" || Array.isArray(requestInfo)) {
+        return false;
+    }
+    const record = requestInfo as Record<string, unknown>;
+    return Boolean(record.noticeable_latency);
+}
+
 interface ToolRendererProps {
     toolInvocation: ToolInvocation;
     isFinished: boolean;
@@ -272,6 +280,33 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             const question = node.question || node.reason || node.topic || node.status || "";
             if (node.governanceType === "ask_user") {
                 return null;
+            }
+            if (node.governanceType === "context_governance") {
+                if (!isNoticeableContextGovernance(node.requestInfo)) {
+                    return null;
+                }
+                return (
+                    <motion.div
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, ease: 'easeOut' }}
+                        className="my-1.5 flex w-full items-center gap-3"
+                    >
+                        <div className="h-px flex-1 bg-border/70" />
+                        <div className="flex max-w-[78%] items-center gap-2 rounded-full border border-border/80 bg-background/80 px-3 py-1.5 text-[11px] shadow-[0_0_20px_rgba(148,163,184,0.08)] backdrop-blur-sm">
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400/90 shadow-[0_0_10px_rgba(34,211,238,0.35)]" />
+                            <span className="truncate font-semibold text-foreground/90">
+                                {t(lt("上下文治理", "Context governance"))}
+                            </span>
+                            {question ? (
+                                <span className="truncate text-muted-foreground">
+                                    {question}
+                                </span>
+                            ) : null}
+                        </div>
+                        <div className="h-px flex-1 bg-border/70" />
+                    </motion.div>
+                );
             }
             return (
                 <ApprovalCard

@@ -58,6 +58,50 @@ function UnresolvedResourceCard({
     );
 }
 
+function isNoticeableContextGovernance(requestInfo: unknown) {
+    if (!requestInfo || typeof requestInfo !== "object" || Array.isArray(requestInfo)) {
+        return false;
+    }
+    const record = requestInfo as Record<string, unknown>;
+    return Boolean(record.noticeable_latency);
+}
+
+function ContextGovernanceDivider({
+    label,
+    detail,
+}: {
+    label: string;
+    detail: string;
+}) {
+    const { colors } = useUiPrefs();
+    return (
+        <View style={styles.contextGovernanceWrap}>
+            <View style={[styles.contextGovernanceLine, { backgroundColor: colors.border }]} />
+            <View
+                style={[
+                    styles.contextGovernanceChip,
+                    {
+                        borderColor: colors.border,
+                        backgroundColor: colors.surfaceStrong,
+                        shadowColor: colors.text,
+                    },
+                ]}
+            >
+                <View style={[styles.contextGovernanceDot, { backgroundColor: colors.accent }]} />
+                <Text style={[styles.contextGovernanceLabel, { color: colors.text }]} numberOfLines={1}>
+                    {label}
+                </Text>
+                {detail ? (
+                    <Text style={[styles.contextGovernanceDetail, { color: colors.textMuted }]} numberOfLines={1}>
+                        {detail}
+                    </Text>
+                ) : null}
+            </View>
+            <View style={[styles.contextGovernanceLine, { backgroundColor: colors.border }]} />
+        </View>
+    );
+}
+
 function artifactDisplayTitle(artifact: Record<string, unknown>) {
     return String(
         artifact.displayLabel
@@ -308,11 +352,20 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             // Avoid rendering a second input card in the message stream.
             return null;
         }
+        if (node.governanceType === "context_governance") {
+            if (!isNoticeableContextGovernance(node.requestInfo)) {
+                return null;
+            }
+            return (
+                <ContextGovernanceDivider
+                    label={t("src.components.chat.messageblockitem.context_governance")}
+                    detail={String(node.reason || node.topic || node.status || "").trim()}
+                />
+            );
+        }
         const title = node.governanceType === "safety_blocked"
             ? t("src.components.chat.messageblockitem.safety_blocked")
-            : node.governanceType === "context_governance"
-                ? t("src.components.chat.messageblockitem.context_governance")
-                    : node.governanceType === "lane_updated"
+            : node.governanceType === "lane_updated"
                     ? t("src.components.chat.messageblockitem.run_scheduling")
                     : node.governanceType === "approval_request"
                         ? t("src.components.chat.messageblockitem.approval")
@@ -321,7 +374,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                         : t("src.components.chat.messageblockitem.runtime_control");
         const tone = node.governanceType === "safety_blocked" || approvalKind === "safety_blocked"
             ? "safety"
-            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated" || node.governanceType === "context_governance"
+            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated"
                 ? "control"
             : "approval";
         return (
@@ -614,5 +667,47 @@ const styles = StyleSheet.create({
     unresolvedSubtitle: {
         fontSize: 11,
         lineHeight: 16,
+    },
+    contextGovernanceWrap: {
+        width: "100%",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.sm,
+        marginVertical: spacing.xs,
+    },
+    contextGovernanceLine: {
+        flex: 1,
+        height: StyleSheet.hairlineWidth,
+        opacity: 0.55,
+    },
+    contextGovernanceChip: {
+        maxWidth: "78%",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 6,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 2 },
+        elevation: 1,
+    },
+    contextGovernanceDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 999,
+        opacity: 0.9,
+    },
+    contextGovernanceLabel: {
+        fontSize: 11,
+        lineHeight: 15,
+        fontWeight: "700",
+    },
+    contextGovernanceDetail: {
+        flexShrink: 1,
+        fontSize: 10,
+        lineHeight: 14,
     },
 });

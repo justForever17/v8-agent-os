@@ -9,10 +9,12 @@ export async function GET(req: Request) {
     try {
         const { searchParams } = new URL(req.url);
         const scope = searchParams.get("scope") || "";
+        const status = searchParams.get("status") || "";
         const limit = searchParams.get("limit") || "50";
         
         const params = new URLSearchParams();
         if (scope) params.set("scope", scope);
+        if (status) params.set("status", status);
         params.set("limit", limit);
         
         const response = await fetch(`${ENGINE_URL}/v1/memory/knowledge?${params.toString()}`);

@@ -34,7 +34,10 @@ interface ContextPolicy {
     recursion_limit?: number;
     compression?: {
         enabled?: boolean;
+        mode?: string;
         default_context_window_tokens?: number;
+        trigger_ratio?: number;
+        keep_recent_turns?: number;
         soft_trigger_ratio?: number;
         hard_trigger_ratio?: number;
         keep_recent_messages?: number;
@@ -42,6 +45,8 @@ interface ContextPolicy {
         max_summary_input_tokens?: number;
         max_summary_input_messages?: number;
         max_summary_output_tokens?: number;
+        compression_model_safety_ratio?: number;
+        noticeable_latency_ms?: number;
     };
     runtime_adapters?: {
         plugin_host?: {
@@ -69,18 +74,23 @@ interface ContextDomainData {
 }
 
 const DEFAULT_POLICY: ContextPolicy = {
-    schema_version: 2,
+    schema_version: 3,
     recursion_limit: 100,
     compression: {
         enabled: true,
+        mode: "persistent_baseline",
         default_context_window_tokens: 32000,
-        soft_trigger_ratio: 0.55,
-        hard_trigger_ratio: 0.75,
-        keep_recent_messages: 6,
-        use_llm_summary: false,
+        trigger_ratio: 0.94,
+        keep_recent_turns: 4,
+        keep_recent_messages: 8,
+        soft_trigger_ratio: 0.90,
+        hard_trigger_ratio: 0.94,
+        use_llm_summary: true,
         max_summary_input_tokens: 5000,
         max_summary_input_messages: 60,
         max_summary_output_tokens: 800,
+        compression_model_safety_ratio: 0.90,
+        noticeable_latency_ms: 800,
     },
     runtime_adapters: {
         plugin_host: {
@@ -101,17 +111,22 @@ const DEFAULT_BINDINGS: ContextBindings = {
 const PRESET_OPTIONS = [
     {
         key: "saving",
-        title: "app.admin.dashboard.context.page.ke3c16acc",
-        description: "app.admin.dashboard.context.page.k1be9d9c1",
+        title: "紧凑",
+        description: "更早落 baseline，适合移动端和高频长会话。",
         compression: {
             enabled: true,
-            soft_trigger_ratio: 0.45,
-            hard_trigger_ratio: 0.62,
-            keep_recent_messages: 4,
-            use_llm_summary: false,
-            max_summary_input_tokens: 3000,
-            max_summary_input_messages: 36,
-            max_summary_output_tokens: 500,
+            mode: "persistent_baseline",
+            trigger_ratio: 0.92,
+            keep_recent_turns: 3,
+            keep_recent_messages: 6,
+            soft_trigger_ratio: 0.88,
+            hard_trigger_ratio: 0.92,
+            use_llm_summary: true,
+            max_summary_input_tokens: 4000,
+            max_summary_input_messages: 48,
+            max_summary_output_tokens: 640,
+            compression_model_safety_ratio: 0.88,
+            noticeable_latency_ms: 600,
         },
         runtime_adapters: {
             plugin_host: { window_size: 12, max_summary_items: 6 },
@@ -120,17 +135,22 @@ const PRESET_OPTIONS = [
     },
     {
         key: "balanced",
-        title: "app.admin.dashboard.context.page.k0f34dd0d",
-        description: "app.admin.dashboard.context.page.k1cee126d",
+        title: "平衡",
+        description: "推荐默认值，使用永久降水位 baseline 并保留最近 raw 对话。",
         compression: {
             enabled: true,
-            soft_trigger_ratio: 0.55,
-            hard_trigger_ratio: 0.75,
-            keep_recent_messages: 6,
-            use_llm_summary: false,
+            mode: "persistent_baseline",
+            trigger_ratio: 0.94,
+            keep_recent_turns: 4,
+            keep_recent_messages: 8,
+            soft_trigger_ratio: 0.90,
+            hard_trigger_ratio: 0.94,
+            use_llm_summary: true,
             max_summary_input_tokens: 5000,
             max_summary_input_messages: 60,
             max_summary_output_tokens: 800,
+            compression_model_safety_ratio: 0.90,
+            noticeable_latency_ms: 800,
         },
         runtime_adapters: {
             plugin_host: { window_size: 15, max_summary_items: 8 },
@@ -139,17 +159,22 @@ const PRESET_OPTIONS = [
     },
     {
         key: "high_fidelity",
-        title: "app.admin.dashboard.context.page.kba7671ad",
-        description: "app.admin.dashboard.context.page.k53e0a764",
+        title: "高保真",
+        description: "更晚触发压缩并保留更多最近 raw 轮次，适合复杂工程任务。",
         compression: {
             enabled: true,
-            soft_trigger_ratio: 0.68,
-            hard_trigger_ratio: 0.85,
-            keep_recent_messages: 8,
+            mode: "persistent_baseline",
+            trigger_ratio: 0.95,
+            keep_recent_turns: 6,
+            keep_recent_messages: 12,
+            soft_trigger_ratio: 0.91,
+            hard_trigger_ratio: 0.95,
             use_llm_summary: true,
             max_summary_input_tokens: 8000,
             max_summary_input_messages: 80,
             max_summary_output_tokens: 1200,
+            compression_model_safety_ratio: 0.92,
+            noticeable_latency_ms: 1200,
         },
         runtime_adapters: {
             plugin_host: { window_size: 20, max_summary_items: 10 },
@@ -208,13 +233,16 @@ function matchesPreset(policy: ContextPolicy, presetKey: PresetKey) {
     const automation = policy.runtime_adapters?.automation || {};
     return (
         Boolean(compression.enabled) === Boolean(preset.compression.enabled)
-        && Number(compression.soft_trigger_ratio ?? 0) === preset.compression.soft_trigger_ratio
-        && Number(compression.hard_trigger_ratio ?? 0) === preset.compression.hard_trigger_ratio
+        && String(compression.mode || "") === String(preset.compression.mode || "")
+        && Number(compression.trigger_ratio ?? 0) === preset.compression.trigger_ratio
+        && Number(compression.keep_recent_turns ?? 0) === preset.compression.keep_recent_turns
         && Number(compression.keep_recent_messages ?? 0) === preset.compression.keep_recent_messages
         && Boolean(compression.use_llm_summary) === Boolean(preset.compression.use_llm_summary)
         && Number(compression.max_summary_input_tokens ?? 0) === preset.compression.max_summary_input_tokens
         && Number(compression.max_summary_input_messages ?? 0) === preset.compression.max_summary_input_messages
         && Number(compression.max_summary_output_tokens ?? 0) === preset.compression.max_summary_output_tokens
+        && Number(compression.compression_model_safety_ratio ?? 0) === preset.compression.compression_model_safety_ratio
+        && Number(compression.noticeable_latency_ms ?? 0) === preset.compression.noticeable_latency_ms
         && Number(pluginHost.window_size ?? 0) === preset.runtime_adapters.plugin_host.window_size
         && Number(pluginHost.max_summary_items ?? 0) === preset.runtime_adapters.plugin_host.max_summary_items
         && Number(automation.recent_run_limit ?? 0) === preset.runtime_adapters.automation.recent_run_limit
@@ -250,20 +278,18 @@ function applyPreset(policy: ContextPolicy, presetKey: PresetKey): ContextPolicy
 }
 
 function presetLabel(preset: PresetKey | "custom"): string {
-    return PRESET_OPTIONS.find((item) => item.key === preset)?.title || "app.admin.dashboard.context.page.kf1007633";
+    return PRESET_OPTIONS.find((item) => item.key === preset)?.title || "已自定义";
 }
 
 function describeSummaryStrategy(policy: ContextPolicy, bindings: ContextBindings): string {
     const compression = policy.compression || {};
     if (!compression.enabled) {
-        return "app.admin.dashboard.context.page.k12b31ba6";
+        return "已禁用压缩";
     }
     if (compression.use_llm_summary) {
-        return bindings.summaryModel
-            ? "app.admin.dashboard.context.page.kde493157"
-            : "app.admin.dashboard.context.page.k87ef0778";
+        return bindings.summaryModel ? "LLM 压缩模型已绑定" : "使用当前默认 summary 角色";
     }
-    return "app.admin.dashboard.context.page.k68f93b7a";
+    return "规则压缩";
 }
 
 function modelValue(model: SysModel) {
@@ -402,31 +428,29 @@ export function MemoryContextPanel() {
             <DomainSummaryStrip
                 items={[
                     {
-                        label: t("app.admin.dashboard.context.page.kd66fab3a"),
-                        value: t(presetLabel(currentPreset)),
-                        description: t("app.admin.dashboard.context.page.k29954063"),
+                        label: "上下文预设",
+                        value: presetLabel(currentPreset),
+                        description: "永久降水位治理的推荐组合值。",
                     },
                     {
-                        label: t("app.admin.dashboard.context.page.ka861f42b"),
-                        value: t(describeSummaryStrategy(policyForm, bindingsForm)),
-                        description: t("app.admin.dashboard.context.page.k201edf4a"),
+                        label: "压缩策略",
+                        value: describeSummaryStrategy(policyForm, bindingsForm),
+                        description: "压缩基线层由 summary 模型或规则压缩生成。",
                     },
                     {
-                        label: t("app.admin.dashboard.context.page.ka1052f03"),
-                        value: t("app.admin.dashboard.context.page.k3b49881d", {
-                            policyForm_compression_keep_recent_messages_6: policyForm.compression?.keep_recent_messages ?? 6,
-                        }),
-                        description: t("app.admin.dashboard.context.page.k8554f00b"),
+                        label: "最近 raw 保留",
+                        value: `${policyForm.compression?.keep_recent_turns ?? 4} 轮 / ${policyForm.compression?.keep_recent_messages ?? 8} 条消息`,
+                        description: "最近对话保持原文，不进入 baseline 压缩。",
                     },
                     {
-                        label: t("app.admin.dashboard.context.page.kffd7c829"),
-                        value: t("app.admin.dashboard.context.page.kfea0a470"),
-                        description: t("app.admin.dashboard.context.page.k683aa2e6"),
+                        label: "触发阈值",
+                        value: `${Math.round((policyForm.compression?.trigger_ratio ?? 0.94) * 100)}%`,
+                        description: "建议 1M 窗口使用 92%-95% 安全线。",
                     },
                     {
-                        label: t("app.admin.dashboard.context.page.k3a3d61a9"),
-                        value: t("app.admin.dashboard.context.page.k7f410813"),
-                        description: t("app.admin.dashboard.context.page.kddc2925b"),
+                        label: "治理模式",
+                        value: policyForm.compression?.mode === "persistent_baseline" ? "永久降水位" : (policyForm.compression?.mode || "未设置"),
+                        description: "原始全文历史继续保留给 UI 和审计。",
                     },
                 ]}
             />
@@ -445,17 +469,12 @@ export function MemoryContextPanel() {
                         onClick={() => handleApplyPreset(option.key)}
                     >
                         <div className="flex items-center justify-between gap-3">
-                            <div className="text-base font-semibold">{t(option.title)}</div>
+                            <div className="text-base font-semibold">{option.title}</div>
                             <AlignLeft className="h-4 w-4 shrink-0" />
                         </div>
-                        <div className="mt-2 text-sm leading-6 text-slate-500">{t(option.description)}</div>
+                        <div className="mt-2 text-sm leading-6 text-slate-500">{option.description}</div>
                         <div className="mt-4 text-xs leading-5 text-slate-500">
-                            {t("app.admin.dashboard.context.page.k2be2a736", {
-                                option_compression_soft_trigger_ratio: option.compression.soft_trigger_ratio,
-                                option_compression_hard_trigger_ratio: option.compression.hard_trigger_ratio,
-                                option_compression_keep_recent_messages: option.compression.keep_recent_messages,
-                                option_compression_max_summary_input_tokens: option.compression.max_summary_input_tokens,
-                            })}
+                            阈值 {Math.round((option.compression.trigger_ratio ?? 0.94) * 100)}% · 最近 raw {option.compression.keep_recent_turns} 轮 · 压缩输入 {option.compression.max_summary_input_tokens}
                         </div>
                     </button>
                 ))}
@@ -467,19 +486,19 @@ export function MemoryContextPanel() {
 
             <AdvancedSection title={"app.admin.dashboard.context.page.k8d1286a2"} description={"app.admin.dashboard.context.page.k71a2c636"} defaultOpen={false}>
                 <div className="grid gap-6 xl:grid-cols-2">
-                    <ConfigCard title={"app.admin.dashboard.context.page.k24e23c9b"} description={"app.admin.dashboard.context.page.ka12f2cec"}>
+                    <ConfigCard title={"永久降水位治理"} description={"压缩主线改为 baseline + 最近 raw 对话保留，不再每轮从全量 raw 历史重新压缩。"}>
                         <div className="space-y-5">
                             <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                                 <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.context.page.k699fdecf")}</div>
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.context.page.k65b57dfb")}</div>
+                                    <div className="text-sm font-medium text-slate-900">启用上下文治理</div>
+                                    <div className="text-xs leading-5 text-slate-500">关闭后不会生成 baseline，也不会在长会话进入永久降水位模式。</div>
                                 </div>
                                 <Switch checked={policyForm.compression?.enabled ?? true} onCheckedChange={(checked) => updateCompression({ enabled: checked })} />
                             </div>
 
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k1ac467d7")}</Label>
+                                    <Label>递归上限</Label>
                                     <Input
                                         type="number"
                                         min={10}
@@ -490,11 +509,11 @@ export function MemoryContextPanel() {
                                             recursion_limit: Number(event.target.value),
                                         }))}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.k7201ba84")}</p>
+                                    <p className="text-xs text-slate-500">保护复杂 prompt 组装链，避免递归式上下文治理失控。</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k2145b4bb")}</Label>
+                                    <Label>主聊天模型窗口</Label>
                                     <Input
                                         type="number"
                                         min={2048}
@@ -502,43 +521,42 @@ export function MemoryContextPanel() {
                                         value={policyForm.compression?.default_context_window_tokens ?? 32000}
                                         onChange={(event) => updateCompression({ default_context_window_tokens: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.k020074fe")}</p>
+                                    <p className="text-xs text-slate-500">用于判断何时开始压缩。1M 模型建议与实际窗口保持一致。</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k0ba8abed")}</Label>
+                                    <Label>压缩触发阈值</Label>
                                     <Input
                                         type="number"
-                                        min={0.1}
+                                        min={0.92}
                                         max={0.95}
                                         step={0.01}
-                                        value={policyForm.compression?.soft_trigger_ratio ?? 0.55}
-                                        onChange={(event) => updateCompression({ soft_trigger_ratio: Number(event.target.value) })}
+                                        value={policyForm.compression?.trigger_ratio ?? 0.94}
+                                        onChange={(event) => updateCompression({ trigger_ratio: Number(event.target.value), hard_trigger_ratio: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.k9bfaf2bd")}</p>
+                                    <p className="text-xs text-slate-500">推荐 0.94。达到安全线后立即更新 baseline，而不是继续蓄水。</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k88e4b454")}</Label>
+                                    <Label>最近 raw 保留轮数</Label>
                                     <Input
                                         type="number"
-                                        min={0.15}
-                                        max={0.99}
-                                        step={0.01}
-                                        value={policyForm.compression?.hard_trigger_ratio ?? 0.75}
-                                        onChange={(event) => updateCompression({ hard_trigger_ratio: Number(event.target.value) })}
+                                        min={1}
+                                        max={40}
+                                        value={policyForm.compression?.keep_recent_turns ?? 4}
+                                        onChange={(event) => updateCompression({ keep_recent_turns: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.kd41de26d")}</p>
+                                    <p className="text-xs text-slate-500">这些最近轮次保持原文输入，适合长流程任务保留细节。</p>
                                 </div>
                             </div>
                         </div>
                     </ConfigCard>
 
-                    <ConfigCard title={"app.admin.dashboard.context.page.k67675fc3"} description={"app.admin.dashboard.context.page.k797f385c"}>
+                    <ConfigCard title={"压缩模型与 chunk 治理"} description={"当压缩模型窗口小于主模型时，自动分块压缩并递归汇总，保持压缩模型无状态。"}>
                         <div className="space-y-5">
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k5eb3c1cb")}</Label>
+                                    <Label>最近 raw 消息下限</Label>
                                     <Input
                                         type="number"
                                         min={1}
@@ -546,11 +564,11 @@ export function MemoryContextPanel() {
                                         value={policyForm.compression?.keep_recent_messages ?? 6}
                                         onChange={(event) => updateCompression({ keep_recent_messages: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.ke7822966")}</p>
+                                    <p className="text-xs text-slate-500">兼容极端消息结构，确保 raw 保留消息数不低于轮数下限。</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k72b4a7a6")}</Label>
+                                    <Label>单块压缩输入预算</Label>
                                     <Input
                                         type="number"
                                         min={512}
@@ -558,11 +576,11 @@ export function MemoryContextPanel() {
                                         value={policyForm.compression?.max_summary_input_tokens ?? 5000}
                                         onChange={(event) => updateCompression({ max_summary_input_tokens: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.ka999be4e")}</p>
+                                    <p className="text-xs text-slate-500">每个压缩块都会限制在该预算与压缩模型安全线以内。</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.kf20fe3a0")}</Label>
+                                    <Label>单块消息上限</Label>
                                     <Input
                                         type="number"
                                         min={5}
@@ -570,11 +588,11 @@ export function MemoryContextPanel() {
                                         value={policyForm.compression?.max_summary_input_messages ?? 60}
                                         onChange={(event) => updateCompression({ max_summary_input_messages: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.kc7417d2c")}</p>
+                                    <p className="text-xs text-slate-500">超长流程会按块切分，再做多轮递归汇总。</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("app.admin.dashboard.context.page.k93eb3185")}</Label>
+                                    <Label>压缩输出预算</Label>
                                     <Input
                                         type="number"
                                         min={128}
@@ -582,20 +600,47 @@ export function MemoryContextPanel() {
                                         value={policyForm.compression?.max_summary_output_tokens ?? 800}
                                         onChange={(event) => updateCompression({ max_summary_output_tokens: Number(event.target.value) })}
                                     />
-                                    <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.k93f2744e")}</p>
+                                    <p className="text-xs text-slate-500">用于生成新的 baseline 摘要块，避免汇总结果再次失控膨胀。</p>
                                 </div>
                             </div>
 
                             <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                                 <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.context.page.k3e11964e")}</div>
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.context.page.k45b19907")}</div>
+                                    <div className="text-sm font-medium text-slate-900">启用 LLM 压缩</div>
+                                    <div className="text-xs leading-5 text-slate-500">建议开启。规则压缩只适合非常短的旧历史。</div>
                                 </div>
                                 <Switch checked={policyForm.compression?.use_llm_summary ?? false} onCheckedChange={(checked) => updateCompression({ use_llm_summary: checked })} />
                             </div>
 
+                            <div className="grid gap-5 md:grid-cols-2">
+                                <div className="space-y-1.5">
+                                    <Label>压缩模型安全线</Label>
+                                    <Input
+                                        type="number"
+                                        min={0.5}
+                                        max={0.95}
+                                        step={0.01}
+                                        value={policyForm.compression?.compression_model_safety_ratio ?? 0.9}
+                                        onChange={(event) => updateCompression({ compression_model_safety_ratio: Number(event.target.value) })}
+                                    />
+                                    <p className="text-xs text-slate-500">主模型和压缩模型窗口不一致时，切块预算按这个安全线计算。</p>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label>显式治理节点阈值 (ms)</Label>
+                                    <Input
+                                        type="number"
+                                        min={50}
+                                        max={60000}
+                                        step={50}
+                                        value={policyForm.compression?.noticeable_latency_ms ?? 800}
+                                        onChange={(event) => updateCompression({ noticeable_latency_ms: Number(event.target.value) })}
+                                    />
+                                    <p className="text-xs text-slate-500">压缩过程超过该耗时，可在聊天流里显示 context governance 节点。</p>
+                                </div>
+                            </div>
+
                             <div className="space-y-1.5">
-                                <Label>{t("app.admin.dashboard.context.page.k6a51cc17")}</Label>
+                                <Label>压缩模型绑定</Label>
                                 <Select
                                     value={bindingsForm.summaryModel || "__empty__"}
                                     onValueChange={(value) => {
@@ -606,10 +651,10 @@ export function MemoryContextPanel() {
                                     }}
                                 >
                                     <SelectTrigger className="w-full">
-                                        <SelectValue placeholder={t("app.admin.dashboard.context.page.kc233116e")} />
+                                        <SelectValue placeholder="未单独绑定时使用默认 summary 角色" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="__empty__">{t("app.admin.dashboard.context.page.kc03621ca")}</SelectItem>
+                                        <SelectItem value="__empty__">跟随默认 summary 角色</SelectItem>
                                         {llmModels.map((model) => (
                                             <SelectItem key={modelValue(model)} value={modelValue(model)}>
                                                 {model.name || modelValue(model)} {model.provider?.name ? `(${model.provider.name})` : ""}
@@ -617,7 +662,7 @@ export function MemoryContextPanel() {
                                         ))}
                                     </SelectContent>
                                 </Select>
-                                <p className="text-xs text-slate-500">{t("app.admin.dashboard.context.page.kbca31aa4")}</p>
+                                <p className="text-xs text-slate-500">如果压缩模型窗口小于主模型，系统会自动切块压缩后再递归汇总。</p>
                             </div>
                         </div>
                     </ConfigCard>

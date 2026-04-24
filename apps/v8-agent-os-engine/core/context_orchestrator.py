@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from core.context_compaction_baseline import (
+    baseline_matches_messages,
+    load_compaction_baseline,
+    persist_compaction_baseline,
+)
 from core.context_durable_flush import flush_before_context_compaction
 from core.llm_factory import llm_factory
 from core.storage import storage
+from erc.runtime_context import get_runtime_context
 
 
 _ALLOWED_BLOCK_TYPES = {
@@ -137,16 +144,70 @@ class ContextOrchestrator:
         compaction_applied = False
         history_block: ContextBlock | None = None
         method = "none"
-        keep_recent_messages = int(keep_recent_override or compression.get("keep_recent_messages") or 6)
+        keep_recent_turns = int(keep_recent_override or compression.get("keep_recent_turns") or 4)
+        keep_recent_messages = int(compression.get("keep_recent_messages") or max(keep_recent_turns * 2, 6))
         durable_flush: Dict[str, Any] | None = None
+        compaction_mode = str(compression.get("mode") or "persistent_baseline").strip() or "persistent_baseline"
+        trigger_ratio = float(compression.get("trigger_ratio") or compression.get("hard_trigger_ratio") or 0.94)
+        trigger_limit = max(1, int(context_window * trigger_ratio))
+        compaction_latency_ms = 0
+        recent_raw_count = len(non_system_messages)
+        recent_raw_turn_count = 0
+        baseline_used = False
+        baseline_refreshed = False
+        baseline_message_count = 0
+        baseline_snapshot = None
+        baseline_has_uncovered_messages = False
+        runtime_ctx = get_runtime_context()
+        session_id = str(runtime_ctx.get("session_id") or "").strip()
+        old_prefix: List[BaseMessage] = []
+        recent_tail: List[BaseMessage] = list(non_system_messages)
 
         if compression.get("enabled", True):
-            soft_limit = max(1, int(context_window * float(compression.get("soft_trigger_ratio") or 0.55)))
-            hard_limit = max(1, int(context_window * float(compression.get("hard_trigger_ratio") or 0.75)))
-            should_compact = estimated_input_tokens >= soft_limit
-            trigger_reason = "soft_token_budget" if should_compact else "within_budget"
-            if estimated_input_tokens > hard_limit:
-                trigger_reason = "hard_token_budget"
+            old_prefix, recent_tail, recent_raw_turn_count = self._split_recent_tail_by_turns(
+                messages=non_system_messages,
+                keep_recent_turns=keep_recent_turns,
+                keep_recent_messages=keep_recent_messages,
+            )
+            recent_raw_count = len(recent_tail)
+            should_compact = estimated_input_tokens >= trigger_limit
+            trigger_reason = "persistent_baseline_token_budget" if should_compact else "within_budget"
+            if compaction_mode == "persistent_baseline" and session_id and old_prefix:
+                baseline_snapshot = load_compaction_baseline(session_id=session_id, target_role=target_role)
+                if baseline_snapshot:
+                    covered_count = min(int(baseline_snapshot.get("coveredMessageCount") or 0), len(old_prefix))
+                    covered_prefix = list(old_prefix[:covered_count])
+                    if covered_prefix and baseline_matches_messages(baseline_snapshot, covered_prefix):
+                        history_block = self._build_baseline_block_from_snapshot(baseline_snapshot)
+                        baseline_used = history_block is not None
+                        if baseline_used:
+                            method = str(history_block.metadata.get("summary_method") or "baseline")
+                            baseline_message_count = covered_count
+                            uncovered_old_messages = list(old_prefix[covered_count:])
+                            baseline_has_uncovered_messages = bool(uncovered_old_messages)
+                            non_system_messages = uncovered_old_messages + list(recent_tail)
+                    else:
+                        non_system_messages = list(old_prefix) + list(recent_tail)
+                else:
+                    non_system_messages = list(old_prefix) + list(recent_tail)
+
+            projected_messages = list(rendered_messages)
+            if history_block is not None:
+                projected_messages.append(self._render_block_message(history_block))
+            projected_messages.extend(non_system_messages)
+            projected_effective_tokens = self._estimate_messages_tokens(projected_messages)
+
+            if compaction_mode == "persistent_baseline" and baseline_used:
+                if baseline_has_uncovered_messages:
+                    should_compact = True
+                    trigger_reason = "baseline_roll_forward"
+                else:
+                    should_compact = False
+                    trigger_reason = (
+                        "baseline_reused_over_budget"
+                        if projected_effective_tokens >= trigger_limit
+                        else "baseline_reused"
+                    )
 
             if should_compact:
                 try:
@@ -158,18 +219,60 @@ class ContextOrchestrator:
                         "reason": f"flush_failed:{exc}",
                     }
                 if durable_flush.get("ok", False):
-                    summary_mode = "llm" if estimated_input_tokens > hard_limit else "rule"
-                    non_system_messages, history_block, method = self._compact_non_system_messages(
-                        messages=non_system_messages,
-                        keep_recent_messages=keep_recent_messages,
-                        compression=compression,
-                        target_role=target_role,
-                        resolved_model_id=resolved_model_id,
-                        summary_mode=summary_mode,
-                    )
-                    compaction_applied = history_block is not None
+                    baseline_source_messages = old_prefix if old_prefix else []
+                    if (
+                        compaction_mode == "persistent_baseline"
+                        and baseline_used
+                        and old_prefix
+                        and len(old_prefix) > baseline_message_count
+                    ):
+                        baseline_source_messages = old_prefix
+                    if baseline_source_messages:
+                        summary_mode = "llm" if compression.get("use_llm_summary", True) else "rule"
+                        compaction_started = time.perf_counter()
+                        history_block, method = self._build_history_block(
+                            to_compress=baseline_source_messages,
+                            compression=compression,
+                            target_role=target_role,
+                            resolved_model_id=resolved_model_id,
+                            summary_mode=summary_mode,
+                        )
+                        compaction_latency_ms = int((time.perf_counter() - compaction_started) * 1000)
+                        compaction_applied = history_block is not None
+                        if compaction_applied:
+                            baseline_refreshed = bool(session_id and compaction_mode == "persistent_baseline")
+                            baseline_message_count = len(baseline_source_messages)
+                            if session_id and compaction_mode == "persistent_baseline":
+                                persisted_snapshot = persist_compaction_baseline(
+                                    session_id=session_id,
+                                    target_role=target_role,
+                                    covered_messages=baseline_source_messages,
+                                    baseline_text=history_block.content,
+                                    estimated_tokens=self._estimate_text_tokens(history_block.content),
+                                    summary_method=str(history_block.metadata.get("summary_method") or method),
+                                    chunked=bool(history_block.metadata.get("chunked")),
+                                    context_window_tokens=context_window,
+                                    trigger_ratio=trigger_ratio,
+                                    resolved_model_id=resolved_model_id,
+                                )
+                                baseline_snapshot = persisted_snapshot
+                            non_system_messages = list(recent_tail)
+                            trigger_reason = (
+                                "baseline_refreshed"
+                                if baseline_refreshed
+                                else "compaction_applied_without_baseline"
+                            )
+                        else:
+                            non_system_messages = list(old_prefix) + list(recent_tail)
+                    elif baseline_used:
+                        non_system_messages = list(recent_tail)
+                        compaction_applied = True
+                        trigger_reason = "baseline_reused"
                 else:
                     trigger_reason = "pre_compaction_flush_failed"
+            elif baseline_used:
+                compaction_applied = True
+                trigger_reason = "baseline_reused"
 
         blocks: List[ContextBlock] = []
         if history_block is not None:
@@ -201,6 +304,15 @@ class ContextOrchestrator:
             "trigger_reason": trigger_reason,
             "compaction_applied": compaction_applied,
             "compaction_method": method,
+            "compaction_mode": compaction_mode,
+            "baseline_active": baseline_used,
+            "baseline_refreshed": baseline_refreshed,
+            "baseline_message_count": baseline_message_count,
+            "recent_raw_message_count": recent_raw_count,
+            "recent_raw_turn_count": recent_raw_turn_count,
+            "trigger_ratio": trigger_ratio,
+            "latency_ms": compaction_latency_ms,
+            "noticeable_latency": compaction_latency_ms >= int(compression.get("noticeable_latency_ms") or 800),
             "block_types": [block.type for block in blocks],
             "block_count": len(blocks),
             "block_summaries": [self._build_block_summary(block) for block in blocks],
@@ -254,6 +366,44 @@ class ContextOrchestrator:
         )
         return to_keep, summary_block, method
 
+    def _split_recent_tail_by_turns(
+        self,
+        *,
+        messages: Sequence[BaseMessage],
+        keep_recent_turns: int,
+        keep_recent_messages: int,
+    ) -> tuple[List[BaseMessage], List[BaseMessage], int]:
+        message_list = list(messages)
+        if not message_list:
+            return [], [], 0
+        human_indexes = [index for index, message in enumerate(message_list) if isinstance(message, HumanMessage)]
+        if not human_indexes:
+            keep_from = max(0, len(message_list) - keep_recent_messages)
+            return message_list[:keep_from], message_list[keep_from:], 0
+        recent_humans = human_indexes[-max(1, keep_recent_turns):]
+        keep_from = recent_humans[0]
+        keep_from = min(keep_from, max(0, len(message_list) - keep_recent_messages))
+        if keep_from <= 0:
+            return [], message_list, len(recent_humans)
+        return message_list[:keep_from], message_list[keep_from:], len(recent_humans)
+
+    def _build_baseline_block_from_snapshot(self, snapshot: Dict[str, Any]) -> ContextBlock | None:
+        content = str(snapshot.get("baselineText") or "").strip()
+        if not content:
+            return None
+        return ContextBlock(
+            type="history_summary",
+            title="历史上下文提炼",
+            content=content,
+            metadata={
+                "summary_method": str(snapshot.get("summaryMethod") or "baseline"),
+                "compressed_messages": int(snapshot.get("coveredMessageCount") or 0),
+                "candidate_messages": int(snapshot.get("coveredMessageCount") or 0),
+                "chunked": bool(snapshot.get("chunked")),
+                "source": "persistent_baseline",
+            },
+        )
+
     def _build_history_block(
         self,
         *,
@@ -280,15 +430,22 @@ class ContextOrchestrator:
             max_input_tokens=int(compression.get("max_summary_input_tokens") or 5000),
             max_input_messages=int(compression.get("max_summary_input_messages") or 60),
         )
+        summary_source_messages = (
+            list(to_compress)
+            if summary_mode == "llm" and compression.get("use_llm_summary")
+            else selected_messages
+        )
         summary_text = None
         method = "rule_summary"
+        chunked = False
         if summary_mode == "llm" and compression.get("use_llm_summary") and summary_model:
-            summary_text = self._build_llm_summary(
-                to_compress=selected_messages,
+            summary_text, chunked = self._build_llm_summary(
+                to_compress=summary_source_messages,
                 model_id=summary_model,
                 max_input_tokens=int(compression.get("max_summary_input_tokens") or 5000),
                 max_input_messages=int(compression.get("max_summary_input_messages") or 60),
                 max_output_tokens=int(compression.get("max_summary_output_tokens") or 800),
+                compression_model_safety_ratio=float(compression.get("compression_model_safety_ratio") or 0.90),
             )
             if summary_text:
                 method = "llm_summary"
@@ -302,7 +459,8 @@ class ContextOrchestrator:
             metadata={
                 "summary_method": method,
                 "compressed_messages": len(to_compress),
-                "candidate_messages": len(selected_messages),
+                "candidate_messages": len(summary_source_messages if summary_text and method == "llm_summary" else selected_messages),
+                "chunked": chunked,
             },
         )
         self._summary_cache[cache_key] = block
@@ -319,32 +477,156 @@ class ContextOrchestrator:
         max_input_tokens: int,
         max_input_messages: int,
         max_output_tokens: int,
-    ) -> str | None:
+        compression_model_safety_ratio: float,
+    ) -> tuple[str | None, bool]:
         try:
             llm = llm_factory.create_chat_model(model_id, temperature=0, max_tokens=max_output_tokens, _role="summary")
-            clipped_messages = self._truncate_candidates_for_llm(
-                messages=to_compress,
-                max_input_tokens=max_input_tokens,
-                max_input_messages=max_input_messages,
+            model_window = llm_factory.get_model_context_window(str(model_id or "").strip()) or max_input_tokens
+            safe_chunk_budget = max(256, min(max_input_tokens, int(model_window * max(0.5, min(compression_model_safety_ratio, 0.95)))))
+            clipped_messages = list(to_compress)
+            if not clipped_messages:
+                return "", False
+
+            chunks = self._chunk_messages_for_summary(
+                messages=clipped_messages,
+                max_chunk_tokens=safe_chunk_budget,
+                max_chunk_messages=max_input_messages,
             )
-            transcript = "\n".join(
-                f"{self._message_role(message)}: {self._clip_text(self._message_text(message), 320)}"
-                for message in clipped_messages
-                if self._message_text(message)
+            if not chunks:
+                return "", False
+
+            chunk_summaries: List[str] = []
+            for chunk in chunks:
+                transcript = self._messages_to_summary_transcript(chunk)
+                if not transcript.strip():
+                    continue
+                chunk_summaries.append(
+                    self._summarize_fragment_group(
+                        llm=llm,
+                        fragments=[transcript],
+                        max_output_tokens=max_output_tokens,
+                    )
+                )
+
+            if not chunk_summaries:
+                return "", False
+            reduced, reduced_any = self._reduce_summary_fragments(
+                llm=llm,
+                fragments=chunk_summaries,
+                max_output_tokens=max_output_tokens,
+                max_chunk_tokens=safe_chunk_budget,
+                max_chunk_messages=max_input_messages,
             )
-            if not transcript.strip():
-                return ""
-            prompt = (
-                "你是上下文治理模块，只负责把旧对话压缩为可供后续执行继续使用的历史摘要。\n"
-                "保留：用户目标、已完成的动作、关键文件路径/URL/产物、失败与阻塞、仍然有效的执行约束。\n"
-                "不要复述寒暄，不要新增推断，不要输出前言。\n\n"
-                f"{transcript}"
-            )
-            response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": []})
-            return self._clip_text(self._message_text(response), max_output_tokens * 4)
+            return (reduced[0] if reduced else ""), len(chunks) > 1 or reduced_any
         except Exception as exc:
             print(f"[ContextOrchestrator] LLM summary failed: {exc}")
-            return None
+            return None, False
+
+    def _messages_to_summary_transcript(self, messages: Sequence[BaseMessage]) -> str:
+        return "\n".join(
+            f"{self._message_role(message)}: {self._clip_text(self._message_text(message), 320)}"
+            for message in messages
+            if self._message_text(message)
+        )
+
+    def _chunk_messages_for_summary(
+        self,
+        *,
+        messages: Sequence[BaseMessage],
+        max_chunk_tokens: int,
+        max_chunk_messages: int,
+    ) -> List[List[BaseMessage]]:
+        chunks: List[List[BaseMessage]] = []
+        current: List[BaseMessage] = []
+        used_tokens = 0
+        for message in messages:
+            token_cost = max(1, self._estimate_message_tokens(message))
+            if current and (used_tokens + token_cost > max_chunk_tokens or len(current) >= max_chunk_messages):
+                chunks.append(current)
+                current = []
+                used_tokens = 0
+            current.append(message)
+            used_tokens += token_cost
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _chunk_fragments_for_summary(
+        self,
+        *,
+        fragments: Sequence[str],
+        max_chunk_tokens: int,
+        max_chunk_messages: int,
+    ) -> List[List[str]]:
+        chunks: List[List[str]] = []
+        current: List[str] = []
+        used_tokens = 0
+        for fragment in fragments:
+            normalized = str(fragment or "").strip()
+            if not normalized:
+                continue
+            token_cost = max(1, self._estimate_text_tokens(normalized))
+            if current and (used_tokens + token_cost > max_chunk_tokens or len(current) >= max_chunk_messages):
+                chunks.append(current)
+                current = []
+                used_tokens = 0
+            current.append(normalized)
+            used_tokens += token_cost
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _summarize_fragment_group(
+        self,
+        *,
+        llm: Any,
+        fragments: Sequence[str],
+        max_output_tokens: int,
+    ) -> str:
+        prompt = (
+            "你是上下文治理模块，只负责把旧对话压缩为可供后续执行继续使用的历史摘要。\n"
+            "保留：用户目标、已完成的动作、关键文件路径/URL/产物、失败与阻塞、仍然有效的执行约束。\n"
+            "不要复述寒暄，不要新增推断，不要输出前言。\n\n"
+            + "\n\n".join(f"[FRAGMENT {index + 1}]\n{text}" for index, text in enumerate(fragments))
+        )
+        response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": []})
+        return self._clip_text(self._message_text(response), max_output_tokens * 4)
+
+    def _reduce_summary_fragments(
+        self,
+        *,
+        llm: Any,
+        fragments: Sequence[str],
+        max_output_tokens: int,
+        max_chunk_tokens: int,
+        max_chunk_messages: int,
+    ) -> tuple[List[str], bool]:
+        current = [str(item or "").strip() for item in fragments if str(item or "").strip()]
+        reduced_any = False
+        while len(current) > 1:
+            groups = self._chunk_fragments_for_summary(
+                fragments=current,
+                max_chunk_tokens=max_chunk_tokens,
+                max_chunk_messages=max_chunk_messages,
+            )
+            if not groups:
+                break
+            if len(groups) == len(current):
+                groups = [current[index:index + 2] for index in range(0, len(current), 2)]
+            next_level = [
+                self._summarize_fragment_group(
+                    llm=llm,
+                    fragments=group,
+                    max_output_tokens=max_output_tokens,
+                )
+                for group in groups
+                if group
+            ]
+            if not next_level:
+                break
+            current = next_level
+            reduced_any = True
+        return current, reduced_any
 
     def _build_rule_summary(self, messages: Sequence[BaseMessage]) -> str:
         lines: List[str] = []
@@ -553,6 +835,7 @@ class ContextOrchestrator:
                 "max_summary_input_tokens": int(compression.get("max_summary_input_tokens") or 5000),
                 "max_summary_input_messages": int(compression.get("max_summary_input_messages") or 60),
                 "max_summary_output_tokens": int(compression.get("max_summary_output_tokens") or 800),
+                "compression_model_safety_ratio": float(compression.get("compression_model_safety_ratio") or 0.90),
             },
             "messages": [
                 {

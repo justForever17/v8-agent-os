@@ -36,7 +36,9 @@ if "chromadb" not in sys.modules:
     sys.modules["chromadb"] = type("chromadb", (), {"PersistentClient": _FakeChromaClient})()
 
 from core.context_orchestrator import ContextOrchestrator  # noqa: E402
+from core.database import db  # noqa: E402
 from core.storage import storage  # noqa: E402
+from erc.runtime_context import bind_runtime_context  # noqa: E402
 from graph.supervisor_context import _build_workspace_rules_context, workspace_resolution_service  # noqa: E402
 from runtimes.extensions.runtime import extensions_runtime_service  # noqa: E402
 from runtimes.memory.runtime import memory_runtime  # noqa: E402
@@ -269,18 +271,42 @@ def _run_variant(
 ) -> dict[str, Any]:
     orchestrator = ContextOrchestrator()
     messages = _build_messages(user_query=user_query, pressure=pressure)
+    db.create_or_update_session(
+        session_id=session_id,
+        title=f"Context Assessment · {scene_name}",
+        user_id="assessment",
+        metadata={"assessment": True, "scene": scene_name},
+    )
+    db.create_run_record(
+        run_id=run_id,
+        session_id=session_id,
+        user_id="assessment",
+        run_type="assessment",
+        status="running",
+        trigger_source="assessment_script",
+        metadata={"pressure": pressure, "scene": scene_name},
+    )
     with _patched_compaction(force_context_window=force_context_window) as context_config:
-        prepared = orchestrator.prepare(
-            messages=messages,
-            runtime_kind=runtime_kind,
-            target_role="supervisor",
-            resolved_model_id=str(storage.get_role_model_id("supervisor") or "").strip(),
-            resolved_scope=scope,
-            scope_chain=scope_chain,
-            leading_system_content=leading_system_content,
-        )
+        with bind_runtime_context(
+            session_id=session_id,
+            run_id=run_id,
+            latest_seq=1,
+            event_ts=datetime.now().isoformat(),
+        ):
+            prepared = orchestrator.prepare(
+                messages=messages,
+                runtime_kind=runtime_kind,
+                target_role="supervisor",
+                resolved_model_id=str(storage.get_role_model_id("supervisor") or "").strip(),
+                resolved_scope=scope,
+                scope_chain=scope_chain,
+                leading_system_content=leading_system_content,
+            )
+    db.update_run_record(run_id, status="completed", metadata={"assessment": True, "scene": scene_name, "pressure": pressure})
     return {
         "scene": scene_name,
+        "sessionId": session_id,
+        "runId": run_id,
         "pressure": pressure,
         "forcedContextWindow": force_context_window,
         "contextConfig": {
@@ -442,6 +468,18 @@ def _build_scene_report(scene: dict[str, Any]) -> dict[str, Any]:
         leading_system_content=leading_system_content,
         force_context_window=32000,
     )
+    fallback_hard_reuse = _run_variant(
+        scene_name=scene["name"],
+        user_query=scene["userQuery"],
+        scope=scene["scope"],
+        scope_chain=list(scene["scopeChain"]),
+        session_id=scene["sessionId"],
+        run_id=f"{scene['runId']}-reuse",
+        runtime_kind=scene["runtimeKind"],
+        pressure="hard",
+        leading_system_content=leading_system_content,
+        force_context_window=32000,
+    )
 
     return {
         "label": scene["label"],
@@ -470,6 +508,7 @@ def _build_scene_report(scene: dict[str, Any]) -> dict[str, Any]:
             "actualCurrentModelWindow": actual,
             "fallback32kSoftBudget": fallback_soft,
             "fallback32kHardBudget": fallback_hard,
+            "fallback32kHardBudgetReuse": fallback_hard_reuse,
         },
     }
 
@@ -537,6 +576,7 @@ def _build_report(results: dict[str, Any]) -> str:
                 f"- actual: trigger=`{scene['variants']['actualCurrentModelWindow']['audit']['trigger_reason']}`, applied=`{scene['variants']['actualCurrentModelWindow']['audit']['compaction_applied']}`, method=`{scene['variants']['actualCurrentModelWindow']['audit']['compaction_method']}`",
                 f"- fallback soft: trigger=`{scene['variants']['fallback32kSoftBudget']['audit']['trigger_reason']}`, applied=`{scene['variants']['fallback32kSoftBudget']['audit']['compaction_applied']}`, method=`{scene['variants']['fallback32kSoftBudget']['audit']['compaction_method']}`",
                 f"- fallback hard: trigger=`{scene['variants']['fallback32kHardBudget']['audit']['trigger_reason']}`, applied=`{scene['variants']['fallback32kHardBudget']['audit']['compaction_applied']}`, method=`{scene['variants']['fallback32kHardBudget']['audit']['compaction_method']}`",
+                f"- fallback hard reuse: trigger=`{scene['variants']['fallback32kHardBudgetReuse']['audit']['trigger_reason']}`, applied=`{scene['variants']['fallback32kHardBudgetReuse']['audit']['compaction_applied']}`, method=`{scene['variants']['fallback32kHardBudgetReuse']['audit']['compaction_method']}`",
                 "",
             ]
         )

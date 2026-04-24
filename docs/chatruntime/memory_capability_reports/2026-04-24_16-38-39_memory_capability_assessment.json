@@ -1,0 +1,363 @@
+{
+  "generatedAt": "2026-04-24_16-38-39",
+  "backgroundDoc": "E:\\Projects\\v8chat\\v8-agent-os\\docs\\chatruntime\\参与 agent 记忆能力测评.md",
+  "memoryPolicyDefaults": {
+    "preference_importance_threshold": 35,
+    "preference_confidence_threshold": 0.45,
+    "knowledge_importance_threshold": 35,
+    "knowledge_confidence_threshold": 0.45,
+    "global_knowledge_importance_threshold": 50,
+    "global_knowledge_confidence_threshold": 0.6,
+    "global_operational_importance_threshold": 45,
+    "global_operational_confidence_threshold": 0.55
+  },
+  "currentMemoryPolicy": {
+    "extraction_enabled": true,
+    "preference_importance_threshold": 35,
+    "preference_confidence_threshold": 0.45,
+    "knowledge_importance_threshold": 35,
+    "knowledge_confidence_threshold": 0.45,
+    "global_knowledge_importance_threshold": 50,
+    "global_knowledge_confidence_threshold": 0.6,
+    "global_operational_importance_threshold": 45,
+    "global_operational_confidence_threshold": 0.55
+  },
+  "workflowMemoryConfig": {
+    "enabled": true,
+    "hintInjectionEnabled": true,
+    "progressiveHintsEnabled": true,
+    "minSuccessCount": 2,
+    "errorfulSuccessRequiresUserAcceptance": true,
+    "maxInjectedHints": 2,
+    "maxHintChars": 900,
+    "maxActiveWorkflowGuidesPerRun": 2,
+    "quarantineOnNegativeFeedback": true,
+    "requireApprovalForSideEffects": true,
+    "riskTierActivationPolicy": {
+      "read_only": "auto",
+      "low": "auto",
+      "medium": "approval",
+      "high": "approval",
+      "critical": "quarantine"
+    },
+    "engineering": {
+      "enabled": true,
+      "extractFromProofLedger": true,
+      "requireEngineeringModeForInjection": true,
+      "requireVerifiedProofForActivation": true,
+      "learnFailedVerificationAsAntiPattern": true,
+      "minVerifiedSuccessCount": 2
+    }
+  },
+  "checks": [
+    {
+      "id": "same_key_preference_overwrite",
+      "title": "同 key 偏好覆写",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "mergedValue": "耐克",
+        "rawValue": "耐克"
+      }
+    },
+    {
+      "id": "temporal_preference_recommendation",
+      "title": "时间维度偏好覆写推荐题",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "mergedValue": "耐克",
+        "injectionPreview": "- language: zh-CN\n- system_name: V8 Agent OS\n- system_slug: v8-agent-os\n- system_author: justForever17\n- favorite_shoe_brand: 耐克",
+        "example": "1 月喜欢阿迪达斯，4 月改喜欢耐克，7 月推荐鞋时必须引用耐克。"
+      }
+    },
+    {
+      "id": "semantic_key_drift_reconciliation",
+      "title": "同义 key 漂移归一",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "keys": [
+          "favorite_shoe_brand"
+        ],
+        "note": "当前系统不会自动把语义相近的不同 key 归并成同一偏好。"
+      }
+    },
+    {
+      "id": "project_scope_isolation",
+      "title": "项目作用域隔离",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "projectA": {
+          "language": "zh-CN",
+          "system_name": "V8 Agent OS",
+          "system_slug": "v8-agent-os",
+          "system_author": "justForever17",
+          "preferred_framework": "React"
+        },
+        "projectB": {
+          "language": "zh-CN",
+          "system_name": "V8 Agent OS",
+          "system_slug": "v8-agent-os",
+          "system_author": "justForever17",
+          "preferred_framework": "Vue"
+        }
+      }
+    },
+    {
+      "id": "no_implicit_global_leak",
+      "title": "无显式信号时不自动升级到 global",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "decisions": [
+          {
+            "itemType": "preference",
+            "requestedScope": "global",
+            "finalScope": "project:v8",
+            "scopeDecision": "global_rejected_to_current_scope",
+            "rejectedGlobalReason": "missing_explicit_global_signal"
+          },
+          {
+            "itemType": "preference",
+            "requestedScope": "global",
+            "finalScope": "global",
+            "scopeDecision": "global_promoted",
+            "globalPromotionReason": "explicit_global_signal"
+          },
+          {
+            "itemType": "knowledge",
+            "requestedScope": "channel:feishu:legacy",
+            "finalScope": "project:v8",
+            "scopeDecision": "specific_scope_rebound",
+            "rejectedGlobalReason": "specific_scope_mismatch"
+          }
+        ]
+      }
+    },
+    {
+      "id": "external_api_memory_isolation",
+      "title": "外部 API 记忆隔离",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "adapterStatus": "extracted",
+        "resolvedScope": "external_api_thread:thread-memory-eval",
+        "persistScope": "external_api_thread:thread-memory-eval"
+      }
+    },
+    {
+      "id": "durable_threshold_hygiene",
+      "title": "durable policy 阈值卫生",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "preference_importance_threshold": {
+          "current": 35,
+          "default": 35
+        },
+        "preference_confidence_threshold": {
+          "current": 0.45,
+          "default": 0.45
+        },
+        "knowledge_importance_threshold": {
+          "current": 35,
+          "default": 35
+        },
+        "knowledge_confidence_threshold": {
+          "current": 0.45,
+          "default": 0.45
+        },
+        "global_knowledge_importance_threshold": {
+          "current": 50,
+          "default": 50
+        },
+        "global_knowledge_confidence_threshold": {
+          "current": 0.6,
+          "default": 0.6
+        },
+        "global_operational_importance_threshold": {
+          "current": 45,
+          "default": 45
+        },
+        "global_operational_confidence_threshold": {
+          "current": 0.55,
+          "default": 0.55
+        }
+      }
+    },
+    {
+      "id": "summary_contamination_resistance",
+      "title": "被动注入链的旧结论污染抵抗力",
+      "status": "pass",
+      "evidenceType": "executed",
+      "details": {
+        "mergedPreferences": {
+          "language": "zh-CN",
+          "system_name": "V8 Agent OS",
+          "system_slug": "v8-agent-os",
+          "system_author": "justForever17",
+          "assistant_persona": "专业冷静",
+          "favorite_shoe_brand": "耐克"
+        },
+        "injectionPreview": "- language: zh-CN\n- system_name: V8 Agent OS\n- system_slug: v8-agent-os\n- system_author: justForever17\n- assistant_persona: 专业冷静\n- favorite_shoe_brand: 耐克",
+        "note": "canonical key 覆写后，注入面不应继续保留旧偏好值。"
+      }
+    },
+    {
+      "id": "engineering_activation_gating",
+      "title": "工程 workflow 激活门槛",
+      "status": "pass",
+      "evidenceType": "config_governance",
+      "details": {
+        "engineering": {
+          "enabled": true,
+          "extractFromProofLedger": true,
+          "requireEngineeringModeForInjection": true,
+          "requireVerifiedProofForActivation": true,
+          "learnFailedVerificationAsAntiPattern": true,
+          "minVerifiedSuccessCount": 2
+        },
+        "riskTierActivationPolicy": {
+          "read_only": "auto",
+          "low": "auto",
+          "medium": "approval",
+          "high": "approval",
+          "critical": "quarantine"
+        }
+      }
+    },
+    {
+      "id": "engineering_failed_path_not_golden",
+      "title": "失败验证不会直接进 golden path",
+      "status": "pass",
+      "evidenceType": "config_governance",
+      "details": {
+        "engineering": {
+          "enabled": true,
+          "extractFromProofLedger": true,
+          "requireEngineeringModeForInjection": true,
+          "requireVerifiedProofForActivation": true,
+          "learnFailedVerificationAsAntiPattern": true,
+          "minVerifiedSuccessCount": 2
+        }
+      }
+    }
+  ],
+  "scorecard": [
+    {
+      "id": "same_key_preference_overwrite",
+      "status": "pass",
+      "public": 10,
+      "internal": 10,
+      "max": 10
+    },
+    {
+      "id": "temporal_preference_recommendation",
+      "status": "pass",
+      "public": 10,
+      "internal": 10,
+      "max": 10
+    },
+    {
+      "id": "semantic_key_drift_reconciliation",
+      "status": "pass",
+      "public": 10,
+      "internal": 10,
+      "max": 10
+    },
+    {
+      "id": "project_scope_isolation",
+      "status": "pass",
+      "public": 10,
+      "internal": 10,
+      "max": 10
+    },
+    {
+      "id": "no_implicit_global_leak",
+      "status": "pass",
+      "public": 10,
+      "internal": 10,
+      "max": 10
+    },
+    {
+      "id": "external_api_memory_isolation",
+      "status": "pass",
+      "public": 10,
+      "internal": 10,
+      "max": 10
+    },
+    {
+      "id": "durable_threshold_hygiene",
+      "status": "pass",
+      "public": 10,
+      "internal": 9,
+      "max": 10
+    },
+    {
+      "id": "summary_contamination_resistance",
+      "status": "pass",
+      "public": 10,
+      "internal": 9,
+      "max": 10
+    },
+    {
+      "id": "engineering_failed_path_not_golden",
+      "status": "pass",
+      "public": 9,
+      "internal": 6,
+      "max": 10
+    },
+    {
+      "id": "engineering_activation_gating",
+      "status": "pass",
+      "public": 9,
+      "internal": 6,
+      "max": 10
+    }
+  ],
+  "scoreSummary": {
+    "publicTotal": 98,
+    "internalTotal": 90,
+    "publicScore": 9.8,
+    "internalScore": 9.0,
+    "gateReached": true,
+    "gateTarget": {
+      "public": 9.8,
+      "internal": 9.0
+    }
+  },
+  "harshQuestionMatrix": [
+    {
+      "category": "偏好覆写题",
+      "prompt": "1 月 30 日用户说喜欢阿迪达斯；4 月 30 日又说更喜欢耐克；7 月 30 日让 supervisor 推荐一款鞋。",
+      "expected": "必须优先引用最新偏好耐克，并说明旧偏好已被覆盖。",
+      "currentAssessment": "同 key 覆写链路可通过，但如果 extractor key 漂移或旧摘要未刷新，就有答错风险。"
+    },
+    {
+      "category": "作用域隔离题",
+      "prompt": "项目 A 偏好 React，项目 B 偏好 Vue；默认工作区没有框架偏好。",
+      "expected": "项目 A/B 互不串区，默认工作区也不误带项目偏好。",
+      "currentAssessment": "当前 scope chain 与 project preference isolation 基本能做对。"
+    },
+    {
+      "category": "一次性噪音题",
+      "prompt": "某轮排障出现临时路径、临时 workaround、临时报错说明。",
+      "expected": "不应自动沉淀为长期记忆或全局规则。",
+      "currentAssessment": "durable policy 已收紧到平衡档，但仍应继续用真实排障样本回归，防止一次性 operational 噪音重新混入长期记忆。"
+    },
+    {
+      "category": "API 隔离题",
+      "prompt": "外部 API 调用里说“以后叫我老板”。随后 phone/web 普通对话中继续打招呼。",
+      "expected": "外部 API 偏好不得投影成 phone/web 的人格记忆。",
+      "currentAssessment": "network supervisor 专用 memory adapter 当前隔离方向是对的。"
+    },
+    {
+      "category": "工程绕路清洗题",
+      "prompt": "工程任务先失败验证、后纠偏成功。",
+      "expected": "golden path 只保留成功链，失败步骤进入 anti-pattern/warning。",
+      "currentAssessment": "Phase 6 配置门槛方向正确，但仍需要更多 proof-backed 实战数据来完全坐实。"
+    }
+  ]
+}

@@ -27,6 +27,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.exceptions import OutputParserException
 
 from core.database import db
+from core.memory_canonicalization import canonicalize_memory_extraction_result
 from core.llm_chat_adapter import _extract_json_payload
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.memory_router import MemoryRouter
@@ -66,6 +67,23 @@ _NOISY_KNOWLEDGE_HINTS = (
     ".wav",
     "角色扮演",
     "测试对话",
+)
+
+_NOISY_PREFERENCE_HINTS = (
+    "临时",
+    "一次性",
+    "workaround",
+    "debug",
+    "调试",
+    "排障",
+    "命令输出",
+    "oauth",
+    "callback",
+    "二维码",
+    "扫码",
+    ".ogg",
+    ".mp3",
+    ".wav",
 )
 
 
@@ -810,11 +828,60 @@ def _policy_float(policy: Dict[str, Any], key: str, default: float) -> float:
     return value
 
 
+_WINDOWS_PATH_RE = re.compile(r"[a-zA-Z]:\\")
+_UNIX_PATH_RE = re.compile(r"(^|[\s'\"(])/(users|home|tmp|var|opt|etc|mnt|volumes)/", re.IGNORECASE)
+
+
+def _looks_path_like_text(value: str) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    return (
+        bool(_WINDOWS_PATH_RE.search(normalized))
+        or bool(_UNIX_PATH_RE.search(lowered))
+        or "\\.v8-agent-os\\" in lowered
+        or "/.v8-agent-os/" in lowered
+    )
+
+
+def _preference_noise_reason(pref: PreferenceExtraction) -> str | None:
+    text = f"{str(pref.key or '').strip().lower()} {str(pref.value or '').strip().lower()}"
+    if _looks_path_like_text(text):
+        return "path_like_preference"
+    if any(token in text for token in _NOISY_PREFERENCE_HINTS):
+        return "noise_hint"
+    return None
+
+
+def classify_global_preference_risk(key: str, value: str) -> str | None:
+    text = f"{str(key or '').strip().lower()} {str(value or '').strip().lower()}"
+    if _looks_path_like_text(text):
+        return "path_like_global_preference"
+    if any(token in text for token in _NOISY_PREFERENCE_HINTS):
+        return "noisy_global_preference"
+    return None
+
+
+def classify_global_knowledge_risk(fact_text: str, category_text: str = "") -> str | None:
+    normalized_fact = str(fact_text or "").strip().lower()
+    normalized_category = str(category_text or "").strip().lower()
+    combined = f"{normalized_fact} {normalized_category}"
+    if _is_path_like_fact(normalized_fact) or _looks_path_like_text(normalized_fact):
+        return "path_like_global"
+    if any(token in combined for token in _NOISY_KNOWLEDGE_HINTS):
+        return "noise_hint"
+    return None
+
+
 def _evaluate_preference_persistence(pref: PreferenceExtraction, policy: Dict[str, Any]) -> tuple[bool, str]:
     if _normalize_target_store(pref.target_store, default="preference") != "preference":
         return False, f"target_store_{_normalize_target_store(pref.target_store, default='preference')}"
     if _normalize_durability(pref.durability, default="stable") != "stable":
         return False, f"durability_{_normalize_durability(pref.durability, default='stable')}"
+    noise_reason = _preference_noise_reason(pref)
+    if noise_reason:
+        return False, noise_reason
     if int(pref.importance or 0) < _policy_int(policy, "preference_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["preference_importance_threshold"])):
         return False, "importance_below_threshold"
     if float(pref.confidence or 0.0) < _policy_float(policy, "preference_confidence_threshold", float(MEMORY_DURABLE_POLICY_DEFAULTS["preference_confidence_threshold"])):
@@ -837,8 +904,9 @@ def _evaluate_knowledge_persistence(fact: KnowledgeExtraction, policy: Dict[str,
         return False, "noise_hint"
 
     if scope_kind == "global":
-        if _is_path_like_fact(fact_text):
-            return False, "path_like_global"
+        global_risk = classify_global_knowledge_risk(fact_text, category_text)
+        if global_risk:
+            return False, global_risk
         if durability == "operational" and _is_operational_learning_fact(fact):
             if int(fact.importance or 0) < _policy_int(policy, "global_operational_importance_threshold", int(MEMORY_DURABLE_POLICY_DEFAULTS["global_operational_importance_threshold"])):
                 return False, "importance_below_operational_threshold"
@@ -1918,6 +1986,7 @@ def analyze_session_memory(
         }
 
     scope_decisions = _align_extraction_scopes(result, effective_memory_scope)
+    canonicalization = canonicalize_memory_extraction_result(result)
     _emit_memory_event(
         run_handle,
         "memory.extraction.completed",
@@ -1938,6 +2007,7 @@ def analyze_session_memory(
             "memory_policy": memory_policy,
             "extractorModel": extraction_attempt.extractor_model or None,
             "scopeDecisions": scope_decisions[:20],
+            "canonicalization": canonicalization,
             "rawOutputPreview": extraction_attempt.raw_output_preview or None,
             "parserErrorPreview": extraction_attempt.parser_error_preview or None,
             "extractionFailureStage": None,
@@ -2099,6 +2169,7 @@ def analyze_session_memory(
                 "memoryPolicy": memory_policy,
                 "provenanceClass": provenance_class,
                 "sourceRuntime": source_runtime,
+                "canonicalization": canonicalization,
                 "transcriptSource": transcript["source"],
                 "latestSeq": transcript["latest_seq"],
                 "extractionMode": extraction_mode,
@@ -2140,6 +2211,7 @@ def analyze_session_memory(
             "source_runtime": source_runtime,
             "provenance_class": provenance_class,
             "memory_policy": memory_policy,
+            "canonicalization": canonicalization,
         },
     )
     
@@ -2200,6 +2272,7 @@ def analyze_session_memory(
         "source_runtime": source_runtime,
         "provenance_class": provenance_class,
         "memory_policy": memory_policy,
+        "canonicalization": canonicalization,
     }
 
 async def generate_periodic_summary(

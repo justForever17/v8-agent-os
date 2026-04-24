@@ -15,6 +15,7 @@ from .models import (
     GraphEntityPayload,
     GraphRelationPayload,
     PreferenceMutationPayload,
+    PreferenceQuarantineMutationPayload,
     ProjectDescriptorPayload,
     WorkspaceBindingPayload,
     WorkflowBindingPayload,
@@ -251,6 +252,8 @@ async def get_memory_config():
         config["retrieval_threshold_source"] = metadata["retrievalThresholdSource"]
         config["retrieval_threshold_is_default"] = metadata["retrievalThresholdIsDefault"]
         config["durable_policy_defaults"] = metadata["durablePolicyDefaults"]
+        config["durable_policy_presets"] = metadata.get("durablePolicyPresets") or {}
+        config["recommended_durable_policy_preset"] = metadata.get("recommendedDurablePolicyPreset") or "balanced"
         return config
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -265,6 +268,8 @@ async def update_memory_config(config: dict = Body(...)):
             "retrieval_threshold_source",
             "retrieval_threshold_is_default",
             "durable_policy_defaults",
+            "durable_policy_presets",
+            "recommended_durable_policy_preset",
         ):
             next_config.pop(ui_only_key, None)
         if "extraction_model" in next_config:
@@ -390,6 +395,24 @@ async def delete_memory_preference(payload: PreferenceMutationPayload):
             key=payload.key.strip(),
             scope=(payload.scope or "global").strip() or "global",
         )
+        return {"deleted": deleted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/preferences/quarantine/restore")
+async def restore_quarantined_global_preference(payload: PreferenceQuarantineMutationPayload):
+    try:
+        restored = memory_runtime.restore_global_preference_quarantine(record_id=payload.record_id)
+        return {"restored": bool(restored), "item": restored}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/memory/preferences/quarantine")
+async def delete_quarantined_global_preference(payload: PreferenceQuarantineMutationPayload):
+    try:
+        deleted = memory_runtime.delete_global_preference_quarantine(record_id=payload.record_id)
         return {"deleted": deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -628,9 +651,9 @@ async def memory_recall_preview(q: str, scope: str = None):
 
 
 @router.get("/memory/knowledge")
-async def get_all_knowledge(scope: str = None, limit: int = 50):
+async def get_all_knowledge(scope: str = None, limit: int = 50, status: str = "active"):
     try:
-        results = memory_runtime.list_knowledge(scope=scope, limit=limit)
+        results = memory_runtime.list_knowledge(scope=scope, limit=limit, status=status)
         return {"items": results, "total": len(results)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -736,6 +759,15 @@ async def update_knowledge_item(fact_id: str, body: dict = Body(...)):
         return {"updated": ok, "id": fact_id}
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/knowledge/{fact_id}/restore")
+async def restore_knowledge_item(fact_id: str):
+    try:
+        restored = memory_runtime.restore_knowledge(fact_id=fact_id)
+        return {"restored": restored, "id": fact_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

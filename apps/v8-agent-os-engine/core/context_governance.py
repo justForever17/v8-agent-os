@@ -14,6 +14,15 @@ CONTEXT_AUDIT_FIELDS = (
     "trigger_reason",
     "compaction_applied",
     "compaction_method",
+    "compaction_mode",
+    "baseline_active",
+    "baseline_refreshed",
+    "baseline_message_count",
+    "recent_raw_message_count",
+    "recent_raw_turn_count",
+    "trigger_ratio",
+    "latency_ms",
+    "noticeable_latency",
     "block_types",
     "block_count",
     "estimated_saved_tokens",
@@ -129,10 +138,26 @@ def normalize_context_audit(audit: Dict[str, Any] | None) -> Dict[str, Any]:
             normalized[key] = _normalize_durable_flush(value)
         elif key == "recall_audit":
             normalized[key] = _normalize_recall_audit(value)
-        elif key in {"context_policy_version", "context_window_tokens", "original_message_count", "estimated_input_tokens", "block_count", "estimated_saved_tokens"}:
+        elif key in {
+            "context_policy_version",
+            "context_window_tokens",
+            "original_message_count",
+            "estimated_input_tokens",
+            "block_count",
+            "estimated_saved_tokens",
+            "baseline_message_count",
+            "recent_raw_message_count",
+            "recent_raw_turn_count",
+            "latency_ms",
+        }:
             normalized[key] = _coerce_int(value, 0)
-        elif key == "compaction_applied":
+        elif key in {"compaction_applied", "baseline_active", "baseline_refreshed", "noticeable_latency"}:
             normalized[key] = bool(value)
+        elif key == "trigger_ratio":
+            try:
+                normalized[key] = float(value or 0.0)
+            except (TypeError, ValueError):
+                normalized[key] = 0.0
         else:
             normalized[key] = _normalize_string(value)
 

@@ -225,25 +225,25 @@ class KnowledgeDB:
             
             return [dict(r) for r in rows]
             
-    def get_all_knowledge(self, scope: Optional[str] = None, limit: int = 50) -> List[Dict]:
+    def get_all_knowledge(self, scope: Optional[str] = None, limit: int = 50, status: str = "active") -> List[Dict]:
         """查询所有激活的知识条目"""
         with self._conn() as conn:
             if scope:
                 rows = conn.execute("""
                     SELECT id, fact, category, scope, status, source_session, updated_at
                     FROM knowledge
-                    WHERE scope IN (?, 'global') AND status = 'active'
+                    WHERE scope IN (?, 'global') AND status = ?
                     ORDER BY updated_at DESC
                     LIMIT ?
-                """, (scope, limit)).fetchall()
+                """, (scope, status, limit)).fetchall()
             else:
                 rows = conn.execute("""
                     SELECT id, fact, category, scope, status, source_session, updated_at
                     FROM knowledge
-                    WHERE status = 'active'
+                    WHERE status = ?
                     ORDER BY updated_at DESC
                     LIMIT ?
-                """, (limit,)).fetchall()
+                """, (status, limit)).fetchall()
             
             return [dict(r) for r in rows]
     
@@ -343,6 +343,20 @@ class KnowledgeDB:
                 (_utc_now_iso(), fact_id)
             )
             return cursor.rowcount > 0
+
+    def set_knowledge_status(self, fact_id: str, status: str) -> bool:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"active", "deleted", "quarantined"}:
+            return False
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE knowledge SET status = ?, updated_at = ? WHERE id = ?",
+                (normalized_status, _utc_now_iso(), fact_id),
+            )
+            return cursor.rowcount > 0
+
+    def quarantine_knowledge(self, fact_id: str) -> bool:
+        return self.set_knowledge_status(fact_id, "quarantined")
     
     def get_knowledge_count(self) -> int:
         """获取活跃知识条目数"""

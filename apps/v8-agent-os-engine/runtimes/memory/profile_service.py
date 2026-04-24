@@ -39,5 +39,14 @@ class ProfileService:
     def delete_preference(self, *, key: str, scope: str = "global") -> bool:
         return memory_store.delete_preference(key=key, scope=scope)
 
+    def list_global_preference_quarantine(self) -> List[Dict[str, object]]:
+        return memory_store.load_global_preference_quarantine()
+
+    def restore_global_preference_quarantine(self, *, record_id: str) -> Optional[Dict[str, object]]:
+        return memory_store.restore_global_preference_quarantine(record_id)
+
+    def delete_global_preference_quarantine(self, *, record_id: str) -> bool:
+        return memory_store.delete_global_preference_quarantine(record_id)
+
 
 profile_service = ProfileService()

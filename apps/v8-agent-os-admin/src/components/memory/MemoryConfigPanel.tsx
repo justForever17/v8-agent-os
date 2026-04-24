@@ -74,25 +74,70 @@ interface DurablePolicyDefaults {
     global_operational_importance_threshold: number;
     global_operational_confidence_threshold: number;
 }
+type DurablePolicyPresets = Record<string, DurablePolicyDefaults>;
 interface MemoryConfigResponse extends MemoryConfig {
     durable_policy_defaults?: DurablePolicyDefaults;
+    durable_policy_presets?: DurablePolicyPresets;
+    recommended_durable_policy_preset?: string;
 }
 const MEMORY_DURABLE_POLICY_DEFAULTS: DurablePolicyDefaults = {
-    preference_importance_threshold: 65,
-    preference_confidence_threshold: 0.7,
-    knowledge_importance_threshold: 55,
-    knowledge_confidence_threshold: 0.65,
-    global_knowledge_importance_threshold: 62,
-    global_knowledge_confidence_threshold: 0.72,
-    global_operational_importance_threshold: 58,
-    global_operational_confidence_threshold: 0.68,
+    preference_importance_threshold: 35,
+    preference_confidence_threshold: 0.45,
+    knowledge_importance_threshold: 35,
+    knowledge_confidence_threshold: 0.45,
+    global_knowledge_importance_threshold: 50,
+    global_knowledge_confidence_threshold: 0.6,
+    global_operational_importance_threshold: 45,
+    global_operational_confidence_threshold: 0.55,
 };
+const DURABLE_POLICY_PRESET_LABELS: Record<string, string> = {
+    learning_first: "学习优先",
+    balanced: "平衡",
+    quality_first: "质量优先",
+};
+const DURABLE_POLICY_PRESET_DESCRIPTIONS: Record<string, string> = {
+    learning_first: "更容易写入 durable memory，适合调试和观察提取覆盖率。",
+    balanced: "推荐默认值，在写入覆盖率和长期记忆质量之间保持平衡。",
+    quality_first: "更保守，优先降低噪音和误召回，适合稳定运行阶段。",
+};
+const DURABLE_POLICY_KEYS: Array<keyof DurablePolicyDefaults> = [
+    "preference_importance_threshold",
+    "preference_confidence_threshold",
+    "knowledge_importance_threshold",
+    "knowledge_confidence_threshold",
+    "global_knowledge_importance_threshold",
+    "global_knowledge_confidence_threshold",
+    "global_operational_importance_threshold",
+    "global_operational_confidence_threshold",
+];
 function buildMemoryConfigSavePayload(config: MemoryConfig): MemoryConfig {
     const { recommended_retrieval_threshold, retrieval_threshold_source, retrieval_threshold_is_default, ...editable } = config;
     void recommended_retrieval_threshold;
     void retrieval_threshold_source;
     void retrieval_threshold_is_default;
     return editable;
+}
+function detectDurablePolicyPreset(
+    config: MemoryConfig,
+    defaults: DurablePolicyDefaults,
+    presets: DurablePolicyPresets,
+): string | "custom" {
+    const currentValue = (key: keyof DurablePolicyDefaults) => (config[key] as number | undefined) ?? defaults[key];
+    const entries = Object.entries(presets);
+    for (const [presetKey, presetValues] of entries) {
+        const matched = DURABLE_POLICY_KEYS.every((key) => {
+            const current = currentValue(key);
+            const expected = presetValues[key];
+            if (typeof current === "number" && typeof expected === "number") {
+                return Math.abs(current - expected) < 0.0001;
+            }
+            return current === expected;
+        });
+        if (matched) {
+            return presetKey;
+        }
+    }
+    return "custom";
 }
 interface RecallPreviewItem {
     id: string;
@@ -126,6 +171,8 @@ export default function MemoryConfigPanel() {
     const t = useT();
     const [config, setConfig] = useState<MemoryConfig>({});
     const [durableDefaults, setDurableDefaults] = useState<DurablePolicyDefaults>(MEMORY_DURABLE_POLICY_DEFAULTS);
+    const [durablePresets, setDurablePresets] = useState<DurablePolicyPresets>({ balanced: MEMORY_DURABLE_POLICY_DEFAULTS });
+    const [recommendedDurablePreset, setRecommendedDurablePreset] = useState<string>("balanced");
     const [models, setModels] = useState<SysModel[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -144,9 +191,20 @@ export default function MemoryConfigPanel() {
             ]);
             if (confRes.ok) {
                 const fetchedConfig: MemoryConfigResponse = await confRes.json();
-                const { durable_policy_defaults, ...editableConfig } = fetchedConfig;
+                const {
+                    durable_policy_defaults,
+                    durable_policy_presets,
+                    recommended_durable_policy_preset,
+                    ...editableConfig
+                } = fetchedConfig;
                 if (durable_policy_defaults) {
                     setDurableDefaults(durable_policy_defaults);
+                }
+                if (durable_policy_presets && Object.keys(durable_policy_presets).length > 0) {
+                    setDurablePresets(durable_policy_presets);
+                }
+                if (recommended_durable_policy_preset) {
+                    setRecommendedDurablePreset(recommended_durable_policy_preset);
                 }
                 setConfig(editableConfig);
             }
@@ -199,6 +257,19 @@ export default function MemoryConfigPanel() {
         finally {
             setSaving(false);
         }
+    };
+    const currentDurablePreset = detectDurablePolicyPreset(config, durableDefaults, durablePresets);
+    const applyDurablePreset = (presetKey: string) => {
+        const preset = durablePresets[presetKey];
+        if (!preset) {
+            return;
+        }
+        setConfig((prev) => ({
+            ...prev,
+            ...Object.fromEntries(
+                DURABLE_POLICY_KEYS.map((key) => [key, preset[key]]),
+            ),
+        }));
     };
     const renderImportanceSlider = (key: keyof DurablePolicyDefaults, label: string, description: string) => (<div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
@@ -495,11 +566,43 @@ export default function MemoryConfigPanel() {
             <Card>
                 <CardHeader>
                     <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k4a2f7fd5")}</CardTitle>
-                    <CardDescription>
-                        {t("components.memory.MemoryConfigPanel.k93c31269")}
-                    </CardDescription>
+                <CardDescription>
+                    {t("components.memory.MemoryConfigPanel.k93c31269")}
+                </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
+                    <div className="space-y-3 rounded-lg border p-4">
+                        <div className="space-y-1">
+                            <Label>Durable 写入预设</Label>
+                            <p className="text-xs text-muted-foreground">
+                                一键切换偏好/知识 durable policy 阈值。推荐默认值为“{DURABLE_POLICY_PRESET_LABELS[recommendedDurablePreset] || "平衡"}”。
+                            </p>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                            {Object.entries(durablePresets).map(([presetKey, presetValues]) => (
+                                <button
+                                    key={presetKey}
+                                    type="button"
+                                    onClick={() => applyDurablePreset(presetKey)}
+                                    className={`rounded-lg border p-3 text-left transition-colors ${currentDurablePreset === presetKey ? "border-sky-300 bg-sky-50" : "border-border hover:border-slate-300"}`}
+                                >
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="text-sm font-semibold">{DURABLE_POLICY_PRESET_LABELS[presetKey] || presetKey}</span>
+                                        {presetKey === recommendedDurablePreset ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">推荐</span> : null}
+                                    </div>
+                                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                                        {DURABLE_POLICY_PRESET_DESCRIPTIONS[presetKey] || "使用该预设批量写入 durable policy。"}
+                                    </p>
+                                    <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                                        pref {presetValues.preference_importance_threshold}/{presetValues.preference_confidence_threshold.toFixed(2)} · global {presetValues.global_knowledge_importance_threshold}/{presetValues.global_knowledge_confidence_threshold.toFixed(2)}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            当前状态：{currentDurablePreset === "custom" ? "已自定义" : DURABLE_POLICY_PRESET_LABELS[currentDurablePreset] || currentDurablePreset}
+                        </p>
+                    </div>
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                         <div className="space-y-4 rounded-lg border p-4">
                             <div className="space-y-1">

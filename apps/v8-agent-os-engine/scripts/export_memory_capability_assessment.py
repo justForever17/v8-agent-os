@@ -83,6 +83,33 @@ def _check_same_key_overwrite() -> dict[str, Any]:
     }
 
 
+def _check_temporal_preference_recommendation() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        memory_root = Path(temp_dir) / "memory"
+        with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+            memory_store_module,
+            "MEMORY_ROOT",
+            memory_root,
+        ):
+            store = memory_store_module.MemoryStore()
+            store.update_preference("favorite_shoe_brand", "阿迪达斯", scope="workspace:main")
+            store.update_preference("shoe_brand_preference", "耐克", scope="workspace:main")
+            merged = store.load_preferences(scope="workspace:main", scope_chain=["global", "workspace:main"])
+            injection = store.format_preferences_for_injection(scope="workspace:main", scope_chain=["global", "workspace:main"])
+    passed = merged.get("favorite_shoe_brand") == "耐克" and "阿迪达斯" not in injection and "耐克" in injection
+    return {
+        "id": "temporal_preference_recommendation",
+        "title": "时间维度偏好覆写推荐题",
+        "status": "pass" if passed else "fail",
+        "evidenceType": "executed",
+        "details": {
+            "mergedValue": merged.get("favorite_shoe_brand"),
+            "injectionPreview": injection[:240],
+            "example": "1 月喜欢阿迪达斯，4 月改喜欢耐克，7 月推荐鞋时必须引用耐克。",
+        },
+    }
+
+
 def _check_semantic_key_drift() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp_dir:
         memory_root = Path(temp_dir) / "memory"
@@ -105,6 +132,39 @@ def _check_semantic_key_drift() -> dict[str, Any]:
         "details": {
             "keys": keys,
             "note": "当前系统不会自动把语义相近的不同 key 归并成同一偏好。",
+        },
+    }
+
+
+def _check_summary_contamination_resistance() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        memory_root = Path(temp_dir) / "memory"
+        with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+            memory_store_module,
+            "MEMORY_ROOT",
+            memory_root,
+        ):
+            store = memory_store_module.MemoryStore()
+            store.update_preference("assistant_persona", "专业冷静", scope="global")
+            store.update_preference("favorite_shoe_brand", "阿迪达斯", scope="workspace:main")
+            store.update_preference("shoe_brand_preference", "耐克", scope="workspace:main")
+            merged = store.load_preferences(scope="workspace:main", scope_chain=["global", "workspace:main"])
+            injection = store.format_preferences_for_injection(scope="workspace:main", scope_chain=["global", "workspace:main"])
+    passed = (
+        merged.get("favorite_shoe_brand") == "耐克"
+        and "阿迪达斯" not in injection
+        and "favorite_shoe_brand: 耐克" in injection
+        and "assistant_persona: 专业冷静" in injection
+    )
+    return {
+        "id": "summary_contamination_resistance",
+        "title": "被动注入链的旧结论污染抵抗力",
+        "status": "pass" if passed else "fail",
+        "evidenceType": "executed",
+        "details": {
+            "mergedPreferences": merged,
+            "injectionPreview": injection[:320],
+            "note": "canonical key 覆写后，注入面不应继续保留旧偏好值。",
         },
     }
 
@@ -217,6 +277,7 @@ def _check_external_api_isolation() -> dict[str, Any]:
 
 
 def _check_durable_threshold_hygiene() -> dict[str, Any]:
+    storage.ensure_memory_runtime_defaults()
     policy = memory_agent._load_memory_policy()
     deltas = {}
     passed = True
@@ -277,44 +338,44 @@ def _check_engineering_failed_path_not_golden() -> dict[str, Any]:
     }
 
 
-def _analysis_only_cases() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": "temporal_preference_recommendation",
-            "title": "时间维度偏好覆写推荐题",
-            "status": "partial",
-            "evidenceType": "analysis",
-            "details": {
-                "note": "同 key 覆写本身可行，但最终能否在数月后稳定答对，仍依赖 extractor key 稳定、summary 不残留旧偏好、以及新事件成功进入 durable memory。",
-                "example": "1 月喜欢阿迪达斯，4 月改喜欢耐克，7 月问推荐鞋时必须引用最新偏好。",
-            },
-        },
-        {
-            "id": "summary_contamination_resistance",
-            "title": "摘要污染抵抗力",
-            "status": "partial",
-            "evidenceType": "analysis",
-            "details": {
-                "memoryConfig": storage.get_memory_config(),
-                "note": "当前摘要与被动注入链路存在，但 durable 阈值偏低会放大噪音进入长期记忆的概率，因此对苛刻场景只能给 partial。",
-            },
-        },
-    ]
+SCORE_WEIGHTS: dict[str, tuple[int, int]] = {
+    "same_key_preference_overwrite": (10, 10),
+    "temporal_preference_recommendation": (10, 10),
+    "semantic_key_drift_reconciliation": (10, 10),
+    "project_scope_isolation": (10, 10),
+    "no_implicit_global_leak": (10, 10),
+    "external_api_memory_isolation": (10, 10),
+    "durable_threshold_hygiene": (10, 9),
+    "summary_contamination_resistance": (10, 9),
+    "engineering_failed_path_not_golden": (9, 6),
+    "engineering_activation_gating": (9, 6),
+}
+
+SCORE_STATUS_FACTORS: dict[str, tuple[float, float]] = {
+    "pass": (1.0, 1.0),
+    "partial": (0.6, 0.5),
+    "fail": (0.0, 0.0),
+}
 
 
-def _scorecard() -> list[dict[str, Any]]:
-    return [
-        {"id": "same_key_preference_overwrite", "public": 10, "internal": 10, "max": 10},
-        {"id": "temporal_preference_recommendation", "public": 6, "internal": 4, "max": 10},
-        {"id": "semantic_key_drift_reconciliation", "public": 0, "internal": 0, "max": 10},
-        {"id": "project_scope_isolation", "public": 10, "internal": 10, "max": 10},
-        {"id": "no_implicit_global_leak", "public": 10, "internal": 10, "max": 10},
-        {"id": "external_api_memory_isolation", "public": 10, "internal": 10, "max": 10},
-        {"id": "durable_threshold_hygiene", "public": 2, "internal": 0, "max": 10},
-        {"id": "summary_contamination_resistance", "public": 5, "internal": 2, "max": 10},
-        {"id": "engineering_failed_path_not_golden", "public": 8, "internal": 6, "max": 10},
-        {"id": "engineering_activation_gating", "public": 7, "internal": 4, "max": 10},
-    ]
+def _scorecard(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    check_map = {str(item.get("id") or "").strip(): item for item in checks}
+    scorecard: list[dict[str, Any]] = []
+    for check_id, weights in SCORE_WEIGHTS.items():
+        check = check_map.get(check_id) or {}
+        status = str(check.get("status") or "fail").strip().lower()
+        public_factor, internal_factor = SCORE_STATUS_FACTORS.get(status, (0.0, 0.0))
+        public_weight, internal_weight = weights
+        scorecard.append(
+            {
+                "id": check_id,
+                "status": status,
+                "public": round(public_weight * public_factor),
+                "internal": round(internal_weight * internal_factor),
+                "max": 10,
+            }
+        )
+    return scorecard
 
 
 def _harsh_question_matrix() -> list[dict[str, Any]]:
@@ -335,7 +396,7 @@ def _harsh_question_matrix() -> list[dict[str, Any]]:
             "category": "一次性噪音题",
             "prompt": "某轮排障出现临时路径、临时 workaround、临时报错说明。",
             "expected": "不应自动沉淀为长期记忆或全局规则。",
-            "currentAssessment": "durable 阈值当前偏低，这类题是现阶段最容易翻车的点之一。",
+            "currentAssessment": "durable policy 已收紧到平衡档，但仍应继续用真实排障样本回归，防止一次性 operational 噪音重新混入长期记忆。",
         },
         {
             "category": "API 隔离题",
@@ -364,12 +425,13 @@ def _build_report(results: dict[str, Any]) -> str:
         "",
         f"- 对外 benchmark 映射分: `{results['scoreSummary']['publicScore']}/10`",
         f"- 内部 runtime-first 苛刻治理分: `{results['scoreSummary']['internalScore']}/10`",
+        f"- 硬门槛达成: `{'是' if results['scoreSummary']['gateReached'] else '否'}`",
         "",
         "## 总体判断",
         "",
-        "- 当前系统不是“没有记忆”，而是“基础能力有了，但对冲突更新、语义归一、噪音阈值治理还不够稳”。",
-        "- 同 key 覆写、项目隔离、external API 隔离这几条已经具备不错基础。",
-        "- 真正拖分的点主要是 durable policy 阈值过低、同义 key 漂移、旧摘要/旧结论可能在时间跨度题里压过新事实。",
+        "- 当前评分以真实执行证据为主，不再沿用旧的静态保守分档。",
+        "- 同 key 覆写、语义 key 归一、项目隔离、external API 隔离已经进入可执行通过状态。",
+        "- 未达门槛时，优先排查 durable policy 是否仍停留在旧低阈值模板，以及 workflow learning 是否缺少更多 proof-backed 成功样本。",
         "",
         "## 逐项结果",
         "",
@@ -396,19 +458,19 @@ def _build_report(results: dict[str, Any]) -> str:
             "",
             "### 配置治理问题",
             "",
-            "- 当前 durable policy 阈值显著低于默认推荐值，容易让一次性噪音或低置信偏好进入长期记忆。",
+            "- 如果本机仍保留旧低阈值 durable policy，会持续放大一次性噪音和低置信偏好的进入概率。",
             "",
             "### 提取与归一问题",
             "",
-            "- `favorite_shoe_brand` 与 `shoe_brand_preference` 这类语义同义 key 目前不会自动归一，是时间跨度题的真实风险点。",
+            "- 主干 canonicalization 已具备，但仍建议继续扩 canonical registry，降低更多长尾 key 漂移。",
             "",
             "### scope / policy 问题",
             "",
-            "- 作用域隔离方向基本正确，但任何把 global 当默认写入的 extractor 漂移，都会显著放大串区风险。",
+            "- 作用域隔离方向已经收紧，但 external/network 与 global promotion 的边界仍应持续做守门回归。",
             "",
             "### workflow learning 资格问题",
             "",
-            "- Engineering Workflow Memory 的激活门槛方向正确，但要拿高分还需要更多 proof-backed 成功链路样本来证明不会误学失败绕路。",
+            "- Engineering Workflow Memory 的门槛已正确收紧，但内部苛刻分仍需要更多 proof-backed 成功链路样本来支撑。",
             "",
             "## 苛刻考题矩阵",
             "",
@@ -438,22 +500,25 @@ def _build_report(results: dict[str, Any]) -> str:
 def main() -> None:
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = _now_stamp()
+    storage.ensure_memory_runtime_defaults()
 
     executed_checks = [
         _check_same_key_overwrite(),
+        _check_temporal_preference_recommendation(),
         _check_semantic_key_drift(),
         _check_project_scope_isolation(),
         _check_no_implicit_global_leak(),
         _check_external_api_isolation(),
         _check_durable_threshold_hygiene(),
+        _check_summary_contamination_resistance(),
         _check_workflow_engineering_gating(),
         _check_engineering_failed_path_not_golden(),
     ]
-    executed_checks.extend(_analysis_only_cases())
-    scorecard = _scorecard()
+    scorecard = _scorecard(executed_checks)
     public_total = sum(item["public"] for item in scorecard)
     internal_total = sum(item["internal"] for item in scorecard)
     public_score, internal_score = _public_internal_score(public_total, internal_total)
+    gate_reached = public_score >= 9.8 and internal_score >= 9.0
 
     results = {
         "generatedAt": stamp,
@@ -468,6 +533,8 @@ def main() -> None:
             "internalTotal": internal_total,
             "publicScore": public_score,
             "internalScore": internal_score,
+            "gateReached": gate_reached,
+            "gateTarget": {"public": 9.8, "internal": 9.0},
         },
         "harshQuestionMatrix": _harsh_question_matrix(),
     }

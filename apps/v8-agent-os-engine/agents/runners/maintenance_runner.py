@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from agents import memory_agent
+from core import memory_store as memory_store_module
+from core.knowledge_db import knowledge_db
 from erc.run_service import run_service
 from erc.runtime_context import bind_runtime_context
 from erc.runtime_stability import runtime_stability_service
@@ -15,6 +17,49 @@ from runtimes.memory.runtime import memory_runtime
 
 class MemoryAgentRunner:
     agent_id = "memory_agent"
+
+    def _quarantine_global_high_risk_memory(self) -> Dict[str, Any]:
+        quarantined_preferences = 0
+        quarantined_preference_keys: list[str] = []
+        quarantined_knowledge = 0
+        quarantined_knowledge_ids: list[str] = []
+
+        global_preferences = memory_store_module.memory_store.get_scope_preferences_raw("global")
+        for key, value in global_preferences.items():
+            reason = memory_agent.classify_global_preference_risk(key, value)
+            if not reason:
+                continue
+            memory_store_module.memory_store.quarantine_global_preference(
+                key=key,
+                value=value,
+                reason=reason,
+                metadata={"source": "maintenance", "scope": "global"},
+            )
+            quarantined_preferences += 1
+            quarantined_preference_keys.append(str(key))
+
+        for item in knowledge_db.get_all_knowledge(scope=None, limit=500, status="active"):
+            if str(item.get("scope") or "").strip() != "global":
+                continue
+            reason = memory_agent.classify_global_knowledge_risk(
+                str(item.get("fact") or ""),
+                str(item.get("category") or ""),
+            )
+            if not reason:
+                continue
+            fact_id = str(item.get("id") or "").strip()
+            if not fact_id:
+                continue
+            if knowledge_db.quarantine_knowledge(fact_id):
+                quarantined_knowledge += 1
+                quarantined_knowledge_ids.append(fact_id)
+
+        return {
+            "quarantinedPreferenceCount": quarantined_preferences,
+            "quarantinedPreferenceKeys": quarantined_preference_keys,
+            "quarantinedKnowledgeCount": quarantined_knowledge,
+            "quarantinedKnowledgeIds": quarantined_knowledge_ids,
+        }
 
     def _session_extraction_runtime_session_id(self, source_session_id: str) -> str:
         digest = hashlib.md5(str(source_session_id).encode("utf-8")).hexdigest()[:10]
@@ -448,6 +493,7 @@ class MemoryAgentRunner:
         legacy_summary_touched_refs: list[str] = []
         legacy_summary_backfilled_count = 0
         workflow_maintenance_result: Dict[str, Any] = {}
+        global_quarantine_result: Dict[str, Any] = {}
 
         try:
             for target in targets:
@@ -488,6 +534,7 @@ class MemoryAgentRunner:
                 if str(item).strip()
             ]
             legacy_summary_backfilled_count = int(backfill_result.get("updatedCount") or 0)
+            global_quarantine_result = self._quarantine_global_high_risk_memory()
             workflow_maintenance_result = memory_runtime.run_workflow_maintenance() or {}
             run_handle.emit(
                 "memory.workflow.maintenance.completed",
@@ -525,6 +572,10 @@ class MemoryAgentRunner:
             "legacySummaryBackfilledCount": legacy_summary_backfilled_count,
             "legacySummaryTouchedRefs": legacy_summary_touched_refs,
             "failedTargets": failed_targets,
+            "globalQuarantinedPreferenceCount": int(global_quarantine_result.get("quarantinedPreferenceCount") or 0),
+            "globalQuarantinedPreferenceKeys": list(global_quarantine_result.get("quarantinedPreferenceKeys") or []),
+            "globalQuarantinedKnowledgeCount": int(global_quarantine_result.get("quarantinedKnowledgeCount") or 0),
+            "globalQuarantinedKnowledgeIds": list(global_quarantine_result.get("quarantinedKnowledgeIds") or []),
             "workflowCandidateCount": int(workflow_maintenance_result.get("candidateCount") or 0),
             "workflowCandidateUpdatedCount": int(workflow_maintenance_result.get("updatedCount") or 0),
             "workflowActiveHintCount": int(workflow_maintenance_result.get("activatedCount") or 0),
@@ -542,6 +593,8 @@ class MemoryAgentRunner:
             "summary_stale_count_after": maintenance_meta["summaryStaleCountAfter"],
             "summary_backfilled_count": summary_backfilled_count,
             "legacy_summary_backfilled_count": legacy_summary_backfilled_count,
+            "global_quarantined_preference_count": maintenance_meta["globalQuarantinedPreferenceCount"],
+            "global_quarantined_knowledge_count": maintenance_meta["globalQuarantinedKnowledgeCount"],
             "workflow_candidate_count": maintenance_meta["workflowCandidateCount"],
             "workflow_candidate_updated_count": maintenance_meta["workflowCandidateUpdatedCount"],
             "workflow_active_hint_count": maintenance_meta["workflowActiveHintCount"],

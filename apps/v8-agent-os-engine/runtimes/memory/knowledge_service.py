@@ -62,6 +62,9 @@ class KnowledgeService:
             knowledge_db.hard_delete_knowledge(fact_id)
         return deleted
 
+    def restore_knowledge(self, *, fact_id: str) -> bool:
+        return knowledge_db.set_knowledge_status(fact_id, "active")
+
     def search_full_text(
         self,
         *,
@@ -71,8 +74,15 @@ class KnowledgeService:
     ) -> List[Dict]:
         return knowledge_db.fts_search(query, scope=scope, limit=limit)
 
-    def list_recent_knowledge(self, *, scope: Optional[str] = None, limit: int = 50) -> List[Dict]:
-        return self.query_knowledge(scope=scope, limit=limit)
+    def list_recent_knowledge(
+        self,
+        *,
+        scope: Optional[str] = None,
+        limit: int = 50,
+        status: str = "active",
+    ) -> List[Dict]:
+        normalized_status = str(status or "active").strip().lower() or "active"
+        return knowledge_db.get_all_knowledge(scope=scope, limit=limit, status=normalized_status)
 
     def get_knowledge_count(self) -> int:
         return knowledge_db.get_knowledge_count()

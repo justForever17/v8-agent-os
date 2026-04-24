@@ -42,6 +42,8 @@ from agents.memory_agent import (
     RelationExtraction,
 )
 from core import memory_store as memory_store_module
+from core.memory_canonicalization import canonicalize_memory_extraction_result
+from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from runtimes.memory.models import ProjectDescriptor, SessionScopeBinding
 from runtimes.memory.scope_resolution import ScopeBindingConflictError, ScopeResolutionService
 
@@ -103,6 +105,71 @@ class _FakeResolutionRepo:
 
 
 class MemoryDurablePolicyTests(unittest.TestCase):
+    def test_preference_canonicalization_overwrites_old_alias_with_latest_value(self):
+        result = MemoryExtractionResult(
+            summary="shoe preference",
+            tags=["preference"],
+            preferences=[
+                PreferenceExtraction(
+                    scope="global",
+                    key="favorite_shoe_brand",
+                    value="阿迪达斯",
+                    importance=70,
+                    confidence=0.8,
+                ),
+                PreferenceExtraction(
+                    scope="global",
+                    key="shoe_brand_preference",
+                    value="耐克",
+                    importance=90,
+                    confidence=0.95,
+                ),
+            ],
+        )
+
+        diagnostics = canonicalize_memory_extraction_result(result)
+
+        self.assertEqual(len(result.preferences), 1)
+        self.assertEqual(result.preferences[0].key, "favorite_shoe_brand")
+        self.assertEqual(result.preferences[0].value, "耐克")
+        self.assertGreaterEqual(diagnostics["preferenceCanonicalizationCount"], 1)
+        self.assertGreaterEqual(diagnostics["preferenceMergeCount"], 1)
+
+    def test_global_preference_noise_classification_rejects_path_like_values(self):
+        self.assertEqual(
+            memory_agent.classify_global_preference_risk("favorite_download_path", r"C:\Users\sunny\Downloads"),
+            "path_like_global_preference",
+        )
+        self.assertIsNone(memory_agent.classify_global_preference_risk("favorite_shoe_brand", "耐克"))
+
+    def test_legacy_low_memory_policy_is_auto_migrated_to_balanced_defaults(self):
+        raw_config = {
+            "memory": {
+                "preference_importance_threshold": 18,
+                "preference_confidence_threshold": 0.18,
+                "knowledge_importance_threshold": 20,
+                "knowledge_confidence_threshold": 0.20,
+                "global_knowledge_importance_threshold": 20,
+                "global_knowledge_confidence_threshold": 0.20,
+                "global_operational_importance_threshold": 20,
+                "global_operational_confidence_threshold": 0.20,
+            }
+        }
+        with patch.object(storage, "_ensure_config_json_exists"), patch.object(
+            storage,
+            "_read_raw_config_payload",
+            return_value=raw_config,
+        ), patch.object(storage, "_write_config_payload") as write_mock:
+            applied = storage.ensure_memory_runtime_defaults()
+
+        self.assertEqual(applied.get("durable_policy_preset"), "balanced")
+        self.assertEqual(applied.get("retrieval_threshold"), 0.20)
+        write_mock.assert_called()
+        written_payload = write_mock.call_args.args[0]
+        written_memory = written_payload["memory"]
+        for key, expected in MEMORY_DURABLE_POLICY_DEFAULTS.items():
+            self.assertEqual(written_memory[key], expected)
+
     def test_extract_with_llm_reports_empty_response_instead_of_generic_model_empty(self):
         class _FakeParser:
             def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003

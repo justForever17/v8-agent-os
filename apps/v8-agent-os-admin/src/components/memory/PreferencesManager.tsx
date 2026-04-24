@@ -14,6 +14,14 @@ interface PreferenceRow {
     isNew?: boolean;
     saving?: boolean;
 }
+interface QuarantinedPreferenceRecord {
+    id: string;
+    key: string;
+    value: string;
+    reason?: string;
+    metadata?: Record<string, unknown>;
+    quarantinedAt?: string;
+}
 type PreferencesByScope = Record<string, PreferenceRow[]>;
 function isAllowedPreferenceScope(scope: string) {
     return scope === "global" || scope.startsWith("project:") || scope.startsWith("channel:");
@@ -56,6 +64,7 @@ export function PreferencesManager() {
     const { toast } = useToast();
     const t = useT();
     const [preferencesByScope, setPreferencesByScope] = useState<PreferencesByScope>({});
+    const [quarantinedGlobalPreferences, setQuarantinedGlobalPreferences] = useState<QuarantinedPreferenceRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [newScopeName, setNewScopeName] = useState("");
     const scopes = useMemo(() => sortScopes(Object.keys(preferencesByScope)), [preferencesByScope]);
@@ -68,6 +77,7 @@ export function PreferencesManager() {
             }
             const data = await res.json();
             setPreferencesByScope(normalizePreferences(data?.preferences || {}));
+            setQuarantinedGlobalPreferences(Array.isArray(data?.globalQuarantine) ? data.globalQuarantine : []);
         }
         catch (error) {
             console.error("Failed to load preferences:", error);
@@ -84,6 +94,57 @@ export function PreferencesManager() {
     useEffect(() => {
         void loadPreferences();
     }, [loadPreferences]);
+    const handleRestoreQuarantined = useCallback(async (record: QuarantinedPreferenceRecord) => {
+        try {
+            const res = await fetch("/api/memory/preferences/quarantine", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ recordId: record.id }),
+            });
+            if (!res.ok) {
+                throw new Error(`Restore failed: ${res.status}`);
+            }
+            await loadPreferences();
+            toast({
+                title: "已恢复全局偏好",
+                description: `${record.key} 已从隔离区恢复到 global。`,
+            });
+        } catch (error) {
+            console.error("Failed to restore quarantined preference:", error);
+            toast({
+                title: "恢复失败",
+                description: "无法恢复该条全局隔离偏好。",
+                variant: "destructive",
+            });
+        }
+    }, [loadPreferences, toast]);
+    const handleDeleteQuarantined = useCallback(async (record: QuarantinedPreferenceRecord) => {
+        if (!window.confirm(`确定删除隔离偏好 ${record.key} 吗？此操作不会恢复到 active。`)) {
+            return;
+        }
+        try {
+            const res = await fetch("/api/memory/preferences/quarantine", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ recordId: record.id }),
+            });
+            if (!res.ok) {
+                throw new Error(`Delete failed: ${res.status}`);
+            }
+            await loadPreferences();
+            toast({
+                title: "已删除隔离偏好",
+                description: `${record.key} 已从隔离区删除。`,
+            });
+        } catch (error) {
+            console.error("Failed to delete quarantined preference:", error);
+            toast({
+                title: "删除失败",
+                description: "无法删除该条全局隔离偏好。",
+                variant: "destructive",
+            });
+        }
+    }, [loadPreferences, toast]);
     const mutateRow = useCallback((scope: string, rowId: string, patch: Partial<PreferenceRow>) => {
         setPreferencesByScope((prev) => ({
             ...prev,
@@ -235,6 +296,42 @@ export function PreferencesManager() {
                     </Button>
                 </div>
             </div>
+
+            {quarantinedGlobalPreferences.length > 0 ? (
+                <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
+                    <CardHeader>
+                        <CardTitle className="text-lg">全局高风险偏好隔离区</CardTitle>
+                        <CardDescription>
+                            这里展示被自动隔离的 global preference。你可以查看原因、恢复到 active，或直接删除。
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        {quarantinedGlobalPreferences.map((record) => (
+                            <div key={record.id} className="grid gap-3 rounded-2xl border border-amber-500/20 bg-background/80 px-4 py-4 xl:grid-cols-[200px_minmax(0,1fr)_auto]">
+                                <div className="min-w-0">
+                                    <div className="font-mono text-sm font-medium">{record.key}</div>
+                                    <div className="mt-1 text-xs text-muted-foreground">{record.quarantinedAt || "未知时间"}</div>
+                                </div>
+                                <div className="min-w-0 space-y-1">
+                                    <div className="text-sm">{record.value}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                        原因：{record.reason || "unspecified"}
+                                    </div>
+                                </div>
+                                <div className="flex items-center justify-end gap-2">
+                                    <Button variant="outline" size="sm" onClick={() => void handleRestoreQuarantined(record)}>
+                                        <Save className="mr-2 h-4 w-4" />
+                                        恢复
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => void handleDeleteQuarantined(record)}>
+                                        <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </CardContent>
+                </Card>
+            ) : null}
 
             {loading ? (<div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
                     {t("components.memory.PreferencesManager.k1f44c77b")}

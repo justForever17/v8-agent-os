@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
+from core.memory_canonicalization import canonicalize_preference_key
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 logger = logging.getLogger("v8_agent_os.memory")
@@ -88,6 +89,7 @@ class MemoryStore:
         
         # 图谱目录
         (MEMORY_ROOT / ".graph").mkdir(exist_ok=True)
+        (MEMORY_ROOT / "quarantine").mkdir(exist_ok=True)
         
         # 创建默认 MEMORY.md
         if not self.memory_path.exists():
@@ -194,13 +196,18 @@ class MemoryStore:
         merged = {}
         for s in scopes_order:
             if s in all_data:
-                merged.update(all_data[s])
+                for key, value in all_data[s].items():
+                    merged[canonicalize_preference_key(key)] = value
         
         return merged
     
     def get_all_scopes(self) -> List[str]:
         """获取所有已定义的 scope"""
         return list(self._load_raw_preferences().keys())
+
+    def get_scope_preferences_raw(self, scope: str = "global") -> Dict[str, str]:
+        normalized_scope = self._validate_scope(scope)
+        return dict(self._load_raw_preferences().get(normalized_scope) or {})
     
     def update_preference(self, key: str, value: str, scope: str = "global"):
         """
@@ -208,13 +215,14 @@ class MemoryStore:
         """
         normalized_scope = self._validate_scope(scope)
         data = self._load_raw_preferences()
+        canonical_key = canonicalize_preference_key(key)
         
         if normalized_scope not in data:
             data[normalized_scope] = {}
-        data[normalized_scope][key] = value
+        data[normalized_scope][canonical_key] = value
         
         self._save_preferences(data)
-        logger.info(f"[MemoryStore] Updated preference [{normalized_scope}] {key} = {value}")
+        logger.info(f"[MemoryStore] Updated preference [{normalized_scope}] {canonical_key} = {value}")
 
     def delete_preference(self, key: str, scope: str = "global") -> bool:
         """
@@ -222,12 +230,101 @@ class MemoryStore:
         """
         normalized_scope = self._validate_scope(scope)
         data = self._load_raw_preferences()
-        if normalized_scope not in data or key not in data[normalized_scope]:
+        canonical_key = canonicalize_preference_key(key)
+        if normalized_scope not in data or canonical_key not in data[normalized_scope]:
             return False
 
-        del data[normalized_scope][key]
+        del data[normalized_scope][canonical_key]
         self._save_preferences(data)
-        logger.info(f"[MemoryStore] Deleted preference [{normalized_scope}] {key}")
+        logger.info(f"[MemoryStore] Deleted preference [{normalized_scope}] {canonical_key}")
+        return True
+
+    def _global_preference_quarantine_path(self) -> Path:
+        return MEMORY_ROOT / "quarantine" / "global_preferences.json"
+
+    def load_global_preference_quarantine(self) -> List[Dict[str, Any]]:
+        path = self._global_preference_quarantine_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        items = payload if isinstance(payload, list) else []
+        normalized: List[Dict[str, Any]] = []
+        changed = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            if not str(record.get("id") or "").strip():
+                key_part = canonicalize_preference_key(str(record.get("key") or "preference"))
+                stamp = str(record.get("quarantinedAt") or _utc_now_iso()).replace(":", "-")
+                record["id"] = f"prefq:{key_part}:{stamp}"
+                changed = True
+            normalized.append(record)
+        if changed:
+            self._save_global_preference_quarantine_items(normalized)
+        return normalized
+
+    def _save_global_preference_quarantine_items(self, items: List[Dict[str, Any]]) -> None:
+        path = self._global_preference_quarantine_path()
+        path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def quarantine_global_preference(
+        self,
+        *,
+        key: str,
+        value: str,
+        reason: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        canonical_key = canonicalize_preference_key(key)
+        record = {
+            "id": f"prefq:{canonical_key}:{uuid.uuid4().hex[:10]}",
+            "key": canonical_key,
+            "value": str(value or "").strip(),
+            "reason": str(reason or "").strip() or "unspecified",
+            "metadata": dict(metadata or {}),
+            "quarantinedAt": _utc_now_iso(),
+        }
+        items = self.load_global_preference_quarantine()
+        items.append(record)
+        self._save_global_preference_quarantine_items(items)
+        self.delete_preference(canonical_key, scope="global")
+        return record
+
+    def restore_global_preference_quarantine(self, record_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(record_id or "").strip()
+        if not normalized_id:
+            return None
+        items = self.load_global_preference_quarantine()
+        restored: Optional[Dict[str, Any]] = None
+        remaining: List[Dict[str, Any]] = []
+        for item in items:
+            if str(item.get("id") or "").strip() == normalized_id and restored is None:
+                restored = dict(item)
+                continue
+            remaining.append(item)
+        if not restored:
+            return None
+        self._save_global_preference_quarantine_items(remaining)
+        self.update_preference(
+            key=str(restored.get("key") or "").strip(),
+            value=str(restored.get("value") or "").strip(),
+            scope="global",
+        )
+        return restored
+
+    def delete_global_preference_quarantine(self, record_id: str) -> bool:
+        normalized_id = str(record_id or "").strip()
+        if not normalized_id:
+            return False
+        items = self.load_global_preference_quarantine()
+        remaining = [item for item in items if str(item.get("id") or "").strip() != normalized_id]
+        if len(remaining) == len(items):
+            return False
+        self._save_global_preference_quarantine_items(remaining)
         return True
     
     def _save_preferences(self, data: Dict[str, Dict[str, str]]):

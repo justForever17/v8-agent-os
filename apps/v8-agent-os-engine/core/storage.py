@@ -107,15 +107,57 @@ LEGACY_ADMIN_ORIGINS = {
 
 MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED = 0.20
 
+MEMORY_DURABLE_POLICY_PRESETS: dict[str, dict[str, Any]] = {
+    "learning_first": {
+        "label": "学习优先",
+        "preference_importance_threshold": 25,
+        "preference_confidence_threshold": 0.35,
+        "knowledge_importance_threshold": 28,
+        "knowledge_confidence_threshold": 0.35,
+        "global_knowledge_importance_threshold": 42,
+        "global_knowledge_confidence_threshold": 0.50,
+        "global_operational_importance_threshold": 38,
+        "global_operational_confidence_threshold": 0.45,
+    },
+    "balanced": {
+        "label": "平衡",
+        "preference_importance_threshold": 35,
+        "preference_confidence_threshold": 0.45,
+        "knowledge_importance_threshold": 35,
+        "knowledge_confidence_threshold": 0.45,
+        "global_knowledge_importance_threshold": 50,
+        "global_knowledge_confidence_threshold": 0.60,
+        "global_operational_importance_threshold": 45,
+        "global_operational_confidence_threshold": 0.55,
+    },
+    "quality_first": {
+        "label": "质量优先",
+        "preference_importance_threshold": 48,
+        "preference_confidence_threshold": 0.58,
+        "knowledge_importance_threshold": 46,
+        "knowledge_confidence_threshold": 0.54,
+        "global_knowledge_importance_threshold": 60,
+        "global_knowledge_confidence_threshold": 0.68,
+        "global_operational_importance_threshold": 55,
+        "global_operational_confidence_threshold": 0.62,
+    },
+}
+
 MEMORY_DURABLE_POLICY_DEFAULTS: dict[str, Any] = {
-    "preference_importance_threshold": 65,
-    "preference_confidence_threshold": 0.70,
-    "knowledge_importance_threshold": 55,
-    "knowledge_confidence_threshold": 0.65,
-    "global_knowledge_importance_threshold": 62,
-    "global_knowledge_confidence_threshold": 0.72,
-    "global_operational_importance_threshold": 58,
-    "global_operational_confidence_threshold": 0.68,
+    key: value
+    for key, value in MEMORY_DURABLE_POLICY_PRESETS["balanced"].items()
+    if key != "label"
+}
+
+LEGACY_LOW_MEMORY_DURABLE_POLICY: dict[str, Any] = {
+    "preference_importance_threshold": 18,
+    "preference_confidence_threshold": 0.18,
+    "knowledge_importance_threshold": 20,
+    "knowledge_confidence_threshold": 0.20,
+    "global_knowledge_importance_threshold": 20,
+    "global_knowledge_confidence_threshold": 0.20,
+    "global_operational_importance_threshold": 20,
+    "global_operational_confidence_threshold": 0.20,
 }
 
 
@@ -1885,6 +1927,8 @@ class StorageManager:
             "retrievalThresholdSource": "user" if threshold_is_user_defined else "engine_default",
             "retrievalThresholdIsDefault": not threshold_is_user_defined,
             "durablePolicyDefaults": deepcopy(MEMORY_DURABLE_POLICY_DEFAULTS),
+            "durablePolicyPresets": deepcopy(MEMORY_DURABLE_POLICY_PRESETS),
+            "recommendedDurablePolicyPreset": "balanced",
         }
 
     def ensure_memory_runtime_defaults(self) -> Dict[str, Any]:
@@ -1902,7 +1946,32 @@ class StorageManager:
             raw_config["memory"] = raw_memory
             self._write_config_payload(raw_config)
             applied["retrieval_threshold"] = MEMORY_RETRIEVAL_THRESHOLD_RECOMMENDED
+        if self._looks_like_legacy_low_memory_durable_policy(raw_memory):
+            for key, value in MEMORY_DURABLE_POLICY_DEFAULTS.items():
+                raw_memory[key] = value
+            raw_config["memory"] = raw_memory
+            self._write_config_payload(raw_config)
+            applied["durable_policy_preset"] = "balanced"
         return applied
+
+    def _looks_like_legacy_low_memory_durable_policy(self, raw_memory: Dict[str, Any]) -> bool:
+        if not isinstance(raw_memory, dict):
+            return False
+        for key, expected in LEGACY_LOW_MEMORY_DURABLE_POLICY.items():
+            current = raw_memory.get(key)
+            if isinstance(expected, float):
+                try:
+                    if abs(float(current) - expected) > 0.0001:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+            else:
+                try:
+                    if int(current) != expected:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+        return True
         
     def save_memory_config(self, data: Dict[str, Any]):
         self.write_json("memory_config.json", data)

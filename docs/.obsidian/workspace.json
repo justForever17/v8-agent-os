@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "V8_AGENT_OS_QUICK_START_ZH.md",
+                "file": "chatruntime/memory_capability_reports/2026-04-24_16-38-39_memory_capability_assessment.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "V8_AGENT_OS_QUICK_START_ZH"
+              "title": "2026-04-24_16-38-39_memory_capability_assessment"
             }
           }
         ],
@@ -200,8 +200,9 @@
   },
   "active": "5f02ea1e820c9b83",
   "lastOpenFiles": [
-    "ENGINE_QUICK_START.md",
     "chatruntime/memory_capability_reports/2026-04-24_12-42-46_memory_capability_assessment.md",
+    "V8_AGENT_OS_QUICK_START_ZH.md",
+    "ENGINE_QUICK_START.md",
     "OPENCLAW_4_8_PLUGIN_HOST_ADOPTION_ZH.md",
     "prompt.md",
     "computer/SUPERVISOR_RPA_COMPUTER_USE_BOUNDARY_REDESIGN_ZH.md",
@@ -230,7 +231,6 @@
     "supervisor/plan/2026-04-21_16-04-34_nuwa_einstein_supervisor_plan_pipeline.md",
     "supervisor/SUPERVISOR_SINGLE_TURN_SYSTEM_CONTENT_2026-04-19.md",
     "memoryruntime/2026-04-22_09-33-00_行为记忆链空运行_第3轮_结果反馈后_SYSTEM_CONTENT.md",
-    "memoryruntime/2026-04-22_10-18-25_行为记忆链空运行_第2轮_首动作后_SYSTEM_CONTENT.md",
     "runtime-governance",
     "supervisor/plan/_dry_run_debug.log",
     "memoryruntime",

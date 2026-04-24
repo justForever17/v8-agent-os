@@ -63,14 +63,24 @@ apps/v8-agent-os-phone-tmp/
 **/tmp/
 **/temp/
 
-# Keep committed templates and docs
+# Keep committed templates and public docs
 !**/env.template
 !docs/
 !bootstrap.ps1
 !bootstrap.sh
 !bootstrap.command
 
+# Public docs boundary: only these four docs are intended for source control.
+docs/**
+!docs/V8_AGENT_OS_API_REFERENCE_ZH.md
+!docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md
+!docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md
+!docs/V8_AGENT_OS_QUICK_START_ZH.md
+
 docs/software-copyright
+
+# Internal engine tests and eval resources stay local/private.
+apps/v8-agent-os-engine/tests/**
 
 # Exclude internal dev/admin scripts from source control
 apps/v8-agent-os-admin/scripts/

@@ -6,6 +6,7 @@ from .models import ModelConnectionTestPayload
 from core.extensions_runtime import extensions_runtime_service
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
+from core.model_provider_catalog import model_provider_catalog
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
@@ -236,12 +237,168 @@ async def save_model_control_plane(data: dict = Body(...)):
 @router.post("/models/test-connection")
 async def test_model_connection(payload: ModelConnectionTestPayload):
     try:
-        result = model_connection_tester.test_model_connection(model_id=payload.model_id)
+        result = model_connection_tester.test_model_connection(
+            model_id=payload.model_id,
+            model_ref=payload.model_ref or "",
+            provider_id=payload.provider_id or "",
+        )
         if result.get("ok"):
             return result
         raise HTTPException(status_code=422, detail=result)
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models/catalog")
+async def get_model_provider_catalog():
+    try:
+        return model_provider_catalog.load()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/providers/probe")
+async def probe_model_provider(data: dict = Body(...)):
+    try:
+        provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
+        custom_provider_name = str(data.get("customProviderName") or data.get("custom_provider_name") or "").strip()
+        base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
+        is_custom_probe = provider_id in {"", "__custom__", "custom"} and bool(custom_provider_name or base_url)
+        if not provider_id and not is_custom_probe:
+            raise HTTPException(status_code=422, detail="providerId is required")
+        credential = str(data.get("apiKey") or data.get("api_key") or "").strip()
+        credential_source = "request" if credential else ""
+        provider = None
+        if is_custom_probe:
+            provider = model_provider_catalog.build_custom_provider(custom_provider_name, base_url)
+            provider_id = str(provider.get("id") or "")
+        elif not credential:
+            config = model_control_plane.get_config()
+            existing_provider = (
+                ((config.get("providers") or {}).get(provider_id) or {}).get("provider") or {}
+            )
+            stored_key = str(existing_provider.get("api_key") or "").strip()
+            if stored_key and not stored_key.startswith("oauth:"):
+                credential = stored_key
+                credential_source = "stored_provider"
+        result = (
+            model_provider_catalog.probe_provider_entry(provider, credential=credential, base_url=base_url)
+            if provider
+            else model_provider_catalog.probe_provider(provider_id, credential=credential, base_url=base_url)
+        )
+        if is_custom_probe and result.get("ok"):
+            saved_provider = model_provider_catalog.save_custom_provider(provider or {})
+            result["provider"] = saved_provider
+            result["providerId"] = saved_provider.get("id")
+            result["customProviderSaved"] = True
+        else:
+            result["providerId"] = provider_id
+        result["credentialSource"] = credential_source or "none"
+        result["usedStoredCredential"] = credential_source == "stored_provider"
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/models/providers/custom/{provider_id}")
+async def delete_custom_model_provider(provider_id: str):
+    try:
+        provider = model_provider_catalog.get_provider(provider_id)
+        if not provider or not provider.get("isCustom"):
+            raise HTTPException(status_code=404, detail="custom provider not found")
+        deleted = model_provider_catalog.delete_custom_provider(provider_id)
+        return {"ok": deleted, "providerId": provider_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/connect")
+async def connect_model_provider(data: dict = Body(...)):
+    try:
+        provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
+        model_id = str(data.get("modelId") or data.get("model_id") or "").strip()
+        if not provider_id or not model_id:
+            raise HTTPException(status_code=422, detail="providerId and modelId are required")
+        custom_provider_name = str(data.get("customProviderName") or data.get("custom_provider_name") or "").strip()
+        base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
+        incoming_credential = str(data.get("apiKey") or data.get("api_key") or "").strip()
+        provider = model_provider_catalog.get_provider(provider_id)
+        if not provider and provider_id in {"__custom__", "custom"}:
+            if not incoming_credential:
+                raise HTTPException(status_code=422, detail="apiKey is required before connecting this Provider")
+            provider = model_provider_catalog.build_custom_provider(custom_provider_name, base_url)
+            provider = model_provider_catalog.save_custom_provider(provider)
+            provider_id = str(provider.get("id") or "")
+        if not provider:
+            raise HTTPException(status_code=404, detail="provider not found")
+
+        model = model_provider_catalog.normalize_model(provider, model_id)
+        config = model_control_plane.get_config()
+        providers = dict(config.get("providers") or {})
+        existing = dict(providers.get(provider_id) or {})
+        existing_provider = dict(existing.get("provider") or {})
+        auth = dict(provider.get("auth") or {})
+        credential = str(incoming_credential or existing_provider.get("api_key") or "").strip()
+        if auth.get("type") == "api_key" and not credential:
+            raise HTTPException(status_code=422, detail="apiKey is required before connecting this Provider")
+        credential_mode = "oauthFile" if auth.get("type") == "oauth_file" else "apiKey"
+        oauth_path = str(auth.get("path") or "")
+        next_provider = {
+            **existing_provider,
+            "name": provider.get("name") or provider_id,
+            "base_url": str(base_url or provider.get("baseUrl") or ""),
+            "api_standard": provider.get("apiStandard") or "openai",
+            "type": "PLATFORM" if auth.get("type") == "oauth_file" else "API",
+            "api_key": credential if auth.get("type") != "oauth_file" else f"oauth:{oauth_path}",
+            "credential_mode": credential_mode,
+            "oauth_preset": auth.get("preset") or existing_provider.get("oauth_preset") or "",
+            "logoAsset": provider.get("logoAsset") or existing_provider.get("logoAsset") or "",
+            "is_enabled": True,
+        }
+        is_custom_provider = bool(provider.get("isCustom"))
+        is_oauth_provider = auth.get("type") == "oauth_file"
+        managed_context_window = None if (is_custom_provider or is_oauth_provider) else model.get("contextWindow")
+        managed_max_tokens = None if (is_custom_provider or is_oauth_provider) else model.get("maxTokens")
+        managed_temperature = None if (is_custom_provider or is_oauth_provider) else model.get("temperature")
+        next_model = {
+            "type": model.get("type") or "TEXT",
+            "contextWindow": managed_context_window,
+            "maxTokens": managed_max_tokens,
+            "temperature": managed_temperature,
+            "capabilities": model.get("capabilities") or {},
+            "capabilityClass": "vision_multimodal" if (model.get("capabilities") or {}).get("vision") else "chat_general",
+            "isEnabled": True,
+        }
+        current_models = dict(existing.get("models") or {})
+        if provider.get("singleActiveModel"):
+            current_models = {}
+        current_models[model_id] = next_model
+        providers[provider_id] = {"provider": next_provider, "models": current_models}
+        config["providers"] = providers
+        saved = model_control_plane.save_config(config)
+        return {
+            "ok": True,
+            "providerId": provider_id,
+            "modelId": model_id,
+            "modelRef": model.get("modelRef"),
+            "config": saved,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

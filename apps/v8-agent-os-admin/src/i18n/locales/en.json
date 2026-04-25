@@ -2601,5 +2601,19 @@
   "app.admin.dashboard.engineeringLane.diagnosticsDescription": "Compact command, Git, and LSP provider diagnostics.",
   "app.admin.dashboard.engineeringLane.noDiagnostics": "No diagnostics yet.",
   "app.admin.dashboard.engineeringLane.worksetTitle": "Workset Risk",
-  "app.admin.dashboard.engineeringLane.worksetDescription": "Read-only view of read/write set, changed files, and taskBrief writeSet drift."
+  "app.admin.dashboard.engineeringLane.worksetDescription": "Read-only view of read/write set, changed files, and taskBrief writeSet drift.",
+  "app.admin.dashboard.model.hub.catalog.probeFailed": "Model probe failed",
+  "app.admin.dashboard.model.hub.catalog.connectFailed": "Connection failed",
+  "app.admin.dashboard.model.hub.catalog.connected": "Model connected",
+  "app.admin.dashboard.model.hub.catalog.fallback": "Fell back to catalog candidates.",
+  "app.admin.dashboard.model.hub.catalog.writeFailed": "Could not write model configuration.",
+  "app.admin.dashboard.model.hub.catalog.title": "Quick connect",
+  "app.admin.dashboard.model.hub.catalog.description": "Choose OAuth or a Provider catalog entry, then detect and connect the current model in one flow. Advanced parameters remain editable below.",
+  "app.admin.dashboard.model.hub.catalog.selectModel": "Select model",
+  "app.admin.dashboard.model.hub.catalog.detectAndConnect": "Detect and connect",
+  "app.admin.dashboard.model.hub.catalog.apiProvider": "API Key Provider",
+  "app.admin.dashboard.model.hub.catalog.apiProviderHint": "Normal mode connects one current model only; use advanced editing for bulk imports.",
+  "app.admin.dashboard.model.hub.catalog.selectProvider": "Select provider",
+  "app.admin.dashboard.model.hub.catalog.probe": "Probe models",
+  "app.admin.dashboard.model.hub.catalog.connectCurrent": "Connect current model"
 }

@@ -1,6 +1,7 @@
 type EngineProviderMeta = {
     name?: string;
     icon?: string | null;
+    logoAsset?: string | null;
 };
 
 type EngineModelMeta = Record<string, unknown>;
@@ -12,9 +13,9 @@ export type EngineProviderContainer = {
 
 export type AdminModelRecord = {
     id: string;
+    modelRef: string;
     providerId: string;
     modelId: string;
-    name: string;
     type: string;
     contextWindow: number | null;
     maxTokens: number | null;
@@ -22,10 +23,27 @@ export type AdminModelRecord = {
     rerankApiFlavor: string;
     isEnabled: boolean;
     provider: {
+        id?: string;
         name: string;
         icon?: string | null;
+        logoAsset?: string | null;
     };
 };
+
+export function buildModelRef(providerId: string, modelId: string) {
+    const provider = String(providerId || "").trim();
+    const model = String(modelId || "").trim();
+    if (!provider || !model) return "";
+    return `${provider}::${encodeURIComponent(model)}`;
+}
+
+export function parseModelRef(value: string): { providerId: string; modelId: string } | null {
+    const raw = String(value || "").trim();
+    if (!raw.includes("::")) return null;
+    const [providerId, encodedModelId] = raw.split("::", 2);
+    if (!providerId || !encodedModelId) return null;
+    return { providerId, modelId: decodeURIComponent(encodedModelId) };
+}
 
 function asNullableNumber(value: unknown) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -56,11 +74,12 @@ export function mapEngineModel(
         ? rawModelMeta
         : {};
 
+    const modelRef = buildModelRef(providerId, modelId);
     return {
-        id: modelId,
+        id: modelRef,
+        modelRef,
         providerId,
         modelId,
-        name: String(modelMeta.name || modelId),
         type: String(modelMeta.type || "TEXT"),
         contextWindow: asNullableNumber(modelMeta.contextWindow),
         maxTokens: asNullableNumber(modelMeta.maxTokens),
@@ -68,8 +87,10 @@ export function mapEngineModel(
         rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
         isEnabled: modelMeta.isEnabled !== false,
         provider: {
+            id: providerId,
             name: String(providerMeta.name || providerId),
             icon: providerMeta.icon || null,
+            logoAsset: providerMeta.logoAsset || null,
         },
     };
 }
@@ -96,7 +117,6 @@ export function listEngineModels(
 
 export function buildModelMutationPayload(data: Record<string, unknown>) {
     return {
-        name: data.name,
         type: data.type,
         contextWindow: parseOptionalInteger(data.contextWindow),
         maxTokens: parseOptionalInteger(data.maxTokens),

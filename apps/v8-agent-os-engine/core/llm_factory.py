@@ -16,10 +16,12 @@ except ImportError:  # pragma: no cover - optional dependency in dev env
 from core.storage import storage
 from core.llm_chat_adapter import V8ChatModelAdapter
 from core.gemini_cli_runtime import GeminiCliRuntimeModel
+from core.openai_codex_runtime import OpenAICodexResponsesRuntimeModel
 from core.model_capability_matrix import build_effective_capability_matrix, normalize_capability_metadata
 from core.llm_exceptions import V8LLMCapabilityMismatchError, raise_as_v8_llm_error
 from core.provider_runtime_profiles import (
     is_anthropic_compat_provider,
+    is_codex_oauth_provider,
     is_gemini_cli_provider,
     resolve_provider_adapter,
     runtime_readiness_for_provider,
@@ -337,11 +339,14 @@ class LLMFactory:
         - global model meta (temperature, maxTokens, contextWindow)
         Returns an empty map if model explicitly not found.
         """
-        record = model_control_plane.get_model_record(target_model_name)
+        lookup = model_control_plane._resolve_model_lookup(target_model_name)  # noqa: SLF001 - precise modelRef compatibility
+        record = lookup.get("record")
         if record:
             p_name = str(record.get("provider_id") or "")
             p_conf = dict(record.get("provider") or {})
             meta = dict(record.get("model") or {})
+            upstream_model_id = str(record.get("model_id") or target_model_name)
+            model_ref = str(record.get("model_ref") or "")
             api_standard = str(p_conf.get("api_standard", "openai") or "openai")
             capability_class = str(meta.get("capabilityClass") or "")
 
@@ -362,6 +367,11 @@ class LLMFactory:
                 api_standard=api_standard,
                 base_url=t_base_url,
             )
+            is_codex_oauth = is_codex_oauth_provider(
+                api_standard=api_standard,
+                provider_config=p_conf,
+                oauth_flavor=oauth_flavor,
+            )
             capabilities = dict(meta.get("capabilities") or {})
             if is_gemini_cli:
                 capabilities.update(
@@ -376,6 +386,16 @@ class LLMFactory:
                 capabilities.update(
                     {
                         "vision": False,
+                        "supportsMultimodal": False,
+                    }
+                )
+            if is_codex_oauth:
+                capabilities.update(
+                    {
+                        "supportsNativeTools": False,
+                        "supportsPromptEmulatedTools": True,
+                        "supportsNativeStructuredOutput": False,
+                        "supportsPromptFallbackStructuredOutput": True,
                         "supportsMultimodal": False,
                     }
                 )
@@ -422,7 +442,9 @@ class LLMFactory:
 
             return {
                 "is_found": True,
-                "model_name": target_model_name,
+                "model_name": upstream_model_id,
+                "model_id": upstream_model_id,
+                "model_ref": model_ref,
                 "provider_id": p_name,
                 "provider_name": p_name,
                 "provider_record": p_conf,
@@ -469,7 +491,12 @@ class LLMFactory:
             }
         
         # Unmapped ad-hoc model names handling
-        return {"is_found": False, "model_name": target_model_name}
+        return {
+            "is_found": False,
+            "model_name": target_model_name,
+            "lookup_status": lookup.get("status"),
+            "lookup_matches": lookup.get("matches") or [],
+        }
 
     @staticmethod
     def _extract_timeout(meta: Dict[str, Any], **kwargs) -> Any:
@@ -648,6 +675,10 @@ class LLMFactory:
         capability_class_override = str(kwargs.pop("_capability_class", "") or "")
         
         if not meta.get("is_found"):
+            if meta.get("lookup_status") == "ambiguous":
+                raise ValueError(
+                    f"模型 '{model_id}' 存在多个 Provider，请使用 provider-qualified modelRef。"
+                )
             # If the user passed a model completely unregistered, we attempt to initialize it 
             # as OpenAI barebones just in case base_url/api_key are in standard env vars
             provider_kwargs = cls._attach_telemetry(
@@ -674,19 +705,20 @@ class LLMFactory:
                 code="capability_mismatch",
                 message="当前 provider 尚未进入统一 LangChain 运行时或缺少本地 runtime 依赖。",
                 provider=str(meta.get("provider_name") or meta.get("provider_id") or "unknown"),
-                model=model_id,
+                model=str(meta.get("model_id") or model_id),
                 retryable=False,
                 user_action="请补齐本地 runtime 依赖，或切换到当前已 runtime-ready 的 provider。",
                 details={"runtimeUnsupportedReason": str(meta.get("runtime_unsupported_reason") or "")},
             )
 
         api_standard = str(meta.get("api_standard", "openai")).lower()
+        wire_model_id = str(meta.get("model_id") or model_id)
         try:
             if api_standard == "anthropic":
                 provider_kwargs = cls._attach_telemetry(
-                    cls._build_anthropic_kwargs(model_id, meta, **kwargs),
+                    cls._build_anthropic_kwargs(wire_model_id, meta, **kwargs),
                     meta,
-                    model_id=model_id,
+                    model_id=wire_model_id,
                     role=role,
                     request_kind=request_kind,
                     capability_class_override=capability_class_override,
@@ -699,15 +731,15 @@ class LLMFactory:
                     oauth_flavor=str(meta.get("oauth_flavor") or ""),
                 ):
                     provider_kwargs = cls._attach_telemetry(
-                        cls._build_gemini_kwargs(model_id, meta, **kwargs),
+                        cls._build_gemini_kwargs(wire_model_id, meta, **kwargs),
                         meta,
-                        model_id=model_id,
+                        model_id=wire_model_id,
                         role=role,
                         request_kind=request_kind,
                         capability_class_override=capability_class_override,
                     )
                     builder = lambda: GeminiCliRuntimeModel(
-                        model_id=model_id,
+                        model_id=wire_model_id,
                         meta=meta,
                         model_kwargs=provider_kwargs,
                     )
@@ -715,26 +747,40 @@ class LLMFactory:
                     if ChatGoogleGenerativeAI is None:
                         raise ImportError("langchain-google-genai is not installed")
                     provider_kwargs = cls._attach_telemetry(
-                        cls._build_gemini_kwargs(model_id, meta, **kwargs),
+                        cls._build_gemini_kwargs(wire_model_id, meta, **kwargs),
                         meta,
-                        model_id=model_id,
+                        model_id=wire_model_id,
                         role=role,
                         request_kind=request_kind,
                         capability_class_override=capability_class_override,
                     )
                     builder = lambda: ChatGoogleGenerativeAI(**provider_kwargs)
+            elif str(meta.get("provider_adapter") or "") == "openai-codex-responses":
+                provider_kwargs = cls._attach_telemetry(
+                    cls._build_openai_kwargs(wire_model_id, meta, **kwargs),
+                    meta,
+                    model_id=wire_model_id,
+                    role=role,
+                    request_kind=request_kind,
+                    capability_class_override=capability_class_override,
+                )
+                builder = lambda: OpenAICodexResponsesRuntimeModel(
+                    model_id=wire_model_id,
+                    meta=meta,
+                    model_kwargs=provider_kwargs,
+                )
             else:
                 provider_kwargs = cls._attach_telemetry(
-                    cls._build_openai_kwargs(model_id, meta, **kwargs),
+                    cls._build_openai_kwargs(wire_model_id, meta, **kwargs),
                     meta,
-                    model_id=model_id,
+                    model_id=wire_model_id,
                     role=role,
                     request_kind=request_kind,
                     capability_class_override=capability_class_override,
                 )
                 builder = lambda: ChatOpenAI(**provider_kwargs)
             return V8ChatModelAdapter(
-                model_id=model_id,
+                model_id=wire_model_id,
                 provider_standard=api_standard,
                 role=role,
                 meta=meta,
@@ -759,8 +805,9 @@ class LLMFactory:
         if not api_key:
             raise ValueError(f"Could not resolve API key for embedding model '{model_id}'")
             
+        wire_model_id = str(meta.get("model_id") or model_id)
         return OpenAICompatibleEmbedding(
-            model_name=model_id,
+            model_name=wire_model_id,
             api_key=api_key,
             base_url=meta.get("base_url"),
             max_tokens=meta.get("global_context_window"),
@@ -786,9 +833,10 @@ class LLMFactory:
             raise ValueError(f"Could not resolve API key for reranker model '{model_id}'")
         role = str(kwargs.pop("role", "") or "reranker")
         capability_class = str(kwargs.pop("capability_class", "") or meta.get("capability_class") or "reranker")
+        wire_model_id = str(meta.get("model_id") or model_id)
             
         return RestReranker(
-            model_name=model_id,
+            model_name=wire_model_id,
             api_key=api_key,
             base_url=meta.get("base_url"),
             max_tokens=meta.get("global_context_window"),
@@ -805,7 +853,8 @@ class LLMFactory:
         
         Reads from models.json → roles → {role}, falling back to 'default' role.
         """
-        model_id = model_control_plane.resolve_model_for_role(role).get("resolvedModelId") or ""
+        resolution = model_control_plane.resolve_model_for_role(role)
+        model_id = resolution.get("resolvedModelRef") or resolution.get("resolvedModelId") or ""
         if not model_id:
             raise ValueError(f"No model configured for role '{role}' in models.json. "
                              f"Please set roles.{role} in Admin → Models.")
@@ -829,7 +878,8 @@ class LLMFactory:
     @classmethod
     def create_embedding_for_role(cls, **kwargs) -> BaseEmbedding:
         """Create an embedding model using the 'embedding' role from models.json."""
-        model_id = model_control_plane.resolve_model_for_role("embedding").get("resolvedModelId") or ""
+        resolution = model_control_plane.resolve_model_for_role("embedding")
+        model_id = resolution.get("resolvedModelRef") or resolution.get("resolvedModelId") or ""
         if not model_id:
             raise ValueError("No embedding model configured. Set roles.embedding in models.json.")
         return cls.create_embedding_model(model_id, **kwargs)
@@ -837,7 +887,8 @@ class LLMFactory:
     @classmethod
     def create_reranker_for_role(cls, role: str = "reranker", **kwargs) -> BaseReranker:
         """Create a reranker model using a named rerank role from models.json."""
-        model_id = model_control_plane.resolve_model_for_role(role).get("resolvedModelId") or ""
+        resolution = model_control_plane.resolve_model_for_role(role)
+        model_id = resolution.get("resolvedModelRef") or resolution.get("resolvedModelId") or ""
         if not model_id:
             raise ValueError(f"No reranker model configured. Set roles.{role} in models.json.")
         return cls.create_reranker_model(model_id, role=role, **kwargs)

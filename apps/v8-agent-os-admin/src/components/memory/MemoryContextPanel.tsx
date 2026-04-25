@@ -657,7 +657,7 @@ export function MemoryContextPanel() {
                                         <SelectItem value="__empty__">跟随默认 summary 角色</SelectItem>
                                         {llmModels.map((model) => (
                                             <SelectItem key={modelValue(model)} value={modelValue(model)}>
-                                                {model.name || modelValue(model)} {model.provider?.name ? `(${model.provider.name})` : ""}
+                                                {modelValue(model)} {model.provider?.name ? `(${model.provider.name})` : ""}
                                             </SelectItem>
                                         ))}
                                     </SelectContent>

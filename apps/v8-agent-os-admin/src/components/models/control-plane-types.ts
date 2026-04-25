@@ -11,8 +11,8 @@ export type ModelCapabilities = {
 
 export type ControlPlaneModel = {
     id: string;
+    modelRef?: string;
     modelId: string;
-    name: string;
     providerId: string;
     providerName: string;
     providerIcon?: string | null;
@@ -22,7 +22,7 @@ export type ControlPlaneModel = {
     stabilityTier: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
-    temperature?: number;
+    temperature?: number | null;
     isEnabled: boolean;
     capabilities: ModelCapabilities;
     capabilityTags: string[];
@@ -37,12 +37,12 @@ export type ControlPlaneRoleCard = {
     capabilityClasses: string[];
     rawModelId: string;
     resolvedModelId: string;
-    resolvedModelName: string;
+    resolvedModelRef?: string;
     resolvedProviderName: string;
-    bindingState: "explicit" | "default" | "inherited_default" | "invalid" | "unbound";
+    bindingState: "explicit" | "default" | "inherited_default" | "invalid" | "ambiguous" | "unbound";
     compatibleModels: Array<{
         modelId: string;
-        name: string;
+        modelRef?: string;
         providerName: string;
         capabilityClass: string;
         capabilityTags: string[];
@@ -62,7 +62,7 @@ export type ControlPlaneModuleStatus = {
         roleLabel: string;
         bindingState: string;
         modelId: string;
-        modelName: string;
+        modelRef?: string;
         providerName: string;
     }>;
 };

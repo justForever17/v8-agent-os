@@ -10,8 +10,8 @@ export async function GET() {
         if (!response.ok) {
             return NextResponse.json(data, { status: response.status });
         }
-        const modelId = (data as { data?: { bindings?: { defaultReplyModel?: string } } }).data?.bindings?.defaultReplyModel || null;
-        return NextResponse.json({ modelId, value: modelId, source: "models.json.roles.default" });
+        const modelRef = (data as { data?: { bindings?: { defaultReplyModel?: string } } }).data?.bindings?.defaultReplyModel || null;
+        return NextResponse.json({ modelId: modelRef, modelRef, value: modelRef, source: "models.json.roles.default" });
     } catch (e) {
         console.error("GET default-agent-model error:", e);
         return NextResponse.json({ error: "Failed to fetch setting" }, { status: 500 });
@@ -23,14 +23,15 @@ export async function POST(req: NextRequest) {
         const unauthorized = await requireAdminIdentity();
         if (unauthorized) return unauthorized;
 
-        const { modelId } = await req.json();
+        const incoming = await req.json();
+        const modelRef = String(incoming?.modelRef || incoming?.modelId || "").trim();
         const { response, data } = await proxyEngineJson("/config-registry/supervisor", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 data: {
                     bindings: {
-                        defaultReplyModel: modelId,
+                        defaultReplyModel: modelRef,
                     },
                 },
             }),
@@ -43,6 +44,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
             key: "DEFAULT_AGENT_MODEL_ID",
             modelId: resolved,
+            modelRef: resolved,
             value: resolved,
             source: "config.json#models.roles.default",
         });

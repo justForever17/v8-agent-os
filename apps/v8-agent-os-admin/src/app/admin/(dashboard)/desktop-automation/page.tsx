@@ -214,7 +214,7 @@ export default function DesktopAutomationPage() {
                                 <SelectItem value="__empty__">{t("app.admin.dashboard.desktop.automation.page.k54745147")}</SelectItem>
                                 {llmModels.map((model) => (
                                     <SelectItem key={model.modelId} value={model.modelId}>
-                                        {model.name} {model.provider?.name ? `(${model.provider.name})` : ""}
+                                        {model.modelId} {model.provider?.name ? `(${model.provider.name})` : ""}
                                     </SelectItem>
                                 ))}
                             </SelectContent>
@@ -246,7 +246,7 @@ export default function DesktopAutomationPage() {
                                 <SelectItem value="__empty__">{t("app.admin.dashboard.desktop.automation.page.k54745147")}</SelectItem>
                                 {llmModels.map((model) => (
                                     <SelectItem key={model.modelId} value={model.modelId}>
-                                        {model.name} {model.provider?.name ? `(${model.provider.name})` : ""}
+                                        {model.modelId} {model.provider?.name ? `(${model.provider.name})` : ""}
                                     </SelectItem>
                                 ))}
                             </SelectContent>
@@ -281,7 +281,7 @@ export default function DesktopAutomationPage() {
                                 <SelectItem value="__empty__">{t("app.admin.dashboard.desktop.automation.page.k39830d18")}</SelectItem>
                                 {rerankModels.map((model) => (
                                     <SelectItem key={model.modelId} value={model.modelId}>
-                                        {model.name} {(model.provider?.name || model.providerName) ? `(${model.provider?.name || model.providerName})` : ""}
+                                        {model.modelId} {(model.provider?.name || model.providerName) ? `(${model.provider?.name || model.providerName})` : ""}
                                     </SelectItem>
                                 ))}
                             </SelectContent>

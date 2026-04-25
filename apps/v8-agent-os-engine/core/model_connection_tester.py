@@ -19,6 +19,7 @@ from core.llm_factory import (
 )
 from core.multimodal_payload_adapter import build_multimodal_content
 from core.model_control_plane import model_control_plane
+from core.model_ref import make_model_ref
 from core.provider_compatibility import normalize_provider_error
 
 
@@ -167,11 +168,12 @@ class ModelConnectionTester:
             }
         )
 
-    def _resolve_metadata(self, model_id: str) -> Dict[str, Any]:
-        meta = llm_factory._resolve_model_metadata(model_id)  # noqa: SLF001 - internal service helper
-        record = model_control_plane.get_model_record(model_id)
+    def _resolve_metadata(self, model_id: str, *, provider_id: str = "") -> Dict[str, Any]:
+        target_model_id = make_model_ref(provider_id, model_id) if provider_id and "::" not in model_id else model_id
+        meta = llm_factory._resolve_model_metadata(target_model_id)  # noqa: SLF001 - internal service helper
+        record = model_control_plane.get_model_record(target_model_id, provider_id=provider_id)
         if not meta.get("is_found") or not record:
-            raise ValueError(f"模型 {model_id} 未在 models.json 中注册。")
+            raise ValueError(f"模型 {model_id} 未在 models.json 中注册，或存在重名模型需要指定 Provider。")
         return {
             **meta,
             "provider_record": dict(record.get("provider") or {}),
@@ -183,7 +185,10 @@ class ModelConnectionTester:
         client = llm_factory.create_chat_model(
             model_id,
             temperature=0,
-            max_tokens=int(meta.get("global_max_tokens") or 16),
+            # Connection probes should stay tiny. Some providers expose very
+            # large max output values, but using those here can exhaust quota or
+            # trigger provider-specific validation paths during a health check.
+            max_tokens=16,
             streaming=False,
             _role="connection_test",
         )
@@ -337,6 +342,28 @@ class ModelConnectionTester:
             }
         return None
 
+    def _is_basic_connection_probe_only(self, meta: Dict[str, Any]) -> bool:
+        provider_record = dict(meta.get("provider_record") or {})
+        provider_adapter = str(meta.get("provider_adapter") or "").strip().lower()
+        oauth_preset = str(provider_record.get("oauth_preset") or meta.get("oauth_preset") or "").strip().lower()
+        oauth_flavor = str(meta.get("oauth_flavor") or provider_record.get("oauth_flavor") or "").strip().lower()
+        provider_type = str(provider_record.get("type") or "").strip().upper()
+        return (
+            provider_adapter == "gemini-cli-runtime"
+            or oauth_preset in {"geminicli", "gemini_cli"}
+            or oauth_flavor in {"geminicli", "gemini_cli"}
+            or provider_type == "PLATFORM"
+        )
+
+    def _basic_probe_only_capability_checks(self, reason: str) -> Dict[str, Any]:
+        skipped = {"status": "skipped", "reason": reason}
+        return {
+            "streaming": dict(skipped),
+            "toolCalling": dict(skipped),
+            "structuredOutput": dict(skipped),
+            "multimodal": dict(skipped),
+        }
+
     def _run_capability_checks(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         matrix = dict(meta.get("effective_capability_matrix") or {})
         checks: Dict[str, Any] = {}
@@ -446,8 +473,11 @@ class ModelConnectionTester:
             "rerankApiFlavor": api_flavor,
         }
 
-    def test_model_connection(self, *, model_id: str) -> Dict[str, Any]:
-        meta = self._resolve_metadata(model_id)
+    def test_model_connection(self, *, model_id: str, provider_id: str = "", model_ref: str = "") -> Dict[str, Any]:
+        runtime_model_id = str(model_ref or (make_model_ref(provider_id, model_id) if provider_id else model_id) or "").strip()
+        meta = self._resolve_metadata(runtime_model_id, provider_id=provider_id)
+        wire_model_id = str(meta.get("model_id") or model_id or runtime_model_id)
+        model_ref = str(meta.get("model_ref") or runtime_model_id)
         provider_id = str(meta.get("provider_id") or "unknown")
         provider_name = str(meta.get("provider_name") or provider_id)
         capability_class = str(meta.get("capability_class") or "")
@@ -455,7 +485,7 @@ class ModelConnectionTester:
         effective_capability_matrix = dict(meta.get("effective_capability_matrix") or {})
         runtime_ready = bool(meta.get("runtime_ready", True))
         runtime_unsupported_reason = str(meta.get("runtime_unsupported_reason") or "")
-        capability_probe = self._probe_local_capability(model_id=model_id, meta=meta)
+        capability_probe = self._probe_local_capability(model_id=wire_model_id, meta=meta)
         provider_preset = self._resolve_local_backend_preset(meta) if str((meta.get("provider_record") or {}).get("type") or "").upper() == "LOCAL" else ""
         provider_adapter = str(meta.get("provider_adapter") or "")
         tool_calling_mode = "native" if bool(effective_capability_matrix.get("supports_native_tools")) else "prompt_emulated" if bool(effective_capability_matrix.get("supports_prompt_emulated_tools")) else "unsupported"
@@ -468,13 +498,15 @@ class ModelConnectionTester:
             if meta.get("oauth_error"):
                 raise RuntimeError(str(meta["oauth_error"]))
             if capability_class == "embedding" or model_type == "EMBEDDING":
-                result = self._test_embedding_model(model_id=model_id, meta=meta)
+                result = self._test_embedding_model(model_id=wire_model_id, meta=meta)
             elif capability_class == "reranker" or model_type in {"RERANK", "RERANKER"}:
-                result = self._test_reranker_model(model_id=model_id, meta=meta)
+                result = self._test_reranker_model(model_id=wire_model_id, meta=meta)
             else:
-                result = self._test_chat_model(model_id=model_id, meta=meta)
-                if runtime_ready:
-                    capability_checks = self._run_capability_checks(model_id=model_id, meta=meta)
+                result = self._test_chat_model(model_id=runtime_model_id, meta=meta)
+                if runtime_ready and self._is_basic_connection_probe_only(meta):
+                    capability_checks = self._basic_probe_only_capability_checks("basic_connection_probe_only_for_oauth_quota_safety")
+                elif runtime_ready:
+                    capability_checks = self._run_capability_checks(model_id=runtime_model_id, meta=meta)
                 else:
                     capability_checks = self._skipped_runtime_capability_checks(runtime_unsupported_reason or "runtime_not_ready")
 
@@ -489,7 +521,7 @@ class ModelConnectionTester:
             self._record_health(
                 provider_id=provider_id,
                 provider_name=provider_name,
-                model_id=model_id,
+                model_id=wire_model_id,
                 status="healthy",
                 latency_ms=float(result["latencyMs"]),
                 detail={
@@ -510,11 +542,13 @@ class ModelConnectionTester:
                     "degradeApplied": degrade_applied,
                     "runtimeReady": runtime_ready,
                     "runtimeUnsupportedReason": runtime_unsupported_reason,
+                    "modelRef": model_ref,
                 },
             )
             return {
                 "ok": True,
-                "modelId": model_id,
+                "modelId": wire_model_id,
+                "modelRef": model_ref,
                 "providerId": provider_id,
                 "providerName": provider_name,
                 "capabilityClass": capability_class,
@@ -533,12 +567,12 @@ class ModelConnectionTester:
                 **result,
             }
         except Exception as exc:
-            normalized = normalize_provider_error(exc, provider=provider_name, model=model_id)
+            normalized = normalize_provider_error(exc, provider=provider_name, model=wire_model_id)
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
             self._record_health(
                 provider_id=provider_id,
                 provider_name=provider_name,
-                model_id=model_id,
+                model_id=wire_model_id,
                 status="failed",
                 latency_ms=float(latency_ms),
                 error_code=normalized["code"],
@@ -558,11 +592,13 @@ class ModelConnectionTester:
                     "degradeApplied": False,
                     "runtimeReady": runtime_ready,
                     "runtimeUnsupportedReason": runtime_unsupported_reason,
+                    "modelRef": model_ref,
                 },
             )
             return {
                 "ok": False,
-                "modelId": model_id,
+                "modelId": wire_model_id,
+                "modelRef": model_ref,
                 "providerId": provider_id,
                 "providerName": provider_name,
                 "capabilityClass": capability_class,

@@ -377,7 +377,7 @@ export default function SupervisorPage() {
                             <SelectContent>
                                 <SelectItem value="default">{t("app.admin.dashboard.supervisor.page.k534ef300")}</SelectItem>
                                 {models.map(model => (<SelectItem key={model.id} value={model.id}>
-                                        {model.name} {model.provider?.name ? `(${model.provider.name})` : `(${model.id.split('-')[0] || t("app.admin.dashboard.supervisor.page.k4f162e67")})`}
+                                        {model.id} {model.provider?.name ? `(${model.provider.name})` : `(${model.id.split('-')[0] || t("app.admin.dashboard.supervisor.page.k4f162e67")})`}
                                     </SelectItem>))}
                             </SelectContent>
                         </Select>
@@ -400,7 +400,7 @@ export default function SupervisorPage() {
                             <SelectContent>
                                 <SelectItem value="__empty__">{t("app.admin.dashboard.supervisor.page.k3930f0e4")}</SelectItem>
                                 {visionCapableModels.map((model) => (<SelectItem key={model.id} value={model.id}>
-                                        {model.name} {model.provider?.name ? `(${model.provider.name})` : `(${model.id.split("-")[0] || t("app.admin.dashboard.supervisor.page.k4f162e67")})`}
+                                        {model.id} {model.provider?.name ? `(${model.provider.name})` : `(${model.id.split("-")[0] || t("app.admin.dashboard.supervisor.page.k4f162e67")})`}
                                     </SelectItem>))}
                             </SelectContent>
                         </Select>

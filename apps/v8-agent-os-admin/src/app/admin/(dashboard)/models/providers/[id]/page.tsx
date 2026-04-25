@@ -15,6 +15,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { getPlatformLoginPresetConfig, inferPlatformLoginPreset, PLATFORM_LOGIN_PRESETS, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
 interface AIModel {
     id: string;
+    modelRef?: string;
     providerId: string;
     name: string;
     modelId: string;
@@ -96,7 +97,7 @@ export default function ProviderConfigPage({ params }: {
     const [providerType, setProviderType] = useState<string>("API");
     const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
     const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini">("openai");
-    const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("qwenCode");
+    const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("geminiCli");
     const [providerBaseUrl, setProviderBaseUrl] = useState("");
     const [providerOauthPath, setProviderOauthPath] = useState("");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
@@ -139,7 +140,7 @@ export default function ProviderConfigPage({ params }: {
             }
             if (defaultModelRes.ok) {
                 const data = await defaultModelRes.json();
-                setDefaultModelId(data.modelId || null);
+                setDefaultModelId(data.modelRef || data.modelId || null);
             }
         }
         catch (error) {
@@ -260,16 +261,31 @@ export default function ProviderConfigPage({ params }: {
             });
         }
     };
-    const handleTestConnection = async (modelId: string) => {
+    const handleSetDefaultModel = async (modelRef: string) => {
+        const response = await fetch("/api/settings/default-agent-model", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ modelRef }),
+        });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kd2b2caac"));
+            toast({ variant: "destructive", title: t("app.admin.dashboard.models.providers.id.page.kd2b2caac"), description: errorMessage });
+            return;
+        }
+        setDefaultModelId(modelRef);
+        await fetchProvider();
+    };
+    const handleTestConnection = async (modelRef: string) => {
         setConnectionStatusMap((current) => ({
             ...current,
-            [modelId]: { status: "testing", message: t("app.admin.dashboard.models.providers.id.page.kdb5dbeb0") },
+            [modelRef]: { status: "testing", message: t("app.admin.dashboard.models.providers.id.page.kdb5dbeb0") },
         }));
         try {
+            const target = provider?.models.find((item) => (item.modelRef || item.id) === modelRef);
             const response = await fetch("/api/models/test-connection", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ modelId }),
+                body: JSON.stringify({ modelRef, modelId: target?.modelId, providerId: target?.providerId || provider?.id }),
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -278,25 +294,28 @@ export default function ProviderConfigPage({ params }: {
                     || t("app.admin.dashboard.models.providers.id.page.k7520c6bd");
                 setConnectionStatusMap((current) => ({
                     ...current,
-                    [modelId]: { status: "error", message: String(error) },
+                    [modelRef]: { status: "error", message: String(error) },
                 }));
                 return;
             }
             const successMessage = [
                 `${data.providerName || "Provider"} · ${Math.round(Number(data.latencyMs || 0))}ms`,
+                data?.capabilityChecks && typeof data.capabilityChecks === "object" && Object.values(data.capabilityChecks).some((item) => (item as { status?: string })?.status === "skipped")
+                    ? "基础连接已通过，深度能力未全量探测"
+                    : "",
                 data.message || t("app.admin.dashboard.models.providers.id.page.k163942fe"),
                 describeCapabilityProbe(data.capabilityProbe),
             ].filter(Boolean).join(" · ");
             setConnectionStatusMap((current) => ({
                 ...current,
-                [modelId]: { status: "success", message: successMessage },
+                [modelRef]: { status: "success", message: successMessage },
             }));
         }
         catch (error) {
             const errorMessage = error instanceof Error ? error.message : t("app.admin.dashboard.models.providers.id.page.k52d13953");
             setConnectionStatusMap((current) => ({
                 ...current,
-                [modelId]: { status: "error", message: errorMessage },
+                [modelRef]: { status: "error", message: errorMessage },
             }));
         }
     };
@@ -311,7 +330,7 @@ export default function ProviderConfigPage({ params }: {
         : apiStandard === "gemini"
             ? t("app.admin.dashboard.models.providers.id.page.k7ab7c579")
             : t("app.admin.dashboard.models.providers.id.page.k2daf728b");
-    const controlModelsById = new Map<string, ControlPlaneModel>((controlPlane?.models || []).map((item: ControlPlaneModel) => [item.modelId, item]));
+    const controlModelsById = new Map<string, ControlPlaneModel>((controlPlane?.models || []).map((item: ControlPlaneModel) => [item.modelRef || item.id, item]));
     const providerOverviewById = new Map<string, ProviderOverview>((controlPlane?.providersOverview || []).map((item: ProviderOverview) => [item.providerId, item]));
     const providerHealth = providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null;
     const localProbe = providerHealth?.localCapabilityProbe;
@@ -489,7 +508,7 @@ export default function ProviderConfigPage({ params }: {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                        {provider.models?.map((model: any) => (<ModelCardV2 key={model.id} model={{ ...model, provider: { name: provider.name, icon: provider.icon } }} controlMeta={controlModelsById.get(model.modelId) || null} isDefault={model.modelId === defaultModelId} connectionStatus={connectionStatusMap[model.modelId] || null} onTestConnection={handleTestConnection} 
+                        {provider.models?.map((model: any) => (<ModelCardV2 key={model.id} model={{ ...model, provider: { name: provider.name, icon: provider.icon } }} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelId} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} onTestConnection={handleTestConnection} onSetDefault={handleSetDefaultModel}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         onEdit={(m: any) => { setEditingModel(m); setModelType(m.type || "TEXT"); setIsModelDialogOpen(true); }} onDelete={handleDeleteModel}/>))}
                         {(!provider.models || provider.models.length === 0) && (<div className="col-span-full text-center py-12 text-muted-foreground bg-muted/30 rounded-lg border border-dashed">

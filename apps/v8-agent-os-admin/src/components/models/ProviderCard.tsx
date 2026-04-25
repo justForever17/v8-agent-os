@@ -1,11 +1,12 @@
 "use client";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Settings, Power, Trash2 } from "lucide-react";
 import type { ProviderOverview } from "@/components/models/control-plane-types";
+import { resolveProviderLogo } from "@/lib/models/model-assets";
 
 interface ProviderCardProps {
     provider: {
@@ -14,7 +15,10 @@ interface ProviderCardProps {
         code: string;
         description?: string | null;
         icon?: string | null;
+        baseUrl?: string | null;
+        apiStandard?: string | null;
         type: string;
+        logoAsset?: string | null;
         isEnabled: boolean;
         models: { id: string }[];
     };
@@ -43,52 +47,67 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
     const localProbe = health?.localCapabilityProbe;
     const localVisionLabel = provider.type === "LOCAL" ? getLocalVisionLabel(localProbe?.status, t) : "";
     const providerMark = (provider.name || provider.code || "P").trim().charAt(0).toUpperCase();
+    const providerLogo = resolveProviderLogo({
+        providerId: provider.id || provider.code,
+        providerName: provider.name,
+        explicitAsset: provider.logoAsset || null,
+    });
+    const status = health?.status || (provider.isEnabled ? "healthy" : "disabled");
+    const statusLabel = getStatusLabel(status, t);
+    const details = [
+        `Provider: ${provider.name}`,
+        `Code: ${provider.code}`,
+        `Type: ${provider.type}${provider.apiStandard ? ` / ${provider.apiStandard}` : ""}`,
+        provider.baseUrl ? `Base URL: ${provider.baseUrl}` : "",
+        health?.reason || provider.description || "",
+        health ? `Models: ${health.enabledModels}/${health.models} enabled` : `Models: ${provider.models.length}`,
+        health ? `Roles: ${health.assignedRoles.join(", ") || "none"}` : "",
+        health ? `Events: ${health.events}, errors: ${Math.round(health.errorRate * 100)}%, avg latency: ${Math.round(health.avgLatencyMs)}ms` : "",
+        localVisionLabel ? `Local vision: ${localVisionLabel}` : "",
+    ].filter(Boolean);
 
     return (
-        <Card className="group relative h-full min-h-[184px] transition-shadow hover:shadow-md">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-sm font-semibold text-slate-600">
-                        {provider.icon || providerMark}
-                    </span>
-                    <span className="line-clamp-2 break-words">{provider.name}</span>
-                </CardTitle>
-                <Badge variant={health?.status === "attention" ? "secondary" : provider.isEnabled ? "default" : "secondary"}>
-                    {getStatusLabel(health?.status || (provider.isEnabled ? "healthy" : "disabled"), t)}
-                </Badge>
-            </CardHeader>
-            <CardContent className="flex h-[calc(100%-4.5rem)] flex-col">
-                <div className="mb-4 min-h-[2.75rem] text-xs text-muted-foreground line-clamp-2">
-                    {health?.reason || provider.description || t("components.models.ProviderCard.k86e9a787")}
-                </div>
-                <div className="mt-auto flex items-start justify-between gap-3">
-                    <div className="space-y-1 text-xs font-medium">
-                        <div>{provider.models.length} {t("components.models.ProviderCard.k5503fbe2")}</div>
-                        {health && (
-                            <>
-                                <div className="text-muted-foreground">
-                                    {health.assignedRoles.length} {t("components.models.ProviderCard.k5295e7fe")} · {t("components.models.ProviderCard.kdb6c0cc1")} {health.enabledModels}/{health.models}
-                                </div>
-                                <div className="text-muted-foreground">
-                                    {health.events} {t("components.models.ProviderCard.kd457901c")} · {t("components.models.ProviderCard.k30f11e61")} {Math.round(health.errorRate * 100)}% · {Math.round(health.avgLatencyMs)}ms
-                                </div>
-                                {localVisionLabel ? (
-                                    <div className="line-clamp-1 text-muted-foreground">
-                                        {localVisionLabel}
-                                    </div>
-                                ) : null}
-                            </>
-                        )}
+        <Card className="group/card relative h-[128px] overflow-visible transition-shadow hover:shadow-md">
+            <CardContent className="flex h-full flex-col p-3">
+                <div className="flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                        <span className="group/info relative flex h-7 w-7 shrink-0 items-center justify-center overflow-visible rounded-lg bg-slate-100 text-xs font-semibold text-slate-600">
+                            {providerLogo ? (
+                                <img src={providerLogo} alt="" className="h-5 w-5 rounded object-contain" />
+                            ) : (
+                                providerMark
+                            )}
+                            <span className="pointer-events-none absolute left-0 top-9 z-50 w-80 rounded-xl bg-slate-950 p-3 text-left text-[11px] font-normal leading-5 text-white opacity-0 shadow-2xl transition-opacity group-hover/info:opacity-100">
+                                {details.map((item) => (
+                                    <span key={item} className="block truncate">{item}</span>
+                                ))}
+                            </span>
+                        </span>
+                        <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold" title={provider.name}>{provider.name}</div>
+                            <div className="truncate text-[11px] text-muted-foreground" title={provider.code}>
+                                {provider.code}
+                            </div>
+                        </div>
                     </div>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onToggle(provider.id, !provider.isEnabled)}>
-                            <Power className={`w-4 h-4 ${provider.isEnabled ? "text-green-500" : "text-muted-foreground"}`} />
+                    <Badge variant={status === "attention" ? "secondary" : provider.isEnabled ? "default" : "secondary"} className="h-5 shrink-0 px-2 text-[10px]">
+                        {statusLabel}
+                    </Badge>
+                </div>
+                <div className="mt-auto flex items-end justify-between gap-2">
+                    <div className="min-w-0 space-y-1 text-[11px] font-medium">
+                        <div className="truncate">{provider.models.length} {t("components.models.ProviderCard.k5503fbe2")}</div>
+                        <div className="truncate text-muted-foreground">{provider.isEnabled ? t("components.models.ProviderCard.k57c1ee90") : t("components.models.ProviderCard.k31ff46bd")}</div>
+                    </div>
+                    <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onToggle(provider.id, !provider.isEnabled)}>
+                            <Power className={`h-3.5 w-3.5 ${provider.isEnabled ? "text-green-500" : "text-muted-foreground"}`} />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(provider)}>
-                            <Settings className="w-4 h-4" />
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEdit(provider)}>
+                            <Settings className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" onClick={() => onDelete(provider.id)}>
-                            <Trash2 className="w-4 h-4" />
+                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => onDelete(provider.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                     </div>
                 </div>

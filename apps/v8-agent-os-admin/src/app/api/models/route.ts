@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { buildModelMutationPayload, listEngineModels } from "@/lib/models/model-admin";
+import { buildModelMutationPayload, buildModelRef, listEngineModels } from "@/lib/models/model-admin";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -75,10 +75,11 @@ export async function POST(req: NextRequest) {
         if (!resPost.ok) throw new Error(`Python API returned ${resPost.status}`);
 
         // Return a mock structure simulating the newly added model
+        const modelRef = buildModelRef(providerCode, modelCode);
         return NextResponse.json({
-            id: modelCode,
+            id: modelRef,
+            modelRef,
             providerId: providerCode,
-            name: data.name,
             modelId: modelCode,
         });
 

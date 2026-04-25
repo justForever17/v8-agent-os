@@ -783,7 +783,7 @@ export default function SubagentsPage() {
                                     <SelectContent>
                                         {models.map((model) => (
                                             <SelectItem key={model.id} value={model.id}>
-                                                {model.name} {model.provider?.name ? `(${model.provider.name})` : ""}
+                                                {model.id} {model.provider?.name ? `(${model.provider.name})` : ""}
                                             </SelectItem>
                                         ))}
                                     </SelectContent>

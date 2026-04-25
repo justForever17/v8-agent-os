@@ -250,6 +250,8 @@ class ModelConnectionTestPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     model_id: str = Field(alias="modelId")
+    model_ref: Optional[str] = Field(default=None, alias="modelRef")
+    provider_id: Optional[str] = Field(default=None, alias="providerId")
 
 
 class ComputerUseSessionPayload(BaseModel):

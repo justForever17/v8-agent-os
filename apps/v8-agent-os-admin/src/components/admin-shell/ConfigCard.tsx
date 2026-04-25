@@ -12,6 +12,7 @@ export function ConfigCard({
     variant = "summary",
     bodyHeight = "auto",
     bodyScroll = "none",
+    allowOverflow = false,
     className,
     contentClassName,
 }: {
@@ -22,6 +23,7 @@ export function ConfigCard({
     variant?: "summary" | "list" | "editor";
     bodyHeight?: "auto" | 360 | 420 | 520 | "clamp";
     bodyScroll?: "none" | "auto";
+    allowOverflow?: boolean;
     className?: string;
     contentClassName?: string;
 }) {
@@ -39,17 +41,19 @@ export function ConfigCard({
                   : "h-[clamp(360px,52vh,640px)]";
 
     const resolvedScrollClass =
-        bodyScroll === "auto" || variant !== "summary"
+        allowOverflow
+            ? "overflow-visible"
+            : bodyScroll === "auto" || variant !== "summary"
             ? "overflow-y-auto pr-1"
             : "";
 
     return (
-        <Card className={cn("min-h-0 rounded-2xl border-slate-200 bg-white shadow-sm", className)}>
+        <Card className={cn("min-h-0 rounded-2xl border-slate-200 bg-white shadow-sm", allowOverflow ? "overflow-visible" : "", className)}>
             <CardHeader className="space-y-2">
                 <CardTitle className="text-lg text-slate-900">{resolveText(title)}</CardTitle>
                 {description ? <CardDescription className="text-sm leading-6 text-slate-600">{resolveText(description)}</CardDescription> : null}
             </CardHeader>
-            <CardContent className="min-h-0 space-y-4 overflow-hidden">
+            <CardContent className={cn("min-h-0 space-y-4", allowOverflow ? "overflow-visible" : "overflow-hidden")}>
                 <div className={cn("min-h-0", resolvedHeightClass, resolvedScrollClass, contentClassName)}>
                     {children}
                 </div>

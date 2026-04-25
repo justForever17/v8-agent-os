@@ -419,7 +419,7 @@ export default function SafetyControlPage() {
                                     <SelectItem value="__none__">未绑定</SelectItem>
                                     {llmModels.map((model) => (
                                         <SelectItem key={model.modelId} value={model.modelId}>
-                                            {model.name || model.modelId}
+                                            {model.modelId}
                                         </SelectItem>
                                     ))}
                                 </SelectContent>

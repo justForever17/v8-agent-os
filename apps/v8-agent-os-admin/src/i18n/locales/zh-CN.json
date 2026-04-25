@@ -2601,5 +2601,19 @@
   "app.admin.dashboard.engineeringLane.diagnosticsDescription": "命令、Git 与 LSP provider 的 compact diagnostics。",
   "app.admin.dashboard.engineeringLane.noDiagnostics": "暂无 diagnostics。",
   "app.admin.dashboard.engineeringLane.worksetTitle": "Workset Risk",
-  "app.admin.dashboard.engineeringLane.worksetDescription": "只读展示 read/write set、changed files 与 taskBrief writeSet 的越界风险。"
+  "app.admin.dashboard.engineeringLane.worksetDescription": "只读展示 read/write set、changed files 与 taskBrief writeSet 的越界风险。",
+  "app.admin.dashboard.model.hub.catalog.probeFailed": "模型探测失败",
+  "app.admin.dashboard.model.hub.catalog.connectFailed": "接入失败",
+  "app.admin.dashboard.model.hub.catalog.connected": "模型已接入",
+  "app.admin.dashboard.model.hub.catalog.fallback": "已回退到目录候选。",
+  "app.admin.dashboard.model.hub.catalog.writeFailed": "无法写入模型配置。",
+  "app.admin.dashboard.model.hub.catalog.title": "轻量接入",
+  "app.admin.dashboard.model.hub.catalog.description": "选择 OAuth 或 Provider 目录，一步检测并接入当前模型。高级参数仍可在下方模型卡编辑。",
+  "app.admin.dashboard.model.hub.catalog.selectModel": "选择模型",
+  "app.admin.dashboard.model.hub.catalog.detectAndConnect": "检测并接入",
+  "app.admin.dashboard.model.hub.catalog.apiProvider": "API Key Provider",
+  "app.admin.dashboard.model.hub.catalog.apiProviderHint": "普通模式只接入一个当前模型；批量导入请继续使用高级编辑。",
+  "app.admin.dashboard.model.hub.catalog.selectProvider": "选择 Provider",
+  "app.admin.dashboard.model.hub.catalog.probe": "探测模型",
+  "app.admin.dashboard.model.hub.catalog.connectCurrent": "接入当前模型"
 }

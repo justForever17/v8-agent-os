@@ -1,3 +1,5 @@
+import { buildModelRef } from "@/lib/models/model-admin";
+
 export type ProviderCredentialMode = "apiKey" | "oauthFile";
 export type PlatformLoginPreset = "qwenCode" | "geminiCli" | "codex";
 export type ProviderApiStandard = "openai" | "anthropic" | "gemini";
@@ -29,6 +31,7 @@ type EngineProviderMeta = {
     name?: string;
     description?: string;
     icon?: string | null;
+    logoAsset?: string | null;
     base_url?: string;
     api_key?: string;
     api_standard?: string;
@@ -139,7 +142,7 @@ function maskPath(filepath: string): string {
 }
 
 function usesLiveOauthSourcePreset(preset: PlatformLoginPreset): boolean {
-    return preset === "qwenCode" || preset === "codex";
+    return preset === "qwenCode" || preset === "geminiCli" || preset === "codex";
 }
 
 function isCanonicalOauthRuntimePath(filepath: string): boolean {
@@ -173,7 +176,7 @@ export function inferPlatformLoginPreset(params: {
     const apiStandard = String(params.apiStandard || "openai").toLowerCase();
 
     if (normalizedType !== "PLATFORM") {
-        return "qwenCode";
+        return "geminiCli";
     }
     if (
         normalizedBaseUrl.includes("portal.qwen.ai") ||
@@ -200,7 +203,7 @@ export function inferPlatformLoginPreset(params: {
     ) {
         return "geminiCli";
     }
-    return "qwenCode";
+    return "geminiCli";
 }
 
 export function getPlatformLoginPresetConfig(preset: PlatformLoginPreset): PlatformLoginPresetConfig {
@@ -273,10 +276,11 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
         const modelMeta = (modelMetaRaw && typeof modelMetaRaw === "object")
             ? (modelMetaRaw as Record<string, unknown>)
             : {};
+        const modelRef = buildModelRef(providerId, modelKey);
         return {
-            id: modelKey,
+            id: modelRef,
+            modelRef,
             providerId: providerId,
-            name: String(modelMeta.name || modelKey),
             modelId: modelKey,
             type: String(modelMeta.type || "TEXT"),
             contextWindow: typeof modelMeta.contextWindow === "number" ? modelMeta.contextWindow : null,
@@ -293,6 +297,7 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
         code: providerId,
         description: meta.description || "",
         icon: meta.icon || "",
+        logoAsset: meta.logoAsset || "",
         baseUrl: meta.base_url || "",
         apiKey: credentialMode === "apiKey" && rawCredential ? "****" : "",
         type: meta.type || "API",

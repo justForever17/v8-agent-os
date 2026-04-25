@@ -7,6 +7,7 @@ from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
+from core.model_ref import make_model_ref, parse_model_ref
 from core.storage import storage
 
 
@@ -336,6 +337,15 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
 def _normalize_project_budget(item: Dict[str, Any]) -> Dict[str, Any]:
     project_id = str(item.get("projectId") or item.get("project_id") or "").strip()
     return {
@@ -400,7 +410,7 @@ class ModelControlPlane:
     def _normalize_capabilities(self, model_id: str, model_meta: Dict[str, Any]) -> Dict[str, bool]:
         model_type = str(model_meta.get("type") or "TEXT").upper()
         raw_caps = dict(model_meta.get("capabilities") or {})
-        display_name = str(model_meta.get("name") or model_id)
+        display_name = str(model_id)
 
         chat_like = model_type in {"TEXT", "MULTIMODAL"}
         multimodal = model_type == "MULTIMODAL"
@@ -475,6 +485,7 @@ class ModelControlPlane:
             normalized_models: Dict[str, Any] = {}
             for model_id, model_meta_raw in models.items():
                 model_meta = dict(model_meta_raw or {})
+                model_meta.pop("name", None)
                 model_meta["runtimeReady"] = provider_runtime_ready
                 capabilities = self._normalize_capabilities(model_id, model_meta)
                 capability_class = str(
@@ -491,11 +502,10 @@ class ModelControlPlane:
                 )
                 normalized_models[model_id] = {
                     **model_meta,
-                    "name": model_meta.get("name") or model_id,
                     "type": str(model_meta.get("type") or "TEXT").upper(),
                     "contextWindow": _safe_int(model_meta.get("contextWindow")),
                     "maxTokens": _safe_int(model_meta.get("maxTokens")),
-                    "temperature": _safe_float(model_meta.get("temperature"), 0.0),
+                    "temperature": _optional_float(model_meta.get("temperature")),
                     "priority": 50 if _safe_int(model_meta.get("priority")) is None else _safe_int(model_meta.get("priority")),
                     "stabilityTier": str(model_meta.get("stabilityTier") or "stable"),
                     "isEnabled": bool(model_meta.get("isEnabled", True)),
@@ -514,6 +524,7 @@ class ModelControlPlane:
                     "api_standard": meta.get("api_standard") or meta.get("apiStandard") or "openai",
                     "type": meta.get("type") or "API",
                     "icon": meta.get("icon") or None,
+                    "logoAsset": meta.get("logoAsset") or None,
                     "is_enabled": bool(meta.get("is_enabled", meta.get("isEnabled", True))),
                 },
                 "models": normalized_models,
@@ -616,24 +627,109 @@ class ModelControlPlane:
 
     def get_role_model_id(self, role: str) -> str:
         resolved = self.resolve_model_for_role(role)
-        return str(resolved.get("resolvedModelId") or "")
+        return str(resolved.get("resolvedModelRef") or resolved.get("resolvedModelId") or "")
 
-    def get_model_record(self, model_id: str, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    def _build_model_record(
+        self,
+        *,
+        provider_id: str,
+        provider_data: Dict[str, Any],
+        model_id: str,
+        normalized: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        model_meta = dict((provider_data.get("models") or {}).get(model_id) or {})
+        provider_meta = dict(provider_data.get("provider") or {})
+        model_ref = make_model_ref(provider_id, model_id)
+        return {
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "model_ref": model_ref,
+            "provider": provider_meta,
+            "model": model_meta,
+            "governance": dict(normalized.get("governance") or {}),
+            "roles": dict(normalized.get("roles") or {}),
+            "routingPolicies": dict(normalized.get("routingPolicies") or {}),
+        }
+
+    def _resolve_model_lookup(
+        self,
+        model_ref_or_id: str,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        provider_id: str = "",
+    ) -> Dict[str, Any]:
         normalized = config or self.get_config()
-        for provider_id, provider_data in (normalized.get("providers") or {}).items():
-            models = provider_data.get("models") or {}
-            if model_id in models:
-                model_meta = dict(models[model_id] or {})
-                provider_meta = dict(provider_data.get("provider") or {})
+        raw = str(model_ref_or_id or "").strip()
+        if not raw:
+            return {"status": "empty", "record": None, "matches": []}
+
+        parsed = parse_model_ref(raw)
+        if parsed:
+            provider_id, model_id = parsed
+            provider_data = (normalized.get("providers") or {}).get(provider_id) or {}
+            if model_id in (provider_data.get("models") or {}):
                 return {
-                    "provider_id": provider_id,
-                    "provider": provider_meta,
-                    "model": model_meta,
-                    "governance": dict(normalized.get("governance") or {}),
-                    "roles": dict(normalized.get("roles") or {}),
-                    "routingPolicies": dict(normalized.get("routingPolicies") or {}),
+                    "status": "exact",
+                    "record": self._build_model_record(
+                        provider_id=provider_id,
+                        provider_data=provider_data,
+                        model_id=model_id,
+                        normalized=normalized,
+                    ),
+                    "matches": [make_model_ref(provider_id, model_id)],
                 }
-        return None
+            return {"status": "missing", "record": None, "matches": []}
+
+        if provider_id:
+            provider_data = (normalized.get("providers") or {}).get(provider_id) or {}
+            models = provider_data.get("models") or {}
+            if raw in models:
+                return {
+                    "status": "exact",
+                    "record": self._build_model_record(
+                        provider_id=provider_id,
+                        provider_data=provider_data,
+                        model_id=raw,
+                        normalized=normalized,
+                    ),
+                    "matches": [make_model_ref(provider_id, raw)],
+                }
+            return {"status": "missing", "record": None, "matches": []}
+
+        matches: List[Dict[str, Any]] = []
+        for candidate_provider_id, provider_data in (normalized.get("providers") or {}).items():
+            if raw in (provider_data.get("models") or {}):
+                matches.append(
+                    self._build_model_record(
+                        provider_id=candidate_provider_id,
+                        provider_data=provider_data,
+                        model_id=raw,
+                        normalized=normalized,
+                    )
+                )
+        if len(matches) == 1:
+            return {
+                "status": "legacy_unique",
+                "record": matches[0],
+                "matches": [matches[0].get("model_ref")],
+            }
+        if len(matches) > 1:
+            return {
+                "status": "ambiguous",
+                "record": None,
+                "matches": [str(item.get("model_ref") or "") for item in matches],
+            }
+        return {"status": "missing", "record": None, "matches": []}
+
+    def get_model_record(
+        self,
+        model_id: str,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        provider_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        lookup = self._resolve_model_lookup(model_id, config, provider_id=provider_id)
+        return lookup.get("record")
 
     def _is_model_compatible(self, role_definition: Dict[str, Any], model_record: Optional[Dict[str, Any]]) -> bool:
         if not model_record:
@@ -651,23 +747,28 @@ class ModelControlPlane:
 
         explicit_model_id = str(roles.get(role) or "")
         default_model_id = str(roles.get("default") or "")
-        explicit_record = self.get_model_record(explicit_model_id, normalized) if explicit_model_id else None
-        default_record = self.get_model_record(default_model_id, normalized) if default_model_id else None
+        explicit_lookup = self._resolve_model_lookup(explicit_model_id, normalized) if explicit_model_id else {"status": "empty", "record": None, "matches": []}
+        default_lookup = self._resolve_model_lookup(default_model_id, normalized) if default_model_id else {"status": "empty", "record": None, "matches": []}
+        explicit_record = explicit_lookup.get("record")
+        default_record = default_lookup.get("record")
 
         binding_state = "unbound"
         model_record: Optional[Dict[str, Any]] = None
         resolved_model_id = ""
+        resolved_model_ref = ""
 
         if explicit_model_id and self._is_model_compatible(role_definition, explicit_record):
             model_record = explicit_record
             binding_state = "explicit"
-            resolved_model_id = explicit_model_id
+            resolved_model_id = str(explicit_record.get("model_id") or explicit_model_id)
+            resolved_model_ref = str(explicit_record.get("model_ref") or "")
         elif role != "default" and default_model_id and self._is_model_compatible(role_definition, default_record):
             model_record = default_record
             binding_state = "inherited_default" if explicit_model_id else "default"
-            resolved_model_id = default_model_id
+            resolved_model_id = str(default_record.get("model_id") or default_model_id)
+            resolved_model_ref = str(default_record.get("model_ref") or "")
         elif explicit_model_id:
-            binding_state = "invalid"
+            binding_state = "ambiguous" if explicit_lookup.get("status") == "ambiguous" else "invalid"
 
         resolved_model = dict((model_record or {}).get("model") or {})
         resolved_provider = dict((model_record or {}).get("provider") or {})
@@ -677,7 +778,10 @@ class ModelControlPlane:
             "rawModelId": explicit_model_id,
             "bindingState": binding_state,
             "resolvedModelId": resolved_model_id,
+            "resolvedModelRef": resolved_model_ref,
             "resolvedProviderId": (model_record or {}).get("provider_id") or "",
+            "lookupStatus": explicit_lookup.get("status") if explicit_model_id else "",
+            "lookupMatches": explicit_lookup.get("matches") or [],
             "resolvedModel": resolved_model,
             "resolvedProvider": resolved_provider,
         }
@@ -719,22 +823,23 @@ class ModelControlPlane:
         resolved_roles = self._build_resolved_roles(normalized)
         assigned_roles_by_model: Dict[str, List[str]] = {}
         for role_key, resolution in resolved_roles.items():
-            resolved_model_id = str(resolution.get("resolvedModelId") or "")
-            if resolved_model_id:
-                assigned_roles_by_model.setdefault(resolved_model_id, []).append(role_key)
+            resolved_model_ref = str(resolution.get("resolvedModelRef") or "")
+            if resolved_model_ref:
+                assigned_roles_by_model.setdefault(resolved_model_ref, []).append(role_key)
 
         models: List[Dict[str, Any]] = []
         for provider_id, provider_data in (normalized.get("providers") or {}).items():
             provider_meta = provider_data.get("provider") or {}
             for model_id, model_meta in (provider_data.get("models") or {}).items():
                 capabilities = dict(model_meta.get("capabilities") or {})
+                model_ref = make_model_ref(provider_id, model_id)
                 models.append(
                     {
-                        "id": model_id,
+                        "id": model_ref,
+                        "modelRef": model_ref,
                         "providerId": provider_id,
                         "providerName": provider_meta.get("name") or provider_id,
                         "providerIcon": provider_meta.get("icon"),
-                        "name": model_meta.get("name") or model_id,
                         "modelId": model_id,
                         "type": model_meta.get("type") or "TEXT",
                         "contextWindow": model_meta.get("contextWindow"),
@@ -748,10 +853,10 @@ class ModelControlPlane:
                         "capabilityTags": [
                             label for key, label in CAPABILITY_TAG_ORDER if capabilities.get(key)
                         ],
-                        "assignedRoles": assigned_roles_by_model.get(model_id, []),
+                        "assignedRoles": assigned_roles_by_model.get(model_ref, []),
                     }
                 )
-        return sorted(models, key=lambda item: (item["providerName"].lower(), item["name"].lower()))
+        return sorted(models, key=lambda item: (item["providerName"].lower(), item["modelId"].lower()))
 
     def get_role_cards(self, config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         normalized = config or self.get_config()
@@ -764,7 +869,7 @@ class ModelControlPlane:
             compatible_models = [
                 {
                     "modelId": model["modelId"],
-                    "name": model["name"],
+                    "modelRef": model["modelRef"],
                     "providerName": model["providerName"],
                     "capabilityClass": model["capabilityClass"],
                     "capabilityTags": model["capabilityTags"],
@@ -785,7 +890,8 @@ class ModelControlPlane:
                     "capabilityClasses": list(role_definition.get("capabilityClasses") or []),
                     "rawModelId": resolution.get("rawModelId") or "",
                     "resolvedModelId": resolution.get("resolvedModelId") or "",
-                    "resolvedModelName": resolved_model.get("name") or "",
+                    "resolvedModelRef": resolution.get("resolvedModelRef") or "",
+                    "resolvedModelName": resolution.get("resolvedModelId") or "",
                     "resolvedProviderName": resolved_provider.get("name") or "",
                     "bindingState": resolution.get("bindingState") or "unbound",
                     "compatibleModels": compatible_models,
@@ -811,7 +917,8 @@ class ModelControlPlane:
                         "roleLabel": role_definition.get("label") or role_key,
                         "bindingState": resolution.get("bindingState") or "unbound",
                         "modelId": resolution.get("resolvedModelId") or "",
-                        "modelName": resolved_model.get("name") or "",
+                        "modelRef": resolution.get("resolvedModelRef") or "",
+                        "modelName": resolution.get("resolvedModelId") or "",
                         "providerName": resolved_provider.get("name") or "",
                     }
                 )

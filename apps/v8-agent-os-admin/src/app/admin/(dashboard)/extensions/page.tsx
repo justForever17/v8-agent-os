@@ -344,7 +344,7 @@ function modelValue(model: SysModel) {
 }
 function modelLabel(model: SysModel) {
     const providerName = model.provider?.name || model.providerName || "";
-    return `${model.name || modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
+    return `${modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
 }
 function StatPill({ label, value }: {
     label: string;

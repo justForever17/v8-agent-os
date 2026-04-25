@@ -1,0 +1,577 @@
+{
+  "version": 1,
+  "lastCheckedAt": "2026-04-25",
+  "providers": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.2,
+      "sourceUrl": "https://platform.openai.com/docs/api-reference/models/list",
+      "confidence": "official",
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gpt-5.4",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "apiStandard": "anthropic",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "x-api-key"
+      },
+      "probeStrategy": "anthropic_models",
+      "recommendedTemperature": 0.2,
+      "sourceUrl": "https://docs.anthropic.com/en/api/models-list",
+      "confidence": "official",
+      "models": [
+        {
+          "id": "claude-sonnet-4-5",
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming"
+          ]
+        }
+      ],
+      "logoAsset": "/model-assets/providers/anthropic.ico"
+    },
+    {
+      "id": "gemini-api",
+      "name": "Google Gemini API",
+      "apiStandard": "gemini",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "auth": {
+        "type": "api_key",
+        "query": "key"
+      },
+      "probeStrategy": "gemini_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://ai.google.dev/api/models",
+      "confidence": "official",
+      "models": [
+        {
+          "id": "gemini-3.1-pro-preview",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gemini-3-flash-preview",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "tools",
+            "vision",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "tools",
+            "vision",
+            "streaming"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI OAuth",
+      "apiStandard": "gemini",
+      "baseUrl": "https://cloudcode-pa.googleapis.com",
+      "auth": {
+        "type": "oauth_file",
+        "path": "~/.gemini/oauth_creds.json",
+        "preset": "geminiCli"
+      },
+      "probeStrategy": "catalog_only",
+      "singleActiveModel": true,
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://github.com/google-gemini/gemini-cli",
+      "confidence": "local_cli",
+      "models": [
+        {
+          "id": "gemini-3.1-pro-preview",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gemini-3-flash-preview",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "streaming"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex",
+      "name": "Codex OAuth",
+      "apiStandard": "openai",
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "auth": {
+        "type": "oauth_file",
+        "path": "~/.codex/auth.json",
+        "preset": "codex"
+      },
+      "probeStrategy": "catalog_only",
+      "singleActiveModel": true,
+      "recommendedTemperature": 0.2,
+      "sourceUrl": "https://developers.openai.com/codex",
+      "confidence": "local_cache",
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "streaming"
+          ]
+        },
+        {
+          "id": "gpt-5.4",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "streaming"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "apiStandard": "openai",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://openrouter.ai/docs/api/reference/overview",
+      "confidence": "official",
+      "models": [],
+      "logoAsset": "/model-assets/providers/openrouter.ico"
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.deepseek.com",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.2,
+      "sourceUrl": "https://api-docs.deepseek.com/api/list-models",
+      "confidence": "official",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 393216,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 393216,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        }
+      ],
+      "logoAsset": "/model-assets/providers/deepseek.ico"
+    },
+    {
+      "id": "dashscope",
+      "name": "Alibaba DashScope / Qwen",
+      "apiStandard": "openai",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope",
+      "confidence": "official",
+      "models": [
+        {
+          "id": "qwen-max",
+          "contextWindow": 131072,
+          "maxOutputTokens": 8192,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "qwen-plus",
+          "contextWindow": 131072,
+          "maxOutputTokens": 8192,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "siliconflow",
+      "name": "SiliconFlow",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://siliconflow.readme.io/reference/retrieve-a-list-of-models",
+      "confidence": "official",
+      "models": [],
+      "logoAsset": "/model-assets/providers/siliconflow.png"
+    },
+    {
+      "id": "modelscope",
+      "name": "ModelScope",
+      "apiStandard": "openai",
+      "baseUrl": "https://api-inference.modelscope.cn/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://www.modelscope.cn",
+      "confidence": "provider_docs",
+      "models": []
+    },
+    {
+      "id": "huggingface-router",
+      "name": "Hugging Face Router",
+      "apiStandard": "openai",
+      "baseUrl": "https://router.huggingface.co/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://huggingface.co/docs/inference-providers/en/index",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "zhipu",
+      "name": "Zhipu BigModel",
+      "apiStandard": "openai",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://docs.bigmodel.cn/cn/guide/develop/openai/introduction",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "moonshot",
+      "name": "Moonshot Kimi",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.moonshot.ai/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://platform.kimi.ai/docs/api/list-models",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "volcengine-ark",
+      "name": "Volcengine Ark / Doubao",
+      "apiStandard": "openai",
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://www.volcengine.com/docs/82379",
+      "confidence": "provider_docs",
+      "models": []
+    },
+    {
+      "id": "tencent-hunyuan",
+      "name": "Tencent Hunyuan",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.hunyuan.cloud.tencent.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://cloud.tencent.com/document/product/1729/111007",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.minimax.io/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://platform.minimax.io/docs/api-reference/text-openai-api",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral AI",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://docs.mistral.ai/api/endpoint/models",
+      "confidence": "official",
+      "models": [],
+      "logoAsset": "/model-assets/providers/mistral.ico"
+    },
+    {
+      "id": "xai",
+      "name": "xAI",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.x.ai/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://docs.x.ai",
+      "confidence": "provider_docs",
+      "models": [],
+      "logoAsset": "/model-assets/providers/xai.ico"
+    },
+    {
+      "id": "groq",
+      "name": "Groq",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.2,
+      "sourceUrl": "https://console.groq.com/docs/openai",
+      "confidence": "official",
+      "models": [],
+      "logoAsset": "/model-assets/providers/groq.ico"
+    },
+    {
+      "id": "together",
+      "name": "Together AI",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.together.xyz/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://docs.together.ai/docs/openai-api-compatibility",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "apiStandard": "openai",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "auth": {
+        "type": "none"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://github.com/ollama/ollama/blob/main/docs/openai.md",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "lmstudio",
+      "name": "LM Studio",
+      "apiStandard": "openai",
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "auth": {
+        "type": "none"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://lmstudio.ai/docs/app/api/endpoints/openai",
+      "confidence": "official",
+      "models": [],
+      "logoAsset": "/model-assets/providers/lmstudio.ico"
+    },
+    {
+      "id": "vllm",
+      "name": "vLLM",
+      "apiStandard": "openai",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "auth": {
+        "type": "none"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://docs.vllm.ai",
+      "confidence": "official",
+      "models": []
+    },
+    {
+      "id": "nexa",
+      "name": "Nexa",
+      "apiStandard": "openai",
+      "baseUrl": "http://127.0.0.1:18181/v1",
+      "auth": {
+        "type": "none"
+      },
+      "probeStrategy": "openai_models",
+      "recommendedTemperature": 0.3,
+      "sourceUrl": "https://docs.nexaai.com",
+      "confidence": "provider_docs",
+      "models": []
+    }
+  ]
+}

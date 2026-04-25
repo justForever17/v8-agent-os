@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { buildModelMutationPayload } from "@/lib/models/model-admin";
+import { buildModelMutationPayload, buildModelRef, parseModelRef } from "@/lib/models/model-admin";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -13,10 +13,14 @@ export async function PUT(
     if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
-        const { id } = await params;
+        const { id: rawId } = await params;
+        const id = decodeURIComponent(rawId);
+        const parsedRef = parseModelRef(id);
         const data = await req.json();
-        const providerId = req.nextUrl.searchParams.get("providerId")?.trim() || "";
+        const providerId = parsedRef?.providerId || req.nextUrl.searchParams.get("providerId")?.trim() || "";
+        const sourceModelId = parsedRef?.modelId || id;
         const desiredProviderId = String(data?.providerId || "").trim() || providerId;
+        const desiredModelId = String(data?.modelId || sourceModelId).trim();
 
         const resGet = await fetch(`${ENGINE_URL}/models`);
         if (!resGet.ok) throw new Error(`Python API returned ${resGet.status} on GET`);
@@ -27,14 +31,18 @@ export async function PUT(
         }
 
         // Find the provider that owns this model (since we only have the model ID from the URL params)
-        let targetProviderId = providerId && routesData.providers[providerId]?.models?.[id] ? providerId : null;
+        let targetProviderId = providerId && routesData.providers[providerId]?.models?.[sourceModelId] ? providerId : null;
         if (!targetProviderId) {
+            const matches: string[] = [];
             for (const providerKey of Object.keys(routesData.providers)) {
-                if (routesData.providers[providerKey].models && routesData.providers[providerKey].models[id]) {
-                    targetProviderId = providerKey;
-                    break;
+                if (routesData.providers[providerKey].models && routesData.providers[providerKey].models[sourceModelId]) {
+                    matches.push(providerKey);
                 }
             }
+            if (matches.length > 1) {
+                return NextResponse.json({ error: "Ambiguous modelId; provider-qualified modelRef is required", matches }, { status: 409 });
+            }
+            targetProviderId = matches[0] || null;
         }
 
         if (!targetProviderId) {
@@ -48,13 +56,21 @@ export async function PUT(
         if (!routesData.providers[desiredProviderId]) {
             return NextResponse.json({ error: "Target provider not found" }, { status: 404 });
         }
+        if (!routesData.providers[desiredProviderId].models) {
+            routesData.providers[desiredProviderId].models = {};
+        }
+
+        if (!desiredModelId) {
+            return NextResponse.json({ error: "modelId is required" }, { status: 400 });
+        }
 
         const existingModel = {
-            ...(routesData.providers[targetProviderId].models[id] || {}),
+            ...(routesData.providers[targetProviderId].models[sourceModelId] || {}),
             ...buildModelMutationPayload(data),
         };
-        delete routesData.providers[targetProviderId].models[id];
-        routesData.providers[desiredProviderId].models[id] = existingModel;
+        delete existingModel.name;
+        delete routesData.providers[targetProviderId].models[sourceModelId];
+        routesData.providers[desiredProviderId].models[desiredModelId] = existingModel;
 
         const resPost = await fetch(`${ENGINE_URL}/models`, {
             method: "POST",
@@ -64,10 +80,13 @@ export async function PUT(
 
         if (!resPost.ok) throw new Error(`Python API returned ${resPost.status} on POST`);
 
+        const modelRef = buildModelRef(desiredProviderId, desiredModelId);
         return NextResponse.json({
-             id,
+             id: modelRef,
+             modelRef,
              providerId: desiredProviderId,
-             ...routesData.providers[desiredProviderId].models[id]
+             modelId: desiredModelId,
+             ...routesData.providers[desiredProviderId].models[desiredModelId]
         });
 
     } catch (error: unknown) {
@@ -85,8 +104,11 @@ export async function DELETE(
     if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
-        const { id } = await params;
-        const providerId = req.nextUrl.searchParams.get("providerId")?.trim() || "";
+        const { id: rawId } = await params;
+        const id = decodeURIComponent(rawId);
+        const parsedRef = parseModelRef(id);
+        const providerId = parsedRef?.providerId || req.nextUrl.searchParams.get("providerId")?.trim() || "";
+        const sourceModelId = parsedRef?.modelId || id;
 
         const resGet = await fetch(`${ENGINE_URL}/models`);
         if (!resGet.ok) throw new Error(`Python API returned ${resGet.status} on GET`);
@@ -94,16 +116,22 @@ export async function DELETE(
 
         if (routesData.providers) {
             let modelFound = false;
-            if (providerId && routesData.providers[providerId]?.models?.[id]) {
-                delete routesData.providers[providerId].models[id];
+            if (providerId && routesData.providers[providerId]?.models?.[sourceModelId]) {
+                delete routesData.providers[providerId].models[sourceModelId];
                 modelFound = true;
             } else {
+                const matches: string[] = [];
                 for (const providerKey of Object.keys(routesData.providers)) {
-                    if (routesData.providers[providerKey].models && routesData.providers[providerKey].models[id]) {
-                        delete routesData.providers[providerKey].models[id];
-                        modelFound = true;
-                        break;
+                    if (routesData.providers[providerKey].models && routesData.providers[providerKey].models[sourceModelId]) {
+                        matches.push(providerKey);
                     }
+                }
+                if (matches.length > 1) {
+                    return NextResponse.json({ error: "Ambiguous modelId; provider-qualified modelRef is required", matches }, { status: 409 });
+                }
+                if (matches[0]) {
+                    delete routesData.providers[matches[0]].models[sourceModelId];
+                    modelFound = true;
                 }
             }
 

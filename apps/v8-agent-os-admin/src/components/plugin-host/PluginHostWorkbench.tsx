@@ -313,7 +313,7 @@ function modelValue(model: SysModel) {
 }
 function modelLabel(model: SysModel) {
     const providerName = model.provider?.name || model.providerName || "";
-    return `${model.name || modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
+    return `${modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
 }
 function humanizeFallbackLabel(value: string, fallback: string) {
     const source = value.trim();

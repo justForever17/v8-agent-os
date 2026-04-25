@@ -12,14 +12,17 @@ export async function POST(req: NextRequest) {
 
     try {
         const incoming = await req.json().catch(() => ({}));
-        const modelId = String(incoming?.modelId || incoming?.model_id || incoming?.id || "").trim();
-        if (!modelId) {
+        const modelRef = String(incoming?.modelRef || incoming?.model_ref || incoming?.id || "").trim();
+        const modelId = String(incoming?.modelId || incoming?.model_id || "").trim();
+        const providerId = String(incoming?.providerId || incoming?.provider_id || "").trim();
+        const target = modelRef || modelId;
+        if (!target) {
             return NextResponse.json({ error: "modelId is required" }, { status: 422 });
         }
         const response = await fetch(ENGINE_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ modelId, model_id: modelId }),
+            body: JSON.stringify({ modelRef, model_ref: modelRef, modelId: modelId || target, model_id: modelId || target, providerId, provider_id: providerId }),
         });
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });

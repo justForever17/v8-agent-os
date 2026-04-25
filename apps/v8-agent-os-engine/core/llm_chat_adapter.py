@@ -371,12 +371,21 @@ class V8ChatModelAdapter(BaseChatModel):
         if not tool_name:
             return self._decorate_message(message, tool_mode="prompt_emulated")
         arguments = payload.get("arguments") or payload.get("args") or {}
+        normalized_calls = normalize_tool_calls(
+            [{"name": tool_name, "args": arguments}],
+            provider_standard=self.provider_standard,
+        )
+        langchain_tool_calls = [
+            {
+                "name": str(call.get("name") or tool_name),
+                "args": call.get("args") or {},
+                "id": str(call.get("id") or call.get("providerToolCallId") or ""),
+            }
+            for call in normalized_calls
+        ]
         ai_message = AIMessage(
             content="",
-            tool_calls=normalize_tool_calls(
-                [{"name": tool_name, "args": arguments}],
-                provider_standard=self.provider_standard,
-            ),
+            tool_calls=langchain_tool_calls,
             additional_kwargs={"tool_emulated": True},
         )
         return self._decorate_message(ai_message, tool_mode="prompt_emulated")

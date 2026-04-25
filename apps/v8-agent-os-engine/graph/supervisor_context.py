@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import platform
+import re
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
@@ -568,6 +569,157 @@ def build_supervisor_system_content(
             parts.append(f"toolPolicy={policy}")
         return " | ".join(parts)
 
+    def _agent_family(agent: dict) -> str:
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        family = str(snapshot.get("specialistFamily") or snapshot.get("family") or "").strip().lower()
+        if family:
+            return family
+        agent_class = str(snapshot.get("agentClass") or "").strip().lower()
+        domains = " ".join(str(item).strip().lower() for item in list(snapshot.get("domainTags") or []) if str(item).strip())
+        if agent_class in {"documentation", "researcher"} or any(token in domains for token in ("writing", "docs", "document", "research", "handoff")):
+            return "writing"
+        if any(token in domains for token in ("software", "frontend", "backend", "runtime", "testing", "code", "skills")):
+            return "engineering"
+        return "engineering"
+
+    def _agent_class(agent: dict) -> str:
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        return str(snapshot.get("agentClass") or "specialist").strip() or "specialist"
+
+    def _agent_ops(agent: dict, *, limit: int = 3) -> str:
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        values = [str(item).strip() for item in list(snapshot.get("operationCapabilities") or []) if str(item).strip()]
+        return ",".join(values[:limit]) or "delegate"
+
+    def _planner_text(plan: dict | None) -> str:
+        if not isinstance(plan, dict):
+            return ""
+        chunks: list[str] = []
+        for key in ("planSummary", "executionStrategy", "globalAcceptanceContract"):
+            chunks.append(str(plan.get(key) or ""))
+        for brief in list(plan.get("taskBriefs") or []):
+            if not isinstance(brief, dict):
+                continue
+            for key in ("goal", "behaviorScope", "requiredCapabilities", "acceptanceContract", "executionLaneHint"):
+                value = brief.get(key)
+                if isinstance(value, list):
+                    chunks.extend(str(item) for item in value)
+                else:
+                    chunks.append(str(value or ""))
+        return " ".join(item for item in chunks if item)
+
+    def _predict_specialist_families(*, query: str, plan: dict | None) -> list[str]:
+        haystack = f"{query or ''} {_planner_text(plan)}".lower()
+        def has_any_token(tokens: tuple[str, ...]) -> bool:
+            for token in tokens:
+                if token.isascii():
+                    if re.search(rf"\b{re.escape(token)}\b", haystack):
+                        return True
+                elif token in haystack:
+                    return True
+            return False
+
+        writing_tokens = (
+            "write", "writing", "docs", "document", "documentation", "handoff", "release note",
+            "proposal", "summary", "article", "copy", "文档", "写作", "撰写", "总结", "交付", "说明",
+            "公众号", "文章", "报告",
+        )
+        engineering_tokens = (
+            "code", "coding", "implement", "implementation", "bug", "fix", "test", "pytest",
+            "build", "typecheck", "api", "runtime", "repo", "project", "frontend", "backend",
+            "migration", "refactor", "代码", "实现", "修复", "测试", "构建", "仓库", "项目",
+            "接口", "运行时", "迁移", "重构",
+        )
+        matches: list[str] = []
+        if has_any_token(engineering_tokens):
+            matches.append("engineering")
+        if has_any_token(writing_tokens):
+            matches.append("writing")
+        return matches
+
+    def _render_specialist_line(agent: dict, *, include_family: bool = False) -> str:
+        agent_id = str(agent.get("id") or "").strip() or "unknown"
+        prefix = f"{agent_id}"
+        if include_family:
+            prefix += f" | family={_agent_family(agent)}"
+        return f"- {prefix} | class={_agent_class(agent)} | ops={_agent_ops(agent)}"
+
+    def _render_specialist_agents_context(*, plan: dict | None) -> str:
+        agents = [
+            agent for agent in list(loaded_agents or [])
+            if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"
+        ]
+        specialist_registry = dict((supervisor_config or {}).get("specialistRegistry") or {})
+        family_mode_enabled = bool(specialist_registry.get("familyModeEnabled", True))
+        try:
+            family_limit = int(specialist_registry.get("maxMembersPerFamily") or 10)
+        except (TypeError, ValueError):
+            family_limit = 10
+        family_limit = max(1, min(family_limit, 50))
+        if not agents:
+            return (
+                "--- SPECIALIST FAMILIES ---\n"
+                "taskFamily=none\n"
+                f"familyMode={'on' if family_mode_enabled else 'off'}; familyLimit={family_limit}\n"
+                "No registered subagents. Configure Admin/Subagents before using delegation_broker.\n"
+                "--------------------------------\n"
+            )
+
+        matched_families = _predict_specialist_families(query=user_query, plan=plan)
+        global_agents = [agent for agent in agents if bool(agent.get("globalExposure"))]
+        if not family_mode_enabled:
+            lines = [
+                "--- SPECIALIST FAMILIES ---",
+                f"taskFamily={'+'.join(matched_families) if matched_families else 'none'}",
+                "familyMode=off; all registered subagents are visible in compact form.",
+                "selectionRule=Use delegation_broker; globalExposure only affects prompt highlighting, not tool authority.",
+                "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",
+            ]
+            if global_agents:
+                lines.append("[globalExposure]")
+                for agent in global_agents:
+                    lines.append(_render_specialist_line(agent, include_family=True))
+            lines.append("[nonGlobalSubagents]")
+            for agent in agents:
+                if bool(agent.get("globalExposure")):
+                    continue
+                lines.append(_render_specialist_line(agent, include_family=True))
+            lines.append("--------------------------------")
+            return "\n".join(lines) + "\n"
+
+        family_map: dict[str, list[dict]] = {}
+        for agent in agents:
+            if bool(agent.get("globalExposure")):
+                continue
+            family_map.setdefault(_agent_family(agent), []).append(agent)
+
+        visible_families = [family for family in matched_families if family in family_map]
+        hidden_families = sorted(family for family in family_map if family not in visible_families)
+        lines = [
+            "--- SPECIALIST FAMILIES ---",
+            f"taskFamily={'+'.join(matched_families) if matched_families else 'none'}",
+            f"familyMode=on; familyLimit={family_limit}; globalExposure bypasses the familyLimit but does not grant tools.",
+            "selectionRule=Use delegation_broker; only delegate inside globalExposure or matched families unless the task family changes.",
+            "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",
+        ]
+        if hidden_families:
+            lines.append(f"hiddenFamilies={','.join(hidden_families)}")
+        if global_agents:
+            lines.append("[globalExposure]")
+            for agent in global_agents:
+                lines.append(_render_specialist_line(agent, include_family=True))
+        for family in visible_families:
+            lines.append(f"[{family}]")
+            for agent in family_map.get(family, [])[:family_limit]:
+                lines.append(_render_specialist_line(agent))
+            overflow = max(0, len(family_map.get(family, [])) - family_limit)
+            if overflow:
+                lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
+        if not global_agents and not visible_families:
+            lines.append("No family matched this turn; keep work with supervisor unless planner creates a matching task brief.")
+        lines.append("--------------------------------")
+        return "\n".join(lines) + "\n"
+
     workspace_path = _resolved_workspace_prompt_path()
     os_name = platform.system()
     current_time = utc_now_iso()
@@ -606,6 +758,7 @@ def build_supervisor_system_content(
                         "id": str(agent.get("id") or "").strip(),
                         "name": str(agent.get("name") or "").strip(),
                         "description": str(agent.get("description") or "").strip(),
+                        "globalExposure": bool(agent.get("globalExposure")),
                         "tool_mode": str(agent.get("tool_mode") or agent.get("toolMode") or "").strip(),
                         "tools": [str(item) for item in list(agent.get("tools") or [])],
                         "capabilitySnapshot": agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {},
@@ -614,6 +767,7 @@ def build_supervisor_system_content(
                     if isinstance(agent, dict)
                 ],
                 "externalWorkers": external_workers,
+                "specialistRegistry": dict(supervisor_config.get("specialistRegistry") or {}),
                 "tools": [
                     {
                         "name": str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip(),
@@ -651,39 +805,9 @@ def build_supervisor_system_content(
             available_tools_context += f"- {tool_name}: {tool_desc}\n"
         available_tools_context += "---------------------------------------\n"
 
-        specialist_agents_context = "--- SPECIALIST AGENT REGISTRY ---\n"
-        specialist_agents_context += (
-            "Selection should prefer capabilitySnapshot; contextual_auto tools are assigned by "
-            "delegation_broker/contextual route at dispatch.\n"
-        )
-        specialist_agents = [agent for agent in loaded_agents if agent.get("id") != "supervisor"]
-        if specialist_agents:
-            for agent in specialist_agents:
-                capability = _capability_summary(agent)
-                specialist_agents_context += (
-                    f"- {agent.get('name') or agent.get('id')} ({agent.get('id')}): "
-                    f"{agent.get('description') or 'No description'} | {render_agent_tool_surface_summary(agent)}"
-                    f"{' | ' + capability if capability else ''}\n"
-                )
-        if external_workers:
-            specialist_agents_context += "\n[External Workers]\n"
-            for worker in external_workers:
-                capability = _capability_summary(
-                    {"capabilitySnapshot": worker.get("capabilitySnapshot"), "description": worker.get("description")}
-                )
-                specialist_agents_context += (
-                    f"- {worker.get('name') or worker.get('id')} ({worker.get('id')}): "
-                    f"{worker.get('description') or 'No description'} | enabled={bool(worker.get('enabled'))}"
-                    f"{' | ' + capability if capability else ''}\n"
-                )
-        if not specialist_agents and not external_workers:
-            specialist_agents_context += "- 暂无已注册的 subagent 或 external worker，可先在 Admin 配置再通过 delegation_broker 调度。\n"
-        specialist_agents_context += "--------------------------------\n"
-
         cached_stable = {
             "envStaticContext": env_static_context,
             "availableToolsContext": available_tools_context,
-            "specialistAgentsContext": specialist_agents_context,
         }
         _STABLE_SYSTEM_CONTEXT_CACHE[stable_signature] = cached_stable
         if len(_STABLE_SYSTEM_CONTEXT_CACHE) > _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT:
@@ -730,8 +854,8 @@ def build_supervisor_system_content(
     )
 
     available_tools_context = cached_stable["availableToolsContext"]
-    specialist_agents_context = cached_stable["specialistAgentsContext"]
     planner_context = _planner_context(state.get("planner_plan"))
+    specialist_agents_context = _render_specialist_agents_context(plan=state.get("planner_plan"))
     artifact_awareness_context, artifact_awareness_diagnostics = _build_artifact_awareness_context(
         memory_runtime=memory_runtime,
         session_id=session_id,

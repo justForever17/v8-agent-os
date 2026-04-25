@@ -337,6 +337,10 @@ export function ArtifactsPanel({ sessionId }: { sessionId?: string | null }) {
                                         </div>
                                     </div>
                                     <div>
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Origin</div>
+                                        <div className="mt-2 break-all font-mono text-sm">{activeArtifact.origin || "runtime_generated"}</div>
+                                    </div>
+                                    <div>
                                         <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Created At</div>
                                         <div className="mt-2 text-sm">{activeArtifact.createdAt || "—"}</div>
                                     </div>

@@ -19,6 +19,31 @@ DEPRECATED_DEFAULT_SUBAGENT_IDS = {
     "life-ops-coach",
 }
 
+def ensure_specialist_family(snapshot: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Backfill compact supervisor routing metadata for legacy agent files."""
+    normalized = dict(snapshot or {})
+    if str(normalized.get("specialistFamily") or "").strip():
+        return normalized
+    domains = " ".join(str(item).lower() for item in list(normalized.get("domainTags") or []))
+    agent_class = str(normalized.get("agentClass") or "").lower()
+    if any(token in domains for token in ("writing", "docs", "document", "research", "handoff")) or agent_class in {"documentation", "researcher"}:
+        normalized["specialistFamily"] = "writing"
+    else:
+        normalized["specialistFamily"] = "engineering"
+    return normalized
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
 class AgentConfig(BaseModel):
     id: str = Field(description="The unique identifier (filename without .md)")
     name: str = Field(description="Display name of the agent")
@@ -31,6 +56,7 @@ class AgentConfig(BaseModel):
     tool_mode: str = Field(default="", description="Tool resolution mode: explicit or contextual_auto")
     system_prompt: str = Field(description="The markdown content acting as the system prompt")
     createdBy: str = Field(default="human", description="Creator of the agent, e.g., 'human' or 'supervisor'")
+    globalExposure: bool = Field(default=False, description="Whether this specialist is always visible in supervisor registry prompts")
     reflection_enabled: bool = Field(default=False, description="Whether this agent output needs to be reviewed by a Reflection iteration")
     max_reflections: int = Field(default=3, description="Maximum number of reflection iterations")
     capabilitySnapshot: Dict[str, Any] = Field(default_factory=dict, description="Routing and planning capability metadata separate from roleLabel")
@@ -50,6 +76,7 @@ def parse_agent_md(content: str, filename: str) -> AgentConfig:
                 markdown_content = content[end_idx+3:].strip()
                 
                 metadata = yaml.safe_load(frontmatter_str) or {}
+                capability_snapshot = metadata.get("capabilitySnapshot") if isinstance(metadata.get("capabilitySnapshot"), dict) else {}
                 
                 return AgentConfig(
                     id=agent_id,
@@ -62,9 +89,10 @@ def parse_agent_md(content: str, filename: str) -> AgentConfig:
                     tools=metadata.get("tools", []),
                     tool_mode=str(metadata.get("tool_mode") or metadata.get("toolMode") or "").strip(),
                     createdBy=metadata.get("createdBy", "human"),
+                    globalExposure=_as_bool(metadata.get("globalExposure"), False),
                     reflection_enabled=metadata.get("reflection_enabled", False),
                     max_reflections=metadata.get("max_reflections", 3),
-                    capabilitySnapshot=metadata.get("capabilitySnapshot") if isinstance(metadata.get("capabilitySnapshot"), dict) else {},
+                    capabilitySnapshot=ensure_specialist_family(capability_snapshot),
                     defaultTemplateVersion=str(metadata.get("defaultTemplateVersion") or ""),
                     promptSourceRefs=metadata.get("promptSourceRefs") if isinstance(metadata.get("promptSourceRefs"), list) else [],
                     system_prompt=markdown_content
@@ -77,6 +105,7 @@ def parse_agent_md(content: str, filename: str) -> AgentConfig:
         id=agent_id,
         name=agent_id,
         description="",
+        capabilitySnapshot=ensure_specialist_family({}),
         system_prompt=content
     )
 
@@ -88,6 +117,7 @@ def dump_agent_md(config: AgentConfig) -> str:
         "tools": config.tools,
         "tool_mode": config.tool_mode,
         "createdBy": config.createdBy,
+        "globalExposure": bool(config.globalExposure),
         "reflection_enabled": config.reflection_enabled,
         "max_reflections": config.max_reflections
     }
@@ -189,6 +219,7 @@ Do not pretend to be the supervisor, do not make final user-facing acceptance de
         tools=[],
         tool_mode="contextual_auto",
         createdBy="system",
+        globalExposure=False,
         reflection_enabled=False,
         max_reflections=3,
         capabilitySnapshot=capability_snapshot,
@@ -209,6 +240,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="diagram-project",
             capability_snapshot={
                 "agentClass": "planner",
+                "specialistFamily": "engineering",
                 "domainTags": ["software_engineering", "runtime_governance", "project_execution"],
                 "artifactCapabilities": ["task_brief", "implementation_plan", "acceptance_contract"],
                 "operationCapabilities": ["decompose", "sequence", "risk_assess", "scope_isolate"],
@@ -234,6 +266,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="code-2",
             capability_snapshot={
                 "agentClass": "executor",
+                "specialistFamily": "engineering",
                 "domainTags": ["software_engineering", "backend", "frontend", "runtime"],
                 "artifactCapabilities": ["source_patch", "migration_note"],
                 "operationCapabilities": ["implement", "refactor", "debug"],
@@ -259,6 +292,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="layout-dashboard",
             capability_snapshot={
                 "agentClass": "executor",
+                "specialistFamily": "engineering",
                 "domainTags": ["frontend", "product_ui", "accessibility", "runtime_surface", "i18n"],
                 "artifactCapabilities": ["tsx_patch", "ui_state_model", "surface_regression_note"],
                 "operationCapabilities": ["implement", "debug_ui", "refine_interaction", "verify_surface"],
@@ -284,6 +318,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="badge-check",
             capability_snapshot={
                 "agentClass": "verifier",
+                "specialistFamily": "engineering",
                 "domainTags": ["software_engineering", "quality", "testing", "regression", "runtime_stability"],
                 "artifactCapabilities": ["test_plan", "regression_report", "failure_analysis"],
                 "operationCapabilities": ["test", "verify", "reproduce", "triage"],
@@ -309,6 +344,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="shield-check",
             capability_snapshot={
                 "agentClass": "reviewer",
+                "specialistFamily": "engineering",
                 "domainTags": ["software_engineering", "architecture", "code_review", "runtime_governance"],
                 "artifactCapabilities": ["review_findings", "risk_assessment"],
                 "operationCapabilities": ["review", "audit", "compare", "validate_contract"],
@@ -334,6 +370,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="search-check",
             capability_snapshot={
                 "agentClass": "researcher",
+                "specialistFamily": "writing",
                 "domainTags": ["research", "synthesis", "source_quality", "strategy"],
                 "artifactCapabilities": ["research_brief", "source_matrix", "option_analysis"],
                 "operationCapabilities": ["research", "compare", "summarize", "triangulate"],
@@ -359,6 +396,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="file-text",
             capability_snapshot={
                 "agentClass": "documentation",
+                "specialistFamily": "writing",
                 "domainTags": ["software_engineering", "technical_writing", "developer_docs", "handoff"],
                 "artifactCapabilities": ["documentation", "release_note", "handoff_summary"],
                 "operationCapabilities": ["summarize", "document", "explain"],
@@ -384,6 +422,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="sparkles",
             capability_snapshot={
                 "agentClass": "skill_curator",
+                "specialistFamily": "engineering",
                 "domainTags": ["skills", "workflow_design", "prompt_engineering", "agent_governance"],
                 "artifactCapabilities": ["skill_review", "workflow_spec", "prompt_patch"],
                 "operationCapabilities": ["audit", "distill", "improve", "validate"],

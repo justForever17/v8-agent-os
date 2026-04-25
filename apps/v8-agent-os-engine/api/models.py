@@ -227,6 +227,8 @@ class GraphEntityPayload(BaseModel):
 
     name: str
     entity_type: str = Field(default="concept", alias="entityType")
+    maintainer_source: Optional[str] = Field(default=None, alias="maintainerSource")
+    confidence: Optional[float] = 1.0
 
 
 class GraphRelationPayload(BaseModel):
@@ -236,6 +238,7 @@ class GraphRelationPayload(BaseModel):
     predicate: str
     object_name: str = Field(alias="object")
     confidence: Optional[float] = 1.0
+    maintainer_source: Optional[str] = Field(default=None, alias="maintainerSource")
 
 
 class RunCommandPayload(BaseModel):

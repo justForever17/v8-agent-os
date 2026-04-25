@@ -179,6 +179,7 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
         else record.get("supports_inline_preview")
     )
     preview_kind = record.get("previewKind") or record.get("preview_kind")
+    origin = record.get("origin") or record.get("artifactOrigin") or metadata.get("origin") or metadata.get("artifactOrigin")
 
     normalized = dict(record)
     normalized.update(
@@ -215,6 +216,9 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             "supports_inline_preview": supports_inline_preview,
             "previewKind": preview_kind,
             "preview_kind": preview_kind,
+            "origin": origin,
+            "artifactOrigin": origin,
+            "artifact_origin": origin,
             "hasPreview": bool(preview_url),
             "projectId": metadata.get("projectId") or metadata.get("project_id"),
             "project_id": metadata.get("projectId") or metadata.get("project_id"),

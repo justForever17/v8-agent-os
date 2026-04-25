@@ -459,12 +459,16 @@ class MemoryRuntime:
         category: str = "general",
         scope: str = "global",
         source_session: Optional[str] = None,
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
     ) -> str:
         return knowledge_service.add_knowledge(
             fact=fact,
             category=category,
             scope=scope,
             source_session=source_session,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
         )
 
     def update_knowledge(
@@ -474,12 +478,16 @@ class MemoryRuntime:
         new_fact: str,
         category: Optional[str] = None,
         scope: Optional[str] = None,
+        maintainer_source: Optional[str] = None,
+        confidence: Optional[float] = None,
     ) -> bool:
         return knowledge_service.update_knowledge(
             fact_id=fact_id,
             new_fact=new_fact,
             category=category,
             scope=scope,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
         )
 
     def delete_knowledge(self, *, fact_id: str) -> bool:
@@ -487,6 +495,9 @@ class MemoryRuntime:
 
     def restore_knowledge(self, *, fact_id: str) -> bool:
         return knowledge_service.restore_knowledge(fact_id=fact_id)
+
+    def revalidate_knowledge(self, *, fact_id: str, maintainer_source: str = "human_admin") -> bool:
+        return knowledge_service.revalidate_knowledge(fact_id=fact_id, maintainer_source=maintainer_source)
 
     def get_graph_stats(self) -> Dict[str, Any]:
         return knowledge_service.get_graph_stats()
@@ -503,8 +514,20 @@ class MemoryRuntime:
     def search_entities(self, *, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
         return knowledge_service.search_entities(keyword=keyword, limit=limit)
 
-    def add_entity(self, *, name: str, entity_type: str = "concept") -> None:
-        knowledge_service.add_entity(name=name, entity_type=entity_type)
+    def add_entity(
+        self,
+        *,
+        name: str,
+        entity_type: str = "concept",
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
+    ) -> None:
+        knowledge_service.add_entity(
+            name=name,
+            entity_type=entity_type,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
+        )
 
     def delete_entity(self, *, name: str) -> bool:
         return knowledge_service.delete_entity(name=name)
@@ -516,12 +539,14 @@ class MemoryRuntime:
         predicate: str,
         object_name: str,
         confidence: float = 1.0,
+        maintainer_source: str = "memory_runtime",
     ) -> None:
         knowledge_service.add_relation(
             subject=subject,
             predicate=predicate,
             object_name=object_name,
             confidence=confidence,
+            maintainer_source=maintainer_source,
         )
 
     def delete_relation(self, *, subject: str, predicate: str, object_name: str) -> bool:

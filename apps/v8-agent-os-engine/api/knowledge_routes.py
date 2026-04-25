@@ -678,7 +678,12 @@ async def search_graph_entities(keyword: str, limit: int = 20):
 @router.post("/memory/graph/entity")
 async def add_graph_entity(payload: GraphEntityPayload):
     try:
-        memory_runtime.add_entity(name=payload.name, entity_type=payload.entity_type)
+        memory_runtime.add_entity(
+            name=payload.name,
+            entity_type=payload.entity_type,
+            maintainer_source=payload.maintainer_source or "human_admin",
+            confidence=payload.confidence or 1.0,
+        )
         return {"created": True, "name": payload.name.lower(), "entityType": payload.entity_type}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -701,6 +706,7 @@ async def add_graph_relation(payload: GraphRelationPayload):
             predicate=payload.predicate,
             object_name=payload.object_name,
             confidence=payload.confidence or 1.0,
+            maintainer_source=payload.maintainer_source or "human_admin",
         )
         return {
             "created": True,
@@ -755,6 +761,8 @@ async def update_knowledge_item(fact_id: str, body: dict = Body(...)):
             new_fact=new_fact,
             category=category,
             scope=scope,
+            maintainer_source=body.get("maintainerSource") or body.get("maintainer_source") or "human_admin",
+            confidence=body.get("confidence"),
         )
         return {"updated": ok, "id": fact_id}
     except HTTPException:
@@ -768,6 +776,20 @@ async def restore_knowledge_item(fact_id: str):
     try:
         restored = memory_runtime.restore_knowledge(fact_id=fact_id)
         return {"restored": restored, "id": fact_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/knowledge/{fact_id}/revalidate")
+async def revalidate_knowledge_item(fact_id: str, body: dict | None = Body(default=None)):
+    try:
+        body = body or {}
+        maintainer_source = body.get("maintainerSource") or body.get("maintainer_source") or "human_admin"
+        revalidated = memory_runtime.revalidate_knowledge(
+            fact_id=fact_id,
+            maintainer_source=maintainer_source,
+        )
+        return {"revalidated": revalidated, "id": fact_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -968,22 +990,27 @@ async def memory_admin_chat(request: AdminChatRequest):
 
     @lc_tool
     def add_graph_relation(subject: str, predicate: str, object: str) -> str:
-        knowledge_db.add_relation(subject, predicate, object)
+        knowledge_db.add_relation(subject, predicate, object, maintainer_source="human_admin")
         return f"Successfully added relation: ({subject}) -[{predicate}]-> ({object})"
 
     @lc_tool
     def add_graph_entity(entity_name: str, entity_type: str = "concept") -> str:
-        knowledge_db.add_entity(entity_name, entity_type)
+        knowledge_db.add_entity(entity_name, entity_type, maintainer_source="human_admin")
         return f"Successfully added entity '{entity_name}' of type '{entity_type}'."
 
     @lc_tool
     def add_knowledge(fact: str, category: str = "general", scope: str = "global") -> str:
-        fact_id = memory_runtime.add_knowledge(fact=fact, category=category, scope=scope)
+        fact_id = memory_runtime.add_knowledge(
+            fact=fact,
+            category=category,
+            scope=scope,
+            maintainer_source="human_admin",
+        )
         return f"Successfully added new knowledge with ID: {fact_id}"
 
     @lc_tool
     def update_knowledge(fact_id: str, new_fact: str) -> str:
-        memory_runtime.update_knowledge(fact_id=fact_id, new_fact=new_fact)
+        memory_runtime.update_knowledge(fact_id=fact_id, new_fact=new_fact, maintainer_source="human_admin")
         return f"Successfully updated knowledge fact {fact_id}."
 
     @lc_tool

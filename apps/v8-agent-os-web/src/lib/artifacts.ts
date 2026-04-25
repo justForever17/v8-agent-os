@@ -32,6 +32,7 @@ export interface RuntimeArtifact {
     supportsInlinePreview?: boolean;
     previewKind?: string;
     sourceComponent?: string;
+    origin?: string;
     metadata?: Record<string, unknown>;
     createdAt?: string;
 }
@@ -106,6 +107,7 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
         supportsInlinePreview: Boolean(record.supportsInlinePreview ?? record.supports_inline_preview),
         previewKind: typeof (record.previewKind || record.preview_kind) === "string" ? String(record.previewKind || record.preview_kind) : undefined,
         sourceComponent: typeof (record.sourceComponent || record.source_component) === "string" ? String(record.sourceComponent || record.source_component) : undefined,
+        origin: typeof (record.origin || record.artifactOrigin || record.artifact_origin) === "string" ? String(record.origin || record.artifactOrigin || record.artifact_origin) : undefined,
         metadata: typeof record.metadata === "object" && record.metadata ? record.metadata as Record<string, unknown> : {},
         createdAt: typeof (record.createdAt || record.created_at) === "string" ? String(record.createdAt || record.created_at) : undefined,
     };

@@ -12,6 +12,7 @@ from core.context_governance import (
     extract_latest_context_governance,
 )
 from core.database import db
+from core.artifact_store import artifact_store
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
 from core.runtime_projection import (
@@ -523,6 +524,32 @@ async def list_runtime_artifacts(session_id: str | None = None, run_id: str | No
                 for item in _memory_runtime().list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
             ],
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/artifacts/adopt-workspace-file")
+async def adopt_workspace_artifact(body: dict = Body(...)):
+    try:
+        path = str(body.get("path") or body.get("workspacePath") or body.get("sourcePath") or "").strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="path is required")
+        artifact = artifact_store.adopt_workspace_file(
+            path=path,
+            mode=str(body.get("mode") or "auto"),
+            session_id=body.get("sessionId") or body.get("session_id"),
+            run_id=body.get("runId") or body.get("run_id"),
+            message_id=body.get("messageId") or body.get("message_id"),
+            source_component="artifact_adoption_api",
+            node="artifact_adoption_api",
+        )
+        return {"artifact": normalize_artifact_record(artifact)}
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

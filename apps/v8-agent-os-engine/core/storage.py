@@ -466,6 +466,10 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "delegation": {
             "externalWorkers": default_external_worker_descriptors(),
         },
+        "specialistRegistry": {
+            "familyModeEnabled": True,
+            "maxMembersPerFamily": 10,
+        },
     },
     "workspace": {"agent_workspace_path": _default_workspace_path()},
     "hooks": {"hooks": []},
@@ -2122,6 +2126,30 @@ class StorageManager:
         self._write_config_payload(payload)
         
     # --- Supervisor Config Accessors ---
+    def _normalize_specialist_registry_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
+        raw = dict(data or {})
+
+        def _as_bool(value: Any, default: bool) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"1", "true", "yes", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "off"}:
+                    return False
+            if value is None:
+                return default
+            return bool(value)
+
+        raw["familyModeEnabled"] = _as_bool(raw.get("familyModeEnabled"), True)
+        try:
+            max_members = int(raw.get("maxMembersPerFamily") or 10)
+        except (TypeError, ValueError):
+            max_members = 10
+        raw["maxMembersPerFamily"] = max(1, min(max_members, 50))
+        return raw
+
     def get_supervisor_config(self) -> Dict[str, Any]:
         self._ensure_legacy_model_bindings_migrated()
         config = self._deep_merge(
@@ -2139,6 +2167,10 @@ class StorageManager:
             delegation["externalWorkers"] = normalized_external_workers
             config["delegation"] = delegation
             should_save = True
+        specialist_registry = self._normalize_specialist_registry_config(config.get("specialistRegistry"))
+        if specialist_registry != config.get("specialistRegistry"):
+            config["specialistRegistry"] = specialist_registry
+            should_save = True
         if should_save:
             self.save_supervisor_config(config)
         return config
@@ -2149,6 +2181,7 @@ class StorageManager:
         delegation = dict(next_payload.get("delegation") or {})
         delegation["externalWorkers"] = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
         next_payload["delegation"] = delegation
+        next_payload["specialistRegistry"] = self._normalize_specialist_registry_config(next_payload.get("specialistRegistry"))
         payload = self._read_config_payload()
         payload["supervisor"] = next_payload
         self._write_config_payload(payload)
@@ -2653,7 +2686,18 @@ class StorageManager:
 
     def save_agent(self, agent_config_dict: Dict[str, Any]):
         from core.runtime.agents import dump_agent_md, AgentConfig
-        agent_config = AgentConfig(**agent_config_dict)
+        payload = dict(agent_config_dict or {})
+        snapshot = payload.get("capabilitySnapshot") if isinstance(payload.get("capabilitySnapshot"), dict) else {}
+        if not str(snapshot.get("specialistFamily") or "").strip():
+            domains = " ".join(str(item).lower() for item in list(snapshot.get("domainTags") or []))
+            agent_class = str(snapshot.get("agentClass") or "").lower()
+            if any(token in domains for token in ("writing", "docs", "document", "research", "handoff")) or agent_class in {"documentation", "researcher"}:
+                snapshot = {**snapshot, "specialistFamily": "writing"}
+            else:
+                snapshot = {**snapshot, "specialistFamily": "engineering"}
+            payload["capabilitySnapshot"] = snapshot
+        payload.setdefault("globalExposure", False)
+        agent_config = AgentConfig(**payload)
         agent_path = self.base_dir / "agents" / f"{agent_config.id}.md"
         md_content = dump_agent_md(agent_config)
         with open(agent_path, "w", encoding="utf-8") as f:

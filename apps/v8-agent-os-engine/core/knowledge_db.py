@@ -61,6 +61,21 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _bounded_confidence(value: object, default: float = 1.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, min(parsed, 1.0))
+
+
+def _effective_confidence(confidence: object, maintainer_source: str | None = None) -> float:
+    base = _bounded_confidence(confidence)
+    if str(maintainer_source or "").strip().lower() == "human_admin":
+        return min(1.0, base * 1.5)
+    return base
+
+
 class KnowledgeDB:
     """SQLite 知识数据库：FTS5 + 知识图谱 + 增量索引"""
     
@@ -104,10 +119,29 @@ class KnowledgeDB:
             """)
             
             # Phase 25.2: Dynamic Schema Migration for Parent-Child Chunking
-            try:
-                conn.execute("ALTER TABLE knowledge ADD COLUMN parent_id TEXT")
-            except Exception:
-                pass # Column likely already exists
+            cursor = conn.execute("PRAGMA table_info(knowledge)")
+            knowledge_columns = {row["name"] for row in cursor.fetchall()}
+            for column_name, column_sql in {
+                "parent_id": "parent_id TEXT",
+                "lifecycle_state": "lifecycle_state TEXT DEFAULT 'active'",
+                "last_seen_at": "last_seen_at TEXT",
+                "last_injected_at": "last_injected_at TEXT",
+                "last_verified_at": "last_verified_at TEXT",
+                "evidence_refs_json": "evidence_refs_json TEXT",
+                "promotion_reason": "promotion_reason TEXT",
+                "superseded_by": "superseded_by TEXT",
+                "tombstone_of": "tombstone_of TEXT",
+                "decay_score": "decay_score REAL DEFAULT 0",
+                "agents_hash": "agents_hash TEXT",
+                "repo_signature": "repo_signature TEXT",
+                "signature_policy": "signature_policy TEXT DEFAULT 'soft_v1'",
+                "maintainer_source": "maintainer_source TEXT DEFAULT 'memory_runtime'",
+                "confidence": "confidence REAL DEFAULT 1.0",
+                "effective_confidence": "effective_confidence REAL DEFAULT 1.0",
+                "metadata_json": "metadata_json TEXT",
+            }.items():
+                if column_name not in knowledge_columns:
+                    conn.execute(f"ALTER TABLE knowledge ADD COLUMN {column_sql}")
             
             # FTS5 全文检索虚拟表
             # 注意: fact_tokenized 是 jieba 分词后的空格分隔文本
@@ -126,9 +160,23 @@ class KnowledgeDB:
                 CREATE TABLE IF NOT EXISTS entities (
                     name TEXT PRIMARY KEY,
                     type TEXT DEFAULT 'concept',
+                    maintainer_source TEXT DEFAULT 'memory_runtime',
+                    confidence REAL DEFAULT 1.0,
+                    effective_confidence REAL DEFAULT 1.0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cursor = conn.execute("PRAGMA table_info(entities)")
+            entity_columns = {row["name"] for row in cursor.fetchall()}
+            for column_name, column_sql in {
+                "maintainer_source": "maintainer_source TEXT DEFAULT 'memory_runtime'",
+                "confidence": "confidence REAL DEFAULT 1.0",
+                "effective_confidence": "effective_confidence REAL DEFAULT 1.0",
+                "updated_at": "updated_at TEXT",
+            }.items():
+                if column_name not in entity_columns:
+                    conn.execute(f"ALTER TABLE entities ADD COLUMN {column_sql}")
             
             # 知识图谱：关系表
             conn.execute("""
@@ -139,12 +187,24 @@ class KnowledgeDB:
                     object TEXT NOT NULL,
                     source_fact_id TEXT,
                     confidence REAL DEFAULT 1.0,
+                    effective_confidence REAL DEFAULT 1.0,
+                    maintainer_source TEXT DEFAULT 'memory_runtime',
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (subject) REFERENCES entities(name),
                     FOREIGN KEY (object) REFERENCES entities(name),
                     UNIQUE(subject, predicate, object)
                 )
             """)
+            cursor = conn.execute("PRAGMA table_info(relations)")
+            relation_columns = {row["name"] for row in cursor.fetchall()}
+            for column_name, column_sql in {
+                "effective_confidence": "effective_confidence REAL DEFAULT 1.0",
+                "maintainer_source": "maintainer_source TEXT DEFAULT 'memory_runtime'",
+                "updated_at": "updated_at TEXT",
+            }.items():
+                if column_name not in relation_columns:
+                    conn.execute(f"ALTER TABLE relations ADD COLUMN {column_sql}")
             
             # 增量索引：文件追踪表
             conn.execute("""
@@ -177,6 +237,9 @@ class KnowledgeDB:
             # 索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_scope ON knowledge(scope)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_lifecycle_state ON knowledge(lifecycle_state)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_repo_signature ON knowledge(repo_signature)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_agents_hash ON knowledge(agents_hash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations(subject)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate)")
@@ -205,20 +268,34 @@ class KnowledgeDB:
             if scope:
                 rows = conn.execute("""
                     SELECT k.id, k.fact, k.category, k.scope, k.status,
+                           k.lifecycle_state, k.last_seen_at, k.last_injected_at,
+                           k.last_verified_at, k.evidence_refs_json, k.promotion_reason,
+                           k.superseded_by, k.tombstone_of, k.decay_score,
+                           k.agents_hash, k.repo_signature, k.signature_policy,
+                           k.maintainer_source, k.confidence, k.effective_confidence,
+                           k.metadata_json,
                            rank as relevance
                     FROM knowledge_fts f
                     JOIN knowledge k ON k.rowid = f.rowid
                     WHERE knowledge_fts MATCH ? AND k.scope IN (?, 'global') AND k.status = 'active'
+                      AND COALESCE(k.lifecycle_state, 'active') NOT IN ('stale', 'tombstoned', 'superseded')
                     ORDER BY rank
                     LIMIT ?
                 """, (fts_query, scope, limit)).fetchall()
             else:
                 rows = conn.execute("""
                     SELECT k.id, k.fact, k.category, k.scope, k.status,
+                           k.lifecycle_state, k.last_seen_at, k.last_injected_at,
+                           k.last_verified_at, k.evidence_refs_json, k.promotion_reason,
+                           k.superseded_by, k.tombstone_of, k.decay_score,
+                           k.agents_hash, k.repo_signature, k.signature_policy,
+                           k.maintainer_source, k.confidence, k.effective_confidence,
+                           k.metadata_json,
                            rank as relevance
                     FROM knowledge_fts f
                     JOIN knowledge k ON k.rowid = f.rowid
                     WHERE knowledge_fts MATCH ? AND k.status = 'active'
+                      AND COALESCE(k.lifecycle_state, 'active') NOT IN ('stale', 'tombstoned', 'superseded')
                     ORDER BY rank
                     LIMIT ?
                 """, (fts_query, limit)).fetchall()
@@ -230,18 +307,26 @@ class KnowledgeDB:
         with self._conn() as conn:
             if scope:
                 rows = conn.execute("""
-                    SELECT id, fact, category, scope, status, source_session, updated_at
+                    SELECT id, fact, category, scope, status, source_session, updated_at,
+                           lifecycle_state, last_seen_at, last_injected_at, last_verified_at,
+                           evidence_refs_json, promotion_reason, superseded_by, tombstone_of,
+                           decay_score, agents_hash, repo_signature, signature_policy,
+                           maintainer_source, confidence, effective_confidence, metadata_json
                     FROM knowledge
                     WHERE scope IN (?, 'global') AND status = ?
-                    ORDER BY updated_at DESC
+                    ORDER BY effective_confidence DESC, updated_at DESC
                     LIMIT ?
                 """, (scope, status, limit)).fetchall()
             else:
                 rows = conn.execute("""
-                    SELECT id, fact, category, scope, status, source_session, updated_at
+                    SELECT id, fact, category, scope, status, source_session, updated_at,
+                           lifecycle_state, last_seen_at, last_injected_at, last_verified_at,
+                           evidence_refs_json, promotion_reason, superseded_by, tombstone_of,
+                           decay_score, agents_hash, repo_signature, signature_policy,
+                           maintainer_source, confidence, effective_confidence, metadata_json
                     FROM knowledge
                     WHERE status = ?
-                    ORDER BY updated_at DESC
+                    ORDER BY effective_confidence DESC, updated_at DESC
                     LIMIT ?
                 """, (status, limit)).fetchall()
             
@@ -253,9 +338,25 @@ class KnowledgeDB:
     
     def add_knowledge(self, fact_id: str, fact: str, category: str = "general",
                       scope: str = "global", source_session: Optional[str] = None,
-                      parent_id: Optional[str] = None):
+                      parent_id: Optional[str] = None,
+                      lifecycle_state: str = "active",
+                      agents_hash: Optional[str] = None,
+                      repo_signature: Optional[str] = None,
+                      signature_policy: str = "soft_v1",
+                      maintainer_source: str = "memory_runtime",
+                      confidence: float = 1.0,
+                      evidence_refs: Optional[List[str]] = None,
+                      promotion_reason: Optional[str] = None,
+                      metadata: Optional[Dict] = None):
         """添加知识条目 + 同步 FTS5 索引（自动 jieba 分词）"""
         fact_tokenized = tokenize_for_fts(fact)
+        now = _utc_now_iso()
+        normalized_lifecycle = str(lifecycle_state or "active").strip().lower() or "active"
+        normalized_source = str(maintainer_source or "memory_runtime").strip() or "memory_runtime"
+        bounded_confidence = _bounded_confidence(confidence)
+        effective = _effective_confidence(bounded_confidence, normalized_source)
+        evidence_refs_json = json.dumps(list(evidence_refs or []), ensure_ascii=False)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         
         with self._conn() as conn:
             # 检查是否已存在
@@ -271,9 +372,16 @@ class KnowledgeDB:
                 )
                 conn.execute("""
                     UPDATE knowledge SET fact=?, category=?, scope=?, status='active',
-                           source_session=?, parent_id=?, updated_at=?
+                           source_session=?, parent_id=?, lifecycle_state=?, last_seen_at=?,
+                           agents_hash=?, repo_signature=?, signature_policy=?,
+                           maintainer_source=?, confidence=?, effective_confidence=?,
+                           evidence_refs_json=?, promotion_reason=?, metadata_json=?, updated_at=?
                     WHERE id=?
-                """, (fact, category, scope, source_session, parent_id, _utc_now_iso(), fact_id))
+                """, (
+                    fact, category, scope, source_session, parent_id, normalized_lifecycle, now,
+                    agents_hash, repo_signature, signature_policy, normalized_source, bounded_confidence,
+                    effective, evidence_refs_json, promotion_reason, metadata_json, now, fact_id,
+                ))
                 conn.execute("""
                     INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope)
                     VALUES (?, ?, ?, ?)
@@ -281,9 +389,19 @@ class KnowledgeDB:
             else:
                 # 新增
                 conn.execute("""
-                    INSERT INTO knowledge (id, fact, category, scope, status, source_session, parent_id, updated_at)
-                    VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-                """, (fact_id, fact, category, scope, source_session, parent_id, _utc_now_iso()))
+                    INSERT INTO knowledge (
+                        id, fact, category, scope, status, source_session, parent_id,
+                        lifecycle_state, last_seen_at, agents_hash, repo_signature,
+                        signature_policy, maintainer_source, confidence, effective_confidence,
+                        evidence_refs_json, promotion_reason, metadata_json, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    fact_id, fact, category, scope, source_session, parent_id,
+                    normalized_lifecycle, now, agents_hash, repo_signature,
+                    signature_policy, normalized_source, bounded_confidence, effective,
+                    evidence_refs_json, promotion_reason, metadata_json, now,
+                ))
                 
                 # 获取新 rowid 同步到 FTS5
                 new_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -339,7 +457,7 @@ class KnowledgeDB:
         """软删除知识条目"""
         with self._conn() as conn:
             cursor = conn.execute(
-                "UPDATE knowledge SET status = 'deleted', updated_at = ? WHERE id = ? AND status = 'active'",
+                "UPDATE knowledge SET status = 'deleted', lifecycle_state = 'tombstoned', updated_at = ? WHERE id = ? AND status = 'active'",
                 (_utc_now_iso(), fact_id)
             )
             return cursor.rowcount > 0
@@ -349,14 +467,81 @@ class KnowledgeDB:
         if normalized_status not in {"active", "deleted", "quarantined"}:
             return False
         with self._conn() as conn:
+            lifecycle_state = "active" if normalized_status == "active" else ("tombstoned" if normalized_status == "deleted" else "quarantined")
             cursor = conn.execute(
-                "UPDATE knowledge SET status = ?, updated_at = ? WHERE id = ?",
-                (normalized_status, _utc_now_iso(), fact_id),
+                "UPDATE knowledge SET status = ?, lifecycle_state = ?, updated_at = ? WHERE id = ?",
+                (normalized_status, lifecycle_state, _utc_now_iso(), fact_id),
             )
             return cursor.rowcount > 0
 
     def quarantine_knowledge(self, fact_id: str) -> bool:
         return self.set_knowledge_status(fact_id, "quarantined")
+
+    def mark_stale_for_signature_mismatch(
+        self,
+        *,
+        scopes: List[str],
+        agents_hash: str = "",
+        repo_signature: str = "",
+    ) -> int:
+        scope_values = [str(item).strip() for item in list(scopes or []) if str(item).strip()]
+        if not scope_values or not (agents_hash or repo_signature):
+            return 0
+        placeholders = ",".join("?" * len(scope_values))
+        signature_params: list[object] = []
+        signature_conditions: list[str] = []
+        if agents_hash:
+            signature_conditions.append("(agents_hash IS NOT NULL AND agents_hash != '' AND agents_hash != ?)")
+            signature_params.append(agents_hash)
+        if repo_signature:
+            signature_conditions.append("(repo_signature IS NOT NULL AND repo_signature != '' AND repo_signature != ?)")
+            signature_params.append(repo_signature)
+        if not signature_conditions:
+            return 0
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE knowledge
+                SET lifecycle_state = 'stale', updated_at = ?
+                WHERE status = 'active'
+                  AND scope IN ({placeholders})
+                  AND COALESCE(lifecycle_state, 'active') NOT IN ('stale', 'tombstoned', 'superseded')
+                  AND ({' OR '.join(signature_conditions)})
+                """,
+                [now, *scope_values, *signature_params],
+            )
+            return cursor.rowcount
+
+    def revalidate_knowledge(
+        self,
+        fact_id: str,
+        *,
+        agents_hash: str = "",
+        repo_signature: str = "",
+        signature_policy: str = "soft_v1",
+        maintainer_source: str = "human_admin",
+    ) -> bool:
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            row = conn.execute("SELECT confidence FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+            if not row:
+                return False
+            confidence = _bounded_confidence(row["confidence"] if "confidence" in row.keys() else 1.0)
+            effective = _effective_confidence(confidence, maintainer_source)
+            cursor = conn.execute(
+                """
+                UPDATE knowledge
+                SET lifecycle_state = 'active', status = 'active', last_verified_at = ?,
+                    agents_hash = COALESCE(NULLIF(?, ''), agents_hash),
+                    repo_signature = COALESCE(NULLIF(?, ''), repo_signature),
+                    signature_policy = ?, maintainer_source = ?,
+                    effective_confidence = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, agents_hash, repo_signature, signature_policy, maintainer_source, effective, now, fact_id),
+            )
+            return cursor.rowcount > 0
     
     def get_knowledge_count(self) -> int:
         """获取活跃知识条目数"""
@@ -368,16 +553,29 @@ class KnowledgeDB:
     # 知识图谱
     # ==========================================
     
-    def add_entity(self, name: str, entity_type: str = "concept"):
+    def add_entity(self, name: str, entity_type: str = "concept", maintainer_source: str = "memory_runtime", confidence: float = 1.0):
         """添加实体"""
+        source = str(maintainer_source or "memory_runtime").strip() or "memory_runtime"
+        bounded = _bounded_confidence(confidence)
+        effective = _effective_confidence(bounded, source)
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)",
-                (name.lower(), entity_type)
+                """
+                INSERT INTO entities (name, type, maintainer_source, confidence, effective_confidence, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    type = excluded.type,
+                    maintainer_source = excluded.maintainer_source,
+                    confidence = excluded.confidence,
+                    effective_confidence = excluded.effective_confidence,
+                    updated_at = excluded.updated_at
+                """,
+                (name.lower(), entity_type, source, bounded, effective, _utc_now_iso())
             )
     
     def add_relation(self, subject: str, predicate: str, obj: str,
-                     source_fact_id: Optional[str] = None, confidence: float = 1.0):
+                     source_fact_id: Optional[str] = None, confidence: float = 1.0,
+                     maintainer_source: str = "memory_runtime"):
         """
         添加关系三元组: (subject) -[predicate]-> (object)
         
@@ -385,17 +583,26 @@ class KnowledgeDB:
         """
         subject_lower = subject.lower()
         obj_lower = obj.lower()
+        source = str(maintainer_source or "memory_runtime").strip() or "memory_runtime"
+        bounded = _bounded_confidence(confidence)
+        effective = _effective_confidence(bounded, source)
         
         with self._conn() as conn:
             # 确保实体存在
-            conn.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, 'concept')", (subject_lower,))
-            conn.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, 'concept')", (obj_lower,))
+            conn.execute("INSERT OR IGNORE INTO entities (name, type, maintainer_source, confidence, effective_confidence) VALUES (?, 'concept', ?, ?, ?)", (subject_lower, source, bounded, effective))
+            conn.execute("INSERT OR IGNORE INTO entities (name, type, maintainer_source, confidence, effective_confidence) VALUES (?, 'concept', ?, ?, ?)", (obj_lower, source, bounded, effective))
             
             # 添加关系（忽略重复）
             conn.execute("""
-                INSERT OR IGNORE INTO relations (subject, predicate, object, source_fact_id, confidence)
-                VALUES (?, ?, ?, ?, ?)
-            """, (subject_lower, predicate.upper(), obj_lower, source_fact_id, confidence))
+                INSERT INTO relations (subject, predicate, object, source_fact_id, confidence, effective_confidence, maintainer_source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(subject, predicate, object) DO UPDATE SET
+                    source_fact_id = COALESCE(excluded.source_fact_id, relations.source_fact_id),
+                    confidence = excluded.confidence,
+                    effective_confidence = excluded.effective_confidence,
+                    maintainer_source = excluded.maintainer_source,
+                    updated_at = excluded.updated_at
+            """, (subject_lower, predicate.upper(), obj_lower, source_fact_id, bounded, effective, source, _utc_now_iso()))
     
     def query_entity(self, entity: str) -> List[Dict]:
         """查询实体的所有关系（出边 + 入边）"""
@@ -403,25 +610,25 @@ class KnowledgeDB:
         with self._conn() as conn:
             # 出边: entity → ?
             outgoing = conn.execute("""
-                SELECT subject, predicate, object, confidence
+                SELECT subject, predicate, object, confidence, effective_confidence, maintainer_source
                 FROM relations
                 WHERE subject = ?
-                ORDER BY confidence DESC
+                ORDER BY effective_confidence DESC, confidence DESC
             """, (entity_lower,)).fetchall()
             
             # 入边: ? → entity
             incoming = conn.execute("""
-                SELECT subject, predicate, object, confidence
+                SELECT subject, predicate, object, confidence, effective_confidence, maintainer_source
                 FROM relations
                 WHERE object = ?
-                ORDER BY confidence DESC
+                ORDER BY effective_confidence DESC, confidence DESC
             """, (entity_lower,)).fetchall()
             
             results = []
             for r in outgoing:
-                results.append({"direction": "out", "subject": r[0], "predicate": r[1], "object": r[2], "confidence": r[3]})
+                results.append({"direction": "out", "subject": r[0], "predicate": r[1], "object": r[2], "confidence": r[3], "effectiveConfidence": r[4], "maintainerSource": r[5]})
             for r in incoming:
-                results.append({"direction": "in", "subject": r[0], "predicate": r[1], "object": r[2], "confidence": r[3]})
+                results.append({"direction": "in", "subject": r[0], "predicate": r[1], "object": r[2], "confidence": r[3], "effectiveConfidence": r[4], "maintainerSource": r[5]})
             
             return results
 
@@ -471,12 +678,22 @@ class KnowledgeDB:
         keyword_lower = keyword.lower()
         with self._conn() as conn:
             cursor = conn.execute("""
-                SELECT name, type
+                SELECT name, type, maintainer_source, confidence, effective_confidence
                 FROM entities
                 WHERE name LIKE ?
+                ORDER BY effective_confidence DESC, name ASC
                 LIMIT ?
             """, (f"%{keyword_lower}%", limit))
-            return [{"name": row[0], "type": row[1]} for row in cursor.fetchall()]
+            return [
+                {
+                    "name": row[0],
+                    "type": row[1],
+                    "maintainerSource": row[2],
+                    "confidence": row[3],
+                    "effectiveConfidence": row[4],
+                }
+                for row in cursor.fetchall()
+            ]
     
     def multi_hop_query(self, start: str, hops: int = 2) -> List[Dict]:
         """
@@ -570,10 +787,10 @@ class KnowledgeDB:
         with self._conn() as conn:
             # 取 Top N 实体（按关联度排序）
             entities = conn.execute("""
-                SELECT e.name, e.type,
+                SELECT e.name, e.type, e.maintainer_source, e.confidence, e.effective_confidence,
                     (SELECT COUNT(*) FROM relations WHERE subject = e.name OR object = e.name) as degree
                 FROM entities e
-                ORDER BY degree DESC
+                ORDER BY effective_confidence DESC, degree DESC
                 LIMIT ?
             """, (limit,)).fetchall()
             
@@ -585,7 +802,7 @@ class KnowledgeDB:
             
             # 构建 nodes
             nodes = []
-            for name, etype, degree in entities:
+            for name, etype, maintainer_source, confidence, effective_confidence, degree in entities:
                 # display name 恢复：lowercase → Title Case
                 # 特殊处理："next.js" → "Next.js", "fastapi" → "Fastapi"
                 display = name.replace(".", ".").title() if "." not in name else name.title()
@@ -597,23 +814,28 @@ class KnowledgeDB:
                     "type": etype,
                     "color": color,
                     "val": max(degree, 1),  # 节点大小基于关联度
+                    "maintainerSource": maintainer_source,
+                    "confidence": confidence,
+                    "effectiveConfidence": effective_confidence,
                 })
             
             # 取所有关系（两端都在 entity_names 中的）
             placeholders = ",".join("?" * len(entity_names))
             relations = conn.execute(f"""
-                SELECT subject, predicate, object, confidence
+                SELECT subject, predicate, object, confidence, effective_confidence, maintainer_source
                 FROM relations
                 WHERE subject IN ({placeholders}) AND object IN ({placeholders})
             """, (*entity_names, *entity_names)).fetchall()
             
             links = []
-            for subj, pred, obj, conf in relations:
+            for subj, pred, obj, conf, effective_conf, maintainer_source in relations:
                 links.append({
                     "source": subj,
                     "target": obj,
                     "label": pred,
                     "confidence": conf,
+                    "effectiveConfidence": effective_conf,
+                    "maintainerSource": maintainer_source,
                 })
             
             return {"nodes": nodes, "links": links}
@@ -643,13 +865,18 @@ class KnowledgeDB:
             return True
     
     def update_knowledge(self, fact_id: str, new_fact: str,
-                         category: str = None, scope: str = None) -> bool:
+                         category: str = None, scope: str = None,
+                         maintainer_source: str | None = None,
+                         confidence: float | None = None,
+                         agents_hash: str | None = None,
+                         repo_signature: str | None = None,
+                         signature_policy: str = "soft_v1") -> bool:
         """
         更新知识条目 + 重建 FTS5 索引。
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT rowid, fact, category, scope FROM knowledge WHERE id = ?", (fact_id,)
+                "SELECT rowid, fact, category, scope, confidence, maintainer_source FROM knowledge WHERE id = ?", (fact_id,)
             ).fetchone()
             
             if not row:
@@ -658,13 +885,24 @@ class KnowledgeDB:
             rowid = row[0]
             final_cat = category or row[2]
             final_scope = scope or row[3]
+            final_source = str(maintainer_source or row[5] or "memory_runtime").strip() or "memory_runtime"
+            final_confidence = _bounded_confidence(confidence if confidence is not None else row[4])
+            effective = _effective_confidence(final_confidence, final_source)
             fact_tokenized = tokenize_for_fts(new_fact)
+            now = _utc_now_iso()
             
             # 更新主表
             conn.execute("""
-                UPDATE knowledge SET fact=?, category=?, scope=?, updated_at=?
+                UPDATE knowledge SET fact=?, category=?, scope=?, lifecycle_state='active',
+                    last_seen_at=?, agents_hash=COALESCE(NULLIF(?, ''), agents_hash),
+                    repo_signature=COALESCE(NULLIF(?, ''), repo_signature),
+                    signature_policy=?, maintainer_source=?, confidence=?,
+                    effective_confidence=?, updated_at=?
                 WHERE id=?
-            """, (new_fact, final_cat, final_scope, _utc_now_iso(), fact_id))
+            """, (
+                new_fact, final_cat, final_scope, now, agents_hash or "", repo_signature or "",
+                signature_policy, final_source, final_confidence, effective, now, fact_id,
+            ))
             
             # 重建 FTS5 记录
             conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid,))

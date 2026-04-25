@@ -28,6 +28,10 @@ interface KnowledgeItem {
     category: string;
     scope: string;
     status?: string;
+    lifecycle_state?: string;
+    maintainer_source?: string;
+    confidence?: number;
+    effective_confidence?: number;
     [key: string]: unknown;
 }
 const VALID_TABS = new Set(["context", "preferences", "logs", "knowledge", "workflows", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
@@ -146,6 +150,27 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
             });
         }
     }, [loadKnowledge, toast]);
+    const handleRevalidateKnowledge = useCallback(async (item: KnowledgeItem) => {
+        try {
+            const res = await fetch(`/api/memory/knowledge/${item.id}/revalidate`, { method: "POST" });
+            if (!res.ok) {
+                throw new Error(`Revalidate failed: ${res.status}`);
+            }
+            await loadKnowledge();
+            toast({
+                title: "记忆签名已复核",
+                description: `${item.id} 已恢复 active 注入资格。`,
+            });
+        }
+        catch (err) {
+            console.error("Revalidate knowledge failed:", err);
+            toast({
+                title: "复核失败",
+                description: "无法复核该条 stale 记忆。",
+                variant: "destructive",
+            });
+        }
+    }, [loadKnowledge, toast]);
     const handleSaveKnowledge = useCallback(async (id: string, updated: {
         fact: string;
         category: string;
@@ -154,7 +179,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         const res = await fetch(`/api/memory/knowledge/${id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(updated),
+            body: JSON.stringify({ ...updated, maintainerSource: "human_admin" }),
         });
         if (!res.ok) {
             throw new Error(`Save failed: ${res.status}`);
@@ -467,10 +492,25 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                                                 <div className="mt-1 flex items-center gap-2">
                                                     <span className="rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-xs text-blue-600">{item.scope}</span>
                                                     <span className="text-xs text-muted-foreground">{item.category}</span>
+                                                    {item.lifecycle_state && item.lifecycle_state !== "active" ? (
+                                                        <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-xs text-amber-700">{item.lifecycle_state}</span>
+                                                    ) : null}
+                                                    {item.maintainer_source ? (
+                                                        <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-xs text-emerald-700">{item.maintainer_source}</span>
+                                                    ) : null}
+                                                    {typeof item.effective_confidence === "number" ? (
+                                                        <span className="font-mono text-[10px] text-muted-foreground">eff {item.effective_confidence.toFixed(2)}</span>
+                                                    ) : null}
                                                     <span className="font-mono text-[10px] text-muted-foreground/40">{item.id}</span>
                                                 </div>
                                             </div>
                                             <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                                {item.lifecycle_state === "stale" ? (
+                                                    <Button variant="outline" size="sm" onClick={() => void handleRevalidateKnowledge(item)}>
+                                                        <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                                                        复核
+                                                    </Button>
+                                                ) : null}
                                                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => handleEditKnowledge(item)}>
                                                     <Edit2 className="h-4 w-4"/>
                                                 </Button>

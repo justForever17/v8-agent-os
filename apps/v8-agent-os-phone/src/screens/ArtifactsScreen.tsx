@@ -214,6 +214,10 @@ export default function ArtifactsScreen() {
                                         <Text style={styles.detailValue}>{selectedArtifact.kind || t("src.screens.artifactsscreen.unknown")}</Text>
                                     </View>
                                     <View style={styles.detailRow}>
+                                        <Text style={styles.detailLabel}>Origin</Text>
+                                        <Text style={styles.detailMono}>{selectedArtifact.origin || "runtime_generated"}</Text>
+                                    </View>
+                                    <View style={styles.detailRow}>
                                         <Text style={styles.detailLabel}>{t("src.screens.artifactsscreen.created")}</Text>
                                         <Text style={styles.detailValue}>{formatClock(selectedArtifact.createdAt, locale) || t("src.screens.artifactsscreen.unknown")}</Text>
                                     </View>

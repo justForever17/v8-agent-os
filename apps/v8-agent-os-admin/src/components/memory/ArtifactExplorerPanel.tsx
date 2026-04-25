@@ -41,6 +41,9 @@ interface ArtifactRecord {
     created_at?: string;
     createdAt?: string;
     hasPreview?: boolean;
+    origin?: string;
+    artifactOrigin?: string;
+    artifact_origin?: string;
     metadata?: Record<string, unknown>;
 }
 
@@ -68,6 +71,10 @@ function getArtifactCreatedAt(artifact: ArtifactRecord): string | undefined {
 
 function getArtifactId(artifact: ArtifactRecord): string {
     return String(artifact.artifactId || artifact.id || "");
+}
+
+function getArtifactOrigin(artifact: ArtifactRecord): string {
+    return String(artifact.origin || artifact.artifactOrigin || artifact.artifact_origin || artifact.metadata?.origin || "").trim();
 }
 
 function getArtifactIcon(kind: ArtifactKind) {
@@ -239,7 +246,7 @@ export function ArtifactExplorerPanel() {
                     <CardTitle className="flex items-center justify-between gap-3 text-lg">
                         <span className="flex items-center gap-2">
                             <FileImage className="h-5 w-5 text-primary" />
-                            {t("Artifact Explorer")}
+                            {t("components.memory.ArtifactExplorerPanel.title")}
                         </span>
                         <Button variant="outline" size="sm" onClick={() => void loadArtifacts()}>
                             <RefreshCw className="mr-2 h-4 w-4" />
@@ -348,6 +355,7 @@ export function ArtifactExplorerPanel() {
                                                         <div className="flex flex-wrap items-center gap-2">
                                                             <p className="truncate font-semibold">{artifactLabel(artifact)}</p>
                                                             <Badge variant="secondary">{artifactKindLabel(kind)}</Badge>
+                                                            {getArtifactOrigin(artifact) ? <Badge variant="outline">{getArtifactOrigin(artifact)}</Badge> : null}
                                                             {artifact.hasPreview ? <Badge variant="outline">{t("components.memory.ArtifactExplorerPanel.k76932896")}</Badge> : null}
                                                         </div>
                                                         <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
@@ -377,7 +385,7 @@ export function ArtifactExplorerPanel() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2 text-base">
                                     <SelectedIcon className="h-4 w-4 text-primary" />
-                                    {t("Artifact Detail")}
+                                    {t("components.memory.ArtifactExplorerPanel.detailTitle")}
                                 </CardTitle>
                                 <CardDescription>
                                     {selectedArtifact ? t("components.memory.ArtifactExplorerPanel.kd499c13e") : t("components.memory.ArtifactExplorerPanel.kb404a309")}
@@ -403,6 +411,7 @@ export function ArtifactExplorerPanel() {
                                             <div className="mt-3 flex flex-wrap gap-2">
                                                 <Badge>{artifactKindLabel(selectedKind)}</Badge>
                                                 <Badge variant="secondary">{getArtifactMime(selectedArtifact)}</Badge>
+                                                {getArtifactOrigin(selectedArtifact) ? <Badge variant="outline">{getArtifactOrigin(selectedArtifact)}</Badge> : null}
                                                 {(selectedArtifact.sessionId || selectedArtifact.session_id) ? (
                                                     <Badge variant="outline">
                                                         {t("components.memory.ArtifactExplorerPanel.kdd2c7128")} {selectedArtifact.sessionId || selectedArtifact.session_id}

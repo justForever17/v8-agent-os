@@ -133,7 +133,6 @@ from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
-from core.workspace_share import resolve_workspace_file_to_share
 from core.tools.media_downloader import download_media_for_vision
 from core.tools.s3_tools import s3_broker, s3_download_file, s3_list_objects, s3_upload_file
 from core.tools.vision_media_analyzer import vision_media_analyzer
@@ -2821,14 +2820,41 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
 def share_workspace_file(path: str, mode: str = "auto") -> dict[str, Any]:
     """Share a file from the current main/project workspace as a remote session resource for preview or download.
 
-    This tool performs explicit sharing only. It does not write to the artifact store and does not pretend the file is a runtime-generated artifact.
+    Compatibility wrapper: the file is adopted into the runtime artifact store with origin=workspace_adopted.
 
     Arguments:
         path: Absolute or relative path inside the current workspace/project workspace.
         mode: auto, preview, or download. Defaults to auto.
     """
     try:
-        return resolve_workspace_file_to_share(path, mode)
+        runtime_context = get_runtime_context()
+        artifact = artifact_store.adopt_workspace_file(
+            path=path,
+            mode=mode,
+            session_id=str(runtime_context.get("session_id") or "").strip() or None,
+            run_id=str(runtime_context.get("run_id") or "").strip() or None,
+            message_id=str(runtime_context.get("message_id") or "").strip() or None,
+            source_component="share_workspace_file_compat",
+            node="share_workspace_file",
+        )
+        adopted_from = artifact.get("adoptedFrom") if isinstance(artifact.get("adoptedFrom"), dict) else {}
+        return {
+            "ok": True,
+            "artifact": artifact,
+            "artifactId": artifact.get("artifactId") or artifact.get("id"),
+            "origin": "workspace_adopted",
+            "filename": adopted_from.get("filename") or artifact.get("title"),
+            "mimeType": artifact.get("mimeType"),
+            "mode": adopted_from.get("mode") or str(mode or "auto").strip() or "auto",
+            "url": artifact.get("contentUrl") or artifact.get("previewUrl"),
+            "previewable": bool(adopted_from.get("previewable", artifact.get("hasPreview"))),
+            "downloadable": bool(adopted_from.get("downloadable", True)),
+            "viewerKind": adopted_from.get("viewerKind") or (artifact.get("metadata") or {}).get("viewerKind"),
+            "workspaceRelativePath": artifact.get("workspaceRelativePath") or artifact.get("workspacePath"),
+            "workspaceId": artifact.get("workspaceId"),
+            "projectId": artifact.get("projectId"),
+            "message": "File adopted into the runtime artifact system.",
+        }
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return {

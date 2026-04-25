@@ -33,12 +33,16 @@ class KnowledgeService:
         category: str = "general",
         scope: str = "global",
         source_session: Optional[str] = None,
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
     ) -> str:
         return memory_store.add_knowledge(
             fact=fact,
             category=category,
             scope=scope,
             source_session=source_session,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
         )
 
     def update_knowledge(
@@ -48,12 +52,16 @@ class KnowledgeService:
         new_fact: str,
         category: Optional[str] = None,
         scope: Optional[str] = None,
+        maintainer_source: Optional[str] = None,
+        confidence: Optional[float] = None,
     ) -> bool:
         return memory_store.update_knowledge(
             fact_id=fact_id,
             new_fact=new_fact,
             category=category,
             scope=scope,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
         )
 
     def delete_knowledge(self, *, fact_id: str) -> bool:
@@ -64,6 +72,9 @@ class KnowledgeService:
 
     def restore_knowledge(self, *, fact_id: str) -> bool:
         return knowledge_db.set_knowledge_status(fact_id, "active")
+
+    def revalidate_knowledge(self, *, fact_id: str, maintainer_source: str = "human_admin") -> bool:
+        return memory_store.revalidate_knowledge(fact_id, maintainer_source=maintainer_source)
 
     def search_full_text(
         self,
@@ -82,6 +93,8 @@ class KnowledgeService:
         status: str = "active",
     ) -> List[Dict]:
         normalized_status = str(status or "active").strip().lower() or "active"
+        if normalized_status == "active":
+            memory_store.refresh_stale_revalidation(scopes=[scope] if scope else None)
         return knowledge_db.get_all_knowledge(scope=scope, limit=limit, status=normalized_status)
 
     def get_knowledge_count(self) -> int:
@@ -96,8 +109,20 @@ class KnowledgeService:
     def query_entity(self, *, entity: str) -> List[Dict]:
         return knowledge_db.query_entity(entity)
 
-    def add_entity(self, *, name: str, entity_type: str = "concept") -> None:
-        knowledge_db.add_entity(name, entity_type)
+    def add_entity(
+        self,
+        *,
+        name: str,
+        entity_type: str = "concept",
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
+    ) -> None:
+        knowledge_db.add_entity(
+            name,
+            entity_type,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
+        )
 
     def delete_entity(self, *, name: str) -> bool:
         return knowledge_db.delete_entity(name)
@@ -109,8 +134,15 @@ class KnowledgeService:
         predicate: str,
         object_name: str,
         confidence: float = 1.0,
+        maintainer_source: str = "memory_runtime",
     ) -> None:
-        knowledge_db.add_relation(subject, predicate, object_name, confidence=confidence)
+        knowledge_db.add_relation(
+            subject,
+            predicate,
+            object_name,
+            confidence=confidence,
+            maintainer_source=maintainer_source,
+        )
 
     def delete_relation(self, *, subject: str, predicate: str, object_name: str) -> bool:
         return knowledge_db.delete_relation(subject, predicate, object_name)

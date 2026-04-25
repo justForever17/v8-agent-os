@@ -211,6 +211,7 @@ export type ArtifactDetail = {
     surfaceVisible?: boolean;
     externalUrl?: string;
     previewUrl?: string;
+    origin?: string;
     resourceRef?: AdminResourceRef | null;
     createdAt?: string;
     metadata?: Record<string, unknown>;

@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shlex
+import sys
 from copy import deepcopy
 from typing import Any, Iterable
 
@@ -869,64 +871,51 @@ def choose_best_local_agent(task_brief: dict[str, Any], agents: Iterable[dict[st
     return agent
 
 
+_CLAUDE_CODE_WORKER_ID = "claude-code-worker"
+_CLAUDE_CODE_COMMAND_TEMPLATE = (
+    'claude -p --permission-mode acceptEdits --output-format text '
+    '"V8 external worker task. Decode this taskBrief base64 JSON: {task_brief_b64}. '
+    "Obey writeSet, behaviorScope, requiredCapabilities, and acceptanceContract. "
+    "Work only in the current workspace. "
+    "When finished, print exactly one <V8_WORKER_RESULT> JSON object with keys "
+    "summary, localSelfCheck, artifactRefs, and acceptanceHint </V8_WORKER_RESULT> block.\""
+)
+
+
+def _claude_code_external_worker_descriptor() -> dict[str, Any]:
+    return {
+        "id": _CLAUDE_CODE_WORKER_ID,
+        "name": "Claude Code Worker",
+        "description": "Real Claude Code CLI worker for bounded implementation, debugging, review, or verification tasks.",
+        "enabled": False,
+        "workerType": "claude_code",
+        "capabilitySnapshot": {
+            "agentClass": "external_worker",
+            "domainTags": ["software_engineering", "implementation", "debugging", "code_review"],
+            "artifactCapabilities": ["code", "patch", "report"],
+            "operationCapabilities": ["implement", "debug", "review", "verify"],
+            "runtimeAffinities": ["chat", "command_session", "claude_code"],
+            "toolExposurePolicy": "task_brief_driven",
+            "externalWorkerSuitability": "high",
+        },
+        "launchProfile": {
+            "commandTemplate": _CLAUDE_CODE_COMMAND_TEMPLATE,
+            "cwdPolicy": "inherit_workspace",
+            "envPassThrough": [],
+            "startupTimeoutSeconds": 10,
+        },
+        "sessionMode": "interactive",
+        "allowedSideEffects": ["workspace_write", "tool_use", "long_running_cli"],
+        "resultSchema": {
+            "type": "v8_worker_result_v1",
+            "markers": ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"],
+        },
+    }
+
+
 def default_external_worker_descriptors() -> list[dict[str, Any]]:
     return [
-        {
-            "id": "coding-cli-worker",
-            "name": "Coding CLI Worker",
-            "description": "External coding worker template for bounded implementation, debug, or verification tasks.",
-            "enabled": False,
-            "workerType": "coding_cli",
-            "capabilitySnapshot": {
-                "agentClass": "external_worker",
-                "domainTags": ["software_engineering", "implementation", "verification"],
-                "artifactCapabilities": ["code", "patch"],
-                "operationCapabilities": ["implement", "debug", "verify"],
-                "runtimeAffinities": ["chat", "command_session"],
-                "toolExposurePolicy": "task_brief_driven",
-                "externalWorkerSuitability": "high",
-            },
-            "launchProfile": {
-                "commandTemplate": "",
-                "cwdPolicy": "inherit_workspace",
-                "envPassThrough": [],
-                "startupTimeoutSeconds": 10,
-            },
-            "sessionMode": "interactive",
-            "allowedSideEffects": ["workspace_write", "tool_use", "long_running_cli"],
-            "resultSchema": {
-                "type": "v8_worker_result_v1",
-                "markers": ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"],
-            },
-        },
-        {
-            "id": "research-writer-worker",
-            "name": "Research / Writing Worker",
-            "description": "External research and writing worker template for synthesis, drafting, or evidence gathering tasks.",
-            "enabled": False,
-            "workerType": "research_writer",
-            "capabilitySnapshot": {
-                "agentClass": "external_worker",
-                "domainTags": ["research", "writing", "analysis"],
-                "artifactCapabilities": ["report", "draft"],
-                "operationCapabilities": ["research", "synthesize", "write"],
-                "runtimeAffinities": ["chat", "command_session"],
-                "toolExposurePolicy": "task_brief_driven",
-                "externalWorkerSuitability": "high",
-            },
-            "launchProfile": {
-                "commandTemplate": "",
-                "cwdPolicy": "inherit_workspace",
-                "envPassThrough": [],
-                "startupTimeoutSeconds": 10,
-            },
-            "sessionMode": "interactive",
-            "allowedSideEffects": ["workspace_write", "network_access", "long_running_cli"],
-            "resultSchema": {
-                "type": "v8_worker_result_v1",
-                "markers": ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"],
-            },
-        },
+        _claude_code_external_worker_descriptor(),
     ]
 
 
@@ -967,7 +956,20 @@ def normalize_external_worker_descriptors(values: Iterable[Any] | None) -> list[
             continue
         seen.add(descriptor_id)
         items.append(normalized)
+    if _CLAUDE_CODE_WORKER_ID not in seen:
+        items.append(_claude_code_external_worker_descriptor())
     return items
+
+
+def _prefix_external_worker_command_with_cwd(command: str, *, cwd_policy: str, workspace_path: str) -> str:
+    normalized_policy = str(cwd_policy or "").strip()
+    normalized_workspace = str(workspace_path or "").strip()
+    if normalized_policy != "inherit_workspace" or not normalized_workspace:
+        return command
+    if sys.platform == "win32":
+        quoted = '"' + normalized_workspace.replace('"', '""') + '"'
+        return f"cd /d {quoted} && {command}"
+    return f"cd {shlex.quote(normalized_workspace)} && {command}"
 
 
 def choose_best_external_worker_with_diagnostics(task_brief: dict[str, Any], descriptors: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -1062,9 +1064,14 @@ def render_external_worker_command(
             return "{" + key + "}"
 
     try:
-        return command_template.format_map(_SafeDict(replacements)).strip()
+        rendered = command_template.format_map(_SafeDict(replacements)).strip()
     except Exception:
-        return command_template.strip()
+        rendered = command_template.strip()
+    return _prefix_external_worker_command_with_cwd(
+        rendered,
+        cwd_policy=str(launch_profile.get("cwdPolicy") or "").strip(),
+        workspace_path=workspace_path,
+    )
 
 
 def parse_external_worker_result_block(

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { forceCollide, forceX, forceY } from "d3-force-3d";
-import { Link2, Loader2, Search, Sparkles, Trash2, Unlink2 } from "lucide-react";
+import { Link2, Loader2, Plus, Search, Sparkles, Trash2, Unlink2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
@@ -422,6 +422,8 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                     subject: selectedNode.id,
                     predicate,
                     object: target,
+                    confidence: 1.0,
+                    maintainerSource: "human_admin",
                 }),
             });
             if (!res.ok) {
@@ -728,10 +730,16 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                                 <Button variant="ghost" size="sm" onClick={() => setMenuMode("root")}>
                                     {t("components.memory.GraphViewer.k8d9b4100")}
                                 </Button>
-                                <Button size="sm" onClick={() => void handleCreateRelation()} disabled={mutating}>
-                                    <Sparkles className="mr-2 h-4 w-4"/>
-                                    {t("components.memory.GraphViewer.kf5843a88")}
-                                </Button>
+                                <div className="flex flex-wrap justify-end gap-2">
+                                    <Button variant="outline" size="sm" onClick={() => void handleCreateRelation()} disabled={mutating || !connectTarget.trim()}>
+                                        <Plus className="mr-2 h-4 w-4"/>
+                                        新建节点并连接
+                                    </Button>
+                                    <Button size="sm" onClick={() => void handleCreateRelation()} disabled={mutating}>
+                                        <Sparkles className="mr-2 h-4 w-4"/>
+                                        {t("components.memory.GraphViewer.kf5843a88")}
+                                    </Button>
+                                </div>
                             </div>
                         </div>) : null}
 

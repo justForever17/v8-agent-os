@@ -23,8 +23,8 @@
       "models": [
         {
           "id": "gpt-5.5",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 100000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -36,8 +36,8 @@
         },
         {
           "id": "gpt-5.4",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 100000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -105,8 +105,8 @@
       "models": [
         {
           "id": "gemini-3.1-pro-preview",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -118,8 +118,8 @@
         },
         {
           "id": "gemini-3-flash-preview",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "tools",
@@ -131,8 +131,8 @@
         },
         {
           "id": "gemini-2.5-pro",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -144,8 +144,8 @@
         },
         {
           "id": "gemini-2.5-flash",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "tools",
@@ -175,8 +175,8 @@
       "models": [
         {
           "id": "gemini-3.1-pro-preview",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -187,8 +187,8 @@
         },
         {
           "id": "gemini-3-flash-preview",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "streaming",
@@ -199,8 +199,8 @@
         },
         {
           "id": "gemini-2.5-pro",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -211,8 +211,8 @@
         },
         {
           "id": "gemini-2.5-flash",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 65536,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
           "capabilities": [
             "chat",
             "streaming",
@@ -241,8 +241,8 @@
       "models": [
         {
           "id": "gpt-5.5",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 130000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -254,8 +254,8 @@
         },
         {
           "id": "gpt-5.4",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 130000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -311,8 +311,8 @@
       "models": [
         {
           "id": "deepseek-v4-flash",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 393216,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 360000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -322,8 +322,8 @@
         },
         {
           "id": "deepseek-v4-pro",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 393216,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 360000,
           "capabilities": [
             "chat",
             "reasoning",
@@ -356,7 +356,7 @@
       "models": [
         {
           "id": "qwen-max",
-          "contextWindow": 131072,
+          "contextWindow": 1000000,
           "maxOutputTokens": 8192,
           "capabilities": [
             "chat",
@@ -366,7 +366,7 @@
         },
         {
           "id": "qwen-plus",
-          "contextWindow": 131072,
+          "contextWindow": 1000000,
           "maxOutputTokens": 8192,
           "capabilities": [
             "chat",

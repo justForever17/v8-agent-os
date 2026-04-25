@@ -27,7 +27,7 @@ from core.provider_runtime_profiles import (
     runtime_readiness_for_provider,
 )
 from core.model_budget_service import model_budget_service
-from core.model_control_plane import model_control_plane
+from core.model_control_plane import model_control_plane, normalize_config_temperature
 from core.model_telemetry import model_telemetry_service
 from core.oauth_credentials import resolve_oauth_reference, resolve_provider_oauth_credential
 from core.provider_compatibility import normalize_provider_error
@@ -471,7 +471,7 @@ class LLMFactory:
                 "runtime_unsupported_reason": runtime_unsupported_reason,
                 "provider_adapter": provider_adapter,
                 "provider_adapter_label": provider_adapter_label,
-                "global_temperature": meta.get("temperature"),
+                "global_temperature": normalize_config_temperature(meta.get("temperature")),
                 "global_max_tokens": meta.get("maxTokens"),
                 "global_context_window": meta.get("contextWindow"),
                 "rerank_api_flavor": normalize_rerank_api_flavor(meta.get("rerank_api_flavor") or meta.get("rerankApiFlavor")),
@@ -527,8 +527,10 @@ class LLMFactory:
 
         if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
-        elif meta.get("global_temperature") is not None:
-            final_kwargs["temperature"] = meta.get("global_temperature")
+        else:
+            global_temperature = normalize_config_temperature(meta.get("global_temperature"))
+            if global_temperature is not None:
+                final_kwargs["temperature"] = global_temperature
 
         model_kwargs = dict(kwargs.get("model_kwargs") or {})
         if "max_tokens" in kwargs:
@@ -565,8 +567,10 @@ class LLMFactory:
 
         if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
-        elif meta.get("global_temperature") is not None:
-            final_kwargs["temperature"] = meta.get("global_temperature")
+        else:
+            global_temperature = normalize_config_temperature(meta.get("global_temperature"))
+            if global_temperature is not None:
+                final_kwargs["temperature"] = global_temperature
 
         max_tokens = kwargs.get("max_tokens") or meta.get("global_max_tokens")
         if max_tokens:
@@ -596,8 +600,10 @@ class LLMFactory:
             final_kwargs["timeout"] = timeout
         if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
-        elif meta.get("global_temperature") is not None:
-            final_kwargs["temperature"] = meta.get("global_temperature", 0.0)
+        else:
+            global_temperature = normalize_config_temperature(meta.get("global_temperature"))
+            if global_temperature is not None:
+                final_kwargs["temperature"] = global_temperature
 
         max_tokens = kwargs.get("max_tokens") or meta.get("global_max_tokens")
         if max_tokens:

@@ -178,10 +178,10 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k93e56ead")}：{formatRelativeTimestamp(run.startedAt, uiLocale)}</span>
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.kb854ae58")}：{formatRelativeTimestamp(run.finishedAt, uiLocale)}</span>
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.kca695f8f")}：{run.extractorModel || "—"}</span>
-                                                    <span>{t("scope")}：{run.effectiveMemoryScope || run.resolvedScope || "—"}</span>
-                                                    <span>{t("policy")}：{run.memoryPolicy || "—"}</span>
+                                                    <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.scope")}：{run.effectiveMemoryScope || run.resolvedScope || "—"}</span>
+                                                    <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.policy")}：{run.memoryPolicy || "—"}</span>
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.kc6cf9db6")}：{run.extractionMode || "—"}</span>
-                                                    <span>{t("transcript")}：{run.transcriptSource || "—"}</span>
+                                                    <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.transcript")}：{run.transcriptSource || "—"}</span>
                                                 </div>
                                                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k9cbe8e03")}：{run.extractedPreferenceCount || 0}</span>

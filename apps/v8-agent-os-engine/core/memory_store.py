@@ -424,6 +424,130 @@ class MemoryStore:
     def _safe_scope_path_token(self, value: str) -> str:
         token = str(value or "").strip().replace(":", "__").replace("/", "_").replace("\\", "_")
         return token or "default"
+
+    def _scope_uses_repo_signature(self, scope: str) -> bool:
+        normalized = str(scope or "").strip()
+        return normalized.startswith("project:") or normalized.startswith("workspace:")
+
+    def _current_soft_signature(self) -> Dict[str, Any]:
+        try:
+            from core.storage import storage
+            from erc.runtime_context import get_runtime_context
+            from runtimes.memory.signature import build_soft_repo_signature
+
+            context = get_runtime_context()
+            workspace_path = (
+                str(context.get("workspace_path") or "").strip()
+                or str((storage.get_workspace_config() or {}).get("agent_workspace_path") or "").strip()
+            )
+            return build_soft_repo_signature(workspace_path)
+        except Exception:
+            return {
+                "signaturePolicy": "soft_v1",
+                "workspaceRoot": "",
+                "agentsHash": "",
+                "repoSignature": "",
+            }
+
+    def _mark_stale_for_signature_mismatch(self, scopes: List[str]) -> Dict[str, Any]:
+        from core.knowledge_db import knowledge_db
+
+        scoped = [scope for scope in scopes if self._scope_uses_repo_signature(scope)]
+        signature = self._current_soft_signature()
+        if not scoped or not (signature.get("agentsHash") or signature.get("repoSignature")):
+            return {"staleMarked": 0, "signaturePolicy": signature.get("signaturePolicy") or "soft_v1"}
+        marked = knowledge_db.mark_stale_for_signature_mismatch(
+            scopes=scoped,
+            agents_hash=str(signature.get("agentsHash") or ""),
+            repo_signature=str(signature.get("repoSignature") or ""),
+        )
+        return {
+            "staleMarked": marked,
+            "signaturePolicy": signature.get("signaturePolicy") or "soft_v1",
+            "agentsHash": signature.get("agentsHash") or "",
+            "repoSignature": signature.get("repoSignature") or "",
+        }
+
+    def refresh_stale_revalidation(self, scopes: Optional[List[str]] = None) -> Dict[str, Any]:
+        if scopes is not None:
+            return self._mark_stale_for_signature_mismatch(scopes)
+        try:
+            from core.knowledge_db import knowledge_db
+
+            with knowledge_db._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT scope FROM knowledge
+                    WHERE status = 'active'
+                      AND (scope LIKE 'project:%' OR scope LIKE 'workspace:%')
+                    """
+                ).fetchall()
+            return self._mark_stale_for_signature_mismatch([str(row["scope"] or "") for row in rows])
+        except Exception as exc:
+            logger.warning(f"[MemoryStore] Could not refresh stale revalidation state: {exc}")
+            return {"staleMarked": 0, "signaturePolicy": "soft_v1"}
+
+    def _is_injectable_knowledge(self, fact_id: str) -> bool:
+        from core.knowledge_db import knowledge_db
+
+        try:
+            with knowledge_db._conn() as conn:
+                row = conn.execute(
+                    "SELECT status, lifecycle_state FROM knowledge WHERE id = ?",
+                    (fact_id,),
+                ).fetchone()
+            if not row:
+                return False
+            status = str(row["status"] or "active").strip().lower()
+            lifecycle_state = str(row["lifecycle_state"] or "active").strip().lower()
+            return status == "active" and lifecycle_state not in {"stale", "tombstoned", "superseded", "quarantined"}
+        except Exception as exc:
+            logger.warning(f"[MemoryStore] Could not verify knowledge injection state for {fact_id}: {exc}")
+            return False
+
+    def revalidate_knowledge(self, fact_id: str, maintainer_source: str = "human_admin") -> bool:
+        from core.knowledge_db import knowledge_db
+
+        try:
+            with knowledge_db._conn() as conn:
+                row = conn.execute("SELECT scope FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+                if not row:
+                    return False
+                scope = str(row["scope"] or "global")
+        except Exception as exc:
+            logger.warning(f"[MemoryStore] Could not fetch scope for knowledge revalidation {fact_id}: {exc}")
+            return False
+
+        signature = self._current_soft_signature() if self._scope_uses_repo_signature(scope) else {}
+        ok = knowledge_db.revalidate_knowledge(
+            fact_id,
+            agents_hash=str(signature.get("agentsHash") or ""),
+            repo_signature=str(signature.get("repoSignature") or ""),
+            signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
+            maintainer_source=maintainer_source,
+        )
+        if not ok:
+            return False
+
+        path = self._get_knowledge_path(scope)
+        if path.exists():
+            try:
+                items = json.loads(path.read_text(encoding="utf-8"))
+                for item in items:
+                    if item.get("id") == fact_id:
+                        item["status"] = "active"
+                        item["lifecycle_state"] = "active"
+                        item["last_verified_at"] = _utc_now_iso()
+                        item["maintainer_source"] = maintainer_source
+                        if signature:
+                            item["agents_hash"] = signature.get("agentsHash")
+                            item["repo_signature"] = signature.get("repoSignature")
+                            item["signature_policy"] = signature.get("signaturePolicy")
+                        break
+                path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception as exc:
+                logger.warning(f"[MemoryStore] Could not update JSON knowledge after revalidation {fact_id}: {exc}")
+        return True
     
     def add_knowledge(
         self,
@@ -432,6 +556,8 @@ class MemoryStore:
         scope: str = "global",
         source_session: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
     ) -> str:
         """添加知识到分区 JSON + SQLite DB (FTS5)"""
         normalized_scope = self._validate_scope(scope)
@@ -451,10 +577,18 @@ class MemoryStore:
             "category": category,
             "scope": normalized_scope,
             "status": "active",
+            "lifecycle_state": "active",
             "timestamp": _utc_now_iso(),
             "source_session": source_session,
+            "maintainer_source": maintainer_source,
+            "confidence": confidence,
             "tags": [str(tag).strip() for tag in list(tags or []) if str(tag).strip()],
         }
+        signature = self._current_soft_signature() if self._scope_uses_repo_signature(normalized_scope) else {}
+        if signature:
+            item["agents_hash"] = signature.get("agentsHash")
+            item["repo_signature"] = signature.get("repoSignature")
+            item["signature_policy"] = signature.get("signaturePolicy")
         items.append(item)
         
         path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -462,7 +596,22 @@ class MemoryStore:
         # 同步写入 SQLite DB (FTS5 自动索引)
         try:
             from core.knowledge_db import knowledge_db
-            knowledge_db.add_knowledge(fact_id, fact, category, normalized_scope, source_session)
+            knowledge_db.add_knowledge(
+                fact_id,
+                fact,
+                category,
+                normalized_scope,
+                source_session,
+                agents_hash=str(signature.get("agentsHash") or ""),
+                repo_signature=str(signature.get("repoSignature") or ""),
+                signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
+                maintainer_source=maintainer_source,
+                confidence=confidence,
+                metadata={
+                    "tags": item["tags"],
+                    "workspaceRoot": signature.get("workspaceRoot") if signature else "",
+                },
+            )
         except Exception as e:
             logger.warning(f"[MemoryStore] DB sync failed (non-fatal): {e}")
 
@@ -480,7 +629,8 @@ class MemoryStore:
         logger.info(f"[MemoryStore] Added knowledge {fact_id} to {path.name} [{normalized_scope}]")
         return fact_id
     
-    def update_knowledge(self, fact_id: str, new_fact: str, category: str = None, scope: str = None) -> bool:
+    def update_knowledge(self, fact_id: str, new_fact: str, category: str = None, scope: str = None,
+                         maintainer_source: str | None = None, confidence: float | None = None) -> bool:
         """更新分区 JSON、SQLite 知识库及向量库"""
         from core.knowledge_db import knowledge_db
         try:
@@ -514,7 +664,18 @@ class MemoryStore:
                 path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
                 # 更新 SQLite
                 next_scope = self._validate_scope(scope) if scope else None
-                knowledge_db.update_knowledge(fact_id, new_fact, category, next_scope)
+                signature = self._current_soft_signature() if self._scope_uses_repo_signature(next_scope or old_scope) else {}
+                knowledge_db.update_knowledge(
+                    fact_id,
+                    new_fact,
+                    category,
+                    next_scope,
+                    maintainer_source=maintainer_source,
+                    confidence=confidence,
+                    agents_hash=str(signature.get("agentsHash") or ""),
+                    repo_signature=str(signature.get("repoSignature") or ""),
+                    signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
+                )
                 
                 # 更新 Vector Store (通过覆盖同一 ID)
                 try:
@@ -568,7 +729,10 @@ class MemoryStore:
                 # 级联删除关联此事实的图谱关系
                 conn.execute("DELETE FROM relations WHERE source_fact_id = ?", (fact_id,))
                 # 逻辑删除知识主条目并标记
-                conn.execute("UPDATE knowledge SET status = 'deleted' WHERE id = ?", (fact_id,))
+                conn.execute(
+                    "UPDATE knowledge SET status = 'deleted', lifecycle_state = 'tombstoned', updated_at = ? WHERE id = ?",
+                    (_utc_now_iso(), fact_id),
+                )
                 # FTS表是触发器自动维护或靠重新索引维护，可以直接从FTS删以防止搜到
                 conn.execute("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge WHERE id = ?)", (fact_id,))
         except Exception as e:
@@ -597,6 +761,7 @@ class MemoryStore:
         from core.knowledge_db import knowledge_db
 
         scope_candidates = self._normalize_scope_chain(scope=scope or "global", scope_chain=scopes)
+        self._mark_stale_for_signature_mismatch(scope_candidates)
         include_exact_scopes = [item for item in scope_candidates if item != "global"]
         results = []
 
@@ -637,6 +802,10 @@ class MemoryStore:
             results = [r for r in results if r.get("category") == category]
 
         results = [r for r in results if self._is_valid_scope(str(r.get("scope") or "global"))]
+        results = [
+            r for r in results
+            if str(r.get("lifecycle_state") or "active").strip().lower() not in {"stale", "tombstoned", "superseded"}
+        ]
         return results[:limit]
 
     def _load_recall_runtime_config(
@@ -773,6 +942,7 @@ class MemoryStore:
         allowed_scopes = set(self._normalize_scope_chain(scope=scope or "global", scope_chain=scopes))
         if "global" not in allowed_scopes:
             allowed_scopes.add("global")
+        self._mark_stale_for_signature_mismatch(list(allowed_scopes))
 
         seed_candidates: Dict[str, Dict[str, Any]] = {}
         diagnostics: Dict[str, Any] = {
@@ -818,6 +988,8 @@ class MemoryStore:
                     item_scope = str(result.get("metadata", {}).get("scope", "global") or "global")
                     if item_scope not in allowed_scopes:
                         continue
+                    if not self._is_injectable_knowledge(final_id):
+                        continue
                     self._merge_recall_candidate(
                         seed_candidates,
                         {
@@ -856,6 +1028,8 @@ class MemoryStore:
                             if elevated:
                                 final_fact = elevated[0]
                                 final_id = parent_row[0]
+                    if not self._is_injectable_knowledge(str(final_id or "")):
+                        continue
                     self._merge_recall_candidate(
                         seed_candidates,
                         {

@@ -46,6 +46,24 @@ DEFAULT_ROLE_PARAMETERS = {
     "subagent": {"temperature": None},
 }
 
+
+def normalize_config_temperature(value: Any) -> Optional[float]:
+    """Normalize user-sourced temperature config.
+
+    A configured value of 0 is treated as unset so accidental slider/input
+    saves do not force provider requests into a degenerate sampling mode.
+    Explicit runtime kwargs still bypass this helper.
+    """
+    if value in ("", None):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return max(min(parsed, 2.0), 0.05)
+
 DEFAULT_GOVERNANCE = {
     "enabled": True,
     "stickyRunModel": True,
@@ -493,14 +511,7 @@ class ModelControlPlane:
             incoming = dict(role_value)
             role_params = dict(params.get(str(role_key)) or {})
             if "temperature" in incoming:
-                value = incoming.get("temperature")
-                if value in ("", None):
-                    role_params["temperature"] = None
-                else:
-                    try:
-                        role_params["temperature"] = max(min(float(value), 2.0), 0.0)
-                    except (TypeError, ValueError):
-                        role_params["temperature"] = None
+                role_params["temperature"] = normalize_config_temperature(incoming.get("temperature"))
             params[str(role_key)] = role_params
         return params
 
@@ -687,12 +698,7 @@ class ModelControlPlane:
     def get_role_temperature(self, role: str, config: Optional[Dict[str, Any]] = None) -> Optional[float]:
         params = self.get_role_parameters(role, config)
         value = params.get("temperature")
-        if value in ("", None):
-            return None
-        try:
-            return max(min(float(value), 2.0), 0.0)
-        except (TypeError, ValueError):
-            return None
+        return normalize_config_temperature(value)
 
     def _build_model_record(
         self,

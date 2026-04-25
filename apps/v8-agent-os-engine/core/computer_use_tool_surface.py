@@ -45,6 +45,7 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "mem_summary",
     "read_audit_log",
     "read_background_output",
+    "share_workspace_file",
     "send_background_input",
     "s3_upload_file",
     "s3_list_objects",

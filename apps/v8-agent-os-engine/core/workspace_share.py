@@ -109,6 +109,8 @@ def resolve_workspace_file_to_share(path: str, mode: str) -> dict[str, Any]:
         "previewable": previewable,
         "downloadable": True,
         "viewerKind": viewer_kind,
+        "pathPlane": path_plane,
+        "sourcePath": str(absolute_path),
         "workspaceRelativePath": workspace_relative_path,
         "workspaceId": workspace_id,
         "projectId": project_id,

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from core.database import db
 from core.multimodal_payload_adapter import build_artifact_descriptor, normalize_artifact_record, utc_now_iso
+from core.workspace_share import resolve_workspace_file_to_share
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
 
@@ -165,6 +166,48 @@ class ArtifactStore:
             node=node,
         )
         return normalize_artifact_record(descriptor)
+
+    def adopt_workspace_file(
+        self,
+        *,
+        path: str,
+        mode: str = "auto",
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+        source_component: str = "artifact_adoption",
+        node: str = "artifact_adoption",
+    ) -> Dict[str, Any]:
+        share = resolve_workspace_file_to_share(path, mode)
+        source_path = str(share.get("sourcePath") or "").strip()
+        if not source_path:
+            raise FileNotFoundError("Workspace adoption resolved no source file.")
+        metadata = {
+            "origin": "workspace_adopted",
+            "storageClass": "workspace",
+            "pathPlane": share.get("pathPlane") or ("workspace_artifact" if share.get("previewable") else "workspace_download"),
+            "surfaceVisible": True,
+            "workspaceRelativePath": share.get("workspaceRelativePath"),
+            "workspaceId": share.get("workspaceId"),
+            "projectId": share.get("projectId"),
+            "viewerKind": share.get("viewerKind"),
+            "downloadable": bool(share.get("downloadable", True)),
+            "previewable": bool(share.get("previewable", False)),
+            "adoptionMode": str(mode or "auto").strip() or "auto",
+        }
+        artifact = self.record_local_file(
+            file_path=source_path,
+            session_id=session_id,
+            run_id=run_id,
+            message_id=message_id,
+            workspace_path=str(share.get("workspaceRelativePath") or "").strip() or None,
+            metadata=metadata,
+            source_component=source_component,
+            node=node,
+        )
+        artifact["origin"] = "workspace_adopted"
+        artifact["adoptedFrom"] = share
+        return artifact
 
 
 artifact_store = ArtifactStore()

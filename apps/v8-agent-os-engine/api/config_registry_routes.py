@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, HTTPException
 
 from core.audio.audio_config import AudioConfigManager
 from core.audit_logger import audit_logger
+from core.model_control_plane import normalize_config_temperature
 from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
 from core.prompt_budget import (
@@ -77,14 +78,7 @@ def _update_role_parameters(updates: dict[str, Any]) -> dict[str, Any]:
     for role_key, value in dict(updates or {}).items():
         existing = dict(role_parameters.get(str(role_key)) or {})
         if isinstance(value, dict) and "temperature" in value:
-            raw_temperature = value.get("temperature")
-            if raw_temperature in ("", None):
-                existing["temperature"] = None
-            else:
-                try:
-                    existing["temperature"] = max(min(float(raw_temperature), 2.0), 0.0)
-                except (TypeError, ValueError):
-                    existing["temperature"] = None
+            existing["temperature"] = normalize_config_temperature(value.get("temperature"))
         role_parameters[str(role_key)] = existing
     config["roleParameters"] = role_parameters
     model_control_plane.save_config(config)
@@ -155,6 +149,7 @@ def _build_supervisor_domain() -> dict[str, Any]:
             "delegation": {
                 "externalWorkers": list(delegation.get("externalWorkers") or []),
             },
+            "specialistRegistry": dict(supervisor_config.get("specialistRegistry") or {}),
         },
         "source": f"V8_AGENT_OS.md + {_config_source('systemBase.identity')} + {_config_source('supervisor')} + {_config_source('models')}",
         "savePath": [
@@ -211,6 +206,9 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
         if "externalWorkers" in incoming:
             delegation["externalWorkers"] = list(incoming.get("externalWorkers") or [])
         supervisor_config["delegation"] = delegation
+
+    if "specialistRegistry" in data and isinstance(data.get("specialistRegistry"), dict):
+        supervisor_config["specialistRegistry"] = dict(data.get("specialistRegistry") or {})
 
     storage.save_supervisor_config(supervisor_config)
 

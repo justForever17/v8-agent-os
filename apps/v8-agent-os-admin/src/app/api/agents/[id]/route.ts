@@ -22,6 +22,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             icon,
             roleLabel,
             capabilitySnapshot,
+            globalExposure,
             reflection_enabled,
             max_reflections,
         } = data;
@@ -40,6 +41,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             capabilitySnapshot: capabilitySnapshot && typeof capabilitySnapshot === "object" && !Array.isArray(capabilitySnapshot)
                 ? capabilitySnapshot
                 : {},
+            globalExposure: Boolean(globalExposure),
             reflection_enabled: reflection_enabled || false,
             max_reflections: max_reflections || 3,
             system_prompt: systemPrompt || ""

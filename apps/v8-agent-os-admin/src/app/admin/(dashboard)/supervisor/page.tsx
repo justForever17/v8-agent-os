@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 interface AIModel {
     id: string;
@@ -42,6 +43,8 @@ type PromptBudgetDiagnostic = {
 };
 const NATIVE_TOOL_SERVER_NAME = "系统原生能力";
 const SUPERVISOR_PROMPT_BUDGET_TOKENS = 10000;
+const TEMPERATURE_PRESET = 0.7;
+const MIN_CONFIG_TEMPERATURE = 0.05;
 function estimatePromptTokens(text: string) {
     let cjk = 0;
     let otherVisible = 0;
@@ -69,7 +72,29 @@ function parseOptionalTemperature(value: string) {
     if (!trimmed) return null;
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed)) return null;
-    return Math.max(Math.min(parsed, 2), 0);
+    if (parsed <= 0) return null;
+    return Math.max(Math.min(parsed, 2), MIN_CONFIG_TEMPERATURE);
+}
+function formatDecimal(value: number) {
+    return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+function temperatureSliderValue(value: string) {
+    const parsed = Number(String(value || "").trim());
+    if (!Number.isFinite(parsed)) return TEMPERATURE_PRESET;
+    return Math.max(Math.min(parsed, 2), MIN_CONFIG_TEMPERATURE);
+}
+function temperatureStatusText(value: string, locale: string) {
+    if (String(value || "").trim()) {
+        return locale === "en"
+            ? `Override ${formatDecimal(temperatureSliderValue(value))}`
+            : `已启用覆盖 ${formatDecimal(temperatureSliderValue(value))}`;
+    }
+    return locale === "en"
+        ? `Recommended ${formatDecimal(TEMPERATURE_PRESET)} (not enabled)`
+        : `推荐值 ${formatDecimal(TEMPERATURE_PRESET)}（未启用）`;
+}
+function temperatureDefaultText(locale: string) {
+    return locale === "en" ? "model config / provider default" : "模型配置 / 供应商默认";
 }
 export default function SupervisorPage() {
     const t = useT();
@@ -194,6 +219,10 @@ export default function SupervisorPage() {
     const promptBudgetOverLimit = promptEstimatedTokens > SUPERVISOR_PROMPT_BUDGET_TOKENS;
     const promptBudgetNearLimit = promptEstimatedTokens > SUPERVISOR_PROMPT_BUDGET_TOKENS * 0.85;
     const runtimePromptTruncated = promptBudgetDiagnostics.some((item) => item?.truncated);
+    const promptBudgetParams = useMemo(() => ({
+        estimated: promptEstimatedTokens,
+        budget: SUPERVISOR_PROMPT_BUDGET_TOKENS,
+    }), [promptEstimatedTokens]);
     const visionCapableModels = useMemo(() => models.filter((model) => {
         const type = String(model.type || "").toUpperCase();
         return !type || ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes(type);
@@ -203,9 +232,7 @@ export default function SupervisorPage() {
             toast({
                 variant: "destructive",
                 title: t("app.admin.dashboard.supervisor.page.promptBudget.overTitle"),
-                description: t("app.admin.dashboard.supervisor.page.promptBudget.overDescription")
-                    .replace("{estimated}", String(promptEstimatedTokens))
-                    .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS)),
+                description: t("app.admin.dashboard.supervisor.page.promptBudget.overDescription", promptBudgetParams),
             });
             return;
         }
@@ -405,32 +432,50 @@ export default function SupervisorPage() {
                     </div>
 
                     <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
-                        <div className="space-y-2">
-                            <Label>{locale === "en" ? "Supervisor temperature override" : "主理人温度覆盖"}</Label>
-                            <Input
-                                value={supervisorTemperature}
-                                onChange={(event) => setSupervisorTemperature(event.target.value)}
-                                inputMode="decimal"
-                                placeholder={locale === "en" ? "Empty = model/provider default" : "留空 = 模型/供应商默认"}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                                <Label>{locale === "en" ? "Supervisor temperature override" : "主理人温度覆盖"}</Label>
+                                <span className="text-xs font-medium text-muted-foreground">
+                                    {temperatureStatusText(supervisorTemperature, locale)}
+                                </span>
+                            </div>
+                            <Slider
+                                value={[temperatureSliderValue(supervisorTemperature)]}
+                                min={MIN_CONFIG_TEMPERATURE}
+                                max={2}
+                                step={0.05}
+                                onValueChange={([value]) => setSupervisorTemperature(formatDecimal(value))}
                             />
+                            <Button type="button" variant="outline" size="sm" onClick={() => setSupervisorTemperature("")}>
+                                {locale === "en" ? "Use provider default" : "使用供应商默认"}
+                            </Button>
                             <p className="text-xs leading-5 text-muted-foreground">
                                 {locale === "en"
-                                    ? "Application-level override. Leave empty to avoid forcing temperature into provider requests."
-                                    : "应用面覆盖值。留空时不会向 Provider 请求强行注入 temperature。"}
+                                    ? `Default saves null and falls back to ${temperatureDefaultText(locale)}. 0 is not a configurable temperature.`
+                                    : `默认会保存 null，并回落到${temperatureDefaultText(locale)}；0 不作为可配置温度。`}
                             </p>
                         </div>
-                        <div className="space-y-2">
-                            <Label>{locale === "en" ? "Subagent temperature override" : "Subagent 温度覆盖"}</Label>
-                            <Input
-                                value={subagentTemperature}
-                                onChange={(event) => setSubagentTemperature(event.target.value)}
-                                inputMode="decimal"
-                                placeholder={locale === "en" ? "Empty = model/provider default" : "留空 = 模型/供应商默认"}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                                <Label>{locale === "en" ? "Subagent temperature override" : "Subagent 温度覆盖"}</Label>
+                                <span className="text-xs font-medium text-muted-foreground">
+                                    {temperatureStatusText(subagentTemperature, locale)}
+                                </span>
+                            </div>
+                            <Slider
+                                value={[temperatureSliderValue(subagentTemperature)]}
+                                min={MIN_CONFIG_TEMPERATURE}
+                                max={2}
+                                step={0.05}
+                                onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))}
                             />
+                            <Button type="button" variant="outline" size="sm" onClick={() => setSubagentTemperature("")}>
+                                {locale === "en" ? "Use provider default" : "使用供应商默认"}
+                            </Button>
                             <p className="text-xs leading-5 text-muted-foreground">
                                 {locale === "en"
-                                    ? "Applies to agent/reviewer roles unless a call passes an explicit temperature."
-                                    : "适用于 agent/reviewer 运行时角色；若调用显式传入 temperature，则以调用侧为准。"}
+                                    ? `Applies after save. Default saves null; explicit runtime calls may still pass temperature=0.`
+                                    : `保存后生效。默认保存 null；运行时代码显式 temperature=0 仍优先。`}
                             </p>
                         </div>
                     </div>
@@ -461,18 +506,12 @@ export default function SupervisorPage() {
                         <p className="text-xs text-muted-foreground mb-2">{t("app.admin.dashboard.supervisor.page.kd096e672")}</p>
                         <div className={`rounded-md border px-3 py-2 text-xs ${promptBudgetOverLimit ? "border-rose-300 bg-rose-50 text-rose-700" : promptBudgetNearLimit || runtimePromptTruncated ? "border-amber-300 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
                             {promptBudgetOverLimit
-                                ? t("app.admin.dashboard.supervisor.page.promptBudget.overStatus")
-                                    .replace("{estimated}", String(promptEstimatedTokens))
-                                    .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS))
+                                ? t("app.admin.dashboard.supervisor.page.promptBudget.overStatus", promptBudgetParams)
                                 : runtimePromptTruncated
                                     ? t("app.admin.dashboard.supervisor.page.promptBudget.runtimeTruncated")
                                     : promptBudgetNearLimit
-                                        ? t("app.admin.dashboard.supervisor.page.promptBudget.nearStatus")
-                                            .replace("{estimated}", String(promptEstimatedTokens))
-                                            .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS))
-                                        : t("app.admin.dashboard.supervisor.page.promptBudget.okStatus")
-                                            .replace("{estimated}", String(promptEstimatedTokens))
-                                            .replace("{budget}", String(SUPERVISOR_PROMPT_BUDGET_TOKENS))}
+                                        ? t("app.admin.dashboard.supervisor.page.promptBudget.nearStatus", promptBudgetParams)
+                                        : t("app.admin.dashboard.supervisor.page.promptBudget.okStatus", promptBudgetParams)}
                         </div>
                         <Textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} className="font-mono text-sm min-h-[250px] leading-relaxed resize-y" placeholder={t("app.admin.dashboard.supervisor.page.k59c88769")}/>
                     </div>

@@ -471,7 +471,7 @@ class LLMFactory:
                 "runtime_unsupported_reason": runtime_unsupported_reason,
                 "provider_adapter": provider_adapter,
                 "provider_adapter_label": provider_adapter_label,
-                "global_temperature": meta.get("temperature", 0.0),
+                "global_temperature": meta.get("temperature"),
                 "global_max_tokens": meta.get("maxTokens"),
                 "global_context_window": meta.get("contextWindow"),
                 "rerank_api_flavor": normalize_rerank_api_flavor(meta.get("rerank_api_flavor") or meta.get("rerankApiFlavor")),
@@ -525,10 +525,10 @@ class LLMFactory:
 
         final_kwargs["api_key"] = meta.get("api_key") or "sk-dummy"
 
-        if "temperature" in kwargs:
+        if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
-        else:
-            final_kwargs["temperature"] = meta.get("global_temperature", 0.0)
+        elif meta.get("global_temperature") is not None:
+            final_kwargs["temperature"] = meta.get("global_temperature")
 
         model_kwargs = dict(kwargs.get("model_kwargs") or {})
         if "max_tokens" in kwargs:
@@ -563,10 +563,10 @@ class LLMFactory:
         if timeout is not None:
             final_kwargs["timeout"] = timeout
 
-        if "temperature" in kwargs:
+        if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
-        else:
-            final_kwargs["temperature"] = meta.get("global_temperature", 0.0)
+        elif meta.get("global_temperature") is not None:
+            final_kwargs["temperature"] = meta.get("global_temperature")
 
         max_tokens = kwargs.get("max_tokens") or meta.get("global_max_tokens")
         if max_tokens:
@@ -594,7 +594,7 @@ class LLMFactory:
         timeout = cls._extract_timeout(meta, **kwargs)
         if timeout is not None:
             final_kwargs["timeout"] = timeout
-        if "temperature" in kwargs:
+        if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
         elif meta.get("global_temperature") is not None:
             final_kwargs["temperature"] = meta.get("global_temperature", 0.0)
@@ -669,10 +669,14 @@ class LLMFactory:
         2. Global models.json `temperature` / `maxTokens`
         3. Fallback to `api_key="sk-dummy"` if missing so as not to immediately crash initialization.
         """
-        meta = cls._resolve_model_metadata(model_id)
         role = str(kwargs.pop("_role", "") or "")
         request_kind = str(kwargs.pop("_request_kind", "") or "chat")
         capability_class_override = str(kwargs.pop("_capability_class", "") or "")
+        if role and ("temperature" not in kwargs or kwargs.get("temperature") is None):
+            role_temperature = model_control_plane.get_role_temperature(role)
+            if role_temperature is not None:
+                kwargs["temperature"] = role_temperature
+        meta = cls._resolve_model_metadata(model_id)
         
         if not meta.get("is_found"):
             if meta.get("lookup_status") == "ambiguous":

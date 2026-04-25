@@ -473,6 +473,40 @@ class ModelConnectionTester:
             "rerankApiFlavor": api_flavor,
         }
 
+    def _test_media_generation_provider(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        provider_record = dict(meta.get("provider_record") or {})
+        api_standard = str(meta.get("api_standard") or provider_record.get("apiStandard") or provider_record.get("api_standard") or "").strip().lower()
+        provider_kind = str(provider_record.get("providerKind") or provider_record.get("provider_kind") or "").strip().lower()
+        base_url = str(meta.get("base_url") or provider_record.get("baseUrl") or provider_record.get("base_url") or "").strip().rstrip("/")
+        if not base_url:
+            raise RuntimeError("媒体 Provider 缺少 baseURL，无法执行健康探测。")
+        started = time.perf_counter()
+        if api_standard == "comfyui" or provider_kind == "media_generation":
+            endpoint = f"{base_url}/object_info"
+            response = requests.get(endpoint, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+            node_count = len(payload) if isinstance(payload, dict) else 0
+            checkpoint_inputs = (
+                ((payload or {}).get("CheckpointLoaderSimple") or {})
+                .get("input", {})
+                .get("required", {})
+                .get("ckpt_name")
+                if isinstance(payload, dict)
+                else None
+            )
+            checkpoint_count = len(checkpoint_inputs[0]) if isinstance(checkpoint_inputs, list) and checkpoint_inputs else 0
+            latency_ms = (time.perf_counter() - started) * 1000
+            return {
+                "latencyMs": round(latency_ms, 2),
+                "message": f"ComfyUI 节点 {node_count} 个，checkpoint {checkpoint_count} 个",
+                "requestKind": "media_generation_probe",
+                "resolvedEndpoint": endpoint,
+                "nodeCount": node_count,
+                "checkpointCount": checkpoint_count,
+            }
+        raise RuntimeError(f"暂不支持该媒体 Provider 的连接测试：{api_standard or provider_kind or model_id}")
+
     def test_model_connection(self, *, model_id: str, provider_id: str = "", model_ref: str = "") -> Dict[str, Any]:
         runtime_model_id = str(model_ref or (make_model_ref(provider_id, model_id) if provider_id else model_id) or "").strip()
         meta = self._resolve_metadata(runtime_model_id, provider_id=provider_id)
@@ -501,6 +535,9 @@ class ModelConnectionTester:
                 result = self._test_embedding_model(model_id=wire_model_id, meta=meta)
             elif capability_class == "reranker" or model_type in {"RERANK", "RERANKER"}:
                 result = self._test_reranker_model(model_id=wire_model_id, meta=meta)
+            elif capability_class == "media_generation" or model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO"}:
+                result = self._test_media_generation_provider(model_id=wire_model_id, meta=meta)
+                capability_checks = self._skipped_runtime_capability_checks("media_generation_provider_probe_only")
             else:
                 result = self._test_chat_model(model_id=runtime_model_id, meta=meta)
                 if runtime_ready and self._is_basic_connection_probe_only(meta):

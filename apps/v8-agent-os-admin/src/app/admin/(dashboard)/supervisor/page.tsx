@@ -64,6 +64,13 @@ async function readResponseError(response: Response, fallback: string) {
             : "";
     return detail || fallback;
 }
+function parseOptionalTemperature(value: string) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(Math.min(parsed, 2), 0);
+}
 export default function SupervisorPage() {
     const t = useT();
     const { locale } = useLocale();
@@ -75,6 +82,8 @@ export default function SupervisorPage() {
     const [name, setName] = useState("智能主管");
     const [roleLabel, setRoleLabel] = useState("主理人");
     const [avatar, setAvatar] = useState("");
+    const [supervisorTemperature, setSupervisorTemperature] = useState("");
+    const [subagentTemperature, setSubagentTemperature] = useState("");
     const [models, setModels] = useState<AIModel[]>([]);
     const [mcpTools, setMcpTools] = useState<MCPTool[]>([]);
     const [lockedNativeTools, setLockedNativeTools] = useState<LockedTool[]>([]);
@@ -145,6 +154,8 @@ export default function SupervisorPage() {
                     setRoleLabel(data.roleLabel);
                 if (data.avatar)
                     setAvatar(data.avatar);
+                setSupervisorTemperature(data.supervisor_temperature === null || data.supervisor_temperature === undefined ? "" : String(data.supervisor_temperature));
+                setSubagentTemperature(data.subagent_temperature === null || data.subagent_temperature === undefined ? "" : String(data.subagent_temperature));
             }
             if (modRes.ok)
                 setModels(await modRes.json());
@@ -210,7 +221,9 @@ export default function SupervisorPage() {
                     allowed_tools: selectedTools.length > 0 ? selectedTools : null,
                     name,
                     roleLabel,
-                    avatar
+                    avatar,
+                    supervisor_temperature: parseOptionalTemperature(supervisorTemperature),
+                    subagent_temperature: parseOptionalTemperature(subagentTemperature),
                 }),
             });
             if (!res.ok) {
@@ -389,6 +402,37 @@ export default function SupervisorPage() {
                         {defaultModelId ? (<p className="text-xs text-muted-foreground">
                                 {locale === "en" ? `Current default reply model: ${defaultModelId}` : `当前默认回复模型：${defaultModelId}`}
                             </p>) : null}
+                    </div>
+
+                    <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                            <Label>{locale === "en" ? "Supervisor temperature override" : "主理人温度覆盖"}</Label>
+                            <Input
+                                value={supervisorTemperature}
+                                onChange={(event) => setSupervisorTemperature(event.target.value)}
+                                inputMode="decimal"
+                                placeholder={locale === "en" ? "Empty = model/provider default" : "留空 = 模型/供应商默认"}
+                            />
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {locale === "en"
+                                    ? "Application-level override. Leave empty to avoid forcing temperature into provider requests."
+                                    : "应用面覆盖值。留空时不会向 Provider 请求强行注入 temperature。"}
+                            </p>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{locale === "en" ? "Subagent temperature override" : "Subagent 温度覆盖"}</Label>
+                            <Input
+                                value={subagentTemperature}
+                                onChange={(event) => setSubagentTemperature(event.target.value)}
+                                inputMode="decimal"
+                                placeholder={locale === "en" ? "Empty = model/provider default" : "留空 = 模型/供应商默认"}
+                            />
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {locale === "en"
+                                    ? "Applies to agent/reviewer roles unless a call passes an explicit temperature."
+                                    : "适用于 agent/reviewer 运行时角色；若调用显式传入 temperature，则以调用侧为准。"}
+                            </p>
+                        </div>
                     </div>
 
                     <div id="vision-media-model" className="space-y-2">

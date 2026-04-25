@@ -17,12 +17,10 @@ interface AIModel {
     id: string;
     modelRef?: string;
     providerId: string;
-    name: string;
     modelId: string;
     type: string;
     contextWindow: number | null;
     maxTokens: number | null;
-    temperature?: number | null;
     isEnabled: boolean;
 }
 interface AIProvider {
@@ -96,7 +94,7 @@ export default function ProviderConfigPage({ params }: {
     const [isSaving, setIsSaving] = useState(false);
     const [providerType, setProviderType] = useState<string>("API");
     const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
-    const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini">("openai");
+    const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
     const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("geminiCli");
     const [providerBaseUrl, setProviderBaseUrl] = useState("");
     const [providerOauthPath, setProviderOauthPath] = useState("");
@@ -127,7 +125,7 @@ export default function ProviderConfigPage({ params }: {
                 setProvider(nextProvider);
                 setProviderType(nextProvider.type || "API");
                 setCredentialMode(nextProvider.type === "PLATFORM" ? "oauthFile" : (nextProvider.credentialMode || "apiKey"));
-                setApiStandard((nextProvider.apiStandard as "openai" | "anthropic" | "gemini") || "openai");
+                setApiStandard((nextProvider.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui") || "openai");
                 setPlatformLoginPreset(inferredPreset);
                 setProviderBaseUrl(nextProvider.baseUrl || "");
                 setProviderOauthPath(nextProvider.oauthPath || "");
@@ -181,6 +179,11 @@ export default function ProviderConfigPage({ params }: {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
         const data = Object.fromEntries(formData.entries());
+        for (const key of ["contextWindow", "maxTokens"]) {
+            if (data[key] === "") {
+                data[key] = "";
+            }
+        }
         // Force providerId to current provider
         data.providerId = id;
         const url = editingModel
@@ -427,13 +430,15 @@ export default function ProviderConfigPage({ params }: {
                 ? t("app.admin.dashboard.models.providers.id.page.kdab0f774")
                 : apiStandard === "anthropic"
                     ? t("app.admin.dashboard.models.providers.id.page.k504d12c7")
-                    : t("app.admin.dashboard.models.providers.id.page.k560df989")} readOnly/>
+                    : apiStandard === "comfyui"
+                        ? "ComfyUI"
+                        : t("app.admin.dashboard.models.providers.id.page.k560df989")} readOnly/>
                                         <input type="hidden" name="apiStandard" value={apiStandard}/>
                                     </div>
                                 </>) : (<div className="grid gap-2">
                                     <Label htmlFor="apiStandard">{t("app.admin.dashboard.models.providers.id.page.k3a701154")}</Label>
                                     <input type="hidden" name="apiStandard" value={apiStandard}/>
-                                    <Select value={apiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini") => setApiStandard(value)}>
+                                    <Select value={apiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini" | "comfyui") => setApiStandard(value)}>
                                         <SelectTrigger>
                                             <SelectValue />
                                         </SelectTrigger>
@@ -441,6 +446,7 @@ export default function ProviderConfigPage({ params }: {
                                             <SelectItem value="openai">{t("app.admin.dashboard.models.providers.id.page.kdab0f774")}</SelectItem>
                                             <SelectItem value="anthropic">{t("app.admin.dashboard.models.providers.id.page.k504d12c7")}</SelectItem>
                                             <SelectItem value="gemini">{t("app.admin.dashboard.models.providers.id.page.k560df989")}</SelectItem>
+                                            <SelectItem value="comfyui">ComfyUI</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>)}
@@ -528,10 +534,6 @@ export default function ProviderConfigPage({ params }: {
                         <input type="hidden" name="providerId" value={id}/>
 
                         <div className="grid gap-2">
-                            <Label htmlFor="model-name">{t("app.admin.dashboard.models.providers.id.page.k27484fde")}</Label>
-                            <Input id="model-name" name="name" defaultValue={editingModel?.name} required placeholder={t("app.admin.dashboard.models.providers.id.page.k0be2fe1f")}/>
-                        </div>
-                        <div className="grid gap-2">
                             <Label htmlFor="model-id">{t("app.admin.dashboard.models.providers.id.page.k3edcd0aa")}</Label>
                             <Input id="model-id" name="modelId" defaultValue={editingModel?.modelId} required placeholder={t("app.admin.dashboard.models.providers.id.page.k8b7ccc0e")}/>
                         </div>
@@ -547,23 +549,23 @@ export default function ProviderConfigPage({ params }: {
                                     <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.models.providers.id.page.k6223be05")}</SelectItem>
                                     <SelectItem value="EMBEDDING">{t("app.admin.dashboard.models.providers.id.page.k9b398ad1")}</SelectItem>
                                     <SelectItem value="RERANK">{t("app.admin.dashboard.models.providers.id.page.k318b19b4")}</SelectItem>
+                                    <SelectItem value="MEDIA">媒体生成</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
+                        {modelType === "TEXT" || modelType === "MULTIMODAL" ? (<div className="grid grid-cols-2 gap-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.k20e21cd2")}</Label>
-                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="128000"/>
+                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="仅用于 V8 预算估算"/>
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.k317345b1")}</Label>
-                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="4096"/>
+                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="可选请求上限"/>
                             </div>
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="temperature">{t("app.admin.dashboard.models.providers.id.page.ke5e6cc55")}</Label>
-                            <Input id="temperature" name="temperature" type="number" step="0.1" defaultValue={editingModel?.temperature ?? 0.0} placeholder="0.0"/>
-                        </div>
+                        </div>) : null}
+                        {modelType === "MEDIA" ? (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-muted-foreground">
+                            媒体生成模型使用工作流 / 分辨率 / 时长 / 采样等媒体参数，不使用聊天模型的上下文窗口、最大输出和温度三件套。
+                        </div>) : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.models.providers.id.page.kb7dfaded")}</Button>
                     </form>
                 </DialogContent>

@@ -5,7 +5,7 @@ import hashlib
 import re
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 import requests
 
@@ -102,7 +102,7 @@ class ModelProviderCatalog:
             "baseUrl": clean_base_url,
             "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
             "probeStrategy": "openai_models",
-            "recommendedTemperature": None,
+            "providerKind": "chat",
             "confidence": "custom",
             "isCustom": True,
             "models": [],
@@ -195,6 +195,9 @@ class ModelProviderCatalog:
                 "resolvedModelsUrl": f"{effective_base_url}/models",
             }
 
+        if strategy == "comfyui":
+            return self._probe_comfyui(provider, effective_base_url=effective_base_url, timeout=timeout)
+
         try:
             url = f"{effective_base_url}/models"
             params = {}
@@ -240,13 +243,15 @@ class ModelProviderCatalog:
             for item in data:
                 if isinstance(item, str):
                     model_id = item.strip()
+                    online_metadata: Dict[str, Any] = {}
                 else:
-                    model_id = str((item or {}).get("id") or (item or {}).get("name") or "").strip()
+                    online_metadata = dict(item or {})
+                    model_id = str(online_metadata.get("id") or online_metadata.get("name") or "").strip()
                 if model_id.startswith("models/"):
                     model_id = model_id.split("/", 1)[1]
                 if not model_id:
                     continue
-                models.append(self.normalize_model(provider, model_id))
+                models.append(self.normalize_model(provider, model_id, online_metadata=online_metadata))
             return {
                 "ok": True,
                 "source": "online",
@@ -267,28 +272,191 @@ class ModelProviderCatalog:
                 "error": str(exc),
             }
 
-    def normalize_model(self, provider: Dict[str, Any], model_id: str) -> Dict[str, Any]:
-        model = self._model_from_catalog(provider, model_id)
-        capabilities = list(model.get("capabilities") or [])
-        capability_map = {
-            "chat": "chat" in capabilities or True,
-            "reasoning": "reasoning" in capabilities,
-            "toolCalling": "tools" in capabilities,
-            "vision": "vision" in capabilities,
-            "streaming": "streaming" in capabilities or True,
-            "embedding": "embedding" in capabilities,
-            "rerank": "rerank" in capabilities,
+    def _probe_comfyui(self, provider: Dict[str, Any], *, effective_base_url: str, timeout: float = 20.0) -> Dict[str, Any]:
+        url = f"{effective_base_url}/object_info"
+        try:
+            response = requests.get(url, timeout=timeout)
+            if not response.ok:
+                return {
+                    "ok": False,
+                    "source": "online",
+                    "provider": provider,
+                    "models": [],
+                    "reason": "online_probe_failed",
+                    "statusCode": response.status_code,
+                    "resolvedModelsUrl": url,
+                    "error": response.text[:500],
+                }
+            payload = response.json()
+            checkpoint_names: List[str] = []
+            loader = payload.get("CheckpointLoaderSimple") if isinstance(payload, dict) else None
+            required = ((loader or {}).get("input") or {}).get("required") or {}
+            ckpt_payload = required.get("ckpt_name")
+            if isinstance(ckpt_payload, list) and ckpt_payload and isinstance(ckpt_payload[0], list):
+                checkpoint_names = [str(item) for item in ckpt_payload[0][:50] if str(item).strip()]
+            models = [
+                self.normalize_model(
+                    provider,
+                    f"checkpoint:{name}",
+                    online_metadata={"capabilities": ["workflow", "image"], "checkpoint": name},
+                )
+                for name in checkpoint_names
+            ] or [self.normalize_model(provider, "comfyui-workflow", online_metadata={"capabilities": ["workflow", "image", "video", "audio"]})]
+            return {
+                "ok": True,
+                "source": "online",
+                "provider": provider,
+                "models": models,
+                "rawCount": len(checkpoint_names) or 1,
+                "modelCount": len(models),
+                "resolvedModelsUrl": url,
+                "capabilitySource": "online",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "source": "online",
+                "provider": provider,
+                "models": [],
+                "reason": "online_probe_failed",
+                "resolvedModelsUrl": url,
+                "error": str(exc),
+            }
+
+    def _capabilities_from_online(self, metadata: Dict[str, Any]) -> Set[str]:
+        caps: Set[str] = set()
+        for key in ("capabilities", "capabilityTags", "modalities", "input_modalities", "output_modalities"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                caps.update(str(item).strip().lower() for item in value if str(item).strip())
+        methods = metadata.get("supportedGenerationMethods") or metadata.get("supported_generation_methods")
+        if isinstance(methods, list):
+            method_text = " ".join(str(item).lower() for item in methods)
+            if "generatecontent" in method_text or "chat" in method_text:
+                caps.add("chat")
+            if "embed" in method_text:
+                caps.add("embedding")
+        if metadata.get("inputTokenLimit") or metadata.get("outputTokenLimit"):
+            caps.add("chat")
+        return caps
+
+    def _capabilities_from_family(self, provider: Dict[str, Any], model_id: str, provider_kind: str) -> Set[str]:
+        ident = f"{provider.get('id') or ''} {provider.get('name') or ''} {model_id}".lower()
+        caps: Set[str] = set()
+        if provider_kind == "media_generation" or "comfyui" in ident:
+            caps.update({"workflow", "image"})
+            return caps
+        if any(token in ident for token in ("embed", "embedding", "bge-m3", "text-embedding", "qwen3-embed")):
+            caps.add("embedding")
+            return caps
+        if any(token in ident for token in ("rerank", "reranker", "bge-reranker")):
+            caps.add("rerank")
+            return caps
+        caps.add("chat")
+        if any(token in ident for token in ("gpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "gemini", "claude-3", "claude-sonnet", "claude-opus", "doubao-seed", "qwen-vl", "vl", "vision")):
+            caps.update({"vision", "multimodal"})
+        if any(token in ident for token in ("reason", "thinking", "r1", "o1", "o3", "gpt-5", "gpt-5.5", "gpt-5.4", "gemini-3", "gemini-2.5", "claude")):
+            caps.add("reasoning")
+        if any(token in ident for token in ("tts", "audio", "speech", "voice")):
+            caps.add("audio")
+        if any(token in ident for token in ("image", "dall-e", "gpt-image", "seedream")):
+            caps.add("image")
+        if any(token in ident for token in ("video", "veo", "seedance", "wan", "sora")):
+            caps.add("video")
+        return caps
+
+    def _normalize_capability_map(self, tags: Set[str], provider_kind: str) -> Dict[str, bool]:
+        media = provider_kind == "media_generation" or bool(tags.intersection({"image", "video", "audio", "workflow"}))
+        embedding = "embedding" in tags
+        rerank = "rerank" in tags or "reranker" in tags
+        chat = "chat" in tags or (not media and not embedding and not rerank)
+        tools = bool(tags.intersection({"tools", "tool", "function", "function_calling"}))
+        streaming = "streaming" in tags or (chat and not media)
+        return {
+            "chat": chat,
+            "reasoning": "reasoning" in tags,
+            "toolCalling": tools,
+            "vision": "vision" in tags,
+            "multimodal": "multimodal" in tags or "vision" in tags,
+            "streaming": streaming,
+            "embedding": embedding,
+            "rerank": rerank,
+            "image": "image" in tags,
+            "video": "video" in tags,
+            "audio": "audio" in tags,
+            "workflow": "workflow" in tags,
         }
+
+    def _infer_model_type(self, capability_map: Dict[str, bool]) -> str:
+        if capability_map.get("embedding"):
+            return "EMBEDDING"
+        if capability_map.get("rerank"):
+            return "RERANK"
+        if capability_map.get("image") or capability_map.get("video") or capability_map.get("audio") or capability_map.get("workflow"):
+            return "MEDIA"
+        if capability_map.get("vision") or capability_map.get("multimodal"):
+            return "MULTIMODAL"
+        return "TEXT"
+
+    def _capability_source(self, catalog_model: Dict[str, Any], online_metadata: Dict[str, Any], family_caps: Set[str]) -> str:
+        if online_metadata and self._capabilities_from_online(online_metadata):
+            return "online"
+        if catalog_model.get("capabilities"):
+            return "catalog"
+        if family_caps:
+            return "heuristic"
+        return "manual"
+
+    def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        online_metadata = dict(online_metadata or {})
+        model = self._model_from_catalog(provider, model_id)
+        provider_kind = str(provider.get("providerKind") or "chat")
+        catalog_caps = {str(item).strip().lower() for item in list(model.get("capabilities") or []) if str(item).strip()}
+        online_caps = self._capabilities_from_online(online_metadata)
+        family_caps = self._capabilities_from_family(provider, model_id, provider_kind)
+        capability_tags = catalog_caps | online_caps | family_caps
+        capability_map = self._normalize_capability_map(capability_tags, provider_kind)
+        context_window = (
+            model.get("contextWindow")
+            or online_metadata.get("inputTokenLimit")
+            or online_metadata.get("input_token_limit")
+            or online_metadata.get("context_length")
+        )
+        max_tokens = (
+            model.get("maxOutputTokens")
+            or model.get("maxTokens")
+            or online_metadata.get("outputTokenLimit")
+            or online_metadata.get("output_token_limit")
+            or online_metadata.get("max_output_tokens")
+        )
+        capability_source = self._capability_source(model, online_metadata, family_caps)
         return {
             "id": model_id,
             "modelId": model_id,
             "modelRef": make_model_ref(str(provider.get("id") or ""), model_id),
-            "type": "MULTIMODAL" if capability_map.get("vision") else "TEXT",
-            "contextWindow": model.get("contextWindow"),
-            "maxTokens": model.get("maxOutputTokens") or model.get("maxTokens"),
-            "temperature": provider.get("recommendedTemperature"),
+            "type": self._infer_model_type(capability_map),
+            "contextWindow": context_window,
+            "maxTokens": max_tokens,
             "capabilities": capability_map,
-            "capabilityTags": capabilities,
+            "capabilityTags": sorted(capability_tags),
+            "capabilitySource": capability_source,
+            "capabilityClass": (
+                "media_generation"
+                if capability_map.get("image") or capability_map.get("video") or capability_map.get("audio") or capability_map.get("workflow")
+                else "embedding"
+                if capability_map.get("embedding")
+                else "reranker"
+                if capability_map.get("rerank")
+                else "vision_multimodal"
+                if capability_map.get("vision") or capability_map.get("multimodal")
+                else "chat_reasoning"
+                if capability_map.get("reasoning")
+                else "chat_tool_calling"
+                if capability_map.get("toolCalling")
+                else "chat_general"
+            ),
+            "parameterProfile": model.get("parameterProfile") or provider_kind,
+            "mediaLimits": model.get("mediaLimits") or {},
         }
 
 

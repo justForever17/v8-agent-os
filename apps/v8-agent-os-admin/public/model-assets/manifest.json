@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "notes": "Whitelisted provider/model assets for ModelHub. Cherry Studio app.asar was inspected, but no trusted provider/model icon asset paths were found; user data folders are intentionally excluded.",
+  "providers": {
+    "anthropic": {
+      "asset": "/model-assets/providers/anthropic.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "45FA55283B0671B71451D4E067932E3D4AE57EEB7B59582C4C3C1AB21558B0A4"
+    },
+    "deepseek": {
+      "asset": "/model-assets/providers/deepseek.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "30A4420E6E4DCB17FD7DE560C5004346C2BC8CD971D2D5F5EE15326603E51321"
+    },
+    "groq": {
+      "asset": "/model-assets/providers/groq.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "945268E4ED2640DCAD9667A598323E572F50A9065928399F465D43CDD0C6AA57"
+    },
+    "huggingface-router": {
+      "asset": "/model-assets/providers/huggingface.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "BD845F3018A6D5C08B9845654BD1C1F6FCF3C8EE016ACDBE90625F431E66648C"
+    },
+    "lmstudio": {
+      "asset": "/model-assets/providers/lmstudio.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "94CE3375C26E76CF76A446FFAD15CC290F4248873A5BCD4FD59D711FA5439724"
+    },
+    "mistral": {
+      "asset": "/model-assets/providers/mistral.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "4D0B6362E4E5B2505F3A5A741B76ADFD31AEE73636F672EF7E80AC4C62C7B2B4"
+    },
+    "openrouter": {
+      "asset": "/model-assets/providers/openrouter.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "9EA97C59357C47DB235D0591B7ED936D40B94E3DD02030A36E26B406671F011D"
+    },
+    "siliconflow": {
+      "asset": "/model-assets/providers/siliconflow.png",
+      "source": "official-or-whitelisted-static",
+      "sha256": "34B69206516F4F999C5FD6B4E41171DD2D356248EC13F6136E098C416319AE68"
+    },
+    "xai": {
+      "asset": "/model-assets/providers/xai.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "59FBABD76920F7170CFD1B75C610253DD06B0C45C4C58BF03BDF3F439392F2EE"
+    }
+  },
+  "models": {}
+}

@@ -88,6 +88,11 @@ type BridgeToolsPayload = {
 
 type SupervisorConfigRegistryPayload = {
     data?: {
+        modelParameters?: {
+            subagent?: {
+                temperature?: number | null;
+            };
+        } | null;
         delegation?: {
             externalWorkers?: unknown[];
         } | null;
@@ -166,6 +171,14 @@ const DEFAULT_FORM_STATE: AgentFormState = {
     maxReflections: 3,
 };
 
+function parseOptionalTemperature(value: string) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(Math.min(parsed, 2), 0);
+}
+
 function classifySelector(
     selector: string,
     skillNames: Set<string>,
@@ -196,10 +209,12 @@ export default function SubagentsPage() {
     const [defaultModelId, setDefaultModelId] = useState("");
     const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(null);
     const [externalWorkersJson, setExternalWorkersJson] = useState("[]");
+    const [subagentTemperature, setSubagentTemperature] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isSavingExternalWorkers, setIsSavingExternalWorkers] = useState(false);
+    const [isSavingSubagentTemperature, setIsSavingSubagentTemperature] = useState(false);
     const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
     const [form, setForm] = useState<AgentFormState>(DEFAULT_FORM_STATE);
     const [toolPanels, setToolPanels] = useState<Record<ToolPanelKey, boolean>>({
@@ -372,6 +387,8 @@ export default function SubagentsPage() {
             if (supervisorRes.ok) {
                 const data: SupervisorConfigRegistryPayload = await supervisorRes.json();
                 setSupervisorDomainData(data);
+                const temperature = data?.data?.modelParameters?.subagent?.temperature;
+                setSubagentTemperature(temperature === null || temperature === undefined ? "" : String(temperature));
                 setExternalWorkersJson(
                     JSON.stringify(
                         Array.isArray(data?.data?.delegation?.externalWorkers) ? data.data!.delegation!.externalWorkers : [],
@@ -544,6 +561,51 @@ export default function SubagentsPage() {
         }
     }, [externalWorkersJson, supervisorDomainData, toast]);
 
+    const handleSaveSubagentTemperature = useCallback(async () => {
+        setIsSavingSubagentTemperature(true);
+        try {
+            const nextPayload = {
+                data: {
+                    ...(supervisorDomainData?.data || {}),
+                    modelParameters: {
+                        ...((supervisorDomainData?.data?.modelParameters || {}) as Record<string, unknown>),
+                        subagent: {
+                            ...(((supervisorDomainData?.data?.modelParameters?.subagent || {}) as Record<string, unknown>)),
+                            temperature: parseOptionalTemperature(subagentTemperature),
+                        },
+                    },
+                },
+            };
+            const response = await fetch("/api/config-registry/supervisor", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(nextPayload),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(String(data?.detail || data?.error || response.status));
+            }
+            setSupervisorDomainData(data);
+            const temperature = data?.data?.modelParameters?.subagent?.temperature;
+            setSubagentTemperature(temperature === null || temperature === undefined ? "" : String(temperature));
+            toast({
+                title: "Subagent 温度已保存",
+                description: subagentTemperature.trim()
+                    ? "后续 agent/reviewer 调用会使用该应用面 temperature 覆盖。"
+                    : "已恢复为模型/供应商默认温度，不强行注入 temperature。",
+            });
+        } catch (error) {
+            console.error("Failed to save subagent temperature", error);
+            toast({
+                title: "Subagent 温度保存失败",
+                description: error instanceof Error ? error.message : "未知错误",
+                variant: "destructive",
+            });
+        } finally {
+            setIsSavingSubagentTemperature(false);
+        }
+    }, [subagentTemperature, supervisorDomainData, toast]);
+
     const handleDelete = useCallback(async (id: string) => {
         if (!confirm(t("app.admin.dashboard.subagents.page.ka7d365b9"))) return;
         try {
@@ -597,7 +659,7 @@ export default function SubagentsPage() {
                 </div>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-3">
+            <div className="grid gap-4 lg:grid-cols-4">
                 <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2 text-base"><ShieldCheck className="h-4 w-4 text-sky-600" />{t("app.admin.dashboard.subagents.page.k00bf2013")}</CardTitle>
@@ -639,6 +701,27 @@ export default function SubagentsPage() {
                         <div className="text-xs leading-5">
                             {t("app.admin.dashboard.subagents.page.k6b4be373")}
                         </div>
+                    </CardContent>
+                </Card>
+                <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2 text-base"><BrainCircuit className="h-4 w-4 text-indigo-600" />Subagent 温度</CardTitle>
+                        <CardDescription>应用面覆盖值；留空时不注入 temperature。</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        <Input
+                            value={subagentTemperature}
+                            onChange={(event) => setSubagentTemperature(event.target.value)}
+                            inputMode="decimal"
+                            placeholder="留空 = 模型/供应商默认"
+                        />
+                        <p className="text-xs leading-5 text-slate-500">
+                            仅影响 agent/reviewer 运行时角色；显式调用参数仍优先。
+                        </p>
+                        <Button size="sm" onClick={() => void handleSaveSubagentTemperature()} disabled={isSavingSubagentTemperature}>
+                            {isSavingSubagentTemperature ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            保存覆盖
+                        </Button>
                     </CardContent>
                 </Card>
             </div>

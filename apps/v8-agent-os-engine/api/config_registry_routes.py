@@ -71,6 +71,26 @@ def _update_role_bindings(updates: dict[str, Any]) -> dict[str, str]:
     return {key: str(roles.get(key) or "").strip() for key in updates.keys()}
 
 
+def _update_role_parameters(updates: dict[str, Any]) -> dict[str, Any]:
+    config = model_control_plane.get_config()
+    role_parameters = dict(config.get("roleParameters") or {})
+    for role_key, value in dict(updates or {}).items():
+        existing = dict(role_parameters.get(str(role_key)) or {})
+        if isinstance(value, dict) and "temperature" in value:
+            raw_temperature = value.get("temperature")
+            if raw_temperature in ("", None):
+                existing["temperature"] = None
+            else:
+                try:
+                    existing["temperature"] = max(min(float(raw_temperature), 2.0), 0.0)
+                except (TypeError, ValueError):
+                    existing["temperature"] = None
+        role_parameters[str(role_key)] = existing
+    config["roleParameters"] = role_parameters
+    model_control_plane.save_config(config)
+    return {key: dict(role_parameters.get(str(key)) or {}) for key in updates.keys()}
+
+
 def _build_models_domain() -> dict[str, Any]:
     payload = model_control_plane.build_payload(model_control_plane.get_config())
     return {
@@ -127,6 +147,10 @@ def _build_supervisor_domain() -> dict[str, Any]:
             "bindings": {
                 "supervisorModel": model_control_plane.get_role_model_id("supervisor") or "",
                 "defaultReplyModel": model_control_plane.get_role_model_id("default") or "",
+            },
+            "modelParameters": {
+                "supervisor": model_control_plane.get_role_parameters("supervisor"),
+                "subagent": model_control_plane.get_role_parameters("subagent"),
             },
             "delegation": {
                 "externalWorkers": list(delegation.get("externalWorkers") or []),
@@ -198,6 +222,8 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
         role_updates["default"] = str(bindings.get("defaultReplyModel") or "").strip()
     if role_updates:
         _update_role_bindings(role_updates)
+    if "modelParameters" in data and isinstance(data.get("modelParameters"), dict):
+        _update_role_parameters(dict(data.get("modelParameters") or {}))
     return _build_supervisor_domain()
 
 

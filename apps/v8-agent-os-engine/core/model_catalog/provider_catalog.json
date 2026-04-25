@@ -13,8 +13,12 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.2,
       "sourceUrl": "https://platform.openai.com/docs/api-reference/models/list",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.openai.com/api-keys"
+      },
       "confidence": "official",
       "models": [
         {
@@ -25,7 +29,9 @@
             "chat",
             "reasoning",
             "tools",
-            "streaming"
+            "streaming",
+            "vision",
+            "multimodal"
           ]
         },
         {
@@ -36,10 +42,13 @@
             "chat",
             "reasoning",
             "tools",
-            "streaming"
+            "streaming",
+            "vision",
+            "multimodal"
           ]
         }
-      ]
+      ],
+      "providerKind": "chat"
     },
     {
       "id": "anthropic",
@@ -51,8 +60,12 @@
         "header": "x-api-key"
       },
       "probeStrategy": "anthropic_models",
-      "recommendedTemperature": 0.2,
       "sourceUrl": "https://docs.anthropic.com/en/api/models-list",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://console.anthropic.com/settings/keys"
+      },
       "confidence": "official",
       "models": [
         {
@@ -64,11 +77,13 @@
             "reasoning",
             "tools",
             "vision",
-            "streaming"
+            "streaming",
+            "multimodal"
           ]
         }
       ],
-      "logoAsset": "/model-assets/providers/anthropic.ico"
+      "logoAsset": "/model-assets/providers/anthropic.ico",
+      "providerKind": "chat"
     },
     {
       "id": "gemini-api",
@@ -80,8 +95,12 @@
         "query": "key"
       },
       "probeStrategy": "gemini_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://ai.google.dev/api/models",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://aistudio.google.com/apikey"
+      },
       "confidence": "official",
       "models": [
         {
@@ -93,7 +112,8 @@
             "reasoning",
             "tools",
             "vision",
-            "streaming"
+            "streaming",
+            "multimodal"
           ]
         },
         {
@@ -104,7 +124,9 @@
             "chat",
             "tools",
             "vision",
-            "streaming"
+            "streaming",
+            "reasoning",
+            "multimodal"
           ]
         },
         {
@@ -116,7 +138,8 @@
             "reasoning",
             "tools",
             "vision",
-            "streaming"
+            "streaming",
+            "multimodal"
           ]
         },
         {
@@ -127,10 +150,13 @@
             "chat",
             "tools",
             "vision",
-            "streaming"
+            "streaming",
+            "reasoning",
+            "multimodal"
           ]
         }
-      ]
+      ],
+      "providerKind": "chat"
     },
     {
       "id": "gemini",
@@ -144,7 +170,6 @@
       },
       "probeStrategy": "catalog_only",
       "singleActiveModel": true,
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://github.com/google-gemini/gemini-cli",
       "confidence": "local_cli",
       "models": [
@@ -155,7 +180,9 @@
           "capabilities": [
             "chat",
             "reasoning",
-            "streaming"
+            "streaming",
+            "vision",
+            "multimodal"
           ]
         },
         {
@@ -164,7 +191,10 @@
           "maxOutputTokens": 65536,
           "capabilities": [
             "chat",
-            "streaming"
+            "streaming",
+            "reasoning",
+            "vision",
+            "multimodal"
           ]
         },
         {
@@ -174,7 +204,9 @@
           "capabilities": [
             "chat",
             "reasoning",
-            "streaming"
+            "streaming",
+            "vision",
+            "multimodal"
           ]
         },
         {
@@ -183,10 +215,14 @@
           "maxOutputTokens": 65536,
           "capabilities": [
             "chat",
-            "streaming"
+            "streaming",
+            "reasoning",
+            "vision",
+            "multimodal"
           ]
         }
-      ]
+      ],
+      "providerKind": "local_runtime"
     },
     {
       "id": "codex",
@@ -200,7 +236,6 @@
       },
       "probeStrategy": "catalog_only",
       "singleActiveModel": true,
-      "recommendedTemperature": 0.2,
       "sourceUrl": "https://developers.openai.com/codex",
       "confidence": "local_cache",
       "models": [
@@ -211,7 +246,10 @@
           "capabilities": [
             "chat",
             "reasoning",
-            "streaming"
+            "streaming",
+            "tools",
+            "vision",
+            "multimodal"
           ]
         },
         {
@@ -221,10 +259,14 @@
           "capabilities": [
             "chat",
             "reasoning",
-            "streaming"
+            "streaming",
+            "tools",
+            "vision",
+            "multimodal"
           ]
         }
-      ]
+      ],
+      "providerKind": "local_runtime"
     },
     {
       "id": "openrouter",
@@ -237,11 +279,16 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://openrouter.ai/docs/api/reference/overview",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://openrouter.ai/settings/keys"
+      },
       "confidence": "official",
       "models": [],
-      "logoAsset": "/model-assets/providers/openrouter.ico"
+      "logoAsset": "/model-assets/providers/openrouter.ico",
+      "providerKind": "chat"
     },
     {
       "id": "deepseek",
@@ -254,8 +301,12 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.2,
       "sourceUrl": "https://api-docs.deepseek.com/api/list-models",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.deepseek.com/api_keys"
+      },
       "confidence": "official",
       "models": [
         {
@@ -281,7 +332,8 @@
           ]
         }
       ],
-      "logoAsset": "/model-assets/providers/deepseek.ico"
+      "logoAsset": "/model-assets/providers/deepseek.ico",
+      "providerKind": "chat"
     },
     {
       "id": "dashscope",
@@ -294,8 +346,12 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://bailian.console.aliyun.com/?tab=model#/api-key"
+      },
       "confidence": "official",
       "models": [
         {
@@ -318,7 +374,8 @@
             "streaming"
           ]
         }
-      ]
+      ],
+      "providerKind": "chat"
     },
     {
       "id": "siliconflow",
@@ -331,11 +388,16 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://siliconflow.readme.io/reference/retrieve-a-list-of-models",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://cloud.siliconflow.cn/account/ak"
+      },
       "confidence": "official",
       "models": [],
-      "logoAsset": "/model-assets/providers/siliconflow.png"
+      "logoAsset": "/model-assets/providers/siliconflow.png",
+      "providerKind": "chat"
     },
     {
       "id": "modelscope",
@@ -348,10 +410,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://www.modelscope.cn",
+      "credentialHelp": {
+        "label": "获取 Token",
+        "kind": "api_key",
+        "url": "https://modelscope.cn/my/myaccesstoken"
+      },
       "confidence": "provider_docs",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "huggingface-router",
@@ -364,10 +431,16 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://huggingface.co/docs/inference-providers/en/index",
+      "credentialHelp": {
+        "label": "获取 Token",
+        "kind": "api_key",
+        "url": "https://huggingface.co/settings/tokens"
+      },
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/providers/huggingface.ico"
     },
     {
       "id": "zhipu",
@@ -380,10 +453,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://docs.bigmodel.cn/cn/guide/develop/openai/introduction",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
+      },
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "moonshot",
@@ -396,10 +474,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://platform.kimi.ai/docs/api/list-models",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.moonshot.ai/console/api-keys"
+      },
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "volcengine-ark",
@@ -412,10 +495,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://www.volcengine.com/docs/82379",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
+      },
       "confidence": "provider_docs",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "tencent-hunyuan",
@@ -428,10 +516,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://cloud.tencent.com/document/product/1729/111007",
+      "credentialHelp": {
+        "label": "打开控制台",
+        "kind": "console",
+        "url": "https://console.cloud.tencent.com/hunyuan"
+      },
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "minimax",
@@ -444,10 +537,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://platform.minimax.io/docs/api-reference/text-openai-api",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.minimax.io/user-center/basic-information/interface-key"
+      },
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "mistral",
@@ -460,11 +558,16 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://docs.mistral.ai/api/endpoint/models",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://console.mistral.ai/api-keys"
+      },
       "confidence": "official",
       "models": [],
-      "logoAsset": "/model-assets/providers/mistral.ico"
+      "logoAsset": "/model-assets/providers/mistral.ico",
+      "providerKind": "chat"
     },
     {
       "id": "xai",
@@ -477,11 +580,16 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://docs.x.ai",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://console.x.ai/team/default/api-keys"
+      },
       "confidence": "provider_docs",
       "models": [],
-      "logoAsset": "/model-assets/providers/xai.ico"
+      "logoAsset": "/model-assets/providers/xai.ico",
+      "providerKind": "chat"
     },
     {
       "id": "groq",
@@ -494,11 +602,16 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.2,
       "sourceUrl": "https://console.groq.com/docs/openai",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://console.groq.com/keys"
+      },
       "confidence": "official",
       "models": [],
-      "logoAsset": "/model-assets/providers/groq.ico"
+      "logoAsset": "/model-assets/providers/groq.ico",
+      "providerKind": "chat"
     },
     {
       "id": "together",
@@ -511,10 +624,15 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://docs.together.ai/docs/openai-api-compatibility",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://api.together.ai/settings/api-keys"
+      },
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "chat"
     },
     {
       "id": "ollama",
@@ -525,10 +643,10 @@
         "type": "none"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://github.com/ollama/ollama/blob/main/docs/openai.md",
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "local_runtime"
     },
     {
       "id": "lmstudio",
@@ -539,11 +657,11 @@
         "type": "none"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://lmstudio.ai/docs/app/api/endpoints/openai",
       "confidence": "official",
       "models": [],
-      "logoAsset": "/model-assets/providers/lmstudio.ico"
+      "logoAsset": "/model-assets/providers/lmstudio.ico",
+      "providerKind": "local_runtime"
     },
     {
       "id": "vllm",
@@ -554,10 +672,10 @@
         "type": "none"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://docs.vllm.ai",
       "confidence": "official",
-      "models": []
+      "models": [],
+      "providerKind": "local_runtime"
     },
     {
       "id": "nexa",
@@ -568,10 +686,44 @@
         "type": "none"
       },
       "probeStrategy": "openai_models",
-      "recommendedTemperature": 0.3,
       "sourceUrl": "https://docs.nexaai.com",
       "confidence": "provider_docs",
-      "models": []
+      "models": [],
+      "providerKind": "local_runtime"
+    },
+    {
+      "id": "comfyui",
+      "name": "ComfyUI",
+      "apiStandard": "comfyui",
+      "providerKind": "media_generation",
+      "baseUrl": "http://127.0.0.1:8188",
+      "auth": {
+        "type": "none"
+      },
+      "probeStrategy": "comfyui",
+      "sourceUrl": "https://docs.comfy.org/",
+      "credentialHelp": {
+        "label": "打开 ComfyUI",
+        "kind": "local_ui",
+        "urlFrom": "baseUrl"
+      },
+      "lastCheckedAt": "2026-04-25",
+      "confidence": "official-docs",
+      "models": [
+        {
+          "id": "comfyui-workflow",
+          "capabilities": [
+            "workflow",
+            "image",
+            "video",
+            "audio"
+          ],
+          "parameterProfile": "media_generation",
+          "mediaLimits": {
+            "workflow": true
+          }
+        }
+      ]
     }
   ]
 }

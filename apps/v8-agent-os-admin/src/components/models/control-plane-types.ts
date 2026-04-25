@@ -3,9 +3,14 @@ export type ModelCapabilities = {
     reasoning: boolean;
     toolCalling: boolean;
     vision: boolean;
+    multimodal: boolean;
     streaming: boolean;
+    image: boolean;
+    video: boolean;
+    audio: boolean;
     embedding: boolean;
     rerank: boolean;
+    workflow: boolean;
     computerUse: boolean;
 };
 
@@ -22,7 +27,9 @@ export type ControlPlaneModel = {
     stabilityTier: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
-    temperature?: number | null;
+    capabilitySource?: string | null;
+    parameterProfile?: string | null;
+    mediaLimits?: Record<string, unknown>;
     isEnabled: boolean;
     capabilities: ModelCapabilities;
     capabilityTags: string[];

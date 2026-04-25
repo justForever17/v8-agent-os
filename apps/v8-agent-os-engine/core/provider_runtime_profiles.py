@@ -131,6 +131,8 @@ def resolve_provider_adapter(
         base_url=provider.get("base_url") or provider.get("baseUrl") or "",
     ):
         return "anthropic-compat", "DeepSeek Anthropic compat"
+    if normalized_api == "comfyui":
+        return "comfyui", "ComfyUI media runtime"
     if normalized_api in {"google", "gemini"}:
         return "gemini", "gemini"
     if normalized_api == "anthropic":

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Plus, RefreshCw, X } from "lucide-react";
+import { ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -20,6 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { fetchConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { resolveProviderLogo } from "@/lib/models/model-assets";
 import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
 type AIProvider = {
     id: string;
@@ -50,7 +51,6 @@ type AIModel = {
     type: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
-    temperature?: number | null;
     rerankApiFlavor?: string;
     isEnabled: boolean;
     provider?: {
@@ -83,7 +83,6 @@ type ModelConnectionStatus = {
 type CatalogModel = {
     id: string;
     modelId?: string;
-    name?: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
 };
@@ -93,10 +92,39 @@ type CatalogProvider = {
     apiStandard?: string;
     baseUrl?: string;
     auth?: { type?: string; path?: string };
+    logoAsset?: string | null;
+    credentialHelp?: {
+        label?: string;
+        url?: string;
+        kind?: "api_key" | "console" | "local_ui" | "docs";
+        urlFrom?: "baseUrl";
+    };
     isCustom?: boolean;
     singleActiveModel?: boolean;
     models?: CatalogModel[];
 };
+function ProviderOptionLabel({
+    provider,
+    suffix,
+}: {
+    provider: Pick<CatalogProvider, "id" | "name" | "logoAsset">;
+    suffix?: string;
+}) {
+    const logo = resolveProviderLogo({
+        providerId: provider.id,
+        providerName: provider.name,
+        explicitAsset: provider.logoAsset,
+    });
+    const initial = (provider.name || provider.id || "?").trim().slice(0, 1).toUpperCase();
+    return (
+        <span className="flex min-w-0 items-center gap-2">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600">
+                {logo ? <img src={logo} alt="" className="h-4 w-4 object-contain" /> : initial}
+            </span>
+            <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` · ${suffix}` : ""}</span>
+        </span>
+    );
+}
 function extractErrorText(value: unknown, fallback: string): string {
     if (typeof value === "string" && value.trim())
         return value;
@@ -135,7 +163,7 @@ export default function ModelHubPage() {
     const [editingModel, setEditingModel] = useState<AIModel | null>(null);
     const [providerType, setProviderType] = useState<AIProvider["type"]>("API");
     const [providerCredentialMode, setProviderCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
-    const [providerApiStandard, setProviderApiStandard] = useState<"openai" | "anthropic" | "gemini">("openai");
+    const [providerApiStandard, setProviderApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
     const [providerBaseUrl, setProviderBaseUrl] = useState("");
     const [providerApiKey, setProviderApiKey] = useState("");
     const [providerOauthPath, setProviderOauthPath] = useState("");
@@ -195,13 +223,19 @@ export default function ModelHubPage() {
     const controlModelsById = useMemo(() => new Map((hubEnvelope?.data.models || []).map((item) => [item.modelRef || item.id, item])), [hubEnvelope]);
     const providerOverviewById = useMemo(() => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])), [hubEnvelope]);
     const selectedCatalogProvider = useMemo(() => catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null, [catalogProviders, selectedCatalogProviderId]);
+    const selectedCredentialHelpUrl = useMemo(() => {
+        const help = selectedCatalogProvider?.credentialHelp;
+        if (!help) return "";
+        if (help.urlFrom === "baseUrl") return selectedCatalogProvider?.baseUrl || "";
+        return help.url || "";
+    }, [selectedCatalogProvider]);
     const oauthCatalogProviders = useMemo(() => catalogProviders.filter((item) => item.auth?.type === "oauth_file"), [catalogProviders]);
     const apiCatalogProviders = useMemo(() => catalogProviders.filter((item) => item.auth?.type !== "oauth_file"), [catalogProviders]);
     const visibleCatalogModels = useMemo(() => {
         const query = catalogModelFilter.trim().toLowerCase();
         if (!query) return catalogProbeModels.slice(0, 80);
         return catalogProbeModels
-            .filter((model) => `${model.name || ""} ${model.modelId || ""} ${model.id || ""}`.toLowerCase().includes(query))
+            .filter((model) => `${model.modelId || ""} ${model.id || ""}`.toLowerCase().includes(query))
             .slice(0, 80);
     }, [catalogModelFilter, catalogProbeModels]);
     const filteredModels = activeTab === "all"
@@ -234,7 +268,7 @@ export default function ModelHubPage() {
         event.preventDefault();
         const formData = new FormData(event.currentTarget);
         const payload = Object.fromEntries(formData.entries());
-        for (const key of ["contextWindow", "maxTokens", "temperature"]) {
+        for (const key of ["contextWindow", "maxTokens"]) {
             if (payload[key] === "") payload[key] = null as unknown as FormDataEntryValue;
         }
         const url = editingModel
@@ -597,7 +631,7 @@ export default function ModelHubPage() {
                                         </SelectTrigger>
                                         <SelectContent>
                                             {(provider.models || []).map((model) => (
-                                                <SelectItem key={`${provider.id}:${model.id}`} value={model.id}>{model.name || model.id}</SelectItem>
+                                                <SelectItem key={`${provider.id}:${model.id}`} value={model.id}>{model.id}</SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
@@ -635,14 +669,32 @@ export default function ModelHubPage() {
                                 <SelectContent>
                                     <SelectItem value="__custom__">+ 添加自定义 Provider</SelectItem>
                                     {apiCatalogProviders.filter((item) => item.isCustom).map((provider) => (
-                                        <SelectItem key={provider.id} value={provider.id}>{provider.name} · 自定义</SelectItem>
+                                        <SelectItem key={provider.id} value={provider.id}>
+                                            <ProviderOptionLabel provider={provider} suffix="自定义" />
+                                        </SelectItem>
                                     ))}
                                     {apiCatalogProviders.filter((item) => !item.isCustom).map((provider) => (
-                                        <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>
+                                        <SelectItem key={provider.id} value={provider.id}>
+                                            <ProviderOptionLabel provider={provider} />
+                                        </SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
-                            <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" placeholder="API key；已接入 Provider 可留空复用"/>
+                            <div className="flex min-w-0 items-center rounded-xl border border-input bg-background">
+                                {selectedCredentialHelpUrl ? (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="ml-1 h-9 w-9 shrink-0"
+                                        title={selectedCatalogProvider?.credentialHelp?.label || "获取 API Key"}
+                                        onClick={() => window.open(selectedCredentialHelpUrl, "_blank", "noopener,noreferrer")}
+                                    >
+                                        <ExternalLink className="h-4 w-4"/>
+                                    </Button>
+                                ) : null}
+                                <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0" placeholder="API key；已接入 Provider 可留空复用"/>
+                            </div>
                             <Button disabled={isCatalogBusy} onClick={() => void handleProbeCatalogProvider()}>{t("app.admin.dashboard.model.hub.catalog.probe")}</Button>
                         </div>
                         {selectedCatalogProviderId === "__custom__" ? (
@@ -694,10 +746,10 @@ export default function ModelHubPage() {
                                                     className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white" : "hover:bg-muted"}`}
                                                     onClick={() => {
                                                         setSelectedCatalogModelId(modelId);
-                                                        setCatalogModelFilter(model.name || modelId);
+                                                        setCatalogModelFilter(modelId);
                                                     }}
                                                 >
-                                                    <span className="truncate">{model.name || modelId}</span>
+                                                    <span className="truncate">{modelId}</span>
                                                     {model.contextWindow ? <span className="ml-3 shrink-0 text-xs opacity-70">{model.contextWindow}</span> : null}
                                                 </button>
                                             );
@@ -740,7 +792,7 @@ export default function ModelHubPage() {
                     setEditingProvider(provider);
                     setProviderType(provider.type || "API");
                     setProviderCredentialMode(provider.type === "PLATFORM" ? "oauthFile" : (provider.credentialMode || "apiKey"));
-                    setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini") || "openai");
+                    setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui") || "openai");
                     setProviderBaseUrl(provider.baseUrl || "");
                     setProviderApiKey(provider.apiKey || "");
                     setProviderOauthPath(provider.oauthPath || "");
@@ -762,10 +814,11 @@ export default function ModelHubPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm text-slate-500">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
                     <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-xl">
-                        <TabsList className="grid w-full grid-cols-5 rounded-2xl bg-slate-100">
+                        <TabsList className="grid w-full grid-cols-6 rounded-2xl bg-slate-100">
                             <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
                             <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
                             <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>
+                            <TabsTrigger value="media">媒体</TabsTrigger>
                             <TabsTrigger value="embedding">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</TabsTrigger>
                             <TabsTrigger value="rerank">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</TabsTrigger>
                         </TabsList>
@@ -867,7 +920,9 @@ export default function ModelHubPage() {
                 ? t("app.admin.dashboard.model.hub.page.kdab0f774")
                 : providerApiStandard === "anthropic"
                     ? t("app.admin.dashboard.model.hub.page.k504d12c7")
-                    : t("app.admin.dashboard.model.hub.page.k560df989")} readOnly/>
+                    : providerApiStandard === "comfyui"
+                        ? "ComfyUI"
+                        : t("app.admin.dashboard.model.hub.page.k560df989")} readOnly/>
                                     <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 </div>
                             </>) : providerType === "LOCAL" ? (<>
@@ -899,12 +954,13 @@ export default function ModelHubPage() {
                             </>) : (<div className="space-y-2">
                                 <Label htmlFor="provider-api-standard">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
                                 <input type="hidden" name="apiStandard" value={providerApiStandard}/>
-                                <Select value={providerApiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini") => setProviderApiStandard(value)}>
+                                <Select value={providerApiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini" | "comfyui") => setProviderApiStandard(value)}>
                                     <SelectTrigger id="provider-api-standard"><SelectValue /></SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="openai">{t("app.admin.dashboard.model.hub.page.kdab0f774")}</SelectItem>
                                         <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.page.k504d12c7")}</SelectItem>
                                         <SelectItem value="gemini">{t("app.admin.dashboard.model.hub.page.k560df989")}</SelectItem>
+                                        <SelectItem value="comfyui">ComfyUI</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>)}
@@ -969,6 +1025,7 @@ export default function ModelHubPage() {
                                 <SelectContent>
                                     <SelectItem value="TEXT">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</SelectItem>
                                     <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</SelectItem>
+                                    <SelectItem value="MEDIA">媒体生成</SelectItem>
                                     <SelectItem value="EMBEDDING">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</SelectItem>
                                     <SelectItem value="RERANK">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</SelectItem>
                                 </SelectContent>
@@ -989,20 +1046,22 @@ export default function ModelHubPage() {
                                     {t("app.admin.dashboard.model.hub.page.kfaf657c9")}
                                 </p>
                             </div>) : null}
-                        <div className="grid gap-4 md:grid-cols-3">
-                            <div className="space-y-2">
-                                <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
-                                <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="128000"/>
+                        {modelType === "TEXT" || modelType === "MULTIMODAL" ? (
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <div className="space-y-2">
+                                    <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
+                                    <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="仅用于 V8OS 预算估算"/>
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
+                                    <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="可选请求上限"/>
+                                </div>
                             </div>
-                            <div className="space-y-2">
-                                <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
-                                <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="4096"/>
+                        ) : modelType === "MEDIA" ? (
+                            <div className="rounded-xl border bg-muted/30 p-3 text-sm text-muted-foreground">
+                                媒体生成 Provider 使用 workflow / 图片 / 视频 / 音频参数，不展示聊天模型的上下文窗口、最大输出或温度。
                             </div>
-                            <div className="space-y-2">
-                                <Label htmlFor="model-temperature">{t("app.admin.dashboard.model.hub.page.ke5e6cc55")}</Label>
-                                <Input id="model-temperature" name="temperature" type="number" step="0.1" defaultValue={editingModel?.temperature ?? ""} placeholder="由 runtime/角色配置决定"/>
-                            </div>
-                        </div>
+                        ) : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button>
                     </form>
                 </DialogContent>

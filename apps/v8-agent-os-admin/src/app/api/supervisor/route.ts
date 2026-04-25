@@ -25,6 +25,14 @@ type SupervisorRegistryData = {
         supervisorModel?: string | null;
         defaultReplyModel?: string | null;
     };
+    modelParameters?: {
+        supervisor?: {
+            temperature?: number | null;
+        };
+        subagent?: {
+            temperature?: number | null;
+        };
+    };
     promptBudgetDiagnostics?: Array<Record<string, unknown>>;
 };
 
@@ -49,6 +57,8 @@ export async function GET() {
             allowed_tools: supervisorData.allowedTools ?? null,
             locked_native_tools: supervisorData.lockedNativeTools ?? [],
             runtime_managed_tools: supervisorData.runtimeManagedTools ?? [],
+            supervisor_temperature: supervisorData.modelParameters?.supervisor?.temperature ?? null,
+            subagent_temperature: supervisorData.modelParameters?.subagent?.temperature ?? null,
             name: profile.name || "智能主管",
             roleLabel: profile.roleLabel || "主理人",
             avatar: profile.avatar || "",
@@ -64,7 +74,7 @@ export async function POST(req: Request) {
         const unauthorized = await requireAdminIdentity();
         if (unauthorized) return unauthorized;
 
-        const { systemPrompt, model_id, allowed_tools, name, roleLabel, avatar } = await req.json();
+        const { systemPrompt, model_id, allowed_tools, name, roleLabel, avatar, supervisor_temperature, subagent_temperature } = await req.json();
         const { response, data } = await proxyEngineJson("/config-registry/supervisor", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -81,6 +91,10 @@ export async function POST(req: Request) {
                         supervisorModel: model_id ?? null,
                         defaultReplyModel: undefined,
                     },
+                    modelParameters: {
+                        supervisor: { temperature: supervisor_temperature ?? null },
+                        subagent: { temperature: subagent_temperature ?? null },
+                    },
                 },
             }),
         });
@@ -94,6 +108,8 @@ export async function POST(req: Request) {
             prompt_budget_diagnostics: (data as { data?: SupervisorRegistryData })?.data?.promptBudgetDiagnostics ?? [],
             model_id: model_id ?? null,
             binding_source: "config.json#models.roles.supervisor",
+            supervisor_temperature: supervisor_temperature ?? null,
+            subagent_temperature: subagent_temperature ?? null,
             allowed_tools,
             name,
             roleLabel,

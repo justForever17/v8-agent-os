@@ -39,7 +39,6 @@ interface ModelCardV2Props {
         isEnabled: boolean;
         contextWindow?: number | null;
         maxTokens?: number | null;
-        temperature?: number | null;
     };
     controlMeta?: ControlPlaneModel | null;
     isDefault?: boolean;
@@ -74,25 +73,26 @@ type CapabilityIconItem = {
     Icon: LucideIcon;
 };
 
-function buildCapabilityIconItems(modelType: string, capabilityTags: string[]): CapabilityIconItem[] {
+function buildCapabilityIconItems(modelType: string, capabilityTags: string[], capabilities?: ControlPlaneModel["capabilities"] | null): CapabilityIconItem[] {
     const source = `${modelType} ${capabilityTags.join(" ")}`.toLowerCase();
     const has = (...needles: string[]) => needles.some((needle) => source.includes(needle.toLowerCase()));
+    const cap = (key: keyof ControlPlaneModel["capabilities"]) => Boolean(capabilities?.[key]);
     const items: CapabilityIconItem[] = [];
     const add = (key: string, label: string, Icon: LucideIcon) => {
         if (!items.some((item) => item.key === key)) items.push({ key, label, Icon });
     };
 
-    if (has("chat", "text", "对话", "文本") || !capabilityTags.length) add("chat", "Chat / 对话", MessageCircle);
-    if (has("tool", "function", "工具")) add("tools", "Tools / 工具", Wrench);
-    if (has("stream", "流式")) add("streaming", "Streaming / 流式", Radio);
-    if (has("vision", "视觉")) add("vision", "Vision / 视觉", Eye);
-    if (has("multimodal", "多模态")) add("multimodal", "Multimodal / 多模态", Eye);
-    if (has("image", "图片", "图像")) add("image", "Image / 图片", ImageIcon);
-    if (has("video", "视频")) add("video", "Video / 视频", Video);
-    if (has("audio", "音频", "voice", "语音")) add("audio", "Audio / 音频", Volume2);
-    if (has("embedding", "vector", "向量")) add("embedding", "Embedding / 向量", Database);
-    if (has("rerank", "重排")) add("rerank", "Rerank / 重排", ListOrdered);
-    if (has("reasoning", "推理")) add("reasoning", "Reasoning / 推理", Brain);
+    if (cap("chat") || has("chat", "text", "对话", "文本") || !capabilityTags.length) add("chat", "Chat / 对话", MessageCircle);
+    if (cap("toolCalling") || has("tool", "function", "工具")) add("tools", "Tools / 工具", Wrench);
+    if (cap("streaming") || has("stream", "流式")) add("streaming", "Streaming / 流式", Radio);
+    if (cap("vision") || has("vision", "视觉")) add("vision", "Vision / 视觉", Eye);
+    if (cap("multimodal") || has("multimodal", "多模态")) add("multimodal", "Multimodal / 多模态", Eye);
+    if (cap("image") || has("image", "图片", "图像")) add("image", "Image / 图片", ImageIcon);
+    if (cap("video") || has("video", "视频")) add("video", "Video / 视频", Video);
+    if (cap("audio") || has("audio", "音频", "voice", "语音")) add("audio", "Audio / 音频", Volume2);
+    if (cap("embedding") || has("embedding", "vector", "向量")) add("embedding", "Embedding / 向量", Database);
+    if (cap("rerank") || has("rerank", "重排")) add("rerank", "Rerank / 重排", ListOrdered);
+    if (cap("reasoning") || has("reasoning", "推理")) add("reasoning", "Reasoning / 推理", Brain);
 
     return items;
 }
@@ -115,7 +115,7 @@ export function ModelCardV2({
     const testing = currentStatus === "testing";
     const statusMessage = connectionStatus?.message || "";
     const modelRef = model.modelRef || model.id || model.modelId;
-    const capabilityIconItems = buildCapabilityIconItems(model.type, capabilityTags);
+    const capabilityIconItems = buildCapabilityIconItems(model.type, capabilityTags, controlMeta?.capabilities);
     const modelIcon = resolveModelIcon({
         modelId: model.modelId,
         providerId: model.provider?.id,
@@ -129,7 +129,8 @@ export function ModelCardV2({
         `Type: ${model.type}`,
         typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "",
         typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "",
-        typeof model.temperature === "number" ? `Temperature: ${model.temperature}` : "",
+        controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "",
+        controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "",
         capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "",
         assignedRoles.length ? `Roles: ${assignedRoles.map((role) => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none",
         statusMessage ? `Status: ${statusMessage}` : "",
@@ -166,8 +167,8 @@ export function ModelCardV2({
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
                             {capabilityIconItems.map(({ key, label, Icon }) => (
-                                <span key={`${modelRef}:${key}`} title={label} className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-                                    <Icon className="h-3 w-3" />
+                                <span key={`${modelRef}:${key}`} title={label} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                                    <Icon className="h-2.5 w-2.5" />
                                 </span>
                             ))}
                         </div>

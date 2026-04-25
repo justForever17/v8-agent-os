@@ -360,6 +360,7 @@ async def connect_model_provider(data: dict = Body(...)):
             "name": provider.get("name") or provider_id,
             "base_url": str(base_url or provider.get("baseUrl") or ""),
             "api_standard": provider.get("apiStandard") or "openai",
+            "providerKind": provider.get("providerKind") or existing_provider.get("providerKind") or "chat",
             "type": "PLATFORM" if auth.get("type") == "oauth_file" else "API",
             "api_key": credential if auth.get("type") != "oauth_file" else f"oauth:{oauth_path}",
             "credential_mode": credential_mode,
@@ -369,16 +370,19 @@ async def connect_model_provider(data: dict = Body(...)):
         }
         is_custom_provider = bool(provider.get("isCustom"))
         is_oauth_provider = auth.get("type") == "oauth_file"
-        managed_context_window = None if (is_custom_provider or is_oauth_provider) else model.get("contextWindow")
-        managed_max_tokens = None if (is_custom_provider or is_oauth_provider) else model.get("maxTokens")
-        managed_temperature = None if (is_custom_provider or is_oauth_provider) else model.get("temperature")
+        is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or str(model.get("type") or "").upper() == "MEDIA"
+        managed_context_window = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("contextWindow")
+        managed_max_tokens = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("maxTokens")
         next_model = {
             "type": model.get("type") or "TEXT",
             "contextWindow": managed_context_window,
             "maxTokens": managed_max_tokens,
-            "temperature": managed_temperature,
             "capabilities": model.get("capabilities") or {},
-            "capabilityClass": "vision_multimodal" if (model.get("capabilities") or {}).get("vision") else "chat_general",
+            "capabilityClass": model.get("capabilityClass")
+            or ("media_generation" if is_media_provider else "vision_multimodal" if (model.get("capabilities") or {}).get("vision") else "chat_general"),
+            "capabilitySource": model.get("capabilitySource") or "manual",
+            "parameterProfile": model.get("parameterProfile") or ("media_generation" if is_media_provider else "chat"),
+            "mediaLimits": model.get("mediaLimits") or {},
             "isEnabled": True,
         }
         current_models = dict(existing.get("models") or {})

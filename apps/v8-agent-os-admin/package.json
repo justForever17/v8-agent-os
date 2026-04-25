@@ -6,7 +6,8 @@
     "dev": "next dev -p 9528",
     "build": "next build",
     "start": "next start -p 9528",
-    "lint": "node scripts/validate-i18n.mjs && eslint"
+    "lint": "node scripts/validate-i18n.mjs && eslint",
+    "sync:lobe-icons": "node scripts/sync-lobe-icons.mjs"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.1",
@@ -20,6 +21,7 @@
     "@langchain/langgraph": "^1.0.2",
     "@langchain/mcp-adapters": "^1.0.0",
     "@langchain/openai": "^1.1.2",
+    "@lobehub/icons-static-svg": "^1.87.0",
     "@modelcontextprotocol/sdk": "^1.22.0",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-avatar": "^1.1.11",

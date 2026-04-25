@@ -2608,7 +2608,7 @@
   "app.admin.dashboard.model.hub.catalog.fallback": "Fell back to catalog candidates.",
   "app.admin.dashboard.model.hub.catalog.writeFailed": "Could not write model configuration.",
   "app.admin.dashboard.model.hub.catalog.title": "Quick connect",
-  "app.admin.dashboard.model.hub.catalog.description": "Choose OAuth or a Provider catalog entry, then detect and connect the current model in one flow. Advanced parameters remain editable below.",
+  "app.admin.dashboard.model.hub.catalog.description": "Choose a provider, get a key, probe models, and connect the current model. Advanced parameters remain editable below.",
   "app.admin.dashboard.model.hub.catalog.selectModel": "Select model",
   "app.admin.dashboard.model.hub.catalog.detectAndConnect": "Detect and connect",
   "app.admin.dashboard.model.hub.catalog.apiProvider": "API Key Provider",

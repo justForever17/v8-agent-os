@@ -73,8 +73,9 @@ def build_effective_capability_matrix(
     raw = dict(capabilities or {})
     normalized_class = str(capability_class or "").strip().lower()
     normalized_api = str(api_standard or "openai").strip().lower()
+    media_like = normalized_class == "media_generation"
     chat_like = normalized_class in CHAT_CAPABILITY_CLASSES
-    multimodal = normalized_class == "vision_multimodal" or _bool(raw.get("supportsMultimodal"), _bool(raw.get("vision"), False))
+    multimodal = normalized_class == "vision_multimodal" or _bool(raw.get("supportsMultimodal"), _bool(raw.get("multimodal"), _bool(raw.get("vision"), False)))
     reasoning = _bool(raw.get("supportsReasoning"), _bool(raw.get("reasoning"), normalized_class in {"chat_reasoning", "vision_multimodal"}))
     streaming = _bool(raw.get("supportsStreaming"), _bool(raw.get("streaming"), chat_like))
     tools = _bool(raw.get("supportsTools"), _bool(raw.get("toolCalling"), chat_like))
@@ -88,10 +89,10 @@ def build_effective_capability_matrix(
     matrix = {
         "capabilityClass": normalized_class or "chat_general",
         "apiStandard": normalized_api or "openai",
-        "supports_streaming": streaming,
+        "supports_streaming": False if media_like else streaming,
         "supports_multimodal": multimodal,
         "supports_reasoning_blocks": reasoning_blocks,
-        "supports_native_tools": bool(tools and native_tools),
+        "supports_native_tools": bool(False if media_like else tools and native_tools),
         "supports_prompt_emulated_tools": bool(chat_like and prompt_emulated_tools),
         "supports_native_structured_output": bool(structured and native_structured),
         "supports_prompt_fallback_structured_output": bool(chat_like and prompt_fallback_structured),

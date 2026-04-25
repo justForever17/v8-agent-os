@@ -41,6 +41,11 @@ DEFAULT_BINDINGS = {
     "agents": {},
 }
 
+DEFAULT_ROLE_PARAMETERS = {
+    "supervisor": {"temperature": None},
+    "subagent": {"temperature": None},
+}
+
 DEFAULT_GOVERNANCE = {
     "enabled": True,
     "stickyRunModel": True,
@@ -312,9 +317,14 @@ CAPABILITY_TAG_ORDER = [
     ("reasoning", "推理"),
     ("toolCalling", "工具"),
     ("vision", "视觉"),
+    ("multimodal", "多模态"),
     ("streaming", "流式"),
+    ("image", "图片"),
+    ("video", "视频"),
+    ("audio", "音频"),
     ("embedding", "向量"),
     ("rerank", "重排"),
+    ("workflow", "工作流"),
     ("computerUse", "桌面"),
 ]
 
@@ -389,7 +399,9 @@ def _infer_capability_class(model_type: str, capabilities: Dict[str, bool]) -> s
         return "embedding"
     if normalized_type in {"RERANK", "RERANKER"} or capabilities.get("rerank"):
         return "reranker"
-    if capabilities.get("vision"):
+    if normalized_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO"} or capabilities.get("image") or capabilities.get("video") or capabilities.get("audio") or capabilities.get("workflow"):
+        return "media_generation"
+    if capabilities.get("vision") or capabilities.get("multimodal"):
         return "vision_multimodal"
     if capabilities.get("reasoning"):
         return "chat_reasoning"
@@ -412,7 +424,8 @@ class ModelControlPlane:
         raw_caps = dict(model_meta.get("capabilities") or {})
         display_name = str(model_id)
 
-        chat_like = model_type in {"TEXT", "MULTIMODAL"}
+        media_like = model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO"}
+        chat_like = model_type in {"TEXT", "MULTIMODAL"} and not media_like
         multimodal = model_type == "MULTIMODAL"
         embedding = model_type == "EMBEDDING"
         rerank = model_type in {"RERANK", "RERANKER"}
@@ -423,9 +436,14 @@ class ModelControlPlane:
             "reasoning": bool(raw_caps.get("reasoning", _infer_reasoning(model_id, display_name))),
             "toolCalling": bool(raw_caps.get("toolCalling", chat_like)),
             "vision": bool(raw_caps.get("vision", multimodal)),
+            "multimodal": bool(raw_caps.get("multimodal", raw_caps.get("vision", multimodal))),
             "streaming": bool(raw_caps.get("streaming", chat_like)),
             "embedding": bool(raw_caps.get("embedding", embedding)),
             "rerank": bool(raw_caps.get("rerank", rerank)),
+            "image": bool(raw_caps.get("image", media_like and model_type in {"MEDIA", "IMAGE"})),
+            "video": bool(raw_caps.get("video", media_like and model_type in {"MEDIA", "VIDEO"})),
+            "audio": bool(raw_caps.get("audio", media_like and model_type in {"MEDIA", "AUDIO"})),
+            "workflow": bool(raw_caps.get("workflow", media_like)),
             "computerUse": bool(raw_caps.get("computerUse", False)),
         }
         capability_class = str(model_meta.get("capabilityClass") or _infer_capability_class(model_type, normalized))
@@ -467,10 +485,30 @@ class ModelControlPlane:
             routing[str(key)] = str(value or "")
         return routing
 
+    def _normalize_role_parameters(self, raw: Dict[str, Any]) -> Dict[str, Dict[str, Optional[float]]]:
+        params: Dict[str, Dict[str, Optional[float]]] = deepcopy(DEFAULT_ROLE_PARAMETERS)
+        for role_key, role_value in (raw or {}).items():
+            if not isinstance(role_value, dict):
+                continue
+            incoming = dict(role_value)
+            role_params = dict(params.get(str(role_key)) or {})
+            if "temperature" in incoming:
+                value = incoming.get("temperature")
+                if value in ("", None):
+                    role_params["temperature"] = None
+                else:
+                    try:
+                        role_params["temperature"] = max(min(float(value), 2.0), 0.0)
+                    except (TypeError, ValueError):
+                        role_params["temperature"] = None
+            params[str(role_key)] = role_params
+        return params
+
     def normalize_config(self, raw_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         raw = deepcopy(raw_config or {})
         providers_in = raw.get("providers") or {}
         roles_in = raw.get("roles") or {}
+        role_parameters_in = raw.get("roleParameters") or raw.get("role_parameters") or {}
         bindings_in = raw.get("bindings") or {}
         governance_in = raw.get("governance") or {}
         budgets_in = dict(governance_in.get("budgets") or {})
@@ -486,6 +524,7 @@ class ModelControlPlane:
             for model_id, model_meta_raw in models.items():
                 model_meta = dict(model_meta_raw or {})
                 model_meta.pop("name", None)
+                model_meta.pop("temperature", None)
                 model_meta["runtimeReady"] = provider_runtime_ready
                 capabilities = self._normalize_capabilities(model_id, model_meta)
                 capability_class = str(
@@ -505,13 +544,15 @@ class ModelControlPlane:
                     "type": str(model_meta.get("type") or "TEXT").upper(),
                     "contextWindow": _safe_int(model_meta.get("contextWindow")),
                     "maxTokens": _safe_int(model_meta.get("maxTokens")),
-                    "temperature": _optional_float(model_meta.get("temperature")),
                     "priority": 50 if _safe_int(model_meta.get("priority")) is None else _safe_int(model_meta.get("priority")),
                     "stabilityTier": str(model_meta.get("stabilityTier") or "stable"),
                     "isEnabled": bool(model_meta.get("isEnabled", True)),
                     "runtimeReady": provider_runtime_ready,
                     "capabilities": capabilities,
                     "capabilityClass": capability_class,
+                    "capabilitySource": model_meta.get("capabilitySource") or "manual",
+                    "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
+                    "mediaLimits": model_meta.get("mediaLimits") or {},
                 }
 
             providers[str(provider_id)] = {
@@ -522,6 +563,7 @@ class ModelControlPlane:
                     "base_url": meta.get("base_url") or meta.get("baseUrl") or "",
                     "api_key": meta.get("api_key") or meta.get("apiKey") or "",
                     "api_standard": meta.get("api_standard") or meta.get("apiStandard") or "openai",
+                    "providerKind": meta.get("providerKind") or meta.get("provider_kind") or "chat",
                     "type": meta.get("type") or "API",
                     "icon": meta.get("icon") or None,
                     "logoAsset": meta.get("logoAsset") or None,
@@ -534,6 +576,7 @@ class ModelControlPlane:
             "version": _safe_int(raw.get("version")) or 2,
             "providers": providers,
             "roles": self._normalize_roles(roles_in),
+            "roleParameters": self._normalize_role_parameters(role_parameters_in),
             "bindings": {
                 **DEFAULT_BINDINGS,
                 **bindings_in,
@@ -629,6 +672,28 @@ class ModelControlPlane:
         resolved = self.resolve_model_for_role(role)
         return str(resolved.get("resolvedModelRef") or resolved.get("resolvedModelId") or "")
 
+    def _parameter_role_key(self, role: str) -> str:
+        normalized = str(role or "").strip()
+        if normalized.startswith("agent:") or normalized.startswith("reviewer:"):
+            return "subagent"
+        return normalized
+
+    def get_role_parameters(self, role: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[float]]:
+        normalized = config or self.get_config()
+        params = dict(normalized.get("roleParameters") or {})
+        key = self._parameter_role_key(role)
+        return dict(params.get(key) or {})
+
+    def get_role_temperature(self, role: str, config: Optional[Dict[str, Any]] = None) -> Optional[float]:
+        params = self.get_role_parameters(role, config)
+        value = params.get("temperature")
+        if value in ("", None):
+            return None
+        try:
+            return max(min(float(value), 2.0), 0.0)
+        except (TypeError, ValueError):
+            return None
+
     def _build_model_record(
         self,
         *,
@@ -648,6 +713,7 @@ class ModelControlPlane:
             "model": model_meta,
             "governance": dict(normalized.get("governance") or {}),
             "roles": dict(normalized.get("roles") or {}),
+            "roleParameters": dict(normalized.get("roleParameters") or {}),
             "routingPolicies": dict(normalized.get("routingPolicies") or {}),
         }
 
@@ -806,7 +872,7 @@ class ModelControlPlane:
             ),
             "models": len(flat_models),
             "reasoningModels": sum(1 for model in flat_models if model["capabilities"].get("reasoning")),
-            "multimodalModels": sum(1 for model in flat_models if model["capabilities"].get("vision")),
+            "multimodalModels": sum(1 for model in flat_models if model["capabilities"].get("vision") or model["capabilities"].get("multimodal")),
             "rolesAssigned": assigned_roles,
             "capabilityClasses": self._count_capability_classes(flat_models),
         }
@@ -844,7 +910,9 @@ class ModelControlPlane:
                         "type": model_meta.get("type") or "TEXT",
                         "contextWindow": model_meta.get("contextWindow"),
                         "maxTokens": model_meta.get("maxTokens"),
-                        "temperature": model_meta.get("temperature"),
+                        "capabilitySource": model_meta.get("capabilitySource") or "manual",
+                        "parameterProfile": model_meta.get("parameterProfile") or "chat",
+                        "mediaLimits": model_meta.get("mediaLimits") or {},
                         "priority": model_meta.get("priority"),
                         "stabilityTier": model_meta.get("stabilityTier"),
                         "isEnabled": bool(model_meta.get("isEnabled", True)),

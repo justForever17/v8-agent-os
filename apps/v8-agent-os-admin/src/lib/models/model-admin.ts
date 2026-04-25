@@ -19,7 +19,6 @@ export type AdminModelRecord = {
     type: string;
     contextWindow: number | null;
     maxTokens: number | null;
-    temperature: number | null;
     rerankApiFlavor: string;
     isEnabled: boolean;
     provider: {
@@ -83,7 +82,6 @@ export function mapEngineModel(
         type: String(modelMeta.type || "TEXT"),
         contextWindow: asNullableNumber(modelMeta.contextWindow),
         maxTokens: asNullableNumber(modelMeta.maxTokens),
-        temperature: asNullableNumber(modelMeta.temperature),
         rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
         isEnabled: modelMeta.isEnabled !== false,
         provider: {
@@ -120,7 +118,6 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
         type: data.type,
         contextWindow: parseOptionalInteger(data.contextWindow),
         maxTokens: parseOptionalInteger(data.maxTokens),
-        temperature: parseOptionalFloat(data.temperature),
         costPerInput: parseOptionalFloat(data.costPerInput),
         costPerOutput: parseOptionalFloat(data.costPerOutput),
         rerank_api_flavor: String(data.rerankApiFlavor || "").trim() || undefined,

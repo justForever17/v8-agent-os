@@ -285,7 +285,6 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
             type: String(modelMeta.type || "TEXT"),
             contextWindow: typeof modelMeta.contextWindow === "number" ? modelMeta.contextWindow : null,
             maxTokens: typeof modelMeta.maxTokens === "number" ? modelMeta.maxTokens : null,
-            temperature: typeof modelMeta.temperature === "number" ? modelMeta.temperature : null,
             rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
             isEnabled: modelMeta.isEnabled !== false,
         };

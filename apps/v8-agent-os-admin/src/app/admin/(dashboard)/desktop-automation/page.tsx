@@ -10,19 +10,21 @@ import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 
 type ModelOption = {
     id: string;
+    modelRef?: string;
+    providerId?: string;
     modelId: string;
     name: string;
     type: string;
-    provider?: { name?: string };
+    provider?: { id?: string; name?: string };
     providerName?: string;
 };
 
@@ -208,17 +210,13 @@ export default function DesktopAutomationPage() {
                 <ConfigCard title={"app.admin.dashboard.desktop.automation.page.keb697d9b"} description={"app.admin.dashboard.desktop.automation.page.k2a55c8b3"}>
                     <div className="space-y-2">
                         <Label>{t("app.admin.dashboard.desktop.automation.page.k9d1ed51e")}</Label>
-                        <Select value={envelope.data.modelBindings.plannerModel || "__empty__"} onValueChange={(value) => updateBinding("plannerModel", value)}>
-                            <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.desktop.automation.page.k54745147")} /></SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="__empty__">{t("app.admin.dashboard.desktop.automation.page.k54745147")}</SelectItem>
-                                {llmModels.map((model) => (
-                                    <SelectItem key={model.modelId} value={model.modelId}>
-                                        {model.modelId} {model.provider?.name ? `(${model.provider.name})` : ""}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                        <ModelSelect
+                            models={llmModels}
+                            value={envelope.data.modelBindings.plannerModel || "__empty__"}
+                            emptyLabel={t("app.admin.dashboard.desktop.automation.page.k54745147")}
+                            placeholder={t("app.admin.dashboard.desktop.automation.page.k54745147")}
+                            onValueChange={(value) => updateBinding("plannerModel", value)}
+                        />
                     </div>
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-xs leading-6 text-slate-600">
                         <div className="font-medium text-slate-900">{t("app.admin.dashboard.desktop.automation.page.kf558439c")}</div>
@@ -240,17 +238,13 @@ export default function DesktopAutomationPage() {
                 <ConfigCard title={"app.admin.dashboard.desktop.automation.page.ke9dbede4"} description={"app.admin.dashboard.desktop.automation.page.k47ac837b"}>
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.desktop.automation.page.k428ef950")}</Label>
-                            <Select value={envelope.data.modelBindings.visualJudgeModel || "__empty__"} onValueChange={(value) => updateBinding("visualJudgeModel", value)}>
-                            <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.desktop.automation.page.k54745147")} /></SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="__empty__">{t("app.admin.dashboard.desktop.automation.page.k54745147")}</SelectItem>
-                                {llmModels.map((model) => (
-                                    <SelectItem key={model.modelId} value={model.modelId}>
-                                        {model.modelId} {model.provider?.name ? `(${model.provider.name})` : ""}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                            <ModelSelect
+                                models={llmModels}
+                                value={envelope.data.modelBindings.visualJudgeModel || "__empty__"}
+                                emptyLabel={t("app.admin.dashboard.desktop.automation.page.k54745147")}
+                                placeholder={t("app.admin.dashboard.desktop.automation.page.k54745147")}
+                                onValueChange={(value) => updateBinding("visualJudgeModel", value)}
+                            />
                     </div>
                         <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
                             <div className="space-y-1">
@@ -272,20 +266,13 @@ export default function DesktopAutomationPage() {
                     </div>
                     <div className="space-y-2">
                         <Label>{t("app.admin.dashboard.desktop.automation.page.kfef16620")}</Label>
-                        <Select
+                        <ModelSelect
+                            models={rerankModels}
                             value={envelope.data.modelBindings.candidateRerankerModel || "__empty__"}
+                            emptyLabel={t("app.admin.dashboard.desktop.automation.page.k39830d18")}
+                            placeholder={t("app.admin.dashboard.desktop.automation.page.k39830d18")}
                             onValueChange={(value) => updateBinding("candidateRerankerModel", value)}
-                        >
-                            <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.desktop.automation.page.k39830d18")} /></SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="__empty__">{t("app.admin.dashboard.desktop.automation.page.k39830d18")}</SelectItem>
-                                {rerankModels.map((model) => (
-                                    <SelectItem key={model.modelId} value={model.modelId}>
-                                        {model.modelId} {(model.provider?.name || model.providerName) ? `(${model.provider?.name || model.providerName})` : ""}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                        />
                         <p className="text-xs leading-5 text-slate-500">
                             {t("app.admin.dashboard.desktop.automation.page.k59f13024")}{envelope.data.modelBindings.fallbackRerankerModel || t("app.admin.dashboard.desktop.automation.page.k54745147")}{t("app.admin.dashboard.desktop.automation.page.k75b279f7")}
                         </p>

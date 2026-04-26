@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -61,8 +62,12 @@ type BaselineSystemTool = {
 
 type AIModel = {
     id: string;
+    modelRef?: string;
+    providerId?: string;
+    modelId?: string;
     name: string;
-    provider?: { name?: string | null } | null;
+    provider?: { id?: string; name?: string | null } | null;
+    providerName?: string | null;
 };
 
 type MCPTool = {
@@ -1798,18 +1803,12 @@ export default function SubagentsPage() {
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.subagents.page.kca695f8f")}</Label>
-                                <Select value={form.modelId} onValueChange={(value) => setForm((current) => ({ ...current, modelId: value }))}>
-                                    <SelectTrigger>
-                                        <SelectValue placeholder={t("app.admin.dashboard.subagents.page.k9e6fdf0a")} />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {models.map((model) => (
-                                            <SelectItem key={model.id} value={model.id}>
-                                                {model.id} {model.provider?.name ? `(${model.provider.name})` : ""}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                <ModelSelect
+                                    models={models}
+                                    value={form.modelId}
+                                    placeholder={t("app.admin.dashboard.subagents.page.k9e6fdf0a")}
+                                    onValueChange={(value) => setForm((current) => ({ ...current, modelId: value }))}
+                                />
                             </div>
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.subagents.page.k963f9424")}</Label>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, Clapperboard, Music2, RefreshCw, Sparkles, UserRound } from "lucide-react";
+import { Box, Clapperboard, RefreshCw, Sparkles, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ type CreativeMediaData = {
     characterBibles: Array<Record<string, unknown>>;
     keyframes: Array<Record<string, unknown>>;
     jobs: Array<Record<string, unknown>>;
+    editPlans: Array<Record<string, unknown>>;
+    renders: Array<Record<string, unknown>>;
 };
 
 const EMPTY_DATA: CreativeMediaData = {
@@ -24,6 +26,8 @@ const EMPTY_DATA: CreativeMediaData = {
     characterBibles: [],
     keyframes: [],
     jobs: [],
+    editPlans: [],
+    renders: [],
 };
 
 function text(value: unknown, fallback = "-") {
@@ -65,7 +69,7 @@ export default function CreativeMediaPage() {
         setLoading(true);
         setError("");
         try {
-            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs] = await Promise.all([
+            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders] = await Promise.all([
                 fetch("/api/creative-media/catalog", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/resolutions", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/recipes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
@@ -73,6 +77,8 @@ export default function CreativeMediaPage() {
                 fetch("/api/creative-media/character-bibles", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/keyframes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/edit-plans", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/renders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
             ]);
             setData({
                 catalog,
@@ -82,6 +88,8 @@ export default function CreativeMediaPage() {
                 characterBibles: Array.isArray(characterBibles.characterBibles) ? characterBibles.characterBibles : [],
                 keyframes: Array.isArray(keyframes.keyframes) ? keyframes.keyframes : [],
                 jobs: Array.isArray(jobs.jobs) ? jobs.jobs : [],
+                editPlans: Array.isArray(editPlans.editPlans) ? editPlans.editPlans : [],
+                renders: Array.isArray(renders.renders) ? renders.renders : [],
             });
         } catch (err) {
             setError(String(err));
@@ -107,6 +115,9 @@ export default function CreativeMediaPage() {
                     <p className="mt-2 text-muted-foreground">
                         只读治理面板：查看 recipe、asset ledger、角色 bible、关键帧、job 与 provider catalog。
                     </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                        音乐保持 Creative Media cue / brief / reference / artifact 体系；旧播放器仅作兼容 API。
+                    </p>
                 </div>
                 <Button variant="outline" onClick={() => void fetchData()} disabled={loading}>
                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -120,30 +131,14 @@ export default function CreativeMediaPage() {
                 </Card>
             ) : null}
 
-            <Card className="border-violet-200 bg-violet-50/70">
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                        <Music2 className="h-5 w-5" />
-                        音乐边界
-                    </CardTitle>
-                    <CardDescription>
-                        Creative Media 的音乐是 cue sheet、score brief、music reference 与未来生成计划；旧 MusicTrack URL 播放器只保留兼容 API。
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-3 text-sm text-slate-700 md:grid-cols-3">
-                    <div className="rounded-md border bg-white p-3">不写入 /api/music</div>
-                    <div className="rounded-md border bg-white p-3">不生成 audioUrl / musicUrl / tracks</div>
-                    <div className="rounded-md border bg-white p-3">真实媒体输出必须进入 artifact / asset ledger</div>
-                </CardContent>
-            </Card>
-
-            <div className="grid gap-3 md:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-6">
                 {[
                     { label: "Catalog Modalities", value: countCatalogModalities(data.catalog), icon: Box },
                     { label: "Recipes", value: data.recipes.length, icon: Sparkles },
                     { label: "Assets", value: data.assets.length, icon: Box },
                     { label: "Characters", value: data.characterBibles.length, icon: UserRound },
                     { label: "Keyframes / Jobs", value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
+                    { label: "Edit / Render", value: `${data.editPlans.length} / ${data.renders.length}`, icon: Clapperboard },
                 ].map((item) => (
                     <Card key={item.label}>
                         <CardContent className="flex items-center gap-3 p-4">
@@ -273,6 +268,66 @@ export default function CreativeMediaPage() {
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(keyframe.recipeId)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={3} label="暂无关键帧" />}
+                            </TableBody>
+                        </Table>
+                    </CardContent>
+                </Card>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-2">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Edit Plans</CardTitle>
+                        <CardDescription>P3 后期计划：timeline、tracks、lineage 与 render profile。</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>ID</TableHead>
+                                    <TableHead>Recipe</TableHead>
+                                    <TableHead>状态</TableHead>
+                                    <TableHead>更新</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {data.editPlans.length ? data.editPlans.slice(0, 8).map((plan) => (
+                                    <TableRow key={text(plan.planId)}>
+                                        <TableCell className="max-w-40 truncate font-mono text-xs">{text(plan.planId)}</TableCell>
+                                        <TableCell className="max-w-40 truncate font-mono text-xs">{text(plan.recipeId)}</TableCell>
+                                        <TableCell>{text(plan.status)}</TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">{text(plan.updatedAt)}</TableCell>
+                                    </TableRow>
+                                )) : <EmptyRow colSpan={4} label="暂无 edit plan" />}
+                            </TableBody>
+                        </Table>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Render Jobs</CardTitle>
+                        <CardDescription>P3 本地 ffmpeg 渲染任务与 artifact 输出。</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>ID</TableHead>
+                                    <TableHead>Plan</TableHead>
+                                    <TableHead>状态</TableHead>
+                                    <TableHead>Artifacts</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {data.renders.length ? data.renders.slice(0, 8).map((render) => (
+                                    <TableRow key={text(render.renderJobId)}>
+                                        <TableCell className="max-w-40 truncate font-mono text-xs">{text(render.renderJobId)}</TableCell>
+                                        <TableCell className="max-w-40 truncate font-mono text-xs">{text(render.planId)}</TableCell>
+                                        <TableCell>{text(render.status)}</TableCell>
+                                        <TableCell>{Array.isArray(render.artifacts) ? render.artifacts.length : 0}</TableCell>
+                                    </TableRow>
+                                )) : <EmptyRow colSpan={4} label="暂无 render job" />}
                             </TableBody>
                         </Table>
                     </CardContent>

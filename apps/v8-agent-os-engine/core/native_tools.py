@@ -4011,6 +4011,81 @@ def creative_media_list_keyframes(
 
 
 @tool
+def creative_media_create_edit_plan(request: dict[str, Any]) -> str:
+    """Create a CreativeMedia P3 edit plan from registered video/audio assets and optional subtitles."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        plan = creative_media_runtime.create_edit_plan(dict(request or {}))
+        return json.dumps({"editPlan": plan}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error creating CreativeMedia edit plan: {str(e)}"
+
+
+@tool
+def creative_media_get_edit_plan(plan_id: str) -> str:
+    """Read a CreativeMedia edit plan by id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        plan = creative_media_runtime.get_edit_plan(plan_id)
+        if not plan:
+            return f"Error: CreativeMedia edit plan not found: {plan_id}"
+        return json.dumps({"editPlan": plan}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia edit plan: {str(e)}"
+
+
+@tool
+def creative_media_list_edit_plans(recipe_id: Optional[str] = None) -> str:
+    """List CreativeMedia edit plans, optionally filtered by recipe id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps({"editPlans": creative_media_runtime.list_edit_plans(recipe_id=recipe_id)}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia edit plans: {str(e)}"
+
+
+@tool
+def creative_media_render_edit_plan(request: dict[str, Any]) -> str:
+    """Render a CreativeMedia edit plan locally through ffmpeg and record output artifacts."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        render = creative_media_runtime.render_edit_plan(dict(request or {}))
+        return json.dumps({"render": render}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error rendering CreativeMedia edit plan: {str(e)}"
+
+
+@tool
+def creative_media_get_render(render_job_id: str) -> str:
+    """Read a CreativeMedia render job by id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        render = creative_media_runtime.get_render(render_job_id)
+        if not render:
+            return f"Error: CreativeMedia render job not found: {render_job_id}"
+        return json.dumps({"render": render}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia render job: {str(e)}"
+
+
+@tool
+def creative_media_list_renders(plan_id: Optional[str] = None, status: Optional[str] = None) -> str:
+    """List CreativeMedia render jobs, optionally filtered by edit plan or status."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        renders = creative_media_runtime.list_renders(plan_id=plan_id, status=status)
+        return json.dumps({"renders": renders}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia render jobs: {str(e)}"
+
+
+@tool
 def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
     """Ask the user for mandatory input or confirmation and pause the graph until a response is provided."""
     request = {
@@ -10008,6 +10083,12 @@ NATIVE_TOOLS = [
     creative_media_register_keyframe,
     creative_media_get_keyframe,
     creative_media_list_keyframes,
+    creative_media_create_edit_plan,
+    creative_media_get_edit_plan,
+    creative_media_list_edit_plans,
+    creative_media_render_edit_plan,
+    creative_media_get_render,
+    creative_media_list_renders,
     computer_use_list_apps,
     computer_use_list_primitives,
     computer_use_desktop_capabilities,

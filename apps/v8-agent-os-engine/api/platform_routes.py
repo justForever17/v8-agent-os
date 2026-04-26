@@ -272,9 +272,18 @@ async def probe_model_provider(data: dict = Body(...)):
             raise HTTPException(status_code=422, detail="providerId is required")
         credential = str(data.get("apiKey") or data.get("api_key") or "").strip()
         credential_source = "request" if credential else ""
+        provider_kind = str(data.get("providerKind") or data.get("provider_kind") or "").strip()
+        media_modality = str(data.get("mediaModality") or data.get("media_modality") or "").strip()
+        api_standard = str(data.get("apiStandard") or data.get("api_standard") or "openai").strip()
         provider = None
         if is_custom_probe:
-            provider = model_provider_catalog.build_custom_provider(custom_provider_name, base_url)
+            provider = model_provider_catalog.build_custom_provider(
+                custom_provider_name,
+                base_url,
+                provider_kind=provider_kind or "chat",
+                media_modality=media_modality,
+                api_standard=api_standard,
+            )
             provider_id = str(provider.get("id") or "")
         elif not credential:
             config = model_control_plane.get_config()
@@ -334,11 +343,21 @@ async def connect_model_provider(data: dict = Body(...)):
         custom_provider_name = str(data.get("customProviderName") or data.get("custom_provider_name") or "").strip()
         base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
         incoming_credential = str(data.get("apiKey") or data.get("api_key") or "").strip()
+        provider_kind = str(data.get("providerKind") or data.get("provider_kind") or "").strip()
+        media_modality = str(data.get("mediaModality") or data.get("media_modality") or "").strip()
+        api_standard = str(data.get("apiStandard") or data.get("api_standard") or "").strip()
+        requested_model_type = str(data.get("modelType") or data.get("type") or "").strip().upper()
         provider = model_provider_catalog.get_provider(provider_id)
         if not provider and provider_id in {"__custom__", "custom"}:
             if not incoming_credential:
                 raise HTTPException(status_code=422, detail="apiKey is required before connecting this Provider")
-            provider = model_provider_catalog.build_custom_provider(custom_provider_name, base_url)
+            provider = model_provider_catalog.build_custom_provider(
+                custom_provider_name,
+                base_url,
+                provider_kind=provider_kind or ("media_generation" if media_modality else "chat"),
+                media_modality=media_modality,
+                api_standard=api_standard or "openai",
+            )
             provider = model_provider_catalog.save_custom_provider(provider)
             provider_id = str(provider.get("id") or "")
         if not provider:
@@ -359,8 +378,9 @@ async def connect_model_provider(data: dict = Body(...)):
             **existing_provider,
             "name": provider.get("name") or provider_id,
             "base_url": str(base_url or provider.get("baseUrl") or ""),
-            "api_standard": provider.get("apiStandard") or "openai",
+            "api_standard": api_standard or provider.get("apiStandard") or "openai",
             "providerKind": provider.get("providerKind") or existing_provider.get("providerKind") or "chat",
+            "mediaModality": provider.get("mediaModality") or media_modality or existing_provider.get("mediaModality") or "",
             "type": "PLATFORM" if auth.get("type") == "oauth_file" else "API",
             "api_key": credential if auth.get("type") != "oauth_file" else f"oauth:{oauth_path}",
             "credential_mode": credential_mode,
@@ -370,11 +390,13 @@ async def connect_model_provider(data: dict = Body(...)):
         }
         is_custom_provider = bool(provider.get("isCustom"))
         is_oauth_provider = auth.get("type") == "oauth_file"
-        is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or str(model.get("type") or "").upper() == "MEDIA"
+        media_model_types = {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
+        normalized_model_type = requested_model_type if requested_model_type in media_model_types | {"TEXT", "MULTIMODAL", "EMBEDDING", "RERANK"} else str(model.get("type") or "TEXT").upper()
+        is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or normalized_model_type in media_model_types
         managed_context_window = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("contextWindow")
         managed_max_tokens = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("maxTokens")
         next_model = {
-            "type": model.get("type") or "TEXT",
+            "type": normalized_model_type or "TEXT",
             "contextWindow": managed_context_window,
             "maxTokens": managed_max_tokens,
             "capabilities": model.get("capabilities") or {},

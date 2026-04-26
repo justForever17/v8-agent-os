@@ -9,6 +9,7 @@ import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip"
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,13 +21,17 @@ import { cn } from "@/lib/utils";
 
 interface SysModel {
     id: string;
+    modelRef?: string;
+    providerId?: string;
     modelId: string;
     name: string;
     type: string;
     provider?: {
+        id?: string;
         name?: string;
         icon?: string;
     };
+    providerName?: string;
 }
 
 interface ContextPolicy {
@@ -290,10 +295,6 @@ function describeSummaryStrategy(policy: ContextPolicy, bindings: ContextBinding
         return bindings.summaryModel ? "LLM 压缩模型已绑定" : "使用当前默认 summary 角色";
     }
     return "规则压缩";
-}
-
-function modelValue(model: SysModel) {
-    return String(model.modelId || model.id || "").trim();
 }
 
 export function MemoryContextPanel() {
@@ -641,27 +642,18 @@ export function MemoryContextPanel() {
 
                             <div className="space-y-1.5">
                                 <Label>压缩模型绑定</Label>
-                                <Select
+                                <ModelSelect
+                                    models={llmModels}
                                     value={bindingsForm.summaryModel || "__empty__"}
+                                    emptyLabel="跟随默认 summary 角色"
+                                    placeholder="未单独绑定时使用默认 summary 角色"
                                     onValueChange={(value) => {
                                         setBindingsForm((prev) => ({
                                             ...prev,
-                                            summaryModel: value === "__empty__" ? "" : value,
+                                            summaryModel: value,
                                         }));
                                     }}
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="未单独绑定时使用默认 summary 角色" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="__empty__">跟随默认 summary 角色</SelectItem>
-                                        {llmModels.map((model) => (
-                                            <SelectItem key={modelValue(model)} value={modelValue(model)}>
-                                                {modelValue(model)} {model.provider?.name ? `(${model.provider.name})` : ""}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                />
                                 <p className="text-xs text-slate-500">如果压缩模型窗口小于主模型，系统会自动切块压缩后再递归汇总。</p>
                             </div>
                         </div>

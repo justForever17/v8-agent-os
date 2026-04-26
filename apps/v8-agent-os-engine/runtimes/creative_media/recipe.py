@@ -47,6 +47,15 @@ def _list_of_strings(value: Any) -> list[str]:
     return result
 
 
+def _scope_fields(request: dict[str, Any], previous: dict[str, Any] | None = None) -> dict[str, str]:
+    previous = previous or {}
+    return {
+        "projectId": _clean_str(request.get("projectId") or request.get("project_id") or previous.get("projectId")),
+        "workspaceId": _clean_str(request.get("workspaceId") or request.get("workspace_id") or previous.get("workspaceId")),
+        "workspacePath": _clean_str(request.get("workspacePath") or request.get("workspace_path") or previous.get("workspacePath")),
+    }
+
+
 def _extract_quoted_text(prompt: str) -> list[str]:
     patterns = [
         r"「([^」]{1,80})」",
@@ -263,6 +272,7 @@ class CreativeRecipeCompiler:
         now = utc_now_iso()
         bible = {
             "characterBibleId": bible_id,
+            **_scope_fields(request, previous),
             "name": _clean_str(request.get("name") or previous.get("name")) or bible_id,
             "description": _clean_str(request.get("description") or previous.get("description")),
             "identityAnchors": _list_of_strings(request.get("identityAnchors") or request.get("identity_anchors") or previous.get("identityAnchors")),
@@ -300,6 +310,7 @@ class CreativeRecipeCompiler:
         now = utc_now_iso()
         keyframe = {
             "keyframeId": keyframe_id,
+            **_scope_fields(request, previous),
             "recipeId": _clean_str(request.get("recipeId") or request.get("recipe_id") or previous.get("recipeId")),
             "shotId": _clean_str(request.get("shotId") or request.get("shot_id") or previous.get("shotId")),
             "role": _clean_str(request.get("role") or previous.get("role") or "reference"),
@@ -357,6 +368,7 @@ class CreativeRecipeCompiler:
         now = utc_now_iso()
         asset = {
             "assetId": asset_id,
+            **_scope_fields(request, previous),
             "role": _clean_str(request.get("role") or previous.get("role") or "reference"),
             "modality": _normalize_modality(request.get("modality") or previous.get("modality") or "image"),
             "assetPlane": "creative_media_asset",
@@ -467,6 +479,7 @@ class CreativeRecipeCompiler:
         }
         return {
             "recipeId": _clean_str(request.get("recipeId") or request.get("id")) or f"cm_recipe_{uuid.uuid4().hex}",
+            **_scope_fields(request),
             "version": 1,
             "modality": modality,
             "recipeKind": recipe_kind,

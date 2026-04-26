@@ -1,13 +1,13 @@
 "use client";
 
-import { FileAudio, FileImage, FileText, FileVideo, Layout, Code, Download, Maximize2, Link2 } from "lucide-react";
+import { Disc3, FileAudio, FileImage, FileText, FileVideo, Layout, Code, Download, Maximize2, Link2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 interface ArtifactCardProps {
     id: string;
     title: string;
-    type: 'code' | 'markdown' | 'html' | 'image' | 'video' | 'audio' | 'document' | 'file';
+    type: 'code' | 'markdown' | 'html' | 'image' | 'video' | 'audio' | 'music' | 'document' | 'file';
     subtitle?: string;
     className?: string;
     onClick?: () => void;
@@ -25,7 +25,9 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                     ? <FileImage className="h-5 w-5" />
                     : type === 'video'
                         ? <FileVideo className="h-5 w-5" />
-                        : type === 'audio'
+                        : type === 'music'
+                            ? <Disc3 className="h-5 w-5" />
+                            : type === 'audio'
                             ? <FileAudio className="h-5 w-5" />
                             : <Link2 className="h-5 w-5" />;
 
@@ -42,7 +44,8 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                     type === 'html' ? "bg-orange-100/50 text-orange-600 border-orange-200" :
                         type === 'image' ? "bg-pink-100/50 text-pink-600 border-pink-200" :
                             type === 'video' ? "bg-violet-100/50 text-violet-600 border-violet-200" :
-                                type === 'audio' ? "bg-amber-100/50 text-amber-600 border-amber-200" :
+                                type === 'music' ? "bg-fuchsia-100/50 text-fuchsia-600 border-fuchsia-200" :
+                                    type === 'audio' ? "bg-amber-100/50 text-amber-600 border-amber-200" :
                                     "bg-green-100/50 text-green-600 border-green-200"
             )}>
                 {icon}

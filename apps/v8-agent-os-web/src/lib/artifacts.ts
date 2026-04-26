@@ -122,8 +122,13 @@ export function normalizeRuntimeArtifacts(input: unknown): RuntimeArtifact[] {
         .filter((artifact): artifact is RuntimeArtifact => artifact !== null);
 }
 
-export function inferArtifactCardType(artifact: RuntimeArtifact): "code" | "markdown" | "html" | "image" | "video" | "audio" | "document" | "file" {
+export function inferArtifactCardType(artifact: RuntimeArtifact): "code" | "markdown" | "html" | "image" | "video" | "audio" | "music" | "document" | "file" {
     const kind = artifact.kind.toLowerCase();
+    const metadata = artifact.metadata || {};
+    const musicProbe = `${kind} ${String(metadata.modality || "")} ${String(metadata.musicKind || metadata.music_kind || "")}`.toLowerCase();
+    if (musicProbe.includes("music")) {
+        return "music";
+    }
     if (kind === "image" || kind === "video" || kind === "audio" || kind === "document") {
         return kind;
     }

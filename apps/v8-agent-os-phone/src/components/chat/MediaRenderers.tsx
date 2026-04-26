@@ -14,11 +14,13 @@ export const MediaPlayer = memo(function MediaPlayer({
     type,
     title,
     candidates,
+    variant = "audio",
 }: {
     src: string;
     type: "video" | "audio";
     title?: string;
     candidates?: string[];
+    variant?: "audio" | "music";
 }) {
     const { colors, t } = useUiPrefs();
     const displayTitle = title || src.split("/").pop()?.split("?")[0] || t("src.components.chat.mediarenderers.media_file");
@@ -36,11 +38,12 @@ export const MediaPlayer = memo(function MediaPlayer({
         : [];
 
     if (type === "audio") {
+        const isMusic = variant === "music";
         if (previewBlocked || !resolvedSrc) {
             return (
                 <View style={[styles.videoWrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                     <View style={styles.blockedWrap}>
-                        <MaterialCommunityIcons name="music-off" size={28} color={colors.warning} />
+                        <MaterialCommunityIcons name={isMusic ? "album" : "music-off"} size={28} color={colors.warning} />
                         <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                         <Text style={[styles.blockedText, { color: colors.textMuted }]}>
                             {previewBlocked
@@ -54,12 +57,12 @@ export const MediaPlayer = memo(function MediaPlayer({
         return (
             <View style={[styles.audioCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                 <View style={[styles.audioIcon, { backgroundColor: colors.primarySoft }]}>
-                    <MaterialCommunityIcons name="music-note-outline" size={18} color={colors.primaryDeep} />
+                    <MaterialCommunityIcons name={isMusic ? "album" : "music-note-outline"} size={18} color={colors.primaryDeep} />
                 </View>
                 <View style={styles.audioBody}>
                     <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                     <Text style={[styles.audioSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
-                        {t("src.components.chat.mediarenderers.tap_to_open_audio")}
+                        {isMusic ? "音乐 artifact · 点击打开" : t("src.components.chat.mediarenderers.tap_to_open_audio")}
                     </Text>
                 </View>
                 <Pressable onPress={() => void Linking.openURL(resolvedSrc)} style={styles.openButton}>

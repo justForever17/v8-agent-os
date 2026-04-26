@@ -10,6 +10,7 @@ import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip"
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { SafetyGuardianPanel } from "@/components/runtime/SafetyGuardianPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,10 +22,14 @@ import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from
 type MachinePosture = "dedicated_runtime_host" | "developer_mixed_host";
 
 type ModelOption = {
+    id?: string;
+    modelRef?: string;
+    providerId?: string;
     modelId: string;
     name: string;
     type: string;
-    provider?: { name?: string };
+    provider?: { id?: string; name?: string };
+    providerName?: string;
 };
 
 type SafetyData = {
@@ -393,8 +398,12 @@ export default function SafetyControlPage() {
                         </div>
                         <div className="space-y-2">
                             <Label>Safety Review Model</Label>
-                            <Select
+                            <ModelSelect
+                                models={llmModels}
                                 value={String(data.modelBindings?.safetyReviewModel || "__none__")}
+                                emptyValue="__none__"
+                                emptyLabel="未绑定"
+                                placeholder="未绑定"
                                 onValueChange={(next) =>
                                     setEnvelope((previous) =>
                                         previous
@@ -404,26 +413,14 @@ export default function SafetyControlPage() {
                                                       ...previous.data,
                                                       modelBindings: {
                                                           ...(previous.data.modelBindings || {}),
-                                                          safetyReviewModel: next === "__none__" ? "" : next,
+                                                          safetyReviewModel: next,
                                                       },
                                                   },
                                               }
                                             : previous,
                                     )
                                 }
-                            >
-                                <SelectTrigger>
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="__none__">未绑定</SelectItem>
-                                    {llmModels.map((model) => (
-                                        <SelectItem key={model.modelId} value={model.modelId}>
-                                            {model.modelId}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            />
                         </div>
                         <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                             <div className="space-y-1">

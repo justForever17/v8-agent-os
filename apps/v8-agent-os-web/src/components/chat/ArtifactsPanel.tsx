@@ -279,12 +279,15 @@ export function ArtifactsPanel({ sessionId }: { sessionId?: string | null }) {
                                 {activeArtifactUrl && runtimeArtifactType === "video" ? (
                                     <video controls className="max-h-[60vh] w-full rounded-xl bg-black/5" src={activeArtifactUrl} />
                                 ) : null}
-                                {activeArtifactUrl && runtimeArtifactType === "audio" ? (
+                                {activeArtifactUrl && (runtimeArtifactType === "audio" || runtimeArtifactType === "music") ? (
                                     <div className="rounded-xl border bg-background p-5">
+                                        {runtimeArtifactType === "music" ? (
+                                            <div className="mb-3 text-sm font-medium">音乐 artifact</div>
+                                        ) : null}
                                         <audio controls className="w-full" src={activeArtifactUrl} />
                                     </div>
                                 ) : null}
-                                {!activeArtifactUrl || !["image", "video", "audio"].includes(runtimeArtifactType) ? (
+                                {!activeArtifactUrl || !["image", "video", "audio", "music"].includes(runtimeArtifactType) ? (
                                     <div className="rounded-xl border bg-background p-5 space-y-4">
                                         <div>
                                             <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Artifact Type</div>

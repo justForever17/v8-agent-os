@@ -112,6 +112,22 @@ function artifactDisplayTitle(artifact: Record<string, unknown>) {
     ).trim();
 }
 
+function isCreativeMusicArtifact(artifact: Record<string, unknown>) {
+    const metadata = artifact.metadata && typeof artifact.metadata === "object"
+        ? artifact.metadata as Record<string, unknown>
+        : {};
+    const probe = [
+        artifact.kind,
+        artifact.modality,
+        artifact.musicKind,
+        metadata.modality,
+        metadata.musicKind,
+        metadata.music_kind,
+        metadata.creativeMediaModality,
+    ].map((item) => String(item || "").toLowerCase()).join(" ");
+    return probe.includes("music");
+}
+
 function inferArtifactMediaKind(artifact: Record<string, unknown>, src: string) {
     const kind = String(artifact.kind || "").trim().toLowerCase();
     const mimeType = String(artifact.mimeType || artifact.mime_type || "").trim().toLowerCase();
@@ -418,7 +434,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return <ImagePreview src={src} alt={title} candidates={mediaCandidates} />;
         }
         if (mediaKind === "video" || mediaKind === "audio") {
-            return <MediaPlayer src={src} type={mediaKind} title={title} candidates={mediaCandidates} />;
+            return <MediaPlayer src={src} type={mediaKind} title={title} candidates={mediaCandidates} variant={mediaKind === "audio" && isCreativeMusicArtifact(artifact) ? "music" : "audio"} />;
         }
         if (documentKind) {
             return renderFileCard(src, {

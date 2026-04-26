@@ -14,10 +14,59 @@ from core.model_ref import make_model_ref
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "model_catalog" / "provider_catalog.json"
 _CUSTOM_CATALOG_PATH = Path.home() / ".v8-agent-os" / "model_provider_catalog.custom.json"
+_CREATIVE_MEDIA_MATRIX_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "runtimes"
+    / "creative_media"
+    / "assets"
+    / "media_provider_format_matrix.json"
+)
+
+
+_MEDIA_MODEL_TYPES = {
+    "image": "IMAGE",
+    "video": "VIDEO",
+    "voice": "VOICE",
+    "music": "MUSIC",
+    "workflow": "WORKFLOW",
+    "model3d": "MODEL3D",
+}
+
+_MEDIA_DEFAULT_MODEL_IDS = {
+    "openai_images": ["gpt-image-2", "gpt-image-1"],
+    "volcengine_seedream": ["doubao-seedream-4-0-250828"],
+    "stability_image": ["stable-image-core"],
+    "fal_image": ["fal-image-model"],
+    "replicate_image": ["replicate-image-model"],
+    "volcengine_seedance": ["doubao-seedance-1-0-pro-fast-251015"],
+    "google_veo": ["veo-3.1-generate-preview"],
+    "runway_video": ["gen4_turbo"],
+    "luma_video": ["ray-2"],
+    "minimax_video": ["video-01"],
+    "kling_video": ["kling-v2-1"],
+    "v8_audio_tts": ["v8-audio-tts"],
+    "openai_audio_speech": ["gpt-4o-mini-tts"],
+    "elevenlabs_tts": ["eleven_multilingual_v2"],
+    "minimax_tts": ["speech-02-hd"],
+    "mureka_music": ["mureka-o1"],
+    "fal_music": ["fal-music-model"],
+    "suno_placeholder": ["suno-future-generation"],
+    "fal_3d": ["fal-3d-model"],
+    "tripo3d_placeholder": ["tripo3d-model"],
+}
 
 
 def _as_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
+
+
+def _normalized_modality(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"audio", "speech", "tts"}:
+        return "voice"
+    if raw in {"3d", "model_3d", "model-3d"}:
+        return "model3d"
+    return raw
 
 
 class ModelProviderCatalog:
@@ -49,16 +98,103 @@ class ModelProviderCatalog:
         with self.custom_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
 
+    def _media_capabilities(self, modality: str) -> List[str]:
+        normalized = _normalized_modality(modality)
+        caps = {normalized}
+        if normalized == "voice":
+            caps.add("audio")
+        if normalized == "workflow":
+            caps.update({"workflow", "image"})
+        if normalized == "model3d":
+            caps.add("model3d")
+        return sorted(item for item in caps if item)
+
+    def _media_model_type(self, modality: str) -> str:
+        return _MEDIA_MODEL_TYPES.get(_normalized_modality(modality), "MEDIA")
+
+    def _media_catalog_model(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> Dict[str, Any]:
+        request = dict(provider_entry.get("request") or {})
+        polling = dict(provider_entry.get("polling") or {})
+        result = dict(provider_entry.get("result") or {})
+        return {
+            "id": model_id,
+            "type": self._media_model_type(modality),
+            "capabilities": self._media_capabilities(modality),
+            "parameterProfile": provider_entry.get("apiStandard") or provider_entry.get("adapter") or "media_generation",
+            "mediaLimits": {
+                "modality": _normalized_modality(modality),
+                "adapter": provider_entry.get("adapter") or "catalog_only",
+                "apiStandard": provider_entry.get("apiStandard") or "",
+                "submitPath": request.get("submitPath") or "",
+                "pollingMode": polling.get("mode") or "none",
+                "resultPaths": _as_list(result.get("paths")),
+                "sizeFormat": request.get("sizeFormat") or "",
+            },
+        }
+
+    def _provider_from_media_matrix_entry(self, modality: str, entry: Dict[str, Any]) -> Dict[str, Any] | None:
+        provider_id = str(entry.get("id") or "").strip()
+        if not provider_id:
+            return None
+        normalized_modality = _normalized_modality(modality)
+        model_ids = _MEDIA_DEFAULT_MODEL_IDS.get(provider_id) or [f"{provider_id}-model"]
+        auth = dict(entry.get("auth") or {})
+        adapter = str(entry.get("adapter") or "catalog_only")
+        api_standard = str(entry.get("apiStandard") or adapter or "media_generation")
+        return {
+            "id": provider_id,
+            "name": entry.get("displayName") or provider_id,
+            "apiStandard": api_standard,
+            "providerKind": "media_generation",
+            "mediaModality": normalized_modality,
+            "adapter": adapter,
+            "baseUrl": entry.get("baseUrlDefault") or "",
+            "auth": auth,
+            "probeStrategy": "catalog_only",
+            "sourceUrl": entry.get("sourceUrl") or "",
+            "credentialHelp": entry.get("credentialHelp") or {},
+            "lastCheckedAt": entry.get("lastCheckedAt") or "",
+            "confidence": entry.get("confidence") or "provider_docs",
+            "request": entry.get("request") or {},
+            "polling": entry.get("polling") or {},
+            "result": entry.get("result") or {},
+            "statusMap": entry.get("statusMap") or {},
+            "models": [self._media_catalog_model(entry, normalized_modality, model_id) for model_id in model_ids],
+        }
+
+    def _creative_media_matrix_providers(self) -> List[Dict[str, Any]]:
+        if not _CREATIVE_MEDIA_MATRIX_PATH.exists():
+            return []
+        try:
+            with _CREATIVE_MEDIA_MATRIX_PATH.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return []
+        providers: List[Dict[str, Any]] = []
+        modalities = payload.get("modalities") if isinstance(payload, dict) else {}
+        if not isinstance(modalities, dict):
+            return []
+        for modality, entries in modalities.items():
+            for entry in _as_list(entries):
+                if not isinstance(entry, dict):
+                    continue
+                provider = self._provider_from_media_matrix_entry(str(modality), entry)
+                if provider:
+                    providers.append(provider)
+        return providers
+
     def load(self) -> Dict[str, Any]:
         builtin = self._load_builtin()
         custom = self._load_custom()
         providers: List[Dict[str, Any]] = []
+        seen_provider_ids: Set[str] = set()
         for entry in _as_list(custom.get("providers")):
             if not isinstance(entry, dict) or not entry.get("id"):
                 continue
             item = deepcopy(entry)
             item["isCustom"] = True
             providers.append(item)
+            seen_provider_ids.add(str(item.get("id") or ""))
         for entry in _as_list(builtin.get("providers")):
             if not isinstance(entry, dict) or not entry.get("id"):
                 continue
@@ -67,6 +203,15 @@ class ModelProviderCatalog:
             item.pop("modelsUrl", None)
             item.pop("models_url", None)
             providers.append(item)
+            seen_provider_ids.add(str(item.get("id") or ""))
+        for entry in self._creative_media_matrix_providers():
+            provider_id = str(entry.get("id") or "")
+            if provider_id in seen_provider_ids:
+                continue
+            item = deepcopy(entry)
+            item.setdefault("isCustom", False)
+            providers.append(item)
+            seen_provider_ids.add(provider_id)
         return {**builtin, "providers": providers}
 
     def list_providers(self) -> List[Dict[str, Any]]:
@@ -87,7 +232,16 @@ class ModelProviderCatalog:
         digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8]
         return f"custom-{slug}-{digest}"
 
-    def build_custom_provider(self, name: str, base_url: str, provider_id: str = "") -> Dict[str, Any]:
+    def build_custom_provider(
+        self,
+        name: str,
+        base_url: str,
+        provider_id: str = "",
+        *,
+        provider_kind: str = "chat",
+        media_modality: str = "",
+        api_standard: str = "openai",
+    ) -> Dict[str, Any]:
         clean_name = str(name or "").strip()
         clean_base_url = str(base_url or "").strip().rstrip("/")
         if not clean_name:
@@ -95,14 +249,19 @@ class ModelProviderCatalog:
         if not clean_base_url:
             raise ValueError("baseUrl is required")
         custom_id = str(provider_id or "").strip() or self.make_custom_provider_id(clean_name, clean_base_url)
+        clean_provider_kind = str(provider_kind or "chat").strip() or "chat"
+        clean_modality = _normalized_modality(media_modality)
+        is_media = clean_provider_kind == "media_generation" or clean_modality in _MEDIA_MODEL_TYPES
+        clean_api_standard = str(api_standard or ("media_generation" if is_media else "openai")).strip()
         return {
             "id": custom_id,
             "name": clean_name,
-            "apiStandard": "openai",
+            "apiStandard": clean_api_standard,
             "baseUrl": clean_base_url,
             "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
-            "probeStrategy": "openai_models",
-            "providerKind": "chat",
+            "probeStrategy": "catalog_only" if is_media else "openai_models",
+            "providerKind": "media_generation" if is_media else clean_provider_kind,
+            "mediaModality": clean_modality if is_media else "",
             "confidence": "custom",
             "isCustom": True,
             "models": [],
@@ -172,13 +331,19 @@ class ModelProviderCatalog:
         strategy = str(provider.get("probeStrategy") or "catalog_only")
         effective_base_url = str(base_url or provider.get("baseUrl") or "").rstrip("/")
         if strategy == "catalog_only":
+            models = [
+                self.normalize_model(provider, str(item.get("id") or item.get("modelId") or ""))
+                for item in _as_list(provider.get("models"))
+                if str(item.get("id") or item.get("modelId") or "").strip()
+            ]
             return {
-                "ok": False,
+                "ok": True,
                 "source": "catalog",
                 "provider": provider,
-                "models": [],
-                "reason": "catalog_only_provider_not_probeable",
-                "error": "This provider does not expose a /models probe endpoint.",
+                "models": models,
+                "rawCount": len(_as_list(provider.get("models"))),
+                "modelCount": len(models),
+                "reason": "catalog_only_provider",
             }
         if not effective_base_url:
             return {"ok": False, "source": "online", "provider": provider, "models": [], "reason": "missing_base_url", "error": "baseUrl is required"}
@@ -344,7 +509,11 @@ class ModelProviderCatalog:
         ident = f"{provider.get('id') or ''} {provider.get('name') or ''} {model_id}".lower()
         caps: Set[str] = set()
         if provider_kind == "media_generation" or "comfyui" in ident:
-            caps.update({"workflow", "image"})
+            modality = _normalized_modality(provider.get("mediaModality"))
+            if modality:
+                caps.update(self._media_capabilities(modality))
+            else:
+                caps.update({"workflow", "image"})
             return caps
         if any(token in ident for token in ("embed", "embedding", "bge-m3", "text-embedding", "qwen3-embed")):
             caps.add("embedding")
@@ -358,15 +527,19 @@ class ModelProviderCatalog:
         if any(token in ident for token in ("reason", "thinking", "r1", "o1", "o3", "gpt-5", "gpt-5.5", "gpt-5.4", "gemini-3", "gemini-2.5", "claude")):
             caps.add("reasoning")
         if any(token in ident for token in ("tts", "audio", "speech", "voice")):
-            caps.add("audio")
+            caps.update({"audio", "voice"})
+        if any(token in ident for token in ("music", "song", "mureka", "suno")):
+            caps.add("music")
         if any(token in ident for token in ("image", "dall-e", "gpt-image", "seedream")):
             caps.add("image")
         if any(token in ident for token in ("video", "veo", "seedance", "wan", "sora")):
             caps.add("video")
+        if any(token in ident for token in ("3d", "model3d", "tripo")):
+            caps.add("model3d")
         return caps
 
     def _normalize_capability_map(self, tags: Set[str], provider_kind: str) -> Dict[str, bool]:
-        media = provider_kind == "media_generation" or bool(tags.intersection({"image", "video", "audio", "workflow"}))
+        media = provider_kind == "media_generation" or bool(tags.intersection({"image", "video", "audio", "voice", "music", "workflow", "model3d"}))
         embedding = "embedding" in tags
         rerank = "rerank" in tags or "reranker" in tags
         chat = "chat" in tags or (not media and not embedding and not rerank)
@@ -383,8 +556,11 @@ class ModelProviderCatalog:
             "rerank": rerank,
             "image": "image" in tags,
             "video": "video" in tags,
-            "audio": "audio" in tags,
+            "audio": "audio" in tags or "voice" in tags,
+            "voice": "voice" in tags or "audio" in tags,
+            "music": "music" in tags,
             "workflow": "workflow" in tags,
+            "model3d": "model3d" in tags,
         }
 
     def _infer_model_type(self, capability_map: Dict[str, bool]) -> str:
@@ -392,7 +568,18 @@ class ModelProviderCatalog:
             return "EMBEDDING"
         if capability_map.get("rerank"):
             return "RERANK"
-        if capability_map.get("image") or capability_map.get("video") or capability_map.get("audio") or capability_map.get("workflow"):
+        media_types = [
+            ("workflow", "WORKFLOW"),
+            ("model3d", "MODEL3D"),
+            ("music", "MUSIC"),
+            ("video", "VIDEO"),
+            ("image", "IMAGE"),
+            ("voice", "VOICE"),
+        ]
+        matched = [model_type for key, model_type in media_types if capability_map.get(key)]
+        if len(matched) == 1:
+            return matched[0]
+        if matched:
             return "MEDIA"
         if capability_map.get("vision") or capability_map.get("multimodal"):
             return "MULTIMODAL"
@@ -442,7 +629,13 @@ class ModelProviderCatalog:
             "capabilitySource": capability_source,
             "capabilityClass": (
                 "media_generation"
-                if capability_map.get("image") or capability_map.get("video") or capability_map.get("audio") or capability_map.get("workflow")
+                if capability_map.get("image")
+                or capability_map.get("video")
+                or capability_map.get("audio")
+                or capability_map.get("voice")
+                or capability_map.get("music")
+                or capability_map.get("workflow")
+                or capability_map.get("model3d")
                 else "embedding"
                 if capability_map.get("embedding")
                 else "reranker"

@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/admin-shell/EmptyState";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -156,10 +157,13 @@ type SkillInstallResult = {
 };
 type SysModel = {
     id: string;
+    modelRef?: string;
+    providerId?: string;
     modelId: string;
     name: string;
     type: string;
     provider?: {
+        id?: string;
         name?: string;
     };
     providerName?: string;
@@ -338,13 +342,6 @@ function statusLabel(status: string, t: TranslateFn) {
     if (status === "disabled")
         return t("app.admin.dashboard.extensions.page.k369f3547");
     return t("app.admin.dashboard.extensions.page.k5797988b");
-}
-function modelValue(model: SysModel) {
-    return String(model.modelId || model.id || "").trim();
-}
-function modelLabel(model: SysModel) {
-    const providerName = model.provider?.name || model.providerName || "";
-    return `${modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
 }
 function StatPill({ label, value }: {
     label: string;
@@ -957,17 +954,13 @@ export default function ExtensionsPage() {
 
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.extensions.page.k4c4359c1")}</Label>
-                            <Select value={prefilterModel || "__empty__"} onValueChange={(value) => updateConfig({ modelBindings: { prefilterModel: value === "__empty__" ? "" : value } })}>
-                                <SelectTrigger className="w-full">
-                                    <SelectValue placeholder={t("app.admin.dashboard.extensions.page.kccd8e176")}/>
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="__empty__">{t("app.admin.dashboard.extensions.page.kccd8e176")}</SelectItem>
-                                    {prefilterModels.map((model) => (<SelectItem key={modelValue(model)} value={modelValue(model)}>
-                                            {modelLabel(model)}
-                                        </SelectItem>))}
-                                </SelectContent>
-                            </Select>
+                            <ModelSelect
+                                models={prefilterModels}
+                                value={prefilterModel || "__empty__"}
+                                emptyLabel={t("app.admin.dashboard.extensions.page.kccd8e176")}
+                                placeholder={t("app.admin.dashboard.extensions.page.kccd8e176")}
+                                onValueChange={(value) => updateConfig({ modelBindings: { prefilterModel: value } })}
+                            />
                             <p className="text-xs leading-5 text-slate-500">
                                 {t("app.admin.dashboard.extensions.page.k2cebabf6")}
                             </p>

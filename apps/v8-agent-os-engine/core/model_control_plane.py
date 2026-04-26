@@ -417,7 +417,16 @@ def _infer_capability_class(model_type: str, capabilities: Dict[str, bool]) -> s
         return "embedding"
     if normalized_type in {"RERANK", "RERANKER"} or capabilities.get("rerank"):
         return "reranker"
-    if normalized_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO"} or capabilities.get("image") or capabilities.get("video") or capabilities.get("audio") or capabilities.get("workflow"):
+    if (
+        normalized_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
+        or capabilities.get("image")
+        or capabilities.get("video")
+        or capabilities.get("audio")
+        or capabilities.get("voice")
+        or capabilities.get("music")
+        or capabilities.get("workflow")
+        or capabilities.get("model3d")
+    ):
         return "media_generation"
     if capabilities.get("vision") or capabilities.get("multimodal"):
         return "vision_multimodal"
@@ -442,7 +451,7 @@ class ModelControlPlane:
         raw_caps = dict(model_meta.get("capabilities") or {})
         display_name = str(model_id)
 
-        media_like = model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO"}
+        media_like = model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
         chat_like = model_type in {"TEXT", "MULTIMODAL"} and not media_like
         multimodal = model_type == "MULTIMODAL"
         embedding = model_type == "EMBEDDING"
@@ -460,8 +469,11 @@ class ModelControlPlane:
             "rerank": bool(raw_caps.get("rerank", rerank)),
             "image": bool(raw_caps.get("image", media_like and model_type in {"MEDIA", "IMAGE"})),
             "video": bool(raw_caps.get("video", media_like and model_type in {"MEDIA", "VIDEO"})),
-            "audio": bool(raw_caps.get("audio", media_like and model_type in {"MEDIA", "AUDIO"})),
-            "workflow": bool(raw_caps.get("workflow", media_like)),
+            "audio": bool(raw_caps.get("audio", media_like and model_type in {"MEDIA", "AUDIO", "VOICE"})),
+            "voice": bool(raw_caps.get("voice", raw_caps.get("audio", media_like and model_type in {"VOICE", "AUDIO"}))),
+            "music": bool(raw_caps.get("music", media_like and model_type == "MUSIC")),
+            "workflow": bool(raw_caps.get("workflow", media_like and model_type in {"MEDIA", "WORKFLOW"})),
+            "model3d": bool(raw_caps.get("model3d", media_like and model_type == "MODEL3D")),
             "computerUse": bool(raw_caps.get("computerUse", False)),
         }
         capability_class = str(model_meta.get("capabilityClass") or _infer_capability_class(model_type, normalized))

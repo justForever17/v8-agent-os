@@ -6,6 +6,7 @@ import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -182,10 +183,13 @@ type DomainData = {
 };
 type SysModel = {
     id: string;
+    modelRef?: string;
+    providerId?: string;
     modelId: string;
     name: string;
     type: string;
     provider?: {
+        id?: string;
         name?: string;
     };
     providerName?: string;
@@ -307,13 +311,6 @@ async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
         throw new Error(typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : `Request failed (${response.status})`);
     }
     return data as T;
-}
-function modelValue(model: SysModel) {
-    return String(model.modelId || model.id || "").trim();
-}
-function modelLabel(model: SysModel) {
-    const providerName = model.provider?.name || model.providerName || "";
-    return `${modelValue(model)}${providerName ? ` (${providerName})` : ""}`;
 }
 function humanizeFallbackLabel(value: string, fallback: string) {
     const source = value.trim();
@@ -1010,23 +1007,19 @@ export function PluginHostWorkbench() {
 
                                     <div className="space-y-2">
                                         <Label htmlFor="plugin-host-prefilter">{t("components.plugin.host.PluginHostWorkbench.kdf4fce29")}</Label>
-                                        <Select value={prefilterModel || "__empty__"} onValueChange={(value: string) => setExtensionsConfig((current) => ({
-            ...current,
-            modelBindings: {
-                ...(current.modelBindings || {}),
-                prefilterModel: value === "__empty__" ? "" : value,
-            },
-        }))}>
-                                            <SelectTrigger id="plugin-host-prefilter" className="w-full">
-                                                <SelectValue placeholder={t("components.plugin.host.PluginHostWorkbench.kccd8e176")}/>
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="__empty__">{t("components.plugin.host.PluginHostWorkbench.kccd8e176")}</SelectItem>
-                                                {prefilterModels.map((model) => (<SelectItem key={modelValue(model)} value={modelValue(model)}>
-                                                        {modelLabel(model)}
-                                                    </SelectItem>))}
-                                            </SelectContent>
-                                        </Select>
+                                        <ModelSelect
+                                            models={prefilterModels}
+                                            value={prefilterModel || "__empty__"}
+                                            emptyLabel={t("components.plugin.host.PluginHostWorkbench.kccd8e176")}
+                                            placeholder={t("components.plugin.host.PluginHostWorkbench.kccd8e176")}
+                                            onValueChange={(value: string) => setExtensionsConfig((current) => ({
+                                                ...current,
+                                                modelBindings: {
+                                                    ...(current.modelBindings || {}),
+                                                    prefilterModel: value,
+                                                },
+                                            }))}
+                                        />
                                         <p className="text-xs leading-5 text-slate-500">{t("components.plugin.host.PluginHostWorkbench.k2cebabf6")}</p>
                                     </div>
 

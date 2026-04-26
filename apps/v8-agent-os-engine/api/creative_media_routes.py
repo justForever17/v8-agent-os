@@ -119,6 +119,52 @@ async def get_creative_media_keyframe(keyframe_id: str):
     return {"keyframe": keyframe}
 
 
+@router.post("/edit-plans")
+async def create_creative_media_edit_plan(body: dict = Body(...)):
+    try:
+        return {"editPlan": creative_media_runtime.create_edit_plan(body)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/edit-plans")
+async def list_creative_media_edit_plans(recipeId: str | None = None):
+    return {"editPlans": creative_media_runtime.list_edit_plans(recipe_id=recipeId)}
+
+
+@router.get("/edit-plans/{plan_id}")
+async def get_creative_media_edit_plan(plan_id: str):
+    plan = creative_media_runtime.get_edit_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="creative media edit plan not found")
+    return {"editPlan": plan}
+
+
+@router.post("/renders")
+async def render_creative_media_edit_plan(body: dict = Body(...)):
+    try:
+        return {"render": creative_media_runtime.render_edit_plan(body)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/renders")
+async def list_creative_media_renders(planId: str | None = None, status: str | None = None):
+    return {"renders": creative_media_runtime.list_renders(plan_id=planId, status=status)}
+
+
+@router.get("/renders/{render_job_id}")
+async def get_creative_media_render(render_job_id: str):
+    render = creative_media_runtime.get_render(render_job_id)
+    if not render:
+        raise HTTPException(status_code=404, detail="creative media render job not found")
+    return {"render": render}
+
+
 @router.post("/jobs")
 async def create_creative_media_job(body: dict = Body(...)):
     try:

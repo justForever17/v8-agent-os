@@ -71,6 +71,12 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "creative_media_register_keyframe",
             "creative_media_get_keyframe",
             "creative_media_list_keyframes",
+            "creative_media_create_edit_plan",
+            "creative_media_get_edit_plan",
+            "creative_media_list_edit_plans",
+            "creative_media_render_edit_plan",
+            "creative_media_get_render",
+            "creative_media_list_renders",
         ],
     },
 }

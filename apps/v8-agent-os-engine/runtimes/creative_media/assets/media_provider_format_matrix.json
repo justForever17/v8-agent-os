@@ -267,6 +267,20 @@
     ],
     "music": [
       {
+        "id": "mureka_music",
+        "displayName": "Mureka Music API",
+        "apiStandard": "mureka_song_task",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.mureka.ai",
+        "credentialHelp": {"label": "Get Mureka API key", "url": "https://platform.mureka.ai/"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/v1/song/generate", "bodyFields": ["prompt", "lyrics", "model", "duration"], "sizeFormat": "AUDIO_DURATION"},
+        "polling": {"mode": "task", "statusPath": "/v1/song/query/{task_id}"},
+        "result": {"paths": ["creative_music_brief", "cue_sheet", "future_artifact"]},
+        "sourceUrl": "https://platform.mureka.ai/docs/en/quickstart.html",
+        "confidence": "provider_docs"
+      },
+      {
         "id": "fal_music",
         "displayName": "fal.ai Music Models",
         "apiStandard": "fal_queue",

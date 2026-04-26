@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { ModelSelect } from "@/components/models/ModelSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,10 +16,15 @@ import { Slider } from "@/components/ui/slider";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 interface AIModel {
     id: string;
+    modelRef?: string;
+    providerId?: string;
+    modelId?: string;
     name: string;
     provider?: {
+        id?: string;
         name: string;
     };
+    providerName?: string;
     type?: string;
 }
 interface MCPTool {
@@ -410,17 +416,15 @@ export default function SupervisorPage() {
 
                     <div className="space-y-2">
                         <Label>{t("app.admin.dashboard.supervisor.page.kba259bc3")}</Label>
-                        <Select value={selectedModelId} onValueChange={setSelectedModelId}>
-                            <SelectTrigger>
-                                <SelectValue placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")}/>
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="default">{t("app.admin.dashboard.supervisor.page.k534ef300")}</SelectItem>
-                                {models.map(model => (<SelectItem key={model.id} value={model.id}>
-                                        {model.id} {model.provider?.name ? `(${model.provider.name})` : `(${model.id.split('-')[0] || t("app.admin.dashboard.supervisor.page.k4f162e67")})`}
-                                    </SelectItem>))}
-                            </SelectContent>
-                        </Select>
+                        <ModelSelect
+                            models={models}
+                            value={selectedModelId}
+                            emptyValue="default"
+                            emptyLabel={t("app.admin.dashboard.supervisor.page.k534ef300")}
+                            emptyOutputValue="default"
+                            placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")}
+                            onValueChange={setSelectedModelId}
+                        />
                         <p className="text-xs text-muted-foreground">
                             {locale === "en"
             ? "If not specified, the lead follows the current session model or the default chat model."
@@ -482,17 +486,13 @@ export default function SupervisorPage() {
 
                     <div id="vision-media-model" className="space-y-2">
                         <Label>{t("app.admin.dashboard.supervisor.page.kf558439c")}</Label>
-                        <Select value={visionModelId} onValueChange={setVisionModelId}>
-                            <SelectTrigger>
-                                <SelectValue placeholder={t("app.admin.dashboard.supervisor.page.k3930f0e4")}/>
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="__empty__">{t("app.admin.dashboard.supervisor.page.k3930f0e4")}</SelectItem>
-                                {visionCapableModels.map((model) => (<SelectItem key={model.id} value={model.id}>
-                                        {model.id} {model.provider?.name ? `(${model.provider.name})` : `(${model.id.split("-")[0] || t("app.admin.dashboard.supervisor.page.k4f162e67")})`}
-                                    </SelectItem>))}
-                            </SelectContent>
-                        </Select>
+                        <ModelSelect
+                            models={visionCapableModels}
+                            value={visionModelId || "__empty__"}
+                            emptyLabel={t("app.admin.dashboard.supervisor.page.k3930f0e4")}
+                            placeholder={t("app.admin.dashboard.supervisor.page.k3930f0e4")}
+                            onValueChange={setVisionModelId}
+                        />
                         <p className="text-xs text-muted-foreground">
                             {t("app.admin.dashboard.supervisor.page.k948f683d")}
                         </p>

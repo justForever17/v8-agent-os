@@ -9,15 +9,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Loader2, Save } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
+import { ModelSelect } from "@/components/models/ModelSelect";
 interface SysModel {
     id: string;
+    modelRef?: string;
+    providerId?: string;
     modelId: string;
     name: string;
     type: string;
     provider: {
+        id?: string;
         name: string;
         icon?: string;
     };
+    providerName?: string;
 }
 interface MemoryConfig {
     extraction_model?: string;
@@ -314,16 +319,13 @@ export default function MemoryConfigPanel() {
                 <CardContent className="space-y-5">
                     <div className="space-y-1.5">
                         <Label>{t("components.memory.MemoryConfigPanel.k3fced67a")}</Label>
-                        <Select value={config.extraction_model || ""} onValueChange={(val) => setConfig(prev => ({ ...prev, extraction_model: val }))}>
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k92ef9586")}/>
-                            </SelectTrigger>
-                            <SelectContent>
-                                {llmModels.map(m => (<SelectItem key={m.id} value={m.id}>
-                                        {m.name || m.id} ({m.provider?.name})
-                                    </SelectItem>))}
-                            </SelectContent>
-                        </Select>
+                        <ModelSelect
+                            models={llmModels}
+                            value={config.extraction_model || ""}
+                            emptyLabel={t("components.memory.MemoryConfigPanel.k92ef9586")}
+                            placeholder={t("components.memory.MemoryConfigPanel.k92ef9586")}
+                            onValueChange={(val) => setConfig(prev => ({ ...prev, extraction_model: val }))}
+                        />
                         <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.ke4b6e27a")}</p>
                     </div>
 
@@ -340,32 +342,27 @@ export default function MemoryConfigPanel() {
 
                     <div className="space-y-1.5">
                         <Label>{t("components.memory.MemoryConfigPanel.k20b56b59")}</Label>
-                        <Select value={config.embedding_model || ""} onValueChange={(val) => setConfig(prev => ({ ...prev, embedding_model: val }))}>
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k32d0f545")}/>
-                            </SelectTrigger>
-                            <SelectContent>
-                                {embedModels.map(m => (<SelectItem key={m.id} value={m.id}>
-                                        {m.name || m.id} ({m.provider?.name})
-                                    </SelectItem>))}
-                            </SelectContent>
-                        </Select>
+                        <ModelSelect
+                            models={embedModels}
+                            value={config.embedding_model || ""}
+                            emptyLabel={t("components.memory.MemoryConfigPanel.k32d0f545")}
+                            placeholder={t("components.memory.MemoryConfigPanel.k32d0f545")}
+                            onValueChange={(val) => setConfig(prev => ({ ...prev, embedding_model: val }))}
+                        />
                         <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k2c0de4e9")}</p>
                     </div>
 
                     <div className="space-y-1.5">
                         <Label>{t("components.memory.MemoryConfigPanel.k8476c9a1")}</Label>
-                        <Select value={config.reranker_model || ""} onValueChange={(val) => setConfig(prev => ({ ...prev, reranker_model: val }))}>
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder={t("components.memory.MemoryConfigPanel.k5dd610de")}/>
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="none">{t("components.memory.MemoryConfigPanel.k2bc5c99c")}</SelectItem>
-                                {rerankModels.map(m => (<SelectItem key={m.id} value={m.id}>
-                                        {m.name || m.id} ({m.provider?.name})
-                                    </SelectItem>))}
-                            </SelectContent>
-                        </Select>
+                        <ModelSelect
+                            models={rerankModels}
+                            value={config.reranker_model || "none"}
+                            emptyValue="none"
+                            emptyLabel={t("components.memory.MemoryConfigPanel.k2bc5c99c")}
+                            emptyOutputValue="none"
+                            placeholder={t("components.memory.MemoryConfigPanel.k5dd610de")}
+                            onValueChange={(val) => setConfig(prev => ({ ...prev, reranker_model: val }))}
+                        />
                         <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.kfc781832")}</p>
                     </div>
                 </CardContent>

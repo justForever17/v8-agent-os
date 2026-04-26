@@ -2691,7 +2691,26 @@ class StorageManager:
         if not str(snapshot.get("specialistFamily") or "").strip():
             domains = " ".join(str(item).lower() for item in list(snapshot.get("domainTags") or []))
             agent_class = str(snapshot.get("agentClass") or "").lower()
-            if any(token in domains for token in ("writing", "docs", "document", "research", "handoff")) or agent_class in {"documentation", "researcher"}:
+            if (
+                any(
+                    token in domains
+                    for token in (
+                        "media",
+                        "creative",
+                        "image",
+                        "video",
+                        "audio",
+                        "storyboard",
+                        "keyframe",
+                        "character",
+                        "subtitle",
+                        "editing",
+                    )
+                )
+                or agent_class in {"creative_director", "visual_recipe_engineer", "character_continuity", "motion_director", "audio_post"}
+            ):
+                snapshot = {**snapshot, "specialistFamily": "creative_media"}
+            elif any(token in domains for token in ("writing", "docs", "document", "research", "handoff")) or agent_class in {"documentation", "researcher"}:
                 snapshot = {**snapshot, "specialistFamily": "writing"}
             else:
                 snapshot = {**snapshot, "specialistFamily": "engineering"}

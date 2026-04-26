@@ -576,6 +576,25 @@ def build_supervisor_system_content(
             return family
         agent_class = str(snapshot.get("agentClass") or "").strip().lower()
         domains = " ".join(str(item).strip().lower() for item in list(snapshot.get("domainTags") or []) if str(item).strip())
+        if (
+            agent_class in {"creative_director", "visual_recipe_engineer", "character_continuity", "motion_director", "audio_post"}
+            or any(
+                token in domains
+                for token in (
+                    "media",
+                    "creative",
+                    "image",
+                    "video",
+                    "audio",
+                    "storyboard",
+                    "keyframe",
+                    "character",
+                    "subtitle",
+                    "editing",
+                )
+            )
+        ):
+            return "creative_media"
         if agent_class in {"documentation", "researcher"} or any(token in domains for token in ("writing", "docs", "document", "research", "handoff")):
             return "writing"
         if any(token in domains for token in ("software", "frontend", "backend", "runtime", "testing", "code", "skills")):
@@ -630,11 +649,21 @@ def build_supervisor_system_content(
             "migration", "refactor", "代码", "实现", "修复", "测试", "构建", "仓库", "项目",
             "接口", "运行时", "迁移", "重构",
         )
+        creative_media_tokens = (
+            "image", "video", "audio", "media", "multimedia", "creative", "storyboard", "shot",
+            "keyframe", "character", "continuity", "camera", "motion", "voiceover", "subtitle",
+            "music", "sfx", "clip", "edit", "render", "comfyui", "seedance", "lovart", "libtv",
+            "图片", "图像", "视频", "音频", "多媒体", "创意", "分镜", "镜头", "关键帧",
+            "角色", "一致性", "运镜", "配音", "旁白", "字幕", "音乐", "音效", "剪辑",
+            "拼接", "生成图", "生成视频", "口语化编辑",
+        )
         matches: list[str] = []
         if has_any_token(engineering_tokens):
             matches.append("engineering")
         if has_any_token(writing_tokens):
             matches.append("writing")
+        if has_any_token(creative_media_tokens):
+            matches.append("creative_media")
         return matches
 
     def _render_specialist_line(agent: dict, *, include_family: bool = False) -> str:

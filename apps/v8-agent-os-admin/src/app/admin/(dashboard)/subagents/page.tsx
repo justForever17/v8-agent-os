@@ -492,6 +492,16 @@ function HoverHelpLabel({
     );
 }
 
+function WorkerConfigLabel({
+    label,
+    tooltip,
+}: {
+    label: ReactNode;
+    tooltip: ReactNode;
+}) {
+    return <HoverHelpLabel label={label} tooltip={tooltip} />;
+}
+
 function classifySelector(
     selector: string,
     skillNames: Set<string>,
@@ -1454,157 +1464,253 @@ export default function SubagentsPage() {
                         </div>
 
                         <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                            <div className="grid gap-3 md:grid-cols-4">
+                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                    <StatusCardTitle
+                                        icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />}
+                                        title={locale === "en" ? "Executor" : "执行器"}
+                                        tooltip={locale === "en"
+                                            ? "Which local CLI will be launched. Claude Code is a real local preset; custom keeps the protocol but lets advanced users swap the launcher."
+                                            : "决定启动哪个本地 CLI。Claude Code 是真实本机预置；自定义保留协议但允许高级用户替换启动器。"}
+                                    />
+                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.workerType || "custom"}</div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                    <StatusCardTitle
+                                        icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />}
+                                        title={locale === "en" ? "Routing" : "路由画像"}
+                                        tooltip={locale === "en"
+                                            ? "These labels tell the broker what kind of tasks this worker should receive. They do not change the shell command."
+                                            : "这些标签告诉 broker 该把什么任务派给它；它们不会改变底层 shell 命令。"}
+                                    />
+                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.agentClass || "external_worker"}</div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                    <StatusCardTitle
+                                        icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />}
+                                        title={locale === "en" ? "Safety" : "启用状态"}
+                                        tooltip={locale === "en"
+                                            ? "Disabled templates are saved but never dispatched. A worker counts as remote target only when enabled and command template is present."
+                                            : "未启用模板只保存、不参与派发。只有启用且有命令模板时才算远端可委派目标。"}
+                                    />
+                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.enabled ? (locale === "en" ? "enabled" : "已启用") : (locale === "en" ? "template only" : "仅模板")}</div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                    <StatusCardTitle
+                                        icon={<Wrench className="h-4 w-4 shrink-0 text-slate-600" />}
+                                        title={locale === "en" ? "Protocol" : "回传协议"}
+                                        tooltip={locale === "en"
+                                            ? "The advanced protocol passes taskBrief into the CLI and expects a V8 result block back. Most users do not need to edit it."
+                                            : "高级协议负责把 taskBrief 交给 CLI，并要求回传 V8 结果块。多数用户不需要编辑。"}
+                                    />
+                                    <div className="mt-2 truncate text-xs text-slate-500">V8_WORKER_RESULT</div>
+                                </div>
+                            </div>
+
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label>Worker ID</Label>
-                                    <Input
-                                        value={externalWorkerForm.id}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, id: event.target.value }))}
-                                        placeholder="coding-cli-worker"
+                                    <WorkerConfigLabel
+                                        label={locale === "en" ? "Name" : "名称"}
+                                        tooltip={locale === "en" ? "Human-readable name shown in the worker list." : "显示在 worker 列表里的名称，只影响识别，不影响派发逻辑。"}
                                     />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Name" : "名称"}</Label>
                                     <Input
                                         value={externalWorkerForm.name}
                                         onChange={(event) => setExternalWorkerForm((current) => ({ ...current, name: event.target.value }))}
                                         placeholder="Claude Code Worker"
                                     />
                                 </div>
-                                <div className="space-y-2 md:col-span-2">
-                                    <Label>{locale === "en" ? "Description" : "描述"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.description}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, description: event.target.value }))}
-                                        placeholder={locale === "en" ? "What tasks should this worker receive?" : "这个 worker 适合接什么任务？"}
-                                    />
-                                </div>
                                 <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Worker type" : "Worker 类型"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.workerType}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, workerType: event.target.value }))}
-                                        placeholder="custom / claude_code"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Startup timeout" : "启动超时（秒）"}</Label>
-                                    <Input
-                                        type="number"
-                                        min={3}
-                                        max={120}
-                                        value={externalWorkerForm.startupTimeoutSeconds}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, startupTimeoutSeconds: event.target.value }))}
-                                    />
-                                </div>
-                                <div className="space-y-2 md:col-span-2">
-                                    <Label>{locale === "en" ? "Command template" : "命令模板"}</Label>
-                                    <Textarea
-                                        value={externalWorkerForm.commandTemplate}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, commandTemplate: event.target.value }))}
-                                        className="min-h-[84px] font-mono text-xs"
-                                        placeholder='codex exec --json "{task_brief_b64}"'
-                                    />
-                                    <p className="text-xs leading-5 text-slate-500">
-                                        {locale === "en"
-                                            ? "Only enabled workers with a non-empty command template count as remote delegation targets."
-                                            : "只有 enabled=true 且命令模板非空，才计为远端可委派目标。"}
-                                    </p>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Working directory policy" : "工作目录策略"}</Label>
-                                    <Select value={externalWorkerForm.cwdPolicy} onValueChange={(value) => setExternalWorkerForm((current) => ({ ...current, cwdPolicy: value }))}>
-                                        <SelectTrigger><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="inherit_workspace">inherit_workspace</SelectItem>
-                                            <SelectItem value="runtime_temp">runtime_temp</SelectItem>
-                                            <SelectItem value="explicit">explicit</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Session mode" : "会话模式"}</Label>
-                                    <Select value={externalWorkerForm.sessionMode} onValueChange={(value) => setExternalWorkerForm((current) => ({ ...current, sessionMode: value }))}>
-                                        <SelectTrigger><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="interactive">interactive</SelectItem>
-                                            <SelectItem value="oneshot">oneshot</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>env passthrough</Label>
-                                    <Input
-                                        value={externalWorkerForm.envPassThroughText}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, envPassThroughText: event.target.value }))}
-                                        placeholder="PATH, HOME"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Allowed side effects" : "允许副作用"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.allowedSideEffectsText}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, allowedSideEffectsText: event.target.value }))}
-                                        placeholder="workspace_write, network_access"
-                                    />
-                                </div>
-                                <div className="space-y-2 md:col-span-2">
-                                    <Label>{locale === "en" ? "Result markers" : "结果标记"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.resultMarkersText}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, resultMarkersText: event.target.value }))}
-                                        placeholder="<V8_WORKER_RESULT>, </V8_WORKER_RESULT>"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="grid gap-4 border-t border-slate-200 pt-4 md:grid-cols-2">
-                                <div className="space-y-2">
-                                    <HoverHelpLabel
+                                    <WorkerConfigLabel
                                         label={locale === "en" ? "Capability class" : "能力类型"}
                                         tooltip={locale === "en"
-                                            ? "Free-form label used for routing. Examples: researcher, writer, operator, analyst, creative."
-                                            : "自由路由标签。示例：researcher、writer、operator、analyst、creative。"}
+                                            ? "Free-form routing label. Examples: coder, reviewer, writer, researcher, operator."
+                                            : "自由路由标签。示例：coder、reviewer、writer、researcher、operator。"}
                                     />
                                     <Input
                                         value={externalWorkerForm.agentClass}
                                         onChange={(event) => setExternalWorkerForm((current) => ({ ...current, agentClass: event.target.value }))}
-                                        placeholder="external_worker"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Tool exposure policy" : "工具暴露策略"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.toolExposurePolicy}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, toolExposurePolicy: event.target.value }))}
-                                        placeholder="task_brief_driven"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Domain tags" : "领域标签"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.domainTagsText}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, domainTagsText: event.target.value }))}
-                                        placeholder="research, writing"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{locale === "en" ? "Operations" : "操作能力"}</Label>
-                                    <Input
-                                        value={externalWorkerForm.operationCapabilitiesText}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, operationCapabilitiesText: event.target.value }))}
-                                        placeholder="research, synthesize, write"
+                                        placeholder="coder / reviewer / writer"
                                     />
                                 </div>
                                 <div className="space-y-2 md:col-span-2">
-                                    <Label>{locale === "en" ? "Runtime affinities" : "Runtime 偏好"}</Label>
+                                    <WorkerConfigLabel
+                                        label={locale === "en" ? "Task fit" : "适合接什么任务"}
+                                        tooltip={locale === "en"
+                                            ? "Short plain-language description. This helps humans audit the worker; routing mostly uses the capability labels below."
+                                            : "用一句话描述它适合接什么任务，方便人工治理；实际路由主要看下面的能力标签。"}
+                                    />
                                     <Input
-                                        value={externalWorkerForm.runtimeAffinitiesText}
-                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, runtimeAffinitiesText: event.target.value }))}
-                                        placeholder="chat, command_session"
+                                        value={externalWorkerForm.description}
+                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, description: event.target.value }))}
+                                        placeholder={locale === "en" ? "Bounded implementation, debugging, review, and verification tasks." : "适合有明确边界的实现、调试、审查和验证任务。"}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <WorkerConfigLabel
+                                        label={locale === "en" ? "Domain tags" : "领域标签"}
+                                        tooltip={locale === "en"
+                                            ? "Comma-separated topic labels used by the broker when matching task briefs."
+                                            : "逗号分隔的主题标签，用于 broker 按 task brief 匹配 worker。"}
+                                    />
+                                    <Input
+                                        value={externalWorkerForm.domainTagsText}
+                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, domainTagsText: event.target.value }))}
+                                        placeholder="software_engineering, code_review"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <WorkerConfigLabel
+                                        label={locale === "en" ? "Operations" : "操作能力"}
+                                        tooltip={locale === "en"
+                                            ? "Comma-separated verbs such as implement, debug, review, write. This is task routing metadata, not a command."
+                                            : "逗号分隔的动作词，如 implement、debug、review、write。这是路由元数据，不是命令。"}
+                                    />
+                                    <Input
+                                        value={externalWorkerForm.operationCapabilitiesText}
+                                        onChange={(event) => setExternalWorkerForm((current) => ({ ...current, operationCapabilitiesText: event.target.value }))}
+                                        placeholder="implement, debug, review, verify"
                                     />
                                 </div>
                             </div>
+
+                            <details className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                                    {locale === "en" ? "Advanced execution protocol" : "高级执行协议（通常不用改）"}
+                                </summary>
+                                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label="Worker ID"
+                                            tooltip={locale === "en" ? "Stable config key. Change only when creating a distinct worker identity." : "稳定配置键。只有创建新的 worker 身份时才需要改。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.id}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, id: event.target.value }))}
+                                            placeholder="claude-code-worker"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Worker type" : "Worker 类型"}
+                                            tooltip={locale === "en" ? "Machine-readable worker kind used by preferredWorkerType matching." : "机器可读类型，用于 preferredWorkerType 精确匹配。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.workerType}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, workerType: event.target.value }))}
+                                            placeholder="custom / claude_code"
+                                        />
+                                    </div>
+                                    <div className="space-y-2 md:col-span-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Command template" : "命令模板"}
+                                            tooltip={locale === "en"
+                                                ? "Shell command used to start the CLI. It receives {task_brief_b64}; edit only if you know the launcher contract."
+                                                : "启动 CLI 的 shell 命令，会接收 {task_brief_b64}。只有理解启动协议时才需要改。"}
+                                        />
+                                        <Textarea
+                                            value={externalWorkerForm.commandTemplate}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, commandTemplate: event.target.value }))}
+                                            className="min-h-[84px] font-mono text-xs"
+                                            placeholder='claude -p "... {task_brief_b64} ..."'
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Working directory" : "工作目录策略"}
+                                            tooltip={locale === "en" ? "inherit_workspace runs the command from the current workspace." : "inherit_workspace 会让命令在当前工作区内运行。"}
+                                        />
+                                        <Select value={externalWorkerForm.cwdPolicy} onValueChange={(value) => setExternalWorkerForm((current) => ({ ...current, cwdPolicy: value }))}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="inherit_workspace">inherit_workspace</SelectItem>
+                                                <SelectItem value="runtime_temp">runtime_temp</SelectItem>
+                                                <SelectItem value="explicit">explicit</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Startup timeout" : "启动超时（秒）"}
+                                            tooltip={locale === "en" ? "How long the runtime waits for the CLI session to start." : "runtime 等待 CLI 会话启动的最长时间。"}
+                                        />
+                                        <Input
+                                            type="number"
+                                            min={3}
+                                            max={120}
+                                            value={externalWorkerForm.startupTimeoutSeconds}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, startupTimeoutSeconds: event.target.value }))}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Session mode" : "会话模式"}
+                                            tooltip={locale === "en" ? "interactive keeps a command session that can be observed or resumed." : "interactive 会保留可观察、可继续输入的命令会话。"}
+                                        />
+                                        <Select value={externalWorkerForm.sessionMode} onValueChange={(value) => setExternalWorkerForm((current) => ({ ...current, sessionMode: value }))}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="interactive">interactive</SelectItem>
+                                                <SelectItem value="oneshot">oneshot</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label="env passthrough"
+                                            tooltip={locale === "en" ? "Optional environment variable names to pass through to the child process." : "可选：传给子进程的环境变量名。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.envPassThroughText}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, envPassThroughText: event.target.value }))}
+                                            placeholder="PATH, HOME"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Allowed side effects" : "允许副作用"}
+                                            tooltip={locale === "en" ? "Declared side effects for governance and audit. They do not grant extra model tools by themselves." : "用于治理和审计的副作用声明，本身不额外授予模型工具。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.allowedSideEffectsText}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, allowedSideEffectsText: event.target.value }))}
+                                            placeholder="workspace_write, tool_use"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Tool policy" : "工具暴露策略"}
+                                            tooltip={locale === "en" ? "Routing metadata describing how tools should be exposed to this worker." : "描述工具如何暴露给该 worker 的路由元数据。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.toolExposurePolicy}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, toolExposurePolicy: event.target.value }))}
+                                            placeholder="task_brief_driven"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Runtime affinities" : "Runtime 偏好"}
+                                            tooltip={locale === "en" ? "Runtime labels used for routing and diagnostics." : "用于路由和诊断的 runtime 标签。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.runtimeAffinitiesText}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, runtimeAffinitiesText: event.target.value }))}
+                                            placeholder="chat, command_session"
+                                        />
+                                    </div>
+                                    <div className="space-y-2 md:col-span-2">
+                                        <WorkerConfigLabel
+                                            label={locale === "en" ? "Result markers" : "结果标记"}
+                                            tooltip={locale === "en" ? "Markers used to extract the worker's structured result from CLI output." : "用于从 CLI 输出中提取结构化 worker 结果的标记。"}
+                                        />
+                                        <Input
+                                            value={externalWorkerForm.resultMarkersText}
+                                            onChange={(event) => setExternalWorkerForm((current) => ({ ...current, resultMarkersText: event.target.value }))}
+                                            placeholder="<V8_WORKER_RESULT>, </V8_WORKER_RESULT>"
+                                        />
+                                    </div>
+                                </div>
+                            </details>
 
                             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
                                 <label className="flex items-center gap-3 text-sm font-medium text-slate-900">

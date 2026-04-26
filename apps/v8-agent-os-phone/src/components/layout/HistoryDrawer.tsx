@@ -4,12 +4,11 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 
-import { MusicShelf } from "@/src/components/layout/MusicShelf";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ConversationSummary, MusicTrack } from "@/src/types/admin";
+import type { ConversationSummary } from "@/src/types/admin";
 
 type GroupKey = "channels" | "cron" | "hooks" | "web";
 
@@ -45,8 +44,6 @@ export function HistoryDrawer({
     items,
     groups: groupedItems,
     activeConversationId,
-    adminBaseUrl,
-    musicTracks,
     loading,
     onClose,
     onSelectConversation,
@@ -57,8 +54,6 @@ export function HistoryDrawer({
     items: ConversationSummary[];
     groups?: Record<GroupKey, ConversationSummary[]>;
     activeConversationId: string | null;
-    adminBaseUrl: string;
-    musicTracks: MusicTrack[];
     loading?: boolean;
     onClose: () => void;
     onSelectConversation: (item: ConversationSummary) => void;
@@ -239,9 +234,6 @@ export function HistoryDrawer({
                             )}
                         </ScrollView>
 
-                        <View style={[styles.musicWrap, { borderTopColor: colors.border }]}>
-                            <MusicShelf adminBaseUrl={adminBaseUrl} tracks={musicTracks} />
-                        </View>
                     </View>
                     <Pressable style={styles.backdrop} onPress={onClose} />
                 </View>
@@ -407,10 +399,5 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         opacity: 0.82,
-    },
-    musicWrap: {
-        marginTop: 8,
-        borderTopWidth: StyleSheet.hairlineWidth,
-        paddingTop: 10,
     },
 });

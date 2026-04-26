@@ -3843,6 +3843,18 @@ async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
 
 
 @tool
+def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[str] = None) -> str:
+    """List CreativeMediaRuntime jobs, optionally filtered by modality or status."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        jobs = creative_media_runtime.list_jobs(modality=modality, status=status)
+        return json.dumps({"jobs": jobs}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia jobs: {str(e)}"
+
+
+@tool
 def creative_media_job_artifacts(job_id: str) -> str:
     """List artifacts recorded by a CreativeMediaRuntime job."""
     try:
@@ -3880,6 +3892,18 @@ def creative_media_get_recipe(recipe_id: str) -> str:
 
 
 @tool
+def creative_media_list_recipes(modality: Optional[str] = None, recipe_kind: Optional[str] = None) -> str:
+    """List compiled CreativeMedia recipes, optionally filtered by modality or recipe kind."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        recipes = creative_media_runtime.list_recipes(modality=modality, recipe_kind=recipe_kind)
+        return json.dumps({"recipes": recipes}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia recipes: {str(e)}"
+
+
+@tool
 def creative_media_register_asset(request: dict[str, Any]) -> str:
     """Register an existing artifact/path as a CreativeMedia asset ledger entry without copying the file."""
     try:
@@ -3901,6 +3925,89 @@ def creative_media_list_assets(modality: Optional[str] = None, role: Optional[st
         return json.dumps({"assets": assets}, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error listing CreativeMedia assets: {str(e)}"
+
+
+@tool
+def creative_media_create_character_bible(request: dict[str, Any]) -> str:
+    """Create or update a CreativeMedia character bible entry for character consistency."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        bible = creative_media_runtime.create_character_bible(dict(request or {}))
+        return json.dumps({"characterBible": bible}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error creating CreativeMedia character bible: {str(e)}"
+
+
+@tool
+def creative_media_get_character_bible(character_bible_id: str) -> str:
+    """Read a CreativeMedia character bible by id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        bible = creative_media_runtime.get_character_bible(character_bible_id)
+        if not bible:
+            return f"Error: CreativeMedia character bible not found: {character_bible_id}"
+        return json.dumps({"characterBible": bible}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia character bible: {str(e)}"
+
+
+@tool
+def creative_media_list_character_bibles() -> str:
+    """List CreativeMedia character bibles."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps({"characterBibles": creative_media_runtime.list_character_bibles()}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia character bibles: {str(e)}"
+
+
+@tool
+def creative_media_register_keyframe(request: dict[str, Any]) -> str:
+    """Register an artifact/path as a CreativeMedia keyframe without copying the file."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        keyframe = creative_media_runtime.register_keyframe(dict(request or {}))
+        return json.dumps({"keyframe": keyframe}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error registering CreativeMedia keyframe: {str(e)}"
+
+
+@tool
+def creative_media_get_keyframe(keyframe_id: str) -> str:
+    """Read a CreativeMedia keyframe by id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        keyframe = creative_media_runtime.get_keyframe(keyframe_id)
+        if not keyframe:
+            return f"Error: CreativeMedia keyframe not found: {keyframe_id}"
+        return json.dumps({"keyframe": keyframe}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia keyframe: {str(e)}"
+
+
+@tool
+def creative_media_list_keyframes(
+    recipe_id: Optional[str] = None,
+    role: Optional[str] = None,
+    character_bible_id: Optional[str] = None,
+) -> str:
+    """List CreativeMedia keyframes with optional recipe, role, or character bible filters."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        keyframes = creative_media_runtime.list_keyframes(
+            recipe_id=recipe_id,
+            role=role,
+            character_bible_id=character_bible_id,
+        )
+        return json.dumps({"keyframes": keyframes}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia keyframes: {str(e)}"
 
 
 @tool
@@ -9888,11 +9995,19 @@ NATIVE_TOOLS = [
     creative_media_resolutions,
     creative_media_create_job,
     creative_media_get_job,
+    creative_media_list_jobs,
     creative_media_job_artifacts,
     creative_media_compile_recipe,
     creative_media_get_recipe,
+    creative_media_list_recipes,
     creative_media_register_asset,
     creative_media_list_assets,
+    creative_media_create_character_bible,
+    creative_media_get_character_bible,
+    creative_media_list_character_bibles,
+    creative_media_register_keyframe,
+    creative_media_get_keyframe,
+    creative_media_list_keyframes,
     computer_use_list_apps,
     computer_use_list_primitives,
     computer_use_desktop_capabilities,

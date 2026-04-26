@@ -5,7 +5,8 @@
   "notes": [
     "This file stores public provider metadata only. Never store API keys here.",
     "Only verified_official and provider_docs entries should be considered adapter candidates.",
-    "music and model3d are catalog/stub layers in P1; they intentionally do not imply runtime support."
+    "music and model3d are catalog/stub layers in P1/P2; they intentionally do not imply runtime support.",
+    "Creative Media music is cue/brief/reference planning. It must not be interpreted as legacy MusicTrack URL player configuration."
   ],
   "modalities": {
     "image": [
@@ -275,7 +276,7 @@
         "auth": {"type": "api_key", "header": "Authorization", "scheme": "Key"},
         "request": {"method": "POST", "submitPath": "/{model}", "bodyFields": ["prompt", "lyrics", "duration"], "sizeFormat": "AUDIO_DURATION"},
         "polling": {"mode": "queue", "statusPath": "/{request_id}/status", "resultPath": "/{request_id}"},
-        "result": {"paths": ["audio.url", "music.url"]},
+        "result": {"paths": ["creative_music_brief", "cue_sheet", "future_artifact"]},
         "sourceUrl": "https://docs.fal.ai/model-apis/",
         "confidence": "provider_docs"
       },

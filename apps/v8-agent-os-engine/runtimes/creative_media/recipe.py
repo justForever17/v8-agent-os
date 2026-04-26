@@ -17,7 +17,10 @@ from .catalog import (
 
 RECIPE_STORE_FILE = "creative_media/recipes.json"
 ASSET_LEDGER_FILE = "creative_media/asset_ledger.json"
+CHARACTER_BIBLE_STORE_FILE = "creative_media/character_bibles.json"
+KEYFRAME_STORE_FILE = "creative_media/keyframes.json"
 SUPPORTED_RECIPE_MODALITIES = {"image", "video", "voice", "music"}
+SUPPORTED_MUSIC_KINDS = {"cue_sheet", "score_brief", "music_reference", "future_generation"}
 
 
 def utc_now_iso() -> str:
@@ -124,9 +127,29 @@ def _normalize_modality(value: Any) -> str:
 def _asset_symbol(modality: str, index: int) -> str:
     if modality == "video":
         return f"@视频{index}"
-    if modality in {"voice", "music", "audio"}:
-        return f"@音频{index}"
+    if modality == "voice":
+        return f"@语音{index}"
+    if modality == "music":
+        return f"@音乐{index}"
     return f"@图片{index}"
+
+
+def _normalize_music_kind(value: Any, fallback: str = "cue_sheet") -> str:
+    normalized = _clean_str(value).lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "cue": "cue_sheet",
+        "sheet": "cue_sheet",
+        "bgm": "score_brief",
+        "score": "score_brief",
+        "background_score": "score_brief",
+        "reference": "music_reference",
+        "ref": "music_reference",
+        "generation": "future_generation",
+        "generate": "future_generation",
+    }
+    normalized = aliases.get(normalized, normalized)
+    fallback_value = fallback if fallback in SUPPORTED_MUSIC_KINDS else "cue_sheet"
+    return normalized if normalized in SUPPORTED_MUSIC_KINDS else fallback_value
 
 
 def _normalize_asset(item: dict[str, Any], *, index: int) -> dict[str, Any]:
@@ -152,6 +175,28 @@ def _asset_summary(assets: list[dict[str, Any]]) -> list[str]:
         role = asset.get("role") or "reference"
         if ref:
             result.append(f"{ref} 作为 {role}")
+    return result
+
+
+def _character_bible_summary(character_bibles: list[dict[str, Any]]) -> list[str]:
+    result: list[str] = []
+    for bible in character_bibles:
+        anchors = [*list(bible.get("identityAnchors") or []), *list(bible.get("visualAnchors") or [])]
+        summary = "；".join(str(item) for item in anchors[:4] if str(item).strip())
+        name = bible.get("name") or bible.get("characterBibleId")
+        if name:
+            result.append(f"{name}: {summary}" if summary else str(name))
+    return result
+
+
+def _keyframe_summary(keyframes: list[dict[str, Any]]) -> list[str]:
+    result: list[str] = []
+    for keyframe in keyframes:
+        ref = keyframe.get("artifactId") or keyframe.get("sourcePath") or keyframe.get("workspacePath") or keyframe.get("keyframeId")
+        role = keyframe.get("role") or "reference"
+        title = keyframe.get("title") or keyframe.get("shotId") or keyframe.get("keyframeId")
+        if ref:
+            result.append(f"{ref} 作为 {role} keyframe（{title}）")
     return result
 
 
@@ -192,6 +237,117 @@ class CreativeRecipeCompiler:
     def get_recipe(self, recipe_id: str) -> dict[str, Any] | None:
         return dict((_read_store(RECIPE_STORE_FILE, "recipes").get("recipes") or {}).get(str(recipe_id)) or {}) or None
 
+    def list_recipes(self, *, modality: str | None = None, recipe_kind: str | None = None) -> list[dict[str, Any]]:
+        recipes = list((_read_store(RECIPE_STORE_FILE, "recipes").get("recipes") or {}).values())
+        normalized_modality = _normalize_modality(modality)
+        normalized_kind = _clean_str(recipe_kind).lower()
+        result: list[dict[str, Any]] = []
+        for recipe in recipes:
+            if normalized_modality and _normalize_modality(recipe.get("modality")) != normalized_modality:
+                continue
+            if normalized_kind and _clean_str(recipe.get("recipeKind")).lower() != normalized_kind:
+                continue
+            result.append(dict(recipe))
+        result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return result
+
+    def create_character_bible(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = dict(payload or {})
+        bible_id = (
+            _clean_str(request.get("characterBibleId") or request.get("character_bible_id") or request.get("id"))
+            or f"cm_character_{uuid.uuid4().hex}"
+        )
+        store = _read_store(CHARACTER_BIBLE_STORE_FILE, "characterBibles")
+        bibles = dict(store.get("characterBibles") or {})
+        previous = dict(bibles.get(bible_id) or {})
+        now = utc_now_iso()
+        bible = {
+            "characterBibleId": bible_id,
+            "name": _clean_str(request.get("name") or previous.get("name")) or bible_id,
+            "description": _clean_str(request.get("description") or previous.get("description")),
+            "identityAnchors": _list_of_strings(request.get("identityAnchors") or request.get("identity_anchors") or previous.get("identityAnchors")),
+            "visualAnchors": _list_of_strings(request.get("visualAnchors") or request.get("visual_anchors") or previous.get("visualAnchors")),
+            "voiceAnchors": _list_of_strings(request.get("voiceAnchors") or request.get("voice_anchors") or previous.get("voiceAnchors")),
+            "wardrobe": _list_of_strings(request.get("wardrobe") or previous.get("wardrobe")),
+            "props": _list_of_strings(request.get("props") or previous.get("props")),
+            "negativeConstraints": _list_of_strings(request.get("negativeConstraints") or request.get("negative_constraints") or previous.get("negativeConstraints")),
+            "sourceRefs": _list_of_strings(request.get("sourceRefs") or request.get("source_refs") or previous.get("sourceRefs")),
+            "assetIds": _list_of_strings(request.get("assetIds") or request.get("asset_ids") or previous.get("assetIds")),
+            "lineage": self._lineage_from_request(request, previous=previous.get("lineage")),
+            "version": int(previous.get("version") or 0) + 1,
+            "metadata": {**dict(previous.get("metadata") or {}), **dict(request.get("metadata") or {})},
+            "createdAt": previous.get("createdAt") or now,
+            "updatedAt": now,
+        }
+        bibles[bible_id] = bible
+        _write_store(CHARACTER_BIBLE_STORE_FILE, "characterBibles", bibles)
+        return deepcopy(bible)
+
+    def get_character_bible(self, bible_id: str) -> dict[str, Any] | None:
+        return dict((_read_store(CHARACTER_BIBLE_STORE_FILE, "characterBibles").get("characterBibles") or {}).get(str(bible_id)) or {}) or None
+
+    def list_character_bibles(self) -> list[dict[str, Any]]:
+        bibles = list((_read_store(CHARACTER_BIBLE_STORE_FILE, "characterBibles").get("characterBibles") or {}).values())
+        bibles.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return [dict(item) for item in bibles]
+
+    def register_keyframe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = dict(payload or {})
+        keyframe_id = _clean_str(request.get("keyframeId") or request.get("keyframe_id") or request.get("id")) or f"cm_keyframe_{uuid.uuid4().hex}"
+        store = _read_store(KEYFRAME_STORE_FILE, "keyframes")
+        keyframes = dict(store.get("keyframes") or {})
+        previous = dict(keyframes.get(keyframe_id) or {})
+        now = utc_now_iso()
+        keyframe = {
+            "keyframeId": keyframe_id,
+            "recipeId": _clean_str(request.get("recipeId") or request.get("recipe_id") or previous.get("recipeId")),
+            "shotId": _clean_str(request.get("shotId") or request.get("shot_id") or previous.get("shotId")),
+            "role": _clean_str(request.get("role") or previous.get("role") or "reference"),
+            "modality": _normalize_modality(request.get("modality") or previous.get("modality") or "image"),
+            "artifactId": _clean_str(request.get("artifactId") or previous.get("artifactId")),
+            "sourcePath": _clean_str(request.get("sourcePath") or previous.get("sourcePath")),
+            "workspacePath": _clean_str(request.get("workspacePath") or previous.get("workspacePath")),
+            "title": _clean_str(request.get("title") or previous.get("title")) or keyframe_id,
+            "characterBibleIds": _list_of_strings(request.get("characterBibleIds") or request.get("character_bible_ids") or previous.get("characterBibleIds")),
+            "sourceRefs": _list_of_strings(request.get("sourceRefs") or request.get("source_refs") or previous.get("sourceRefs")),
+            "lineage": self._lineage_from_request(request, previous=previous.get("lineage")),
+            "version": int(previous.get("version") or 0) + 1,
+            "metadata": {**dict(previous.get("metadata") or {}), **dict(request.get("metadata") or {})},
+            "createdAt": previous.get("createdAt") or now,
+            "updatedAt": now,
+        }
+        if not any(keyframe.get(key) for key in ("artifactId", "sourcePath", "workspacePath")):
+            raise ValueError("creative media keyframe requires artifactId, sourcePath, or workspacePath")
+        keyframes[keyframe_id] = keyframe
+        _write_store(KEYFRAME_STORE_FILE, "keyframes", keyframes)
+        return deepcopy(keyframe)
+
+    def get_keyframe(self, keyframe_id: str) -> dict[str, Any] | None:
+        return dict((_read_store(KEYFRAME_STORE_FILE, "keyframes").get("keyframes") or {}).get(str(keyframe_id)) or {}) or None
+
+    def list_keyframes(
+        self,
+        *,
+        recipe_id: str | None = None,
+        role: str | None = None,
+        character_bible_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        keyframes = list((_read_store(KEYFRAME_STORE_FILE, "keyframes").get("keyframes") or {}).values())
+        normalized_recipe_id = _clean_str(recipe_id)
+        normalized_role = _clean_str(role).lower()
+        normalized_bible_id = _clean_str(character_bible_id)
+        result: list[dict[str, Any]] = []
+        for keyframe in keyframes:
+            if normalized_recipe_id and _clean_str(keyframe.get("recipeId")) != normalized_recipe_id:
+                continue
+            if normalized_role and _clean_str(keyframe.get("role")).lower() != normalized_role:
+                continue
+            if normalized_bible_id and normalized_bible_id not in _list_of_strings(keyframe.get("characterBibleIds")):
+                continue
+            result.append(dict(keyframe))
+        result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return result
+
     def register_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload or {})
         asset_id = _clean_str(request.get("assetId") or request.get("id")) or f"cm_asset_{uuid.uuid4().hex}"
@@ -203,6 +359,7 @@ class CreativeRecipeCompiler:
             "assetId": asset_id,
             "role": _clean_str(request.get("role") or previous.get("role") or "reference"),
             "modality": _normalize_modality(request.get("modality") or previous.get("modality") or "image"),
+            "assetPlane": "creative_media_asset",
             "artifactId": _clean_str(request.get("artifactId") or previous.get("artifactId")),
             "sourcePath": _clean_str(request.get("sourcePath") or previous.get("sourcePath")),
             "workspacePath": _clean_str(request.get("workspacePath") or previous.get("workspacePath")),
@@ -214,6 +371,11 @@ class CreativeRecipeCompiler:
             "createdAt": previous.get("createdAt") or now,
             "updatedAt": now,
         }
+        if asset["modality"] == "music":
+            asset["musicKind"] = _normalize_music_kind(
+                request.get("musicKind") or request.get("music_kind") or previous.get("musicKind"),
+                fallback="music_reference",
+            )
         if not any(asset.get(key) for key in ("artifactId", "sourcePath", "workspacePath")):
             raise ValueError("creative media asset requires artifactId, sourcePath, or workspacePath")
         assets[asset_id] = asset
@@ -233,6 +395,19 @@ class CreativeRecipeCompiler:
             result.append(dict(asset))
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return result
+
+    def _lineage_from_request(self, request: dict[str, Any], *, previous: Any = None) -> dict[str, Any]:
+        lineage = {**dict(previous or {}), **dict(request.get("lineage") or {})}
+        parent_id = _clean_str(request.get("parentRecipeId") or request.get("parent_recipe_id") or request.get("parentId"))
+        supersedes_id = _clean_str(request.get("supersedesRecipeId") or request.get("supersedes_recipe_id") or request.get("supersedesId"))
+        tombstone_of = _clean_str(request.get("tombstoneOf") or request.get("tombstone_of"))
+        if parent_id:
+            lineage["parentRecipeId"] = parent_id
+        if supersedes_id:
+            lineage["supersedesRecipeId"] = supersedes_id
+        if tombstone_of:
+            lineage["tombstoneOf"] = tombstone_of
+        return lineage
 
     def _save_recipe(self, recipe: dict[str, Any]) -> dict[str, Any]:
         store = _read_store(RECIPE_STORE_FILE, "recipes")
@@ -262,11 +437,18 @@ class CreativeRecipeCompiler:
         ratio = _clean_str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio"))
         duration = request.get("durationSeconds") or request.get("duration_seconds") or request.get("duration")
         assets = self._normalize_assets(request)
+        character_bible_ids = _list_of_strings(request.get("characterBibleIds") or request.get("character_bible_ids"))
+        keyframe_ids = _list_of_strings(request.get("keyframeIds") or request.get("keyframe_ids"))
+        character_bibles = [bible for bible_id in character_bible_ids if (bible := self.get_character_bible(bible_id))]
+        keyframes = [keyframe for keyframe_id in keyframe_ids if (keyframe := self.get_keyframe(keyframe_id))]
         source_refs = [
             ref
             for ref in [
                 *_list_of_strings(request.get("sourceRefs") or request.get("source_refs")),
                 *[asset.get("assetId") or asset.get("artifactId") for asset in assets],
+                *character_bible_ids,
+                *keyframe_ids,
+                *[keyframe.get("artifactId") for keyframe in keyframes],
             ]
             if ref
         ]
@@ -280,6 +462,8 @@ class CreativeRecipeCompiler:
             "durationSeconds": _safe_int(duration, 0, minimum=0, maximum=600) if duration is not None else None,
             "negativeConstraints": _list_of_strings(request.get("negativeConstraints") or request.get("negative_constraints") or request.get("negative")),
             "assetRefs": source_refs,
+            "characterBibleIds": character_bible_ids,
+            "keyframeIds": keyframe_ids,
         }
         return {
             "recipeId": _clean_str(request.get("recipeId") or request.get("id")) or f"cm_recipe_{uuid.uuid4().hex}",
@@ -298,8 +482,10 @@ class CreativeRecipeCompiler:
                 "seed": request.get("seed"),
             },
             "assets": assets,
+            "characterBibles": character_bibles,
+            "keyframes": keyframes,
             "sourceRefs": source_refs,
-            "lineage": dict(request.get("lineage") or {}),
+            "lineage": self._lineage_from_request(request),
             "providerNeutralRecipe": {},
             "providerPrompts": {},
             "constraintCheck": {"ok": True, "checks": [], "warnings": []},
@@ -317,6 +503,8 @@ class CreativeRecipeCompiler:
         structure = list(template.get("structure") or [])
         avoidances = [*list(template.get("avoid") or []), *recipe["hardRequirements"]["negativeConstraints"]]
         asset_lines = _asset_summary(recipe["assets"])
+        character_lines = _character_bible_summary(recipe["characterBibles"])
+        keyframe_lines = _keyframe_summary(recipe["keyframes"])
         provider_neutral = {
             "type": template.get("label") or recipe_kind,
             "objective": prompt,
@@ -324,6 +512,8 @@ class CreativeRecipeCompiler:
             "style": enhancements,
             "layoutControls": {"aspectRatio": ratio},
             "assets": asset_lines,
+            "characters": character_lines,
+            "keyframes": keyframe_lines,
             "avoid": avoidances,
         }
         recipe["providerNeutralRecipe"] = provider_neutral
@@ -347,6 +537,8 @@ class CreativeRecipeCompiler:
         ratio = recipe["controls"]["ratio"] or "16:9"
         segments = self._timed_segments(duration, prompt)
         asset_lines = _asset_summary(recipe["assets"])
+        character_lines = _character_bible_summary(recipe["characterBibles"])
+        keyframe_lines = _keyframe_summary(recipe["keyframes"])
         camera_terms = list(template.get("cameraLanguage") or [])
         avoidances = [*list(template.get("avoid") or []), *recipe["hardRequirements"]["negativeConstraints"]]
         recipe["softEnhancements"] = list(template.get("enhancements") or [])
@@ -357,6 +549,8 @@ class CreativeRecipeCompiler:
             "timedSegments": segments,
             "cameraLanguage": camera_terms,
             "assets": asset_lines,
+            "characters": character_lines,
+            "keyframes": keyframe_lines,
             "avoid": avoidances,
         }
         seedance_prompt = self._render_seedance_prompt(recipe["providerNeutralRecipe"], duration)
@@ -397,23 +591,34 @@ class CreativeRecipeCompiler:
         templates = dict((library.get("music") or {}).get("templates") or {})
         recipe_kind, template = _select_template({"templates": templates}, prompt, "background_score")
         recipe = self._base_recipe(request, prompt, "music", recipe_kind)
+        music_kind = _normalize_music_kind(
+            request.get("musicKind") or request.get("music_kind"),
+            fallback="score_brief" if recipe_kind == "background_score" else "cue_sheet",
+        )
         duration = _safe_int(recipe["controls"].get("durationSeconds"), 30, minimum=1, maximum=600)
         recipe["executionStatus"] = "catalog_only"
+        recipe["musicKind"] = music_kind
+        recipe["creativeMediaPlane"] = "creative_music_plan"
         recipe["controls"]["durationSeconds"] = duration
+        recipe["controls"]["musicKind"] = music_kind
         recipe["softEnhancements"] = list(template.get("arrangement") or [])
         recipe["providerNeutralRecipe"] = {
             "type": template.get("label") or recipe_kind,
+            "musicKind": music_kind,
+            "deliveryPlane": "creative_media_asset_ledger",
             "objective": prompt,
             "durationSeconds": duration,
             "cueSheet": self._music_cues(duration, prompt),
             "arrangement": recipe["softEnhancements"],
-            "rightsNote": "Music generation is catalog-only in P2a; verify copyright/licensing before delivery.",
+            "rightsNote": "Music is a Creative Media cue/brief/reference plan here. It is not a legacy MusicTrack URL player entry.",
         }
         recipe["providerPrompts"] = {
-            "music_brief": recipe["providerNeutralRecipe"],
+            "creative_music_brief": recipe["providerNeutralRecipe"],
         }
         recipe["constraintCheck"] = self._constraint_check(recipe, modality="music")
-        recipe["constraintCheck"]["warnings"].append("music recipe is catalog_only; no provider job is created in P2a")
+        recipe["constraintCheck"]["warnings"].append(
+            "music recipe is catalog_only; no provider job is created and no legacy MusicTrack is written"
+        )
         return recipe
 
     def _render_visual_prompt(self, provider_neutral: dict[str, Any], hard_requirements: dict[str, Any]) -> str:
@@ -427,6 +632,10 @@ class CreativeRecipeCompiler:
             lines.append("风格增强: " + "；".join(str(item) for item in provider_neutral["style"]))
         if provider_neutral.get("assets"):
             lines.append("参考资产: " + "；".join(str(item) for item in provider_neutral["assets"]))
+        if provider_neutral.get("characters"):
+            lines.append("角色设定: " + "；".join(str(item) for item in provider_neutral["characters"]))
+        if provider_neutral.get("keyframes"):
+            lines.append("关键帧: " + "；".join(str(item) for item in provider_neutral["keyframes"]))
         if hard_requirements.get("textTokens"):
             lines.append("必须准确保留文字: " + "；".join(hard_requirements["textTokens"]))
         if hard_requirements.get("ratio"):
@@ -440,6 +649,12 @@ class CreativeRecipeCompiler:
         assets = list(provider_neutral.get("assets") or [])
         if assets:
             lines.append("素材引用: " + "；".join(str(item) for item in assets))
+        characters = list(provider_neutral.get("characters") or [])
+        if characters:
+            lines.append("角色一致性: " + "；".join(str(item) for item in characters))
+        keyframes = list(provider_neutral.get("keyframes") or [])
+        if keyframes:
+            lines.append("关键帧约束: " + "；".join(str(item) for item in keyframes))
         lines.append(f"{duration}秒视频，目标: {provider_neutral.get('objective')}")
         for segment in list(provider_neutral.get("timedSegments") or []):
             lines.append(f"{segment['start']}-{segment['end']}秒: {segment['description']}")
@@ -520,8 +735,11 @@ creative_recipe_compiler = CreativeRecipeCompiler()
 
 __all__ = [
     "ASSET_LEDGER_FILE",
+    "CHARACTER_BIBLE_STORE_FILE",
+    "KEYFRAME_STORE_FILE",
     "RECIPE_STORE_FILE",
     "SUPPORTED_RECIPE_MODALITIES",
+    "SUPPORTED_MUSIC_KINDS",
     "CreativeRecipeCompiler",
     "creative_recipe_compiler",
 ]

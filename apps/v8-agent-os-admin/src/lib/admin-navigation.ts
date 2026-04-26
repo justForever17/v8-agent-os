@@ -118,6 +118,13 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: "lib.admin.navigation.k63312a13",
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
+            {
+                title: "lib.admin.navigation.creativeMediaTitle",
+                href: "/admin/creative-media",
+                icon: Sparkles,
+                description: "lib.admin.navigation.creativeMediaDescription",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
+            },
         ],
     },
     {

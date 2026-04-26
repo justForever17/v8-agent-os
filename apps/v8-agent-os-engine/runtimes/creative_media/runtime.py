@@ -35,7 +35,7 @@ from .recipe import creative_recipe_compiler
 
 JOB_STORE_FILE = "creative_media/jobs.json"
 SUPPORTED_MODALITIES = {"image", "video", "voice", "music", "model3d"}
-# music/model3d intentionally stay schema/catalog-only in P1; adapters can be added without changing the job envelope.
+# music/model3d intentionally stay schema/catalog-only in P2; adapters can be added without changing the job envelope.
 EXECUTABLE_MODALITIES = {"image", "video", "voice"}
 
 
@@ -148,11 +148,19 @@ class CreativeMediaRuntime:
                     "creative_media_resolutions",
                     "creative_media_create_job",
                     "creative_media_get_job",
+                    "creative_media_list_jobs",
                     "creative_media_job_artifacts",
                     "creative_media_compile_recipe",
                     "creative_media_get_recipe",
+                    "creative_media_list_recipes",
                     "creative_media_register_asset",
                     "creative_media_list_assets",
+                    "creative_media_create_character_bible",
+                    "creative_media_get_character_bible",
+                    "creative_media_list_character_bibles",
+                    "creative_media_register_keyframe",
+                    "creative_media_get_keyframe",
+                    "creative_media_list_keyframes",
                 ],
             },
         }
@@ -185,11 +193,42 @@ class CreativeMediaRuntime:
     def get_recipe(self, recipe_id: str) -> dict[str, Any] | None:
         return creative_recipe_compiler.get_recipe(recipe_id)
 
+    def list_recipes(self, *, modality: str | None = None, recipe_kind: str | None = None) -> list[dict[str, Any]]:
+        return creative_recipe_compiler.list_recipes(modality=modality, recipe_kind=recipe_kind)
+
     def register_asset(self, request: dict[str, Any]) -> dict[str, Any]:
         return creative_recipe_compiler.register_asset(dict(request or {}))
 
     def list_assets(self, *, modality: str | None = None, role: str | None = None) -> list[dict[str, Any]]:
         return creative_recipe_compiler.list_assets(modality=modality, role=role)
+
+    def create_character_bible(self, request: dict[str, Any]) -> dict[str, Any]:
+        return creative_recipe_compiler.create_character_bible(dict(request or {}))
+
+    def get_character_bible(self, bible_id: str) -> dict[str, Any] | None:
+        return creative_recipe_compiler.get_character_bible(bible_id)
+
+    def list_character_bibles(self) -> list[dict[str, Any]]:
+        return creative_recipe_compiler.list_character_bibles()
+
+    def register_keyframe(self, request: dict[str, Any]) -> dict[str, Any]:
+        return creative_recipe_compiler.register_keyframe(dict(request or {}))
+
+    def get_keyframe(self, keyframe_id: str) -> dict[str, Any] | None:
+        return creative_recipe_compiler.get_keyframe(keyframe_id)
+
+    def list_keyframes(
+        self,
+        *,
+        recipe_id: str | None = None,
+        role: str | None = None,
+        character_bible_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return creative_recipe_compiler.list_keyframes(
+            recipe_id=recipe_id,
+            role=role,
+            character_bible_id=character_bible_id,
+        )
 
     def _read_jobs(self) -> dict[str, Any]:
         payload = storage.read_json(JOB_STORE_FILE)
@@ -247,6 +286,20 @@ class CreativeMediaRuntime:
         job = self.get_job(job_id, refresh=False) or {}
         return [dict(item) for item in list(job.get("artifacts") or []) if isinstance(item, dict)]
 
+    def list_jobs(self, *, modality: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        jobs = list((self._read_jobs().get("jobs") or {}).values())
+        normalized_modality = str(modality or "").strip().lower()
+        normalized_status = str(status or "").strip().lower()
+        result: list[dict[str, Any]] = []
+        for job in jobs:
+            if normalized_modality and str(job.get("modality") or "").strip().lower() != normalized_modality:
+                continue
+            if normalized_status and str(job.get("status") or "").strip().lower() != normalized_status:
+                continue
+            result.append(dict(job))
+        result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return result
+
     async def create_job(self, request: dict[str, Any]) -> dict[str, Any]:
         modality = str(request.get("modality") or "").strip().lower()
         if modality not in SUPPORTED_MODALITIES:
@@ -254,7 +307,7 @@ class CreativeMediaRuntime:
         if modality not in EXECUTABLE_MODALITIES:
             job = self._new_job(modality=modality, adapter="catalog_only", request=request)
             job["status"] = "failed"
-            job["error"] = f"{modality} is catalog-only in P1; runtime execution is reserved for a later phase."
+            job["error"] = f"{modality} is catalog-only in P2; runtime execution is reserved for a later phase."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
         if modality == "image":

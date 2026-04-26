@@ -15,7 +15,6 @@ import {
     Clock,
     Zap,
 } from "lucide-react";
-import { MusicPlayer } from "./MusicPlayer";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -301,9 +300,7 @@ export function Sidebar() {
                 </div>
             </ScrollArea>
 
-            <div className="mt-auto border-t border-border/40 bg-background/30 backdrop-blur-sm">
-                <MusicPlayer isCollapsed={collapsed} />
-            </div>
+            <div className="mt-auto border-t border-border/40 bg-background/30 backdrop-blur-sm" />
         </div>
     );
 

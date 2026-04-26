@@ -2376,6 +2376,8 @@
   "lib.admin.navigation.kc32f16d1": "COMPUTER USE RUNTIME",
   "lib.admin.navigation.kc6277f77": "Long-term memory, knowledge, and graph.",
   "lib.admin.navigation.kc841e62a": "Skills, MCP, and extension ecosystem.",
+  "lib.admin.navigation.creativeMediaDescription": "Creative media recipes, assets, characters, and keyframes.",
+  "lib.admin.navigation.creativeMediaTitle": "CREATIVE MEDIA RUNTIME",
   "lib.admin.navigation.kcef5c2ee": "AUDIO",
   "lib.admin.navigation.kcf00915a": "Govern the default workspace, project workspaces, and rule injection boundaries.",
   "lib.admin.navigation.kdb0e699b": "SYSTEM BASE",

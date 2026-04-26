@@ -88,7 +88,6 @@ import {
     getSessionScope,
     listCommandPresets,
     listConversations,
-    listMusicTracks,
     listSkills,
     requestTextToSpeech,
     respondAskUser,
@@ -108,7 +107,6 @@ import type {
     CommandPresetSummary,
     ConversationDetail,
     ConversationSummary,
-    MusicTrack,
     AskUserInteraction,
     PendingApproval,
     PhoneUiTimelineNode,
@@ -1683,7 +1681,6 @@ export default function ChatScreen() {
     const [contextReferences, setContextReferences] = useState<ContextReferenceItem[]>([]);
     const [contextGovernance, setContextGovernance] = useState<ContextGovernanceView | null>(null);
     const [contextGovernanceHistory, setContextGovernanceHistory] = useState<ContextGovernanceView[]>([]);
-    const [musicTracks, setMusicTracks] = useState<MusicTrack[]>([]);
     const [commands, setCommands] = useState<CommandPresetSummary[]>([]);
     const [skills, setSkills] = useState<SkillReferenceSummary[]>([]);
     const [uploadedFiles, setUploadedFiles] = useState<UploadedWorkspaceFile[]>([]);
@@ -2491,17 +2488,15 @@ export default function ChatScreen() {
     }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectPath, setActiveConversationId, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
-        const [nextConversations, nextCommands, nextSkills, nextMusic] = await Promise.all([
+        const [nextConversations, nextCommands, nextSkills] = await Promise.all([
             listConversations(authorizedFetch),
             listCommandPresets(authorizedFetch).catch(() => []),
             listSkills(authorizedFetch).catch(() => []),
-            listMusicTracks(authorizedFetch).catch(() => []),
         ]);
 
         setConversations(nextConversations);
         setCommands(nextCommands);
         setSkills(nextSkills);
-        setMusicTracks(nextMusic);
         await loadProjects();
 
         if (
@@ -5216,8 +5211,6 @@ export default function ChatScreen() {
                     items={conversations}
                     groups={projection.sidebarGroups}
                     activeConversationId={activeConversationId}
-                    adminBaseUrl={adminBaseUrl}
-                    musicTracks={musicTracks}
                     loading={loading}
                     onClose={() => setHistoryOpen(false)}
                     onSelectConversation={(item) => void handleSelectConversation(item)}

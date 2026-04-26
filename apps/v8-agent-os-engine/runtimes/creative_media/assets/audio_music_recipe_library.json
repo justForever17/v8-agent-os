@@ -7,7 +7,8 @@
   ],
   "notes": [
     "Voice recipes may map to existing V8 TTS in later job execution.",
-    "Music recipes are catalog-only in P2a and must not imply provider execution or music rights."
+    "Music recipes are catalog-only in P2 and must not imply provider execution or music rights.",
+    "Creative Media music recipes are not legacy MusicTrack URL player configuration."
   ],
   "voice": {
     "templates": {

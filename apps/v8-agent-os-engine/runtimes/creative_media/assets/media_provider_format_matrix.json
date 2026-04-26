@@ -1,0 +1,328 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-26",
+  "statusLevels": ["verified_official", "provider_docs", "community_or_inferred", "placeholder"],
+  "notes": [
+    "This file stores public provider metadata only. Never store API keys here.",
+    "Only verified_official and provider_docs entries should be considered adapter candidates.",
+    "music and model3d are catalog/stub layers in P1; they intentionally do not imply runtime support."
+  ],
+  "modalities": {
+    "image": [
+      {
+        "id": "openai_images",
+        "displayName": "OpenAI-compatible Images",
+        "apiStandard": "openai_images",
+        "adapter": "openai_images",
+        "baseUrlDefault": "https://api.openai.com/v1",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://platform.openai.com/api-keys"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/images/generations",
+          "bodyFields": ["model", "prompt", "size", "response_format"],
+          "sizeField": "size",
+          "sizeFormat": "WIDTHxHEIGHT",
+          "responseFormats": ["url", "b64_json"]
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["data[].url", "data[].b64_json"]},
+        "statusMap": {"http_2xx": "succeeded", "http_error": "failed"},
+        "sourceUrl": "https://platform.openai.com/docs/guides/images/image-generation",
+        "confidence": "verified_official"
+      },
+      {
+        "id": "volcengine_seedream",
+        "displayName": "Volcengine Ark Seedream",
+        "apiStandard": "volcengine_ark_image",
+        "adapter": "volcengine_ark",
+        "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
+        "credentialHelp": {
+          "label": "Get Ark API key",
+          "url": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/images/generations",
+          "bodyFields": ["model", "prompt", "size", "seed", "response_format", "image"],
+          "sizeField": "size",
+          "sizeFormat": "WIDTHxHEIGHT",
+          "responseFormats": ["url", "b64_json"]
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["data[].url", "data[].b64_json"]},
+        "statusMap": {"http_2xx": "succeeded", "http_error": "failed"},
+        "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "stability_image",
+        "displayName": "Stability AI Image",
+        "apiStandard": "stability_image",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.stability.ai",
+        "credentialHelp": {"label": "Get API key", "url": "https://platform.stability.ai/account/keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/v2beta/stable-image/generate/{model}",
+          "bodyFields": ["prompt", "aspect_ratio", "output_format", "seed"],
+          "sizeField": "aspect_ratio",
+          "sizeFormat": "RATIO_COLON"
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["binary_body", "json.image"]},
+        "sourceUrl": "https://platform.stability.ai/docs/api-reference",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "fal_image",
+        "displayName": "fal.ai Image Models",
+        "apiStandard": "fal_queue",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://queue.fal.run",
+        "credentialHelp": {"label": "Get fal key", "url": "https://fal.ai/dashboard/keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Key"},
+        "request": {"method": "POST", "submitPath": "/{model}", "bodyFields": ["prompt", "image_size", "aspect_ratio"], "sizeFormat": "MODEL_SPECIFIC"},
+        "polling": {"mode": "queue", "statusPath": "/{request_id}/status", "resultPath": "/{request_id}"},
+        "result": {"paths": ["images[].url", "image.url"]},
+        "sourceUrl": "https://docs.fal.ai/model-apis/",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "replicate_image",
+        "displayName": "Replicate Image Predictions",
+        "apiStandard": "replicate_predictions",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.replicate.com/v1",
+        "credentialHelp": {"label": "Get API token", "url": "https://replicate.com/account/api-tokens"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Token"},
+        "request": {"method": "POST", "submitPath": "/predictions", "bodyFields": ["version", "input"], "sizeFormat": "MODEL_SPECIFIC"},
+        "polling": {"mode": "prediction", "statusPath": "/predictions/{id}"},
+        "result": {"paths": ["output", "urls.get"]},
+        "sourceUrl": "https://replicate.com/docs/reference/http",
+        "confidence": "provider_docs"
+      }
+    ],
+    "video": [
+      {
+        "id": "volcengine_seedance",
+        "displayName": "Volcengine Ark Seedance",
+        "apiStandard": "volcengine_ark_video",
+        "adapter": "volcengine_ark",
+        "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
+        "credentialHelp": {
+          "label": "Get Ark API key",
+          "url": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/contents/generations/tasks",
+          "bodyFields": ["model", "content", "ratio", "resolution", "duration", "seed", "watermark", "generate_audio"],
+          "ratioField": "ratio",
+          "durationField": "duration",
+          "resolutionField": "resolution",
+          "sizeFormat": "RATIO_AND_RESOLUTION"
+        },
+        "polling": {"mode": "task", "statusPath": "/contents/generations/tasks/{task_id}", "recommendedIntervalSeconds": 10},
+        "result": {"paths": ["content.video_url"]},
+        "statusMap": {"ordered": "queued", "running": "running", "succeeded": "succeeded", "failed": "failed"},
+        "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "google_veo",
+        "displayName": "Google Veo",
+        "apiStandard": "google_operation",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://generativelanguage.googleapis.com/v1beta",
+        "credentialHelp": {"label": "Get Gemini API key", "url": "https://aistudio.google.com/apikey"},
+        "auth": {"type": "api_key", "query": "key"},
+        "request": {"method": "POST", "submitPath": "/models/{model}:predictLongRunning", "bodyFields": ["prompt", "image", "video", "config"], "sizeFormat": "ASPECT_RATIO_FIELD"},
+        "polling": {"mode": "operation", "statusPath": "/{operation_name}"},
+        "result": {"paths": ["response.generatedVideos[].video.uri"]},
+        "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
+        "confidence": "verified_official"
+      },
+      {
+        "id": "runway_video",
+        "displayName": "Runway Video",
+        "apiStandard": "runway_task",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.dev.runwayml.com/v1",
+        "credentialHelp": {"label": "Get API key", "url": "https://dev.runwayml.com/"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/image_to_video", "bodyFields": ["model", "promptImage", "promptText", "ratio", "duration"], "sizeFormat": "RESOLUTION_ENUM"},
+        "polling": {"mode": "task", "statusPath": "/tasks/{id}"},
+        "result": {"paths": ["output[]"]},
+        "sourceUrl": "https://docs.dev.runwayml.com/",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "luma_video",
+        "displayName": "Luma Dream Machine",
+        "apiStandard": "luma_generation",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.lumalabs.ai/dream-machine/v1",
+        "credentialHelp": {"label": "Get API key", "url": "https://lumalabs.ai/dream-machine/api"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/generations", "bodyFields": ["prompt", "aspect_ratio", "keyframes"], "sizeFormat": "RATIO_COLON"},
+        "polling": {"mode": "generation", "statusPath": "/generations/{id}"},
+        "result": {"paths": ["assets.video"]},
+        "sourceUrl": "https://docs.lumalabs.ai/docs/api-reference",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "minimax_video",
+        "displayName": "MiniMax Video",
+        "apiStandard": "minimax_task",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.minimax.io",
+        "credentialHelp": {"label": "Get API key", "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/v1/video_generation", "bodyFields": ["model", "prompt", "first_frame_image", "duration"], "sizeFormat": "MODEL_SPECIFIC"},
+        "polling": {"mode": "task", "statusPath": "/v1/query/video_generation?task_id={task_id}", "resultDownloadPath": "/v1/files/retrieve?file_id={file_id}"},
+        "result": {"paths": ["file_id", "download_url"]},
+        "sourceUrl": "https://platform.minimaxi.com/document/video-generation",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "kling_video",
+        "displayName": "Kling AI Video",
+        "apiStandard": "kling_task",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.klingai.com",
+        "credentialHelp": {"label": "Open console", "url": "https://klingai.com/"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/v1/videos/text2video", "bodyFields": ["model_name", "prompt", "aspect_ratio", "duration"], "sizeFormat": "RATIO_COLON"},
+        "polling": {"mode": "task", "statusPath": "/v1/videos/text2video/{id}"},
+        "result": {"paths": ["data.task_result.videos[].url"]},
+        "sourceUrl": "https://docs.qingque.cn/d/home/eZQFcwKVbJYERy6_zJcDf8B7m",
+        "confidence": "community_or_inferred"
+      }
+    ],
+    "voice": [
+      {
+        "id": "v8_audio_tts",
+        "displayName": "V8 Audio Runtime TTS",
+        "apiStandard": "v8_audio",
+        "adapter": "v8_audio_tts",
+        "baseUrlDefault": "internal",
+        "credentialHelp": {"label": "Use current V8 audio config", "url": "internal"},
+        "auth": {"type": "existing_audio_config"},
+        "request": {"method": "INTERNAL", "submitPath": "core.audio.tts_provider.TTSManager", "bodyFields": ["text", "voice"], "outputFormat": "audio/mpeg"},
+        "polling": {"mode": "none"},
+        "result": {"paths": ["artifact.audio"]},
+        "sourceUrl": "internal",
+        "confidence": "verified_official"
+      },
+      {
+        "id": "openai_audio_speech",
+        "displayName": "OpenAI Audio Speech",
+        "apiStandard": "openai_audio",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.openai.com/v1",
+        "credentialHelp": {"label": "Get API key", "url": "https://platform.openai.com/api-keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/audio/speech", "bodyFields": ["model", "input", "voice", "response_format"], "sizeFormat": "AUDIO_FORMAT_ENUM"},
+        "polling": {"mode": "none"},
+        "result": {"paths": ["binary_body"]},
+        "sourceUrl": "https://platform.openai.com/docs/guides/text-to-speech",
+        "confidence": "verified_official"
+      },
+      {
+        "id": "elevenlabs_tts",
+        "displayName": "ElevenLabs Text to Speech",
+        "apiStandard": "elevenlabs_tts",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.elevenlabs.io/v1",
+        "credentialHelp": {"label": "Get API key", "url": "https://elevenlabs.io/app/settings/api-keys"},
+        "auth": {"type": "api_key", "header": "xi-api-key"},
+        "request": {"method": "POST", "submitPath": "/text-to-speech/{voice_id}", "bodyFields": ["text", "model_id", "output_format", "voice_settings"], "sizeFormat": "AUDIO_FORMAT_ENUM"},
+        "polling": {"mode": "none"},
+        "result": {"paths": ["binary_body"]},
+        "sourceUrl": "https://elevenlabs.io/docs/api-reference/text-to-speech",
+        "confidence": "verified_official"
+      },
+      {
+        "id": "minimax_tts",
+        "displayName": "MiniMax Speech",
+        "apiStandard": "minimax_tts",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://api.minimax.io",
+        "credentialHelp": {"label": "Get API key", "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/v1/t2a_v2", "bodyFields": ["model", "text", "voice_setting", "audio_setting"], "sizeFormat": "AUDIO_FORMAT_ENUM"},
+        "polling": {"mode": "none"},
+        "result": {"paths": ["data.audio", "binary_body"]},
+        "sourceUrl": "https://platform.minimaxi.com/document/speech-synthesis",
+        "confidence": "provider_docs"
+      }
+    ],
+    "music": [
+      {
+        "id": "fal_music",
+        "displayName": "fal.ai Music Models",
+        "apiStandard": "fal_queue",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://queue.fal.run",
+        "credentialHelp": {"label": "Get fal key", "url": "https://fal.ai/dashboard/keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Key"},
+        "request": {"method": "POST", "submitPath": "/{model}", "bodyFields": ["prompt", "lyrics", "duration"], "sizeFormat": "AUDIO_DURATION"},
+        "polling": {"mode": "queue", "statusPath": "/{request_id}/status", "resultPath": "/{request_id}"},
+        "result": {"paths": ["audio.url", "music.url"]},
+        "sourceUrl": "https://docs.fal.ai/model-apis/",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "suno_placeholder",
+        "displayName": "Suno",
+        "apiStandard": "music_generation",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "",
+        "credentialHelp": {"label": "Open provider", "url": "https://suno.com/"},
+        "auth": {"type": "provider_specific"},
+        "request": {"method": "PROVIDER_SPECIFIC", "submitPath": "", "bodyFields": ["prompt", "lyrics", "style"], "sizeFormat": "AUDIO_DURATION"},
+        "polling": {"mode": "provider_specific"},
+        "result": {"paths": ["provider_specific"]},
+        "sourceUrl": "https://suno.com/",
+        "confidence": "placeholder"
+      }
+    ],
+    "model3d": [
+      {
+        "id": "fal_3d",
+        "displayName": "fal.ai 3D Models",
+        "apiStandard": "fal_queue",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://queue.fal.run",
+        "credentialHelp": {"label": "Get fal key", "url": "https://fal.ai/dashboard/keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Key"},
+        "request": {"method": "POST", "submitPath": "/{model}", "bodyFields": ["prompt", "image_url", "texture"], "sizeFormat": "MODEL_3D_ASSET"},
+        "polling": {"mode": "queue", "statusPath": "/{request_id}/status", "resultPath": "/{request_id}"},
+        "result": {"paths": ["model.url", "mesh.url", "glb.url"]},
+        "sourceUrl": "https://docs.fal.ai/model-apis/",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "tripo3d_placeholder",
+        "displayName": "Tripo 3D",
+        "apiStandard": "model3d_task",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "",
+        "credentialHelp": {"label": "Open provider", "url": "https://www.tripo3d.ai/"},
+        "auth": {"type": "provider_specific"},
+        "request": {"method": "POST", "submitPath": "", "bodyFields": ["prompt", "image"], "sizeFormat": "MODEL_3D_ASSET"},
+        "polling": {"mode": "task"},
+        "result": {"paths": ["model_asset"]},
+        "sourceUrl": "https://www.tripo3d.ai/",
+        "confidence": "placeholder"
+      }
+    ]
+  }
+}

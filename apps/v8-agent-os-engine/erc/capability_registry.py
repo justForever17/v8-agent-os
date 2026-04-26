@@ -8,6 +8,7 @@ from core.system_tools.baseline import is_baseline_system_tool_name
 _SNAPSHOT_RUNTIME_ORDER = (
     "chat",
     "memory",
+    "creative_media",
     "automation",
     "extensions",
     "network_supervisor",
@@ -27,6 +28,11 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "displayName": "MemoryRuntime",
         "summary": "负责长期记忆、检索、摘要与会话范围内的知识注入。",
         "visibility": "primary",
+    },
+    "creative_media": {
+        "displayName": "CreativeMediaRuntime",
+        "summary": "负责图片、视频、语音、音乐与未来 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
+        "visibility": "secondary",
     },
     "automation": {
         "displayName": "AutomationRuntime",
@@ -474,7 +480,7 @@ class CapabilityRegistry:
                 continue
             ordered.append(descriptor)
             seen.add(kind)
-        for descriptor in self.list():
+        for descriptor, _registered in self._snapshot_descriptors():
             if descriptor.kind in seen:
                 continue
             ordered.append(descriptor)
@@ -482,36 +488,39 @@ class CapabilityRegistry:
         if not ordered:
             return ""
 
+        from core.runtime_tool_access import RUNTIME_TOOL_GROUPS
+
         lines = [
             "<capability_registry>",
-            "Supervisor 不需要记住所有模块 prompt 细节。你应该优先根据下面这份 Runtime 能力卡片做路由和分工。",
+            "Runtime 能力卡片。常驻工具只覆盖通用面；需要 runtime 级工具时，Supervisor 先用 runtime_broker 按组授予。",
         ]
         if user_query:
             suggestions = [recommended[kind] for kind in recommended]
             if suggestions:
-                lines.append("当前查询的推荐路由:")
+                lines.append("推荐路由:")
                 for item in suggestions[:4]:
                     labels = "、".join(item.matched_keywords[:3]) or "通用契合"
-                    lines.append(
-                        f"- {item.display_name} ({item.kind}) score={round(item.score, 1)} | 命中: {labels}"
-                    )
+                    lines.append(f"- {item.kind}: {item.display_name} | 命中: {labels}")
         for descriptor in ordered:
             policy = self.get_policy(descriptor.kind)
             if not policy.enabled:
                 continue
-            lines.append(f"- {descriptor.display_name} ({descriptor.kind})")
+            groups = [
+                group_name
+                for group_name, group_payload in RUNTIME_TOOL_GROUPS.items()
+                if str(group_payload.get("runtimeKind") or "") == descriptor.kind
+            ]
+            when_to_use = ""
+            if descriptor.prompt_hints:
+                when_to_use = str(descriptor.prompt_hints[0]).strip()
+            elif descriptor.routing_keywords:
+                when_to_use = " / ".join(descriptor.routing_keywords[:5])
+            lines.append(f"- kind={descriptor.kind} | {descriptor.display_name}")
             if descriptor.summary:
                 lines.append(f"  摘要: {descriptor.summary}")
-            lines.append(
-                f"  状态: enabled | auto_route={'yes' if policy.auto_route else 'no'} | direct_tools={'yes' if policy.expose_direct_tools else 'no'} | priority={policy.priority}"
-            )
-            if descriptor.routing_keywords:
-                lines.append(f"  适用关键词: {', '.join(descriptor.routing_keywords[:8])}")
-            if descriptor.capabilities:
-                capability_labels = ", ".join(cap.label for cap in descriptor.capabilities[:4])
-                lines.append(f"  代表能力: {capability_labels}")
-            if descriptor.prompt_hints:
-                lines.append(f"  路由提示: {'；'.join(descriptor.prompt_hints[:2])}")
+            lines.append(f"  可取工具组: {', '.join(groups) if groups else '无；使用常驻工具或该 runtime 自身路由'}")
+            if when_to_use:
+                lines.append(f"  何时使用: {when_to_use}")
         disabled = [
             descriptor.display_name
             for descriptor in ordered

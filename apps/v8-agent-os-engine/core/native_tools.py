@@ -118,6 +118,14 @@ from core.delegation_broker import (
     task_brief_query_text,
     task_brief_summary,
 )
+from core.runtime_tool_access import (
+    RUNTIME_BROKER_TOOL_NAME,
+    grant_runtime_tool_groups,
+    normalize_runtime_access,
+    revoke_runtime_tool_groups,
+    runtime_access_from_route_context,
+    runtime_tool_groups_catalog,
+)
 from core.computer_use_execution_route import (
     _compact_environment_signal_summary,
     _compact_timing_signal_summary,
@@ -3603,6 +3611,246 @@ def memory_read_day(memory_ref_or_date: str) -> str:
         return _get_memory_runtime().read_memory_day(memory_ref_or_date=memory_ref_or_date)
     except Exception as e:
         return f"Error reading memory day: {str(e)}"
+
+
+def _runtime_broker_payload(
+    *,
+    mode: str,
+    ok: bool,
+    summary: str,
+    grants: list[dict[str, Any]] | None = None,
+    groups: list[dict[str, Any]] | None = None,
+    rejected: list[str] | None = None,
+    error: str | None = None,
+) -> str:
+    payload = {
+        "mode": mode,
+        "ok": ok,
+        "summary": summary,
+        "grants": list(grants or []),
+        "groups": list(groups or []),
+        "rejected": list(rejected or []),
+    }
+    if error:
+        payload["error"] = error
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@tool
+def runtime_broker(
+    mode: str = "list",
+    runtime_kind: Optional[str] = None,
+    tool_group: Optional[str] = None,
+    tool_groups: Optional[list[str]] = None,
+    reason: Optional[str] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> Command:
+    """Supervisor-only broker for listing, granting, checking, and revoking runtime tool groups for the current run."""
+    normalized_mode = str(mode or "list").strip().lower()
+    route_context = dict((state or {}).get("current_route_context") or {})
+
+    if normalized_mode == "list":
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Runtime tool groups available for run-scoped grant.",
+                            groups=runtime_tool_groups_catalog(),
+                            grants=[
+                                {"group": group, "runtimeKind": group.split(".", 1)[0]}
+                                for group in runtime_access_from_route_context(route_context)
+                            ],
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": route_context,
+            },
+        )
+
+    requested_groups = list(tool_groups or [])
+    if tool_group:
+        requested_groups.append(tool_group)
+    requested_groups = normalize_runtime_access(requested_groups, runtime_kind=runtime_kind)
+
+    if normalized_mode == "status":
+        active_groups = runtime_access_from_route_context(route_context)
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Current run-scoped runtime tool grants.",
+                            groups=runtime_tool_groups_catalog(),
+                            grants=[
+                                {"group": group, "runtimeKind": group.split(".", 1)[0]}
+                                for group in active_groups
+                            ],
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": route_context,
+            },
+        )
+
+    if normalized_mode == "grant":
+        if not requested_groups:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="runtime_broker(mode=grant) requires tool_group or tool_groups.",
+                                error="missing_tool_group",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+        updated_context, grants, rejected = grant_runtime_tool_groups(
+            route_context,
+            requested_groups,
+            reason=str(reason or "").strip(),
+        )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=not rejected,
+                            summary=(
+                                "Runtime tool group granted for this run. It will be visible on the next supervisor step."
+                                if not rejected
+                                else "Some requested runtime tool groups were not granted."
+                            ),
+                            grants=grants,
+                            groups=runtime_tool_groups_catalog(),
+                            rejected=rejected,
+                            error="unknown_tool_group" if rejected else None,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
+            },
+        )
+
+    if normalized_mode == "revoke":
+        updated_context, grants = revoke_runtime_tool_groups(
+            route_context,
+            requested_groups if requested_groups else None,
+        )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Runtime tool grants updated for this run.",
+                            grants=grants,
+                            groups=runtime_tool_groups_catalog(),
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
+            },
+        )
+
+    return Command(
+        goto="supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_runtime_broker_payload(
+                        mode=normalized_mode or "unknown",
+                        ok=False,
+                        summary=f"Unsupported runtime_broker mode: {normalized_mode}",
+                        error="unsupported_mode",
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            "current_route_context": route_context,
+        },
+    )
+
+
+@tool
+def creative_media_catalog() -> str:
+    """Return the CreativeMediaRuntime provider catalog and adapter capabilities."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps(creative_media_runtime.catalog(), ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia catalog: {str(e)}"
+
+
+@tool
+def creative_media_resolutions() -> str:
+    """Return CreativeMediaRuntime resolution presets for image and video generation."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps(creative_media_runtime.resolutions(), ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia resolutions: {str(e)}"
+
+
+@tool
+async def creative_media_create_job(request: dict[str, Any]) -> str:
+    """Create an image, video, or voice job through CreativeMediaRuntime."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        job = await creative_media_runtime.create_job(dict(request or {}))
+        return json.dumps({"job": job}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error creating CreativeMedia job: {str(e)}"
+
+
+@tool
+async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
+    """Get a CreativeMediaRuntime job by id; refresh polls resumable provider state when supported."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        job = await creative_media_runtime.refresh_job(job_id) if refresh else creative_media_runtime.get_job(job_id, refresh=False)
+        if not job:
+            return f"Error: CreativeMedia job not found: {job_id}"
+        return json.dumps({"job": job}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia job: {str(e)}"
+
+
+@tool
+def creative_media_job_artifacts(job_id: str) -> str:
+    """List artifacts recorded by a CreativeMediaRuntime job."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps({"artifacts": creative_media_runtime.job_artifacts(job_id)}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia job artifacts: {str(e)}"
 
 
 @tool
@@ -9578,6 +9826,7 @@ async def delegate_network_task(
 NATIVE_TOOLS = [
     run_system_command,
     command_session_broker,
+    runtime_broker,
     delegation_broker,
     read_background_output,
     send_background_input,
@@ -9585,6 +9834,11 @@ NATIVE_TOOLS = [
     rpa_list_robot_scripts,
     rpa_run_draft,
     rpa_run_existing_flow,
+    creative_media_catalog,
+    creative_media_resolutions,
+    creative_media_create_job,
+    creative_media_get_job,
+    creative_media_job_artifacts,
     computer_use_list_apps,
     computer_use_list_primitives,
     computer_use_desktop_capabilities,

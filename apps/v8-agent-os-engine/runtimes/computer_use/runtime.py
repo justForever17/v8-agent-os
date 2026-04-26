@@ -257,6 +257,7 @@ class ComputerUseRuntime:
             ],
             "metadata": {
                 "managedToolPrefixes": ["computer_use_"],
+                "managedToolGroups": ["computer_use.control"],
                 "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
                 "onlineVisualLocator": self._online_visual_locator_descriptor(),
                 "browserLane": self.browser_automation.availability_summary(),

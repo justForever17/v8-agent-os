@@ -1750,11 +1750,14 @@ class ChatRuntime:
             metadata["plannerDispatchMode"] = chat_run.prepared.planner_dispatch_mode
         if chat_run.prepared.task_planning_mode:
             metadata["taskPlanningMode"] = True
-        if getattr(chat_run.prepared, "engineering_mode", "auto") != "auto" or chat_run.prepared.engineering_trigger_decision:
-            metadata["engineeringMode"] = chat_run.prepared.engineering_mode
-            metadata["engineeringTriggerDecision"] = dict(chat_run.prepared.engineering_trigger_decision or {})
-            if isinstance(chat_run.prepared.engineering_context_pack, dict):
-                metadata["engineeringContextPack"] = dict(chat_run.prepared.engineering_context_pack)
+        engineering_mode = getattr(chat_run.prepared, "engineering_mode", "auto")
+        engineering_trigger_decision = getattr(chat_run.prepared, "engineering_trigger_decision", None)
+        if engineering_mode != "auto" or engineering_trigger_decision:
+            metadata["engineeringMode"] = engineering_mode
+            metadata["engineeringTriggerDecision"] = dict(engineering_trigger_decision or {})
+            engineering_context_pack = getattr(chat_run.prepared, "engineering_context_pack", None)
+            if isinstance(engineering_context_pack, dict):
+                metadata["engineeringContextPack"] = dict(engineering_context_pack)
         if chat_run.prepared.skill_references:
             metadata["skillReferences"] = list(chat_run.prepared.skill_references)
 

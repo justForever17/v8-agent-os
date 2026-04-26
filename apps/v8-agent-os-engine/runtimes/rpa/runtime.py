@@ -95,6 +95,7 @@ class RPARuntime:
             ],
             "metadata": {
                 "managedToolPrefixes": ["rpa_"],
+                "managedToolGroups": ["rpa.run"],
             },
         }
 

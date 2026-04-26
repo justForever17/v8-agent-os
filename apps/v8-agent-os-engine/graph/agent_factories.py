@@ -17,6 +17,7 @@ from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.storage import storage
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
+from core.runtime_tool_access import filter_visible_tools_for_actor, normalize_runtime_access
 from core.time_truth import utc_now_iso
 from core.workspace_guard import build_workspace_path_status
 from core.workspace_resolution import workspace_resolution_service
@@ -266,6 +267,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             ("Write Set", "writeSet"),
             ("Behavior Scope", "behaviorScope"),
             ("Required Capabilities", "requiredCapabilities"),
+            ("Runtime Access", "runtimeAccess"),
             ("Dependency", "dependency"),
             ("Parallel Group", "parallelGroup"),
             ("Execution Lane Hint", "executionLaneHint"),
@@ -357,6 +359,8 @@ def _merged_route_context(state: dict | None, overlay: dict | None) -> dict:
 def build_contextual_auto_tool_node(
     *,
     base_tools: list,
+    all_native_tools: list | None = None,
+    static_extra_tools: list | None = None,
     all_mcp_tools: list,
     all_plugin_host_tools: list,
     name: str,
@@ -372,7 +376,14 @@ def build_contextual_auto_tool_node(
             all_plugin_host_tools,
             list(route_context.get("selectedPluginHostTools") or []),
         )
-        tools = _dedupe_tools(list(base_tools or []) + selected_mcp_tools + selected_plugin_host_tools)
+        task_brief = route_context.get("taskBrief") if isinstance(route_context.get("taskBrief"), dict) else {}
+        runtime_access = normalize_runtime_access((task_brief or {}).get("runtimeAccess"))
+        actor_base_tools = filter_visible_tools_for_actor(
+            list(all_native_tools or base_tools or []),
+            actor="subagent",
+            runtime_access=runtime_access,
+        )
+        tools = _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools + selected_plugin_host_tools)
         routed = create_routed_tool_node(tools, name=name, fallback_goto=fallback_goto)
         return await routed(state)
 
@@ -452,6 +463,7 @@ def build_agent_node(
             delegated_query = _extract_delegated_query(task_messages)
             inherited_route_context = _resolve_inherited_route_context(state, task_messages, agent_id=agent_id)
             delegated_task_brief = inherited_route_context.get("taskBrief") if isinstance(inherited_route_context.get("taskBrief"), dict) else None
+            delegated_runtime_access = normalize_runtime_access((delegated_task_brief or {}).get("runtimeAccess"))
             delegated_planner_context = inherited_route_context.get("plannerContext") if isinstance(inherited_route_context.get("plannerContext"), dict) else None
             delegated_plan_context = _format_delegated_plan_context(delegated_task_brief, delegated_planner_context)
             inherited_query = str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
@@ -460,12 +472,18 @@ def build_agent_node(
             delegated_query = full_task_brief_query or inherited_query
             extensions_route_query = extensions_route_query or delegated_query
             contextual_base_tools = _dedupe_tools(
-                _exclude_supervisor_only_tools(
-                    select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions_tool]
+                filter_visible_tools_for_actor(
+                    select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions_tool],
+                    actor="subagent",
+                    runtime_access=delegated_runtime_access,
                 )
             )
             explicit_base_tools = _dedupe_tools(
-                _exclude_supervisor_only_tools(list(filtered_native_tools) + [fetch_skill_instructions_tool])
+                filter_visible_tools_for_actor(
+                    list(filtered_native_tools) + [fetch_skill_instructions_tool],
+                    actor="subagent",
+                    runtime_access=delegated_runtime_access,
+                )
             )
             selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
             selected_plugin_host_tools = _resolve_selected_plugin_host_tools(all_plugin_host_tools, agent_tool_selectors)
@@ -822,8 +840,10 @@ def build_specialist_agent_components(
         agent_tool_mode = _resolved_tool_mode(agent_data)
 
         contextual_base_tools = _dedupe_tools(
-            _exclude_supervisor_only_tools(
-                select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions]
+            filter_visible_tools_for_actor(
+                select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions],
+                actor="subagent",
+                runtime_access=[],
             )
         )
         if agent_tool_mode == "contextual_auto":
@@ -833,6 +853,8 @@ def build_specialist_agent_components(
             tool_node_tools = contextual_base_tools
             tool_node_func = build_contextual_auto_tool_node(
                 base_tools=contextual_base_tools,
+                all_native_tools=list(filtered_native_tools) + [fetch_skill_instructions],
+                static_extra_tools=[],
                 all_mcp_tools=all_mcp_tools,
                 all_plugin_host_tools=all_plugin_host_tools,
                 name=f"{agent_id}_tools",
@@ -840,12 +862,24 @@ def build_specialist_agent_components(
             )
         else:
             tool_node_tools = _dedupe_tools(
-                _exclude_supervisor_only_tools(list(filtered_native_tools))
-                + [fetch_skill_instructions]
+                filter_visible_tools_for_actor(
+                    list(filtered_native_tools) + [fetch_skill_instructions],
+                    actor="subagent",
+                    runtime_access=[],
+                )
                 + _resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
                 + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors)
             )
-            tool_node_func = create_routed_tool_node(tool_node_tools, name=f"{agent_id}_tools", fallback_goto=agent_id) if tool_node_tools else None
+            tool_node_func = build_contextual_auto_tool_node(
+                base_tools=tool_node_tools,
+                all_native_tools=list(filtered_native_tools) + [fetch_skill_instructions],
+                static_extra_tools=_resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
+                + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors),
+                all_mcp_tools=_resolve_selected_mcp_tools(all_mcp_tools, tool_selectors),
+                all_plugin_host_tools=_resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors),
+                name=f"{agent_id}_tools",
+                fallback_goto=agent_id,
+            ) if tool_node_tools else None
 
         agent_nodes_map[agent_id] = {
             "node_func": build_agent_node(

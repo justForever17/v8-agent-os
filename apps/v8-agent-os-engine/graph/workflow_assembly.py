@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 
+from core.runtime_tool_access import filter_visible_tools_for_actor
 from erc.runtime_stability import runtime_stability_service
 from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
 
@@ -66,10 +67,16 @@ def compile_supervisor_workflow(
 
     workflow.add_node("planner_auto_dispatch", build_planner_auto_dispatch_node())
     workflow.add_node("supervisor", supervisor_node)
-    workflow.add_node(
-        "supervisor_tools",
-        create_routed_tool_node(supervisor_tools, name="supervisor_tools", fallback_goto="supervisor"),
-    )
+    async def supervisor_tools_node(state):
+        visible_tools = filter_visible_tools_for_actor(
+            supervisor_tools,
+            actor="supervisor",
+            route_context=dict((state or {}).get("current_route_context") or {}),
+        )
+        routed = create_routed_tool_node(visible_tools, name="supervisor_tools", fallback_goto="supervisor")
+        return await routed(state)
+
+    workflow.add_node("supervisor_tools", supervisor_tools_node)
     workflow.add_node("parallel_delegate_task", parallel_task_node)
     workflow.add_node("parallel_delegate_join", parallel_join_node)
     workflow.set_entry_point("planner_auto_dispatch")

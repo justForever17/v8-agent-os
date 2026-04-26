@@ -8,6 +8,7 @@ from core.computer_use_tool_surface import (
     normalize_supervisor_native_allowlist as _normalize_supervisor_native_allowlist,
     select_supervisor_native_tools as _select_supervisor_native_tools,
 )
+from core.runtime_tool_access import all_runtime_group_tool_names, tool_ref_name
 
 def _matches_allowed_plugin_host_tool(tool, allowlist) -> bool:
     if allowlist is None:
@@ -82,13 +83,27 @@ def build_supervisor_toolset(
         supervisor_allowed_tools=supervisor_allowed_tools,
         config_allowed_tools=config_allowed_tools,
     )
+    grantable_runtime_tool_names = all_runtime_group_tool_names()
+    grantable_runtime_tools = [
+        tool_ref
+        for tool_ref in list(filtered_native_tools or [])
+        if tool_ref_name(tool_ref) in grantable_runtime_tool_names
+    ]
+    selected_native_tools = list(selected_native_tools) + grantable_runtime_tools
     broker_tools = [
         tool_ref
         for tool_ref in selected_native_tools
         if str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip() == "delegation_broker"
     ]
     remaining_native_tools = [tool_ref for tool_ref in selected_native_tools if tool_ref not in broker_tools]
-    supervisor_tools = [fetch_skill_instructions_tool] + broker_tools + remaining_native_tools + list(external_tools or [])
+    supervisor_tools = []
+    seen_tool_names: set[str] = set()
+    for tool_ref in [fetch_skill_instructions_tool] + broker_tools + remaining_native_tools + list(external_tools or []):
+        name = tool_ref_name(tool_ref) or str(id(tool_ref))
+        if name in seen_tool_names:
+            continue
+        seen_tool_names.add(name)
+        supervisor_tools.append(tool_ref)
 
     if supervisor_allowed_tools is not None:
         allowed_mcp_tools = [tool for tool in all_mcp_tools if tool.name in supervisor_allowed_tools]

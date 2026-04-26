@@ -123,11 +123,11 @@ class CreativeMediaRuntime:
         return {
             "kind": self.kind,
             "displayName": "CreativeMediaRuntime",
-            "summary": "Manages layered image, video, voice, music, and future 3D media jobs without exposing raw provider quirks to the supervisor prompt.",
+            "summary": "负责图片、视频、语音、音乐与未来 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
             "responsibilities": [
-                "Normalize media provider request formats.",
-                "Persist media job state.",
-                "Record generated media as runtime artifacts.",
+                "归一化媒体 provider 请求格式。",
+                "持久化媒体 job 状态。",
+                "把生成结果登记为 runtime artifact。",
             ],
             "routingKeywords": ["image", "video", "voice", "music", "creative_media", "artifact"],
             "acceptedInputs": ["media job request"],
@@ -135,7 +135,18 @@ class CreativeMediaRuntime:
             "supportsResume": True,
             "supportsRepair": False,
             "visibility": "internal",
-            "metadata": {"p1": True, "supervisorToolSurface": False},
+            "metadata": {
+                "p1": True,
+                "supervisorToolSurface": False,
+                "managedToolGroups": ["creative_media.core"],
+                "managedToolNames": [
+                    "creative_media_catalog",
+                    "creative_media_resolutions",
+                    "creative_media_create_job",
+                    "creative_media_get_job",
+                    "creative_media_job_artifacts",
+                ],
+            },
         }
 
     def catalog(self) -> dict[str, Any]:

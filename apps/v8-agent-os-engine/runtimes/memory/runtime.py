@@ -71,6 +71,7 @@ class MemoryRuntime:
                     "memory_map_expand",
                     "memory_read_day",
                 ],
+                "managedToolGroups": ["memory.read", "memory.maintain"],
             },
         }
 

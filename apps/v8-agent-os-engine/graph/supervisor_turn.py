@@ -9,6 +9,7 @@ from .no_progress_breaker import apply_no_progress_breaker
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from core.context.delegation import build_delegation_context
 from core.runtime.extensions_runtime import extensions_runtime_service
+from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.runtime.reflex_gate import (
     render_gate_prompt_addition,
     render_reflex_prompt_addition,
@@ -93,10 +94,15 @@ def execute_supervisor_turn(
         runtime_kind="chat",
     )
     try:
+        visible_supervisor_tools = filter_visible_tools_for_actor(
+            supervisor_tools,
+            actor="supervisor",
+            route_context=dict(state.get("current_route_context") or {}),
+        )
         route_started_at = time.perf_counter()
         route_bundle = extensions_runtime_service.build_supervisor_route(
             user_query=user_query,
-            supervisor_tools=supervisor_tools,
+            supervisor_tools=visible_supervisor_tools,
             loaded_agents=loaded_agents,
         )
         route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)

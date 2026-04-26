@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-26",
+  "sourceRefs": [
+    "skill:seedance-prompt-zh",
+    "docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md"
+  ],
+  "notes": [
+    "Video recipes keep timing, references, camera motion, and edit intent separate.",
+    "P2a compiles local edit intent only; it does not call a real edit provider."
+  ],
+  "referenceRoles": ["first_frame", "last_frame", "character", "scene", "camera_motion", "action", "style", "audio_tempo"],
+  "durationPolicy": {
+    "shortMaxSeconds": 5,
+    "timedSegmentsRecommendedAboveSeconds": 8,
+    "avoid": ["do not pack multiple scene changes into 4-5 seconds", "do not leave asset references without a role"]
+  },
+  "templates": {
+    "timed_storyboard": {
+      "label": "Timed storyboard video",
+      "keywords": ["视频", "短片", "分镜", "镜头", "运镜", "动画", "广告片"],
+      "cameraLanguage": ["推镜头", "拉镜头", "跟随镜头", "环绕镜头", "特写", "全景", "俯拍", "低角度"],
+      "enhancements": ["按时间段描述", "单段只推进一个主要动作", "结尾保留可剪辑尾帧"],
+      "avoid": ["时长不匹配", "动作过载", "引用素材用途不明"]
+    },
+    "character_continuity": {
+      "label": "Character continuity clip",
+      "keywords": ["角色一致", "人物一致", "连续", "长视频", "参考人物", "人设"],
+      "cameraLanguage": ["稳定景别", "跟随镜头", "中景", "面部特写"],
+      "enhancements": ["锚定角色外观", "服装与道具保持一致", "减少同时变化的变量"],
+      "avoid": ["每段重新描述导致身份漂移", "缺少角色参考图"]
+    },
+    "product_motion": {
+      "label": "Product motion clip",
+      "keywords": ["产品展示", "电商视频", "商品视频", "旋转", "拆解", "广告"],
+      "cameraLanguage": ["静物特写", "慢推", "环绕", "定格展示", "扫光"],
+      "enhancements": ["产品外形稳定", "包装文字尽量正向", "动作简洁流畅"],
+      "avoid": ["产品变形", "包装文字乱码", "同时拆解和换场"]
+    },
+    "local_edit": {
+      "label": "Local video/image edit intent",
+      "keywords": ["局部编辑", "修改", "替换", "换成", "删除", "添加", "保留"],
+      "cameraLanguage": ["保持原镜头", "保留未指定区域"],
+      "enhancements": ["明确保留区域", "明确修改区域", "保留主体连续性"],
+      "avoid": ["把局部编辑写成全量重生成", "未声明 sourceRefs"]
+    }
+  }
+}

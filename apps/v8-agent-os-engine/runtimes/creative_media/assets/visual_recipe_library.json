@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-26",
+  "sourceRefs": [
+    "reference:awesome-gpt-image-2:docs/templates.md",
+    "docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md"
+  ],
+  "notes": [
+    "This library stores abstract recipe structure only. Do not copy long third-party prompts into runtime system content.",
+    "Image recipes compile provider-neutral intent before provider-specific prompt strings."
+  ],
+  "templates": {
+    "ui_interface": {
+      "label": "UI/interface visual",
+      "keywords": ["ui", "界面", "app", "web", "仪表盘", "dashboard", "截图"],
+      "structure": ["平台与产品类型", "核心功能模块", "导航与布局", "可读文字区域", "状态/按钮/卡片层级"],
+      "enhancements": ["高保真界面截图", "信息层级清晰", "留白充足", "文字短句且可读"],
+      "avoid": ["无意义乱码", "过度装饰", "按钮文字溢出"]
+    },
+    "infographic": {
+      "label": "Infographic",
+      "keywords": ["信息图", "图表", "可视化", "流程图", "关系图", "时间线", "科普"],
+      "structure": ["标题区", "3-5个信息模块", "短标题与短说明", "图标或图表元素", "清晰阅读路径"],
+      "enhancements": ["专业报告气质", "低饱和配色", "模块化排版", "中文短句"],
+      "avoid": ["模块过多", "长篇正文", "拥挤信息"]
+    },
+    "poster": {
+      "label": "Poster/layout",
+      "keywords": ["海报", "poster", "主视觉", "封面", "宣传图"],
+      "structure": ["主视觉主体", "标题文案", "副标题或卖点", "构图方向", "传播场景"],
+      "enhancements": ["海报级构图", "主次明确", "高分辨率", "情绪氛围明确"],
+      "avoid": ["文字堆叠", "廉价拼贴", "主题不聚焦"]
+    },
+    "product_commerce": {
+      "label": "Product/e-commerce visual",
+      "keywords": ["电商", "商品", "产品", "包装", "卖点", "广告"],
+      "structure": ["产品外观", "材质与包装文字", "使用场景", "卖点展示", "品牌视觉"],
+      "enhancements": ["棚拍质感", "产品细节清晰", "标签正向可读", "商业广告光线"],
+      "avoid": ["产品形变", "包装文字乱码", "主体被遮挡"]
+    },
+    "brand_identity": {
+      "label": "Brand identity visual",
+      "keywords": ["品牌", "logo", "标志", "vi", "识别", "视觉系统"],
+      "structure": ["品牌名", "行业与受众", "标志方向", "配色", "应用场景"],
+      "enhancements": ["统一风格", "可复用识别元素", "简洁高级", "明确品牌性格"],
+      "avoid": ["商标侵权暗示", "复杂细节过载", "不可读字体"]
+    },
+    "architecture_space": {
+      "label": "Architecture/space visual",
+      "keywords": ["建筑", "空间", "室内", "展厅", "城市", "地图"],
+      "structure": ["空间类型", "材质", "动线", "光线", "尺度关系"],
+      "enhancements": ["真实空间透视", "材质清晰", "自然光影", "可读空间层次"],
+      "avoid": ["透视错乱", "结构不可建造", "杂乱装饰"]
+    },
+    "photography": {
+      "label": "Photography",
+      "keywords": ["摄影", "写真", "写实", "照片", "镜头", "棚拍"],
+      "structure": ["拍摄主体", "场景", "镜头焦段", "光线", "构图"],
+      "enhancements": ["自然皮肤/材质纹理", "电影感光影", "清晰焦点", "真实摄影质感"],
+      "avoid": ["过度修图", "畸形手指", "塑料皮肤"]
+    },
+    "illustration": {
+      "label": "Illustration/art",
+      "keywords": ["插画", "绘本", "艺术", "水彩", "动漫", "手绘"],
+      "structure": ["主体", "世界观", "画风", "色彩", "画面情绪"],
+      "enhancements": ["统一笔触", "完整构图", "氛围细腻", "风格一致"],
+      "avoid": ["风格混杂", "背景空洞", "主体比例漂移"]
+    },
+    "character_design": {
+      "label": "Character design",
+      "keywords": ["角色", "人物", "人设", "形象", "服装", "表情"],
+      "structure": ["身份", "外观锚点", "服装道具", "表情姿态", "风格与用途"],
+      "enhancements": ["角色特征稳定", "轮廓清晰", "服装细节可复用", "可做后续视频参考"],
+      "avoid": ["身份漂移", "服装前后不一致", "脸部过度写实未授权"]
+    },
+    "narrative_scene": {
+      "label": "Narrative scene",
+      "keywords": ["故事", "场景", "叙事", "电影", "世界观", "镜头"],
+      "structure": ["时间地点", "主体动作", "环境线索", "情绪", "视觉焦点"],
+      "enhancements": ["叙事张力", "电影级构图", "环境细节服务主题", "留出后续运镜空间"],
+      "avoid": ["主题松散", "元素硬拼", "动作与场景冲突"]
+    }
+  }
+}

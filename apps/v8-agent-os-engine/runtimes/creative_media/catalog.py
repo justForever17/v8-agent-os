@@ -9,6 +9,9 @@ from typing import Any, Dict
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 PROVIDER_MATRIX_PATH = ASSET_DIR / "media_provider_format_matrix.json"
 RESOLUTION_PRESETS_PATH = ASSET_DIR / "media_resolution_presets.json"
+VISUAL_RECIPE_LIBRARY_PATH = ASSET_DIR / "visual_recipe_library.json"
+VIDEO_RECIPE_LIBRARY_PATH = ASSET_DIR / "video_recipe_library.json"
+AUDIO_MUSIC_RECIPE_LIBRARY_PATH = ASSET_DIR / "audio_music_recipe_library.json"
 
 
 def _read_asset(path: Path) -> Dict[str, Any]:
@@ -21,6 +24,18 @@ def load_provider_matrix() -> Dict[str, Any]:
 
 def load_resolution_presets() -> Dict[str, Any]:
     return deepcopy(_read_asset(RESOLUTION_PRESETS_PATH))
+
+
+def load_visual_recipe_library() -> Dict[str, Any]:
+    return deepcopy(_read_asset(VISUAL_RECIPE_LIBRARY_PATH))
+
+
+def load_video_recipe_library() -> Dict[str, Any]:
+    return deepcopy(_read_asset(VIDEO_RECIPE_LIBRARY_PATH))
+
+
+def load_audio_music_recipe_library() -> Dict[str, Any]:
+    return deepcopy(_read_asset(AUDIO_MUSIC_RECIPE_LIBRARY_PATH))
 
 
 def _normalize_ratio(value: str | None, default: str = "1:1") -> str:

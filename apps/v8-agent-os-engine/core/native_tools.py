@@ -3854,6 +3854,56 @@ def creative_media_job_artifacts(job_id: str) -> str:
 
 
 @tool
+def creative_media_compile_recipe(request: dict[str, Any]) -> str:
+    """Compile an image, video, voice, or music recipe without calling an LLM or media provider."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        recipe = creative_media_runtime.compile_recipe(dict(request or {}))
+        return json.dumps({"recipe": recipe}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error compiling CreativeMedia recipe: {str(e)}"
+
+
+@tool
+def creative_media_get_recipe(recipe_id: str) -> str:
+    """Read a compiled CreativeMedia recipe by recipe id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        recipe = creative_media_runtime.get_recipe(recipe_id)
+        if not recipe:
+            return f"Error: CreativeMedia recipe not found: {recipe_id}"
+        return json.dumps({"recipe": recipe}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia recipe: {str(e)}"
+
+
+@tool
+def creative_media_register_asset(request: dict[str, Any]) -> str:
+    """Register an existing artifact/path as a CreativeMedia asset ledger entry without copying the file."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        asset = creative_media_runtime.register_asset(dict(request or {}))
+        return json.dumps({"asset": asset}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error registering CreativeMedia asset: {str(e)}"
+
+
+@tool
+def creative_media_list_assets(modality: Optional[str] = None, role: Optional[str] = None) -> str:
+    """List CreativeMedia asset ledger entries, optionally filtered by modality and role."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        assets = creative_media_runtime.list_assets(modality=modality, role=role)
+        return json.dumps({"assets": assets}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia assets: {str(e)}"
+
+
+@tool
 def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
     """Ask the user for mandatory input or confirmation and pause the graph until a response is provided."""
     request = {
@@ -9839,6 +9889,10 @@ NATIVE_TOOLS = [
     creative_media_create_job,
     creative_media_get_job,
     creative_media_job_artifacts,
+    creative_media_compile_recipe,
+    creative_media_get_recipe,
+    creative_media_register_asset,
+    creative_media_list_assets,
     computer_use_list_apps,
     computer_use_list_primitives,
     computer_use_desktop_capabilities,

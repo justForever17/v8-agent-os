@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-26",
+  "sourceRefs": [
+    "docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md",
+    "internal:v8_audio_runtime"
+  ],
+  "notes": [
+    "Voice recipes may map to existing V8 TTS in later job execution.",
+    "Music recipes are catalog-only in P2a and must not imply provider execution or music rights."
+  ],
+  "voice": {
+    "templates": {
+      "narration": {
+        "label": "Voice narration",
+        "keywords": ["旁白", "解说", "配音", "播报", "讲述"],
+        "delivery": ["语气清晰", "句子短", "便于字幕切分", "情绪服务画面"]
+      },
+      "dialogue": {
+        "label": "Dialogue performance",
+        "keywords": ["对话", "对白", "台词", "角色A", "角色B"],
+        "delivery": ["角色语气区分", "情绪明确", "停顿自然", "避免长句堆叠"]
+      }
+    }
+  },
+  "music": {
+    "templates": {
+      "background_score": {
+        "label": "Background score brief",
+        "keywords": ["音乐", "bgm", "配乐", "背景音乐", "氛围"],
+        "arrangement": ["明确情绪", "明确速度", "分段 cue", "保留剪辑收束点"]
+      },
+      "beat_sync": {
+        "label": "Beat-sync cue brief",
+        "keywords": ["卡点", "节拍", "鼓点", "转场音乐", "节奏"],
+        "arrangement": ["节拍点服务画面切换", "高潮位置明确", "结尾可循环或可淡出"]
+      }
+    }
+  }
+}

@@ -21,12 +21,16 @@ from core.storage import storage
 from erc.runtime_registry import runtime_registry
 
 from .catalog import (
+    load_audio_music_recipe_library,
     load_provider_matrix,
     load_resolution_presets,
+    load_video_recipe_library,
+    load_visual_recipe_library,
     normalize_provider_status,
     resolve_image_size,
     resolve_video_resolution,
 )
+from .recipe import creative_recipe_compiler
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
@@ -145,6 +149,10 @@ class CreativeMediaRuntime:
                     "creative_media_create_job",
                     "creative_media_get_job",
                     "creative_media_job_artifacts",
+                    "creative_media_compile_recipe",
+                    "creative_media_get_recipe",
+                    "creative_media_register_asset",
+                    "creative_media_list_assets",
                 ],
             },
         }
@@ -163,6 +171,25 @@ class CreativeMediaRuntime:
 
     def resolutions(self) -> dict[str, Any]:
         return load_resolution_presets()
+
+    def recipe_libraries(self) -> dict[str, Any]:
+        return {
+            "visual": load_visual_recipe_library(),
+            "video": load_video_recipe_library(),
+            "audioMusic": load_audio_music_recipe_library(),
+        }
+
+    def compile_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
+        return creative_recipe_compiler.compile_recipe(dict(request or {}))
+
+    def get_recipe(self, recipe_id: str) -> dict[str, Any] | None:
+        return creative_recipe_compiler.get_recipe(recipe_id)
+
+    def register_asset(self, request: dict[str, Any]) -> dict[str, Any]:
+        return creative_recipe_compiler.register_asset(dict(request or {}))
+
+    def list_assets(self, *, modality: str | None = None, role: str | None = None) -> list[dict[str, Any]]:
+        return creative_recipe_compiler.list_assets(modality=modality, role=role)
 
     def _read_jobs(self) -> dict[str, Any]:
         payload = storage.read_json(JOB_STORE_FILE)

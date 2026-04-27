@@ -4086,6 +4086,77 @@ def creative_media_list_renders(plan_id: Optional[str] = None, status: Optional[
 
 
 @tool
+def creative_media_create_quality_job(request: dict[str, Any]) -> str:
+    """Run lightweight deterministic quality checks for a CreativeMedia job or artifacts."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        quality_job = creative_media_runtime.create_quality_job(dict(request or {}))
+        return json.dumps({"qualityJob": quality_job}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error creating CreativeMedia quality job: {str(e)}"
+
+
+@tool
+def creative_media_list_quality_jobs(status: Optional[str] = None) -> str:
+    """List CreativeMedia quality jobs, optionally filtered by status."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps({"qualityJobs": creative_media_runtime.list_quality_jobs(status=status)}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error listing CreativeMedia quality jobs: {str(e)}"
+
+
+@tool
+def creative_media_get_quality_job(quality_job_id: str) -> str:
+    """Read a CreativeMedia quality job by id."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        quality_job = creative_media_runtime.get_quality_job(quality_job_id)
+        if not quality_job:
+            return f"Error: CreativeMedia quality job not found: {quality_job_id}"
+        return json.dumps({"qualityJob": quality_job}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia quality job: {str(e)}"
+
+
+@tool
+async def creative_media_retry_job(job_id: str, request: Optional[dict[str, Any]] = None) -> str:
+    """Retry a CreativeMedia job within the same operationKind using runtime retry policy."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        job = await creative_media_runtime.retry_job(job_id, dict(request or {}))
+        return json.dumps({"job": job}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error retrying CreativeMedia job: {str(e)}"
+
+
+@tool
+def creative_media_cost_ledger() -> str:
+    """List CreativeMedia provider cost and usage ledger entries."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps({"entries": creative_media_runtime.list_cost_ledger()}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia cost ledger: {str(e)}"
+
+
+@tool
+def creative_media_safety_events() -> str:
+    """List CreativeMedia prompt safety rewrite and provider policy events."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return json.dumps({"events": creative_media_runtime.list_safety_events()}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error reading CreativeMedia safety events: {str(e)}"
+
+
+@tool
 def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
     """Ask the user for mandatory input or confirmation and pause the graph until a response is provided."""
     request = {
@@ -10089,6 +10160,12 @@ NATIVE_TOOLS = [
     creative_media_render_edit_plan,
     creative_media_get_render,
     creative_media_list_renders,
+    creative_media_create_quality_job,
+    creative_media_list_quality_jobs,
+    creative_media_get_quality_job,
+    creative_media_retry_job,
+    creative_media_cost_ledger,
+    creative_media_safety_events,
     computer_use_list_apps,
     computer_use_list_primitives,
     computer_use_desktop_capabilities,

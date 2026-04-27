@@ -21,6 +21,87 @@ CHARACTER_BIBLE_STORE_FILE = "creative_media/character_bibles.json"
 KEYFRAME_STORE_FILE = "creative_media/keyframes.json"
 SUPPORTED_RECIPE_MODALITIES = {"image", "video", "voice", "music"}
 SUPPORTED_MUSIC_KINDS = {"cue_sheet", "score_brief", "music_reference", "future_generation"}
+PROTECTED_REFERENCE_REWRITES = [
+    {
+        "kind": "copyright_character",
+        "risk": "medium",
+        "names": ["钢铁侠", "iron man", "ironman", "tony stark", "托尼史塔克", "托尼·史塔克"],
+        "replacement": (
+            "an original hyper-realistic cinematic high-tech powered exoskeleton suit for an adult male silhouette, "
+            "matte deep red armor with bright gold mechanical highlights, streamlined aerodynamic plating, fine brushed metal texture, "
+            "a cool blue-white circular energy core embedded in the chest, a fully enclosed helmet with a liftable gold faceplate, "
+            "narrow white glowing rectangular eye slits, segmented modular shoulder, arm, and leg armor, exposed hydraulic joints and servo motors, "
+            "round palm-mounted directional thrusters, vector flight engines under both feet, subtle tactical indicator lights and sensor arrays, "
+            "dynamic combat pose, dusk city skyline, backlight, volumetric lighting, natural metallic reflections, sharp subject and soft background"
+        ),
+    },
+    {
+        "kind": "copyright_character",
+        "risk": "medium",
+        "names": ["蜘蛛侠", "spider-man", "spiderman", "彼得帕克", "彼得·帕克"],
+        "replacement": (
+            "an original agile urban acrobat hero in a red and midnight-blue technical fabric suit, abstract web-like seam geometry, "
+            "large expressive white eye lenses, dynamic wall-running pose, no logos, no named franchise symbols"
+        ),
+    },
+    {
+        "kind": "copyright_character",
+        "risk": "medium",
+        "names": ["蝙蝠侠", "batman", "bruce wayne", "布鲁斯韦恩", "布鲁斯·韦恩"],
+        "replacement": (
+            "an original nocturnal armored vigilante silhouette with a matte black tactical suit, angular protective cowl, cape-like glider fabric, "
+            "industrial city rooftop at night, no bat emblem, no franchise insignia"
+        ),
+    },
+    {
+        "kind": "brand_logo",
+        "risk": "low",
+        "names": ["迪士尼", "disney", "marvel", "漫威", "dc comics"],
+        "replacement": "an original entertainment-inspired cinematic style without any brand logo, franchise name, or protected character identity",
+    },
+]
+
+ENGLISH_KEYWORD_MAP = [
+    ("超写实", "hyper-realistic"),
+    ("电影级", "cinematic"),
+    ("高清", "high-definition"),
+    ("海报", "poster design"),
+    ("电商", "e-commerce product visual"),
+    ("产品", "product"),
+    ("耳机", "headphones"),
+    ("兔子", "rabbit"),
+    ("玻璃", "glass"),
+    ("金属", "metallic"),
+    ("蓝色", "blue"),
+    ("红色", "red"),
+    ("金色", "gold"),
+    ("白色", "white"),
+    ("黑色", "black"),
+    ("未来", "futuristic"),
+    ("城市", "city"),
+    ("黄昏", "dusk"),
+    ("逆光", "backlit"),
+    ("体积光", "volumetric lighting"),
+    ("旋转", "rotating"),
+    ("推进", "slow camera push-in"),
+    ("运镜", "camera movement"),
+    ("分镜", "storyboard"),
+    ("角色", "character"),
+    ("一致性", "consistency"),
+    ("字幕", "subtitles"),
+    ("旁白", "voiceover"),
+    ("温柔", "gentle"),
+    ("轻快", "upbeat"),
+    ("背景音乐", "background music"),
+    ("音乐", "music"),
+    ("口型", "lip synchronization"),
+    ("动作迁移", "action transfer"),
+    ("数字人", "digital avatar"),
+    ("换人", "character replacement"),
+    ("局部编辑", "localized edit"),
+    ("保留", "preserve"),
+    ("替换", "replace"),
+]
 
 
 def utc_now_iso() -> str:
@@ -73,6 +154,122 @@ def _extract_quoted_text(prompt: str) -> list[str]:
                 seen.add(value)
                 result.append(value)
     return result
+
+
+def _contains_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", value or ""))
+
+
+def _remove_preserved_text(value: str, preserved: list[str]) -> str:
+    result = value
+    for token in preserved:
+        if token:
+            result = result.replace(token, "")
+    return result
+
+
+def _apply_safety_transform(prompt: str) -> dict[str, Any]:
+    sanitized = prompt
+    matches: list[dict[str, Any]] = []
+    lowered = sanitized.lower()
+    for rule in PROTECTED_REFERENCE_REWRITES:
+        matched_names = [name for name in rule["names"] if name.lower() in lowered]
+        if not matched_names:
+            continue
+        for name in matched_names:
+            sanitized = re.sub(re.escape(name), rule["replacement"], sanitized, flags=re.IGNORECASE)
+        lowered = sanitized.lower()
+        matches.append(
+            {
+                "kind": rule["kind"],
+                "risk": rule["risk"],
+                "matched": matched_names,
+                "replacementSummary": rule["replacement"][:240],
+                "action": "descriptive_substitute",
+            }
+        )
+    identity_patterns = [
+        (r"(克隆|模仿|复刻).{0,12}(声音|嗓音|声线)", "protected_voice_request"),
+        (r"(换脸|复刻真人|真人肖像|明星脸)", "sensitive_identity_request"),
+    ]
+    for pattern, kind in identity_patterns:
+        if re.search(pattern, prompt, flags=re.IGNORECASE):
+            matches.append(
+                {
+                    "kind": kind,
+                    "risk": "high",
+                    "matched": [kind],
+                    "replacementSummary": "Use an original fictional presenter or anonymized consented identity instead of a real person or protected voice.",
+                    "action": "human_review_gate_if_user_requires_identity_replication",
+                }
+            )
+            sanitized = re.sub(pattern, "an original fictional presenter with consent-safe identity", sanitized, flags=re.IGNORECASE)
+    return {
+        "applied": bool(matches),
+        "rawPrompt": prompt,
+        "sanitizedPrompt": sanitized,
+        "events": matches,
+        "policy": "copyright_ip_avoidance_by_default",
+    }
+
+
+def _english_prompt_from_keywords(prompt: str, *, modality: str, preserved_tokens: list[str]) -> str:
+    working = _remove_preserved_text(prompt, preserved_tokens)
+    if not _contains_cjk(working):
+        return working.strip() or prompt.strip()
+    ascii_phrases = [
+        item.strip(" ,.;:，。；：")
+        for item in re.findall(r"[A-Za-z][A-Za-z0-9 ,;:'\"()\-]{24,}", working)
+        if item.strip()
+    ]
+    features: list[str] = []
+    for chinese, english in ENGLISH_KEYWORD_MAP:
+        if chinese in working and english not in features:
+            features.append(english)
+    seconds = re.findall(r"(\d{1,3})\s*秒", working)
+    duration = f"{seconds[0]} seconds, " if seconds else ""
+    if modality == "video":
+        base = f"{duration}a clean single-focus cinematic video shot"
+        if features:
+            base += " featuring " + ", ".join(features)
+        base += ", coherent subject identity, stable camera motion, avoid overloading too many actions in one clip"
+    elif modality == "music":
+        base = f"{duration}a structured music cue brief"
+        if features:
+            base += " with " + ", ".join(features)
+        base += ", clear mood, tempo, structure, and licensing-safe original composition intent"
+    elif modality == "voice":
+        base = "spoken script with clear delivery, natural pacing, and subtitle-friendly phrasing"
+        if features:
+            base += ", " + ", ".join(features)
+    else:
+        base = "a high-quality visual generation prompt"
+        if features:
+            base += " featuring " + ", ".join(features)
+        base += ", detailed composition, lighting, material, and style constraints"
+    if ascii_phrases:
+        base += ". Descriptive substitute details: " + "; ".join(ascii_phrases[:3])
+    return base
+
+
+def prepare_provider_prompt_policy(prompt: str, *, modality: str, preserved_tokens: list[str] | None = None) -> dict[str, Any]:
+    preserved = list(preserved_tokens or _extract_quoted_text(prompt))
+    safety = _apply_safety_transform(prompt)
+    translated = _english_prompt_from_keywords(
+        str(safety.get("sanitizedPrompt") or prompt),
+        modality=modality,
+        preserved_tokens=preserved,
+    )
+    if preserved:
+        translated = f"{translated}\nPreserve these exact on-canvas text tokens verbatim: " + " | ".join(preserved)
+    return {
+        "rawUserRequest": prompt,
+        "translatedPrompt": translated.strip(),
+        "preservedTextTokens": preserved,
+        "mustPreserveOriginalText": bool(preserved),
+        "providerPromptLanguage": "en",
+        "safetyTransform": safety,
+    }
 
 
 def _safe_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 600) -> int:
@@ -135,12 +332,12 @@ def _normalize_modality(value: Any) -> str:
 
 def _asset_symbol(modality: str, index: int) -> str:
     if modality == "video":
-        return f"@视频{index}"
+        return f"@video{index}"
     if modality == "voice":
-        return f"@语音{index}"
+        return f"@voice{index}"
     if modality == "music":
-        return f"@音乐{index}"
-    return f"@图片{index}"
+        return f"@music{index}"
+    return f"@image{index}"
 
 
 def _normalize_music_kind(value: Any, fallback: str = "cue_sheet") -> str:
@@ -183,7 +380,7 @@ def _asset_summary(assets: list[dict[str, Any]]) -> list[str]:
         ref = asset.get("symbol") or asset.get("assetId") or asset.get("artifactId") or asset.get("title")
         role = asset.get("role") or "reference"
         if ref:
-            result.append(f"{ref} 作为 {role}")
+            result.append(f"{ref} as {role}")
     return result
 
 
@@ -205,7 +402,7 @@ def _keyframe_summary(keyframes: list[dict[str, Any]]) -> list[str]:
         role = keyframe.get("role") or "reference"
         title = keyframe.get("title") or keyframe.get("shotId") or keyframe.get("keyframeId")
         if ref:
-            result.append(f"{ref} 作为 {role} keyframe（{title}）")
+            result.append(f"{ref} as {role} keyframe ({title})")
     return result
 
 
@@ -466,8 +663,14 @@ class CreativeRecipeCompiler:
         ]
         hard_requirement_values = _list_of_strings(request.get("hardRequirements") or request.get("hard_requirements"))
         text_tokens = _extract_quoted_text(prompt)
+        prompt_policy = prepare_provider_prompt_policy(prompt, modality=modality, preserved_tokens=text_tokens)
         hard_requirements = {
             "rawUserRequest": prompt,
+            "translatedPrompt": prompt_policy["translatedPrompt"],
+            "preservedTextTokens": prompt_policy["preservedTextTokens"],
+            "mustPreserveOriginalText": prompt_policy["mustPreserveOriginalText"],
+            "providerPromptLanguage": prompt_policy["providerPromptLanguage"],
+            "safetyTransform": prompt_policy["safetyTransform"],
             "mustPreserve": hard_requirement_values or [prompt],
             "textTokens": text_tokens,
             "ratio": ratio,
@@ -520,7 +723,7 @@ class CreativeRecipeCompiler:
         keyframe_lines = _keyframe_summary(recipe["keyframes"])
         provider_neutral = {
             "type": template.get("label") or recipe_kind,
-            "objective": prompt,
+            "objective": recipe["hardRequirements"]["translatedPrompt"],
             "structure": structure,
             "style": enhancements,
             "layoutControls": {"aspectRatio": ratio},
@@ -558,7 +761,7 @@ class CreativeRecipeCompiler:
         recipe["controls"].update({"ratio": ratio, "durationSeconds": duration})
         recipe["providerNeutralRecipe"] = {
             "type": template.get("label") or recipe_kind,
-            "objective": prompt,
+            "objective": recipe["hardRequirements"]["translatedPrompt"],
             "timedSegments": segments,
             "cameraLanguage": camera_terms,
             "assets": asset_lines,
@@ -619,7 +822,7 @@ class CreativeRecipeCompiler:
             "type": template.get("label") or recipe_kind,
             "musicKind": music_kind,
             "deliveryPlane": "creative_media_asset_ledger",
-            "objective": prompt,
+            "objective": recipe["hardRequirements"]["translatedPrompt"],
             "durationSeconds": duration,
             "cueSheet": self._music_cues(duration, prompt),
             "arrangement": recipe["softEnhancements"],
@@ -636,64 +839,66 @@ class CreativeRecipeCompiler:
 
     def _render_visual_prompt(self, provider_neutral: dict[str, Any], hard_requirements: dict[str, Any]) -> str:
         lines = [
-            f"任务目标: {provider_neutral.get('objective')}",
-            f"类型: {provider_neutral.get('type')}",
+            f"Objective: {provider_neutral.get('objective')}",
+            f"Visual type: {provider_neutral.get('type')}",
         ]
         if provider_neutral.get("structure"):
-            lines.append("结构: " + "；".join(str(item) for item in provider_neutral["structure"]))
+            lines.append("Composition structure: " + "; ".join(str(item) for item in provider_neutral["structure"]))
         if provider_neutral.get("style"):
-            lines.append("风格增强: " + "；".join(str(item) for item in provider_neutral["style"]))
+            lines.append("Style enhancements: " + "; ".join(str(item) for item in provider_neutral["style"]))
         if provider_neutral.get("assets"):
-            lines.append("参考资产: " + "；".join(str(item) for item in provider_neutral["assets"]))
+            lines.append("Reference assets: " + "; ".join(str(item) for item in provider_neutral["assets"]))
         if provider_neutral.get("characters"):
-            lines.append("角色设定: " + "；".join(str(item) for item in provider_neutral["characters"]))
+            lines.append("Character bible: " + "; ".join(str(item) for item in provider_neutral["characters"]))
         if provider_neutral.get("keyframes"):
-            lines.append("关键帧: " + "；".join(str(item) for item in provider_neutral["keyframes"]))
-        if hard_requirements.get("textTokens"):
-            lines.append("必须准确保留文字: " + "；".join(hard_requirements["textTokens"]))
+            lines.append("Keyframes: " + "; ".join(str(item) for item in provider_neutral["keyframes"]))
+        if hard_requirements.get("preservedTextTokens"):
+            lines.append("Preserve exact on-canvas text: " + " | ".join(hard_requirements["preservedTextTokens"]))
         if hard_requirements.get("ratio"):
-            lines.append(f"画幅比例: {hard_requirements['ratio']}")
+            lines.append(f"Aspect ratio: {hard_requirements['ratio']}")
         if provider_neutral.get("avoid"):
-            lines.append("避免: " + "；".join(str(item) for item in provider_neutral["avoid"]))
+            lines.append("Avoid: " + "; ".join(str(item) for item in provider_neutral["avoid"]))
         return "\n".join(line for line in lines if line.strip())
 
     def _render_seedance_prompt(self, provider_neutral: dict[str, Any], duration: int) -> str:
         lines: list[str] = []
         assets = list(provider_neutral.get("assets") or [])
         if assets:
-            lines.append("素材引用: " + "；".join(str(item) for item in assets))
+            lines.append("Asset references: " + "; ".join(str(item) for item in assets))
         characters = list(provider_neutral.get("characters") or [])
         if characters:
-            lines.append("角色一致性: " + "；".join(str(item) for item in characters))
+            lines.append("Character continuity: " + "; ".join(str(item) for item in characters))
         keyframes = list(provider_neutral.get("keyframes") or [])
         if keyframes:
-            lines.append("关键帧约束: " + "；".join(str(item) for item in keyframes))
-        lines.append(f"{duration}秒视频，目标: {provider_neutral.get('objective')}")
+            lines.append("Keyframe constraints: " + "; ".join(str(item) for item in keyframes))
+        lines.append(f"{duration}-second video. Objective: {provider_neutral.get('objective')}")
         for segment in list(provider_neutral.get("timedSegments") or []):
-            lines.append(f"{segment['start']}-{segment['end']}秒: {segment['description']}")
+            lines.append(f"{segment['start']}-{segment['end']}s: {segment['description']}")
         camera = provider_neutral.get("cameraLanguage") or []
         if camera:
-            lines.append("运镜: " + "、".join(str(item) for item in camera[:4]))
+            lines.append("Camera language: " + ", ".join(str(item) for item in camera[:4]))
         avoid = provider_neutral.get("avoid") or []
         if avoid:
-            lines.append("避免: " + "；".join(str(item) for item in avoid))
+            lines.append("Avoid: " + "; ".join(str(item) for item in avoid))
         return "\n".join(lines)
 
     def _timed_segments(self, duration: int, prompt: str) -> list[dict[str, Any]]:
+        prompt_policy = prepare_provider_prompt_policy(prompt, modality="video")
+        objective = prompt_policy["translatedPrompt"]
         if duration <= 5:
-            return [{"start": 0, "end": duration, "description": f"单一清晰动作或建立镜头: {prompt}"}]
+            return [{"start": 0, "end": duration, "description": f"One clear action or establishing shot: {objective}"}]
         if duration <= 10:
             midpoint = max(3, duration // 2)
             return [
-                {"start": 0, "end": midpoint, "description": f"开场建立主体、场景和主要动作: {prompt}"},
-                {"start": midpoint, "end": duration, "description": "延续动作并收束到可剪辑结尾，避免突然切换过多场景。"},
+                {"start": 0, "end": midpoint, "description": f"Establish the subject, scene, and one primary action: {objective}"},
+                {"start": midpoint, "end": duration, "description": "Continue the action and settle into an edit-friendly ending; avoid abrupt scene changes."},
             ]
         first = min(5, duration // 3)
         second = min(10, max(first + 3, (duration * 2) // 3))
         return [
-            {"start": 0, "end": first, "description": f"开场建立主体和空间关系: {prompt}"},
-            {"start": first, "end": second, "description": "中段推进一个主要动作或镜头运动，保持角色与场景连续。"},
-            {"start": second, "end": duration, "description": "收尾定格或转场，为后续拼接保留稳定尾帧。"},
+            {"start": 0, "end": first, "description": f"Establish subject and spatial relationship: {objective}"},
+            {"start": first, "end": second, "description": "Develop one main action or camera movement while keeping character and scene continuity."},
+            {"start": second, "end": duration, "description": "End on a stable hold or transition frame for later stitching."},
         ]
 
     def _music_cues(self, duration: int, prompt: str) -> list[dict[str, Any]]:
@@ -709,10 +914,13 @@ class CreativeRecipeCompiler:
         return {
             "status": "compiled_only",
             "sourceRefs": list(source_refs),
-            "preserve": _list_of_strings(request.get("preserve") or request.get("preserveRegions")) or ["保留源素材主体和未指定区域"],
-            "modify": _list_of_strings(request.get("modify") or request.get("editTargets")) or [prompt],
-            "providerPrompt": f"局部编辑意图: {prompt}\n保留未指定区域，仅修改明确要求的对象、区域或风格。",
-            "riskNotes": ["P2a 只编译 edit intent，不调用真实 image/video edit provider。"],
+            "preserve": _list_of_strings(request.get("preserve") or request.get("preserveRegions")) or ["Preserve the source subject and all unspecified regions."],
+            "modify": _list_of_strings(request.get("modify") or request.get("editTargets")) or [prepare_provider_prompt_policy(prompt, modality="image")["translatedPrompt"]],
+            "providerPrompt": (
+                f"Localized edit intent: {prepare_provider_prompt_policy(prompt, modality='image')['translatedPrompt']}\n"
+                "Preserve all unspecified regions; only modify the explicitly requested object, area, or style."
+            ),
+            "riskNotes": ["P2a compiles the edit intent only; executable edit adapters are handled by later runtime phases."],
         }
 
     def _constraint_check(self, recipe: dict[str, Any], *, modality: str) -> dict[str, Any]:
@@ -755,4 +963,5 @@ __all__ = [
     "SUPPORTED_MUSIC_KINDS",
     "CreativeRecipeCompiler",
     "creative_recipe_compiler",
+    "prepare_provider_prompt_policy",
 ]

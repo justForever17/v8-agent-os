@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ModelSelect, type AdminModelSelectOption } from "@/components/models/ModelSelect";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -21,6 +22,9 @@ type CreativeMediaData = {
     jobs: Array<Record<string, unknown>>;
     editPlans: Array<Record<string, unknown>>;
     renders: Array<Record<string, unknown>>;
+    qualityJobs: Array<Record<string, unknown>>;
+    costEntries: Array<Record<string, unknown>>;
+    safetyEvents: Array<Record<string, unknown>>;
     modelPreferences?: CreativeModelPreferences;
 };
 
@@ -32,6 +36,8 @@ type CreativeModelCandidate = {
     providerName: string;
     modelId: string;
     modelRef?: string;
+    providerLogoAsset?: string;
+    modelLogoAsset?: string;
     adapter: string;
     source?: string;
     available?: boolean;
@@ -39,10 +45,22 @@ type CreativeModelCandidate = {
     priority?: number;
 };
 
+type CreativeOperationRow = {
+    operationKind: string;
+    modality: string;
+    enabled?: boolean;
+    selectedModelRefs?: string[];
+    priority?: number;
+    optionCount?: number;
+};
+
 type CreativeModelPreferences = {
     version?: number;
     updatedAt?: string;
     candidates: CreativeModelCandidate[];
+    connectedOptions?: CreativeModelCandidate[];
+    diagnosticCandidates?: CreativeModelCandidate[];
+    operationRows?: CreativeOperationRow[];
     policies?: Record<string, { models?: CreativeModelCandidate[]; fallbackEnabled?: boolean }>;
 };
 
@@ -54,6 +72,9 @@ const EMPTY_DATA: CreativeMediaData = {
     jobs: [],
     editPlans: [],
     renders: [],
+    qualityJobs: [],
+    costEntries: [],
+    safetyEvents: [],
 };
 
 function text(value: unknown, fallback = "-") {
@@ -77,6 +98,21 @@ function modalityLabel(t: ReturnType<typeof useT>, modality: string) {
         model3d: "app.admin.dashboard.creativeMedia.modalityModel3d",
     };
     return keyMap[normalized] ? t(keyMap[normalized]) : text(modality);
+}
+
+function asModelSelectOption(candidate: CreativeModelCandidate): AdminModelSelectOption {
+    return {
+        id: candidate.modelRef || candidate.candidateId,
+        modelRef: candidate.modelRef,
+        providerId: candidate.providerId,
+        modelId: candidate.modelId,
+        type: candidate.modality?.toUpperCase(),
+        provider: {
+            id: candidate.providerId,
+            name: candidate.providerName,
+        },
+        providerName: candidate.providerName,
+    };
 }
 
 function CompactJson({ value }: { value: unknown }) {
@@ -109,7 +145,7 @@ export default function CreativeMediaPage() {
         setLoading(true);
         setError("");
         try {
-            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders, modelPreferences] = await Promise.all([
+            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders, qualityJobs, costLedger, safetyEvents, modelPreferences] = await Promise.all([
                 fetch("/api/creative-media/catalog", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/resolutions", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/recipes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
@@ -119,6 +155,9 @@ export default function CreativeMediaPage() {
                 fetch("/api/creative-media/jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/edit-plans", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/renders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/quality-jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/cost-ledger", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/safety-events", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/model-preferences", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
             ]);
             setData({
@@ -131,8 +170,14 @@ export default function CreativeMediaPage() {
                 jobs: Array.isArray(jobs.jobs) ? jobs.jobs : [],
                 editPlans: Array.isArray(editPlans.editPlans) ? editPlans.editPlans : [],
                 renders: Array.isArray(renders.renders) ? renders.renders : [],
+                qualityJobs: Array.isArray(qualityJobs.qualityJobs) ? qualityJobs.qualityJobs : [],
+                costEntries: Array.isArray(costLedger.entries) ? costLedger.entries : [],
+                safetyEvents: Array.isArray(safetyEvents.events) ? safetyEvents.events : [],
                 modelPreferences: {
                     candidates: Array.isArray(modelPreferences.candidates) ? modelPreferences.candidates : [],
+                    connectedOptions: Array.isArray(modelPreferences.connectedOptions) ? modelPreferences.connectedOptions : [],
+                    diagnosticCandidates: Array.isArray(modelPreferences.diagnosticCandidates) ? modelPreferences.diagnosticCandidates : [],
+                    operationRows: Array.isArray(modelPreferences.operationRows) ? modelPreferences.operationRows : [],
                     policies: modelPreferences.policies || {},
                     updatedAt: modelPreferences.updatedAt || "",
                     version: modelPreferences.version,
@@ -150,15 +195,32 @@ export default function CreativeMediaPage() {
     }, [fetchData]);
 
     const musicRecipes = data.recipes.filter((item) => text(item.modality, "") === "music");
-    const modelCandidates = data.modelPreferences?.candidates || [];
-    const updateModelCandidate = useCallback((candidateId: string, patch: Partial<CreativeModelCandidate>) => {
+    const connectedModelOptions = data.modelPreferences?.connectedOptions || [];
+    const diagnosticCandidates = data.modelPreferences?.diagnosticCandidates || [];
+    const operationRows = data.modelPreferences?.operationRows || [];
+    const updateOperationRow = useCallback((operationKind: string, patch: Partial<CreativeOperationRow>) => {
         setData((current) => ({
             ...current,
             modelPreferences: {
                 ...(current.modelPreferences || { candidates: [] }),
-                candidates: (current.modelPreferences?.candidates || []).map((candidate) => (
-                    candidate.candidateId === candidateId ? { ...candidate, ...patch } : candidate
+                operationRows: (current.modelPreferences?.operationRows || []).map((row) => (
+                    row.operationKind === operationKind ? { ...row, ...patch } : row
                 )),
+            },
+        }));
+    }, []);
+    const setOperationModelRef = useCallback((operationKind: string, index: number, modelRef: string) => {
+        setData((current) => ({
+            ...current,
+            modelPreferences: {
+                ...(current.modelPreferences || { candidates: [] }),
+                operationRows: (current.modelPreferences?.operationRows || []).map((row) => {
+                    if (row.operationKind !== operationKind) return row;
+                    const selected = [...(row.selectedModelRefs || [])];
+                    selected[index] = modelRef;
+                    const deduped = selected.filter((value, itemIndex, array) => value && array.indexOf(value) === itemIndex).slice(0, 3);
+                    return { ...row, selectedModelRefs: deduped, enabled: deduped.length > 0 ? true : row.enabled };
+                }),
             },
         }));
     }, []);
@@ -170,10 +232,11 @@ export default function CreativeMediaPage() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    models: (data.modelPreferences?.candidates || []).map((candidate) => ({
-                        candidateId: candidate.candidateId,
-                        enabled: candidate.enabled !== false,
-                        priority: Number(candidate.priority || 100),
+                    selections: (data.modelPreferences?.operationRows || []).map((row) => ({
+                        operationKind: row.operationKind,
+                        modelRefs: (row.selectedModelRefs || []).filter(Boolean).slice(0, 3),
+                        enabled: row.enabled !== false && (row.selectedModelRefs || []).filter(Boolean).length > 0,
+                        priority: Number(row.priority || 100),
                     })),
                 }),
             });
@@ -185,6 +248,9 @@ export default function CreativeMediaPage() {
                 ...current,
                 modelPreferences: {
                     candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+                    connectedOptions: Array.isArray(payload.connectedOptions) ? payload.connectedOptions : [],
+                    diagnosticCandidates: Array.isArray(payload.diagnosticCandidates) ? payload.diagnosticCandidates : [],
+                    operationRows: Array.isArray(payload.operationRows) ? payload.operationRows : [],
                     policies: payload.policies || {},
                     updatedAt: payload.updatedAt || "",
                     version: payload.version,
@@ -195,7 +261,7 @@ export default function CreativeMediaPage() {
         } finally {
             setSavingModels(false);
         }
-    }, [data.modelPreferences?.candidates]);
+    }, [data.modelPreferences?.operationRows]);
 
     return (
         <div className="space-y-6">
@@ -231,7 +297,7 @@ export default function CreativeMediaPage() {
                     { key: "assets", label: t("app.admin.dashboard.creativeMedia.statAssets"), value: data.assets.length, icon: Box },
                     { key: "characters", label: t("app.admin.dashboard.creativeMedia.statCharacters"), value: data.characterBibles.length, icon: UserRound },
                     { key: "keyframes", label: t("app.admin.dashboard.creativeMedia.statKeyframesJobs"), value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
-                    { key: "editRender", label: t("app.admin.dashboard.creativeMedia.statEditRender"), value: `${data.editPlans.length} / ${data.renders.length}`, icon: Clapperboard },
+                    { key: "qualityCost", label: t("app.admin.dashboard.creativeMedia.statQualityCost"), value: `${data.qualityJobs.length} / ${data.costEntries.length}`, icon: Clapperboard },
                 ].map((item) => (
                     <Card key={item.key}>
                         <CardContent className="flex items-center gap-3 p-4">
@@ -259,57 +325,114 @@ export default function CreativeMediaPage() {
                     </div>
                 </CardHeader>
                 <CardContent>
+                    <div className="mb-4 rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                        {t("app.admin.dashboard.creativeMedia.modelPreferencesConnectedHint")}
+                    </div>
                     <Table>
                         <TableHeader>
-                                <TableRow>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableOperation")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableProvider")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableModel")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableAdapter")}</TableHead>
+                            <TableRow>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</TableHead>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableOperation")}</TableHead>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableModel")}</TableHead>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableFallback")}</TableHead>
                                 <TableHead>{t("app.admin.dashboard.creativeMedia.tablePriority")}</TableHead>
                                 <TableHead>{t("app.admin.dashboard.creativeMedia.tableAvailable")}</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {modelCandidates.length ? modelCandidates.map((candidate) => (
-                                <TableRow key={candidate.candidateId}>
-                                    <TableCell>
-                                        <Switch
-                                            checked={candidate.enabled !== false}
-                                            onCheckedChange={(checked) => updateModelCandidate(candidate.candidateId, { enabled: checked })}
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <Badge variant="outline">{modalityLabel(t, candidate.modality)}</Badge>
-                                    </TableCell>
-                                    <TableCell className="font-mono text-xs">{text(candidate.operationKind)}</TableCell>
-                                    <TableCell>
-                                        <div className="font-medium">{text(candidate.providerName || candidate.providerId)}</div>
-                                        <div className="text-xs text-muted-foreground">{text(candidate.source)}</div>
-                                    </TableCell>
-                                    <TableCell className="max-w-64 truncate font-mono text-xs">{text(candidate.modelId)}</TableCell>
-                                    <TableCell className="font-mono text-xs">{text(candidate.adapter)}</TableCell>
-                                    <TableCell>
-                                        <Input
-                                            className="w-24"
-                                            type="number"
-                                            min={1}
-                                            max={999}
-                                            value={Number(candidate.priority || 100)}
-                                            onChange={(event) => updateModelCandidate(candidate.candidateId, { priority: Number(event.target.value || 100) })}
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <Badge variant={candidate.available === false ? "secondary" : "default"}>
-                                            {candidate.available === false ? t("app.admin.dashboard.creativeMedia.unavailable") : t("app.admin.dashboard.creativeMedia.available")}
-                                        </Badge>
-                                    </TableCell>
-                                </TableRow>
-                            )) : <EmptyRow colSpan={8} label={t("app.admin.dashboard.creativeMedia.emptyModelPreferences")} />}
+                            {operationRows.length ? operationRows.map((row) => {
+                                const options = connectedModelOptions
+                                    .filter((candidate) => candidate.operationKind === row.operationKind)
+                                    .map(asModelSelectOption);
+                                const selected = row.selectedModelRefs || [];
+                                return (
+                                    <TableRow key={row.operationKind}>
+                                        <TableCell>
+                                            <Switch
+                                                checked={row.enabled !== false && selected.length > 0}
+                                                disabled={options.length === 0}
+                                                onCheckedChange={(checked) => updateOperationRow(row.operationKind, { enabled: checked })}
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <Badge variant="outline">{modalityLabel(t, row.modality)}</Badge>
+                                        </TableCell>
+                                        <TableCell className="font-mono text-xs">{text(row.operationKind)}</TableCell>
+                                        <TableCell className="min-w-72">
+                                            {options.length ? (
+                                                <ModelSelect
+                                                    models={options}
+                                                    value={selected[0] || ""}
+                                                    emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
+                                                    placeholder={t("app.admin.dashboard.creativeMedia.selectPrimaryModel")}
+                                                    onValueChange={(value) => setOperationModelRef(row.operationKind, 0, value)}
+                                                    showCompatibilityHint={false}
+                                                />
+                                            ) : (
+                                                <div className="space-y-2">
+                                                    <div className="text-sm text-muted-foreground">
+                                                        {t("app.admin.dashboard.creativeMedia.noConnectedModels")}
+                                                    </div>
+                                                    <a className="text-sm font-medium text-primary hover:underline" href="/admin/model-hub">
+                                                        {t("app.admin.dashboard.creativeMedia.openModelHub")}
+                                                    </a>
+                                                </div>
+                                            )}
+                                        </TableCell>
+                                        <TableCell className="min-w-80">
+                                            <div className="grid gap-2 md:grid-cols-2">
+                                                {[1, 2].map((index) => (
+                                                    <ModelSelect
+                                                        key={`${row.operationKind}-${index}`}
+                                                        models={options}
+                                                        value={selected[index] || ""}
+                                                        emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
+                                                        placeholder={index === 1 ? t("app.admin.dashboard.creativeMedia.selectFallbackOne") : t("app.admin.dashboard.creativeMedia.selectFallbackTwo")}
+                                                        onValueChange={(value) => setOperationModelRef(row.operationKind, index, value)}
+                                                        showCompatibilityHint={false}
+                                                    />
+                                                ))}
+                                            </div>
+                                        </TableCell>
+                                        <TableCell>
+                                            <Input
+                                                className="w-24"
+                                                type="number"
+                                                min={1}
+                                                max={999}
+                                                value={Number(row.priority || 100)}
+                                                onChange={(event) => updateOperationRow(row.operationKind, { priority: Number(event.target.value || 100) })}
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <Badge variant={options.length ? "default" : "secondary"}>
+                                                {options.length ? `${options.length}` : t("app.admin.dashboard.creativeMedia.unavailable")}
+                                            </Badge>
+                                        </TableCell>
+                                    </TableRow>
+                                );
+                            }) : <EmptyRow colSpan={7} label={t("app.admin.dashboard.creativeMedia.emptyModelPreferences")} />}
                         </TableBody>
                     </Table>
+                    <details className="mt-4 rounded-lg border bg-background p-3">
+                        <summary className="cursor-pointer text-sm font-medium">
+                            {t("app.admin.dashboard.creativeMedia.diagnosticCandidatesTitle")}
+                        </summary>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                            {t("app.admin.dashboard.creativeMedia.diagnosticCandidatesDescription")}
+                        </p>
+                        <div className="mt-3">
+                            <CompactJson value={diagnosticCandidates.map((candidate) => ({
+                                modality: candidate.modality,
+                                operationKind: candidate.operationKind,
+                                provider: candidate.providerName || candidate.providerId,
+                                model: candidate.modelId,
+                                source: candidate.source,
+                                available: candidate.available,
+                            }))} />
+                        </div>
+                    </details>
                 </CardContent>
             </Card>
 
@@ -429,6 +552,87 @@ export default function CreativeMediaPage() {
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(keyframe.recipeId)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyKeyframes")} />}
+                            </TableBody>
+                        </Table>
+                    </CardContent>
+                </Card>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-3">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.qualityJobsTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.qualityJobsDescription")}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableJob")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {data.qualityJobs.length ? data.qualityJobs.slice(0, 6).map((quality) => (
+                                    <TableRow key={text(quality.qualityJobId)}>
+                                        <TableCell className="max-w-32 truncate font-mono text-xs">{text(quality.qualityJobId)}</TableCell>
+                                        <TableCell className="max-w-32 truncate font-mono text-xs">{text(quality.jobId)}</TableCell>
+                                        <TableCell>{text(quality.status)}</TableCell>
+                                    </TableRow>
+                                )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyQualityJobs")} />}
+                            </TableBody>
+                        </Table>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.costLedgerTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.costLedgerDescription")}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableOperation")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableProvider")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableArtifacts")}</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {data.costEntries.length ? data.costEntries.slice(0, 6).map((entry) => (
+                                    <TableRow key={text(entry.entryId)}>
+                                        <TableCell className="font-mono text-xs">{text(entry.operationKind)}</TableCell>
+                                        <TableCell>{text(entry.provider)}</TableCell>
+                                        <TableCell>{text(entry.artifactCount)}</TableCell>
+                                    </TableRow>
+                                )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyCostLedger")} />}
+                            </TableBody>
+                        </Table>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.safetyEventsTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.safetyEventsDescription")}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableType")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableUpdated")}</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {data.safetyEvents.length ? data.safetyEvents.slice(0, 6).map((event) => (
+                                    <TableRow key={text(event.eventId)}>
+                                        <TableCell>{Array.isArray(event.events) ? text((event.events[0] as Record<string, unknown> | undefined)?.kind) : "-"}</TableCell>
+                                        <TableCell>{text(event.modality)}</TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">{text(event.createdAt)}</TableCell>
+                                    </TableRow>
+                                )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptySafetyEvents")} />}
                             </TableBody>
                         </Table>
                     </CardContent>

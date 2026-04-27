@@ -405,6 +405,7 @@ async def connect_model_provider(data: dict = Body(...)):
             "capabilitySource": model.get("capabilitySource") or "manual",
             "parameterProfile": model.get("parameterProfile") or ("media_generation" if is_media_provider else "chat"),
             "mediaLimits": model.get("mediaLimits") or {},
+            "logoAsset": model.get("logoAsset") or "",
             "isEnabled": True,
         }
         current_models = dict(existing.get("models") or {})

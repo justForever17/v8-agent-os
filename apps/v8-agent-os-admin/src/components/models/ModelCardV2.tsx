@@ -36,6 +36,7 @@ interface ModelCardV2Props {
         modelId: string;
         type: string;
         provider?: { id?: string; name: string; icon?: string | null; logoAsset?: string | null } | null;
+        logoAsset?: string | null;
         isEnabled: boolean;
         contextWindow?: number | null;
         maxTokens?: number | null;
@@ -120,7 +121,7 @@ export function ModelCardV2({
         modelId: model.modelId,
         providerId: model.provider?.id,
         providerName: model.provider?.name,
-        explicitAsset: null,
+        explicitAsset: model.logoAsset || null,
     });
     const details = [
         `ID: ${model.modelId}`,

@@ -5,11 +5,20 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     deepseek: "/model-assets/providers/deepseek.ico",
     groq: "/model-assets/providers/groq.ico",
     huggingface: "/model-assets/providers/huggingface.ico",
+    hitem3d: "/model-assets/providers/hitem3d.svg",
+    hyper3d: "/model-assets/providers/hyper3d.svg",
     lmstudio: "/model-assets/providers/lmstudio.ico",
     mistral: "/model-assets/providers/mistral.ico",
+    mureka: "/model-assets/providers/mureka.svg",
     openrouter: "/model-assets/providers/openrouter.ico",
     siliconflow: "/model-assets/providers/siliconflow.png",
     xai: "/model-assets/providers/xai.ico",
+};
+
+const LOCAL_MODEL_LOGOS: Record<string, string> = {
+    hitem3d: "/model-assets/providers/hitem3d.svg",
+    hyper3d: "/model-assets/providers/hyper3d.svg",
+    mureka: "/model-assets/providers/mureka.svg",
 };
 
 type LobeSlug = keyof typeof LOBE_ICON_ASSETS;
@@ -29,6 +38,14 @@ function pickLobeIcon(slugs: string[]) {
     for (const slug of slugs) {
         const asset = LOBE_ICON_ASSETS[slug as LobeSlug];
         if (asset) return asset;
+    }
+    return null;
+}
+
+function pickLocalModelIcon(modelId?: string | null) {
+    const id = normalizeText(modelId);
+    for (const [key, asset] of Object.entries(LOCAL_MODEL_LOGOS)) {
+        if (id.includes(key) || id.includes(key.replace("3d", "-3d"))) return asset;
     }
     return null;
 }
@@ -58,6 +75,18 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("kimi")) candidates.push("kimi-color", "kimi", "moonshot");
     if (haystack.includes("modelscope")) candidates.push("modelscope-color", "modelscope");
     if (haystack.includes("comfyui")) candidates.push("comfyui-color", "comfyui");
+    if (haystack.includes("fal")) candidates.push("fal-color", "fal");
+    if (haystack.includes("suno")) candidates.push("suno");
+    if (haystack.includes("elevenlabs") || haystack.includes("eleven-labs")) candidates.push("elevenlabs");
+    if (haystack.includes("stability")) candidates.push("stability-color", "stability");
+    if (haystack.includes("replicate")) candidates.push("replicate");
+    if (haystack.includes("tripo")) candidates.push("tripo-color", "tripo");
+    if (haystack.includes("runway")) candidates.push("runway");
+    if (haystack.includes("luma")) candidates.push("luma-color", "luma");
+    if (haystack.includes("kling")) candidates.push("kling-color", "kling");
+    if (haystack.includes("mureka")) candidates.push("mureka");
+    if (haystack.includes("hitem3d") || haystack.includes("hitem-3d")) candidates.push("hitem3d");
+    if (haystack.includes("hyper3d") || haystack.includes("hyper-3d")) candidates.push("hyper3d");
     if (haystack.includes("lmstudio")) candidates.push("lmstudio");
     if (haystack.includes("ollama")) candidates.push("ollama");
     if (haystack.includes("vllm")) candidates.push("vllm-color", "vllm");
@@ -84,7 +113,7 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("gemini")) candidates.push("gemini-color", "gemini");
     if (id.includes("deepseek")) candidates.push("deepseek-color", "deepseek");
     if (id.includes("qwen") || id.includes("qwq")) candidates.push("qwen-color", "qwen");
-    if (id.includes("doubao") || id.includes("seedance")) candidates.push("doubao-color", "doubao", "volcengine-color", "volcengine");
+    if (id.includes("doubao") || id.includes("seedance") || id.includes("seedream") || id.includes("seed3d")) candidates.push("doubao-color", "doubao", "volcengine-color", "volcengine");
     if (id.includes("kimi")) candidates.push("kimi-color", "kimi", "moonshot");
     if (id.includes("moonshot")) candidates.push("moonshot", "kimi-color", "kimi");
     if (id.includes("grok")) candidates.push("grok", "xai");
@@ -94,9 +123,23 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("cohere") || id.includes("command") || id.includes("rerank")) candidates.push("cohere-color", "cohere");
     if (id.includes("voyage")) candidates.push("voyage-color", "voyage");
     if (id.includes("jina")) candidates.push("jina");
-    if (id.includes("glm") || id.includes("zhipu")) candidates.push("zhipu-color", "zhipu", "chatglm-color", "chatglm");
+    if (id.includes("glm") || id.includes("zhipu")) candidates.push("glmv-color", "glmv", "zhipu-color", "zhipu", "chatglm-color", "chatglm");
+    if (id.includes("cogview")) candidates.push("cogview-color", "cogview", "zhipu-color", "zhipu");
+    if (id.includes("cogvideo")) candidates.push("cogvideo-color", "cogvideo", "zhipu-color", "zhipu");
     if (id.includes("hunyuan")) candidates.push("hunyuan-color", "hunyuan");
     if (id.includes("minimax")) candidates.push("minimax-color", "minimax");
+    if (id.includes("fal")) candidates.push("fal-color", "fal");
+    if (id.includes("suno")) candidates.push("suno");
+    if (id.includes("eleven")) candidates.push("elevenlabs");
+    if (id.includes("stability") || id.includes("stable-image")) candidates.push("stability-color", "stability");
+    if (id.includes("replicate")) candidates.push("replicate");
+    if (id.includes("tripo")) candidates.push("tripo-color", "tripo");
+    if (id.includes("runway") || id.includes("gen4")) candidates.push("runway");
+    if (id.includes("luma") || id.includes("ray-")) candidates.push("luma-color", "luma");
+    if (id.includes("kling")) candidates.push("kling-color", "kling");
+    if (id.includes("mureka")) candidates.push("mureka");
+    if (id.includes("hitem3d") || id.includes("hitem-3d")) candidates.push("hitem3d");
+    if (id.includes("hyper3d") || id.includes("hyper-3d")) candidates.push("hyper3d");
     if (id.includes("comfyui")) candidates.push("comfyui-color", "comfyui");
     if (id.includes("ollama")) candidates.push("ollama");
     if (id.includes("lmstudio")) candidates.push("lmstudio");
@@ -131,6 +174,9 @@ export function resolveModelIcon(params: {
     providerName?: string | null;
     explicitAsset?: string | null;
 }) {
+    if (params.explicitAsset) return params.explicitAsset;
+    const localAsset = pickLocalModelIcon(params.modelId);
+    if (localAsset) return localAsset;
     const modelAsset = pickLobeIcon(modelSlugCandidates(params.modelId));
     if (modelAsset) return modelAsset;
     return resolveProviderLogo(params);

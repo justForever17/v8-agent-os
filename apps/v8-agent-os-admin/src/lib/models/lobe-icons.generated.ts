@@ -60,7 +60,27 @@ export const LOBE_ICON_ASSETS = {
     "jina": "/model-assets/lobe/jina.svg",
     "baai": "/model-assets/lobe/baai.svg",
     "meta-color": "/model-assets/lobe/meta-color.svg",
-    "meta": "/model-assets/lobe/meta.svg"
+    "meta": "/model-assets/lobe/meta.svg",
+    "fal-color": "/model-assets/lobe/fal-color.svg",
+    "fal": "/model-assets/lobe/fal.svg",
+    "suno": "/model-assets/lobe/suno.svg",
+    "elevenlabs": "/model-assets/lobe/elevenlabs.svg",
+    "stability-color": "/model-assets/lobe/stability-color.svg",
+    "stability": "/model-assets/lobe/stability.svg",
+    "replicate": "/model-assets/lobe/replicate.svg",
+    "tripo-color": "/model-assets/lobe/tripo-color.svg",
+    "tripo": "/model-assets/lobe/tripo.svg",
+    "runway": "/model-assets/lobe/runway.svg",
+    "luma-color": "/model-assets/lobe/luma-color.svg",
+    "luma": "/model-assets/lobe/luma.svg",
+    "kling-color": "/model-assets/lobe/kling-color.svg",
+    "kling": "/model-assets/lobe/kling.svg",
+    "cogvideo-color": "/model-assets/lobe/cogvideo-color.svg",
+    "cogvideo": "/model-assets/lobe/cogvideo.svg",
+    "cogview-color": "/model-assets/lobe/cogview-color.svg",
+    "cogview": "/model-assets/lobe/cogview.svg",
+    "glmv-color": "/model-assets/lobe/glmv-color.svg",
+    "glmv": "/model-assets/lobe/glmv.svg"
 } as const;
 
 export const LOBE_ICON_SOURCE = {

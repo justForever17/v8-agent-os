@@ -286,6 +286,7 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
             contextWindow: typeof modelMeta.contextWindow === "number" ? modelMeta.contextWindow : null,
             maxTokens: typeof modelMeta.maxTokens === "number" ? modelMeta.maxTokens : null,
             rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
+            logoAsset: String(modelMeta.logoAsset || "") || null,
             isEnabled: modelMeta.isEnabled !== false,
         };
     });

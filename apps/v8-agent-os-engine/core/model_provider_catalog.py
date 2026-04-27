@@ -140,9 +140,16 @@ class ModelProviderCatalog:
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
         operation_kinds = self._media_operation_kinds(provider_entry, modality)
+        model_logo_assets = provider_entry.get("modelLogoAssets")
+        model_logo_asset = ""
+        if isinstance(model_logo_assets, dict):
+            model_logo_asset = str(model_logo_assets.get(model_id) or "").strip()
         return {
             "id": model_id,
             "type": self._media_model_type(modality),
+            "contextWindow": None,
+            "maxTokens": None,
+            "logoAsset": model_logo_asset,
             "capabilities": self._media_capabilities(modality),
             "operationKinds": operation_kinds,
             "parameterProfile": provider_entry.get("apiStandard") or provider_entry.get("adapter") or "media_generation",
@@ -163,7 +170,13 @@ class ModelProviderCatalog:
         if not provider_id:
             return None
         normalized_modality = _normalized_modality(modality)
-        model_ids = _MEDIA_DEFAULT_MODEL_IDS.get(provider_id) or [f"{provider_id}-model"]
+        explicit_model_ids = entry.get("modelIds")
+        if isinstance(explicit_model_ids, list):
+            model_ids = [str(item).strip() for item in explicit_model_ids if str(item).strip()]
+        else:
+            model_ids = []
+        if not model_ids:
+            model_ids = _MEDIA_DEFAULT_MODEL_IDS.get(provider_id) or [f"{provider_id}-model"]
         auth = dict(entry.get("auth") or {})
         adapter = str(entry.get("adapter") or "catalog_only")
         api_standard = str(entry.get("apiStandard") or adapter or "media_generation")
@@ -177,7 +190,7 @@ class ModelProviderCatalog:
             "baseUrl": entry.get("baseUrlDefault") or "",
             "logoAsset": entry.get("logoAsset") or "",
             "auth": auth,
-            "probeStrategy": "catalog_only",
+            "probeStrategy": entry.get("probeStrategy") or "catalog_only",
             "sourceUrl": entry.get("sourceUrl") or "",
             "credentialHelp": entry.get("credentialHelp") or {},
             "lastCheckedAt": entry.get("lastCheckedAt") or "",
@@ -358,19 +371,15 @@ class ModelProviderCatalog:
         strategy = str(provider.get("probeStrategy") or "catalog_only")
         effective_base_url = str(base_url or provider.get("baseUrl") or "").rstrip("/")
         if strategy == "catalog_only":
-            models = [
-                self.normalize_model(provider, str(item.get("id") or item.get("modelId") or ""))
-                for item in _as_list(provider.get("models"))
-                if str(item.get("id") or item.get("modelId") or "").strip()
-            ]
             return {
-                "ok": True,
-                "source": "catalog",
+                "ok": False,
+                "source": "catalog_metadata",
                 "provider": provider,
-                "models": models,
+                "models": [],
                 "rawCount": len(_as_list(provider.get("models"))),
-                "modelCount": len(models),
+                "modelCount": 0,
                 "reason": "catalog_only_provider",
+                "error": "This provider preset has no real online model-list probe. Enter a model ID manually; catalog entries are used only for icons, type hints, and capability metadata.",
             }
         if not effective_base_url:
             return {"ok": False, "source": "online", "provider": provider, "models": [], "reason": "missing_base_url", "error": "baseUrl is required"}
@@ -649,6 +658,7 @@ class ModelProviderCatalog:
             "modelId": model_id,
             "modelRef": make_model_ref(str(provider.get("id") or ""), model_id),
             "type": self._infer_model_type(capability_map),
+            "logoAsset": model.get("logoAsset") or online_metadata.get("logoAsset") or "",
             "contextWindow": context_window,
             "maxTokens": max_tokens,
             "capabilities": capability_map,

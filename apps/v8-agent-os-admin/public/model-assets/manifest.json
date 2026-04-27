@@ -27,6 +27,21 @@
       "source": "official-or-whitelisted-static",
       "sha256": "94CE3375C26E76CF76A446FFAD15CC290F4248873A5BCD4FD59D711FA5439724"
     },
+    "mureka": {
+      "asset": "/model-assets/providers/mureka.svg",
+      "source": "local-textmark",
+      "sha256": "079AE88E6DB833D7004F0F5C10DC4028F7B5C16FCD5EEDBE42542F215FFC75CD"
+    },
+    "hitem3d": {
+      "asset": "/model-assets/providers/hitem3d.svg",
+      "source": "local-textmark",
+      "sha256": "0AF7B33B0ED62C3974FC4E0F2313C198E7153F795C2A8984E519E23CE20D459F"
+    },
+    "hyper3d": {
+      "asset": "/model-assets/providers/hyper3d.svg",
+      "source": "local-textmark",
+      "sha256": "896653BEB660496A17AA2158CB09F2273A4819C5D70F8E3750E247BEA3D46D05"
+    },
     "mistral": {
       "asset": "/model-assets/providers/mistral.ico",
       "source": "official-or-whitelisted-static",

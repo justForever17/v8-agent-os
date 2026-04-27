@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Mureka">
+  <rect width="64" height="64" rx="16" fill="#111827"/>
+  <path d="M14 43V21h7l11 14 11-14h7v22h-8V33L34 43h-4l-8-10v10z" fill="#f8fafc"/>
+  <circle cx="50" cy="14" r="5" fill="#38bdf8"/>
+</svg>

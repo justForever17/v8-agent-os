@@ -215,3 +215,47 @@ async def get_creative_media_job_artifacts(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="creative media job not found")
     return {"artifacts": creative_media_runtime.job_artifacts(job_id)}
+
+
+@router.post("/quality-jobs")
+async def create_creative_media_quality_job(body: dict = Body(...)):
+    try:
+        return {"qualityJob": creative_media_runtime.create_quality_job(body)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/quality-jobs")
+async def list_creative_media_quality_jobs(status: str | None = None):
+    return {"qualityJobs": creative_media_runtime.list_quality_jobs(status=status)}
+
+
+@router.get("/quality-jobs/{quality_job_id}")
+async def get_creative_media_quality_job(quality_job_id: str):
+    quality_job = creative_media_runtime.get_quality_job(quality_job_id)
+    if not quality_job:
+        raise HTTPException(status_code=404, detail="creative media quality job not found")
+    return {"qualityJob": quality_job}
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_creative_media_job(job_id: str, body: dict = Body(default_factory=dict)):
+    try:
+        job = await creative_media_runtime.retry_job(job_id, body)
+        return {"job": job}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cost-ledger")
+async def get_creative_media_cost_ledger():
+    return {"entries": creative_media_runtime.list_cost_ledger()}
+
+
+@router.get("/safety-events")
+async def get_creative_media_safety_events():
+    return {"events": creative_media_runtime.list_safety_events()}

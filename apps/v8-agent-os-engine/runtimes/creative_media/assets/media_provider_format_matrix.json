@@ -13,8 +13,10 @@
       {
         "id": "openai_images",
         "displayName": "OpenAI-compatible Images",
+        "modelIds": ["gpt-image-2", "gpt-image-1"],
         "apiStandard": "openai_images",
         "adapter": "openai_images",
+        "probeStrategy": "openai_models",
         "operationKinds": ["image.generate"],
         "baseUrlDefault": "https://api.openai.com/v1",
         "credentialHelp": {
@@ -37,11 +39,41 @@
         "confidence": "verified_official"
       },
       {
+        "id": "zhipu_bigmodel_image",
+        "displayName": "Zhipu BigModel Image",
+        "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+        "modelIds": ["glm-image", "cogview-4-250304", "cogview-4", "cogview-3-flash"],
+        "apiStandard": "zhipu_bigmodel_image",
+        "adapter": "catalog_only",
+        "probeStrategy": "openai_models",
+        "operationKinds": ["image.generate"],
+        "baseUrlDefault": "https://open.bigmodel.cn/api/paas/v4",
+        "credentialHelp": {
+          "label": "Get BigModel API key",
+          "url": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/images/generations",
+          "bodyFields": ["model", "prompt", "size", "user_id"],
+          "sizeField": "size",
+          "sizeFormat": "WIDTHxHEIGHT"
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["data[].url", "data[].b64_json", "url"]},
+        "statusMap": {"http_2xx": "succeeded", "http_error": "failed"},
+        "sourceUrl": "https://docs.bigmodel.cn/api-reference/模型-api/图像生成",
+        "confidence": "provider_docs"
+      },
+      {
         "id": "volcengine_seedream",
         "displayName": "Volcengine Ark Seedream",
         "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+        "modelIds": ["doubao-seedream-5-0-lite", "doubao-seedream-4-5", "doubao-seedream-4-0", "doubao-seedream-4-0-250828"],
         "apiStandard": "volcengine_ark_image",
         "adapter": "volcengine_ark",
+        "probeStrategy": "openai_models",
         "operationKinds": ["image.generate"],
         "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
         "credentialHelp": {
@@ -67,9 +99,10 @@
         "id": "aliyun_bailian_image",
         "displayName": "Alibaba Cloud Bailian Image",
         "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "modelIds": ["qwen-image-2.0-pro", "qwen-image-2.0", "wan2.7-image-pro", "wan2.6-image"],
         "apiStandard": "dashscope_image_generation",
-        "adapter": "catalog_only",
-        "operationKinds": ["image.generate"],
+        "adapter": "dashscope",
+        "operationKinds": ["image.generate", "image.edit"],
         "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
         "credentialHelp": {
           "label": "Get Bailian API key",
@@ -78,8 +111,9 @@
         "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
         "request": {
           "method": "POST",
-          "submitPath": "/services/aigc/image-generation/generation",
-          "bodyFields": ["model", "input.prompt", "input.image_url", "parameters.size", "parameters.n"],
+          "submitPath": "/services/aigc/multimodal-generation/generation",
+          "editPath": "/services/aigc/multimodal-generation/generation",
+          "bodyFields": ["model", "input.prompt", "input.messages[].content[].image", "input.messages[].content[].text", "parameters.size", "parameters.n"],
           "sizeField": "parameters.size",
           "sizeFormat": "WIDTH*HEIGHT"
         },
@@ -92,6 +126,8 @@
       {
         "id": "stability_image",
         "displayName": "Stability AI Image",
+        "logoAsset": "/model-assets/lobe/stability-color.svg",
+        "modelIds": ["stable-image-core", "stable-image-ultra"],
         "apiStandard": "stability_image",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.stability.ai",
@@ -112,6 +148,8 @@
       {
         "id": "fal_image",
         "displayName": "fal.ai Image Models",
+        "logoAsset": "/model-assets/lobe/fal-color.svg",
+        "modelIds": ["fal-image-model"],
         "apiStandard": "fal_queue",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://queue.fal.run",
@@ -126,6 +164,8 @@
       {
         "id": "replicate_image",
         "displayName": "Replicate Image Predictions",
+        "logoAsset": "/model-assets/lobe/replicate.svg",
+        "modelIds": ["replicate-image-model"],
         "apiStandard": "replicate_predictions",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.replicate.com/v1",
@@ -143,8 +183,10 @@
         "id": "volcengine_seedance",
         "displayName": "Volcengine Ark Seedance",
         "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+        "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-1-5-pro", "doubao-seedance-1-0-pro-fast-251015"],
         "apiStandard": "volcengine_ark_video",
         "adapter": "volcengine_ark",
+        "probeStrategy": "openai_models",
         "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame"],
         "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
         "credentialHelp": {
@@ -168,12 +210,41 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "zhipu_bigmodel_video",
+        "displayName": "Zhipu BigModel Video",
+        "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+        "modelIds": ["cogvideox-3", "vidu-q1", "vidu-2.0", "cogvideox-flash"],
+        "apiStandard": "zhipu_bigmodel_video",
+        "adapter": "catalog_only",
+        "probeStrategy": "openai_models",
+        "operationKinds": ["video.text_to_video", "video.image_to_video"],
+        "baseUrlDefault": "https://open.bigmodel.cn/api/paas/v4",
+        "credentialHelp": {
+          "label": "Get BigModel API key",
+          "url": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/videos/generations",
+          "bodyFields": ["model", "prompt", "image_url", "size", "duration", "fps"],
+          "durationField": "duration",
+          "sizeFormat": "MODEL_SPECIFIC"
+        },
+        "polling": {"mode": "async_result", "statusPath": "/async-result/{id}", "recommendedIntervalSeconds": 10},
+        "result": {"paths": ["video_result[].url", "video_result[].cover_image_url", "output.video_url", "url"]},
+        "statusMap": {"PROCESSING": "running", "SUCCESS": "succeeded", "FAIL": "failed", "FAILED": "failed"},
+        "sourceUrl": "https://docs.bigmodel.cn/api-reference/模型-api/视频生成-异步",
+        "confidence": "provider_docs"
+      },
+      {
         "id": "aliyun_bailian_video",
         "displayName": "Alibaba Cloud Bailian Video",
         "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "modelIds": ["wan2.7-t2v", "wan2.7-t2v-2026-04-25", "wan2.7-i2v", "wan2.7-i2v-2026-04-25", "wan2.7-r2v", "wan2.7-videoedit", "wan2.2-s2v", "wan2.2-animate-move", "wan2.2-animate-mix"],
         "apiStandard": "dashscope_video_task",
-        "adapter": "catalog_only",
-        "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.lipsync", "video.action_transfer", "video.avatar", "video.replacement", "video.style_repaint"],
+        "adapter": "dashscope",
+        "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video", "video.video_edit", "video.lipsync", "video.action_transfer", "video.avatar", "video.replacement", "video.style_repaint"],
         "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
         "credentialHelp": {
           "label": "Get Bailian API key",
@@ -183,6 +254,7 @@
         "request": {
           "method": "POST",
           "submitPath": "/services/aigc/video-generation/video-synthesis",
+          "imageToVideoPath": "/services/aigc/image2video/video-synthesis",
           "bodyFields": ["model", "input.prompt", "input.image_url", "input.audio_url", "input.video_url", "parameters.resolution", "parameters.duration", "parameters.ratio"],
           "durationField": "parameters.duration",
           "resolutionField": "parameters.resolution",
@@ -198,6 +270,7 @@
       {
         "id": "google_veo",
         "displayName": "Google Veo",
+        "modelIds": ["veo-3.1-generate-preview"],
         "apiStandard": "google_operation",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://generativelanguage.googleapis.com/v1beta",
@@ -212,6 +285,8 @@
       {
         "id": "runway_video",
         "displayName": "Runway Video",
+        "logoAsset": "/model-assets/lobe/runway.svg",
+        "modelIds": ["gen4_turbo"],
         "apiStandard": "runway_task",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.dev.runwayml.com/v1",
@@ -226,6 +301,8 @@
       {
         "id": "luma_video",
         "displayName": "Luma Dream Machine",
+        "logoAsset": "/model-assets/lobe/luma-color.svg",
+        "modelIds": ["ray-2"],
         "apiStandard": "luma_generation",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.lumalabs.ai/dream-machine/v1",
@@ -241,6 +318,7 @@
         "id": "minimax_video",
         "displayName": "MiniMax Video",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
+        "modelIds": ["video-01"],
         "apiStandard": "minimax_task",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.minimax.io",
@@ -255,6 +333,8 @@
       {
         "id": "kling_video",
         "displayName": "Kling AI Video",
+        "logoAsset": "/model-assets/lobe/kling-color.svg",
+        "modelIds": ["kling-v2-1"],
         "apiStandard": "kling_task",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.klingai.com",
@@ -271,6 +351,7 @@
       {
         "id": "v8_audio_tts",
         "displayName": "V8 Audio Runtime TTS",
+        "modelIds": ["v8-audio-tts"],
         "apiStandard": "v8_audio",
         "adapter": "v8_audio_tts",
         "baseUrlDefault": "internal",
@@ -285,6 +366,7 @@
       {
         "id": "openai_audio_speech",
         "displayName": "OpenAI Audio Speech",
+        "modelIds": ["gpt-4o-mini-tts"],
         "apiStandard": "openai_audio",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.openai.com/v1",
@@ -297,8 +379,35 @@
         "confidence": "verified_official"
       },
       {
+        "id": "zhipu_bigmodel_voice",
+        "displayName": "Zhipu BigModel Voice",
+        "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+        "modelIds": ["glm-tts", "glm-tts-clone", "glm-asr-2512", "glm-realtime", "glm-4-voice"],
+        "apiStandard": "zhipu_bigmodel_audio",
+        "adapter": "catalog_only",
+        "probeStrategy": "openai_models",
+        "operationKinds": ["voice.tts", "voice.clone", "voice.asr", "voice.realtime"],
+        "baseUrlDefault": "https://open.bigmodel.cn/api/paas/v4",
+        "credentialHelp": {"label": "Get BigModel API key", "url": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/audio/speech",
+          "transcriptionPath": "/audio/transcriptions",
+          "voiceClonePath": "/audio/voices",
+          "bodyFields": ["model", "input", "voice", "response_format", "file", "audio"],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["binary_body", "audio.data", "text"]},
+        "sourceUrl": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音",
+        "confidence": "provider_docs"
+      },
+      {
         "id": "elevenlabs_tts",
         "displayName": "ElevenLabs Text to Speech",
+        "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+        "modelIds": ["eleven_multilingual_v2"],
         "apiStandard": "elevenlabs_tts",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.elevenlabs.io/v1",
@@ -314,6 +423,7 @@
         "id": "minimax_tts",
         "displayName": "MiniMax Speech",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
+        "modelIds": ["speech-02-hd"],
         "apiStandard": "minimax_tts",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.minimax.io",
@@ -329,6 +439,7 @@
         "id": "aliyun_bailian_cosyvoice",
         "displayName": "Alibaba Cloud Bailian CosyVoice",
         "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "modelIds": ["cosyvoice-v3-flash"],
         "apiStandard": "dashscope_cosyvoice_tts",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
@@ -347,12 +458,39 @@
         "result": {"paths": ["output.audio.url", "output.url", "binary_body"]},
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api",
         "confidence": "provider_docs"
+      },
+      {
+        "id": "volcengine_doubao_voice",
+        "displayName": "Volcengine Ark Doubao Voice",
+        "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+        "modelIds": ["doubao-voice-podcast", "doubao-voice-design", "doubao-voice-synthesis-2-0", "doubao-streaming-asr", "doubao-audio-file-asr-2-0", "doubao-realtime-speech-interaction"],
+        "apiStandard": "volcengine_ark_voice",
+        "adapter": "catalog_only",
+        "operationKinds": ["voice.tts", "voice.clone", "voice.asr", "voice.realtime"],
+        "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
+        "credentialHelp": {
+          "label": "Get Ark API key",
+          "url": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/audio/speech",
+          "bodyFields": ["model", "input", "voice", "response_format", "audio", "file"],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["binary_body", "data.audio", "text"]},
+        "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "confidence": "community_or_inferred"
       }
     ],
     "music": [
       {
         "id": "mureka_music",
         "displayName": "Mureka Music API",
+        "logoAsset": "/model-assets/providers/mureka.svg",
+        "modelIds": ["mureka-o1"],
         "apiStandard": "mureka_song_task",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.mureka.ai",
@@ -367,6 +505,8 @@
       {
         "id": "fal_music",
         "displayName": "fal.ai Music Models",
+        "logoAsset": "/model-assets/lobe/fal-color.svg",
+        "modelIds": ["fal-music-model"],
         "apiStandard": "fal_queue",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://queue.fal.run",
@@ -381,6 +521,8 @@
       {
         "id": "suno_placeholder",
         "displayName": "Suno",
+        "logoAsset": "/model-assets/lobe/suno.svg",
+        "modelIds": ["suno-future-generation"],
         "apiStandard": "music_generation",
         "adapter": "catalog_only",
         "baseUrlDefault": "",
@@ -397,6 +539,8 @@
       {
         "id": "fal_3d",
         "displayName": "fal.ai 3D Models",
+        "logoAsset": "/model-assets/lobe/fal-color.svg",
+        "modelIds": ["fal-3d-model"],
         "apiStandard": "fal_queue",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://queue.fal.run",
@@ -409,8 +553,57 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "tencent_hunyuan_3d",
+        "displayName": "Tencent Hunyuan 3D",
+        "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+        "modelIds": ["hunyuan-3d", "hunyuan-3d-rapid", "hunyuan-3d-pro", "hunyuan-3d-texture", "hunyuan-3d-part", "hunyuan-3d-profile", "hunyuan-3d-format-convert"],
+        "apiStandard": "tencentcloud_ai3d",
+        "adapter": "catalog_only",
+        "operationKinds": ["model3d.generate", "model3d.texture", "model3d.part", "model3d.profile", "model3d.convert"],
+        "baseUrlDefault": "https://ai3d.tencentcloudapi.com",
+        "credentialHelp": {"label": "Get Tencent Cloud API key", "url": "https://console.cloud.tencent.com/cam/capi"},
+        "auth": {"type": "secret_id_key", "signature": "tencentcloud_tc3"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/",
+          "bodyFields": ["Action", "Version", "Region", "Prompt", "ImageBase64", "ImageUrl", "ResultFormat"],
+          "actions": ["Generate3D", "Query3D", "SubmitHunyuanTo3DRapidJob", "QueryHunyuanTo3DRapidJob", "SubmitHunyuanTo3DProJob", "QueryHunyuanTo3DProJob", "SubmitHunyuanTo3DTextureJob", "SubmitHunyuanTo3DPartJob", "SubmitHunyuanTo3DProfileJob", "SubmitHunyuanTo3DFormatConvertJob"],
+          "sizeFormat": "MODEL_3D_ASSET"
+        },
+        "polling": {"mode": "task", "statusPath": "Action=QueryHunyuanTo3DJob", "recommendedIntervalSeconds": 10},
+        "result": {"paths": ["Response.ResultFile3ds[].Url", "Response.ResultFile3ds[].PreviewUrl", "Response.Url"]},
+        "sourceUrl": "https://cloud.tencent.com.cn/document/product/1804/120838",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "volcengine_3d_generation",
+        "displayName": "Volcengine Ark 3D Generation",
+        "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+        "modelIds": ["doubao-seed3d-2-0", "hyper3d-gen2", "hitem3d-2-0"],
+        "modelLogoAssets": {
+          "hyper3d-gen2": "/model-assets/providers/hyper3d.svg",
+          "hitem3d-2-0": "/model-assets/providers/hitem3d.svg"
+        },
+        "apiStandard": "volcengine_ark_3d",
+        "adapter": "catalog_only",
+        "operationKinds": ["model3d.generate"],
+        "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
+        "credentialHelp": {
+          "label": "Get Ark API key",
+          "url": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/contents/generations/tasks", "bodyFields": ["model", "prompt", "image_url", "texture", "format"], "sizeFormat": "MODEL_3D_ASSET"},
+        "polling": {"mode": "task", "statusPath": "/contents/generations/tasks/{task_id}", "recommendedIntervalSeconds": 10},
+        "result": {"paths": ["content.model_url", "content.glb_url", "content.mesh_url"]},
+        "sourceUrl": "https://www.volcengine.com/docs/82379/1856268",
+        "confidence": "community_or_inferred"
+      },
+      {
         "id": "tripo3d_placeholder",
         "displayName": "Tripo 3D",
+        "logoAsset": "/model-assets/lobe/tripo-color.svg",
+        "modelIds": ["tripo3d-model"],
         "apiStandard": "model3d_task",
         "adapter": "catalog_only",
         "baseUrlDefault": "",

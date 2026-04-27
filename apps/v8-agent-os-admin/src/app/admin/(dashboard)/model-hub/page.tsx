@@ -20,7 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { fetchConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-import { resolveProviderLogo } from "@/lib/models/model-assets";
+import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
 import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
 type AIProvider = {
     id: string;
@@ -52,6 +52,7 @@ type AIModel = {
     contextWindow?: number | null;
     maxTokens?: number | null;
     rerankApiFlavor?: string;
+    logoAsset?: string | null;
     isEnabled: boolean;
     provider?: {
         id?: string;
@@ -86,6 +87,7 @@ type CatalogModel = {
     type?: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
+    logoAsset?: string | null;
     capabilities?: Record<string, boolean>;
 };
 type CatalogProvider = {
@@ -515,18 +517,21 @@ export default function ModelHubPage() {
                 setProbedCatalogProviderId("");
                 const reason = extractErrorText(data.error || data.detail || data.reason, t("app.admin.dashboard.model.hub.catalog.fallback"));
                 const requiresCredential = data.reason === "credential_required" || String(reason).toLowerCase().includes("api key");
-                setManualModelEntryEnabled(!requiresCredential);
+                const catalogOnly = data.reason === "catalog_only_provider";
+                setManualModelEntryEnabled(!requiresCredential || catalogOnly);
                 setCatalogProbeStatus({
                     ok: false,
-                    message: requiresCredential ? t("app.admin.dashboard.model.hub.catalog.credentialRequired") : reason,
+                    message: catalogOnly ? t("app.admin.dashboard.model.hub.catalog.catalogOnlyManual") : requiresCredential ? t("app.admin.dashboard.model.hub.catalog.credentialRequired") : reason,
                     resolvedModelsUrl: data.resolvedModelsUrl,
                     source: data.source,
                 });
-                toast({
-                    variant: "destructive",
-                    title: t("app.admin.dashboard.model.hub.catalog.probeFailed"),
-                    description: requiresCredential ? t("app.admin.dashboard.model.hub.catalog.apiKeyRequired") : t("app.admin.dashboard.model.hub.catalog.manualFallback", { reason }),
-                });
+                if (!catalogOnly) {
+                    toast({
+                        variant: "destructive",
+                        title: t("app.admin.dashboard.model.hub.catalog.probeFailed"),
+                        description: requiresCredential ? t("app.admin.dashboard.model.hub.catalog.apiKeyRequired") : t("app.admin.dashboard.model.hub.catalog.manualFallback", { reason }),
+                    });
+                }
                 return;
             }
             const providerId = data.providerId || data.provider?.id || selectedCatalogProviderId;
@@ -861,17 +866,28 @@ export default function ModelHubPage() {
                                     <div className="max-h-64 overflow-y-auto rounded-xl border bg-background p-2">
                                         {visibleCatalogModels.map((model) => {
                                             const modelId = model.modelId || model.id;
+                                            const modelIcon = resolveModelIcon({
+                                                modelId,
+                                                providerId: probedCatalogProviderId || selectedCatalogProvider?.id || selectedCatalogProviderId,
+                                                providerName: selectedCatalogProvider?.name || "",
+                                                explicitAsset: model.logoAsset || null,
+                                            });
                                             return (
                                                 <button
                                                     key={`${probedCatalogProviderId || selectedCatalogProviderId}:${modelId}`}
                                                     type="button"
-                                                    className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white" : "hover:bg-muted"}`}
+                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white" : "hover:bg-muted"}`}
                                                     onClick={() => {
                                                         setSelectedCatalogModelId(modelId);
                                                         setCatalogModelFilter(modelId);
                                                     }}
                                                 >
-                                                    <span className="truncate">{modelId}</span>
+                                                    <span className="flex min-w-0 items-center gap-2">
+                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-white/10" : "bg-slate-100"}`}>
+                                                            {modelIcon ? <img src={modelIcon} alt="" className="h-4 w-4 object-contain" /> : null}
+                                                        </span>
+                                                        <span className="truncate">{modelId}</span>
+                                                    </span>
                                                     {model.contextWindow ? <span className="ml-3 shrink-0 text-xs opacity-70">{model.contextWindow}</span> : null}
                                                 </button>
                                             );

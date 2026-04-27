@@ -20,6 +20,7 @@ export type AdminModelRecord = {
     contextWindow: number | null;
     maxTokens: number | null;
     rerankApiFlavor: string;
+    logoAsset?: string | null;
     isEnabled: boolean;
     provider: {
         id?: string;
@@ -83,6 +84,7 @@ export function mapEngineModel(
         contextWindow: asNullableNumber(modelMeta.contextWindow),
         maxTokens: asNullableNumber(modelMeta.maxTokens),
         rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
+        logoAsset: String(modelMeta.logoAsset || "") || null,
         isEnabled: modelMeta.isEnabled !== false,
         provider: {
             id: providerId,

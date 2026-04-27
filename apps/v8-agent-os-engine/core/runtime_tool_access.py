@@ -77,6 +77,12 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "creative_media_render_edit_plan",
             "creative_media_get_render",
             "creative_media_list_renders",
+            "creative_media_create_quality_job",
+            "creative_media_list_quality_jobs",
+            "creative_media_get_quality_job",
+            "creative_media_retry_job",
+            "creative_media_cost_ledger",
+            "creative_media_safety_events",
         ],
     },
 }

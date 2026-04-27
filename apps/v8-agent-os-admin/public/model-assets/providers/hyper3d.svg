@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Hyper3D">
+  <rect width="64" height="64" rx="16" fill="#312e81"/>
+  <path d="M17 17h9v12h12V17h9v30h-9V36H26v11h-9z" fill="#f5f3ff"/>
+  <path d="M32 9 50 20 32 31 14 20z" fill="#22d3ee" opacity=".9"/>
+  <path d="M14 44 32 55 50 44" fill="none" stroke="#22d3ee" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

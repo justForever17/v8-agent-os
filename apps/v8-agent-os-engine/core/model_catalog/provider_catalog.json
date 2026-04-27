@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastCheckedAt": "2026-04-25",
+  "lastCheckedAt": "2026-04-27",
   "providers": [
     {
       "id": "openai",
@@ -453,15 +453,231 @@
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "sourceUrl": "https://docs.bigmodel.cn/cn/guide/develop/openai/introduction",
+      "sourceUrl": "https://docs.bigmodel.cn/api-reference",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
         "url": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
       },
       "confidence": "official",
-      "models": [],
-      "providerKind": "chat"
+      "models": [
+        {
+          "id": "glm-5.1",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-5",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-5-turbo",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4.7",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4.7-flashx",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4.7-flash",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4.6",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4.5-air",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4.5-airx",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4-long",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4-flashx-250414",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-4-flash-250414",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "glm-5v-turbo",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "glm-4.6v",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "glm-ocr",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "autoglm-phone",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "glm-4.1v-thinking-flashx",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "glm-4.6v-flash",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "glm-4.1v-thinking-flash",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "glm-4v-flash",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "embedding-3",
+          "capabilities": [
+            "embedding"
+          ]
+        },
+        {
+          "id": "embedding-2",
+          "capabilities": [
+            "embedding"
+          ]
+        },
+        {
+          "id": "rerank",
+          "capabilities": [
+            "rerank"
+          ]
+        }
+      ],
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg"
     },
     {
       "id": "moonshot",

@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,13 +36,18 @@ from .catalog import (
     resolve_video_resolution,
 )
 from .recipe import creative_recipe_compiler
+from .recipe import prepare_provider_prompt_policy
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
 EDIT_PLAN_STORE_FILE = "creative_media/edit_plans.json"
 RENDER_JOB_STORE_FILE = "creative_media/render_jobs.json"
 MODEL_PREFERENCES_STORE_FILE = "creative_media/model_preferences.json"
+QUALITY_JOB_STORE_FILE = "creative_media/quality_jobs.json"
+COST_LEDGER_STORE_FILE = "creative_media/cost_ledger.json"
+SAFETY_EVENTS_STORE_FILE = "creative_media/safety_events.json"
 SUPPORTED_MODALITIES = {"image", "video", "voice", "music", "model3d"}
+MODEL_PREFERENCE_CONFIG_SOURCES = {"model_control_plane", "runtime_builtin"}
 # music/model3d intentionally stay schema/catalog-only in P2; adapters can be added without changing the job envelope.
 EXECUTABLE_MODALITIES = {"image", "video", "voice"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
@@ -64,11 +70,54 @@ DEFAULT_OPERATION_KINDS = {
 }
 EXECUTABLE_OPERATION_KINDS = {
     "image.generate",
+    "image.edit",
     "video.text_to_video",
     "video.image_to_video",
     "video.first_last_frame",
+    "video.reference_to_video",
+    "video.video_edit",
+    "video.style_repaint",
+    "video.lipsync",
+    "video.avatar",
+    "video.action_transfer",
+    "video.replacement",
     "voice.tts",
 }
+DASHSCOPE_VIDEO_OPERATION_KINDS = {
+    "video.text_to_video",
+    "video.image_to_video",
+    "video.first_last_frame",
+    "video.reference_to_video",
+    "video.video_edit",
+    "video.style_repaint",
+    "video.lipsync",
+    "video.avatar",
+    "video.action_transfer",
+    "video.replacement",
+}
+DASHSCOPE_BUILTIN_MODELS = {
+    "image.generate": ["qwen-image-2.0-pro", "qwen-image-2.0", "wan2.7-image-pro"],
+    "image.edit": ["qwen-image-2.0-pro", "qwen-image-2.0", "wan2.7-image-pro"],
+    "video.text_to_video": ["wan2.7-t2v", "wan2.7-t2v-2026-04-25"],
+    "video.image_to_video": ["wan2.7-i2v", "wan2.7-i2v-2026-04-25"],
+    "video.first_last_frame": ["wan2.7-i2v", "wan2.7-i2v-2026-04-25"],
+    "video.reference_to_video": ["wan2.7-r2v"],
+    "video.video_edit": ["wan2.7-videoedit"],
+    "video.style_repaint": ["wan2.7-videoedit"],
+    "video.lipsync": ["wan2.2-s2v", "videoretalk"],
+    "video.avatar": ["wan2.2-s2v"],
+    "video.action_transfer": ["wan2.2-animate-move"],
+    "video.replacement": ["wan2.2-animate-mix", "wan2.7-videoedit"],
+}
+POLICY_REJECT_MARKERS = (
+    "IPInfringementSuspect",
+    "DataInspectionFailed",
+    "policy",
+    "copyright",
+    "infringement",
+    "safety",
+    "content security",
+)
 
 
 def utc_now_iso() -> str:
@@ -119,6 +168,19 @@ def _safe_priority(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         parsed = default
     return max(1, min(parsed, 999))
+
+
+def _all_operation_kinds() -> list[str]:
+    values: set[str] = set(EXECUTABLE_OPERATION_KINDS)
+    for items in DEFAULT_OPERATION_KINDS.values():
+        values.update(items)
+    values.update(DASHSCOPE_BUILTIN_MODELS.keys())
+    return sorted(values)
+
+
+def _modality_for_operation(operation_kind: str) -> str:
+    prefix = str(operation_kind or "").split(".", 1)[0].strip().lower()
+    return "voice" if prefix == "audio" else prefix
 
 
 def _build_openai_image_payload(*, model: str, prompt: str, size: str, response_format: str = "b64_json") -> dict[str, Any]:
@@ -230,6 +292,12 @@ class CreativeMediaRuntime:
                     "creative_media_render_edit_plan",
                     "creative_media_get_render",
                     "creative_media_list_renders",
+                    "creative_media_create_quality_job",
+                    "creative_media_list_quality_jobs",
+                    "creative_media_get_quality_job",
+                    "creative_media_retry_job",
+                    "creative_media_cost_ledger",
+                    "creative_media_safety_events",
                 ],
             },
         }
@@ -241,6 +309,7 @@ class CreativeMediaRuntime:
             "runtimeAdapters": [
                 {"id": "openai_images", "modalities": ["image"], "executable": True},
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
+                {"id": "dashscope", "modalities": ["image", "video"], "executable": True},
                 {"id": "v8_audio_tts", "modalities": ["voice"], "executable": True},
                 {"id": "catalog_only", "modalities": ["music", "model3d"], "executable": False},
             ],
@@ -274,6 +343,8 @@ class CreativeMediaRuntime:
         ).lower()
         if modality in {"image", "video"} and any(token in haystack for token in ("volc", "seedream", "seedance", "jimeng")):
             return "volcengine_ark"
+        if modality in {"image", "video"} and any(token in haystack for token in ("dashscope", "bailian", "aliyun", "alibaba", "qwen", "wan2", "wanx")):
+            return "dashscope"
         if modality == "image":
             return "openai_images"
         if modality == "voice":
@@ -299,6 +370,11 @@ class CreativeMediaRuntime:
         if explicit:
             return [item for item in explicit if item.startswith(f"{modality}.") or item.startswith("voice.")]
         haystack = " ".join([provider_id, str(provider_meta.get("name") or ""), str(model_data.get("id") or "")]).lower()
+        if modality == "image":
+            if adapter == "dashscope":
+                return ["image.generate", "image.edit"]
+            if adapter == "openai_images":
+                return ["image.generate", "image.edit"]
         if modality == "video":
             if any(token in haystack for token in ("lipsync", "lip-sync", "retalk", "对口型")):
                 return ["video.lipsync"]
@@ -310,6 +386,8 @@ class CreativeMediaRuntime:
                 return ["video.replacement"]
             if adapter == "volcengine_ark":
                 return ["video.text_to_video", "video.image_to_video", "video.first_last_frame"]
+            if adapter == "dashscope":
+                return ["video.text_to_video", "video.image_to_video"]
         return list(DEFAULT_OPERATION_KINDS.get(modality, []))
 
     def _operation_kind_for_request(self, modality: str, request: dict[str, Any]) -> str:
@@ -328,6 +406,14 @@ class CreativeMediaRuntime:
                 return "image.edit"
             return "image.generate"
         if modality == "video":
+            if request.get("actionVideoUrl") or request.get("action_video_url") or request.get("motionReferenceUrl") or request.get("motion_reference_url"):
+                return "video.action_transfer"
+            if request.get("audioUrl") or request.get("audio_url") or request.get("voiceAssetId") or request.get("voice_asset_id"):
+                return "video.lipsync"
+            if request.get("referenceVideoUrl") or request.get("reference_video_url") or request.get("referenceImageUrl") or request.get("reference_image_url"):
+                return "video.reference_to_video"
+            if request.get("editIntent") or request.get("edit_intent") or request.get("videoUrl") or request.get("video_url"):
+                return "video.video_edit"
             image_urls = request.get("imageUrls") or request.get("image_urls") or []
             if request.get("firstFrame") or request.get("lastFrame") or (isinstance(image_urls, list) and len(image_urls) >= 2):
                 return "video.first_last_frame"
@@ -343,9 +429,13 @@ class CreativeMediaRuntime:
         return f"{modality}.generate"
 
     def _is_operation_executable(self, *, adapter: str, operation_kind: str) -> bool:
-        if operation_kind == "image.generate" and adapter in {"openai_images", "volcengine_ark"}:
+        if operation_kind == "image.generate" and adapter in {"openai_images", "volcengine_ark", "dashscope"}:
+            return True
+        if operation_kind == "image.edit" and adapter in {"openai_images", "dashscope"}:
             return True
         if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
+            return True
+        if operation_kind in DASHSCOPE_VIDEO_OPERATION_KINDS and adapter == "dashscope":
             return True
         if operation_kind == "voice.tts" and adapter == "v8_audio_tts":
             return True
@@ -358,6 +448,7 @@ class CreativeMediaRuntime:
         for provider_id, provider_data in providers.items():
             provider_meta = dict((provider_data or {}).get("provider") or {})
             provider_name = str(provider_meta.get("name") or provider_id).strip() or provider_id
+            provider_logo_asset = str(provider_meta.get("logoAsset") or provider_meta.get("logo_asset") or provider_meta.get("icon") or "").strip()
             for model_id, model_data_raw in dict((provider_data or {}).get("models") or {}).items():
                 model_data = dict(model_data_raw or {})
                 model_type = str(model_data.get("type") or "").strip().upper()
@@ -403,6 +494,8 @@ class CreativeMediaRuntime:
                             "providerName": provider_name,
                             "modelId": model_id_str,
                             "modelRef": f"{provider_id}::{model_id_str}",
+                            "providerLogoAsset": provider_logo_asset,
+                            "modelLogoAsset": str(model_data.get("logoAsset") or model_data.get("logo_asset") or "").strip(),
                             "adapter": adapter,
                             "source": "model_control_plane",
                             "available": self._is_operation_executable(adapter=adapter, operation_kind=operation_kind),
@@ -453,6 +546,32 @@ class CreativeMediaRuntime:
                         "available": bool(volc.get("apiKey")),
                     }
                 )
+        dashscope = self._dashscope_credentials()
+        for operation_kind, model_ids in DASHSCOPE_BUILTIN_MODELS.items():
+            modality = operation_kind.split(".", 1)[0]
+            for model_id in model_ids:
+                candidates.append(
+                    {
+                        "candidateId": _candidate_id(
+                            modality=modality,
+                            operation_kind=operation_kind,
+                            provider_id="aliyun_bailian_dashscope",
+                            model_id=model_id,
+                            adapter="dashscope",
+                        ),
+                        "modality": modality,
+                        "operationKind": operation_kind,
+                        "providerId": "aliyun_bailian_dashscope",
+                        "providerName": "Alibaba Cloud Bailian / DashScope",
+                        "modelId": model_id,
+                        "modelRef": f"aliyun_bailian_dashscope::{model_id}",
+                        "adapter": "dashscope",
+                        "source": "env_builtin",
+                        "available": bool(dashscope.get("apiKey")),
+                        "liveReady": bool(dashscope.get("apiKey")),
+                        "inputAssetTypes": self._input_asset_types_for_operation(operation_kind),
+                    }
+                )
         candidates.append(
             {
                 "candidateId": _candidate_id(
@@ -481,6 +600,76 @@ class CreativeMediaRuntime:
         result.sort(key=lambda item: (str(item.get("modality") or ""), str(item.get("providerName") or ""), str(item.get("modelId") or "")))
         return result
 
+    def _is_configured_model_candidate(self, candidate: dict[str, Any]) -> bool:
+        return str(candidate.get("source") or "") in MODEL_PREFERENCE_CONFIG_SOURCES
+
+    def _default_enabled_for_candidate(self, candidate: dict[str, Any], *, has_stored_preferences: bool) -> bool:
+        if has_stored_preferences:
+            return False
+        return self._is_configured_model_candidate(candidate) and bool(candidate.get("available", True))
+
+    def _stored_model_selection_refs(self, item: dict[str, Any]) -> list[str]:
+        refs = item.get("modelRefs")
+        if refs is None:
+            refs = item.get("model_refs")
+        if refs is None:
+            refs = item.get("fallbackModelRefs")
+        if refs is None:
+            refs = item.get("modelRef")
+        return _list_of_strings(refs)
+
+    def _build_operation_rows(
+        self,
+        *,
+        candidates: list[dict[str, Any]],
+        connected_options: list[dict[str, Any]],
+        stored_selections: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        operation_kinds = set(_all_operation_kinds())
+        operation_kinds.update(str(item.get("operationKind") or "") for item in candidates if item.get("operationKind"))
+        operation_kinds.update(str(item.get("operationKind") or "") for item in stored_selections if item.get("operationKind"))
+        selection_by_operation: dict[str, dict[str, Any]] = {}
+        for item in stored_selections:
+            operation_kind = str(item.get("operationKind") or "").strip()
+            if operation_kind:
+                selection_by_operation[operation_kind] = item
+
+        rows: list[dict[str, Any]] = []
+        for operation_kind in sorted(operation_kinds):
+            modality = _modality_for_operation(operation_kind)
+            options = [
+                item
+                for item in connected_options
+                if str(item.get("operationKind") or "") == operation_kind
+            ]
+            enabled_candidates = [
+                item
+                for item in candidates
+                if str(item.get("operationKind") or "") == operation_kind and bool(item.get("enabled", False))
+            ]
+            enabled_candidates.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("modelRef") or "")))
+            stored_selection = selection_by_operation.get(operation_kind) or {}
+            if stored_selection:
+                selected_refs = self._stored_model_selection_refs(stored_selection)
+            else:
+                selected_refs = [
+                    str(item.get("modelRef") or "").strip()
+                    for item in enabled_candidates
+                    if str(item.get("modelRef") or "").strip()
+                ]
+            selected_refs = _list_of_strings(selected_refs)[:3]
+            rows.append(
+                {
+                    "operationKind": operation_kind,
+                    "modality": modality,
+                    "enabled": bool(stored_selection.get("enabled", bool(selected_refs))) if stored_selection else bool(selected_refs),
+                    "selectedModelRefs": selected_refs,
+                    "priority": _safe_priority(stored_selection.get("priority") if stored_selection else (enabled_candidates[0].get("priority") if enabled_candidates else 100), 100),
+                    "optionCount": len(options),
+                }
+            )
+        return rows
+
     def get_model_preferences(self) -> dict[str, Any]:
         stored = storage.read_json(MODEL_PREFERENCES_STORE_FILE)
         stored_models = {
@@ -488,18 +677,44 @@ class CreativeMediaRuntime:
             for item in list((stored or {}).get("models") or [])
             if isinstance(item, dict) and item.get("candidateId")
         } if isinstance(stored, dict) else {}
+        stored_selections = [
+            dict(item)
+            for item in list((stored or {}).get("selections") or [])
+            if isinstance(item, dict) and item.get("operationKind")
+        ] if isinstance(stored, dict) else []
+        has_stored_preferences = bool(stored_models or stored_selections)
+        selection_by_operation = {
+            str(item.get("operationKind") or ""): dict(item)
+            for item in stored_selections
+            if str(item.get("operationKind") or "").strip()
+        }
         candidates: list[dict[str, Any]] = []
         for index, candidate in enumerate(self.list_model_candidates(), start=1):
             saved = stored_models.get(str(candidate.get("candidateId"))) or {}
+            default_enabled = self._default_enabled_for_candidate(candidate, has_stored_preferences=has_stored_preferences)
             priority = _safe_priority(saved.get("priority"), index * 10)
             candidates.append(
                 {
                     **candidate,
                     "priority": priority,
-                    "enabled": bool(saved.get("enabled", candidate.get("available", True))),
+                    "enabled": bool(saved.get("enabled", default_enabled)),
                     "lastUpdatedAt": saved.get("updatedAt") or "",
                 }
             )
+
+        for selection in stored_selections:
+            operation_kind = str(selection.get("operationKind") or "").strip()
+            selected_refs = self._stored_model_selection_refs(selection)
+            if not operation_kind or not selected_refs:
+                continue
+            base_priority = _safe_priority(selection.get("priority"), 100)
+            for index, model_ref in enumerate(selected_refs):
+                for candidate in candidates:
+                    if str(candidate.get("operationKind") or "") == operation_kind and str(candidate.get("modelRef") or "") == model_ref:
+                        candidate["enabled"] = bool(selection.get("enabled", True))
+                        candidate["priority"] = _safe_priority(base_priority + index, base_priority + index)
+                        candidate["lastUpdatedAt"] = selection.get("updatedAt") or candidate.get("lastUpdatedAt") or ""
+
         policies: dict[str, dict[str, Any]] = {}
         operation_kinds = sorted({str(item.get("operationKind") or "") for item in candidates if item.get("operationKind")})
         for operation_kind in operation_kinds:
@@ -509,44 +724,98 @@ class CreativeMediaRuntime:
                 "fallbackEnabled": True,
                 "models": models,
             }
+        connected_options = [dict(item) for item in candidates if self._is_configured_model_candidate(item)]
+        diagnostic_candidates = [dict(item) for item in candidates if not self._is_configured_model_candidate(item)]
         return {
             "version": 1,
             "updatedAt": (stored or {}).get("updatedAt") if isinstance(stored, dict) else "",
             "candidates": candidates,
+            "connectedOptions": connected_options,
+            "diagnosticCandidates": diagnostic_candidates,
+            "operationRows": self._build_operation_rows(
+                candidates=candidates,
+                connected_options=connected_options,
+                stored_selections=list(selection_by_operation.values()),
+            ),
             "policies": policies,
         }
 
     def save_model_preferences(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = utc_now_iso()
-        known = {str(item.get("candidateId")): item for item in self.list_model_candidates()}
+        known_candidates = self.list_model_candidates()
+        known = {str(item.get("candidateId")): item for item in known_candidates}
+        known_by_operation_ref = {
+            (str(item.get("operationKind") or ""), str(item.get("modelRef") or "")): item
+            for item in known_candidates
+            if self._is_configured_model_candidate(item)
+        }
         saved_models: list[dict[str, Any]] = []
-        for item in list((payload or {}).get("models") or []):
+        saved_selections: list[dict[str, Any]] = []
+        incoming = list((payload or {}).get("selections") or (payload or {}).get("models") or [])
+        for item in incoming:
             if not isinstance(item, dict):
                 continue
             candidate_id = str(item.get("candidateId") or "").strip()
-            if not candidate_id or candidate_id not in known:
+            operation_kind = str(item.get("operationKind") or item.get("operation_kind") or "").strip()
+            selected_refs = self._stored_model_selection_refs(item)
+            if operation_kind:
+                saved_selections.append(
+                    {
+                        "operationKind": operation_kind,
+                        "modelRefs": selected_refs[:3],
+                        "enabled": bool(item.get("enabled", bool(selected_refs))),
+                        "priority": _safe_priority(item.get("priority"), 100),
+                        "updatedAt": now,
+                    }
+                )
+            if candidate_id and candidate_id in known:
+                base = known[candidate_id]
+                if not self._is_configured_model_candidate(base):
+                    continue
+                saved_models.append(
+                    {
+                        "candidateId": candidate_id,
+                        "modality": base.get("modality"),
+                        "operationKind": base.get("operationKind"),
+                        "providerId": base.get("providerId"),
+                        "modelId": base.get("modelId"),
+                        "modelRef": base.get("modelRef"),
+                        "adapter": base.get("adapter"),
+                        "enabled": bool(item.get("enabled", True)),
+                        "priority": _safe_priority(item.get("priority"), 100),
+                        "updatedAt": now,
+                    }
+                )
                 continue
-            base = known[candidate_id]
-            saved_models.append(
-                {
-                    "candidateId": candidate_id,
-                    "modality": base.get("modality"),
-                    "operationKind": base.get("operationKind"),
-                    "providerId": base.get("providerId"),
-                    "modelId": base.get("modelId"),
-                    "adapter": base.get("adapter"),
-                    "enabled": bool(item.get("enabled", True)),
-                    "priority": _safe_priority(item.get("priority"), 100),
-                    "updatedAt": now,
-                }
-            )
+            if not operation_kind:
+                continue
+            base_priority = _safe_priority(item.get("priority"), 100)
+            for index, model_ref in enumerate(selected_refs[:3]):
+                base = known_by_operation_ref.get((operation_kind, model_ref))
+                if not base:
+                    continue
+                saved_models.append(
+                    {
+                        "candidateId": base.get("candidateId"),
+                        "modality": base.get("modality"),
+                        "operationKind": base.get("operationKind"),
+                        "providerId": base.get("providerId"),
+                        "modelId": base.get("modelId"),
+                        "modelRef": base.get("modelRef"),
+                        "adapter": base.get("adapter"),
+                        "enabled": bool(item.get("enabled", True)),
+                        "priority": _safe_priority(base_priority + index, base_priority + index),
+                        "updatedAt": now,
+                    }
+                )
         storage.write_json(
             MODEL_PREFERENCES_STORE_FILE,
-            {
-                "version": 1,
-                "updatedAt": now,
-                "models": saved_models,
-            },
+                {
+                    "version": 1,
+                    "updatedAt": now,
+                    "selections": saved_selections,
+                    "models": saved_models,
+                },
         )
         return self.get_model_preferences()
 
@@ -583,7 +852,15 @@ class CreativeMediaRuntime:
         return next_request
 
     def compile_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
-        return creative_recipe_compiler.compile_recipe(dict(request or {}))
+        payload = dict(request or {})
+        payload.update(self._scope_fields(payload))
+        recipe = creative_recipe_compiler.compile_recipe(payload)
+        self._record_safety_event(
+            source="recipe_compile",
+            recipe=recipe,
+            transform=dict((recipe.get("hardRequirements") or {}).get("safetyTransform") or {}),
+        )
+        return recipe
 
     def get_recipe(self, recipe_id: str) -> dict[str, Any] | None:
         return creative_recipe_compiler.get_recipe(recipe_id)
@@ -592,13 +869,17 @@ class CreativeMediaRuntime:
         return creative_recipe_compiler.list_recipes(modality=modality, recipe_kind=recipe_kind)
 
     def register_asset(self, request: dict[str, Any]) -> dict[str, Any]:
-        return creative_recipe_compiler.register_asset(dict(request or {}))
+        payload = dict(request or {})
+        payload.update(self._scope_fields(payload))
+        return creative_recipe_compiler.register_asset(payload)
 
     def list_assets(self, *, modality: str | None = None, role: str | None = None) -> list[dict[str, Any]]:
         return creative_recipe_compiler.list_assets(modality=modality, role=role)
 
     def create_character_bible(self, request: dict[str, Any]) -> dict[str, Any]:
-        return creative_recipe_compiler.create_character_bible(dict(request or {}))
+        payload = dict(request or {})
+        payload.update(self._scope_fields(payload))
+        return creative_recipe_compiler.create_character_bible(payload)
 
     def get_character_bible(self, bible_id: str) -> dict[str, Any] | None:
         return creative_recipe_compiler.get_character_bible(bible_id)
@@ -607,7 +888,9 @@ class CreativeMediaRuntime:
         return creative_recipe_compiler.list_character_bibles()
 
     def register_keyframe(self, request: dict[str, Any]) -> dict[str, Any]:
-        return creative_recipe_compiler.register_keyframe(dict(request or {}))
+        payload = dict(request or {})
+        payload.update(self._scope_fields(payload))
+        return creative_recipe_compiler.register_keyframe(payload)
 
     def get_keyframe(self, keyframe_id: str) -> dict[str, Any] | None:
         return creative_recipe_compiler.get_keyframe(keyframe_id)
@@ -1074,6 +1357,208 @@ class CreativeMediaRuntime:
             job["completedAt"] = utc_now_iso()
             return self._save_render_job(job)
 
+    def _record_terminal_job_observations(self, job: dict[str, Any]) -> None:
+        self._append_cost_entry(job)
+        if job.get("status") == "succeeded" and job.get("artifacts"):
+            quality = self.create_quality_job({"jobId": job.get("jobId"), "artifacts": list(job.get("artifacts") or []), "auto": True})
+            job["qualityStatus"] = quality.get("status") or "not_run"
+            job["qualityJobIds"] = [quality.get("qualityJobId")] if quality.get("qualityJobId") else []
+        elif job.get("status") == "failed":
+            job["qualityStatus"] = "not_run"
+
+    def _append_cost_entry(self, job: dict[str, Any]) -> dict[str, Any]:
+        store = self._read_versioned_store(COST_LEDGER_STORE_FILE, "entries")
+        entries = dict(store.get("entries") or {})
+        response = dict(job.get("providerResponse") or {})
+        request = dict(job.get("request") or {})
+        entry_id = f"cm_cost_{uuid.uuid4().hex}"
+        artifacts = list(job.get("artifacts") or [])
+        output_bytes = 0
+        for artifact in artifacts:
+            path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
+            if path and Path(path).exists():
+                output_bytes += Path(path).stat().st_size
+        entries[entry_id] = {
+            "entryId": entry_id,
+            "jobId": job.get("jobId"),
+            "status": job.get("status"),
+            "provider": response.get("providerId") or request.get("providerId") or job.get("adapter"),
+            "model": response.get("model") or request.get("model") or request.get("modelId"),
+            "operationKind": job.get("operationKind"),
+            "modality": job.get("modality"),
+            "resolution": request.get("resolution") or request.get("size"),
+            "durationSeconds": request.get("duration") or request.get("durationSeconds"),
+            "retryCount": len(list(job.get("fallbackAttempts") or [])),
+            "usage": response.get("usage") or {},
+            "estimatedCost": None,
+            "outputBytes": output_bytes,
+            "artifactCount": len(artifacts),
+            "createdAt": utc_now_iso(),
+        }
+        self._write_versioned_store(COST_LEDGER_STORE_FILE, "entries", entries)
+        return entries[entry_id]
+
+    def list_cost_ledger(self) -> list[dict[str, Any]]:
+        entries = list((self._read_versioned_store(COST_LEDGER_STORE_FILE, "entries").get("entries") or {}).values())
+        entries.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return [dict(item) for item in entries]
+
+    def create_quality_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(request or {})
+        quality_job_id = str(payload.get("qualityJobId") or payload.get("id") or f"cm_quality_{uuid.uuid4().hex}").strip()
+        job_id = str(payload.get("jobId") or payload.get("job_id") or "").strip()
+        job = self.get_job(job_id, refresh=False) if job_id else None
+        artifact_refs = list(payload.get("artifacts") or ((job or {}).get("artifacts") or []))
+        if not artifact_refs and payload.get("artifactId"):
+            artifact_refs = [{"artifactId": payload.get("artifactId"), "sourcePath": payload.get("sourcePath")}]
+        checks: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        failures: list[str] = []
+        for artifact in artifact_refs:
+            if not isinstance(artifact, dict):
+                continue
+            checks.extend(self._quality_checks_for_artifact(artifact, job or payload, warnings=warnings, failures=failures))
+        if not artifact_refs:
+            failures.append("no_artifacts")
+            checks.append({"name": "artifact_present", "ok": False})
+        status = "failed" if failures else "warning" if warnings else "passed"
+        quality_job = {
+            "qualityJobId": quality_job_id,
+            "jobId": job_id,
+            "status": status,
+            "checks": checks,
+            "warnings": warnings,
+            "failures": failures,
+            "retryRecommendation": self._retry_recommendation(status=status, failures=failures, warnings=warnings, job=job or payload),
+            "createdAt": utc_now_iso(),
+        }
+        store = self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs")
+        values = dict(store.get("qualityJobs") or {})
+        values[quality_job_id] = quality_job
+        self._write_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs", values)
+        return quality_job
+
+    def get_quality_job(self, quality_job_id: str) -> dict[str, Any] | None:
+        return dict((self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs").get("qualityJobs") or {}).get(str(quality_job_id)) or {}) or None
+
+    def list_quality_jobs(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        jobs = list((self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs").get("qualityJobs") or {}).values())
+        normalized_status = str(status or "").strip().lower()
+        result = [dict(item) for item in jobs if not normalized_status or str(item.get("status") or "").lower() == normalized_status]
+        result.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return result
+
+    def _quality_checks_for_artifact(self, artifact: dict[str, Any], owner: dict[str, Any], *, warnings: list[str], failures: list[str]) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
+        if not path and artifact.get("artifactId"):
+            path = self._artifact_source_path(str(artifact.get("artifactId") or ""))
+        exists = bool(path and Path(path).exists() and Path(path).is_file())
+        checks.append({"name": "artifact_openable", "ok": exists, "path": path})
+        if not exists:
+            failures.append("artifact_not_openable")
+            return checks
+        size_bytes = Path(path).stat().st_size
+        checks.append({"name": "artifact_non_empty", "ok": size_bytes > 0, "bytes": size_bytes})
+        if size_bytes <= 0:
+            failures.append("artifact_empty")
+        kind = str(artifact.get("kind") or owner.get("modality") or "").lower()
+        suffix = Path(path).suffix.lower()
+        if kind == "image" or suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+            checks.extend(self._quality_image_checks(path, owner, warnings=warnings, failures=failures))
+        elif kind in {"video", "audio"} or suffix in VIDEO_EXTENSIONS or suffix in AUDIO_EXTENSIONS:
+            checks.extend(self._quality_media_probe_checks(path, owner, warnings=warnings, failures=failures, kind=kind or ("video" if suffix in VIDEO_EXTENSIONS else "audio")))
+        elif suffix == ".srt":
+            text = Path(path).read_text(encoding="utf-8", errors="ignore")
+            ok = "-->" in text and bool(text.strip())
+            checks.append({"name": "subtitle_timeline_present", "ok": ok})
+            if not ok:
+                warnings.append("subtitle_timeline_missing")
+        return checks
+
+    def _quality_image_checks(self, path: str, owner: dict[str, Any], *, warnings: list[str], failures: list[str]) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                width, height = image.size
+            checks.append({"name": "image_dimensions", "ok": width > 0 and height > 0, "width": width, "height": height})
+            expected_ratio = str((owner.get("request") or owner).get("ratio") or (owner.get("request") or owner).get("aspectRatio") or "").strip()
+            if expected_ratio and ":" in expected_ratio:
+                left, right = expected_ratio.split(":", 1)
+                expected = float(left) / max(1.0, float(right))
+                actual = width / max(1, height)
+                ok = abs(actual - expected) <= 0.08
+                checks.append({"name": "image_aspect_ratio", "ok": ok, "expected": expected_ratio, "actual": round(actual, 3)})
+                if not ok:
+                    warnings.append("image_aspect_ratio_mismatch")
+        except Exception as exc:
+            checks.append({"name": "image_metadata_readable", "ok": False, "error": _exception_summary(exc)})
+            warnings.append("image_metadata_unavailable")
+        return checks
+
+    def _quality_media_probe_checks(self, path: str, owner: dict[str, Any], *, warnings: list[str], failures: list[str], kind: str) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe:
+            checks.append({"name": "ffprobe_available", "ok": False})
+            warnings.append("ffprobe_unavailable")
+            return checks
+        try:
+            result = subprocess.run(
+                [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            ok = result.returncode == 0
+            checks.append({"name": "ffprobe_readable", "ok": ok})
+            if not ok:
+                failures.append("ffprobe_failed")
+                return checks
+            payload = json.loads(result.stdout or "{}")
+            duration = float(((payload.get("format") or {}).get("duration") or 0) or 0)
+            checks.append({"name": "media_duration_positive", "ok": duration > 0, "durationSeconds": round(duration, 3)})
+            if duration <= 0:
+                failures.append("duration_missing")
+            request = dict(owner.get("request") or owner)
+            expected_duration = request.get("duration") or request.get("durationSeconds")
+            if expected_duration:
+                expected = float(expected_duration)
+                tolerance = max(1.0, expected * 0.35)
+                duration_ok = abs(duration - expected) <= tolerance
+                checks.append({"name": "media_duration_close_to_request", "ok": duration_ok, "expected": expected, "actual": round(duration, 3)})
+                if not duration_ok:
+                    warnings.append("duration_mismatch")
+            streams = list(payload.get("streams") or [])
+            if kind == "video":
+                video_stream = next((item for item in streams if item.get("codec_type") == "video"), {})
+                width = int(video_stream.get("width") or 0)
+                height = int(video_stream.get("height") or 0)
+                checks.append({"name": "video_dimensions", "ok": width > 0 and height > 0, "width": width, "height": height})
+                if width <= 0 or height <= 0:
+                    failures.append("video_dimensions_missing")
+            if kind == "audio":
+                audio_stream = next((item for item in streams if item.get("codec_type") == "audio"), {})
+                checks.append({"name": "audio_stream_present", "ok": bool(audio_stream)})
+                if not audio_stream:
+                    failures.append("audio_stream_missing")
+        except Exception as exc:
+            checks.append({"name": "ffprobe_exception", "ok": False, "error": _exception_summary(exc)})
+            warnings.append("ffprobe_exception")
+        return checks
+
+    def _retry_recommendation(self, *, status: str, failures: list[str], warnings: list[str], job: dict[str, Any]) -> dict[str, Any]:
+        if status == "passed":
+            return {"action": "accept", "reason": "quality gates passed"}
+        if "artifact_not_openable" in failures or "ffprobe_failed" in failures:
+            return {"action": "retry_same_operation", "reason": "artifact fetch or media probe failed"}
+        if "duration_mismatch" in warnings:
+            return {"action": "adjust_parameters", "reason": "requested duration differs from output"}
+        return {"action": "manual_review" if status == "warning" else "retry_same_operation", "reason": ",".join([*failures, *warnings])}
+
     def _read_jobs(self) -> dict[str, Any]:
         payload = storage.read_json(JOB_STORE_FILE)
         if not isinstance(payload, dict) or payload.get("version") != 1:
@@ -1085,6 +1570,12 @@ class CreativeMediaRuntime:
         storage.write_json(JOB_STORE_FILE, {"version": 1, "jobs": dict(payload.get("jobs") or {})})
 
     def _save_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        if job.get("status") in {"succeeded", "failed", "cancelled"} and not job.get("p4RecordedAt"):
+            try:
+                self._record_terminal_job_observations(job)
+            except Exception as exc:
+                job["p4ObservationError"] = _exception_summary(exc)
+            job["p4RecordedAt"] = utc_now_iso()
         payload = self._read_jobs()
         jobs = dict(payload.get("jobs") or {})
         job["updatedAt"] = utc_now_iso()
@@ -1095,22 +1586,136 @@ class CreativeMediaRuntime:
 
     def _scope_fields(self, request: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, str]:
         fallback = fallback or {}
-        return {
+        scope = {
             "projectId": str(request.get("projectId") or request.get("project_id") or fallback.get("projectId") or "").strip(),
             "workspaceId": str(request.get("workspaceId") or request.get("workspace_id") or fallback.get("workspaceId") or "").strip(),
             "workspacePath": str(request.get("workspacePath") or request.get("workspace_path") or fallback.get("workspacePath") or "").strip(),
         }
+        return self._ensure_project_workspace_registered(scope)
+
+    def _ensure_project_workspace_registered(self, scope: dict[str, str]) -> dict[str, str]:
+        workspace_path = str(scope.get("workspacePath") or "").strip()
+        if not workspace_path or not (str(scope.get("projectId") or "").strip() or str(scope.get("workspaceId") or "").strip()):
+            return scope
+        project_id = str(scope.get("projectId") or "").strip() or _safe_filename(Path(workspace_path).name, "creative-media-project")
+        workspace_id = str(scope.get("workspaceId") or "").strip() or project_id
+        scope["projectId"] = project_id
+        scope["workspaceId"] = workspace_id
+        try:
+            from runtimes.memory.project_registry import project_registry_service
+
+            existing = project_registry_service.find_project_for_workspace(
+                workspace_id=workspace_id,
+                workspace_path=workspace_path,
+            )
+            if existing:
+                return {
+                    **scope,
+                    "projectId": str(existing.project_id or project_id),
+                    "workspaceId": str(existing.workspace_id or workspace_id),
+                    "workspacePath": str(existing.workspace_path or workspace_path),
+                }
+            project_registry_service.save_project(
+                {
+                    "id": project_id,
+                    "name": Path(workspace_path).name or project_id,
+                    "workspaceId": workspace_id,
+                    "workspacePath": workspace_path,
+                    "tags": ["creative_media"],
+                    "active": True,
+                }
+            )
+        except Exception:
+            return scope
+        return scope
+
+    def _input_asset_types_for_operation(self, operation_kind: str) -> list[str]:
+        mapping = {
+            "image.generate": [],
+            "image.edit": ["image_url", "image_artifact_public_url"],
+            "video.text_to_video": [],
+            "video.image_to_video": ["image_url"],
+            "video.first_last_frame": ["first_frame_url", "last_frame_url"],
+            "video.reference_to_video": ["reference_image_url", "reference_video_url"],
+            "video.video_edit": ["video_url", "image_url"],
+            "video.style_repaint": ["video_url", "reference_image_url"],
+            "video.lipsync": ["video_or_image_url", "audio_url"],
+            "video.avatar": ["image_url", "audio_url"],
+            "video.action_transfer": ["target_image_url", "reference_video_url"],
+            "video.replacement": ["source_video_url", "target_image_url", "reference_video_url"],
+        }
+        return list(mapping.get(str(operation_kind or ""), []))
+
+    def _prepare_prompt_for_provider(self, request: dict[str, Any], *, modality: str) -> tuple[str, dict[str, Any]]:
+        prompt = str(request.get("prompt") or request.get("text") or request.get("brief") or "").strip()
+        if not prompt:
+            return "", {}
+        policy = prepare_provider_prompt_policy(prompt, modality=modality)
+        return str(policy.get("translatedPrompt") or prompt).strip(), policy
+
+    def _provider_request_hash(self, payload: dict[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(_jsonable_request(payload), ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def _record_safety_event(self, *, source: str, job: dict[str, Any] | None = None, recipe: dict[str, Any] | None = None, transform: dict[str, Any] | None = None) -> None:
+        transform = dict(transform or {})
+        events = list(transform.get("events") or [])
+        if not events:
+            return
+        store = self._read_versioned_store(SAFETY_EVENTS_STORE_FILE, "events")
+        values = dict(store.get("events") or {})
+        now = utc_now_iso()
+        event_id = f"cm_safety_{uuid.uuid4().hex}"
+        values[event_id] = {
+            "eventId": event_id,
+            "source": source,
+            "jobId": (job or {}).get("jobId"),
+            "recipeId": (recipe or {}).get("recipeId"),
+            "modality": (job or recipe or {}).get("modality"),
+            "operationKind": (job or {}).get("operationKind"),
+            "policy": transform.get("policy"),
+            "rawPromptHash": hashlib.sha256(str(transform.get("rawPrompt") or "").encode("utf-8")).hexdigest(),
+            "sanitizedPrompt": transform.get("sanitizedPrompt"),
+            "events": events,
+            "createdAt": now,
+        }
+        self._write_versioned_store(SAFETY_EVENTS_STORE_FILE, "events", values)
+
+    def list_safety_events(self) -> list[dict[str, Any]]:
+        events = list((self._read_versioned_store(SAFETY_EVENTS_STORE_FILE, "events").get("events") or {}).values())
+        events.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return [dict(item) for item in events]
+
+    def _looks_like_policy_reject(self, error: Any) -> bool:
+        text = str(error or "").lower()
+        return any(marker.lower() in text for marker in POLICY_REJECT_MARKERS)
+
+    def _downgrade_policy_prompt(self, prompt: str) -> str:
+        policy = prepare_provider_prompt_policy(prompt, modality="image")
+        base = str(policy.get("translatedPrompt") or prompt)
+        return (
+            base
+            + "\nMake the result clearly original and non-infringing. Remove any remaining franchise, brand, celebrity, or protected identity references. "
+            "Lower similarity to any known character and use generic descriptive traits only."
+        )
 
     def _new_job(self, *, modality: str, adapter: str, request: dict[str, Any]) -> dict[str, Any]:
         now = utc_now_iso()
+        operation_kind = str(request.get("operationKind") or request.get("operation_kind") or self._operation_kind_for_request(modality, request)).strip()
         return {
             "jobId": f"cm_{uuid.uuid4().hex}",
             **self._scope_fields(request),
             "modality": modality,
             "adapter": adapter,
+            "operationKind": operation_kind,
             "status": "queued",
             "request": _jsonable_request(request),
             "providerTaskId": None,
+            "providerRequestHash": None,
+            "fallbackAttempts": [],
+            "retryReason": str(request.get("retryReason") or request.get("retry_reason") or "").strip(),
+            "policyRejectReason": "",
+            "qualityStatus": "not_run",
+            "qualityJobIds": [],
             "artifacts": [],
             "error": None,
             "providerResponse": {},
@@ -1133,6 +1738,8 @@ class CreativeMediaRuntime:
             return job
         if job.get("adapter") == "volcengine_ark" and job.get("modality") == "video":
             return await self._poll_volcengine_video_job(job)
+        if job.get("adapter") == "dashscope" and job.get("providerTaskId"):
+            return await self._poll_dashscope_task(job)
         return job
 
     def job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
@@ -1187,6 +1794,21 @@ class CreativeMediaRuntime:
         if modality == "voice":
             return await self._create_voice_job(request)
         raise ValueError(f"Unsupported creative media modality: {modality}")
+
+    async def retry_job(self, job_id: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
+        original = self.get_job(job_id, refresh=False)
+        if not original:
+            raise ValueError(f"Creative Media job not found: {job_id}")
+        payload = {**dict(original.get("request") or {}), **dict(request or {})}
+        payload["retryOfJobId"] = job_id
+        payload["operationKind"] = original.get("operationKind") or payload.get("operationKind")
+        payload["modality"] = original.get("modality") or payload.get("modality")
+        if original.get("policyRejectReason") or self._looks_like_policy_reject(original.get("error")):
+            payload["prompt"] = self._downgrade_policy_prompt(str(payload.get("prompt") or ""))
+            payload["retryReason"] = "policy_reject_prompt_downgrade"
+        else:
+            payload["retryReason"] = str(payload.get("retryReason") or "quality_or_provider_retry")
+        return await self.create_job(payload)
 
     async def _create_job_with_model_fallback(
         self,
@@ -1255,7 +1877,7 @@ class CreativeMediaRuntime:
 
     async def _create_image_job(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_kind = self._operation_kind_for_request("image", request)
-        if operation_kind != "image.generate":
+        if operation_kind not in {"image.generate", "image.edit"}:
             job = self._new_job(modality="image", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
             job["status"] = "failed"
             job["error"] = f"Creative Media P4 has not implemented executable image operationKind={operation_kind}; compile an editIntent recipe first."
@@ -1264,43 +1886,71 @@ class CreativeMediaRuntime:
         adapter = str(request.get("adapter") or "").strip().lower()
         provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip()
         if not adapter:
-            adapter = "volcengine_ark" if "volc" in provider_id.lower() or str(request.get("provider") or "").lower() in {"volcengine", "seedream"} else "openai_images"
-        job = self._new_job(modality="image", adapter=adapter, request=request)
+            if any(token in provider_id.lower() for token in ("dashscope", "aliyun", "bailian")):
+                adapter = "dashscope"
+            else:
+                adapter = "volcengine_ark" if "volc" in provider_id.lower() or str(request.get("provider") or "").lower() in {"volcengine", "seedream"} else "openai_images"
+        provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="image")
+        prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
+        if prompt_policy:
+            prepared_request["promptPolicy"] = prompt_policy
+        job = self._new_job(modality="image", adapter=adapter, request=prepared_request)
+        self._record_safety_event(source="job_create", job=job, transform=dict(prompt_policy.get("safetyTransform") or {}) if prompt_policy else {})
         self._save_job(job)
         try:
             if adapter == "volcengine_ark":
-                return await self._run_volcengine_image_job(job, request)
+                return await self._run_volcengine_image_job(job, prepared_request)
+            if adapter == "dashscope":
+                return await self._run_dashscope_image_job(job, prepared_request)
             if adapter == "openai_images":
-                return await self._run_openai_image_job(job, request)
+                if operation_kind == "image.edit":
+                    return await self._run_openai_image_edit_job(job, prepared_request)
+                return await self._run_openai_image_job(job, prepared_request)
             raise ValueError(f"Unsupported image adapter: {adapter}")
         except Exception as exc:
             job["status"] = "failed"
             job["error"] = _exception_summary(exc)
+            if self._looks_like_policy_reject(job["error"]):
+                job["policyRejectReason"] = job["error"]
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
 
     async def _create_video_job(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_kind = self._operation_kind_for_request("video", request)
-        if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"}:
+        if operation_kind not in EXECUTABLE_OPERATION_KINDS:
             job = self._new_job(modality="video", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
             job["status"] = "failed"
             job["error"] = f"Creative Media P4 has not implemented executable video operationKind={operation_kind}; keep it as recipe/catalog planning until an adapter is added."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
         adapter = str(request.get("adapter") or "volcengine_ark").strip().lower()
-        job = self._new_job(modality="video", adapter=adapter, request=request)
+        if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
+            adapter = "dashscope"
+        provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="video")
+        prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
+        if prompt_policy:
+            prepared_request["promptPolicy"] = prompt_policy
+        job = self._new_job(modality="video", adapter=adapter, request=prepared_request)
+        self._record_safety_event(source="job_create", job=job, transform=dict(prompt_policy.get("safetyTransform") or {}) if prompt_policy else {})
         self._save_job(job)
         try:
-            if adapter != "volcengine_ark":
+            if adapter == "volcengine_ark":
+                if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"}:
+                    raise ValueError(f"Volcengine adapter does not support operationKind={operation_kind}")
+                job = await self._submit_volcengine_video_job(job, prepared_request)
+            elif adapter == "dashscope":
+                job = await self._submit_dashscope_video_job(job, prepared_request)
+            else:
                 raise ValueError(f"Unsupported video adapter: {adapter}")
-            job = await self._submit_volcengine_video_job(job, request)
             if bool(request.get("wait", False)):
                 timeout_seconds = max(15, min(int(request.get("timeoutSeconds") or request.get("timeout_seconds") or 240), 600))
                 poll_interval = max(2, min(int(request.get("pollIntervalSeconds") or request.get("poll_interval_seconds") or 8), 30))
                 deadline = asyncio.get_event_loop().time() + timeout_seconds
                 while job.get("status") not in {"succeeded", "failed", "cancelled"} and asyncio.get_event_loop().time() < deadline:
                     await asyncio.sleep(poll_interval)
-                    job = await self._poll_volcengine_video_job(job)
+                    refreshed = await self.refresh_job(str(job.get("jobId") or ""))
+                    if refreshed:
+                        job = refreshed
                 if job.get("status") not in {"succeeded", "failed", "cancelled"}:
                     job["status"] = "running"
                     self._save_job(job)
@@ -1308,6 +1958,8 @@ class CreativeMediaRuntime:
         except Exception as exc:
             job["status"] = "failed"
             job["error"] = _exception_summary(exc)
+            if self._looks_like_policy_reject(job["error"]):
+                job["policyRejectReason"] = job["error"]
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
 
@@ -1367,6 +2019,89 @@ class CreativeMediaRuntime:
             "videoModel": str(os.getenv("VOLC_VIDEO_MODEL") or env.get("VOLC_VIDEO_MODEL") or "doubao-seedance-1-0-pro-fast-251015"),
         }
 
+    def _dashscope_credentials(self) -> dict[str, str]:
+        return {
+            "apiKey": str(os.getenv("DASHSCOPE_API_KEY") or "").strip(),
+            "baseUrl": str(os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/api/v1").rstrip("/"),
+        }
+
+    def _public_url_or_error(self, value: Any, *, field_name: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+        raise ValueError(f"{field_name} must be a public HTTP/HTTPS URL for live provider calls; register or upload the local artifact to an accessible URL first")
+
+    def _image_urls_from_request(self, request: dict[str, Any]) -> list[str]:
+        urls = request.get("imageUrls") or request.get("image_urls") or []
+        if isinstance(urls, str):
+            urls = [urls]
+        result = [
+            self._public_url_or_error(url, field_name="imageUrls")
+            for url in list(urls or [])
+            if str(url or "").strip()
+        ]
+        for key in ("imageUrl", "image_url", "sourceImageUrl", "source_image_url", "firstFrame", "first_frame", "lastFrame", "last_frame", "referenceImageUrl", "reference_image_url"):
+            url = self._public_url_or_error(request.get(key), field_name=key)
+            if url:
+                result.append(url)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for url in result:
+            if url not in seen:
+                seen.add(url)
+                unique.append(url)
+        return unique
+
+    def _video_url_from_request(self, request: dict[str, Any], *keys: str) -> str:
+        for key in keys or ("videoUrl", "video_url"):
+            url = self._public_url_or_error(request.get(key), field_name=key)
+            if url:
+                return url
+        return ""
+
+    def _dashscope_headers(self, api_key: str, *, async_task: bool = False) -> dict[str, str]:
+        headers = self._bearer_headers(api_key)
+        if async_task:
+            headers["X-DashScope-Async"] = "enable"
+        return headers
+
+    def _dashscope_task_path_for_operation(self, operation_kind: str) -> str:
+        if operation_kind == "video.action_transfer":
+            return "/services/aigc/image2video/video-synthesis"
+        if operation_kind in {"video.lipsync", "video.avatar"}:
+            return "/services/aigc/video-generation/video-synthesis"
+        if operation_kind in {"video.video_edit", "video.style_repaint", "video.replacement"}:
+            return "/services/aigc/video-generation/video-synthesis"
+        if operation_kind in {"video.image_to_video", "video.first_last_frame", "video.reference_to_video"}:
+            return "/services/aigc/image2video/video-synthesis"
+        return "/services/aigc/video-generation/video-synthesis"
+
+    def _dashscope_result_url(self, response: dict[str, Any]) -> str:
+        output = dict(response.get("output") or {})
+        results = output.get("results")
+        if isinstance(results, dict):
+            for key in ("video_url", "url", "image_url"):
+                if results.get(key):
+                    return str(results[key])
+        if isinstance(results, list) and results:
+            first = dict(results[0] or {})
+            for key in ("video_url", "url", "image_url"):
+                if first.get(key):
+                    return str(first[key])
+        for key in ("video_url", "image_url", "url"):
+            if output.get(key):
+                return str(output[key])
+        choices = output.get("choices")
+        if isinstance(choices, list) and choices:
+            content = (((choices[0] or {}).get("message") or {}).get("content") or [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and (item.get("image") or item.get("video")):
+                        return str(item.get("image") or item.get("video"))
+        return ""
+
     def _openai_image_provider(self, request: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
         config = model_control_plane.get_config()
         providers = dict(config.get("providers") or {})
@@ -1411,6 +2146,7 @@ class CreativeMediaRuntime:
         )
         response_format = str(request.get("responseFormat") or request.get("response_format") or "b64_json")
         payload = _build_openai_image_payload(model=model, prompt=prompt, size=size, response_format=response_format)
+        job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
             f"{base_url}/images/generations",
@@ -1419,7 +2155,84 @@ class CreativeMediaRuntime:
             timeout=180,
         )
         artifact = await self._artifact_from_image_response(response, job=job, provider=provider_id, model=model, mime_hint="image/png")
+        job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": provider_id, "model": model, "size": size, "usage": response.get("usage") or {}}, "completedAt": utc_now_iso()})
+        return self._save_job(job)
+
+    async def _run_openai_image_edit_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, model = self._openai_image_provider(request)
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        prompt = str(request.get("prompt") or "").strip()
+        image_path = str(request.get("imagePath") or request.get("image_path") or request.get("sourcePath") or request.get("source_path") or "").strip()
+        if not image_path and request.get("artifactId"):
+            image_path = self._artifact_source_path(str(request.get("artifactId") or ""))
+        if not prompt:
+            raise ValueError("image edit job requires prompt")
+        if not image_path or not Path(image_path).exists():
+            raise ValueError("OpenAI-compatible image edit requires a local imagePath/sourcePath or artifactId with a source file")
+        size = resolve_image_size(
+            ratio=str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio") or "1:1"),
+            preset=str(request.get("preset") or "1K"),
+            adapter="openai_images",
+            explicit_size=request.get("size"),
+        )
+        data = {"model": model, "prompt": prompt, "size": size}
+        job["providerRequestHash"] = self._provider_request_hash(data)
+        with open(image_path, "rb") as image_file:
+            files = {"image": (Path(image_path).name, image_file, mimetypes.guess_type(image_path)[0] or "image/png")}
+            response = await self._request_multipart_json(
+                "POST",
+                f"{base_url}/images/edits",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                data=data,
+                files=files,
+                timeout=300,
+            )
+        artifact = await self._artifact_from_image_response(response, job=job, provider=provider_id, model=model, mime_hint="image/png")
         job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": provider_id, "model": model, "size": size}, "completedAt": utc_now_iso()})
+        return self._save_job(job)
+
+    async def _run_dashscope_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        creds = self._dashscope_credentials()
+        if not creds["apiKey"]:
+            raise ValueError("DASHSCOPE_API_KEY is required for Alibaba Cloud Bailian / DashScope image jobs")
+        operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("image", request))
+        model = str(request.get("model") or request.get("modelId") or ("qwen-image-2.0-pro" if operation_kind == "image.edit" else "qwen-image-2.0-pro"))
+        prompt = str(request.get("prompt") or "").strip()
+        if not prompt:
+            raise ValueError("DashScope image job requires prompt")
+        if operation_kind == "image.edit":
+            content: list[dict[str, Any]] = []
+            for url in self._image_urls_from_request(request)[:3]:
+                content.append({"image": url})
+            if not content:
+                raise ValueError("DashScope image.edit requires at least one public image URL")
+            content.append({"text": prompt})
+            payload = {"model": model, "input": {"messages": [{"role": "user", "content": content}]}, "parameters": {"n": int(request.get("n") or 1)}}
+        else:
+            size = str(request.get("size") or resolve_image_size(ratio=str(request.get("ratio") or "1:1"), preset=str(request.get("preset") or "2K"))).replace("x", "*")
+            payload = {
+                "model": model,
+                "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+                "parameters": {"size": size, "n": int(request.get("n") or 1), "watermark": bool(request.get("watermark", False))},
+            }
+        path = "/services/aigc/multimodal-generation/generation"
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json("POST", f"{creds['baseUrl']}{path}", headers=self._dashscope_headers(creds["apiKey"]), json=payload, timeout=300)
+        result_url = self._dashscope_result_url(response)
+        if not result_url:
+            raise RuntimeError(f"DashScope image response did not include an image URL: {response}")
+        artifact = await self._artifact_from_url(result_url, job=job, kind="image", provider="aliyun_bailian_dashscope", mime_hint="image/png", metadata={"model": model})
+        job.update(
+            {
+                "status": "succeeded",
+                "artifacts": [artifact],
+                "providerResponse": {"providerId": "aliyun_bailian_dashscope", "model": model, "usage": response.get("usage") or {}, "requestId": response.get("request_id")},
+                "completedAt": utc_now_iso(),
+            }
+        )
         return self._save_job(job)
 
     async def _run_volcengine_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
@@ -1444,6 +2257,7 @@ class CreativeMediaRuntime:
             seed=int(request.get("seed", -1)),
             image_urls=request.get("imageUrls") or request.get("image_urls"),
         )
+        job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
             f"{creds['baseUrl']}/images/generations",
@@ -1452,7 +2266,7 @@ class CreativeMediaRuntime:
             timeout=180,
         )
         artifact = await self._artifact_from_image_response(response, job=job, provider="volcengine_seedream", model=model, mime_hint="image/png")
-        job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": "volcengine_seedream", "model": model, "size": size}, "completedAt": utc_now_iso()})
+        job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": "volcengine_seedream", "model": model, "size": size, "usage": response.get("usage") or {}}, "completedAt": utc_now_iso()})
         return self._save_job(job)
 
     async def _submit_volcengine_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
@@ -1474,6 +2288,7 @@ class CreativeMediaRuntime:
             generate_audio=bool(request.get("generateAudio", request.get("generate_audio", True))),
             watermark=bool(request.get("watermark", False)),
         )
+        job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
             f"{creds['baseUrl']}/contents/generations/tasks",
@@ -1516,6 +2331,122 @@ class CreativeMediaRuntime:
                 job["completedAt"] = utc_now_iso()
         elif status == "failed":
             job["error"] = str((response.get("error") or {}).get("message") or response.get("error") or "Volcengine video task failed")
+            job["completedAt"] = utc_now_iso()
+        return self._save_job(job)
+
+    async def _submit_dashscope_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        creds = self._dashscope_credentials()
+        if not creds["apiKey"]:
+            raise ValueError("DASHSCOPE_API_KEY is required for Alibaba Cloud Bailian / DashScope video jobs")
+        operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
+        model = str(request.get("model") or request.get("modelId") or (DASHSCOPE_BUILTIN_MODELS.get(operation_kind) or ["wan2.7-t2v"])[0])
+        prompt = str(request.get("prompt") or "").strip()
+        duration = max(1, min(int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5), 30))
+        input_payload: dict[str, Any] = {}
+        if prompt:
+            input_payload["prompt"] = prompt
+        image_urls = self._image_urls_from_request(request)
+        video_url = self._video_url_from_request(request, "videoUrl", "video_url", "sourceVideoUrl", "source_video_url")
+        audio_url = self._public_url_or_error(request.get("audioUrl") or request.get("audio_url"), field_name="audioUrl")
+        if operation_kind in {"video.image_to_video", "video.first_last_frame"}:
+            if not image_urls:
+                raise ValueError(f"DashScope {operation_kind} requires public imageUrls")
+            input_payload["img_url"] = image_urls[0]
+            input_payload["image_url"] = image_urls[0]
+            if len(image_urls) > 1:
+                input_payload["end_image_url"] = image_urls[1]
+        elif operation_kind == "video.reference_to_video":
+            ref_image = self._public_url_or_error(request.get("referenceImageUrl") or request.get("reference_image_url"), field_name="referenceImageUrl")
+            ref_video = self._public_url_or_error(request.get("referenceVideoUrl") or request.get("reference_video_url"), field_name="referenceVideoUrl")
+            if ref_image:
+                input_payload["image_url"] = ref_image
+            if ref_video:
+                input_payload["video_url"] = ref_video
+            if not (ref_image or ref_video):
+                raise ValueError("DashScope video.reference_to_video requires referenceImageUrl or referenceVideoUrl")
+        elif operation_kind == "video.action_transfer":
+            target_image = image_urls[0] if image_urls else self._public_url_or_error(request.get("targetImageUrl") or request.get("target_image_url"), field_name="targetImageUrl")
+            reference_video = self._public_url_or_error(
+                request.get("referenceVideoUrl") or request.get("reference_video_url") or request.get("actionVideoUrl") or request.get("action_video_url"),
+                field_name="referenceVideoUrl",
+            )
+            if not target_image or not reference_video:
+                raise ValueError("DashScope video.action_transfer requires target image URL and reference video URL")
+            input_payload.update({"image_url": target_image, "video_url": reference_video, "watermark": bool(request.get("watermark", False))})
+        elif operation_kind in {"video.lipsync", "video.avatar"}:
+            subject_url = video_url or (image_urls[0] if image_urls else "")
+            if not subject_url or not audio_url:
+                raise ValueError(f"DashScope {operation_kind} requires subject video/image URL and audioUrl")
+            input_payload.update({"video_url": subject_url, "audio_url": audio_url})
+            if prompt:
+                input_payload["text"] = prompt
+        elif operation_kind in {"video.video_edit", "video.style_repaint", "video.replacement"}:
+            if not video_url:
+                raise ValueError(f"DashScope {operation_kind} requires videoUrl")
+            input_payload["video_url"] = video_url
+            if image_urls:
+                input_payload["image_url"] = image_urls[0]
+        parameters = {
+            "resolution": str(request.get("resolution") or "720P"),
+            "duration": duration,
+            "ratio": str(request.get("ratio") or request.get("aspectRatio") or "16:9"),
+        }
+        if operation_kind == "video.action_transfer":
+            parameters = {"mode": str(request.get("mode") or "wan-std")}
+        payload = {"model": model, "input": input_payload, "parameters": parameters}
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            f"{creds['baseUrl']}{self._dashscope_task_path_for_operation(operation_kind)}",
+            headers=self._dashscope_headers(creds["apiKey"], async_task=True),
+            json=payload,
+            timeout=180,
+        )
+        output = dict(response.get("output") or {})
+        task_id = str(output.get("task_id") or response.get("task_id") or response.get("taskId") or "").strip()
+        if not task_id:
+            raise RuntimeError(f"DashScope video response did not include task_id: {response}")
+        job["status"] = normalize_provider_status(output.get("task_status") or "PENDING", provider="dashscope")
+        job["providerTaskId"] = task_id
+        job["providerResponse"] = {"providerId": "aliyun_bailian_dashscope", "taskId": task_id, "model": model, "operationKind": operation_kind}
+        return self._save_job(job)
+
+    async def _poll_dashscope_task(self, job: dict[str, Any]) -> dict[str, Any]:
+        creds = self._dashscope_credentials()
+        task_id = str(job.get("providerTaskId") or "").strip()
+        if not task_id:
+            job["status"] = "failed"
+            job["error"] = "Missing providerTaskId"
+            return self._save_job(job)
+        response = await self._request_json(
+            "GET",
+            f"{creds['baseUrl']}/tasks/{task_id}",
+            headers=self._dashscope_headers(creds["apiKey"]),
+            timeout=60,
+        )
+        output = dict(response.get("output") or {})
+        status = normalize_provider_status(output.get("task_status") or response.get("task_status"), provider="dashscope")
+        job["status"] = status
+        job["providerResponse"] = {
+            **dict(job.get("providerResponse") or {}),
+            "lastStatus": output.get("task_status"),
+            "taskId": task_id,
+            "usage": response.get("usage") or {},
+            "requestId": response.get("request_id"),
+        }
+        if status == "succeeded":
+            result_url = self._dashscope_result_url(response)
+            if not result_url:
+                job["status"] = "failed"
+                job["error"] = "DashScope task succeeded without result URL"
+            else:
+                artifact = await self._artifact_from_url(result_url, job=job, kind="video", provider="aliyun_bailian_dashscope", mime_hint="video/mp4", metadata={"model": job["providerResponse"].get("model")})
+                job["artifacts"] = [artifact]
+                job["completedAt"] = utc_now_iso()
+        elif status == "failed":
+            job["error"] = str(output.get("message") or output.get("code") or "DashScope task failed")
+            if self._looks_like_policy_reject(job["error"]):
+                job["policyRejectReason"] = job["error"]
             job["completedAt"] = utc_now_iso()
         return self._save_job(job)
 
@@ -1623,6 +2554,22 @@ class CreativeMediaRuntime:
     async def _request_json(self, method: str, url: str, *, headers: Optional[dict[str, str]] = None, json: Optional[dict[str, Any]] = None, timeout: float = 120.0) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method, url, headers=headers, json=json)
+            if response.status_code >= 400:
+                raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
+            return response.json()
+
+    async def _request_multipart_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Optional[dict[str, str]] = None,
+        data: Optional[dict[str, Any]] = None,
+        files: Optional[dict[str, Any]] = None,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.request(method, url, headers=headers, data=data, files=files)
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
             return response.json()

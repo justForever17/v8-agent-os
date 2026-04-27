@@ -1747,6 +1747,7 @@ def analyze_session_memory(
                 "entryCount": len(transcript_entries),
                 "incrementalEntryCount": len(incremental_messages),
                 "extractionMode": extraction_mode,
+                "contentLength": len(chat_history_text.strip()),
             }
         },
     )
@@ -2268,6 +2269,8 @@ def analyze_session_memory(
         "extraction_mode": extraction_mode,
         "transcript_source": transcript["source"],
         "latest_seq": transcript["latest_seq"],
+        "message_count": len(incremental_messages),
+        "content_length": len(chat_history_text.strip()),
         "no_persisted_memory_reason": no_persisted_memory_reason or None,
         "source_runtime": source_runtime,
         "provenance_class": provenance_class,
@@ -2302,6 +2305,7 @@ async def generate_periodic_summary(
     content = ""
     if tier in {"week", "month", "year"}:
         content = memory_runtime.get_logs_for_period(tier=tier, dt=dt, scope_chain=["global"])
+    daily_log_count = content.count("] Ref: memory://day/")
         
     if not content.strip():
         logger.debug(f"[MemoryAgent] No logs found for {tier}, skipping summary.")
@@ -2326,6 +2330,8 @@ async def generate_periodic_summary(
             "tier": tier,
             "target_date": dt.isoformat(),
             "reason": "no_logs_found",
+            "daily_log_count": 0,
+            "input_content_length": 0,
         }
         
     try:
@@ -2355,6 +2361,8 @@ async def generate_periodic_summary(
             "task_kind": "periodic_summary",
             "tier": tier,
             "target_date": dt.isoformat(),
+            "daily_log_count": daily_log_count,
+            "input_content_length": len(content),
             "content_length": len(normalized_payload["body"] or ""),
             "summary_length": len(normalized_payload["summary"] or ""),
         }

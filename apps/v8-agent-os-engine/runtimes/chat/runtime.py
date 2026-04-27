@@ -311,13 +311,13 @@ class ChatRuntime:
         return {
             "kind": self.kind,
             "displayName": "ChatRuntime",
-            "summary": "负责用户会话主流程、Supervisor 编排、暂停/恢复与 durable 对话投影。",
+            "summary": "当前用户请求所在的主对话执行面；Supervisor 已在其中运行，通常无需显式选择它。",
             "responsibilities": [
                 "创建与恢复聊天 run",
                 "驱动 Supervisor Graph 执行",
                 "把输入、流式输出和中断状态同步到账本与投影",
             ],
-            "routingKeywords": ["聊天", "复杂协作", "任务拆解", "审批", "暂停", "恢复"],
+            "routingKeywords": ["当前对话", "用户请求", "会话恢复", "审批恢复"],
             "acceptedInputs": ["ChatRequest", "resume_run_id", "tool_outputs"],
             "producedOutputs": ["chat_projection", "runtime_events", "workflow_steps"],
             "ownedSteps": ["chat.main", "chat.supervisor_graph"],
@@ -327,8 +327,8 @@ class ChatRuntime:
             "supportsRepair": True,
             "visibility": "primary",
             "promptHints": [
-                "开放式请求、跨模块任务和需要 Supervisor 编排的流程，优先走 ChatRuntime。",
-                "不要把所有模块细节塞进 Supervisor；先看能力卡片，再决定是否切给专门 Runtime。",
+                "把 ChatRuntime 视为当前编排容器；需要专门能力时改用 runtime_broker 授权对应 runtime 工具组。",
+                "不要把 ChatRuntime 当作可被自己再次调度的下游能力。",
             ],
             "capabilities": [
                 {

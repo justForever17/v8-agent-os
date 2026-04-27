@@ -8,6 +8,7 @@ from .supervisor_context import (
 from .no_progress_breaker import apply_no_progress_breaker
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from core.context.delegation import build_delegation_context
+from core.memory_observability import log_memory_observation
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.runtime.reflex_gate import (
@@ -28,6 +29,25 @@ def _last_memory_session_context_diagnostics() -> dict:
         return dict(diagnostics) if isinstance(diagnostics, dict) else {}
     except Exception:
         return {}
+
+
+def _last_human_memory_rag_diagnostics(messages) -> dict:
+    for message in reversed(list(messages or [])):
+        if not hasattr(message, "additional_kwargs"):
+            continue
+        diagnostics = dict(getattr(message, "additional_kwargs", {}) or {}).get("memory_rag_diagnostics")
+        if isinstance(diagnostics, dict):
+            return dict(diagnostics)
+    return {}
+
+
+def _estimate_memory_context_chars(diagnostics: dict) -> int:
+    total = 0
+    for key in ("graphSummarySeedEntities", "consistencyConflicts"):
+        value = diagnostics.get(key)
+        if isinstance(value, list):
+            total += sum(len(str(item)) for item in value[:20])
+    return total
 
 
 def _attach_route_context_to_response(response, *, user_query: str, route_bundle, selected_tools) -> None:
@@ -147,6 +167,20 @@ def execute_supervisor_turn(
         prompt_duration_ms = round((time.perf_counter() - prompt_started_at) * 1000, 2)
         system_content = context_bundle["system_content"]
         memory_diagnostics = _last_memory_session_context_diagnostics()
+        log_memory_observation(
+            "passive_context",
+            "INFO",
+            trigger="supervisor_turn",
+            sessionId=session_id,
+            runId=state.get("run_id") or state.get("runId"),
+            callsLlm=False,
+            scope=current_scope,
+            graphSummaryInjected=bool(memory_diagnostics.get("graphSummaryInjected")),
+            graphSummaryRelationCount=int(memory_diagnostics.get("graphSummaryRelationCount") or 0),
+            consistencyNoteInjected=bool(memory_diagnostics.get("consistencyNoteInjected")),
+            consistencyConflictCount=len(memory_diagnostics.get("consistencyConflicts") or []),
+            inputCharEstimate=_estimate_memory_context_chars(memory_diagnostics),
+        )
         evidence_feedback_packet = runtime_evidence_feedback_service.record(
             session_id=session_id,
             run_id=state.get("run_id") or state.get("runId"),
@@ -166,6 +200,24 @@ def execute_supervisor_turn(
             memory_runtime=memory_runtime,
         )
         passive_rag_duration_ms = round((time.perf_counter() - passive_rag_started_at) * 1000, 2)
+        passive_rag_diagnostics = _last_human_memory_rag_diagnostics(prepared_messages)
+        log_memory_observation(
+            "passive_rag",
+            "SUCCESS" if passive_rag_diagnostics.get("injection_allowed") else "SKIPPED",
+            trigger="supervisor_turn",
+            sessionId=session_id,
+            runId=state.get("run_id") or state.get("runId"),
+            callsLlm=False,
+            scope=current_scope,
+            scopeChain=scope_chain,
+            durationMs=passive_rag_duration_ms,
+            topScores=passive_rag_diagnostics.get("top_scores") or [],
+            threshold=passive_rag_diagnostics.get("threshold"),
+            rejectReason=passive_rag_diagnostics.get("reject_reason") or None,
+            injected=bool(passive_rag_diagnostics.get("injection_allowed")),
+            hasRecallCue=bool(passive_rag_diagnostics.get("has_recall_cue")),
+            humanTurns=passive_rag_diagnostics.get("human_turns"),
+        )
         prepared_messages = prepare_supervisor_messages(
             messages=prepared_messages,
             system_content=system_content,

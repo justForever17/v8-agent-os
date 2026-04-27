@@ -23,6 +23,21 @@ async def get_creative_media_recipe_libraries():
     return creative_media_runtime.recipe_libraries()
 
 
+@router.get("/model-preferences")
+async def get_creative_media_model_preferences():
+    return creative_media_runtime.get_model_preferences()
+
+
+@router.post("/model-preferences")
+async def save_creative_media_model_preferences(body: dict = Body(...)):
+    try:
+        return creative_media_runtime.save_model_preferences(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.post("/recipes/compile")
 async def compile_creative_media_recipe(body: dict = Body(...)):
     try:

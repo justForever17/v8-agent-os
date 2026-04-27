@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, Clapperboard, RefreshCw, Sparkles, UserRound } from "lucide-react";
+import { Box, Clapperboard, RefreshCw, Save, Sparkles, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { useT } from "@/components/providers/LocaleProvider";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 type CreativeMediaData = {
@@ -18,6 +21,29 @@ type CreativeMediaData = {
     jobs: Array<Record<string, unknown>>;
     editPlans: Array<Record<string, unknown>>;
     renders: Array<Record<string, unknown>>;
+    modelPreferences?: CreativeModelPreferences;
+};
+
+type CreativeModelCandidate = {
+    candidateId: string;
+    modality: string;
+    operationKind?: string;
+    providerId: string;
+    providerName: string;
+    modelId: string;
+    modelRef?: string;
+    adapter: string;
+    source?: string;
+    available?: boolean;
+    enabled?: boolean;
+    priority?: number;
+};
+
+type CreativeModelPreferences = {
+    version?: number;
+    updatedAt?: string;
+    candidates: CreativeModelCandidate[];
+    policies?: Record<string, { models?: CreativeModelCandidate[]; fallbackEnabled?: boolean }>;
 };
 
 const EMPTY_DATA: CreativeMediaData = {
@@ -41,6 +67,18 @@ function countCatalogModalities(catalog?: Record<string, unknown>) {
     return Object.keys(modalities).length;
 }
 
+function modalityLabel(t: ReturnType<typeof useT>, modality: string) {
+    const normalized = String(modality || "").toLowerCase();
+    const keyMap: Record<string, string> = {
+        image: "app.admin.dashboard.creativeMedia.modalityImage",
+        video: "app.admin.dashboard.creativeMedia.modalityVideo",
+        voice: "app.admin.dashboard.creativeMedia.modalityVoice",
+        music: "app.admin.dashboard.creativeMedia.modalityMusic",
+        model3d: "app.admin.dashboard.creativeMedia.modalityModel3d",
+    };
+    return keyMap[normalized] ? t(keyMap[normalized]) : text(modality);
+}
+
 function CompactJson({ value }: { value: unknown }) {
     const json = useMemo(() => JSON.stringify(value || {}, null, 2), [value]);
     return (
@@ -61,15 +99,17 @@ function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
 }
 
 export default function CreativeMediaPage() {
+    const t = useT();
     const [data, setData] = useState<CreativeMediaData>(EMPTY_DATA);
     const [loading, setLoading] = useState(true);
+    const [savingModels, setSavingModels] = useState(false);
     const [error, setError] = useState("");
 
     const fetchData = useCallback(async () => {
         setLoading(true);
         setError("");
         try {
-            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders] = await Promise.all([
+            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders, modelPreferences] = await Promise.all([
                 fetch("/api/creative-media/catalog", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/resolutions", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/recipes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
@@ -79,6 +119,7 @@ export default function CreativeMediaPage() {
                 fetch("/api/creative-media/jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/edit-plans", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/renders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/model-preferences", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
             ]);
             setData({
                 catalog,
@@ -90,6 +131,12 @@ export default function CreativeMediaPage() {
                 jobs: Array.isArray(jobs.jobs) ? jobs.jobs : [],
                 editPlans: Array.isArray(editPlans.editPlans) ? editPlans.editPlans : [],
                 renders: Array.isArray(renders.renders) ? renders.renders : [],
+                modelPreferences: {
+                    candidates: Array.isArray(modelPreferences.candidates) ? modelPreferences.candidates : [],
+                    policies: modelPreferences.policies || {},
+                    updatedAt: modelPreferences.updatedAt || "",
+                    version: modelPreferences.version,
+                },
             });
         } catch (err) {
             setError(String(err));
@@ -103,6 +150,52 @@ export default function CreativeMediaPage() {
     }, [fetchData]);
 
     const musicRecipes = data.recipes.filter((item) => text(item.modality, "") === "music");
+    const modelCandidates = data.modelPreferences?.candidates || [];
+    const updateModelCandidate = useCallback((candidateId: string, patch: Partial<CreativeModelCandidate>) => {
+        setData((current) => ({
+            ...current,
+            modelPreferences: {
+                ...(current.modelPreferences || { candidates: [] }),
+                candidates: (current.modelPreferences?.candidates || []).map((candidate) => (
+                    candidate.candidateId === candidateId ? { ...candidate, ...patch } : candidate
+                )),
+            },
+        }));
+    }, []);
+    const saveModelPreferences = useCallback(async () => {
+        setSavingModels(true);
+        setError("");
+        try {
+            const response = await fetch("/api/creative-media/model-preferences", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    models: (data.modelPreferences?.candidates || []).map((candidate) => ({
+                        candidateId: candidate.candidateId,
+                        enabled: candidate.enabled !== false,
+                        priority: Number(candidate.priority || 100),
+                    })),
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(String(payload.detail || payload.error || response.statusText));
+            }
+            setData((current) => ({
+                ...current,
+                modelPreferences: {
+                    candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+                    policies: payload.policies || {},
+                    updatedAt: payload.updatedAt || "",
+                    version: payload.version,
+                },
+            }));
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setSavingModels(false);
+        }
+    }, [data.modelPreferences?.candidates]);
 
     return (
         <div className="space-y-6">
@@ -110,18 +203,18 @@ export default function CreativeMediaPage() {
                 <div>
                     <div className="flex items-center gap-2">
                         <Sparkles className="h-7 w-7 text-violet-600" />
-                        <h1 className="text-3xl font-bold tracking-tight">Creative Media Runtime</h1>
+                        <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.creativeMedia.title")}</h1>
                     </div>
                     <p className="mt-2 text-muted-foreground">
-                        只读治理面板：查看 recipe、asset ledger、角色 bible、关键帧、job 与 provider catalog。
+                        {t("app.admin.dashboard.creativeMedia.description")}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                        音乐保持 Creative Media cue / brief / reference / artifact 体系；旧播放器仅作兼容 API。
+                        {t("app.admin.dashboard.creativeMedia.musicBoundaryInline")}
                     </p>
                 </div>
                 <Button variant="outline" onClick={() => void fetchData()} disabled={loading}>
                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                    刷新
+                    {t("app.admin.dashboard.creativeMedia.refresh")}
                 </Button>
             </div>
 
@@ -133,14 +226,14 @@ export default function CreativeMediaPage() {
 
             <div className="grid gap-3 md:grid-cols-6">
                 {[
-                    { label: "Catalog Modalities", value: countCatalogModalities(data.catalog), icon: Box },
-                    { label: "Recipes", value: data.recipes.length, icon: Sparkles },
-                    { label: "Assets", value: data.assets.length, icon: Box },
-                    { label: "Characters", value: data.characterBibles.length, icon: UserRound },
-                    { label: "Keyframes / Jobs", value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
-                    { label: "Edit / Render", value: `${data.editPlans.length} / ${data.renders.length}`, icon: Clapperboard },
+                    { key: "catalog", label: t("app.admin.dashboard.creativeMedia.statCatalog"), value: countCatalogModalities(data.catalog), icon: Box },
+                    { key: "recipes", label: t("app.admin.dashboard.creativeMedia.statRecipes"), value: data.recipes.length, icon: Sparkles },
+                    { key: "assets", label: t("app.admin.dashboard.creativeMedia.statAssets"), value: data.assets.length, icon: Box },
+                    { key: "characters", label: t("app.admin.dashboard.creativeMedia.statCharacters"), value: data.characterBibles.length, icon: UserRound },
+                    { key: "keyframes", label: t("app.admin.dashboard.creativeMedia.statKeyframesJobs"), value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
+                    { key: "editRender", label: t("app.admin.dashboard.creativeMedia.statEditRender"), value: `${data.editPlans.length} / ${data.renders.length}`, icon: Clapperboard },
                 ].map((item) => (
-                    <Card key={item.label}>
+                    <Card key={item.key}>
                         <CardContent className="flex items-center gap-3 p-4">
                             <item.icon className="h-5 w-5 text-muted-foreground" />
                             <div>
@@ -152,20 +245,88 @@ export default function CreativeMediaPage() {
                 ))}
             </div>
 
+            <Card>
+                <CardHeader>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <CardTitle>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</CardTitle>
+                            <CardDescription>{t("app.admin.dashboard.creativeMedia.modelPreferencesDescription")}</CardDescription>
+                        </div>
+                        <Button onClick={() => void saveModelPreferences()} disabled={savingModels || loading}>
+                            <Save className="mr-2 h-4 w-4" />
+                            {savingModels ? t("app.admin.dashboard.creativeMedia.saving") : t("app.admin.dashboard.creativeMedia.saveModelPreferences")}
+                        </Button>
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    <Table>
+                        <TableHeader>
+                                <TableRow>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableOperation")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableProvider")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableModel")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableAdapter")}</TableHead>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tablePriority")}</TableHead>
+                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableAvailable")}</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {modelCandidates.length ? modelCandidates.map((candidate) => (
+                                <TableRow key={candidate.candidateId}>
+                                    <TableCell>
+                                        <Switch
+                                            checked={candidate.enabled !== false}
+                                            onCheckedChange={(checked) => updateModelCandidate(candidate.candidateId, { enabled: checked })}
+                                        />
+                                    </TableCell>
+                                    <TableCell>
+                                        <Badge variant="outline">{modalityLabel(t, candidate.modality)}</Badge>
+                                    </TableCell>
+                                    <TableCell className="font-mono text-xs">{text(candidate.operationKind)}</TableCell>
+                                    <TableCell>
+                                        <div className="font-medium">{text(candidate.providerName || candidate.providerId)}</div>
+                                        <div className="text-xs text-muted-foreground">{text(candidate.source)}</div>
+                                    </TableCell>
+                                    <TableCell className="max-w-64 truncate font-mono text-xs">{text(candidate.modelId)}</TableCell>
+                                    <TableCell className="font-mono text-xs">{text(candidate.adapter)}</TableCell>
+                                    <TableCell>
+                                        <Input
+                                            className="w-24"
+                                            type="number"
+                                            min={1}
+                                            max={999}
+                                            value={Number(candidate.priority || 100)}
+                                            onChange={(event) => updateModelCandidate(candidate.candidateId, { priority: Number(event.target.value || 100) })}
+                                        />
+                                    </TableCell>
+                                    <TableCell>
+                                        <Badge variant={candidate.available === false ? "secondary" : "default"}>
+                                            {candidate.available === false ? t("app.admin.dashboard.creativeMedia.unavailable") : t("app.admin.dashboard.creativeMedia.available")}
+                                        </Badge>
+                                    </TableCell>
+                                </TableRow>
+                            )) : <EmptyRow colSpan={8} label={t("app.admin.dashboard.creativeMedia.emptyModelPreferences")} />}
+                        </TableBody>
+                    </Table>
+                </CardContent>
+            </Card>
+
             <div className="grid gap-6 xl:grid-cols-2">
                 <Card>
                     <CardHeader>
-                        <CardTitle>Recipes</CardTitle>
-                        <CardDescription>编译后的 provider-neutral recipe。音乐 recipe 使用双层类型。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.recipesTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.recipesDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>类型</TableHead>
-                                    <TableHead>状态</TableHead>
-                                    <TableHead>更新</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableType")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableUpdated")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -182,7 +343,7 @@ export default function CreativeMediaPage() {
                                         <TableCell>{text(recipe.executionStatus)}</TableCell>
                                         <TableCell className="text-xs text-muted-foreground">{text(recipe.updatedAt)}</TableCell>
                                     </TableRow>
-                                )) : <EmptyRow colSpan={4} label="暂无 recipe" />}
+                                )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyRecipes")} />}
                             </TableBody>
                         </Table>
                     </CardContent>
@@ -190,17 +351,17 @@ export default function CreativeMediaPage() {
 
                 <Card>
                     <CardHeader>
-                        <CardTitle>Assets</CardTitle>
-                        <CardDescription>Creative Media 资产账本，不复制文件，不进入旧播放器曲库。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.assetsTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.assetsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>用途</TableHead>
-                                    <TableHead>媒体</TableHead>
-                                    <TableHead>版本</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableRole")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableVersion")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -213,7 +374,7 @@ export default function CreativeMediaPage() {
                                         </TableCell>
                                         <TableCell>{text(asset.version)}</TableCell>
                                     </TableRow>
-                                )) : <EmptyRow colSpan={4} label="暂无资产" />}
+                                )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyAssets")} />}
                             </TableBody>
                         </Table>
                     </CardContent>
@@ -221,16 +382,16 @@ export default function CreativeMediaPage() {
 
                 <Card>
                     <CardHeader>
-                        <CardTitle>Character Bibles</CardTitle>
-                        <CardDescription>角色一致性设定，供 recipe 与关键帧引用。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.charactersTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.charactersDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>名称</TableHead>
-                                    <TableHead>版本</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableName")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableVersion")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -240,7 +401,7 @@ export default function CreativeMediaPage() {
                                         <TableCell>{text(bible.name)}</TableCell>
                                         <TableCell>{text(bible.version)}</TableCell>
                                     </TableRow>
-                                )) : <EmptyRow colSpan={3} label="暂无角色 bible" />}
+                                )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyCharacters")} />}
                             </TableBody>
                         </Table>
                     </CardContent>
@@ -248,16 +409,16 @@ export default function CreativeMediaPage() {
 
                 <Card>
                     <CardHeader>
-                        <CardTitle>Keyframes</CardTitle>
-                        <CardDescription>首帧、尾帧、桥接帧和参考帧。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.keyframesTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.keyframesDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>角色</TableHead>
-                                    <TableHead>Recipe</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableRole")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableRecipe")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -267,7 +428,7 @@ export default function CreativeMediaPage() {
                                         <TableCell>{text(keyframe.role)}</TableCell>
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(keyframe.recipeId)}</TableCell>
                                     </TableRow>
-                                )) : <EmptyRow colSpan={3} label="暂无关键帧" />}
+                                )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyKeyframes")} />}
                             </TableBody>
                         </Table>
                     </CardContent>
@@ -277,17 +438,17 @@ export default function CreativeMediaPage() {
             <div className="grid gap-6 xl:grid-cols-2">
                 <Card>
                     <CardHeader>
-                        <CardTitle>Edit Plans</CardTitle>
-                        <CardDescription>P3 后期计划：timeline、tracks、lineage 与 render profile。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.editPlansTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.editPlansDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>Recipe</TableHead>
-                                    <TableHead>状态</TableHead>
-                                    <TableHead>更新</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableRecipe")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableUpdated")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -298,7 +459,7 @@ export default function CreativeMediaPage() {
                                         <TableCell>{text(plan.status)}</TableCell>
                                         <TableCell className="text-xs text-muted-foreground">{text(plan.updatedAt)}</TableCell>
                                     </TableRow>
-                                )) : <EmptyRow colSpan={4} label="暂无 edit plan" />}
+                                )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyEditPlans")} />}
                             </TableBody>
                         </Table>
                     </CardContent>
@@ -306,17 +467,17 @@ export default function CreativeMediaPage() {
 
                 <Card>
                     <CardHeader>
-                        <CardTitle>Render Jobs</CardTitle>
-                        <CardDescription>P3 本地 ffmpeg 渲染任务与 artifact 输出。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.renderJobsTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.renderJobsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>Plan</TableHead>
-                                    <TableHead>状态</TableHead>
-                                    <TableHead>Artifacts</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tablePlan")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableArtifacts")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -327,7 +488,7 @@ export default function CreativeMediaPage() {
                                         <TableCell>{text(render.status)}</TableCell>
                                         <TableCell>{Array.isArray(render.artifacts) ? render.artifacts.length : 0}</TableCell>
                                     </TableRow>
-                                )) : <EmptyRow colSpan={4} label="暂无 render job" />}
+                                )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyRenderJobs")} />}
                             </TableBody>
                         </Table>
                     </CardContent>
@@ -337,19 +498,19 @@ export default function CreativeMediaPage() {
             <div className="grid gap-6 xl:grid-cols-2">
                 <Card>
                     <CardHeader>
-                        <CardTitle>Music Recipes</CardTitle>
-                        <CardDescription>检查音乐计划是否保持 Creative Media 双层类型。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.musicRecipesTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.musicRecipesDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         {musicRecipes.length ? <CompactJson value={musicRecipes.slice(0, 3)} /> : (
-                            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">暂无 music recipe</div>
+                            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">{t("app.admin.dashboard.creativeMedia.emptyMusicRecipes")}</div>
                         )}
                     </CardContent>
                 </Card>
                 <Card>
                     <CardHeader>
-                        <CardTitle>Catalog</CardTitle>
-                        <CardDescription>Provider matrix 摘要，只读。</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.catalogTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.catalogDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <CompactJson value={data.catalog} />

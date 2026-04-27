@@ -51,6 +51,7 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("groq")) candidates.push("groq");
     if (haystack.includes("xai") || haystack.includes("grok")) candidates.push("xai", "grok");
     if (haystack.includes("qwen") || haystack.includes("dashscope") || haystack.includes("alibaba")) candidates.push("qwen-color", "qwen", "alibabacloud-color", "alibabacloud", "alibaba-color", "alibaba");
+    if (haystack.includes("bailian") || haystack.includes("aliyun")) candidates.push("alibabacloud-color", "alibabacloud", "alibaba-color", "alibaba", "qwen-color", "qwen");
     if (haystack.includes("doubao")) candidates.push("doubao-color", "doubao");
     if (haystack.includes("volcengine") || haystack.includes("volcano")) candidates.push("volcengine-color", "volcengine");
     if (haystack.includes("moonshot")) candidates.push("moonshot");
@@ -110,9 +111,9 @@ export function resolveProviderLogo(params: {
     providerName?: string | null;
     explicitAsset?: string | null;
 }) {
+    if (params.explicitAsset) return params.explicitAsset;
     const lobeAsset = pickLobeIcon(providerSlugCandidates(params.providerId, params.providerName));
     if (lobeAsset) return lobeAsset;
-    if (params.explicitAsset) return params.explicitAsset;
 
     const providerId = normalizeText(params.providerId);
     if (providerId && LEGACY_PROVIDER_LOGOS[providerId]) return LEGACY_PROVIDER_LOGOS[providerId];

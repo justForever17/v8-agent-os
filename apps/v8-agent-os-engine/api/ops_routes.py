@@ -155,12 +155,14 @@ async def upload_memory_docs(
     files: list[UploadFile] = File(...),
     chunk_size: int = Form(1500),
     chunk_overlap: int = Form(200),
+    trusted_upload: bool = Form(False),
 ):
     try:
         from core.document_parser import DocumentIngestionDependencyError, document_parser
         from core.document_chunker import document_chunker
         from core.vector_store import get_vector_store
         from core.knowledge_db import knowledge_db
+        from core.memory_observability import log_memory_observation
         from core.code_chunker import code_chunker
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         import logging
@@ -174,6 +176,8 @@ async def upload_memory_docs(
         total_chunks = 0
         total_chars = 0
         vs = get_vector_store()
+        maintainer_source = "human_admin" if trusted_upload else "imported_document"
+        confidence = 0.67 if trusted_upload else 0.60
 
         for file in files:
             file_path = temp_dir / file.filename
@@ -217,6 +221,16 @@ async def upload_memory_docs(
                     scope="global",
                     source_session=file.filename,
                     parent_id=None,
+                    maintainer_source=maintainer_source,
+                    confidence=confidence,
+                    promotion_reason="trusted_admin_upload" if trusted_upload else "document_upload",
+                    metadata={
+                        "ingestionSource": "memory_upload",
+                        "trustedUpload": trusted_upload,
+                        "chunkRole": "parent",
+                        "chunkSize": chunk_size,
+                        "chunkOverlap": chunk_overlap,
+                    },
                 )
                 child_texts = child_splitter.split_text(p_chunk["text"])
                 for c_idx, c_text in enumerate(child_texts):
@@ -240,6 +254,17 @@ async def upload_memory_docs(
                         scope="global",
                         source_session=file.filename,
                         parent_id=parent_id,
+                        maintainer_source=maintainer_source,
+                        confidence=confidence,
+                        promotion_reason="trusted_admin_upload" if trusted_upload else "document_upload",
+                        metadata={
+                            "ingestionSource": "memory_upload",
+                            "trustedUpload": trusted_upload,
+                            "chunkRole": "child",
+                            "chunkSize": chunk_size,
+                            "chunkOverlap": chunk_overlap,
+                            "parentId": parent_id,
+                        },
                     )
 
             if docs_to_add:
@@ -248,9 +273,27 @@ async def upload_memory_docs(
 
             file_path.unlink(missing_ok=True)
 
+        log_memory_observation(
+            "document_upload_index",
+            "SUCCESS",
+            trigger="admin_upload",
+            callsLlm=False,
+            fileCount=len(files),
+            processedCount=processed_count,
+            chunkCount=total_chunks,
+            inputCharEstimate=total_chars,
+            chunkSize=chunk_size,
+            chunkOverlap=chunk_overlap,
+            trustedUpload=trusted_upload,
+            maintainerSource=maintainer_source,
+            confidence=confidence,
+        )
         return {
             "status": "success",
             "message": f"Successfully parsed {processed_count} files ({total_chars} chars) into {total_chunks} semantic chunks.",
+            "trustedUpload": trusted_upload,
+            "maintainerSource": maintainer_source,
+            "confidence": confidence,
         }
     except DocumentIngestionDependencyError as e:
         raise HTTPException(status_code=424, detail=e.to_payload())

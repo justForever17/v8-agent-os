@@ -40,11 +40,35 @@ from .recipe import creative_recipe_compiler
 JOB_STORE_FILE = "creative_media/jobs.json"
 EDIT_PLAN_STORE_FILE = "creative_media/edit_plans.json"
 RENDER_JOB_STORE_FILE = "creative_media/render_jobs.json"
+MODEL_PREFERENCES_STORE_FILE = "creative_media/model_preferences.json"
 SUPPORTED_MODALITIES = {"image", "video", "voice", "music", "model3d"}
 # music/model3d intentionally stay schema/catalog-only in P2; adapters can be added without changing the job envelope.
 EXECUTABLE_MODALITIES = {"image", "video", "voice"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+MEDIA_MODEL_TYPE_TO_MODALITY = {
+    "IMAGE": "image",
+    "VIDEO": "video",
+    "VOICE": "voice",
+    "AUDIO": "voice",
+    "MUSIC": "music",
+    "MODEL3D": "model3d",
+    "WORKFLOW": "model3d",
+}
+DEFAULT_OPERATION_KINDS = {
+    "image": ["image.generate"],
+    "video": ["video.text_to_video"],
+    "voice": ["voice.tts"],
+    "music": ["music.brief"],
+    "model3d": ["model3d.generate"],
+}
+EXECUTABLE_OPERATION_KINDS = {
+    "image.generate",
+    "video.text_to_video",
+    "video.image_to_video",
+    "video.first_last_frame",
+    "voice.tts",
+}
 
 
 def utc_now_iso() -> str:
@@ -82,6 +106,19 @@ def _list_of_strings(value: Any) -> list[str]:
 def _exception_summary(exc: Exception) -> str:
     message = str(exc).strip()
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+def _candidate_id(*, modality: str, operation_kind: str, provider_id: str, model_id: str, adapter: str) -> str:
+    raw = "|".join([modality, operation_kind, provider_id, model_id, adapter]).encode("utf-8")
+    return f"cm_model_{hashlib.sha256(raw).hexdigest()[:16]}"
+
+
+def _safe_priority(value: Any, default: int) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, 999))
 
 
 def _build_openai_image_payload(*, model: str, prompt: str, size: str, response_format: str = "b64_json") -> dict[str, Any]:
@@ -218,6 +255,332 @@ class CreativeMediaRuntime:
             "video": load_video_recipe_library(),
             "audioMusic": load_audio_music_recipe_library(),
         }
+
+    def _adapter_for_model_candidate(
+        self,
+        *,
+        modality: str,
+        provider_id: str,
+        provider_meta: dict[str, Any],
+        model_data: dict[str, Any],
+    ) -> str:
+        haystack = " ".join(
+            [
+                provider_id,
+                str(provider_meta.get("name") or ""),
+                str(provider_meta.get("apiStandard") or provider_meta.get("api_standard") or ""),
+                str(model_data.get("adapter") or ""),
+            ]
+        ).lower()
+        if modality in {"image", "video"} and any(token in haystack for token in ("volc", "seedream", "seedance", "jimeng")):
+            return "volcengine_ark"
+        if modality == "image":
+            return "openai_images"
+        if modality == "voice":
+            return "v8_audio_tts" if provider_id == "v8_audio_tts" else str(model_data.get("adapter") or "v8_audio_tts")
+        return str(model_data.get("adapter") or "catalog_only")
+
+    def _operation_kinds_for_candidate(
+        self,
+        *,
+        modality: str,
+        provider_id: str,
+        adapter: str,
+        provider_meta: dict[str, Any],
+        model_data: dict[str, Any],
+    ) -> list[str]:
+        media_limits = dict(model_data.get("mediaLimits") or {})
+        explicit = _list_of_strings(
+            model_data.get("operationKinds")
+            or model_data.get("operations")
+            or media_limits.get("operationKinds")
+            or provider_meta.get("operationKinds")
+        )
+        if explicit:
+            return [item for item in explicit if item.startswith(f"{modality}.") or item.startswith("voice.")]
+        haystack = " ".join([provider_id, str(provider_meta.get("name") or ""), str(model_data.get("id") or "")]).lower()
+        if modality == "video":
+            if any(token in haystack for token in ("lipsync", "lip-sync", "retalk", "对口型")):
+                return ["video.lipsync"]
+            if any(token in haystack for token in ("action", "motion", "动作迁移")):
+                return ["video.action_transfer"]
+            if any(token in haystack for token in ("avatar", "digital-human", "数字人")):
+                return ["video.avatar"]
+            if any(token in haystack for token in ("replace", "replacement", "换人")):
+                return ["video.replacement"]
+            if adapter == "volcengine_ark":
+                return ["video.text_to_video", "video.image_to_video", "video.first_last_frame"]
+        return list(DEFAULT_OPERATION_KINDS.get(modality, []))
+
+    def _operation_kind_for_request(self, modality: str, request: dict[str, Any]) -> str:
+        explicit = str(
+            request.get("operationKind")
+            or request.get("operation_kind")
+            or request.get("operation")
+            or request.get("taskType")
+            or request.get("task_type")
+            or ""
+        ).strip()
+        if explicit:
+            return explicit.replace("-", "_")
+        if modality == "image":
+            if request.get("editIntent") or request.get("edit_intent") or request.get("mask") or request.get("maskUrl"):
+                return "image.edit"
+            return "image.generate"
+        if modality == "video":
+            image_urls = request.get("imageUrls") or request.get("image_urls") or []
+            if request.get("firstFrame") or request.get("lastFrame") or (isinstance(image_urls, list) and len(image_urls) >= 2):
+                return "video.first_last_frame"
+            if image_urls:
+                return "video.image_to_video"
+            return "video.text_to_video"
+        if modality == "voice":
+            return "voice.tts"
+        if modality == "music":
+            return "music.brief"
+        if modality == "model3d":
+            return "model3d.generate"
+        return f"{modality}.generate"
+
+    def _is_operation_executable(self, *, adapter: str, operation_kind: str) -> bool:
+        if operation_kind == "image.generate" and adapter in {"openai_images", "volcengine_ark"}:
+            return True
+        if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
+            return True
+        if operation_kind == "voice.tts" and adapter == "v8_audio_tts":
+            return True
+        return False
+
+    def list_model_candidates(self) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        config = model_control_plane.get_config()
+        providers = dict(config.get("providers") or {})
+        for provider_id, provider_data in providers.items():
+            provider_meta = dict((provider_data or {}).get("provider") or {})
+            provider_name = str(provider_meta.get("name") or provider_id).strip() or provider_id
+            for model_id, model_data_raw in dict((provider_data or {}).get("models") or {}).items():
+                model_data = dict(model_data_raw or {})
+                model_type = str(model_data.get("type") or "").strip().upper()
+                modality = MEDIA_MODEL_TYPE_TO_MODALITY.get(model_type)
+                capabilities = dict(model_data.get("capabilities") or {})
+                if not modality:
+                    if capabilities.get("image"):
+                        modality = "image"
+                    elif capabilities.get("video"):
+                        modality = "video"
+                    elif capabilities.get("voice") or capabilities.get("audio"):
+                        modality = "voice"
+                    elif capabilities.get("music"):
+                        modality = "music"
+                if modality not in SUPPORTED_MODALITIES:
+                    continue
+                adapter = self._adapter_for_model_candidate(
+                    modality=modality,
+                    provider_id=str(provider_id),
+                    provider_meta=provider_meta,
+                    model_data=model_data,
+                )
+                model_id_str = str(model_id)
+                for operation_kind in self._operation_kinds_for_candidate(
+                    modality=modality,
+                    provider_id=str(provider_id),
+                    adapter=adapter,
+                    provider_meta=provider_meta,
+                    model_data={**model_data, "id": model_id_str},
+                ):
+                    candidates.append(
+                        {
+                            "candidateId": _candidate_id(
+                                modality=modality,
+                                operation_kind=operation_kind,
+                                provider_id=str(provider_id),
+                                model_id=model_id_str,
+                                adapter=adapter,
+                            ),
+                            "modality": modality,
+                            "operationKind": operation_kind,
+                            "providerId": str(provider_id),
+                            "providerName": provider_name,
+                            "modelId": model_id_str,
+                            "modelRef": f"{provider_id}::{model_id_str}",
+                            "adapter": adapter,
+                            "source": "model_control_plane",
+                            "available": self._is_operation_executable(adapter=adapter, operation_kind=operation_kind),
+                        }
+                    )
+
+        volc = self._volc_credentials()
+        if volc.get("imageModel"):
+            candidates.append(
+                {
+                    "candidateId": _candidate_id(
+                        modality="image",
+                        operation_kind="image.generate",
+                        provider_id="volcengine_seedream",
+                        model_id=volc["imageModel"],
+                        adapter="volcengine_ark",
+                    ),
+                    "modality": "image",
+                    "operationKind": "image.generate",
+                    "providerId": "volcengine_seedream",
+                    "providerName": "Volcengine Seedream",
+                    "modelId": volc["imageModel"],
+                    "modelRef": f"volcengine_seedream::{volc['imageModel']}",
+                    "adapter": "volcengine_ark",
+                    "source": "mcp_or_env",
+                    "available": bool(volc.get("apiKey")),
+                }
+            )
+        if volc.get("videoModel"):
+            for operation_kind in ("video.text_to_video", "video.image_to_video", "video.first_last_frame"):
+                candidates.append(
+                    {
+                        "candidateId": _candidate_id(
+                            modality="video",
+                            operation_kind=operation_kind,
+                            provider_id="volcengine_seedance",
+                            model_id=volc["videoModel"],
+                            adapter="volcengine_ark",
+                        ),
+                        "modality": "video",
+                        "operationKind": operation_kind,
+                        "providerId": "volcengine_seedance",
+                        "providerName": "Volcengine Seedance",
+                        "modelId": volc["videoModel"],
+                        "modelRef": f"volcengine_seedance::{volc['videoModel']}",
+                        "adapter": "volcengine_ark",
+                        "source": "mcp_or_env",
+                        "available": bool(volc.get("apiKey")),
+                    }
+                )
+        candidates.append(
+            {
+                "candidateId": _candidate_id(
+                    modality="voice",
+                    operation_kind="voice.tts",
+                    provider_id="v8_audio_tts",
+                    model_id="active-tts-provider",
+                    adapter="v8_audio_tts",
+                ),
+                "modality": "voice",
+                "operationKind": "voice.tts",
+                "providerId": "v8_audio_tts",
+                "providerName": "V8 Audio TTS",
+                "modelId": "active-tts-provider",
+                "modelRef": "v8_audio_tts::active-tts-provider",
+                "adapter": "v8_audio_tts",
+                "source": "runtime_builtin",
+                "available": True,
+            }
+        )
+
+        by_id: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            by_id[str(candidate["candidateId"])] = candidate
+        result = list(by_id.values())
+        result.sort(key=lambda item: (str(item.get("modality") or ""), str(item.get("providerName") or ""), str(item.get("modelId") or "")))
+        return result
+
+    def get_model_preferences(self) -> dict[str, Any]:
+        stored = storage.read_json(MODEL_PREFERENCES_STORE_FILE)
+        stored_models = {
+            str(item.get("candidateId") or ""): dict(item)
+            for item in list((stored or {}).get("models") or [])
+            if isinstance(item, dict) and item.get("candidateId")
+        } if isinstance(stored, dict) else {}
+        candidates: list[dict[str, Any]] = []
+        for index, candidate in enumerate(self.list_model_candidates(), start=1):
+            saved = stored_models.get(str(candidate.get("candidateId"))) or {}
+            priority = _safe_priority(saved.get("priority"), index * 10)
+            candidates.append(
+                {
+                    **candidate,
+                    "priority": priority,
+                    "enabled": bool(saved.get("enabled", candidate.get("available", True))),
+                    "lastUpdatedAt": saved.get("updatedAt") or "",
+                }
+            )
+        policies: dict[str, dict[str, Any]] = {}
+        operation_kinds = sorted({str(item.get("operationKind") or "") for item in candidates if item.get("operationKind")})
+        for operation_kind in operation_kinds:
+            models = [item for item in candidates if item.get("operationKind") == operation_kind]
+            models.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("providerName") or "")))
+            policies[operation_kind] = {
+                "fallbackEnabled": True,
+                "models": models,
+            }
+        return {
+            "version": 1,
+            "updatedAt": (stored or {}).get("updatedAt") if isinstance(stored, dict) else "",
+            "candidates": candidates,
+            "policies": policies,
+        }
+
+    def save_model_preferences(self, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now_iso()
+        known = {str(item.get("candidateId")): item for item in self.list_model_candidates()}
+        saved_models: list[dict[str, Any]] = []
+        for item in list((payload or {}).get("models") or []):
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(item.get("candidateId") or "").strip()
+            if not candidate_id or candidate_id not in known:
+                continue
+            base = known[candidate_id]
+            saved_models.append(
+                {
+                    "candidateId": candidate_id,
+                    "modality": base.get("modality"),
+                    "operationKind": base.get("operationKind"),
+                    "providerId": base.get("providerId"),
+                    "modelId": base.get("modelId"),
+                    "adapter": base.get("adapter"),
+                    "enabled": bool(item.get("enabled", True)),
+                    "priority": _safe_priority(item.get("priority"), 100),
+                    "updatedAt": now,
+                }
+            )
+        storage.write_json(
+            MODEL_PREFERENCES_STORE_FILE,
+            {
+                "version": 1,
+                "updatedAt": now,
+                "models": saved_models,
+            },
+        )
+        return self.get_model_preferences()
+
+    def _has_explicit_model_selection(self, request: dict[str, Any]) -> bool:
+        return any(
+            key in request and str(request.get(key) or "").strip()
+            for key in ("adapter", "provider", "providerId", "provider_id", "model", "modelId", "model_id")
+        )
+
+    def _preferred_model_candidates(self, operation_kind: str) -> list[dict[str, Any]]:
+        prefs = self.get_model_preferences()
+        candidates = [
+            dict(item)
+            for item in list((prefs.get("policies") or {}).get(operation_kind, {}).get("models") or [])
+            if bool(item.get("enabled", True)) and bool(item.get("available", True))
+        ]
+        candidates.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("providerName") or "")))
+        return candidates
+
+    def _all_model_candidates_for_operation(self, operation_kind: str) -> list[dict[str, Any]]:
+        prefs = self.get_model_preferences()
+        return [
+            dict(item)
+            for item in list((prefs.get("policies") or {}).get(operation_kind, {}).get("models") or [])
+        ]
+
+    def _request_for_candidate(self, request: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+        next_request = dict(request or {})
+        next_request["adapter"] = candidate.get("adapter")
+        next_request["providerId"] = candidate.get("providerId")
+        next_request["model"] = candidate.get("modelId")
+        next_request.setdefault("modelId", candidate.get("modelId"))
+        next_request["operationKind"] = candidate.get("operationKind")
+        return next_request
 
     def compile_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         return creative_recipe_compiler.compile_recipe(dict(request or {}))
@@ -800,6 +1163,23 @@ class CreativeMediaRuntime:
             job["error"] = f"{modality} is catalog-only in P2; runtime execution is reserved for a later phase."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
+        operation_kind = self._operation_kind_for_request(modality, request)
+        if not self._has_explicit_model_selection(request):
+            preferred = self._preferred_model_candidates(operation_kind)
+            if preferred:
+                return await self._create_job_with_model_fallback(modality, operation_kind, request, preferred)
+            if self._all_model_candidates_for_operation(operation_kind):
+                job = self._new_job(modality=modality, adapter="operation_unavailable", request={**request, "operationKind": operation_kind})
+                job["status"] = "failed"
+                job["error"] = f"No enabled executable Creative Media model candidate is available for operationKind={operation_kind}"
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
+            if operation_kind not in EXECUTABLE_OPERATION_KINDS:
+                job = self._new_job(modality=modality, adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
+                job["status"] = "failed"
+                job["error"] = f"No enabled Creative Media model candidate supports operationKind={operation_kind}"
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
         if modality == "image":
             return await self._create_image_job(request)
         if modality == "video":
@@ -808,7 +1188,79 @@ class CreativeMediaRuntime:
             return await self._create_voice_job(request)
         raise ValueError(f"Unsupported creative media modality: {modality}")
 
+    async def _create_job_with_model_fallback(
+        self,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        attempts: list[dict[str, Any]] = []
+        last_job: dict[str, Any] | None = None
+        for candidate in candidates:
+            attempt_request = self._request_for_candidate(request, candidate)
+            try:
+                if modality == "image":
+                    job = await self._create_image_job(attempt_request)
+                elif modality == "video":
+                    job = await self._create_video_job(attempt_request)
+                elif modality == "voice":
+                    job = await self._create_voice_job(attempt_request)
+                else:
+                    raise ValueError(f"Unsupported fallback modality: {modality}")
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "candidateId": candidate.get("candidateId"),
+                        "operationKind": operation_kind,
+                        "providerId": candidate.get("providerId"),
+                        "modelId": candidate.get("modelId"),
+                        "adapter": candidate.get("adapter"),
+                        "status": "failed",
+                        "error": _exception_summary(exc),
+                    }
+                )
+                continue
+            last_job = job
+            attempts.append(
+                {
+                    "candidateId": candidate.get("candidateId"),
+                    "operationKind": operation_kind,
+                    "providerId": candidate.get("providerId"),
+                    "modelId": candidate.get("modelId"),
+                    "adapter": candidate.get("adapter"),
+                    "status": job.get("status"),
+                    "error": job.get("error"),
+                }
+            )
+            if job.get("status") != "failed":
+                job["selectedModelCandidate"] = {
+                    "candidateId": candidate.get("candidateId"),
+                    "operationKind": operation_kind,
+                    "providerId": candidate.get("providerId"),
+                    "modelId": candidate.get("modelId"),
+                    "adapter": candidate.get("adapter"),
+                }
+                job["fallbackAttempts"] = attempts
+                return self._save_job(job)
+        if last_job:
+            last_job["fallbackAttempts"] = attempts
+            return self._save_job(last_job)
+        job = self._new_job(modality=modality, adapter="fallback", request={**request, "operationKind": operation_kind})
+        job["status"] = "failed"
+        job["error"] = "No enabled Creative Media model candidate succeeded"
+        job["fallbackAttempts"] = attempts
+        job["completedAt"] = utc_now_iso()
+        return self._save_job(job)
+
     async def _create_image_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        operation_kind = self._operation_kind_for_request("image", request)
+        if operation_kind != "image.generate":
+            job = self._new_job(modality="image", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
+            job["status"] = "failed"
+            job["error"] = f"Creative Media P4 has not implemented executable image operationKind={operation_kind}; compile an editIntent recipe first."
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
         adapter = str(request.get("adapter") or "").strip().lower()
         provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip()
         if not adapter:
@@ -828,6 +1280,13 @@ class CreativeMediaRuntime:
             return self._save_job(job)
 
     async def _create_video_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        operation_kind = self._operation_kind_for_request("video", request)
+        if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"}:
+            job = self._new_job(modality="video", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
+            job["status"] = "failed"
+            job["error"] = f"Creative Media P4 has not implemented executable video operationKind={operation_kind}; keep it as recipe/catalog planning until an adapter is added."
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
         adapter = str(request.get("adapter") or "volcengine_ark").strip().lower()
         job = self._new_job(modality="video", adapter=adapter, request=request)
         self._save_job(job)
@@ -853,6 +1312,13 @@ class CreativeMediaRuntime:
             return self._save_job(job)
 
     async def _create_voice_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        operation_kind = self._operation_kind_for_request("voice", request)
+        if operation_kind != "voice.tts":
+            job = self._new_job(modality="voice", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
+            job["status"] = "failed"
+            job["error"] = f"Unsupported voice operationKind={operation_kind}"
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
         job = self._new_job(modality="voice", adapter="v8_audio_tts", request=request)
         self._save_job(job)
         try:

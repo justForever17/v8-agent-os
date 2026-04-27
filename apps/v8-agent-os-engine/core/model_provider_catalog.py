@@ -35,10 +35,12 @@ _MEDIA_MODEL_TYPES = {
 _MEDIA_DEFAULT_MODEL_IDS = {
     "openai_images": ["gpt-image-2", "gpt-image-1"],
     "volcengine_seedream": ["doubao-seedream-4-0-250828"],
+    "aliyun_bailian_image": ["wan2.6-image"],
     "stability_image": ["stable-image-core"],
     "fal_image": ["fal-image-model"],
     "replicate_image": ["replicate-image-model"],
     "volcengine_seedance": ["doubao-seedance-1-0-pro-fast-251015"],
+    "aliyun_bailian_video": ["wan2.7-t2v"],
     "google_veo": ["veo-3.1-generate-preview"],
     "runway_video": ["gen4_turbo"],
     "luma_video": ["ray-2"],
@@ -48,6 +50,7 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "openai_audio_speech": ["gpt-4o-mini-tts"],
     "elevenlabs_tts": ["eleven_multilingual_v2"],
     "minimax_tts": ["speech-02-hd"],
+    "aliyun_bailian_cosyvoice": ["cosyvoice-v3-flash"],
     "mureka_music": ["mureka-o1"],
     "fal_music": ["fal-music-model"],
     "suno_placeholder": ["suno-future-generation"],
@@ -112,19 +115,42 @@ class ModelProviderCatalog:
     def _media_model_type(self, modality: str) -> str:
         return _MEDIA_MODEL_TYPES.get(_normalized_modality(modality), "MEDIA")
 
+    def _media_operation_kinds(self, provider_entry: Dict[str, Any], modality: str) -> List[str]:
+        explicit = provider_entry.get("operationKinds") or provider_entry.get("operations") or []
+        if isinstance(explicit, list) and explicit:
+            return [str(item) for item in explicit if str(item).strip()]
+        normalized = _normalized_modality(modality)
+        if normalized == "image":
+            return ["image.generate"]
+        if normalized == "video":
+            adapter = str(provider_entry.get("adapter") or "")
+            if adapter == "volcengine_ark":
+                return ["video.text_to_video", "video.image_to_video", "video.first_last_frame"]
+            return ["video.text_to_video"]
+        if normalized == "voice":
+            return ["voice.tts"]
+        if normalized == "music":
+            return ["music.brief"]
+        if normalized == "model3d":
+            return ["model3d.generate"]
+        return []
+
     def _media_catalog_model(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> Dict[str, Any]:
         request = dict(provider_entry.get("request") or {})
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
+        operation_kinds = self._media_operation_kinds(provider_entry, modality)
         return {
             "id": model_id,
             "type": self._media_model_type(modality),
             "capabilities": self._media_capabilities(modality),
+            "operationKinds": operation_kinds,
             "parameterProfile": provider_entry.get("apiStandard") or provider_entry.get("adapter") or "media_generation",
             "mediaLimits": {
                 "modality": _normalized_modality(modality),
                 "adapter": provider_entry.get("adapter") or "catalog_only",
                 "apiStandard": provider_entry.get("apiStandard") or "",
+                "operationKinds": operation_kinds,
                 "submitPath": request.get("submitPath") or "",
                 "pollingMode": polling.get("mode") or "none",
                 "resultPaths": _as_list(result.get("paths")),
@@ -149,6 +175,7 @@ class ModelProviderCatalog:
             "mediaModality": normalized_modality,
             "adapter": adapter,
             "baseUrl": entry.get("baseUrlDefault") or "",
+            "logoAsset": entry.get("logoAsset") or "",
             "auth": auth,
             "probeStrategy": "catalog_only",
             "sourceUrl": entry.get("sourceUrl") or "",

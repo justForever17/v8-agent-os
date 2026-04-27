@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-04-26",
+  "updatedAt": "2026-04-27",
   "statusLevels": ["verified_official", "provider_docs", "community_or_inferred", "placeholder"],
   "notes": [
     "This file stores public provider metadata only. Never store API keys here.",
@@ -15,6 +15,7 @@
         "displayName": "OpenAI-compatible Images",
         "apiStandard": "openai_images",
         "adapter": "openai_images",
+        "operationKinds": ["image.generate"],
         "baseUrlDefault": "https://api.openai.com/v1",
         "credentialHelp": {
           "label": "Get API key",
@@ -38,8 +39,10 @@
       {
         "id": "volcengine_seedream",
         "displayName": "Volcengine Ark Seedream",
+        "logoAsset": "/model-assets/lobe/volcengine-color.svg",
         "apiStandard": "volcengine_ark_image",
         "adapter": "volcengine_ark",
+        "operationKinds": ["image.generate"],
         "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
         "credentialHelp": {
           "label": "Get Ark API key",
@@ -58,6 +61,32 @@
         "result": {"paths": ["data[].url", "data[].b64_json"]},
         "statusMap": {"http_2xx": "succeeded", "http_error": "failed"},
         "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "aliyun_bailian_image",
+        "displayName": "Alibaba Cloud Bailian Image",
+        "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "apiStandard": "dashscope_image_generation",
+        "adapter": "catalog_only",
+        "operationKinds": ["image.generate"],
+        "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
+        "credentialHelp": {
+          "label": "Get Bailian API key",
+          "url": "https://help.aliyun.com/zh/model-studio/get-api-key"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/services/aigc/image-generation/generation",
+          "bodyFields": ["model", "input.prompt", "input.image_url", "parameters.size", "parameters.n"],
+          "sizeField": "parameters.size",
+          "sizeFormat": "WIDTH*HEIGHT"
+        },
+        "polling": {"mode": "task", "statusPath": "/tasks/{task_id}"},
+        "result": {"paths": ["output.results[].url", "output.image_url", "output.url"]},
+        "statusMap": {"PENDING": "queued", "RUNNING": "running", "SUCCEEDED": "succeeded", "FAILED": "failed", "CANCELED": "cancelled"},
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/image-generation/",
         "confidence": "provider_docs"
       },
       {
@@ -113,8 +142,10 @@
       {
         "id": "volcengine_seedance",
         "displayName": "Volcengine Ark Seedance",
+        "logoAsset": "/model-assets/lobe/volcengine-color.svg",
         "apiStandard": "volcengine_ark_video",
         "adapter": "volcengine_ark",
+        "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame"],
         "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
         "credentialHelp": {
           "label": "Get Ark API key",
@@ -134,6 +165,34 @@
         "result": {"paths": ["content.video_url"]},
         "statusMap": {"ordered": "queued", "running": "running", "succeeded": "succeeded", "failed": "failed"},
         "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "aliyun_bailian_video",
+        "displayName": "Alibaba Cloud Bailian Video",
+        "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "apiStandard": "dashscope_video_task",
+        "adapter": "catalog_only",
+        "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.lipsync", "video.action_transfer", "video.avatar", "video.replacement", "video.style_repaint"],
+        "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
+        "credentialHelp": {
+          "label": "Get Bailian API key",
+          "url": "https://help.aliyun.com/zh/model-studio/get-api-key"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/services/aigc/video-generation/video-synthesis",
+          "bodyFields": ["model", "input.prompt", "input.image_url", "input.audio_url", "input.video_url", "parameters.resolution", "parameters.duration", "parameters.ratio"],
+          "durationField": "parameters.duration",
+          "resolutionField": "parameters.resolution",
+          "ratioField": "parameters.ratio",
+          "sizeFormat": "RESOLUTION_ENUM"
+        },
+        "polling": {"mode": "task", "statusPath": "/tasks/{task_id}", "recommendedIntervalSeconds": 10},
+        "result": {"paths": ["output.video_url", "output.results[].url"]},
+        "statusMap": {"PENDING": "queued", "RUNNING": "running", "SUCCEEDED": "succeeded", "FAILED": "failed", "CANCELED": "cancelled"},
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/use-video-generation",
         "confidence": "provider_docs"
       },
       {
@@ -181,6 +240,7 @@
       {
         "id": "minimax_video",
         "displayName": "MiniMax Video",
+        "logoAsset": "/model-assets/lobe/minimax-color.svg",
         "apiStandard": "minimax_task",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.minimax.io",
@@ -253,6 +313,7 @@
       {
         "id": "minimax_tts",
         "displayName": "MiniMax Speech",
+        "logoAsset": "/model-assets/lobe/minimax-color.svg",
         "apiStandard": "minimax_tts",
         "adapter": "catalog_only",
         "baseUrlDefault": "https://api.minimax.io",
@@ -262,6 +323,29 @@
         "polling": {"mode": "none"},
         "result": {"paths": ["data.audio", "binary_body"]},
         "sourceUrl": "https://platform.minimaxi.com/document/speech-synthesis",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "aliyun_bailian_cosyvoice",
+        "displayName": "Alibaba Cloud Bailian CosyVoice",
+        "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "apiStandard": "dashscope_cosyvoice_tts",
+        "adapter": "catalog_only",
+        "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
+        "credentialHelp": {
+          "label": "Get Bailian API key",
+          "url": "https://help.aliyun.com/zh/model-studio/get-api-key"
+        },
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/services/audio/tts/SpeechSynthesizer",
+          "bodyFields": ["model", "input.text", "parameters.voice", "parameters.format", "parameters.sample_rate"],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["output.audio.url", "output.url", "binary_body"]},
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api",
         "confidence": "provider_docs"
       }
     ],

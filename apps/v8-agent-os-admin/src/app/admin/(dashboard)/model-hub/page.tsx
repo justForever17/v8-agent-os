@@ -114,14 +114,14 @@ type CatalogProvider = {
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
 type MediaModelType = "MEDIA" | "IMAGE" | "VIDEO" | "AUDIO" | "VOICE" | "MUSIC" | "WORKFLOW" | "MODEL3D";
 
-const CATALOG_PURPOSES: { id: CatalogPurpose; label: string; hint: string; modelType: string; modality?: string }[] = [
-    { id: "chat", label: "LLM / 多模态", hint: "聊天、推理、工具调用、视觉理解模型。", modelType: "TEXT" },
-    { id: "image", label: "图片生成", hint: "只登记图片生成 Provider，不写上下文窗口/温度。", modelType: "IMAGE", modality: "image" },
-    { id: "video", label: "视频生成", hint: "登记视频任务/轮询类 Provider。", modelType: "VIDEO", modality: "video" },
-    { id: "voice", label: "语音生成", hint: "TTS/旁白/对白 Provider，与音乐曲库分开。", modelType: "VOICE", modality: "voice" },
-    { id: "music", label: "音乐生成", hint: "登记 cue/brief/future generation Provider，不进入旧 MusicTrack。", modelType: "MUSIC", modality: "music" },
-    { id: "workflow", label: "ComfyUI workflow", hint: "登记 workflowName + 参数形态的工作流 Provider。", modelType: "WORKFLOW", modality: "workflow" },
-    { id: "model3d", label: "3D 模型", hint: "预留 3D/GLB/mesh 生成 Provider 接入。", modelType: "MODEL3D", modality: "model3d" },
+const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string; modelType: string; modality?: string }[] = [
+    { id: "chat", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.chat", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.chatHint", modelType: "TEXT" },
+    { id: "image", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.image", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.imageHint", modelType: "IMAGE", modality: "image" },
+    { id: "video", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.video", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.videoHint", modelType: "VIDEO", modality: "video" },
+    { id: "voice", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.voice", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.voiceHint", modelType: "VOICE", modality: "voice" },
+    { id: "music", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.music", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.musicHint", modelType: "MUSIC", modality: "music" },
+    { id: "workflow", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.workflow", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.workflowHint", modelType: "WORKFLOW", modality: "workflow" },
+    { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.model3d", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.model3dHint", modelType: "MODEL3D", modality: "model3d" },
 ];
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
@@ -284,6 +284,8 @@ export default function ModelHubPage() {
     const providerOverviewById = useMemo(() => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])), [hubEnvelope]);
     const selectedCatalogProvider = useMemo(() => catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null, [catalogProviders, selectedCatalogProviderId]);
     const catalogPurposeConfig = useMemo(() => getCatalogPurposeConfig(catalogPurpose), [catalogPurpose]);
+    const catalogPurposeLabel = t(catalogPurposeConfig.labelKey);
+    const catalogPurposeHint = t(catalogPurposeConfig.hintKey);
     const selectedCredentialHelpUrl = useMemo(() => {
         const help = selectedCatalogProvider?.credentialHelp;
         if (!help) return "";
@@ -472,7 +474,7 @@ export default function ModelHubPage() {
             toast({
                 variant: "destructive",
                 title: t("app.admin.dashboard.model.hub.catalog.probeFailed"),
-                description: "请先填写自定义 Provider 名称和 baseURL。",
+                description: t("app.admin.dashboard.model.hub.catalog.customMissing"),
             });
             return;
         }
@@ -483,7 +485,7 @@ export default function ModelHubPage() {
             setManualModelEntryEnabled(true);
             setCatalogProbeStatus({
                 ok: true,
-                message: `${catalogPurposeConfig.label} 自定义 Provider 使用手填模型/工作流 ID；不会探测聊天 /models 或写入上下文窗口。`,
+                message: t("app.admin.dashboard.model.hub.catalog.customMediaManual", { purpose: catalogPurposeLabel }),
                 source: "manual",
             });
             return;
@@ -516,14 +518,14 @@ export default function ModelHubPage() {
                 setManualModelEntryEnabled(!requiresCredential);
                 setCatalogProbeStatus({
                     ok: false,
-                    message: requiresCredential ? "请先输入 API key，或先接入该 Provider 保存凭据。" : reason,
+                    message: requiresCredential ? t("app.admin.dashboard.model.hub.catalog.credentialRequired") : reason,
                     resolvedModelsUrl: data.resolvedModelsUrl,
                     source: data.source,
                 });
                 toast({
                     variant: "destructive",
                     title: t("app.admin.dashboard.model.hub.catalog.probeFailed"),
-                    description: requiresCredential ? "请先输入 API key。" : `${reason}；你仍可手填模型 ID 接入。`,
+                    description: requiresCredential ? t("app.admin.dashboard.model.hub.catalog.apiKeyRequired") : t("app.admin.dashboard.model.hub.catalog.manualFallback", { reason }),
                 });
                 return;
             }
@@ -535,7 +537,9 @@ export default function ModelHubPage() {
             setManualModelEntryEnabled(nextModels.length === 0);
             setCatalogProbeStatus({
                 ok: true,
-                message: data.source === "catalog" ? `已载入 ${nextModels.length} 个预设模型/工作流。` : `在线探测成功，发现 ${nextModels.length} 个模型。`,
+                message: data.source === "catalog"
+                    ? t("app.admin.dashboard.model.hub.catalog.catalogLoaded", { count: nextModels.length })
+                    : t("app.admin.dashboard.model.hub.catalog.onlineLoaded", { count: nextModels.length }),
                 resolvedModelsUrl: data.resolvedModelsUrl,
                 source: data.source,
             });
@@ -598,7 +602,7 @@ export default function ModelHubPage() {
             toast({
                 variant: "destructive",
                 title: t("app.admin.dashboard.model.hub.page.kb2803a72"),
-                description: extractErrorText(data.detail || data.error, "删除自定义 Provider 失败。"),
+                description: extractErrorText(data.detail || data.error, t("app.admin.dashboard.model.hub.catalog.deleteCustomFailed")),
             });
             return;
         }
@@ -640,7 +644,7 @@ export default function ModelHubPage() {
             const successMessage = [
                 `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} · ${Math.round(Number(data.latencyMs || 0))}ms`,
                 resolvedEndpoint,
-                skippedCapabilities ? "基础连接已通过，深度能力未全量探测" : "",
+                skippedCapabilities ? t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities") : "",
                 data.message || "",
             ].filter(Boolean).join(" · ");
             setConnectionStatusMap((current) => ({
@@ -742,7 +746,7 @@ export default function ModelHubPage() {
                     </div>
                     <div className="rounded-2xl border bg-card p-4">
                         <div className="text-sm font-semibold">{t("app.admin.dashboard.model.hub.catalog.apiProvider")}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">先选接入用途；媒体类模型不会写入上下文窗口、最大输出或温度等聊天字段。</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.catalog.apiProviderPurposeHint")}</div>
                         <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                             {CATALOG_PURPOSES.map((purpose) => (
                                 <button
@@ -759,8 +763,8 @@ export default function ModelHubPage() {
                                         setManualModelEntryEnabled(false);
                                     }}
                                 >
-                                    <span className="block text-sm font-semibold">{purpose.label}</span>
-                                    <span className={`mt-1 block truncate text-[11px] ${catalogPurpose === purpose.id ? "text-white/75" : "text-muted-foreground"}`}>{purpose.hint}</span>
+                                    <span className="block text-sm font-semibold">{t(purpose.labelKey)}</span>
+                                    <span className={`mt-1 block truncate text-[11px] ${catalogPurpose === purpose.id ? "text-white/75" : "text-muted-foreground"}`}>{t(purpose.hintKey)}</span>
                                 </button>
                             ))}
                         </div>
@@ -778,10 +782,10 @@ export default function ModelHubPage() {
                                     <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectProvider")}/>
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="__custom__">+ 添加自定义 Provider</SelectItem>
+                                    <SelectItem value="__custom__">{t("app.admin.dashboard.model.hub.catalog.addCustomProvider")}</SelectItem>
                                     {apiCatalogProviders.filter((item) => item.isCustom).map((provider) => (
                                         <SelectItem key={provider.id} value={provider.id}>
-                                            <ProviderOptionLabel provider={provider} suffix="自定义" />
+                                            <ProviderOptionLabel provider={provider} suffix={t("app.admin.dashboard.model.hub.catalog.customSuffix")} />
                                         </SelectItem>
                                     ))}
                                     {apiCatalogProviders.filter((item) => !item.isCustom).map((provider) => (
@@ -798,41 +802,41 @@ export default function ModelHubPage() {
                                         variant="ghost"
                                         size="icon"
                                         className="ml-1 h-9 w-9 shrink-0"
-                                        title={selectedCatalogProvider?.credentialHelp?.label || "获取 API Key"}
+                                        title={selectedCatalogProvider?.credentialHelp?.label || t("app.admin.dashboard.model.hub.catalog.getApiKey")}
                                         onClick={() => window.open(selectedCredentialHelpUrl, "_blank", "noopener,noreferrer")}
                                     >
                                         <ExternalLink className="h-4 w-4"/>
                                     </Button>
                                 ) : null}
-                                <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0" placeholder="API key；已接入 Provider 可留空复用"/>
+                                <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
                             </div>
                             <Button disabled={isCatalogBusy} onClick={() => void handleProbeCatalogProvider()}>{t("app.admin.dashboard.model.hub.catalog.probe")}</Button>
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground">
-                            当前用途：{catalogPurposeConfig.label}。{catalogPurposeConfig.hint}
+                            {t("app.admin.dashboard.model.hub.catalog.currentPurpose", { purpose: catalogPurposeLabel, hint: catalogPurposeHint })}
                         </div>
                         {selectedCatalogProviderId === "__custom__" ? (
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                <Input value={customProviderName} onChange={(event) => setCustomProviderName(event.target.value)} placeholder="Provider name，例如 My Gateway"/>
-                                <Input value={customProviderBaseUrl} onChange={(event) => setCustomProviderBaseUrl(event.target.value)} placeholder="baseURL，例如 http://127.0.0.1:8317/v1"/>
+                                <Input value={customProviderName} onChange={(event) => setCustomProviderName(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customNamePlaceholder")}/>
+                                <Input value={customProviderBaseUrl} onChange={(event) => setCustomProviderBaseUrl(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}/>
                                 <div className="md:col-span-2 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
                                     {catalogPurpose === "chat"
-                                        ? "OpenAI-compatible 本地服务通常需要填写到 /v1；系统会严格请求 baseURL + /models，不会自动补 /v1。"
-                                        : `${catalogPurposeConfig.label} 自定义接入只登记 Provider 与模型/工作流 ID；真实参数由 Creative Media runtime 的 recipe / adapter 治理。`}
+                                        ? t("app.admin.dashboard.model.hub.catalog.chatCustomHint")
+                                        : t("app.admin.dashboard.model.hub.catalog.mediaCustomHint", { purpose: catalogPurposeLabel })}
                                 </div>
                             </div>
                         ) : selectedCatalogProvider?.isCustom ? (
                             <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
                                 <span>{selectedCatalogProvider.baseUrl}</span>
                                 <Button variant="outline" size="sm" onClick={() => void handleDeleteCustomCatalogProvider(selectedCatalogProvider.id)}>
-                                    <X className="mr-1 h-3 w-3"/>删除自定义
+                                    <X className="mr-1 h-3 w-3"/>{t("app.admin.dashboard.model.hub.catalog.deleteCustom")}
                                 </Button>
                             </div>
                         ) : selectedCatalogProvider ? (
                             <div className="mt-3 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
                                 {selectedCatalogProvider.probeStrategy === "catalog_only"
-                                    ? `预设 baseURL：${selectedCatalogProvider.baseUrl || "由 Provider 配置决定"} · 申请入口：${selectedCatalogProvider.credentialHelp?.label || "查看 Provider"}`
-                                    : `探测地址：${selectedCatalogProvider.baseUrl}/models`}
+                                    ? t("app.admin.dashboard.model.hub.catalog.presetBaseUrl", { baseUrl: selectedCatalogProvider.baseUrl || t("app.admin.dashboard.model.hub.catalog.providerDefault"), help: selectedCatalogProvider.credentialHelp?.label || t("app.admin.dashboard.model.hub.catalog.openProvider") })
+                                    : t("app.admin.dashboard.model.hub.catalog.probeUrl", { url: `${selectedCatalogProvider.baseUrl}/models` })}
                             </div>
                         ) : null}
                         {catalogProbeStatus ? (
@@ -851,7 +855,7 @@ export default function ModelHubPage() {
                                             setSelectedCatalogModelId(event.target.value.trim());
                                         }
                                     }}
-                                    placeholder={manualModelEntryEnabled ? "手填模型 ID，例如 gpt-5.5" : "输入筛选模型 ID / name"}
+                                    placeholder={manualModelEntryEnabled ? t("app.admin.dashboard.model.hub.catalog.manualModelPlaceholder") : t("app.admin.dashboard.model.hub.catalog.modelFilterPlaceholder")}
                                 />
                                 {!manualModelEntryEnabled ? (
                                     <div className="max-h-64 overflow-y-auto rounded-xl border bg-background p-2">
@@ -873,7 +877,7 @@ export default function ModelHubPage() {
                                             );
                                         })}
                                         {visibleCatalogModels.length === 0 ? (
-                                            <div className="px-3 py-4 text-sm text-muted-foreground">没有匹配的模型。</div>
+                                            <div className="px-3 py-4 text-sm text-muted-foreground">{t("app.admin.dashboard.model.hub.catalog.noMatchedModels")}</div>
                                         ) : null}
                                     </div>
                                 ) : null}
@@ -936,12 +940,12 @@ export default function ModelHubPage() {
                             <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
                             <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
                             <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>
-                            <TabsTrigger value="image">图片</TabsTrigger>
-                            <TabsTrigger value="video">视频</TabsTrigger>
-                            <TabsTrigger value="voice">语音</TabsTrigger>
-                            <TabsTrigger value="music">音乐</TabsTrigger>
-                            <TabsTrigger value="workflow">Workflow</TabsTrigger>
-                            <TabsTrigger value="model3d">3D</TabsTrigger>
+                            <TabsTrigger value="image">{t("app.admin.dashboard.model.hub.catalog.tabImage")}</TabsTrigger>
+                            <TabsTrigger value="video">{t("app.admin.dashboard.model.hub.catalog.tabVideo")}</TabsTrigger>
+                            <TabsTrigger value="voice">{t("app.admin.dashboard.model.hub.catalog.tabVoice")}</TabsTrigger>
+                            <TabsTrigger value="music">{t("app.admin.dashboard.model.hub.catalog.tabMusic")}</TabsTrigger>
+                            <TabsTrigger value="workflow">{t("app.admin.dashboard.model.hub.catalog.tabWorkflow")}</TabsTrigger>
+                            <TabsTrigger value="model3d">{t("app.admin.dashboard.model.hub.catalog.tabModel3d")}</TabsTrigger>
                             <TabsTrigger value="embedding">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</TabsTrigger>
                             <TabsTrigger value="rerank">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</TabsTrigger>
                         </TabsList>
@@ -1148,13 +1152,13 @@ export default function ModelHubPage() {
                                 <SelectContent>
                                     <SelectItem value="TEXT">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</SelectItem>
                                     <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</SelectItem>
-                                    <SelectItem value="IMAGE">图片生成</SelectItem>
-                                    <SelectItem value="VIDEO">视频生成</SelectItem>
-                                    <SelectItem value="VOICE">语音生成</SelectItem>
-                                    <SelectItem value="MUSIC">音乐生成</SelectItem>
-                                    <SelectItem value="WORKFLOW">ComfyUI / Workflow</SelectItem>
-                                    <SelectItem value="MODEL3D">3D 模型生成</SelectItem>
-                                    <SelectItem value="MEDIA">媒体生成（兼容）</SelectItem>
+                                    <SelectItem value="IMAGE">{t("app.admin.dashboard.model.hub.catalog.typeImage")}</SelectItem>
+                                    <SelectItem value="VIDEO">{t("app.admin.dashboard.model.hub.catalog.typeVideo")}</SelectItem>
+                                    <SelectItem value="VOICE">{t("app.admin.dashboard.model.hub.catalog.typeVoice")}</SelectItem>
+                                    <SelectItem value="MUSIC">{t("app.admin.dashboard.model.hub.catalog.typeMusic")}</SelectItem>
+                                    <SelectItem value="WORKFLOW">{t("app.admin.dashboard.model.hub.catalog.typeWorkflow")}</SelectItem>
+                                    <SelectItem value="MODEL3D">{t("app.admin.dashboard.model.hub.catalog.typeModel3d")}</SelectItem>
+                                    <SelectItem value="MEDIA">{t("app.admin.dashboard.model.hub.catalog.typeMediaCompat")}</SelectItem>
                                     <SelectItem value="EMBEDDING">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</SelectItem>
                                     <SelectItem value="RERANK">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</SelectItem>
                                 </SelectContent>
@@ -1179,16 +1183,16 @@ export default function ModelHubPage() {
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
-                                    <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="仅用于 V8OS 预算估算"/>
+                                    <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.contextWindowPlaceholder")}/>
                                 </div>
                                 <div className="space-y-2">
                                     <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
-                                    <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="可选请求上限"/>
+                                    <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.maxTokensPlaceholder")}/>
                                 </div>
                             </div>
                         ) : MEDIA_MODEL_TYPES.has(modelType) ? (
                             <div className="rounded-xl border bg-muted/30 p-3 text-sm text-muted-foreground">
-                                媒体生成 Provider 使用 Creative Media 的 recipe / adapter / artifact 治理，不展示聊天模型的上下文窗口、最大输出或温度。音乐与旧 MusicTrack 播放器保持隔离，3D 当前只做接入预留。
+                                {t("app.admin.dashboard.model.hub.catalog.mediaModelNotice")}
                             </div>
                         ) : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button>

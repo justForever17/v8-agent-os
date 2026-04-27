@@ -15,13 +15,12 @@ _SNAPSHOT_RUNTIME_ORDER = (
     "plugin_host",
     "computer_use",
     "rpa",
-    "desktop_live",
 )
 
 _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     "chat": {
         "displayName": "ChatRuntime",
-        "summary": "负责 Supervisor 主链、多 Agent 聊天编排与会话执行控制。",
+        "summary": "当前用户请求所在的主对话执行面；Supervisor 已在其中运行，通常无需显式选择它。",
         "visibility": "primary",
     },
     "memory": {
@@ -63,11 +62,6 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "displayName": "NetworkSupervisorRuntime",
         "summary": "负责节点发现、信任、定向唤醒与显式远程任务委派。",
         "visibility": "primary",
-    },
-    "desktop_live": {
-        "displayName": "DesktopLiveSurface",
-        "summary": "负责 Admin/Phone/Web 远程桌面画面桥接、会话采集、WebRTC/MJPEG 协商与直播状态管理；不作为 agent 执行 runtime。",
-        "visibility": "secondary",
     },
 }
 
@@ -433,8 +427,6 @@ class CapabilityRegistry:
                     return bool(storage.get_plugin_host_config().get("enabled", True))
                 if kind == "network_supervisor":
                     return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
-                if kind == "desktop_live":
-                    return bool((storage.get_system_base_config().get("desktopLive") or {}).get("enabled", True))
             except Exception:
                 return True
             return True

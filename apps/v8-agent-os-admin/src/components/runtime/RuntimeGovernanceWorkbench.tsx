@@ -123,6 +123,25 @@ type RuntimeLiveStats = {
     recoverableSessions: number;
 };
 
+type MemoryAuditLog = {
+    id?: string;
+    source_type?: string;
+    action?: string;
+    status?: string;
+    details?: string;
+    timestamp?: string;
+};
+
+type MemoryDashboard = {
+    extractions?: {
+        summary?: Record<string, number>;
+    };
+    maintenance?: {
+        summary?: Record<string, number>;
+    };
+    workflows?: Record<string, unknown>;
+};
+
 const PRESET_LABELS: Record<RuntimePresetId, { title: string; description: string }> = {
     balanced: { title:"components.runtime.RuntimeGovernanceWorkbench.k0590e788", description:"components.runtime.RuntimeGovernanceWorkbench.k4a43ff73" },
     conservative: { title:"components.runtime.RuntimeGovernanceWorkbench.k1de80f3c", description:"components.runtime.RuntimeGovernanceWorkbench.k7b94c86c" },
@@ -198,6 +217,24 @@ function asStringArray(value: unknown): string[] {
         : [];
 }
 
+function parseMemoryAuditDetails(value?: string) {
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : {};
+    } catch {
+        return {};
+    }
+}
+
+function compactNumber(value: unknown) {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num)) return 0;
+    return num;
+}
+
 function extractPlannerInspector(detail: SessionDetail | null) {
     if (!detail) return null;
     const workflowProjection = asRecord(detail.workflowProjection);
@@ -263,6 +300,8 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
     const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
     const [selectedSessionDetail, setSelectedSessionDetail] = useState<SessionDetail | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
+    const [memoryDashboard, setMemoryDashboard] = useState<MemoryDashboard | null>(null);
+    const [memoryAuditLogs, setMemoryAuditLogs] = useState<MemoryAuditLog[]>([]);
 
     const runtimes = useMemo(() => snapshot.runtimes || [], [snapshot.runtimes]);
     const recommendations = useMemo(() => snapshot.recommendations || [], [snapshot.recommendations]);
@@ -387,6 +426,8 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
         () => extractPlannerInspector(selectedSessionDetail),
         [selectedSessionDetail]
     );
+    const memoryExtractionSummary = memoryDashboard?.extractions?.summary || {};
+    const memoryMaintenanceSummary = memoryDashboard?.maintenance?.summary || {};
 
     const loadSnapshot = useCallback(async (nextQuery?: string) => {
         const suffix = nextQuery?.trim() ? `?query=${encodeURIComponent(nextQuery.trim())}` : "";
@@ -407,17 +448,23 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
     }, []);
 
     const loadObservability = useCallback(async () => {
-        const [runsRes, approvalsRes, sessionsRes] = await Promise.all([
+        const [runsRes, approvalsRes, sessionsRes, memoryRes, auditRes] = await Promise.all([
             fetch("/api/runs?limit=40", { cache: "no-store" }),
             fetch("/api/approvals?status=pending", { cache: "no-store" }),
             fetch("/api/conversations", { cache: "no-store" }),
+            fetch("/api/memory/dashboard", { cache: "no-store" }),
+            fetch("/api/audit/logs?source_type=MEMORY&limit=50", { cache: "no-store" }),
         ]);
         const runsData = runsRes.ok ? await runsRes.json().catch(() => ({})) : {};
         const approvalsData = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
         const sessionsData = sessionsRes.ok ? await sessionsRes.json().catch(() => []) : [];
+        const memoryData = memoryRes.ok ? await memoryRes.json().catch(() => ({})) : {};
+        const auditData = auditRes.ok ? await auditRes.json().catch(() => ({})) : {};
         setRuns(Array.isArray(runsData?.runs) ? runsData.runs : []);
         setApprovals(Array.isArray(approvalsData?.approvals) ? approvalsData.approvals : []);
         setSessions(Array.isArray(sessionsData) ? sessionsData : []);
+        setMemoryDashboard(memoryData || null);
+        setMemoryAuditLogs(Array.isArray(auditData?.logs) ? auditData.logs : []);
     }, []);
 
     const loadAll = useCallback(async (nextQuery?: string) => {
@@ -587,6 +634,53 @@ export function RuntimeGovernanceWorkbench({ embedded = false }: RuntimeGovernan
                 <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>待审批</CardDescription><CardTitle className="text-3xl">{approvals.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">这里会显示待处理确认和当前状态。</CardContent></Card>
                 <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>可恢复 Workflow</CardDescription><CardTitle className="text-3xl">{recoverableSessions.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">这里统计的是当前仍可 resume/retry 的会话工作流。</CardContent></Card>
             </div>
+
+            <Card className="border-border/60">
+                <CardHeader>
+                    <CardTitle className="text-lg">{t("components.runtime.RuntimeGovernanceWorkbench.memoryObservabilityTitle")}</CardTitle>
+                    <CardDescription>{t("components.runtime.RuntimeGovernanceWorkbench.memoryObservabilityDescription")}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-4">
+                        {[
+                            [t("components.runtime.RuntimeGovernanceWorkbench.memoryMetricCompleted"), memoryExtractionSummary.completed],
+                            [t("components.runtime.RuntimeGovernanceWorkbench.memoryMetricSkipped"), memoryExtractionSummary.skipped],
+                            [t("components.runtime.RuntimeGovernanceWorkbench.memoryMetricPersisted"), memoryExtractionSummary.persisted],
+                            [t("components.runtime.RuntimeGovernanceWorkbench.memoryMetricBackfilled"), memoryMaintenanceSummary.summaryBackfilled],
+                        ].map(([label, value]) => (
+                            <div key={String(label)} className="rounded-xl border bg-muted/20 p-3">
+                                <div className="text-xs text-muted-foreground">{label}</div>
+                                <div className="mt-2 text-2xl font-semibold">{compactNumber(value)}</div>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                        {memoryAuditLogs.length ? memoryAuditLogs.slice(0, 12).map((log) => {
+                            const details = parseMemoryAuditDetails(log.details);
+                            return (
+                                <div key={log.id || `${log.timestamp}-${log.action}`} className="rounded-xl border bg-background p-3">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <Badge variant="outline">{String(details.action || log.action || "memory")}</Badge>
+                                        <Badge variant={String(log.status || "").toUpperCase() === "SUCCESS" ? "default" : "secondary"}>{log.status || "INFO"}</Badge>
+                                        {details.callsLlm === true ? <Badge>{t("components.runtime.RuntimeGovernanceWorkbench.memoryCallsLlm")}</Badge> : <Badge variant="secondary">{t("components.runtime.RuntimeGovernanceWorkbench.memoryNoLlm")}</Badge>}
+                                        <span className="text-xs text-muted-foreground">{formatWhen(log.timestamp)}</span>
+                                    </div>
+                                    <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-muted-foreground md:grid-cols-4">
+                                        <span>{t("components.runtime.RuntimeGovernanceWorkbench.memoryTrigger")}: {String(details.trigger || "—")}</span>
+                                        <span>{t("components.runtime.RuntimeGovernanceWorkbench.memoryInputChars")}: {String(details.inputCharEstimate ?? "—")}</span>
+                                        <span>{t("components.runtime.RuntimeGovernanceWorkbench.memoryWritten")}: {String(details.persistedKnowledgeCount ?? details.chunkCount ?? details.summaryBackfilledCount ?? "—")}</span>
+                                        <span>{t("components.runtime.RuntimeGovernanceWorkbench.memorySkipReason")}: {String(details.skipReason || details.rejectReason || "—")}</span>
+                                    </div>
+                                </div>
+                            );
+                        }) : (
+                            <div className="rounded-xl border border-dashed bg-muted/20 p-6 text-sm text-muted-foreground">
+                                {t("components.runtime.RuntimeGovernanceWorkbench.memoryNoAuditLogs")}
+                            </div>
+                        )}
+                    </div>
+                </CardContent>
+            </Card>
 
             <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
                 <Card className="border-border/60">

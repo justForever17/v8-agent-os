@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from agents import memory_agent
 from core import memory_store as memory_store_module
 from core.knowledge_db import knowledge_db
+from core.memory_observability import log_memory_observation
 from erc.run_service import run_service
 from erc.runtime_context import bind_runtime_context
 from erc.runtime_stability import runtime_stability_service
@@ -107,6 +108,15 @@ class MemoryAgentRunner:
     ) -> Dict[str, Any]:
         memory_config = storage.get_memory_config() or {}
         if not bool(memory_config.get("extraction_enabled", True)):
+            log_memory_observation(
+                "session_extraction",
+                "SKIPPED",
+                trigger=trigger_source,
+                sessionId=session_id,
+                parentRunId=parent_run_id,
+                callsLlm=False,
+                skipReason="extraction_disabled",
+            )
             return {
                 "run_id": None,
                 "session_id": session_id,
@@ -172,6 +182,17 @@ class MemoryAgentRunner:
                 },
             )
             run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+            log_memory_observation(
+                "session_extraction",
+                "REJECTED",
+                trigger=trigger_source,
+                sessionId=session_id,
+                runId=run_handle.run_id,
+                parentRunId=parent_run_id,
+                callsLlm=False,
+                skipReason="session_lane_busy",
+                error=error_message,
+            )
             return {
                 "run_id": run_handle.run_id,
                 "session_id": extraction_session_id,
@@ -263,6 +284,25 @@ class MemoryAgentRunner:
                 pass
 
         status = result.get("status", "completed")
+        log_memory_observation(
+            "session_extraction",
+            "SKIPPED" if status == "skipped" else "FAILED" if status == "failed" else "SUCCESS",
+            trigger=trigger_source,
+            sessionId=session_id,
+            runId=run_handle.run_id,
+            parentRunId=parent_run_id,
+            callsLlm=status not in {"skipped", "rejected"},
+            skipReason=result.get("reason") if status == "skipped" else None,
+            inputCharEstimate=result.get("content_length") or result.get("input_char_estimate"),
+            messageCount=result.get("message_count") or result.get("entry_count"),
+            extractedPreferenceCount=result.get("extracted_preference_count"),
+            extractedKnowledgeCount=result.get("extracted_knowledge_count"),
+            persistedPreferenceCount=result.get("persisted_preference_count") or result.get("preference_count"),
+            persistedKnowledgeCount=result.get("persisted_knowledge_count") or result.get("knowledge_count"),
+            persistedRelationCount=result.get("persisted_relation_count") or result.get("relation_count"),
+            memoryPolicy=result.get("memory_policy"),
+            transcriptSource=result.get("transcript_source"),
+        )
         reason = "memory_session_extraction_completed"
         if status == "skipped":
             reason = "memory_session_extraction_skipped"
@@ -328,6 +368,17 @@ class MemoryAgentRunner:
                 },
             )
             run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+            log_memory_observation(
+                "periodic_summary",
+                "REJECTED",
+                trigger=trigger_source,
+                tier=tier,
+                runId=run_handle.run_id,
+                sessionId=effective_session_id,
+                callsLlm=False,
+                skipReason="session_lane_busy",
+                error=error_message,
+            )
             return {
                 "run_id": run_handle.run_id,
                 "session_id": effective_session_id,
@@ -410,6 +461,21 @@ class MemoryAgentRunner:
                 pass
 
         status = result.get("status", "completed")
+        log_memory_observation(
+            "periodic_summary",
+            "SKIPPED" if status == "skipped" else "FAILED" if status == "failed" else "SUCCESS",
+            trigger=trigger_source,
+            tier=tier,
+            runId=run_handle.run_id,
+            sessionId=effective_session_id,
+            targetDate=result.get("target_date"),
+            callsLlm=status not in {"skipped", "rejected"},
+            dailyLogCount=result.get("daily_log_count"),
+            inputCharEstimate=result.get("input_content_length"),
+            outputCharEstimate=result.get("content_length"),
+            summaryLength=result.get("summary_length"),
+            skipReason=result.get("reason") if status == "skipped" else None,
+        )
         reason = "memory_periodic_summary_completed"
         if status == "skipped":
             reason = "memory_periodic_summary_skipped"
@@ -466,6 +532,16 @@ class MemoryAgentRunner:
                 },
             )
             run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+            log_memory_observation(
+                "maintenance",
+                "REJECTED",
+                trigger=trigger_source,
+                runId=run_handle.run_id,
+                sessionId=effective_session_id,
+                callsLlm=False,
+                skipReason="session_lane_busy",
+                error=error_message,
+            )
             return {
                 "run_id": run_handle.run_id,
                 "session_id": effective_session_id,
@@ -487,6 +563,17 @@ class MemoryAgentRunner:
 
         before_health = memory_runtime.get_memory_map_health()
         targets = memory_runtime.list_summary_targets(states=["missing", "stale"])
+        log_memory_observation(
+            "maintenance_targets",
+            "INFO",
+            trigger=trigger_source,
+            runId=run_handle.run_id,
+            sessionId=effective_session_id,
+            callsLlm=False,
+            targetCount=len(targets),
+            missingCount=int(((before_health.get("counts") or {}).get("missing")) or 0),
+            staleCount=int(((before_health.get("counts") or {}).get("stale")) or 0),
+        )
         touched_refs: list[str] = []
         summary_backfilled_count = 0
         failed_targets: list[dict[str, str]] = []
@@ -603,6 +690,23 @@ class MemoryAgentRunner:
             "legacy_summary_touched_refs": legacy_summary_touched_refs,
             "failed_targets": failed_targets,
         }
+        log_memory_observation(
+            "maintenance",
+            "SUCCESS" if not failed_targets else "WARNING",
+            trigger=trigger_source,
+            runId=run_handle.run_id,
+            sessionId=effective_session_id,
+            callsLlm=bool(summary_backfilled_count),
+            targetCount=len(targets),
+            summaryBackfilledCount=summary_backfilled_count,
+            legacySummaryBackfilledCount=legacy_summary_backfilled_count,
+            touchedRefs=touched_refs[:20],
+            failedTargetCount=len(failed_targets),
+            workflowCandidateCount=maintenance_meta["workflowCandidateCount"],
+            workflowCandidateUpdatedCount=maintenance_meta["workflowCandidateUpdatedCount"],
+            workflowActiveHintCount=maintenance_meta["workflowActiveHintCount"],
+            workflowQuarantinedCount=maintenance_meta["workflowQuarantinedCount"],
+        )
         return self._finalize_run(run_handle, reason="memory_maintenance_completed", result=result)
 
 memory_agent_runner = MemoryAgentRunner()

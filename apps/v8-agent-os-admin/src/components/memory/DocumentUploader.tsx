@@ -3,6 +3,7 @@ import { useState, useRef, DragEvent, ChangeEvent, useEffect, useCallback } from
 import { UploadCloud, FileText, Loader2, CheckCircle2, AlertCircle, X, Trash2, File as FileIcon, FileArchive, FileCode, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
@@ -14,6 +15,7 @@ export default function DocumentUploader() {
     const [uploading, setUploading] = useState(false);
     const [chunkSize, setChunkSize] = useState([1500]);
     const [chunkOverlap, setChunkOverlap] = useState([200]);
+    const [trustedUpload, setTrustedUpload] = useState(false);
     const [result, setResult] = useState<{
         status: 'success' | 'error';
         message: string;
@@ -93,6 +95,7 @@ export default function DocumentUploader() {
         files.forEach(file => formData.append("files", file));
         formData.append("chunk_size", chunkSize[0].toString());
         formData.append("chunk_overlap", chunkOverlap[0].toString());
+        formData.append("trusted_upload", trustedUpload ? "true" : "false");
         try {
             const res = await fetch("/api/memory/upload", {
                 method: "POST",
@@ -239,6 +242,13 @@ export default function DocumentUploader() {
                         <Slider value={chunkOverlap} onValueChange={setChunkOverlap} min={0} max={1000} step={50} disabled={uploading}/>
                         <p className="text-[10px] text-muted-foreground">{t("components.memory.DocumentUploader.k7ba56eda")}</p>
                     </div>
+                    <label className="flex gap-3 rounded-xl border border-dashed bg-muted/20 p-3 md:col-span-2">
+                        <Checkbox checked={trustedUpload} onCheckedChange={(value) => setTrustedUpload(Boolean(value))} disabled={uploading}/>
+                        <span className="space-y-1">
+                            <span className="block text-sm font-medium">{t("components.memory.DocumentUploader.trustedUploadTitle")}</span>
+                            <span className="block text-xs leading-5 text-muted-foreground">{t("components.memory.DocumentUploader.trustedUploadDescription")}</span>
+                        </span>
+                    </label>
                 </div>
 
                 {/* Result Message */}

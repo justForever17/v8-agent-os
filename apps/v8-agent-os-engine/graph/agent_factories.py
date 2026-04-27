@@ -17,7 +17,7 @@ from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.storage import storage
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
-from core.runtime_tool_access import filter_visible_tools_for_actor, normalize_runtime_access
+from core.runtime_tool_access import filter_visible_tools_for_actor, normalize_runtime_access, runtime_tool_names_for_groups
 from core.time_truth import utc_now_iso
 from core.workspace_guard import build_workspace_path_status
 from core.workspace_resolution import workspace_resolution_service
@@ -68,6 +68,18 @@ def _exclude_supervisor_only_tools(tools: list) -> list:
         for tool_ref in list(tools or [])
         if str(getattr(tool_ref, "name", "")).strip() not in excluded
     ]
+
+
+def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtime_access: list[str]) -> list:
+    """Keep contextual_auto narrow while adding explicitly granted runtime tools."""
+    baseline_tools = list(select_baseline_system_tools(filtered_native_tools))
+    granted_runtime_tool_names = runtime_tool_names_for_groups(runtime_access)
+    granted_runtime_tools = [
+        tool_ref
+        for tool_ref in list(filtered_native_tools or [])
+        if str(getattr(tool_ref, "name", "")).strip() in granted_runtime_tool_names
+    ]
+    return _dedupe_tools(baseline_tools + granted_runtime_tools)
 
 
 def _resolved_tool_mode(agent_data: dict) -> str:
@@ -473,7 +485,7 @@ def build_agent_node(
             extensions_route_query = extensions_route_query or delegated_query
             contextual_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
-                    select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions_tool],
+                    _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access) + [fetch_skill_instructions_tool],
                     actor="subagent",
                     runtime_access=delegated_runtime_access,
                 )

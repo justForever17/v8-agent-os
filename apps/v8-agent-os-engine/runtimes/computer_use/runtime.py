@@ -57,6 +57,7 @@ from runtimes.computer_use.budgeting import (
     collect_budget_usage,
     resolve_step_budget,
 )
+from runtimes.computer_use.candidate_board import build_candidate_board, candidate_board_source_catalog
 from runtimes.computer_use.clipboard_payload import normalize_clipboard_payload
 from runtimes.computer_use.coordinate_anchor import (
     build_relative_point_candidates,
@@ -83,6 +84,7 @@ from runtimes.computer_use.live_matrix_feedback import primitive_live_feedback_f
 from runtimes.computer_use.observation_bundle import build_observation_bundle
 from runtimes.computer_use.platform_adapters import create_platform_discovery_providers
 from runtimes.computer_use.playbooks import built_in_playbook_seeds, experience_asset_inventory
+from runtimes.computer_use.platform_probe_runner import build_platform_probe_matrix
 from runtimes.computer_use.preflight_policy import build_preflight_context
 from runtimes.computer_use.post_action_visual_check import (
     normalize_expected_texts,
@@ -121,6 +123,7 @@ from runtimes.computer_use.recovery_policy import build_recovery_policy_metadata
 from runtimes.computer_use.route_policy import build_platform_route_policy, decide_execution_route
 from runtimes.computer_use.verification_contract import build_result_contract
 from runtimes.computer_use.visual_locator_provider import VisualLocatorProvider, create_visual_locator_provider
+from runtimes.computer_use.visual_actor_provider import VisualActorRequest, create_visual_actor_provider
 from runtimes.computer_use.visual_locator_runtime import _normalize_ocr_query
 from runtimes.computer_use.visual_locator_scope import (
     crop_capture_image_to_bounds,
@@ -174,6 +177,23 @@ from runtimes.computer_use.types import (
 from runtimes.computer_use.verification import normalize_verification_payload
 
 
+def _display_bounds_from_capture(capture_bounds: List[int] | None) -> Dict[str, Any]:
+    if not isinstance(capture_bounds, list) or len(capture_bounds) != 4:
+        return {}
+    try:
+        x0 = float(capture_bounds[0])
+        y0 = float(capture_bounds[1])
+        x1 = float(capture_bounds[2])
+        y1 = float(capture_bounds[3])
+    except Exception:
+        return {}
+    width = x1 - x0 if x1 > x0 else x1
+    height = y1 - y0 if y1 > y0 else y1
+    if width <= 0 or height <= 0:
+        return {}
+    return {"x": x0, "y": y0, "width": width, "height": height}
+
+
 class ComputerUseRuntime:
     kind = "computer_use"
 
@@ -208,7 +228,88 @@ class ComputerUseRuntime:
                 "notes": [f"读取在线视觉定位层状态失败: {exc}"],
             }
 
+    def _visual_actor_descriptor(self) -> Dict[str, Any]:
+        try:
+            return dict(self.visual_actor_provider.availability_summary() or {})
+        except Exception as exc:
+            return {
+                "providerId": "computer_use_visual_actor_provider",
+                "available": False,
+                "mode": "proposal_only_candidate_board_first",
+                "reason": f"读取视觉动作提案层状态失败: {exc}",
+            }
+
+    def _browser_profile_persistence_payload(self, browser_lane: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        summary = dict(browser_lane or self.browser_automation.availability_summary() or {})
+        return {
+            "enabled": str(summary.get("profileMode") or "") == "dedicated_debug_profile",
+            "profileMode": summary.get("profileMode"),
+            "profileRoot": summary.get("profileRoot"),
+            "defaultUserDataDir": summary.get("defaultUserDataDir"),
+            "debugPort": summary.get("targetPort"),
+            "cleanupPolicy": "close_run_owned_tabs_only_keep_profile_cookies_localStorage",
+            "persistsCookiesLocalStorage": True,
+            "notes": [
+                "Computer Use 默认使用 V8 专用 debug profile，不复用用户默认浏览器 profile。",
+                "登录态、cookies、localStorage 会保留；run cleanup 不删除该 profile。",
+            ],
+        }
+
+    def _platform_probe_matrix_payload(self, *, browser_lane: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return build_platform_probe_matrix(
+            current_platform=str(getattr(self.driver, "platform", "") or ""),
+            driver_summary={
+                "available": self.driver.is_available(),
+                "platform": getattr(self.driver, "platform", None),
+                "backend": getattr(self.driver, "backend", None),
+            },
+            browser_summary=dict(browser_lane or self.browser_automation.availability_summary() or {}),
+        )
+
+    def build_candidate_board(
+        self,
+        *,
+        goal: str,
+        locator_resolution: Dict[str, Any] | None = None,
+        visual_observation: Dict[str, Any] | None = None,
+        observation: Dict[str, Any] | None = None,
+        selector_memory_candidates: List[Dict[str, Any]] | None = None,
+        browser_candidates: List[Dict[str, Any]] | None = None,
+        history_candidates: List[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
+        board = build_candidate_board(
+            goal=goal,
+            locator_resolution=locator_resolution,
+            visual_observation=visual_observation,
+            observation=observation,
+            selector_memory_candidates=selector_memory_candidates,
+            browser_candidates=browser_candidates,
+            history_candidates=history_candidates,
+        )
+        return board.as_dict()
+
+    def propose_visual_actor_action(
+        self,
+        *,
+        goal: str,
+        candidate_board: Dict[str, Any],
+        screenshot_artifact_id: str | None = None,
+        screenshot_path: str | None = None,
+        display_bounds: Dict[str, Any] | None = None,
+        previous_frame_summary: str | None = None,
+    ) -> Dict[str, Any]:
+        request = VisualActorRequest(
+            goal=goal,
+            screenshotArtifactId=screenshot_artifact_id,
+            screenshotPath=screenshot_path,
+            candidateBoard=dict(candidate_board or {}),
+            previousFrameSummary=previous_frame_summary,
+            displayBounds=dict(display_bounds or {}),
+        )
+        return self.visual_actor_provider.propose(request).as_dict()
+
     def runtime_descriptor(self) -> dict[str, Any]:
+        browser_lane = self.browser_automation.availability_summary()
         return {
             "kind": self.kind,
             "displayName": "ComputerUseRuntime",
@@ -272,12 +373,17 @@ class ComputerUseRuntime:
                 "screenWakePolicy": screen_wake_policy(),
                 **self._resolution_policy_payload(include_current_display=False),
                 "builtInPlaybookSeeds": built_in_playbook_seeds(),
+                "visualActor": self._visual_actor_descriptor(),
+                "candidateBoardSources": candidate_board_source_catalog(),
+                "browserProfilePersistence": self._browser_profile_persistence_payload(browser_lane),
+                "platformProbeMatrix": self._platform_probe_matrix_payload(browser_lane=browser_lane),
             },
         }
 
     def __init__(self) -> None:
         self.driver = create_desktop_driver()
         self.visual_locator_runtime: VisualLocatorProvider = create_visual_locator_provider()
+        self.visual_actor_provider = create_visual_actor_provider()
         self.browser_automation = BrowserAutomationProvider()
         self.app_adapters = ComputerUseAppAdapterRegistry()
         self.app_profiles = ComputerUseAppProfiles()
@@ -6520,6 +6626,19 @@ class ComputerUseRuntime:
                         observer_resolution=observer_resolution,
                         locator_resolution=resolved,
                     )
+                candidate_board = self.build_candidate_board(
+                    goal=locator,
+                    locator_resolution=resolved,
+                    visual_observation=dict(resolved.get("visualObservation") or {}),
+                )
+                resolved["candidateBoard"] = candidate_board
+                resolved["visualActorProposal"] = self.propose_visual_actor_action(
+                    goal=locator,
+                    candidate_board=candidate_board,
+                    screenshot_path=search_image_path or capture_image_path,
+                    display_bounds=_display_bounds_from_capture(capture_bounds),
+                    previous_frame_summary=str((resolved.get("visualObservation") or {}).get("summary") or ""),
+                )
                 self._remember_visual_locator_resolution(cache_key=cache_key, resolved=resolved)
             except Exception:
                 reused = self._recent_visual_locator_resolution(cache_key=cache_key)
@@ -11905,6 +12024,7 @@ class ComputerUseRuntime:
         capability_truth = dict(capability_matrix.get("truth") or {})
         capability_truth_payload = self._capability_truth_payload(capability_matrix=capability_matrix)
         resolution_payload = self._resolution_policy_payload()
+        browser_lane = self.browser_automation.availability_summary()
         current_matrix = dict(capability_matrix.get("current") or {})
         capabilities = dict(current_matrix.get("facets") or {})
         capabilities["execution"] = {
@@ -11936,11 +12056,15 @@ class ComputerUseRuntime:
                 "resourceCleanupPolicy": dict(resolution_payload.get("resourceCleanupPolicy") or {}),
                 "experienceAssets": dict(capability_truth_payload.get("experienceAssets") or {}),
                 "builtInPlaybookSeeds": list(capability_truth_payload.get("builtInPlaybookSeeds") or []),
+                "visualActor": self._visual_actor_descriptor(),
+                "candidateBoardSources": candidate_board_source_catalog(),
+                "browserProfilePersistence": self._browser_profile_persistence_payload(browser_lane),
+                "platformProbeMatrix": self._platform_probe_matrix_payload(browser_lane=browser_lane),
                 "routePolicy": capabilities.get("execution"),
                 "visionFallback": vision_state,
                 "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
                 "onlineVisualLocator": self._online_visual_locator_descriptor(),
-                "browserLane": self.browser_automation.availability_summary(),
+                "browserLane": browser_lane,
                 "appAdapter": self._app_adapter_summary(),
                 "selectorStats": self.driver.selector_metrics(),
                 "appCatalog": self.app_catalog.summary(include_running=True),

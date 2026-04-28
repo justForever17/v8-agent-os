@@ -1,35 +1,13 @@
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Callable, Dict
 
+from runtimes.computer_use.fact_resolver import classify_goal, resolve_goal_facts
 from runtimes.computer_use.playbooks import built_in_playbook_seeds
 
 
 FactSearch = Callable[[str], Any]
-
-_GITHUB_REPO_ALIASES: dict[str, dict[str, str]] = {
-    "turix": {
-        "owner": "TurixAI",
-        "repo": "TuriX-CUA",
-        "url": "https://github.com/TurixAI/TuriX-CUA",
-        "source": "built_in_alias",
-    },
-    "turix-cua": {
-        "owner": "TurixAI",
-        "repo": "TuriX-CUA",
-        "url": "https://github.com/TurixAI/TuriX-CUA",
-        "source": "built_in_alias",
-    },
-    "turixai/turix-cua": {
-        "owner": "TurixAI",
-        "repo": "TuriX-CUA",
-        "url": "https://github.com/TurixAI/TuriX-CUA",
-        "source": "built_in_alias",
-    },
-}
 
 
 @dataclass(slots=True)
@@ -71,104 +49,13 @@ class ComputerUseTaskLoop:
         }
 
 
-def _contains_any(text: str, needles: Iterable[str]) -> bool:
-    lowered = text.lower()
-    return any(str(item).lower() in lowered for item in needles)
-
-
 def normalize_intent(goal: str) -> dict[str, Any]:
-    normalized_goal = str(goal or "").strip()
-    lowered = normalized_goal.lower()
-    githubish = "github" in lowered or "git hub" in lowered
-    starish = _contains_any(lowered, ["star", "星标", "点星", "收藏", "加星"])
-    repo_match = re.search(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", normalized_goal)
-    owner_repo = None
-    if repo_match:
-        owner_repo = f"{repo_match.group(1)}/{repo_match.group(2)}"
-    elif "turix" in lowered:
-        owner_repo = "TurixAI/TuriX-CUA"
-    return {
-        "rawGoal": normalized_goal,
-        "operation": "star_repository" if githubish and starish else "unknown",
-        "domain": "github" if githubish or owner_repo else "unknown",
-        "entity": owner_repo or ("TuriX-CUA" if "turix" in lowered else None),
-        "requiresFactResolution": bool(githubish and starish),
-        "risk": "external_account_state_mutation" if githubish and starish else "unknown",
-    }
-
-
-def _normalize_repo_token(value: str | None) -> str:
-    return str(value or "").strip().lower().replace("_", "-")
-
-
-def _candidate_from_search_payload(payload: Any) -> dict[str, str] | None:
-    if payload is None:
-        return None
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except Exception:
-            payload = {"raw": payload}
-    if not isinstance(payload, dict):
-        return None
-    items = list(payload.get("results") or payload.get("items") or [])
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or item.get("href") or "").strip()
-        match = re.match(r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:[/#?].*)?$", url)
-        if not match:
-            continue
-        return {
-            "owner": match.group(1),
-            "repo": match.group(2),
-            "url": f"https://github.com/{match.group(1)}/{match.group(2)}",
-            "source": "web_search",
-        }
-    return None
+    return classify_goal(goal)
 
 
 def resolve_facts(intent: dict[str, Any], *, web_searcher: FactSearch | None = None) -> list[dict[str, Any]]:
-    evidence: list[dict[str, Any]] = []
-    if intent.get("operation") != "star_repository":
-        return evidence
-    entity = str(intent.get("entity") or "").strip()
-    alias = _GITHUB_REPO_ALIASES.get(_normalize_repo_token(entity))
-    if alias:
-        evidence.append(
-            {
-                "kind": "canonical_github_repo",
-                "confidence": 1.0,
-                **alias,
-            }
-        )
-        return evidence
-    owner_repo = re.match(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$", entity)
-    if owner_repo:
-        evidence.append(
-            {
-                "kind": "canonical_github_repo",
-                "confidence": 0.88,
-                "owner": owner_repo.group(1),
-                "repo": owner_repo.group(2),
-                "url": f"https://github.com/{owner_repo.group(1)}/{owner_repo.group(2)}",
-                "source": "explicit_owner_repo",
-            }
-        )
-        return evidence
-    if web_searcher and entity:
-        query = f"site:github.com {entity} GitHub repository"
-        candidate = _candidate_from_search_payload(web_searcher(query))
-        if candidate:
-            evidence.append(
-                {
-                    "kind": "canonical_github_repo",
-                    "confidence": 0.72,
-                    **candidate,
-                    "query": query,
-                }
-            )
-    return evidence
+    result = resolve_goal_facts(str(intent.get("rawGoal") or ""), intent=intent, web_searcher=web_searcher)
+    return [dict(item) for item in result.evidence]
 
 
 def select_playbook(intent: dict[str, Any]) -> dict[str, Any] | None:

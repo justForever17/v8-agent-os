@@ -2484,6 +2484,10 @@ def _computer_use_compact_driver_capabilities() -> str:
             "currentDisplay": dict(availability_details.get("currentDisplay") or {}),
             "coordinateAnchorPolicy": dict(availability_details.get("coordinateAnchorPolicy") or {}),
             "resourceCleanupPolicy": dict(availability_details.get("resourceCleanupPolicy") or {}),
+            "visualActor": dict(availability_details.get("visualActor") or {}),
+            "candidateBoardSources": list(availability_details.get("candidateBoardSources") or []),
+            "browserProfilePersistence": dict(availability_details.get("browserProfilePersistence") or {}),
+            "platformProbeMatrix": dict(availability_details.get("platformProbeMatrix") or {}),
             "builtInPlaybookSeeds": list(availability_details.get("builtInPlaybookSeeds") or []),
             "experienceAssets": {
                 "policy": experience_assets.get("policy"),
@@ -2507,6 +2511,8 @@ def _computer_use_compact_driver_capabilities() -> str:
                     ((runtime_descriptor.get("metadata") or {}).get("environmentProbes")) or {}
                 ),
                 "browserLane": dict(availability_details.get("browserLane") or {}),
+                "visualActor": dict(availability_details.get("visualActor") or {}),
+                "browserProfilePersistence": dict(availability_details.get("browserProfilePersistence") or {}),
                 "appAdapter": dict(availability_details.get("appAdapter") or {}),
             },
             "primitiveMatrix": dict((primitive_validation_matrix().get("summary")) or {}),

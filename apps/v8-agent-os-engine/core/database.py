@@ -3,12 +3,14 @@ import json
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterator
 
 from core.json_safe import to_jsonable
 from core.multimodal_payload_adapter import normalize_artifact_record
+from core.observability_db import ObservabilityDatabaseManager
 from core.realtime_protocol import utc_now_iso
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
@@ -21,6 +23,7 @@ class DatabaseManager:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.observability_db = ObservabilityDatabaseManager(self.db_path.parent / "observability.db")
         self._runtime_write_lock = threading.RLock()
         self._init_db()
 
@@ -37,7 +40,8 @@ class DatabaseManager:
                         raise
                     time.sleep(delays[min(attempt, len(delays) - 1)] + lock_timeout_s)
 
-    def get_connection(self):
+    @contextmanager
+    def get_connection(self) -> Iterator[sqlite3.Connection]:
         """Returns a new database connection with WAL mode enabled."""
         conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
@@ -46,7 +50,10 @@ class DatabaseManager:
         conn.execute('PRAGMA busy_timeout=30000;')
         # Foreign keys support
         conn.execute('PRAGMA foreign_keys=ON;')
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
         """Initializes the database schema if it doesn't exist."""
@@ -256,6 +263,33 @@ class DatabaseManager:
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_safety_identity_hash ON skill_safety_reviews (identity_key, content_hash)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_skill_safety_disabled ON skill_safety_reviews (disabled, updated_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_skill_safety_skill_id ON skill_safety_reviews (skill_id)')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS safety_allowlist_entries (
+                    id TEXT PRIMARY KEY,
+                    normalized_target_hash TEXT NOT NULL,
+                    normalized_target_label TEXT,
+                    path_plane TEXT NOT NULL,
+                    runtime_source TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    risk_code TEXT NOT NULL,
+                    governance_target TEXT,
+                    approval_id TEXT,
+                    approval_kind TEXT,
+                    source TEXT,
+                    enabled INTEGER DEFAULT 1,
+                    metadata_json TEXT,
+                    revoked_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_allowlist_key
+                ON safety_allowlist_entries (normalized_target_hash, path_plane, runtime_source, action, risk_code)
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_safety_allowlist_enabled ON safety_allowlist_entries (enabled, updated_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_safety_allowlist_approval ON safety_allowlist_entries (approval_id)')
 
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS ask_user_interactions (
@@ -2497,6 +2531,145 @@ class DatabaseManager:
             row = cursor.fetchone()
             return self._skill_safety_review_from_row(row) if row else None
 
+    def _safety_allowlist_from_row(self, row: sqlite3.Row | Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        raw_metadata = data.pop("metadata_json", None)
+        if raw_metadata:
+            try:
+                data["metadata"] = json.loads(raw_metadata)
+            except json.JSONDecodeError:
+                data["metadata"] = {}
+        else:
+            data["metadata"] = {}
+        data["enabled"] = bool(data.get("enabled"))
+        return data
+
+    def upsert_safety_allowlist_entry(
+        self,
+        *,
+        entry_id: str,
+        normalized_target_hash: str,
+        normalized_target_label: str | None,
+        path_plane: str,
+        runtime_source: str,
+        action: str,
+        risk_code: str,
+        governance_target: str | None = None,
+        approval_id: str | None = None,
+        approval_kind: str | None = None,
+        source: str | None = None,
+        enabled: bool = True,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        metadata_json = json.dumps(to_jsonable(metadata or {}), ensure_ascii=False)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO safety_allowlist_entries
+                (id, normalized_target_hash, normalized_target_label, path_plane, runtime_source, action,
+                 risk_code, governance_target, approval_id, approval_kind, source, enabled, metadata_json,
+                 revoked_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(normalized_target_hash, path_plane, runtime_source, action, risk_code)
+                DO UPDATE SET
+                    normalized_target_label = excluded.normalized_target_label,
+                    governance_target = excluded.governance_target,
+                    approval_id = excluded.approval_id,
+                    approval_kind = excluded.approval_kind,
+                    source = excluded.source,
+                    enabled = excluded.enabled,
+                    metadata_json = excluded.metadata_json,
+                    revoked_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    entry_id,
+                    normalized_target_hash,
+                    normalized_target_label,
+                    path_plane,
+                    runtime_source,
+                    action,
+                    risk_code,
+                    governance_target,
+                    approval_id,
+                    approval_kind,
+                    source,
+                    1 if enabled else 0,
+                    metadata_json,
+                ),
+            )
+            conn.commit()
+            cursor.execute(
+                '''
+                SELECT * FROM safety_allowlist_entries
+                WHERE normalized_target_hash = ? AND path_plane = ? AND runtime_source = ? AND action = ? AND risk_code = ?
+                ''',
+                (normalized_target_hash, path_plane, runtime_source, action, risk_code),
+            )
+            row = cursor.fetchone()
+            return self._safety_allowlist_from_row(row) if row else {}
+
+    def find_safety_allowlist_entry(
+        self,
+        *,
+        normalized_target_hash: str,
+        path_plane: str,
+        runtime_source: str,
+        action: str,
+        risk_code: str,
+        enabled_only: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        query = '''
+            SELECT * FROM safety_allowlist_entries
+            WHERE normalized_target_hash = ? AND path_plane = ? AND runtime_source = ? AND action = ? AND risk_code = ?
+        '''
+        params: list[Any] = [normalized_target_hash, path_plane, runtime_source, action, risk_code]
+        if enabled_only:
+            query += " AND enabled = 1"
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            return self._safety_allowlist_from_row(row) if row else None
+
+    def list_safety_allowlist_entries(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM safety_allowlist_entries WHERE 1=1"
+        params: list[Any] = []
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status in {"active", "enabled"}:
+            query += " AND enabled = 1"
+        elif normalized_status in {"revoked", "disabled"}:
+            query += " AND enabled = 0"
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(500, int(limit or 100))))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._safety_allowlist_from_row(row) for row in cursor.fetchall()]
+
+    def revoke_safety_allowlist_entry(self, entry_id: str) -> Optional[Dict[str, Any]]:
+        now = latest_utc_iso()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE safety_allowlist_entries
+                SET enabled = 0, revoked_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (now, entry_id),
+            )
+            conn.commit()
+            cursor.execute("SELECT * FROM safety_allowlist_entries WHERE id = ?", (entry_id,))
+            row = cursor.fetchone()
+            return self._safety_allowlist_from_row(row) if row else None
+
     def add_ask_user_interaction(
         self,
         *,
@@ -2923,43 +3096,7 @@ class DatabaseManager:
     # --- Telemetry / Usage Operations ---
 
     def add_model_invocation_log(self, record: Dict[str, Any]):
-        with self.get_connection() as conn:
-            conn.execute(
-                '''
-                INSERT OR REPLACE INTO model_invocation_logs (
-                    id, run_id, session_id, provider_id, provider_name, model_id, role, capability_class,
-                    request_kind, status, input_tokens, output_tokens, total_tokens, cost_input, cost_output,
-                    cost_total, latency_ms, error_code, error_message, is_streaming, metadata_json,
-                    started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    record.get("id"),
-                    record.get("run_id"),
-                    record.get("session_id"),
-                    record.get("provider_id"),
-                    record.get("provider_name"),
-                    record.get("model_id"),
-                    record.get("role"),
-                    record.get("capability_class"),
-                    record.get("request_kind"),
-                    record.get("status"),
-                    int(record.get("input_tokens") or 0),
-                    int(record.get("output_tokens") or 0),
-                    int(record.get("total_tokens") or 0),
-                    float(record.get("cost_input") or 0.0),
-                    float(record.get("cost_output") or 0.0),
-                    float(record.get("cost_total") or 0.0),
-                    float(record.get("latency_ms") or 0.0),
-                    record.get("error_code"),
-                    record.get("error_message"),
-                    1 if record.get("is_streaming") else 0,
-                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
-                    record.get("started_at"),
-                    record.get("finished_at"),
-                ),
-            )
-            conn.commit()
+        self.observability_db.add_model_invocation_log(record)
 
     def upsert_usage_ledger(self, record: Dict[str, Any]):
         with self.get_connection() as conn:
@@ -3005,231 +3142,28 @@ class DatabaseManager:
             conn.commit()
 
     def add_provider_health_log(self, record: Dict[str, Any]):
-        with self.get_connection() as conn:
-            conn.execute(
-                '''
-                INSERT OR REPLACE INTO provider_health_logs (
-                    id, provider_id, provider_name, model_id, run_id, session_id, status,
-                    error_code, error_message, latency_ms, detail_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    record.get("id"),
-                    record.get("provider_id"),
-                    record.get("provider_name"),
-                    record.get("model_id"),
-                    record.get("run_id"),
-                    record.get("session_id"),
-                    record.get("status"),
-                    record.get("error_code"),
-                    record.get("error_message"),
-                    float(record.get("latency_ms") or 0.0),
-                    json.dumps(record.get("detail") or {}, ensure_ascii=False),
-                ),
-            )
-            conn.commit()
+        self.observability_db.add_provider_health_log(record)
 
     def add_prompt_cache_event(self, record: Dict[str, Any]) -> None:
-        with self.get_connection() as conn:
-            conn.execute(
-                '''
-                INSERT OR REPLACE INTO prompt_cache_events (
-                    id, provider_id, model_id, model_ref, role, profile_id,
-                    static_prefix_key, response_cache_key, decision, skip_reason,
-                    provider_patch_json, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    record.get("id"),
-                    record.get("provider_id"),
-                    record.get("model_id"),
-                    record.get("model_ref"),
-                    record.get("role"),
-                    record.get("profile_id"),
-                    record.get("static_prefix_key"),
-                    record.get("response_cache_key"),
-                    record.get("decision"),
-                    record.get("skip_reason"),
-                    json.dumps(record.get("provider_patch") or {}, ensure_ascii=False),
-                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
-                    record.get("created_at") or utc_now_iso(),
-                ),
-            )
-            conn.commit()
+        self.observability_db.add_prompt_cache_event(record)
 
     def add_prompt_cache_segments(self, event_id: str, segments: List[Dict[str, Any]]) -> None:
-        if not event_id:
-            return
-        with self.get_connection() as conn:
-            conn.execute("DELETE FROM prompt_cache_segments WHERE event_id = ?", (event_id,))
-            for index, segment in enumerate(segments or []):
-                conn.execute(
-                    '''
-                    INSERT INTO prompt_cache_segments (
-                        id, event_id, ordinal, segment_type, source, content_hash,
-                        char_count, estimated_tokens, metadata_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (
-                        str(uuid.uuid4()),
-                        event_id,
-                        index,
-                        segment.get("type") or segment.get("segment_type") or "",
-                        segment.get("source"),
-                        segment.get("hash") or segment.get("content_hash") or "",
-                        int(segment.get("charCount") or segment.get("char_count") or 0),
-                        int(segment.get("estimatedTokens") or segment.get("estimated_tokens") or 0),
-                        json.dumps(segment.get("metadata") or {}, ensure_ascii=False),
-                        utc_now_iso(),
-                    ),
-                )
-            conn.commit()
+        self.observability_db.add_prompt_cache_segments(event_id, segments)
 
     def get_llm_response_cache(self, response_cache_key: str) -> Optional[Dict[str, Any]]:
-        if not response_cache_key:
-            return None
-        now = utc_now_iso()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT * FROM llm_response_cache
-                WHERE response_cache_key = ?
-                  AND (expires_at IS NULL OR expires_at > ?)
-                ''',
-                (response_cache_key, now),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            item = dict(row)
-            item["response"] = json.loads(item["response_body_json"]) if item.get("response_body_json") else {}
-            item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
-            return item
+        return self.observability_db.get_llm_response_cache(response_cache_key)
 
     def upsert_llm_response_cache(self, record: Dict[str, Any]) -> None:
-        key = str(record.get("response_cache_key") or "")
-        if not key:
-            return
-        ttl_seconds = int(record.get("ttl_seconds") or 600)
-        now_epoch = time.time()
-        created_at = record.get("created_at") or datetime.fromtimestamp(now_epoch, timezone.utc).isoformat()
-        expires_at = datetime.fromtimestamp(now_epoch + max(ttl_seconds, 1), timezone.utc).isoformat()
-        with self.get_connection() as conn:
-            conn.execute(
-                '''
-                INSERT INTO llm_response_cache (
-                    response_cache_key, static_prefix_key, provider_id, model_id, model_ref,
-                    role, response_body_json, metadata_json, hit_count, created_at,
-                    updated_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-                ON CONFLICT(response_cache_key) DO UPDATE SET
-                    response_body_json=excluded.response_body_json,
-                    metadata_json=excluded.metadata_json,
-                    static_prefix_key=excluded.static_prefix_key,
-                    provider_id=excluded.provider_id,
-                    model_id=excluded.model_id,
-                    model_ref=excluded.model_ref,
-                    role=excluded.role,
-                    updated_at=excluded.updated_at,
-                    expires_at=excluded.expires_at
-                ''',
-                (
-                    key,
-                    record.get("static_prefix_key"),
-                    record.get("provider_id"),
-                    record.get("model_id"),
-                    record.get("model_ref"),
-                    record.get("role"),
-                    json.dumps(record.get("response") or {}, ensure_ascii=False),
-                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
-                    created_at,
-                    utc_now_iso(),
-                    expires_at,
-                ),
-            )
-            conn.commit()
+        self.observability_db.upsert_llm_response_cache(record)
 
     def increment_llm_response_cache_hit(self, response_cache_key: str) -> None:
-        if not response_cache_key:
-            return
-        with self.get_connection() as conn:
-            conn.execute(
-                '''
-                UPDATE llm_response_cache
-                SET hit_count = hit_count + 1, updated_at = ?
-                WHERE response_cache_key = ?
-                ''',
-                (utc_now_iso(), response_cache_key),
-            )
-            conn.commit()
+        self.observability_db.increment_llm_response_cache_hit(response_cache_key)
 
     def get_prompt_cache_stats(self, limit: int = 50) -> Dict[str, Any]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT decision, COUNT(*) AS count
-                FROM prompt_cache_events
-                GROUP BY decision
-                ORDER BY count DESC
-                '''
-            )
-            by_decision = [dict(row) for row in cursor.fetchall()]
-            cursor.execute(
-                '''
-                SELECT skip_reason, COUNT(*) AS count
-                FROM prompt_cache_events
-                WHERE COALESCE(skip_reason, '') != ''
-                GROUP BY skip_reason
-                ORDER BY count DESC
-                '''
-            )
-            by_skip_reason = [dict(row) for row in cursor.fetchall()]
-            cursor.execute(
-                '''
-                SELECT COUNT(*) AS count, COALESCE(SUM(hit_count), 0) AS hits
-                FROM llm_response_cache
-                WHERE expires_at IS NULL OR expires_at > ?
-                ''',
-                (utc_now_iso(),),
-            )
-            cache_row = cursor.fetchone()
-            cursor.execute(
-                '''
-                SELECT * FROM prompt_cache_events
-                ORDER BY created_at DESC
-                LIMIT ?
-                ''',
-                (max(1, min(int(limit or 50), 200)),),
-            )
-            recent = []
-            for row in cursor.fetchall():
-                item = dict(row)
-                item["providerPatch"] = json.loads(item["provider_patch_json"]) if item.get("provider_patch_json") else {}
-                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
-                recent.append(item)
-            return {
-                "eventsByDecision": by_decision,
-                "eventsBySkipReason": by_skip_reason,
-                "responseCache": {
-                    "entries": int(cache_row["count"] or 0) if cache_row else 0,
-                    "hits": int(cache_row["hits"] or 0) if cache_row else 0,
-                },
-                "recentEvents": recent,
-            }
+        return self.observability_db.get_prompt_cache_stats(limit=limit)
 
     def purge_prompt_cache(self) -> Dict[str, Any]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            counts: Dict[str, int] = {}
-            for table in ("prompt_cache_segments", "prompt_cache_events", "llm_response_cache"):
-                cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")
-                row = cursor.fetchone()
-                counts[table] = int(row["count"] or 0) if row else 0
-                cursor.execute(f"DELETE FROM {table}")
-            conn.commit()
-            return {"deleted": counts}
+        return self.observability_db.purge_prompt_cache()
 
     def get_counts_snapshot(self) -> Dict[str, int]:
         with self.get_connection() as conn:
@@ -3241,7 +3175,6 @@ class DatabaseManager:
                 ("runs", "run_records"),
                 ("approvals", "pending_approvals"),
                 ("ask_user_interactions", "ask_user_interactions"),
-                ("invocations", "model_invocation_logs"),
             ):
                 cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")
                 row = cursor.fetchone()
@@ -3252,25 +3185,16 @@ class DatabaseManager:
             cursor.execute("SELECT COUNT(*) AS count FROM run_records WHERE status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')")
             row = cursor.fetchone()
             counts["active_runs"] = int(row["count"]) if row else 0
+            try:
+                with self.observability_db.get_connection() as obs_conn:
+                    row = obs_conn.execute("SELECT COUNT(*) AS count FROM model_invocation_logs").fetchone()
+                    counts["invocations"] = int(row["count"]) if row else 0
+            except Exception:
+                counts["invocations"] = 0
             return counts
 
     def get_recent_model_invocations(self, limit: int = 20) -> List[Dict[str, Any]]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT * FROM model_invocation_logs
-                ORDER BY started_at DESC
-                LIMIT ?
-                ''',
-                (limit,),
-            )
-            rows: List[Dict[str, Any]] = []
-            for row in cursor.fetchall():
-                item = dict(row)
-                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
-                rows.append(item)
-            return rows
+        return self.observability_db.get_recent_model_invocations(limit=limit)
 
     def list_model_invocations(
         self,
@@ -3282,57 +3206,17 @@ class DatabaseManager:
         status: Optional[str] = None,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
-        query = 'SELECT * FROM model_invocation_logs WHERE 1=1'
-        params: list[Any] = []
-        if session_id:
-            query += ' AND session_id = ?'
-            params.append(session_id)
-        if run_id:
-            query += ' AND run_id = ?'
-            params.append(run_id)
-        if capability_class:
-            query += ' AND capability_class = ?'
-            params.append(capability_class)
-        if request_kind:
-            query += ' AND request_kind = ?'
-            params.append(request_kind)
-        if status:
-            query += ' AND status = ?'
-            params.append(status)
-        query += ' ORDER BY started_at DESC LIMIT ?'
-        params.append(limit)
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            rows: List[Dict[str, Any]] = []
-            for row in cursor.fetchall():
-                item = dict(row)
-                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
-                rows.append(item)
-            return rows
+        return self.observability_db.list_model_invocations(
+            session_id=session_id,
+            run_id=run_id,
+            capability_class=capability_class,
+            request_kind=request_kind,
+            status=status,
+            limit=limit,
+        )
 
     def get_model_usage_distribution(self, days: int = 7, limit: int = 12) -> List[Dict[str, Any]]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT
-                    model_id,
-                    provider_name,
-                    provider_id,
-                    COUNT(*) AS invocations,
-                    SUM(total_tokens) AS total_tokens,
-                    SUM(cost_total) AS cost_total
-                FROM model_invocation_logs
-                WHERE started_at >= datetime('now', ?)
-                GROUP BY model_id, provider_name, provider_id
-                ORDER BY invocations DESC, total_tokens DESC
-                LIMIT ?
-                ''',
-                (f'-{max(days, 1)} day', limit),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self.observability_db.get_model_usage_distribution(days=days, limit=limit)
 
     def get_daily_telemetry_activity(self, days: int = 7) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -3355,56 +3239,37 @@ class DatabaseManager:
                     FROM run_records
                     WHERE started_at >= datetime('now', ?)
                     GROUP BY date(started_at)
-                ),
-                invocation_stats AS (
-                    SELECT date(started_at) AS day, COUNT(*) AS invocations, COALESCE(SUM(total_tokens), 0) AS total_tokens
-                    FROM model_invocation_logs
-                    WHERE started_at >= datetime('now', ?)
-                    GROUP BY date(started_at)
                 )
                 SELECT
                     dates.day AS day,
                     COALESCE(message_stats.messages, 0) AS messages,
                     COALESCE(run_stats.runs, 0) AS runs,
-                    COALESCE(invocation_stats.invocations, 0) AS invocations,
-                    COALESCE(invocation_stats.total_tokens, 0) AS total_tokens
+                    0 AS invocations,
+                    0 AS total_tokens
                 FROM dates
                 LEFT JOIN message_stats ON message_stats.day = dates.day
                 LEFT JOIN run_stats ON run_stats.day = dates.day
-                LEFT JOIN invocation_stats ON invocation_stats.day = dates.day
                 ORDER BY dates.day ASC
                 ''',
                 (
                     f'-{max(days - 1, 0)} day',
                     f'-{max(days, 1)} day',
                     f'-{max(days, 1)} day',
-                    f'-{max(days, 1)} day',
                 ),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+        invocation_rows = {
+            str(item.get("day")): item
+            for item in self.observability_db.get_daily_invocation_activity(days=days)
+        }
+        for row in rows:
+            invocations = invocation_rows.get(str(row.get("day"))) or {}
+            row["invocations"] = int(invocations.get("invocations") or 0)
+            row["total_tokens"] = int(invocations.get("total_tokens") or 0)
+        return rows
 
     def get_provider_health_summary(self, days: int = 7) -> List[Dict[str, Any]]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT
-                    provider_id,
-                    provider_name,
-                    COUNT(*) AS events,
-                    SUM(CASE WHEN status IN ('completed', 'healthy') THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status NOT IN ('completed', 'healthy') THEN 1 ELSE 0 END) AS error_count,
-                    AVG(latency_ms) AS avg_latency_ms,
-                    MAX(created_at) AS last_seen_at
-                FROM provider_health_logs
-                WHERE created_at >= datetime('now', ?)
-                  AND COALESCE(json_extract(detail_json, '$.source'), '') != 'manual_connection_test'
-                GROUP BY provider_id, provider_name
-                ORDER BY events DESC, provider_name ASC
-                ''',
-                (f'-{max(days, 1)} day',),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self.observability_db.get_provider_health_summary(days=days)
 
     def get_usage_ledger_totals(
         self,
@@ -3453,33 +3318,7 @@ class DatabaseManager:
             }
 
     def get_run_invocation_totals(self, run_id: str) -> Dict[str, Any]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT
-                    COUNT(*) AS invocations,
-                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens,
-                    COALESCE(SUM(cost_total), 0) AS cost_total,
-                    COALESCE(SUM(latency_ms), 0) AS latency_ms_total,
-                    MAX(finished_at) AS last_finished_at
-                FROM model_invocation_logs
-                WHERE run_id = ?
-                ''',
-                (run_id,),
-            )
-            row = cursor.fetchone()
-            return dict(row) if row else {
-                "invocations": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cost_total": 0.0,
-                "latency_ms_total": 0.0,
-                "last_finished_at": None,
-            }
+        return self.observability_db.get_run_invocation_totals(run_id)
 
     # --- Scope Binding / Project Registry Cache Operations ---
 
@@ -3747,60 +3586,16 @@ class DatabaseManager:
     
     def add_audit_log(self, source_type: str, action: str, status: str, details: str = None):
         """Appends a new audit log entry."""
-        import uuid
-        log_id = str(uuid.uuid4())
-        with self.get_connection() as conn:
-            conn.execute('''
-                INSERT INTO system_audit_log (id, source_type, action, status, details)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (log_id, source_type, action, status, details))
-            conn.commit()
+        self.observability_db.add_audit_log(source_type, action, status, details)
             
     def get_audit_logs(self, limit: int = 100, offset: int = 0, source_type: str = None, status: str = None) -> List[Dict[str, Any]]:
         """Retrieves audit logs with optional filtering and pagination."""
-        query = 'SELECT * FROM system_audit_log WHERE 1=1'
-        params = []
-        
-        if source_type:
-            query += ' AND source_type = ?'
-            params.append(source_type)
-        if status:
-            query += ' AND status = ?'
-            params.append(status)
-            
-        query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
-        params.extend([limit, offset])
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
+        return self.observability_db.get_audit_logs(limit=limit, offset=offset, source_type=source_type, status=status)
 
     def clear_audit_logs(self, *, source_type: str = None, status: str = None) -> Dict[str, Any]:
-        query = 'DELETE FROM system_audit_log WHERE 1=1'
-        params = []
-        if source_type:
-            query += ' AND source_type = ?'
-            params.append(source_type)
-        if status:
-            query += ' AND status = ?'
-            params.append(status)
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                query.replace('DELETE FROM system_audit_log', 'SELECT COUNT(*) AS count FROM system_audit_log', 1),
-                params,
-            )
-            row = cursor.fetchone()
-            deleted_count = int(row["count"]) if row else 0
-            cursor.execute(query, params)
-            conn.commit()
-            return {
-                "deleted": deleted_count,
-                "source_type": source_type,
-                "status": status,
-            }
+        result = self.observability_db.clear_audit_logs(source_type=source_type, status=status)
+        result.update({"source_type": source_type, "status": status})
+        return result
 
 # Singleton Instantiation
 import os

@@ -93,6 +93,14 @@ class CommandService:
         })
         run_service.update_metadata(run_id, {"approvedSafetyOperations": operations[-100:]})
 
+    def _remember_safety_allowlist(self, approval: Dict[str, Any], response: Optional[Dict[str, Any]]) -> None:
+        try:
+            from erc.safety_guardian import safety_guardian
+
+            safety_guardian.record_allowlist_from_approval(approval, response if isinstance(response, dict) else {})
+        except Exception:
+            return
+
     def request_approval(self, request: ApprovalRequest) -> Dict[str, Any]:
         from core.database import db
 
@@ -153,6 +161,7 @@ class CommandService:
         approval = db.get_pending_approval(approval_id)
         if approval:
             self._remember_approved_operation(approval, response)
+            self._remember_safety_allowlist(approval, response)
         if approval and approval.get("run_id"):
             self.clear_control_signal(approval["run_id"])
         return approval

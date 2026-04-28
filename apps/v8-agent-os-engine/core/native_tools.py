@@ -223,6 +223,19 @@ def _enforce_safety_decision(
     if decision.is_block() or not decision.allow_override:
         return False, f"Safety Guardian 已阻止该操作：{decision.reason}"
 
+    allowlist_entry = safety_guardian.is_allowlisted(decision)
+    if allowlist_entry:
+        safety_guardian.log_decision_event(
+            action="native_tool_safety_allowlist_reused",
+            decision=decision,
+            subject=question,
+            metadata={
+                "toolCallId": tool_call_id,
+                "allowlistEntryId": allowlist_entry.get("id"),
+            },
+        )
+        return True, None
+
     if operation_fingerprint and _is_safety_operation_previously_approved(operation_fingerprint, operation_target_fingerprint):
         safety_guardian.log_decision_event(
             action="native_tool_safety_approval_reused",
@@ -241,6 +254,7 @@ def _enforce_safety_decision(
         request_payload["operationFingerprint"] = operation_fingerprint
     if operation_target_fingerprint:
         request_payload["operationTargetFingerprint"] = operation_target_fingerprint
+    request_payload["allowlistCandidate"] = safety_guardian.build_allowlist_candidate(decision)
 
     raise ModelGovernanceInterventionRequired(
         f"Safety Guardian 检测到治理审批请求：{decision.reason}",

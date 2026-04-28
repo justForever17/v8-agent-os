@@ -12,6 +12,7 @@ import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { SafetyGuardianPanel } from "@/components/runtime/SafetyGuardianPanel";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -30,6 +31,74 @@ type ModelOption = {
     type: string;
     provider?: { id?: string; name?: string };
     providerName?: string;
+};
+
+type SafetyApproval = {
+    id: string;
+    session_id?: string;
+    run_id?: string;
+    approval_kind?: string;
+    status?: string;
+    created_at?: string;
+    question?: string;
+    riskCode?: string;
+    verdict?: string;
+    reason?: string;
+    allowlistCandidate?: Record<string, unknown> | null;
+};
+
+type SkillSafetyReview = {
+    id: string;
+    skill_name?: string;
+    skill_id?: string;
+    skill_path?: string;
+    static_verdict?: string;
+    effective_verdict?: string;
+    user_override?: string | null;
+    disabled?: boolean;
+    reasons?: string[];
+    flaggedFiles?: Array<Record<string, unknown>>;
+    updated_at?: string;
+};
+
+type SafetyAllowlistEntry = {
+    id: string;
+    normalized_target_label?: string;
+    path_plane?: string;
+    runtime_source?: string;
+    action?: string;
+    risk_code?: string;
+    enabled?: boolean;
+    updated_at?: string;
+};
+
+type SafetyDecisionEvent = {
+    id?: string;
+    timestamp?: string;
+    action?: string;
+    status?: string;
+    verdict?: string;
+    riskCode?: string;
+    runtimeSource?: string;
+    subject?: string;
+    reason?: string;
+    decodedPreview?: unknown;
+    downloadHosts?: string[];
+};
+
+type SafetyDashboard = {
+    pendingSafetyApprovals?: SafetyApproval[];
+    skillSafetyReviews?: SkillSafetyReview[];
+    allowlistEntries?: SafetyAllowlistEntry[];
+    recentDecisions?: SafetyDecisionEvent[];
+    summary?: {
+        pendingSafetyApprovals?: number;
+        skillReviews?: number;
+        activeAllowlist?: number;
+        recentDecisions?: number;
+        verdictCounts?: Record<string, number>;
+        riskCounts?: Record<string, number>;
+    };
 };
 
 type SafetyData = {
@@ -228,17 +297,22 @@ export default function SafetyControlPage() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [preset, setPreset] = useState<(typeof PRESET_OPTIONS)[number]["key"]>("dedicated_runtime_host");
+    const [dashboard, setDashboard] = useState<SafetyDashboard | null>(null);
+    const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
+    const [rememberAllowlist, setRememberAllowlist] = useState<Record<string, boolean>>({});
 
     const loadConfig = async () => {
         setLoading(true);
         try {
-            const [next, modelList] = await Promise.all([
+            const [next, modelList, safetyDashboard] = await Promise.all([
                 fetchConfigDomain<SafetyData>("safety"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
+                fetch("/api/safety/dashboard?limit=80", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
             ]);
             const normalized = normalizeSafetyData(next.data);
             setEnvelope({ ...next, data: normalized });
             setModels(Array.isArray(modelList) ? modelList : []);
+            setDashboard(safetyDashboard && typeof safetyDashboard === "object" ? safetyDashboard : {});
             setPreset(detectPreset(normalized));
         } finally {
             setLoading(false);
@@ -281,6 +355,58 @@ export default function SafetyControlPage() {
             window.setTimeout(() => setSaved(false), 1800);
         } finally {
             setSaving(false);
+        }
+    };
+
+    const handleApprovalAction = async (approvalId: string, approve: boolean) => {
+        const busyKey = `approval:${approve ? "approve" : "reject"}:${approvalId}`;
+        setGovernanceBusy(busyKey);
+        try {
+            const response = await fetch(`/api/approvals/${encodeURIComponent(approvalId)}/${approve ? "approve" : "reject"}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    response: {
+                        approved: approve,
+                        answer: approve ? "Approved from SafetyRuntime governance." : "Rejected from SafetyRuntime governance.",
+                        persistSafetyAllowlist: approve ? Boolean(rememberAllowlist[approvalId]) : false,
+                    },
+                }),
+            });
+            if (!response.ok) {
+                throw new Error(`Approval action failed: ${response.status}`);
+            }
+            await loadConfig();
+        } finally {
+            setGovernanceBusy(null);
+        }
+    };
+
+    const handleSkillSafetyAction = async (reviewId: string, action: "approve" | "disable" | "revoke" | "rescan") => {
+        const busyKey = `skill:${action}:${reviewId}`;
+        setGovernanceBusy(busyKey);
+        try {
+            const response = await fetch(`/api/skills/safety/reviews/${encodeURIComponent(reviewId)}/${action}`, { method: "POST" });
+            if (!response.ok) {
+                throw new Error(`Skill safety action failed: ${response.status}`);
+            }
+            await loadConfig();
+        } finally {
+            setGovernanceBusy(null);
+        }
+    };
+
+    const handleAllowlistRevoke = async (entryId: string) => {
+        const busyKey = `allowlist:revoke:${entryId}`;
+        setGovernanceBusy(busyKey);
+        try {
+            const response = await fetch(`/api/safety/allowlist/${encodeURIComponent(entryId)}/revoke`, { method: "POST" });
+            if (!response.ok) {
+                throw new Error(`Allowlist revoke failed: ${response.status}`);
+            }
+            await loadConfig();
+        } finally {
+            setGovernanceBusy(null);
         }
     };
 
@@ -521,6 +647,174 @@ export default function SafetyControlPage() {
                         )}
                     </CardContent>
                 </Card>
+
+                <AdvancedSection title="SafetyRuntime 观测与审批" description="真实运行观测、待审批项、Skill ledger 与可撤销长期授权集中在这里；空运行矩阵只保留在本地测试脚本。" defaultOpen={false}>
+                    <div className="space-y-4">
+                        <div className="grid gap-3 md:grid-cols-4">
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">pending</div>
+                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.pendingSafetyApprovals ?? 0}</div>
+                                <div className="text-xs text-slate-500">Safety approvals</div>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">ledger</div>
+                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.skillReviews ?? 0}</div>
+                                <div className="text-xs text-slate-500">Skill reviews</div>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">allowlist</div>
+                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.activeAllowlist ?? 0}</div>
+                                <div className="text-xs text-slate-500">Active entries</div>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">events</div>
+                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.recentDecisions ?? 0}</div>
+                                <div className="text-xs text-slate-500">Recent decisions</div>
+                            </div>
+                        </div>
+
+                        <Card className="rounded-2xl border-slate-200 shadow-sm">
+                            <CardHeader>
+                                <CardTitle className="text-base">待处理 Safety 审批</CardTitle>
+                                <CardDescription>“记住此授权”会写入强绑定 allowlist；目标、runtime、path plane 或 risk code 变化后不会复用。</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                                {(dashboard?.pendingSafetyApprovals || []).length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无待处理 Safety 审批。</div>
+                                ) : (
+                                    (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map((approval) => (
+                                        <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge variant="outline">{approval.approval_kind || "safety_review"}</Badge>
+                                                <Badge variant={approval.verdict === "block" ? "destructive" : "secondary"}>{approval.riskCode || "unknown"}</Badge>
+                                                <span className="text-xs text-slate-500">Run {approval.run_id || "-"}</span>
+                                            </div>
+                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{approval.question || approval.reason || "SafetyRuntime 请求人工确认。"}</p>
+                                            {approval.allowlistCandidate ? (
+                                                <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={Boolean(rememberAllowlist[approval.id])}
+                                                        onChange={(event) => setRememberAllowlist((previous) => ({ ...previous, [approval.id]: event.target.checked }))}
+                                                    />
+                                                    记住此授权为长期 allowlist（可撤销，强绑定目标与风险类型）
+                                                </label>
+                                            ) : null}
+                                            <div className="mt-3 flex justify-end gap-2">
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    disabled={governanceBusy === `approval:reject:${approval.id}` || governanceBusy === `approval:approve:${approval.id}`}
+                                                    onClick={() => void handleApprovalAction(approval.id, false)}
+                                                >
+                                                    拒绝
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    disabled={governanceBusy === `approval:approve:${approval.id}` || governanceBusy === `approval:reject:${approval.id}`}
+                                                    onClick={() => void handleApprovalAction(approval.id, true)}
+                                                >
+                                                    通过
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        <div className="grid gap-4 xl:grid-cols-2">
+                            <Card className="rounded-2xl border-slate-200 shadow-sm">
+                                <CardHeader>
+                                    <CardTitle className="text-base">Skill Safety Ledger</CardTitle>
+                                    <CardDescription>按内容 hash 复用审查结果；disabled skill 不进入模型候选。</CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-3">
+                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? (
+                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无 Skill 安全审查记录。</div>
+                                    ) : (
+                                        (dashboard?.skillSafetyReviews || []).slice(0, 8).map((review) => (
+                                            <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="font-medium text-slate-950">{review.skill_name || review.skill_id || "Unknown skill"}</span>
+                                                    <Badge variant={review.disabled ? "destructive" : "outline"}>{review.disabled ? "disabled" : review.effective_verdict || "unknown"}</Badge>
+                                                    {review.user_override ? <Badge variant="secondary">{review.user_override}</Badge> : null}
+                                                </div>
+                                                <div className="mt-2 line-clamp-1 text-xs text-slate-500">{review.skill_path || "-"}</div>
+                                                {Array.isArray(review.reasons) && review.reasons.length ? (
+                                                    <div className="mt-2 text-sm text-slate-600">{review.reasons.slice(0, 2).join(" / ")}</div>
+                                                ) : null}
+                                                <div className="mt-3 flex flex-wrap justify-end gap-2">
+                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "approve")}>审批放行</Button>
+                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "disable")}>禁用</Button>
+                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "revoke")}>撤销</Button>
+                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "rescan")}>重扫</Button>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            <Card className="rounded-2xl border-slate-200 shadow-sm">
+                                <CardHeader>
+                                    <CardTitle className="text-base">Safety Allowlist</CardTitle>
+                                    <CardDescription>长期有效但可撤销；只按 normalized target hash、path plane、runtime source、action、risk code 命中。</CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-3">
+                                    {(dashboard?.allowlistEntries || []).length === 0 ? (
+                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无长期授权记录。</div>
+                                    ) : (
+                                        (dashboard?.allowlistEntries || []).slice(0, 8).map((entry) => (
+                                            <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Badge variant={entry.enabled ? "secondary" : "outline"}>{entry.enabled ? "active" : "revoked"}</Badge>
+                                                    <Badge variant="outline">{entry.risk_code || "unknown"}</Badge>
+                                                    <span className="text-xs text-slate-500">{entry.runtime_source || "unknown"} / {entry.path_plane || "unknown"} / {entry.action || "unknown"}</span>
+                                                </div>
+                                                <div className="mt-2 break-all text-sm text-slate-700">{entry.normalized_target_label || entry.id}</div>
+                                                {entry.enabled ? (
+                                                    <div className="mt-3 flex justify-end">
+                                                        <Button size="sm" variant="outline" disabled={governanceBusy === `allowlist:revoke:${entry.id}`} onClick={() => void handleAllowlistRevoke(entry.id)}>
+                                                            撤销授权
+                                                        </Button>
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        ))
+                                    )}
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        <Card className="rounded-2xl border-slate-200 shadow-sm">
+                            <CardHeader>
+                                <CardTitle className="text-base">最近 Safety 决策</CardTitle>
+                                <CardDescription>只显示脱敏后的 normalized / decoded 摘要，不显示完整 secret。</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                                {(dashboard?.recentDecisions || []).length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无 Safety decision event。</div>
+                                ) : (
+                                    (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => (
+                                        <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge variant={event.verdict === "block" ? "destructive" : "outline"}>{event.verdict || event.status || "unknown"}</Badge>
+                                                <Badge variant="secondary">{event.riskCode || "unknown"}</Badge>
+                                                <span className="text-xs text-slate-500">{event.action || "safety"} · {event.runtimeSource || "unknown"} · {event.timestamp || "-"}</span>
+                                            </div>
+                                            {event.subject ? <div className="mt-2 break-all text-sm text-slate-700">{event.subject}</div> : null}
+                                            {event.reason ? <div className="mt-2 text-sm text-slate-600">{event.reason}</div> : null}
+                                            {Array.isArray(event.downloadHosts) && event.downloadHosts.length ? (
+                                                <div className="mt-2 text-xs text-slate-500">download hosts: {event.downloadHosts.join(", ")}</div>
+                                            ) : null}
+                                        </div>
+                                    ))
+                                )}
+                            </CardContent>
+                        </Card>
+                    </div>
+                </AdvancedSection>
 
                 <AdvancedSection title="app.admin.dashboard.safety.control.page.k4f8c7149" defaultOpen={false}>
                     <SafetyGuardianPanel />

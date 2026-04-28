@@ -574,6 +574,13 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         },
     },
     "runtimeStability": {"version": 1, "strictSupervisorDurability": True, "sessionLanePolicy": "queue"},
+    "storageRetention": {
+        "version": 1,
+        "enabled": True,
+        "maxBytes": 209715200,
+        "mode": "hard_rolling",
+        "protectUserVisibleTranscript": True,
+    },
     "safety": {
         "enabled": True,
         "machinePosture": "dedicated_runtime_host",
@@ -2123,6 +2130,30 @@ class StorageManager:
         for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
             next_data[key] = bool(next_data.get(key))
         payload["engineeringLane"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["engineeringLane"], next_data)
+        self._write_config_payload(payload)
+
+    # --- Storage Retention Config Accessors ---
+    def _normalize_storage_retention_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
+        raw = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["storageRetention"], data if isinstance(data, dict) else {})
+        raw["version"] = 1
+        raw["enabled"] = bool(raw.get("enabled", True))
+        raw["mode"] = str(raw.get("mode") or "hard_rolling").strip() or "hard_rolling"
+        raw["protectUserVisibleTranscript"] = bool(raw.get("protectUserVisibleTranscript", True))
+        try:
+            max_bytes = int(raw.get("maxBytes") or 209715200)
+        except (TypeError, ValueError):
+            max_bytes = 209715200
+        raw["maxBytes"] = max(50 * 1024 * 1024, max_bytes)
+        return raw
+
+    def get_storage_retention_config(self) -> Dict[str, Any]:
+        payload = self._read_config_payload()
+        return self._normalize_storage_retention_config(payload.get("storageRetention"))
+
+    def save_storage_retention_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        current = self.get_storage_retention_config()
+        payload["storageRetention"] = self._normalize_storage_retention_config(self._deep_merge(current, dict(data or {})))
         self._write_config_payload(payload)
         
     # --- Supervisor Config Accessors ---

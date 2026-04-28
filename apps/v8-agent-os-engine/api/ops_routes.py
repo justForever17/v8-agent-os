@@ -25,6 +25,11 @@ class TerminalInputRequest(BaseModel):
     input_text: str
 
 
+class SafetyDryRunRequest(BaseModel):
+    command: str
+    runtime_context: dict | None = None
+
+
 @router.get("/settings/safety-guardian")
 async def get_safety_guardian_settings():
     try:
@@ -39,6 +44,43 @@ async def save_safety_guardian_settings(request: Request):
         data = await request.json()
         config = safety_guardian.save_config(data)
         return {"status": "success", "config": config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/safety/dashboard")
+async def get_safety_dashboard(limit: int = 80):
+    try:
+        return safety_guardian.build_dashboard_payload(limit=max(1, min(limit, 200)))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/safety/allowlist")
+async def list_safety_allowlist(status: str | None = None, limit: int = 100):
+    try:
+        return {"items": safety_guardian.list_safety_allowlist_entries(status=status, limit=max(1, min(limit, 200)))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/safety/allowlist/{entry_id}/revoke")
+async def revoke_safety_allowlist(entry_id: str):
+    try:
+        entry = safety_guardian.revoke_safety_allowlist_entry(entry_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="safety allowlist entry not found")
+        return {"status": "success", "entry": entry}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/safety/dry-run")
+async def explain_safety_command(request: SafetyDryRunRequest):
+    try:
+        return safety_guardian.explain_system_command(request.command, runtime_context=request.runtime_context or {})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -61,7 +61,119 @@ type SummaryPayload = {
         };
     };
 };
+type StorageRetentionPayload = {
+    maxBytes?: number;
+    totalGovernedBytes?: number;
+    overCapBytes?: number;
+    components?: Record<string, number>;
+    recentRetentionEvents?: Array<{
+        id?: string;
+        status?: string;
+        before_bytes?: number;
+        after_bytes?: number;
+        beforeBytes?: number;
+        afterBytes?: number;
+        created_at?: string;
+        createdAt?: string;
+        actions?: unknown[];
+    }>;
+};
 const VALID_TABS = new Set(["overview", "approvals", "runs", "advanced"]);
+
+function formatBytes(value?: number) {
+    const bytes = Number(value || 0);
+    if (bytes <= 0) return "0 MB";
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function StorageRetentionPanel() {
+    const [stats, setStats] = useState<StorageRetentionPayload | null>(null);
+    const [lastResult, setLastResult] = useState<Record<string, any> | null>(null);
+    const [loading, setLoading] = useState(false);
+    const load = async () => {
+        setLoading(true);
+        try {
+            const response = await fetch("/api/storage-retention/stats", { cache: "no-store" });
+            const payload = await response.json().catch(() => null);
+            if (response.ok) setStats(payload);
+        }
+        finally {
+            setLoading(false);
+        }
+    };
+    const run = async (kind: "dry-run" | "prune") => {
+        setLoading(true);
+        try {
+            const response = await fetch(`/api/storage-retention/${kind}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reason: `admin_${kind}` }),
+            });
+            const payload = await response.json().catch(() => null);
+            setLastResult(payload);
+            await load();
+        }
+        finally {
+            setLoading(false);
+        }
+    };
+    useEffect(() => {
+        void load();
+    }, []);
+    const components = stats?.components || {};
+    const actionCount = Array.isArray(lastResult?.actions) ? lastResult.actions.length : 0;
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <div className="text-sm font-semibold text-slate-900">Storage Retention</div>
+                    <div className="text-xs leading-5 text-slate-500">
+                        200MB hard cap for observability logs, snapshots, checkpoints and runtime log files. User-visible messages and artifacts are protected.
+                    </div>
+                </div>
+                <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+                        {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                        Refresh
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => void run("dry-run")} disabled={loading}>Dry run</Button>
+                    <Button size="sm" onClick={() => void run("prune")} disabled={loading}>Prune</Button>
+                </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <div className="text-xs text-slate-500">Governed</div>
+                    <div className="font-semibold text-slate-900">{formatBytes(stats?.totalGovernedBytes)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <div className="text-xs text-slate-500">Cap</div>
+                    <div className="font-semibold text-slate-900">{formatBytes(stats?.maxBytes)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <div className="text-xs text-slate-500">Over cap</div>
+                    <div className={Number(stats?.overCapBytes || 0) > 0 ? "font-semibold text-amber-700" : "font-semibold text-emerald-700"}>{formatBytes(stats?.overCapBytes)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <div className="text-xs text-slate-500">Last action</div>
+                    <div className="font-semibold text-slate-900">{lastResult?.status || stats?.recentRetentionEvents?.[0]?.status || "none"}</div>
+                </div>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+                {Object.entries(components).map(([key, value]) => (
+                    <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2 text-xs">
+                        <span className="text-slate-500">{key}</span>
+                        <span className="font-mono text-slate-900">{formatBytes(Number(value || 0))}</span>
+                    </div>
+                ))}
+            </div>
+            {lastResult ? (
+                <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
+                    Result: {lastResult.status || "unknown"} · actions {actionCount} · before {formatBytes(lastResult.beforeBytes)} · after {formatBytes(lastResult.afterBytes)}
+                </div>
+            ) : null}
+        </div>
+    );
+}
 export default function OperationsCenterPage() {
     const t = useT();
     const router = useRouter();
@@ -242,6 +354,9 @@ export default function OperationsCenterPage() {
                 </TabsContent>
 
                 <TabsContent value="advanced">
+                    <AdvancedSection title="Storage Retention" defaultOpen={false}>
+                        <StorageRetentionPanel />
+                    </AdvancedSection>
                     <AdvancedSection title={"app.admin.dashboard.operations.center.page.k428237fe"} defaultOpen>
                         <AuditLogsPanel />
                     </AdvancedSection>

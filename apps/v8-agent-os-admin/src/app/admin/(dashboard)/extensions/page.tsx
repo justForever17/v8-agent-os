@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, ShieldAlert, Terminal, Upload, Wrench } from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Terminal, Upload, Wrench } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -597,7 +597,6 @@ export default function ExtensionsPage() {
     const [previewError, setPreviewError] = useState("");
     const [previewedQuery, setPreviewedQuery] = useState("");
     const [previewResult, setPreviewResult] = useState<ExtensionPrefilterPreviewResponse | null>(null);
-    const [skillSafetyAction, setSkillSafetyAction] = useState("");
     const fileInputRef = useRef<HTMLInputElement>(null);
     const { toast } = useToast();
     const loadData = useCallback(async () => {
@@ -901,31 +900,6 @@ export default function ExtensionsPage() {
         }
         finally {
             setSavingMcp(false);
-        }
-    };
-    const handleSkillSafetyAction = async (reviewId: string, action: "approve" | "disable" | "revoke" | "rescan") => {
-        if (!reviewId)
-            return;
-        const actionKey = `${reviewId}:${action}`;
-        setSkillSafetyAction(actionKey);
-        try {
-            const res = await fetch(`/api/skills/safety/reviews/${encodeURIComponent(reviewId)}/${action}`, { method: "POST" });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                throw new Error(String(data?.detail || data?.error || (isZh ? "Skill 安全状态更新失败。" : "Failed to update skill safety state.")));
-            }
-            toast({ title: isZh ? "Skill 安全状态已更新" : "Skill safety state updated" });
-            await loadData();
-        }
-        catch (error) {
-            toast({
-                title: isZh ? "Skill 安全状态更新失败" : "Skill safety update failed",
-                description: error instanceof Error ? error.message : (isZh ? "请稍后重试。" : "Please try again."),
-                variant: "destructive",
-            });
-        }
-        finally {
-            setSkillSafetyAction("");
         }
     };
     if (loading || !catalog || !health || !configEnvelope) {
@@ -1246,73 +1220,23 @@ export default function ExtensionsPage() {
 
             <SourceMetaRow source={configEnvelope.source} savePath={configEnvelope.savePath} reloadRequired={configEnvelope.reloadRequired}/>
 
-            <ConfigCard title={isZh ? "Skill Safety 治理" : "Skill Safety Governance"} description={isZh ? "按内容 hash 复用审查结果；critical 默认禁用，high 保留复核提示。禁用项不进入模型候选。" : "Review results are reused by content hash. Critical skills are disabled by default; high-risk skills keep review banners. Disabled skills are hidden from model candidates."} variant="list" bodyHeight={360} bodyScroll="auto">
+            <ConfigCard title={isZh ? "Skill Safety 摘要" : "Skill Safety Summary"} description={isZh ? "审批、禁用、撤销与重扫已迁移到 Safety Runtime 页面，Extensions 只保留状态摘要。" : "Approve, disable, revoke, and rescan actions now live on the Safety Runtime page. Extensions keeps a status summary only."} variant="list">
                 <div className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-3">
                         <StatPill label={isZh ? "已禁用" : "Disabled"} value={skillSafetyDisabledCount}/>
                         <StatPill label={isZh ? "需复核" : "Review"} value={skillSafetyReviewCount}/>
                         <StatPill label={isZh ? "人工批准" : "Approved"} value={skillSafetyApprovedCount}/>
                     </div>
-                    {skillSafetyReviews.length === 0 ? (
-                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm leading-6 text-slate-500">
-                            {isZh ? "暂无 Skill 安全审查记录。首次读取 Skill 后会自动写入 ledger。" : "No skill safety reviews yet. Reviews are recorded when a skill is first loaded."}
-                        </div>
-                    ) : (
-                        <div className="space-y-3">
-                            {skillSafetyReviews.slice(0, 8).map((review) => {
-                                const verdict = String(review.effective_verdict || "").toLowerCase();
-                                const override = String(review.user_override || "").toLowerCase();
-                                const status = review.disabled ? "disabled" : override === "approved" ? "approved" : verdict || "unknown";
-                                const badgeVariant = status === "disabled" || status === "block" ? "destructive" : status === "review" ? "secondary" : "outline";
-                                const reasons = (review.reasons || []).slice(0, 2);
-                                const actionBusy = (action: string) => skillSafetyAction === `${review.id}:${action}`;
-                                return (
-                                    <div key={review.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                        <div className="flex flex-wrap items-start justify-between gap-3">
-                                            <div className="min-w-0 space-y-2">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <ShieldAlert className="h-4 w-4 text-amber-600"/>
-                                                    <div className="text-sm font-semibold text-slate-900">{review.skill_name || review.skill_id || (isZh ? "未知 Skill" : "Unknown skill")}</div>
-                                                    <Badge variant={badgeVariant as "default" | "secondary" | "destructive" | "outline"}>{status}</Badge>
-                                                    {review.static_verdict ? <Badge variant="outline">static: {review.static_verdict}</Badge> : null}
-                                                </div>
-                                                <div className="break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{review.skill_path || "—"}</div>
-                                                <div className="break-all text-[11px] text-slate-500">hash: {(review.content_hash || "").slice(0, 16) || "—"}</div>
-                                                {reasons.length ? (
-                                                    <div className="space-y-1 text-xs leading-5 text-slate-600">
-                                                        {reasons.map((reason, index) => <div key={`${review.id}:reason:${index}`}>- {reason}</div>)}
-                                                    </div>
-                                                ) : null}
-                                                {(review.flaggedFiles || []).length ? (
-                                                    <div className="text-[11px] leading-5 text-amber-700">
-                                                        {(review.flaggedFiles || []).slice(0, 2).map((file) => file.path).filter(Boolean).join(" / ")}
-                                                    </div>
-                                                ) : null}
-                                            </div>
-                                            <div className="flex shrink-0 flex-wrap gap-2">
-                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "approve")} disabled={Boolean(skillSafetyAction)}>
-                                                    {actionBusy("approve") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
-                                                    {isZh ? "批准" : "Approve"}
-                                                </Button>
-                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "disable")} disabled={Boolean(skillSafetyAction)}>
-                                                    {actionBusy("disable") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
-                                                    {isZh ? "禁用" : "Disable"}
-                                                </Button>
-                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "revoke")} disabled={Boolean(skillSafetyAction)}>
-                                                    {actionBusy("revoke") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
-                                                    {isZh ? "撤销" : "Revoke"}
-                                                </Button>
-                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "rescan")} disabled={Boolean(skillSafetyAction)}>
-                                                    {actionBusy("rescan") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
-                                                    {isZh ? "重扫" : "Rescan"}
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    )}
+                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm leading-6 text-slate-500">
+                        {skillSafetyReviews.length === 0
+                            ? (isZh ? "暂无 Skill 安全审查记录。首次读取 Skill 后会自动写入 ledger。" : "No skill safety reviews yet. Reviews are recorded when a skill is first loaded.")
+                            : (isZh ? "普通候选列表会隐藏 disabled skill；治理操作请前往 Safety Runtime 折叠区。" : "Disabled skills are hidden from normal candidates. Use the Safety Runtime section for governance actions.")}
+                    </div>
+                    <div className="flex justify-end">
+                        <Button asChild variant="outline">
+                            <a href="/admin/safety-control">{isZh ? "打开 Safety Runtime 治理" : "Open Safety Runtime Governance"}</a>
+                        </Button>
+                    </div>
                 </div>
             </ConfigCard>
 

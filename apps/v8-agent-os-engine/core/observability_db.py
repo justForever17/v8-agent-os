@@ -1,0 +1,663 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional
+
+from core.v8_agent_os_paths import OBSERVABILITY_DB_PATH
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ObservabilityDatabaseManager:
+    """SQLite store for non-authoritative logs, telemetry, and cache diagnostics."""
+
+    def __init__(self, db_path: Path = OBSERVABILITY_DB_PATH):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.init_db()
+
+    @contextmanager
+    def get_connection(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def init_db(self) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_invocation_logs (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    session_id TEXT,
+                    provider_id TEXT,
+                    provider_name TEXT,
+                    model_id TEXT NOT NULL,
+                    role TEXT,
+                    capability_class TEXT,
+                    request_kind TEXT,
+                    status TEXT NOT NULL,
+                    input_tokens INTEGER DEFAULT 0,
+                    output_tokens INTEGER DEFAULT 0,
+                    total_tokens INTEGER DEFAULT 0,
+                    cost_input REAL DEFAULT 0,
+                    cost_output REAL DEFAULT 0,
+                    cost_total REAL DEFAULT 0,
+                    latency_ms REAL DEFAULT 0,
+                    error_code TEXT,
+                    error_message TEXT,
+                    is_streaming INTEGER DEFAULT 0,
+                    metadata_json TEXT,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finished_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS provider_health_logs (
+                    id TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    provider_name TEXT,
+                    model_id TEXT,
+                    run_id TEXT,
+                    session_id TEXT,
+                    status TEXT NOT NULL,
+                    error_code TEXT,
+                    error_message TEXT,
+                    latency_ms REAL DEFAULT 0,
+                    detail_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prompt_cache_events (
+                    id TEXT PRIMARY KEY,
+                    provider_id TEXT,
+                    model_id TEXT,
+                    model_ref TEXT,
+                    role TEXT,
+                    profile_id TEXT,
+                    static_prefix_key TEXT,
+                    response_cache_key TEXT,
+                    decision TEXT NOT NULL,
+                    skip_reason TEXT,
+                    provider_patch_json TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prompt_cache_segments (
+                    id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    segment_type TEXT NOT NULL,
+                    source TEXT,
+                    content_hash TEXT NOT NULL,
+                    char_count INTEGER DEFAULT 0,
+                    estimated_tokens INTEGER DEFAULT 0,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (event_id) REFERENCES prompt_cache_events (id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS llm_response_cache (
+                    response_cache_key TEXT PRIMARY KEY,
+                    static_prefix_key TEXT,
+                    provider_id TEXT,
+                    model_id TEXT,
+                    model_ref TEXT,
+                    role TEXT,
+                    response_body_json TEXT NOT NULL,
+                    metadata_json TEXT,
+                    hit_count INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_audit_log (
+                    id TEXT PRIMARY KEY,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    source_type TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    details TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_logs (
+                    id TEXT PRIMARY KEY,
+                    task_name TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    action_target TEXT,
+                    trigger_source TEXT,
+                    status TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    duration_ms REAL,
+                    error_message TEXT,
+                    payload TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retention_events (
+                    id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    max_bytes INTEGER NOT NULL,
+                    before_bytes INTEGER DEFAULT 0,
+                    after_bytes INTEGER DEFAULT 0,
+                    actions_json TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_run_id ON model_invocation_logs (run_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_model_id ON model_invocation_logs (model_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_started_at ON model_invocation_logs (started_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_provider_health_logs_provider_id ON provider_health_logs (provider_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_cache_events_created_at ON prompt_cache_events (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_cache_events_prefix_key ON prompt_cache_events (static_prefix_key)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_cache_segments_event_id ON prompt_cache_segments (event_id, ordinal)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_response_cache_expires_at ON llm_response_cache (expires_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON system_audit_log (timestamp DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_source ON system_audit_log (source_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_logs_started_at ON execution_logs (started_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_retention_events_created_at ON retention_events (created_at DESC)")
+            conn.commit()
+
+    def add_model_invocation_log(self, record: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO model_invocation_logs (
+                    id, run_id, session_id, provider_id, provider_name, model_id, role, capability_class,
+                    request_kind, status, input_tokens, output_tokens, total_tokens, cost_input, cost_output,
+                    cost_total, latency_ms, error_code, error_message, is_streaming, metadata_json,
+                    started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.get("id"),
+                    record.get("run_id"),
+                    record.get("session_id"),
+                    record.get("provider_id"),
+                    record.get("provider_name"),
+                    record.get("model_id"),
+                    record.get("role"),
+                    record.get("capability_class"),
+                    record.get("request_kind"),
+                    record.get("status"),
+                    int(record.get("input_tokens") or 0),
+                    int(record.get("output_tokens") or 0),
+                    int(record.get("total_tokens") or 0),
+                    float(record.get("cost_input") or 0.0),
+                    float(record.get("cost_output") or 0.0),
+                    float(record.get("cost_total") or 0.0),
+                    float(record.get("latency_ms") or 0.0),
+                    record.get("error_code"),
+                    record.get("error_message"),
+                    1 if record.get("is_streaming") else 0,
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    record.get("started_at"),
+                    record.get("finished_at"),
+                ),
+            )
+            conn.commit()
+
+    def add_provider_health_log(self, record: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO provider_health_logs (
+                    id, provider_id, provider_name, model_id, run_id, session_id, status,
+                    error_code, error_message, latency_ms, detail_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.get("id"),
+                    record.get("provider_id"),
+                    record.get("provider_name"),
+                    record.get("model_id"),
+                    record.get("run_id"),
+                    record.get("session_id"),
+                    record.get("status"),
+                    record.get("error_code"),
+                    record.get("error_message"),
+                    float(record.get("latency_ms") or 0.0),
+                    json.dumps(record.get("detail") or {}, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+
+    def add_prompt_cache_event(self, record: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO prompt_cache_events (
+                    id, provider_id, model_id, model_ref, role, profile_id,
+                    static_prefix_key, response_cache_key, decision, skip_reason,
+                    provider_patch_json, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.get("id"),
+                    record.get("provider_id"),
+                    record.get("model_id"),
+                    record.get("model_ref"),
+                    record.get("role"),
+                    record.get("profile_id"),
+                    record.get("static_prefix_key"),
+                    record.get("response_cache_key"),
+                    record.get("decision"),
+                    record.get("skip_reason"),
+                    json.dumps(record.get("provider_patch") or {}, ensure_ascii=False),
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    record.get("created_at") or utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def add_prompt_cache_segments(self, event_id: str, segments: List[Dict[str, Any]]) -> None:
+        if not event_id:
+            return
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM prompt_cache_segments WHERE event_id = ?", (event_id,))
+            for index, segment in enumerate(segments or []):
+                conn.execute(
+                    """
+                    INSERT INTO prompt_cache_segments (
+                        id, event_id, ordinal, segment_type, source, content_hash,
+                        char_count, estimated_tokens, metadata_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        event_id,
+                        index,
+                        segment.get("type") or segment.get("segment_type") or "",
+                        segment.get("source"),
+                        segment.get("hash") or segment.get("content_hash") or "",
+                        int(segment.get("charCount") or segment.get("char_count") or 0),
+                        int(segment.get("estimatedTokens") or segment.get("estimated_tokens") or 0),
+                        json.dumps(segment.get("metadata") or {}, ensure_ascii=False),
+                        utc_now_iso(),
+                    ),
+                )
+            conn.commit()
+
+    def get_llm_response_cache(self, response_cache_key: str) -> Optional[Dict[str, Any]]:
+        if not response_cache_key:
+            return None
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM llm_response_cache
+                WHERE response_cache_key = ?
+                  AND (expires_at IS NULL OR expires_at > ?)
+                """,
+                (response_cache_key, utc_now_iso()),
+            ).fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["response"] = json.loads(item["response_body_json"]) if item.get("response_body_json") else {}
+            item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+            return item
+
+    def upsert_llm_response_cache(self, record: Dict[str, Any]) -> None:
+        key = str(record.get("response_cache_key") or "")
+        if not key:
+            return
+        ttl_seconds = int(record.get("ttl_seconds") or 600)
+        now_epoch = time.time()
+        created_at = record.get("created_at") or datetime.fromtimestamp(now_epoch, timezone.utc).isoformat()
+        expires_at = datetime.fromtimestamp(now_epoch + max(ttl_seconds, 1), timezone.utc).isoformat()
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO llm_response_cache (
+                    response_cache_key, static_prefix_key, provider_id, model_id, model_ref,
+                    role, response_body_json, metadata_json, hit_count, created_at,
+                    updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                ON CONFLICT(response_cache_key) DO UPDATE SET
+                    response_body_json=excluded.response_body_json,
+                    metadata_json=excluded.metadata_json,
+                    static_prefix_key=excluded.static_prefix_key,
+                    provider_id=excluded.provider_id,
+                    model_id=excluded.model_id,
+                    model_ref=excluded.model_ref,
+                    role=excluded.role,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    key,
+                    record.get("static_prefix_key"),
+                    record.get("provider_id"),
+                    record.get("model_id"),
+                    record.get("model_ref"),
+                    record.get("role"),
+                    json.dumps(record.get("response") or {}, ensure_ascii=False),
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    created_at,
+                    utc_now_iso(),
+                    expires_at,
+                ),
+            )
+            conn.commit()
+
+    def increment_llm_response_cache_hit(self, response_cache_key: str) -> None:
+        if not response_cache_key:
+            return
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE llm_response_cache SET hit_count = hit_count + 1, updated_at = ? WHERE response_cache_key = ?",
+                (utc_now_iso(), response_cache_key),
+            )
+            conn.commit()
+
+    def get_prompt_cache_stats(self, limit: int = 50) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            by_decision = [dict(row) for row in conn.execute(
+                "SELECT decision, COUNT(*) AS count FROM prompt_cache_events GROUP BY decision ORDER BY count DESC"
+            ).fetchall()]
+            by_skip_reason = [dict(row) for row in conn.execute(
+                """
+                SELECT skip_reason, COUNT(*) AS count
+                FROM prompt_cache_events
+                WHERE COALESCE(skip_reason, '') != ''
+                GROUP BY skip_reason
+                ORDER BY count DESC
+                """
+            ).fetchall()]
+            cache_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count, COALESCE(SUM(hit_count), 0) AS hits
+                FROM llm_response_cache
+                WHERE expires_at IS NULL OR expires_at > ?
+                """,
+                (utc_now_iso(),),
+            ).fetchone()
+            recent: list[dict[str, Any]] = []
+            for row in conn.execute(
+                "SELECT * FROM prompt_cache_events ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit or 50), 200)),),
+            ).fetchall():
+                item = dict(row)
+                item["providerPatch"] = json.loads(item["provider_patch_json"]) if item.get("provider_patch_json") else {}
+                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                recent.append(item)
+            return {
+                "eventsByDecision": by_decision,
+                "eventsBySkipReason": by_skip_reason,
+                "responseCache": {
+                    "entries": int(cache_row["count"] or 0) if cache_row else 0,
+                    "hits": int(cache_row["hits"] or 0) if cache_row else 0,
+                },
+                "recentEvents": recent,
+            }
+
+    def purge_prompt_cache(self) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            counts: Dict[str, int] = {}
+            for table in ("prompt_cache_segments", "prompt_cache_events", "llm_response_cache"):
+                row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                counts[table] = int(row["count"] or 0) if row else 0
+                conn.execute(f"DELETE FROM {table}")
+            conn.commit()
+            return {"deleted": counts}
+
+    def add_audit_log(self, source_type: str, action: str, status: str, details: str = None) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO system_audit_log (id, source_type, action, status, details) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), source_type, action, status, details),
+            )
+            conn.commit()
+
+    def get_audit_logs(self, limit: int = 100, offset: int = 0, source_type: str = None, status: str = None) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM system_audit_log WHERE 1=1"
+        params: list[Any] = []
+        if source_type:
+            query += " AND source_type = ?"
+            params.append(source_type)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+    def clear_audit_logs(self, *, source_type: str = None, status: str = None) -> Dict[str, Any]:
+        query = "DELETE FROM system_audit_log WHERE 1=1"
+        count_query = "SELECT COUNT(*) AS count FROM system_audit_log WHERE 1=1"
+        params: list[Any] = []
+        if source_type:
+            query += " AND source_type = ?"
+            count_query += " AND source_type = ?"
+            params.append(source_type)
+        if status:
+            query += " AND status = ?"
+            count_query += " AND status = ?"
+            params.append(status)
+        with self.get_connection() as conn:
+            row = conn.execute(count_query, params).fetchone()
+            deleted = int(row["count"] or 0) if row else 0
+            conn.execute(query, params)
+            conn.commit()
+            return {"deleted": deleted}
+
+    def log_execution(self, log_id: str, task_name: str, action_type: str, action_target: str, trigger_source: str, status: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        with self.get_connection() as conn:
+            existing = conn.execute("SELECT id FROM execution_logs WHERE id = ?", (log_id,)).fetchone()
+            payload_str = json.dumps(payload or {}, ensure_ascii=False)
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE execution_logs
+                    SET status = ?, completed_at = CURRENT_TIMESTAMP, payload = ?
+                    WHERE id = ?
+                    """,
+                    (status, payload_str, log_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO execution_logs (id, task_name, action_type, action_target, trigger_source, status, started_at, payload)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    """,
+                    (log_id, task_name, action_type, action_target, trigger_source, status, payload_str),
+                )
+            conn.commit()
+
+    def get_execution_logs(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = []
+            for row in conn.execute(
+                "SELECT * FROM execution_logs ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall():
+                item = dict(row)
+                item["payload"] = json.loads(item.get("payload") or "{}")
+                item["finished_at"] = item.get("completed_at")
+                rows.append(item)
+            return rows
+
+    def get_recent_model_invocations(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows: list[dict[str, Any]] = []
+            for row in conn.execute(
+                "SELECT * FROM model_invocation_logs ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall():
+                item = dict(row)
+                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                rows.append(item)
+            return rows
+
+    def list_model_invocations(self, **filters: Any) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM model_invocation_logs WHERE 1=1"
+        params: list[Any] = []
+        for key, column in (
+            ("session_id", "session_id"),
+            ("run_id", "run_id"),
+            ("capability_class", "capability_class"),
+            ("request_kind", "request_kind"),
+            ("status", "status"),
+        ):
+            if filters.get(key):
+                query += f" AND {column} = ?"
+                params.append(filters[key])
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(int(filters.get("limit") or 20))
+        with self.get_connection() as conn:
+            rows = []
+            for row in conn.execute(query, params).fetchall():
+                item = dict(row)
+                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                rows.append(item)
+            return rows
+
+    def get_model_usage_distribution(self, days: int = 7, limit: int = 12) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                """
+                SELECT model_id, provider_name, provider_id, COUNT(*) AS invocations,
+                       SUM(total_tokens) AS total_tokens, SUM(cost_total) AS cost_total
+                FROM model_invocation_logs
+                WHERE started_at >= datetime('now', ?)
+                GROUP BY model_id, provider_name, provider_id
+                ORDER BY invocations DESC, total_tokens DESC
+                LIMIT ?
+                """,
+                (f"-{max(days, 1)} day", limit),
+            ).fetchall()]
+
+    def get_provider_health_summary(self, days: int = 7) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                """
+                SELECT provider_id, provider_name, COUNT(*) AS events,
+                       SUM(CASE WHEN status IN ('completed', 'healthy') THEN 1 ELSE 0 END) AS success_count,
+                       SUM(CASE WHEN status NOT IN ('completed', 'healthy') THEN 1 ELSE 0 END) AS error_count,
+                       AVG(latency_ms) AS avg_latency_ms,
+                       MAX(created_at) AS last_seen_at
+                FROM provider_health_logs
+                WHERE created_at >= datetime('now', ?)
+                  AND COALESCE(json_extract(detail_json, '$.source'), '') != 'manual_connection_test'
+                GROUP BY provider_id, provider_name
+                ORDER BY events DESC, provider_name ASC
+                """,
+                (f"-{max(days, 1)} day",),
+            ).fetchall()]
+
+    def get_daily_invocation_activity(self, days: int = 7) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                """
+                SELECT date(started_at) AS day,
+                       COUNT(*) AS invocations,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM model_invocation_logs
+                WHERE started_at >= datetime('now', ?)
+                GROUP BY date(started_at)
+                """,
+                (f"-{max(days, 1)} day",),
+            ).fetchall()]
+
+    def get_run_invocation_totals(self, run_id: str) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS invocations, COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                       COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cost_total), 0) AS cost_total,
+                       COALESCE(SUM(latency_ms), 0) AS latency_ms_total,
+                       MAX(finished_at) AS last_finished_at
+                FROM model_invocation_logs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            return dict(row) if row else {
+                "invocations": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_total": 0.0,
+                "latency_ms_total": 0.0,
+                "last_finished_at": None,
+            }
+
+    def add_retention_event(self, record: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO retention_events (
+                    id, mode, status, max_bytes, before_bytes, after_bytes,
+                    actions_json, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.get("id") or str(uuid.uuid4()),
+                    record.get("mode") or "dry_run",
+                    record.get("status") or "completed",
+                    int(record.get("max_bytes") or 0),
+                    int(record.get("before_bytes") or 0),
+                    int(record.get("after_bytes") or 0),
+                    json.dumps(record.get("actions") or [], ensure_ascii=False),
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    record.get("created_at") or utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def recent_retention_events(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = []
+            for row in conn.execute(
+                "SELECT * FROM retention_events ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit or 20), 100)),),
+            ).fetchall():
+                item = dict(row)
+                item["actions"] = json.loads(item.get("actions_json") or "[]")
+                item["metadata"] = json.loads(item.get("metadata_json") or "{}")
+                rows.append(item)
+            return rows
+
+
+observability_db = ObservabilityDatabaseManager()

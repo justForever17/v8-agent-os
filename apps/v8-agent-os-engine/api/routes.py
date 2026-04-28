@@ -32,6 +32,7 @@ from . import model_cache_routes as model_cache_routes_module
 from . import platform_routes as platform_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import session_workflow_routes as session_workflow_routes_module
+from . import storage_retention_routes as storage_retention_routes_module
 router = APIRouter()
 _STARTUP_PROFILE = resolve_startup_profile()
 
@@ -124,6 +125,7 @@ router.include_router(model_cache_routes_module.router)
 router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(platform_routes_module.router)
+router.include_router(storage_retention_routes_module.router)
 
 if service_enabled("extensions", profile=_STARTUP_PROFILE):
     _include_optional_router("extensions_routes")

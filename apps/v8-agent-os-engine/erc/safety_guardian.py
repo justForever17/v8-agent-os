@@ -696,6 +696,361 @@ class SafetyGuardian:
         except Exception:
             return
 
+    def build_allowlist_candidate(self, decision: SafetyDecision) -> Dict[str, Any]:
+        details = decision.details if isinstance(decision.details, dict) else {}
+        runtime_context = details.get("runtime_context") if isinstance(details.get("runtime_context"), dict) else {}
+        target_value = (
+            details.get("path")
+            or details.get("command")
+            or details.get("url")
+            or details.get("target")
+            or details.get("pid")
+            or ""
+        )
+        action = self._allowlist_action_for_decision(decision)
+        normalized_target, target_label = self._normalize_allowlist_target(target_value, action=action)
+        path_plane = self._classify_allowlist_path_plane(target_value, runtime_context=runtime_context, action=action)
+        runtime_source = self._allowlist_runtime_source(runtime_context)
+        content_hash = self._allowlist_content_hash(target_value, action=action)
+        raw_key = json.dumps(
+            {
+                "target": normalized_target,
+                "pathPlane": path_plane,
+                "runtimeSource": runtime_source,
+                "action": action,
+                "riskCode": decision.risk_code,
+                "contentHash": content_hash or "",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return {
+            "normalizedTargetHash": hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
+            "normalizedTargetLabel": target_label,
+            "pathPlane": path_plane,
+            "runtimeSource": runtime_source,
+            "action": action,
+            "riskCode": decision.risk_code,
+            "governanceTarget": decision.governance_target,
+            "contentHash": content_hash,
+        }
+
+    def is_allowlisted(self, decision: SafetyDecision) -> Dict[str, Any] | None:
+        candidate = self.build_allowlist_candidate(decision)
+        entry = db.find_safety_allowlist_entry(
+            normalized_target_hash=str(candidate.get("normalizedTargetHash") or ""),
+            path_plane=str(candidate.get("pathPlane") or "unknown"),
+            runtime_source=str(candidate.get("runtimeSource") or "unknown"),
+            action=str(candidate.get("action") or "unknown"),
+            risk_code=str(candidate.get("riskCode") or decision.risk_code),
+            enabled_only=True,
+        )
+        return entry
+
+    def record_allowlist_candidate(
+        self,
+        candidate: Dict[str, Any],
+        *,
+        approval_id: str | None = None,
+        approval_kind: str | None = None,
+        source: str = "admin_approval",
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return db.upsert_safety_allowlist_entry(
+            entry_id=f"safetyallow_{uuid4().hex[:16]}",
+            normalized_target_hash=str(candidate.get("normalizedTargetHash") or ""),
+            normalized_target_label=str(candidate.get("normalizedTargetLabel") or "")[:300] or None,
+            path_plane=str(candidate.get("pathPlane") or "unknown"),
+            runtime_source=str(candidate.get("runtimeSource") or "unknown"),
+            action=str(candidate.get("action") or "unknown"),
+            risk_code=str(candidate.get("riskCode") or "unknown"),
+            governance_target=str(candidate.get("governanceTarget") or "") or None,
+            approval_id=approval_id,
+            approval_kind=approval_kind,
+            source=source,
+            enabled=True,
+            metadata={"contentHash": candidate.get("contentHash"), **(metadata or {})},
+        )
+
+    def record_allowlist_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
+        response = dict(response or {})
+        if not bool(
+            response.get("persistSafetyAllowlist")
+            or response.get("rememberSafetyAllowlist")
+            or response.get("persist_safety_allowlist")
+        ):
+            return None
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        candidate = request.get("allowlistCandidate") if isinstance(request.get("allowlistCandidate"), dict) else {}
+        if not candidate:
+            return None
+        return self.record_allowlist_candidate(
+            candidate,
+            approval_id=str(approval.get("id") or approval.get("approval_id") or ""),
+            approval_kind=str(approval.get("approval_kind") or request.get("approvalKind") or ""),
+            source="admin_approval",
+            metadata={
+                "runId": approval.get("run_id"),
+                "sessionId": approval.get("session_id"),
+                "answer": response.get("answer"),
+            },
+        )
+
+    def list_safety_allowlist_entries(self, *, status: str | None = None, limit: int = 100) -> list[Dict[str, Any]]:
+        return db.list_safety_allowlist_entries(status=status, limit=limit)
+
+    def revoke_safety_allowlist_entry(self, entry_id: str) -> Dict[str, Any] | None:
+        return db.revoke_safety_allowlist_entry(entry_id)
+
+    def build_dashboard_payload(self, *, limit: int = 80) -> Dict[str, Any]:
+        safety_approvals = []
+        for approval in db.list_pending_approvals(status="pending"):
+            request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+            approval_kind = str(approval.get("approval_kind") or request.get("approvalKind") or "").strip().lower()
+            if approval_kind not in {"safety_review", "safety_blocked"}:
+                continue
+            safety_approvals.append(self._project_safety_approval(approval))
+
+        skill_reviews = self.list_skill_safety_reviews(limit=limit)
+        allowlist = self.list_safety_allowlist_entries(limit=limit)
+        audit_rows = db.get_audit_logs(limit=max(limit, 100), source_type="SAFETY")
+        decisions = [self._project_safety_audit_row(row) for row in audit_rows]
+        decisions = [item for item in decisions if item][:limit]
+        verdict_counts: dict[str, int] = {}
+        risk_counts: dict[str, int] = {}
+        for item in decisions:
+            verdict = str(item.get("verdict") or "unknown")
+            verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+            risk_code = str(item.get("riskCode") or "unknown")
+            risk_counts[risk_code] = risk_counts.get(risk_code, 0) + 1
+        return {
+            "pendingSafetyApprovals": safety_approvals[:limit],
+            "skillSafetyReviews": skill_reviews[:limit],
+            "allowlistEntries": allowlist[:limit],
+            "recentDecisions": decisions,
+            "summary": {
+                "pendingSafetyApprovals": len(safety_approvals),
+                "skillReviews": len(skill_reviews),
+                "activeAllowlist": sum(1 for item in allowlist if item.get("enabled")),
+                "recentDecisions": len(decisions),
+                "verdictCounts": verdict_counts,
+                "riskCounts": risk_counts,
+            },
+        }
+
+    def explain_system_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        runtime_context = dict(runtime_context or {})
+        analysis = self._analyze_system_command(command, runtime_context=runtime_context)
+        snapshot = list(self._recent_downloads)
+        try:
+            decision = self.assess_system_command(command, runtime_context=runtime_context)
+        finally:
+            self._recent_downloads = snapshot
+        return {
+            "command": self._redact_sensitive_text(str(command or "")),
+            "normalizedCommand": self._redact_sensitive_text(re.sub(r"\s+", " ", str(command or "")).strip()),
+            "analysis": self._redact_sensitive_payload(analysis.to_payload()),
+            "expectedVerdict": decision.verdict,
+            "riskCode": decision.risk_code,
+            "governanceTarget": decision.governance_target,
+            "reason": decision.reason,
+            "allowlistCandidate": self.build_allowlist_candidate(decision) if not decision.is_allow() else None,
+            "dryRun": True,
+        }
+
+    def _allowlist_action_for_decision(self, decision: SafetyDecision) -> str:
+        details = decision.details if isinstance(decision.details, dict) else {}
+        if details.get("command"):
+            return "command"
+        if details.get("url"):
+            return "network_mutate" if str(details.get("method") or "").upper() in {"POST", "PUT", "PATCH", "DELETE"} else "network_read"
+        if details.get("path"):
+            risk = str(decision.risk_code or "").lower()
+            if "write" in risk:
+                return "write"
+            if "delete" in risk or "destructive" in risk:
+                return "delete"
+            if "execute" in risk:
+                return "execute"
+            return "path"
+        if details.get("pid"):
+            return "process"
+        return str(decision.governance_target or "general")
+
+    def _allowlist_runtime_source(self, runtime_context: Dict[str, Any] | None) -> str:
+        if not isinstance(runtime_context, dict):
+            return "unknown"
+        for key in ("runtime_kind", "runtimeKind", "runtime", "source_runtime", "sourceRuntime"):
+            value = str(runtime_context.get(key) or "").strip().lower()
+            if value:
+                return value
+        return "unknown"
+
+    def _normalize_allowlist_target(self, value: Any, *, action: str) -> tuple[str, str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return "unknown", "unknown"
+        if action == "command":
+            normalized = re.sub(r"\s+", " ", raw).strip().lower()
+            return normalized, self._redact_sensitive_text(normalized[:300])
+        if action.startswith("network"):
+            parsed = urlparse(raw)
+            if parsed.scheme and parsed.netloc:
+                normalized = f"{parsed.scheme.lower()}://{(parsed.hostname or parsed.netloc).lower()}{parsed.path or ''}"
+                return normalized, normalized
+        normalized_path = self._normalize_path(raw)
+        if normalized_path is not None and (normalized_path.is_absolute() or "\\" in raw or "/" in raw):
+            path_label = str(normalized_path)
+            return path_label.lower(), path_label
+        normalized = re.sub(r"\s+", " ", raw).strip().lower()
+        return normalized, self._redact_sensitive_text(normalized[:300])
+
+    def _classify_allowlist_path_plane(self, value: Any, *, runtime_context: Dict[str, Any] | None, action: str) -> str:
+        raw = str(value or "").strip()
+        if action.startswith("network"):
+            return "network"
+        runtime_context = dict(runtime_context or {})
+        candidates: list[Path] = []
+        for key in ("workspace_path", "workspacePath", "project_workspace", "projectWorkspace"):
+            path = self._normalize_path(runtime_context.get(key))
+            if path is not None:
+                candidates.append(path)
+        raw_looks_like_path = action != "command" and bool(re.match(r"^[a-zA-Z]:[\\/]", raw) or raw.startswith(("\\\\", "/", "~\\", "~/")) or "\\" in raw or "/" in raw)
+        normalized = self._normalize_path(raw) if raw_looks_like_path else None
+        if normalized is None:
+            for candidate in self._extract_explicit_paths_from_command(raw):
+                normalized = candidate
+                break
+        if normalized is None:
+            return "command"
+        for workspace in [*candidates, WORKSPACE_HOME]:
+            try:
+                normalized.relative_to(workspace.expanduser().resolve(strict=False))
+                return "workspace"
+            except Exception:
+                continue
+        lowered = str(normalized).lower()
+        if "\\openclaw" in lowered or "/openclaw" in lowered:
+            return "openclaw_workspace"
+        home = Path.home().expanduser().resolve(strict=False)
+        try:
+            normalized.relative_to((home / ".agents").resolve(strict=False))
+            return "agents_home"
+        except Exception:
+            pass
+        temp_roots = [
+            self._normalize_path(os.environ.get("TEMP")),
+            self._normalize_path(os.environ.get("TMP")),
+            Path("/tmp"),
+        ]
+        for temp_root in [item for item in temp_roots if item is not None]:
+            try:
+                normalized.relative_to(temp_root.expanduser().resolve(strict=False))
+                return "temp"
+            except Exception:
+                continue
+        code_root = Path(__file__).resolve().parents[3]
+        try:
+            normalized.relative_to(code_root)
+            return "v8_codebase"
+        except Exception:
+            pass
+        if self._is_sensitive_system_path(normalized):
+            return "core_os"
+        try:
+            normalized.relative_to(home)
+            return "user_home"
+        except Exception:
+            return "external_unknown"
+
+    def _allowlist_content_hash(self, value: Any, *, action: str) -> str | None:
+        if action.startswith("network"):
+            return None
+        paths: list[Path] = []
+        raw = str(value or "").strip()
+        if action == "command":
+            paths.extend(self._extract_explicit_paths_from_command(raw))
+        else:
+            normalized = self._normalize_path(raw)
+            if normalized is not None:
+                paths.append(normalized)
+        for path in paths:
+            try:
+                if path.exists() and path.is_file():
+                    return self._hash_file(path)
+            except Exception:
+                continue
+        return None
+
+    def _project_safety_approval(self, approval: Dict[str, Any]) -> Dict[str, Any]:
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        safety = request.get("safety") if isinstance(request.get("safety"), dict) else {}
+        allowlist_candidate = request.get("allowlistCandidate") if isinstance(request.get("allowlistCandidate"), dict) else None
+        return {
+            "id": approval.get("id"),
+            "session_id": approval.get("session_id"),
+            "run_id": approval.get("run_id"),
+            "approval_kind": approval.get("approval_kind"),
+            "status": approval.get("status"),
+            "created_at": approval.get("created_at"),
+            "question": self._redact_sensitive_text(str(request.get("question") or request.get("prompt") or "")),
+            "riskCode": safety.get("risk_code") or safety.get("riskCode") or request.get("riskCode"),
+            "verdict": safety.get("verdict"),
+            "reason": self._redact_sensitive_text(str(safety.get("reason") or "")),
+            "allowlistCandidate": allowlist_candidate,
+        }
+
+    def _project_safety_audit_row(self, row: Dict[str, Any]) -> Dict[str, Any] | None:
+        raw_details = row.get("details")
+        if not raw_details:
+            return None
+        try:
+            details = json.loads(raw_details)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        safety_details = details.get("details") if isinstance(details.get("details"), dict) else {}
+        runtime_context = safety_details.get("runtime_context") if isinstance(safety_details.get("runtime_context"), dict) else {}
+        analysis = safety_details.get("analysis") if isinstance(safety_details.get("analysis"), dict) else {}
+        return {
+            "id": row.get("id"),
+            "timestamp": row.get("timestamp"),
+            "action": row.get("action"),
+            "status": row.get("status"),
+            "verdict": details.get("verdict"),
+            "riskCode": details.get("riskCode"),
+            "governanceTarget": details.get("governanceTarget"),
+            "runtimeSource": self._allowlist_runtime_source(runtime_context),
+            "subject": self._redact_sensitive_text(str(details.get("subject") or "")),
+            "reason": self._redact_sensitive_text(str(details.get("reason") or "")),
+            "decodedPreview": self._redact_sensitive_payload(analysis.get("decodedCommands") if isinstance(analysis, dict) else []),
+            "encodedIndicators": analysis.get("encodedIndicators") if isinstance(analysis, dict) else [],
+            "downloadHosts": analysis.get("downloadHosts") if isinstance(analysis, dict) else [],
+        }
+
+    def _redact_sensitive_payload(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._redact_sensitive_text(value)
+        if isinstance(value, list):
+            return [self._redact_sensitive_payload(item) for item in value[:20]]
+        if isinstance(value, dict):
+            redacted: dict[str, Any] = {}
+            for key, item in value.items():
+                lowered = str(key).lower()
+                if any(token in lowered for token in ("key", "token", "secret", "password", "cookie")):
+                    redacted[key] = "[REDACTED]"
+                else:
+                    redacted[key] = self._redact_sensitive_payload(item)
+            return redacted
+        return value
+
+    def _redact_sensitive_text(self, value: str) -> str:
+        text = str(value or "")
+        text = re.sub(r"(?i)(api[_-]?key|token|secret|password|cookie)(\s*[:=]\s*)([^\s;&|]+)", r"\1\2[REDACTED]", text)
+        text = re.sub(r"(?i)(bearer\s+)[a-z0-9._\-+/=]{12,}", r"\1[REDACTED]", text)
+        text = re.sub(r"(?i)(sk-[a-z0-9]{8})[a-z0-9_\-]{12,}", r"\1[REDACTED]", text)
+        return text
+
     def normalize_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         raw = deepcopy(config if config is not None else storage.get_safety_guardian_config() or {})
         merged = deepcopy(DEFAULT_SAFETY_GUARDIAN_CONFIG)

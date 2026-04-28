@@ -1007,48 +1007,28 @@ class KnowledgeDB:
                       trigger_source: str, status: str, payload: Optional[Dict] = None, 
                       error_message: Optional[str] = None, duration_ms: Optional[int] = None):
         """记录一条执行日志 (插入或更新)"""
-        now = _utc_now_iso()
-        payload_str = json.dumps(payload, ensure_ascii=False) if payload else "{}"
-        
-        with self._conn() as conn:
-            # 检查是否存在
-            existing = conn.execute("SELECT id FROM execution_logs WHERE id = ?", (log_id,)).fetchone()
-            if existing:
-                # 更新完成状态
-                conn.execute("""
-                    UPDATE execution_logs 
-                    SET status=?, finished_at=?, duration_ms=?, error_message=?
-                    WHERE id=?
-                """, (status, now, duration_ms, error_message, log_id))
-            else:
-                # 初始插入
-                conn.execute("""
-                    INSERT INTO execution_logs (id, task_name, action_type, action_target, trigger_source, status, started_at, payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (log_id, task_name, action_type, action_target, trigger_source, status, now, payload_str))
+        from core.observability_db import observability_db
+
+        next_payload = dict(payload or {})
+        if error_message:
+            next_payload["errorMessage"] = error_message
+        if duration_ms is not None:
+            next_payload["durationMs"] = duration_ms
+        observability_db.log_execution(
+            log_id=log_id,
+            task_name=task_name,
+            action_type=action_type,
+            action_target=action_target,
+            trigger_source=trigger_source,
+            status=status,
+            payload=next_payload,
+        )
                 
     def get_execution_logs(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """获取执行日志列表，按时间倒序"""
-        with self._conn() as conn:
-            rows = conn.execute("""
-                SELECT id, task_name, action_type, action_target, trigger_source, status, 
-                       started_at, finished_at, duration_ms, error_message, payload
-                FROM execution_logs
-                ORDER BY started_at DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset)).fetchall()
-            
-            results = []
-            for r in rows:
-                row_dict = dict(r)
-                # 解析 payload 回 Dict
-                if row_dict.get("payload"):
-                    try:
-                        row_dict["payload"] = json.loads(row_dict["payload"])
-                    except:
-                        pass
-                results.append(row_dict)
-            return results
+        from core.observability_db import observability_db
+
+        return observability_db.get_execution_logs(limit=limit, offset=offset)
 
 # === 全局单例 ===
 knowledge_db = KnowledgeDB()

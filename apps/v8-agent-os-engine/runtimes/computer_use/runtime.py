@@ -89,6 +89,11 @@ from runtimes.computer_use.post_action_visual_check import (
     summarize_semantic_post_action_verification,
     summarize_post_action_visual_check,
 )
+from runtimes.computer_use.task_loop import (
+    github_star_click_script,
+    github_star_dom_probe_script,
+    prepare_task_loop,
+)
 from runtimes.computer_use.primitives import resolve_computer_use_primitive
 from runtimes.computer_use.pure_visual_center_click import resolve_pure_visual_click_point
 from runtimes.computer_use.scene_models import build_scene_assessment
@@ -11211,6 +11216,22 @@ class ComputerUseRuntime:
         if not goal.strip():
             raise DesktopDriverError("planner 目标不能为空。")
 
+        task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
+        if (task_loop.get("domain") or {}).get("selectedPlaybook") == "github.star_repository":
+            return {
+                "sessionId": session_id,
+                "runId": run_id,
+                "goal": goal,
+                "appId": app_id,
+                "taskLoop": task_loop,
+                "planner": {
+                    "role": "computer_use_task_loop",
+                    "plannerOutput": "runtime_native_playbook_selected",
+                    "stepCount": len(((task_loop.get("plan") or {}).get("steps") or [])),
+                    "steps": [],
+                },
+            }
+
         observation_result = self.observe(
             session_id=session_id,
             run_id=run_id,
@@ -11265,6 +11286,26 @@ class ComputerUseRuntime:
         max_steps: int = 5,
         include_screenshot: bool = False,
     ) -> Dict[str, Any]:
+        task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
+        if (task_loop.get("domain") or {}).get("selectedPlaybook") == "github.star_repository":
+            execution = self.execute_github_star_playbook(
+                goal=goal,
+                allow_real_click=True,
+                session_id=session_id,
+                run_id=run_id,
+                user_id=user_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                workspace_path=workspace_path,
+            )
+            return {
+                "sessionId": execution.get("sessionId") or session_id,
+                "runId": execution.get("runId") or run_id,
+                "goal": goal,
+                "appId": app_id,
+                "taskLoop": task_loop,
+                "execution": execution,
+            }
         planning = self.plan(
             goal=goal,
             app_id=app_id,
@@ -11340,6 +11381,224 @@ class ComputerUseRuntime:
                 "selectorStats": self.driver.selector_metrics(),
                 "appCatalog": self.app_catalog.summary(include_running=True),
             },
+        }
+
+    def prepare_task_loop(
+        self,
+        *,
+        goal: str,
+        app_id: str | None = None,
+    ) -> Dict[str, Any]:
+        self.browser_automation.configure(self._computer_use_config())
+        browser_decision = self._browser_lane_decision(
+            action_type="type_text",
+            action_payload={
+                "app_id": app_id or "browser_checkout",
+                "app_name": "browser",
+                "text": "https://github.com/",
+            },
+            app_id=app_id or "browser_checkout",
+        )
+        return prepare_task_loop(
+            goal,
+            browser_decision=browser_decision.as_dict(),
+            web_searcher=self._task_loop_web_searcher,
+        ).as_dict()
+
+    def _task_loop_web_searcher(self, query: str) -> Any:
+        try:
+            from core.tools.web_fetcher import web_search
+
+            if hasattr(web_search, "invoke"):
+                return web_search.invoke({"query": query, "limit": 5})
+            return web_search(query=query, limit=5)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "query": query,
+                "error": str(exc),
+                "source": "computer_use_task_loop_web_search",
+            }
+
+    def execute_github_star_playbook(
+        self,
+        *,
+        goal: str,
+        allow_real_click: bool = False,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        user_id: str = "anonymous",
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        workspace_path: str | None = None,
+        invocation_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self._ensure_runtime_ready()
+        task_loop = self.prepare_task_loop(goal=goal, app_id="browser_checkout")
+        selected = str((task_loop.get("domain") or {}).get("selectedPlaybook") or "")
+        if selected != "github.star_repository":
+            return {
+                "status": "not_applicable",
+                "taskLoop": task_loop,
+            }
+        run_handle = self.begin_or_attach_run(
+            session_id=session_id,
+            run_id=run_id,
+            user_id=user_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            goal=goal,
+            trigger_source="computer_use_task_loop",
+            metadata={
+                "computer_use_goal": goal,
+                "taskLoop": {
+                    "selectedPlaybook": selected,
+                    "status": task_loop.get("status"),
+                },
+                "invocation": dict(invocation_metadata or {}),
+            },
+        )
+        run_handle.emit("computer_use.task_loop.prepared", task_loop)
+        plan_payload = dict(task_loop.get("plan") or {})
+        target_url = str(plan_payload.get("targetUrl") or "").strip()
+        if not target_url:
+            run_handle.emit(
+                "computer_use.task_loop.human_attention",
+                {"reason": "canonical_repo_url_not_resolved"},
+            )
+            run_handle.transition("completed", reason="computer_use_fact_resolution_required", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            return {
+                "status": "needs_human_attention",
+                "reason": "canonical_repo_url_not_resolved",
+                "selectedPlaybook": selected,
+                "taskLoop": task_loop,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+
+        decision = self._browser_lane_decision(
+            action_type="type_text",
+            action_payload={
+                "app_id": "browser_checkout",
+                "app_name": "browser",
+                "text": target_url,
+            },
+            app_id="browser_checkout",
+        )
+        run_handle.emit("computer_use.task_loop.lane_decision", decision.as_dict())
+        if not decision.available:
+            run_handle.emit(
+                "computer_use.task_loop.human_attention",
+                {"reason": decision.reason or "browser_lane_unavailable"},
+            )
+            run_handle.transition("completed", reason="computer_use_browser_lane_unavailable", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            return {
+                "status": "needs_human_attention",
+                "reason": decision.reason or "browser_lane_unavailable",
+                "canonicalUrl": target_url,
+                "selectedPlaybook": selected,
+                "taskLoop": task_loop,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+
+        opened = self.browser_automation.open_tab(url=target_url, decision=decision)
+        target_id = str(opened.get("targetId") or "").strip()
+        run_handle.emit("computer_use.github_star.opened", {"targetUrl": target_url, "targetId": target_id})
+        pre_state = dict(
+            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_dom_probe_script()).get("value"))
+            or {}
+        )
+        run_handle.emit("computer_use.github_star.pre_state", pre_state)
+        if pre_state.get("loggedOut") or pre_state.get("needsLoginForStar"):
+            run_handle.emit("computer_use.task_loop.human_attention", {"reason": "needs_human_login", "preState": pre_state})
+            run_handle.transition("completed", reason="computer_use_needs_human_login", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            return {
+                "status": "needs_human_login",
+                "canonicalUrl": target_url,
+                "selectedPlaybook": selected,
+                "browserTarget": opened,
+                "preState": pre_state,
+                "taskLoop": task_loop,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+        if pre_state.get("isStarred"):
+            run_handle.emit("computer_use.github_star.verified", {"state": "already_starred", "preState": pre_state})
+            run_handle.transition("completed", reason="computer_use_github_star_already_done", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            return {
+                "status": "succeeded",
+                "canonicalUrl": target_url,
+                "selectedPlaybook": selected,
+                "browserTarget": opened,
+                "preState": pre_state,
+                "postState": pre_state,
+                "action": "already_starred",
+                "taskLoop": task_loop,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+        if not allow_real_click:
+            run_handle.emit("computer_use.task_loop.human_attention", {"reason": "real_click_not_allowed", "preState": pre_state})
+            run_handle.transition("completed", reason="computer_use_real_click_not_allowed", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            return {
+                "status": "needs_human_attention",
+                "reason": "real_click_not_allowed",
+                "canonicalUrl": target_url,
+                "selectedPlaybook": selected,
+                "browserTarget": opened,
+                "preState": pre_state,
+                "taskLoop": task_loop,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+
+        click_result = dict(
+            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_click_script()).get("value"))
+            or {}
+        )
+        run_handle.emit("computer_use.github_star.click", click_result)
+        time.sleep(1.5)
+        post_state = dict(
+            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_dom_probe_script()).get("value"))
+            or {}
+        )
+        run_handle.emit("computer_use.github_star.post_state", post_state)
+        if post_state.get("isStarred"):
+            run_handle.transition("completed", reason="computer_use_github_star_completed", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            return {
+                "status": "succeeded",
+                "canonicalUrl": target_url,
+                "selectedPlaybook": selected,
+                "browserTarget": opened,
+                "preState": pre_state,
+                "clickAction": click_result,
+                "postState": post_state,
+                "action": "clicked_star",
+                "taskLoop": task_loop,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+        run_handle.fail("GitHub Star 状态未进入 Starred。", node="computer_use_runtime")
+        return {
+            "status": "failed",
+            "reason": "post_state_not_starred",
+            "canonicalUrl": target_url,
+            "selectedPlaybook": selected,
+            "browserTarget": opened,
+            "preState": pre_state,
+            "clickAction": click_result,
+            "postState": post_state,
+            "taskLoop": task_loop,
+            "runId": run_handle.run_id,
+            "sessionId": run_handle.session_id,
         }
 
 

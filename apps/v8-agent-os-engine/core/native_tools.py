@@ -2446,6 +2446,7 @@ def _computer_use_compact_driver_capabilities() -> str:
         "currentPlatform": raw_capability_truth.get("currentPlatform"),
         "platforms": compact_truth_platforms,
         "browserLaneTruth": dict(raw_capability_truth.get("browserLaneTruth") or {}),
+        "platformParity": dict(raw_capability_truth.get("platformParity") or {}),
         "knownGaps": list(raw_capability_truth.get("knownGaps") or []),
         "portableChecklist": list(raw_capability_truth.get("portableChecklist") or []),
         "screenWakePolicy": dict(raw_capability_truth.get("screenWakePolicy") or {}),
@@ -8639,6 +8640,37 @@ def computer_use_execute_task(
                 planner_goal = f"{planner_goal}\nTarget: {effective_target}"
             if success_criteria:
                 planner_goal = f"{planner_goal}\nSuccess criteria: {success_criteria}"
+            task_loop = _get_computer_use_runtime().prepare_task_loop(
+                goal=planner_goal,
+                app_id=effective_app_id or "browser_checkout",
+            )
+            if (task_loop.get("domain") or {}).get("selectedPlaybook") == "github.star_repository":
+                raw_result = _get_computer_use_runtime().execute_github_star_playbook(
+                    **_computer_use_runtime_kwargs(planner_goal),
+                    allow_real_click=True,
+                )
+                payload = {
+                    "mode": "runtime_native_playbook",
+                    "executionReadyMode": execution_ready_mode,
+                    "goal": effective_goal,
+                    "app": {
+                        "requested": app_query,
+                        "resolved": resolved_app,
+                    },
+                    "target": effective_target,
+                    "successCriteria": success_criteria,
+                    "result": raw_result,
+                    "recommendedNextAction": (
+                        "ask_user"
+                        if str(raw_result.get("status") or "").startswith("needs_human")
+                        else "none"
+                    ),
+                }
+                return _desktop_route_merge_into_response(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    desktop_route=desktop_route,
+                    route_gate_applied=isinstance(state, dict),
+                )
             planning = _get_computer_use_runtime().plan(
                 **_computer_use_runtime_kwargs(planner_goal),
                 app_id=effective_app_id,

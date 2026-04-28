@@ -787,6 +787,8 @@ def _build_computer_use_domain() -> dict[str, Any]:
                 "connectTimeoutMs": int(browser_lane.get("connectTimeoutMs") or 3000),
                 "targetFamilies": list(browser_lane.get("targetFamilies") or ["chromium", "electron", "webview2"]),
                 "allowManagedLaunch": bool(browser_lane.get("allowManagedLaunch", True)),
+                "profileMode": str(browser_lane.get("profileMode") or "dedicated_debug_profile"),
+                "userDataDir": str(browser_lane.get("userDataDir") or browser_lane.get("debugUserDataDir") or ""),
             },
             "observationPolicy": {
                 "frameSequenceEnabled": bool(observation_policy.get("frameSequenceEnabled", True)),

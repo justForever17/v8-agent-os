@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
+from runtimes.computer_use.platform_parity import build_platform_parity_matrix
+
 
 FACET_LABELS: dict[str, str] = {
     "window": "Window",
@@ -181,6 +183,7 @@ def _compact_evidence(details: dict[str, Any]) -> dict[str, Any]:
         "browserLaneAvailable",
         "helperScriptExists",
         "helperScriptPath",
+        "playwrightAvailable",
     ]
     evidence = {key: details.get(key) for key in keys if key in details}
     notes = details.get("notes")
@@ -193,12 +196,15 @@ def _browser_lane_truth(browser_lane: dict[str, Any]) -> dict[str, Any]:
     helper_path = str(browser_lane.get("helperScriptPath") or "").strip()
     helper_exists = bool(browser_lane.get("helperScriptExists"))
     node_available = bool(browser_lane.get("nodeAvailable"))
+    playwright_available = bool(browser_lane.get("playwrightAvailable"))
     enabled = bool(browser_lane.get("enabled"))
     connected = bool(browser_lane.get("connected"))
     if not node_available:
         status = "blocked_by_missing_node"
     elif helper_path and not helper_exists:
         status = "blocked_by_missing_helper"
+    elif helper_exists and not playwright_available:
+        status = "blocked_by_missing_playwright"
     elif enabled and connected:
         status = "real_host_passed"
     elif enabled:
@@ -212,10 +218,17 @@ def _browser_lane_truth(browser_lane: dict[str, Any]) -> dict[str, Any]:
         "nodeAvailable": node_available,
         "helperScriptExists": helper_exists,
         "helperScriptPath": helper_path or None,
+        "playwrightAvailable": playwright_available,
         "connected": connected,
+        "profileMode": browser_lane.get("profileMode"),
+        "profileRoot": browser_lane.get("profileRoot"),
+        "defaultUserDataDir": browser_lane.get("defaultUserDataDir"),
+        "targetPort": browser_lane.get("targetPort"),
         "reason": (
             "browser_cdp_proxy.mjs missing"
             if status == "blocked_by_missing_helper"
+            else "playwright module missing"
+            if status == "blocked_by_missing_playwright"
             else None
         ),
     }
@@ -299,6 +312,14 @@ def build_capability_truth(
                 "impact": "browser/electron/webview tasks must fall back to structured accessibility or visual routes",
             }
         )
+    if browser_truth["status"] == "blocked_by_missing_playwright":
+        known_gaps.append(
+            {
+                "code": "browser_playwright_missing",
+                "summary": "Browser lane helper exists, but the Node Playwright dependency is not resolvable from the engine helper.",
+                "impact": "CDP/DOM browser tasks cannot run until Playwright is installed or exposed to the helper process",
+            }
+        )
     if "macos" in platforms and not platforms["macos"].get("currentHost"):
         known_gaps.append({"code": "macos_real_host_not_run", "summary": "macOS driver is theory-aligned; real host validation is still required."})
     if "linux-x11" in platforms and not platforms["linux-x11"].get("currentHost"):
@@ -307,6 +328,10 @@ def build_capability_truth(
         "version": 1,
         "currentPlatform": current_platform,
         "platforms": platforms,
+        "platformParity": build_platform_parity_matrix(
+            current_platform=current_platform,
+            platforms=platforms,
+        ),
         "browserLaneTruth": browser_truth,
         "portableChecklist": list(PORTABLE_CHECKLIST),
         "knownGaps": known_gaps,
@@ -317,6 +342,7 @@ def build_capability_truth(
             "runtimes/computer_use/browser_automation.py",
             "runtimes/computer_use/app_profiles.py",
             "runtimes/computer_use/environment_probes.py",
+            "runtimes/computer_use/platform_parity.py",
         ],
         "appCatalog": dict(app_catalog_summary or {}),
         "appAdapter": dict(app_adapter_summary or {}),

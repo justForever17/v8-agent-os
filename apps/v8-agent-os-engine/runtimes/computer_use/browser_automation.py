@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import importlib.util
 import json
 import os
 import platform
@@ -42,6 +43,8 @@ _PERSISTENT_PROFILE_BLOCKED_ARGS = {
     "--incognito",
     "--inprivate",
 }
+_DEDICATED_PROFILE_MODE = "dedicated_debug_profile"
+_DEFAULT_PROFILE_ROOT = Path.home() / ".v8-agent-os" / "browser-profiles" / "computer_use"
 
 
 def _basename(value: str | None) -> str:
@@ -118,9 +121,12 @@ class BrowserAutomationProvider:
         self._mode: str = "auto_if_available"
         self._provider_id: str = "engine_managed_cdp"
         self._allow_managed_launch: bool = True
+        self._profile_mode: str = _DEDICATED_PROFILE_MODE
+        self._user_data_dir: Path | None = None
         self._target_families: List[str] = ["chromium", "electron", "webview2"]
         self._managed_launches: Dict[str, Dict[str, Any]] = {}
         self._node_path: str | None = shutil.which("node")
+        self._playwright_probe_cache: Dict[str, Any] | None = None
         atexit.register(self.shutdown)
 
     def configure(self, config: Dict[str, Any] | None) -> None:
@@ -132,6 +138,16 @@ class BrowserAutomationProvider:
         self._proxy_port = int(lane.get("proxyPort") or _DEFAULT_PROXY_PORT)
         self._connect_timeout_ms = int(lane.get("connectTimeoutMs") or 3000)
         self._allow_managed_launch = bool(lane.get("allowManagedLaunch", True))
+        self._profile_mode = (
+            str(lane.get("profileMode") or _DEDICATED_PROFILE_MODE).strip().lower()
+            or _DEDICATED_PROFILE_MODE
+        )
+        raw_user_data_dir = str(
+            lane.get("userDataDir")
+            or lane.get("debugUserDataDir")
+            or ""
+        ).strip()
+        self._user_data_dir = Path(raw_user_data_dir).expanduser() if raw_user_data_dir else None
         self._target_families = [
             str(item).strip().lower()
             for item in list(lane.get("targetFamilies") or ["chromium", "electron", "webview2"])
@@ -141,22 +157,32 @@ class BrowserAutomationProvider:
 
     def availability_summary(self) -> Dict[str, Any]:
         connected = False
+        health: Dict[str, Any] = {}
         try:
-            connected = bool(self._health().get("connected"))
+            health = dict(self._health() or {})
+            connected = bool(health.get("connected"))
         except Exception:
             connected = False
         helper_script = self._helper_script_path()
         helper_exists = helper_script.exists()
+        playwright_probe = self._probe_playwright_dependency()
         return {
             "enabled": self._enabled,
             "mode": self._mode,
             "provider": self._provider_id,
             "proxyPort": self._proxy_port,
+            "targetPort": self._target_port,
             "connectTimeoutMs": self._connect_timeout_ms,
             "targetFamilies": list(self._target_families),
+            "profileMode": self._profile_mode,
+            "profileRoot": str(self._profile_root()),
+            "defaultUserDataDir": str(self._dedicated_user_data_dir("chrome")),
             "nodeAvailable": bool(self._node_path),
             "helperScriptPath": str(helper_script),
             "helperScriptExists": bool(helper_exists),
+            "playwrightAvailable": bool(playwright_probe.get("available")),
+            "playwrightProbe": playwright_probe,
+            "helperHealth": health,
             "connected": connected,
             "managedLaunchCount": len(self._managed_launches),
         }
@@ -164,8 +190,9 @@ class BrowserAutomationProvider:
     def lane_capabilities(self) -> Dict[str, Any]:
         helper_script = self._helper_script_path()
         helper_exists = helper_script.exists()
+        playwright_probe = self._probe_playwright_dependency()
         implemented = bool(self._node_path and helper_exists)
-        available = bool(self._enabled and self._node_path and helper_exists)
+        available = bool(self._enabled and self._node_path and helper_exists and playwright_probe.get("available"))
         return {
             "browserLaneImplemented": implemented,
             "supportsBrowserAutomation": available,
@@ -175,7 +202,68 @@ class BrowserAutomationProvider:
             "nodeAvailable": bool(self._node_path),
             "helperScriptPath": str(helper_script),
             "helperScriptExists": bool(helper_exists),
+            "playwrightAvailable": bool(playwright_probe.get("available")),
+            "playwrightProbe": playwright_probe,
+            "profileMode": self._profile_mode,
+            "profileRoot": str(self._profile_root()),
         }
+
+    def _probe_playwright_dependency(self) -> Dict[str, Any]:
+        if self._playwright_probe_cache is not None:
+            return dict(self._playwright_probe_cache)
+        if not self._node_path:
+            self._playwright_probe_cache = {"available": False, "reason": "node_unavailable"}
+            return dict(self._playwright_probe_cache)
+        script_path = self._helper_script_path()
+        driver_package = self._resolve_playwright_driver_package()
+        probe_script = (
+            "const p=process.env.PLAYWRIGHT_DRIVER_PACKAGE;"
+            "if(p){require(p); console.log('ok:python-driver');}"
+            "else{try{require.resolve('playwright'); console.log('ok:playwright');}"
+            "catch(e){require.resolve('playwright-core'); console.log('ok:playwright-core');}}"
+        )
+        env = os.environ.copy()
+        if driver_package:
+            env["PLAYWRIGHT_DRIVER_PACKAGE"] = str(driver_package)
+        try:
+            completed = subprocess.run(
+                [self._node_path, "-e", probe_script],
+                cwd=str(script_path.parent),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            available = completed.returncode == 0
+            self._playwright_probe_cache = {
+                "available": available,
+                "reason": "ok" if available else "playwright_module_missing",
+                "source": "python_driver_package" if driver_package else "node_module",
+                "driverPackage": str(driver_package) if driver_package else None,
+                "stdout": (completed.stdout or "").strip()[-120:],
+                "stderr": (completed.stderr or "").strip()[-300:],
+            }
+        except Exception as exc:
+            self._playwright_probe_cache = {
+                "available": False,
+                "reason": "playwright_probe_failed",
+                "error": str(exc),
+            }
+        return dict(self._playwright_probe_cache)
+
+    def _resolve_playwright_driver_package(self) -> Path | None:
+        for module_name in ("playwright", "patchright"):
+            try:
+                spec = importlib.util.find_spec(module_name)
+            except Exception:
+                spec = None
+            if not spec or not spec.origin:
+                continue
+            package_dir = Path(spec.origin).parent / "driver" / "package"
+            if (package_dir / "package.json").exists() and (package_dir / "index.js").exists():
+                return package_dir
+        return None
 
     def _resolve_executable_command(self, command: List[str]) -> List[str] | None:
         normalized = [str(item or "").strip() for item in list(command or []) if str(item or "").strip()]
@@ -189,6 +277,37 @@ class BrowserAutomationProvider:
         if resolved:
             return [str(resolved), *normalized[1:]]
         return None
+
+    def _profile_root(self) -> Path:
+        return self._user_data_dir or _DEFAULT_PROFILE_ROOT
+
+    def _browser_kind_from_command(self, command: List[str] | str | None, *, app_id: str | None = None) -> str:
+        requested = _normalize_browser_key(app_id)
+        if requested in _EDGE_APP_IDS:
+            return "edge"
+        if requested in _CHROME_APP_IDS:
+            return "chrome"
+        executable = ""
+        if isinstance(command, list) and command:
+            executable = command[0]
+        elif isinstance(command, str):
+            executable = command
+        name = _basename(executable)
+        if "msedge" in name or name == "edge":
+            return "edge"
+        if "chrome" in name or "chromium" in name:
+            return "chrome"
+        return "chromium"
+
+    def _dedicated_user_data_dir(self, browser_kind: str) -> Path:
+        normalized = str(browser_kind or "chromium").strip().lower() or "chromium"
+        if self._user_data_dir and self._user_data_dir.name.lower() in {"chrome", "edge", "chromium"}:
+            return self._user_data_dir
+        return self._profile_root() / normalized
+
+    def _is_profile_arg(self, value: str) -> bool:
+        lowered = str(value or "").strip().lower()
+        return lowered.startswith("--user-data-dir=") or lowered.startswith("--profile-directory=")
 
     def _platform_browser_candidates(self, family: str) -> List[List[str]]:
         system = platform.system().lower()
@@ -391,7 +510,10 @@ class BrowserAutomationProvider:
         updated_env = dict(environment or os.environ.copy())
         updated_command: List[str] | str = launch_command
         removed_args: List[str] = []
+        injected_args: List[str] = []
+        profile_dir: Path | None = None
         if family in {"chromium", "electron"} and isinstance(launch_command, list):
+            browser_kind = self._browser_kind_from_command(launch_command, app_id=app_id)
             sanitized_command: List[str] = []
             for index, raw_arg in enumerate(launch_command):
                 arg = str(raw_arg or "").strip()
@@ -401,7 +523,7 @@ class BrowserAutomationProvider:
                     sanitized_command.append(arg)
                     continue
                 lowered_arg = arg.lower()
-                if lowered_arg in _PERSISTENT_PROFILE_BLOCKED_ARGS or lowered_arg.startswith("--user-data-dir="):
+                if lowered_arg in _PERSISTENT_PROFILE_BLOCKED_ARGS or self._is_profile_arg(arg):
                     removed_args.append(arg)
                     continue
                 sanitized_command.append(arg)
@@ -409,11 +531,19 @@ class BrowserAutomationProvider:
             debug_flag = f"--remote-debugging-port={debug_port}"
             if debug_flag not in updated_command:
                 updated_command = [*updated_command, debug_flag]
+                injected_args.append(debug_flag)
+            if family == "chromium" and self._profile_mode == _DEDICATED_PROFILE_MODE:
+                profile_dir = self._dedicated_user_data_dir(browser_kind)
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                profile_arg = f"--user-data-dir={profile_dir}"
+                updated_command = [*updated_command, profile_arg]
+                injected_args.append(profile_arg)
         elif family == "webview2":
             existing = str(updated_env.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") or "").strip()
             injection = f"--remote-debugging-port={debug_port}"
             if injection not in existing:
                 updated_env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"{existing} {injection}".strip()
+                injected_args.append(injection)
         else:
             return launch_command, environment, None
         metadata = {
@@ -421,15 +551,69 @@ class BrowserAutomationProvider:
             "browserLaneProvider": self._provider_id,
             "browserTargetPort": debug_port,
             "managedLaunch": True,
-            "profilePersistenceMode": "default_user_profile_launch",
+            "profilePersistenceMode": self._profile_mode if profile_dir else "managed_launch_debuggable",
+            "browserUserDataDir": str(profile_dir) if profile_dir else None,
             "sanitizedLaunchArgsRemoved": list(removed_args),
+            "browserLaunchArgsInjected": list(injected_args),
         }
         self._managed_launches[str(app_id or "").strip().lower() or family] = {
             "family": family,
             "targetPort": debug_port,
+            "profilePersistenceMode": metadata["profilePersistenceMode"],
+            "browserUserDataDir": metadata.get("browserUserDataDir"),
             "launchedAt": time.time(),
         }
         return updated_command, updated_env, metadata
+
+    def _start_managed_chromium_debug_browser(
+        self,
+        *,
+        app_id: str | None,
+        app_name: str | None,
+    ) -> BrowserLaneDecision | None:
+        if not self._allow_managed_launch:
+            return None
+        app_key = str(app_id or "browser_checkout").strip().lower() or "browser_checkout"
+        launch_command = self.resolve_preferred_launch_command(
+            app_id=app_key,
+            app_name=app_name or "browser",
+            launch_command=None,
+        )
+        if not isinstance(launch_command, list) or not launch_command:
+            return None
+        try:
+            prepared_command, prepared_env, metadata = self.prepare_launch(
+                app_id=app_key,
+                launch_command=launch_command,
+                environment=None,
+            )
+            if not isinstance(prepared_command, list):
+                return None
+            subprocess.Popen(
+                prepared_command,
+                env=prepared_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            target_port = int((metadata or {}).get("browserTargetPort") or self._target_port)
+            deadline = time.time() + max(5.0, self._connect_timeout_ms / 1000.0)
+            while time.time() < deadline:
+                if self._is_debug_port_reachable(target_port):
+                    return BrowserLaneDecision(
+                        enabled=True,
+                        available=True,
+                        family="chromium",
+                        reason="managed_debug_browser_started",
+                        target_port=target_port,
+                        managed_launch=True,
+                    )
+                time.sleep(0.2)
+        except Exception:
+            self._managed_launches.pop(app_key, None)
+            return None
+        self._managed_launches.pop(app_key, None)
+        return None
 
     def decide_lane(
         self,
@@ -445,6 +629,10 @@ class BrowserAutomationProvider:
             return BrowserLaneDecision(enabled=False, available=False, reason="browser_lane_disabled")
         if not self._node_path:
             return BrowserLaneDecision(enabled=True, available=False, reason="node_unavailable")
+        if not self._helper_script_path().exists():
+            return BrowserLaneDecision(enabled=True, available=False, reason="helper_script_missing")
+        if not self._probe_playwright_dependency().get("available"):
+            return BrowserLaneDecision(enabled=True, available=False, reason="playwright_module_missing")
         family = self.infer_family(
             app_id=app_id or action_payload.get("app_id"),
             app_name=action_payload.get("app_name") or action_payload.get("app"),
@@ -477,6 +665,12 @@ class BrowserAutomationProvider:
                     target_port=discovered_port,
                     managed_launch=False,
                 )
+            managed_decision = self._start_managed_chromium_debug_browser(
+                app_id=app_id or action_payload.get("app_id") or action_payload.get("resolved_app_id"),
+                app_name=requested_app_name,
+            )
+            if managed_decision is not None:
+                return managed_decision
             return BrowserLaneDecision(
                 enabled=True,
                 available=False,
@@ -548,6 +742,9 @@ class BrowserAutomationProvider:
             env["CDP_PROXY_PORT"] = str(self._proxy_port)
             if target_port:
                 env["CDP_TARGET_PORT"] = str(target_port)
+            driver_package = self._resolve_playwright_driver_package()
+            if driver_package:
+                env["PLAYWRIGHT_DRIVER_PACKAGE"] = str(driver_package)
             self._proxy_process = subprocess.Popen(
                 [node_path, str(script_path)],
                 cwd=str(script_path.parent),

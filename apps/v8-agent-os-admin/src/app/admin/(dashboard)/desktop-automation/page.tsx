@@ -81,11 +81,22 @@ type ComputerUseAvailability = {
         capabilityTruth?: {
             currentPlatform?: string;
             platforms?: Record<string, CapabilityPlatform>;
+            platformParity?: {
+                platforms?: Record<string, {
+                    platform?: string;
+                    status?: string;
+                    driverContract?: string;
+                    expectedDependencies?: string[];
+                    actionChecklist?: string[];
+                    turiXRefs?: string[];
+                }>;
+            };
             browserLaneTruth?: Record<string, unknown>;
             knownGaps?: Array<{ code?: string; summary?: string; impact?: string }>;
             portableChecklist?: string[];
             screenWakePolicy?: Record<string, unknown>;
         };
+        builtInPlaybookSeeds?: Array<{ id?: string; status?: string; domain?: string; operation?: string; preferredLane?: string }>;
     };
 };
 
@@ -138,6 +149,11 @@ export default function DesktopAutomationPage() {
         [capabilityTruth]
     );
     const currentPlatformTruth = truthPlatforms.find((item) => item.currentHost) || truthPlatforms[0];
+    const parityPlatforms = useMemo(
+        () => Object.entries(capabilityTruth?.platformParity?.platforms || {}).map(([key, value]) => ({ key, ...value })),
+        [capabilityTruth]
+    );
+    const builtInPlaybooks = availability?.details?.builtInPlaybookSeeds || [];
     const statusLabel = (status?: string) => {
         const normalized = String(status || "unknown");
         return t(`app.admin.dashboard.desktop.automation.capabilityTruth.status.${normalized}`);
@@ -298,6 +314,24 @@ export default function DesktopAutomationPage() {
                                 {capabilityTruth?.browserLaneTruth?.reason ? (
                                     <p className="mt-2 text-xs leading-5 text-slate-500">{String(capabilityTruth.browserLaneTruth.reason)}</p>
                                 ) : null}
+                                <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    {t("app.admin.dashboard.desktop.automation.capabilityTruth.playwright")}
+                                    {capabilityTruth?.browserLaneTruth?.playwrightAvailable
+                                        ? t("app.admin.dashboard.desktop.automation.page.k85549844")
+                                        : t("app.admin.dashboard.desktop.automation.page.k574ff3b2")}
+                                </p>
+                                {capabilityTruth?.browserLaneTruth?.defaultUserDataDir ? (
+                                    <p className="mt-1 truncate text-xs leading-5 text-slate-500" title={String(capabilityTruth.browserLaneTruth.defaultUserDataDir)}>
+                                        {t("app.admin.dashboard.desktop.automation.capabilityTruth.browserProfile")}
+                                        {String(capabilityTruth.browserLaneTruth.defaultUserDataDir)}
+                                    </p>
+                                ) : null}
+                                {capabilityTruth?.browserLaneTruth?.targetPort ? (
+                                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                                        {t("app.admin.dashboard.desktop.automation.capabilityTruth.debugPort")}
+                                        {String(capabilityTruth.browserLaneTruth.targetPort)}
+                                    </p>
+                                ) : null}
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
                                 <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWake")}</div>
@@ -333,6 +367,34 @@ export default function DesktopAutomationPage() {
                                     ))
                                 ) : (
                                     <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noKnownGaps")}</div>
+                                )}
+                            </div>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.parityPackage")}</div>
+                            <div className="mt-2 space-y-2">
+                                {parityPlatforms.slice(0, 4).map((platform) => (
+                                    <div key={platform.key} className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                                        <div className="font-semibold text-slate-900">
+                                            {platform.platform || platform.key} · {statusLabel(platform.status)}
+                                        </div>
+                                        <div className="truncate">{platform.driverContract || ""}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.playbooks")}</div>
+                            <div className="mt-2 space-y-2">
+                                {builtInPlaybooks.length ? (
+                                    builtInPlaybooks.map((playbook) => (
+                                        <div key={playbook.id} className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                                            <span className="font-semibold text-slate-900">{playbook.id}</span>
+                                            {playbook.preferredLane ? ` · ${playbook.preferredLane}` : ""}
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noPlaybooks")}</div>
                                 )}
                             </div>
                         </div>

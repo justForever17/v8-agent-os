@@ -563,6 +563,8 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "connectTimeoutMs": 3000,
             "targetFamilies": ["chromium", "electron", "webview2"],
             "allowManagedLaunch": True,
+            "profileMode": "dedicated_debug_profile",
+            "userDataDir": "",
         },
         "observationPolicy": {
             "frameSequenceEnabled": True,

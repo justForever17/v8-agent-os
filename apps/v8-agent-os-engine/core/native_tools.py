@@ -2422,12 +2422,53 @@ def _computer_use_compact_driver_capabilities() -> str:
     )
     availability_details = dict((availability or {}).get("details") or {})
     capabilities = dict(availability_details.get("capabilities") or {})
+    raw_capability_truth = dict(availability_details.get("capabilityTruth") or {})
+    compact_truth_platforms: dict[str, Any] = {}
+    for platform_key, platform_payload in dict(raw_capability_truth.get("platforms") or {}).items():
+        platform = dict(platform_payload or {})
+        compact_truth_platforms[str(platform_key)] = {
+            "displayPlatform": platform.get("displayPlatform") or platform_key,
+            "currentHost": bool(platform.get("currentHost")),
+            "statusCounts": dict(platform.get("statusCounts") or {}),
+            "facets": [
+                {
+                    "key": facet.get("key"),
+                    "status": facet.get("status"),
+                    "available": bool(facet.get("available")),
+                    "validationLevel": facet.get("validationLevel"),
+                }
+                for facet in list(platform.get("facets") or [])
+                if isinstance(facet, dict)
+            ],
+        }
+    capability_truth = {
+        "version": raw_capability_truth.get("version"),
+        "currentPlatform": raw_capability_truth.get("currentPlatform"),
+        "platforms": compact_truth_platforms,
+        "browserLaneTruth": dict(raw_capability_truth.get("browserLaneTruth") or {}),
+        "knownGaps": list(raw_capability_truth.get("knownGaps") or []),
+        "portableChecklist": list(raw_capability_truth.get("portableChecklist") or []),
+        "screenWakePolicy": dict(raw_capability_truth.get("screenWakePolicy") or {}),
+        "evidenceRefs": list(raw_capability_truth.get("evidenceRefs") or []),
+    }
+    experience_assets = dict(availability_details.get("experienceAssets") or {})
     return json.dumps(
         {
             "ok": True,
             "action": "desktop_capabilities",
             "driver": capabilities,
             "capabilityMatrix": dict(availability_details.get("capabilityMatrix") or {}),
+            "capabilityTruth": capability_truth,
+            "browserLaneTruth": dict(availability_details.get("browserLaneTruth") or {}),
+            "knownGaps": list(availability_details.get("knownGaps") or []),
+            "portableChecklist": list(availability_details.get("portableChecklist") or []),
+            "screenWakePolicy": dict(availability_details.get("screenWakePolicy") or {}),
+            "builtInPlaybookSeeds": list(availability_details.get("builtInPlaybookSeeds") or []),
+            "experienceAssets": {
+                "policy": experience_assets.get("policy"),
+                "sources": list(experience_assets.get("sources") or []),
+                "externalReferences": list(experience_assets.get("externalReferences") or []),
+            },
             "routePolicy": dict(availability_details.get("routePolicy") or {}),
             "runtime": {
                 "kind": runtime_descriptor.get("kind"),

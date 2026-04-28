@@ -145,6 +145,8 @@ class BrowserAutomationProvider:
             connected = bool(self._health().get("connected"))
         except Exception:
             connected = False
+        helper_script = self._helper_script_path()
+        helper_exists = helper_script.exists()
         return {
             "enabled": self._enabled,
             "mode": self._mode,
@@ -153,19 +155,26 @@ class BrowserAutomationProvider:
             "connectTimeoutMs": self._connect_timeout_ms,
             "targetFamilies": list(self._target_families),
             "nodeAvailable": bool(self._node_path),
+            "helperScriptPath": str(helper_script),
+            "helperScriptExists": bool(helper_exists),
             "connected": connected,
             "managedLaunchCount": len(self._managed_launches),
         }
 
     def lane_capabilities(self) -> Dict[str, Any]:
-        implemented = bool(self._node_path)
-        available = bool(self._enabled and self._node_path)
+        helper_script = self._helper_script_path()
+        helper_exists = helper_script.exists()
+        implemented = bool(self._node_path and helper_exists)
+        available = bool(self._enabled and self._node_path and helper_exists)
         return {
             "browserLaneImplemented": implemented,
             "supportsBrowserAutomation": available,
             "browserLaneAvailable": available,
             "browserLaneProvider": self._provider_id if implemented else None,
             "browserLaneEnabled": bool(self._enabled),
+            "nodeAvailable": bool(self._node_path),
+            "helperScriptPath": str(helper_script),
+            "helperScriptExists": bool(helper_exists),
         }
 
     def _resolve_executable_command(self, command: List[str]) -> List[str] | None:
@@ -533,6 +542,8 @@ class BrowserAutomationProvider:
             node_path = self._node_path
             if not node_path:
                 raise RuntimeError("当前环境缺少 node，无法启用 browser automation lane。")
+            if not script_path.exists():
+                raise RuntimeError(f"browser automation helper 缺失：{script_path}")
             env = os.environ.copy()
             env["CDP_PROXY_PORT"] = str(self._proxy_port)
             if target_port:

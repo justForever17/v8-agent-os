@@ -65,6 +65,7 @@ from runtimes.computer_use.coordinate_anchor import (
     resolve_absolute_click_point,
 )
 from runtimes.computer_use.capability_matrix import build_runtime_capability_matrix
+from runtimes.computer_use.capability_truth import build_capability_truth, screen_wake_policy
 from runtimes.computer_use.drivers import DesktopDriverError, create_desktop_driver
 from runtimes.computer_use.environment_probes import (
     collect_environment_probe_snapshot,
@@ -81,6 +82,7 @@ from runtimes.computer_use.input_policy import (
 from runtimes.computer_use.live_matrix_feedback import primitive_live_feedback_for_action
 from runtimes.computer_use.observation_bundle import build_observation_bundle
 from runtimes.computer_use.platform_adapters import create_platform_discovery_providers
+from runtimes.computer_use.playbooks import built_in_playbook_seeds, experience_asset_inventory
 from runtimes.computer_use.preflight_policy import build_preflight_context
 from runtimes.computer_use.post_action_visual_check import (
     normalize_expected_texts,
@@ -262,6 +264,8 @@ class ComputerUseRuntime:
                 "onlineVisualLocator": self._online_visual_locator_descriptor(),
                 "browserLane": self.browser_automation.availability_summary(),
                 "environmentProbes": environment_probe_capabilities(),
+                "screenWakePolicy": screen_wake_policy(),
+                "builtInPlaybookSeeds": built_in_playbook_seeds(),
             },
         }
 
@@ -279,6 +283,7 @@ class ComputerUseRuntime:
         self.selector_memory = ComputerUseSelectorMemory()
         self.trace_store = trace_store
         self._recent_visual_locator_hits: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
+        self._screen_wake_attempts: Dict[str, float] = {}
         self._runtime_ready = False
         self._runtime_ready_lock = threading.Lock()
 
@@ -415,6 +420,32 @@ class ComputerUseRuntime:
             browser_lane=self.browser_automation.lane_capabilities(),
             app_adapter=self._app_adapter_summary(),
         )
+
+    def _capability_truth_payload(self, *, capability_matrix: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        matrix = dict(capability_matrix or self._runtime_capability_matrix())
+        app_catalog_summary = {}
+        selector_stats = {}
+        try:
+            app_catalog_summary = self.app_catalog.summary(include_running=True)
+        except Exception:
+            app_catalog_summary = {}
+        try:
+            selector_stats = self.driver.selector_metrics()
+        except Exception:
+            selector_stats = {}
+        truth = build_capability_truth(
+            capability_matrix=matrix,
+            browser_lane=self.browser_automation.availability_summary(),
+            app_catalog_summary=app_catalog_summary,
+            app_adapter_summary=self._app_adapter_summary(),
+        )
+        truth["experienceAssets"] = experience_asset_inventory(
+            app_profiles=self.app_profiles.list_profiles(),
+            app_catalog_summary=app_catalog_summary,
+            selector_stats=selector_stats,
+        )
+        truth["builtInPlaybookSeeds"] = built_in_playbook_seeds()
+        return truth
 
     def _platform_route_policy_summary(self, *, capability_truth: Dict[str, Any] | None = None) -> Dict[str, Any]:
         current_platform = str(getattr(self.driver, "platform", "") or os.name)
@@ -1999,6 +2030,48 @@ class ComputerUseRuntime:
             and str(visual_guard.get("status") or "").strip().lower() == "analyzed"
             and visual_guard.get("confirmed") is True
         )
+        if not confirmed and self._is_visual_guard_desktop_capture_mismatch(visual_guard):
+            wake_result = self._attempt_screen_wake_recovery(
+                run_handle=run_handle,
+                visual_guard=visual_guard,
+                action="open_app",
+                window_title=window_title,
+                window_handle=int(window_handle) if window_handle not in (None, "", 0) else None,
+            )
+            if wake_result.get("requiresHumanAttention"):
+                visual_guard = {
+                    **dict(visual_guard or {}),
+                    "status": "screen_wake_requires_human_attention",
+                    "confirmed": False,
+                    "reason": "Screen wake reached a login/credential boundary; human attention is required.",
+                    "screenWakeRecovery": self._screen_wake_public_payload(wake_result),
+                }
+                return False, visual_guard
+            if wake_result.get("attempted") and isinstance(wake_result.get("observation"), dict):
+                wake_visual_guard = self._collect_visual_guard(
+                    run_handle=run_handle,
+                    stage="post_action",
+                    action="open_app",
+                    action_payload={
+                        "app_id": app_id,
+                        "window_title": window_title,
+                        "window_handle": window_handle,
+                        "visual_expectation": expected_result,
+                        "require_visual_guard": True,
+                    },
+                    workspace_path=workspace_path,
+                    observation=dict(wake_result.get("observation") or {}),
+                )
+                if isinstance(wake_visual_guard, dict):
+                    wake_visual_guard = dict(wake_visual_guard)
+                    wake_visual_guard["screenWakeRetried"] = True
+                    wake_visual_guard["screenWakeRecovery"] = self._screen_wake_public_payload(wake_result)
+                    wake_visual_guard["previousReason"] = visual_guard.get("reason") if isinstance(visual_guard, dict) else None
+                    visual_guard = wake_visual_guard
+                    confirmed = bool(
+                        str(wake_visual_guard.get("status") or "").strip().lower() == "analyzed"
+                        and wake_visual_guard.get("confirmed") is True
+                    )
         if (
             not confirmed
             and self._is_visual_guard_desktop_capture_mismatch(visual_guard)
@@ -2370,6 +2443,113 @@ class ComputerUseRuntime:
         if any(token in reason for token in strong_tokens):
             return True
         return ("桌面" in reason or "desktop" in reason) and ("未显示" in reason or "未观察到" in reason or "not visible" in reason)
+
+    def _screen_wake_public_payload(self, wake_result: Dict[str, Any] | None) -> Dict[str, Any]:
+        payload = dict(wake_result or {})
+        payload.pop("observation", None)
+        return payload
+
+    def _screen_wake_attempt_key(self, *, run_handle) -> str:
+        run_id = str(getattr(run_handle, "run_id", "") or "").strip()
+        if run_id:
+            return run_id
+        session_id = str(getattr(run_handle, "session_id", "") or "").strip()
+        return session_id or "global"
+
+    def _observation_requires_human_attention_after_wake(self, observation: Dict[str, Any] | None) -> bool:
+        if not isinstance(observation, dict):
+            return False
+        try:
+            text = json.dumps(observation, ensure_ascii=False).lower()
+        except Exception:
+            text = str(observation).lower()
+        credential_tokens = (
+            "登录",
+            "登陆",
+            "密码",
+            "凭据",
+            "解锁",
+            "pin",
+            "password",
+            "credential",
+            "sign in",
+            "login",
+            "unlock",
+        )
+        return any(token in text for token in credential_tokens)
+
+    def _attempt_screen_wake_recovery(
+        self,
+        *,
+        run_handle,
+        visual_guard: Dict[str, Any] | None,
+        action: str,
+        window_title: str | None = None,
+        window_handle: int | None = None,
+    ) -> Dict[str, Any]:
+        policy = screen_wake_policy()
+        if not policy.get("enabled") or not self._is_visual_guard_desktop_capture_mismatch(visual_guard):
+            return {"attempted": False, "reason": "not_applicable"}
+        attempt_key = self._screen_wake_attempt_key(run_handle=run_handle)
+        if attempt_key in self._screen_wake_attempts:
+            return {
+                "attempted": False,
+                "alreadyAttempted": True,
+                "reason": "max_attempts_per_run",
+                "wakeKey": policy.get("wakeKey"),
+            }
+        self._screen_wake_attempts[attempt_key] = time.time()
+        wait_seconds = float(policy.get("waitSeconds") or 2.5)
+        hotkey_result: Dict[str, Any] | None = None
+        hotkey_error: str | None = None
+        try:
+            hotkey_result = self.driver.hotkey("{SPACE}", window_title=window_title, window_handle=window_handle)
+        except Exception as exc:
+            hotkey_error = str(exc)
+        time.sleep(max(0.1, min(wait_seconds, 5.0)))
+        observation: Dict[str, Any] | None = None
+        observation_error: str | None = None
+        try:
+            observed = self.driver.observe_desktop(
+                window_title=window_title,
+                window_handle=window_handle,
+                depth_limit=2,
+                element_limit=50,
+                use_cache=False,
+            )
+            observation = observed.as_dict() if hasattr(observed, "as_dict") else dict(observed or {})
+        except Exception as exc:
+            observation_error = str(exc)
+        requires_human_attention = self._observation_requires_human_attention_after_wake(observation)
+        result = {
+            "attempted": True,
+            "wakeKey": policy.get("wakeKey"),
+            "hotkeySequence": "{SPACE}",
+            "waitSeconds": wait_seconds,
+            "hotkeyResult": hotkey_result,
+            "hotkeyError": hotkey_error,
+            "observationError": observation_error,
+            "requiresHumanAttention": requires_human_attention,
+            "observationSummary": {
+                "windowTitle": (observation or {}).get("windowTitle"),
+                "elementCount": len(list((observation or {}).get("elements") or [])),
+                "treeHash": (observation or {}).get("treeHash"),
+                "screenHash": (observation or {}).get("screenHash"),
+            },
+            "previousReason": (visual_guard or {}).get("reason"),
+            "observation": observation,
+        }
+        try:
+            run_handle.emit(
+                "computer_use.screen_wake_attempted",
+                {
+                    "action": action,
+                    "screenWake": self._screen_wake_public_payload(result),
+                },
+            )
+        except Exception:
+            pass
+        return result
 
     def _is_browser_text_visibility_false_negative(self, verification: ComputerUseVerification, reason: str) -> bool:
         if verification.status != "text_verified":
@@ -9255,6 +9435,50 @@ class ComputerUseRuntime:
                                 result.metadata["visualGuard"] = visual_guard
                                 if high_risk_action:
                                     result.metadata["highRiskAction"] = True
+                                if self._is_visual_guard_desktop_capture_mismatch(visual_guard):
+                                    wake_result = self._attempt_screen_wake_recovery(
+                                        run_handle=run_handle,
+                                        visual_guard=visual_guard,
+                                        action=requested_action,
+                                        window_title=guard_payload.get("window_title"),
+                                        window_handle=guard_payload.get("window_handle"),
+                                    )
+                                    result.metadata["screenWakeRecovery"] = self._screen_wake_public_payload(wake_result)
+                                    if wake_result.get("requiresHumanAttention"):
+                                        visual_guard = {
+                                            **dict(visual_guard),
+                                            "status": "screen_wake_requires_human_attention",
+                                            "confirmed": False,
+                                            "reason": "Screen wake reached a login/credential boundary; human attention is required.",
+                                            "screenWakeRecovery": self._screen_wake_public_payload(wake_result),
+                                        }
+                                        result.metadata["visualGuard"] = visual_guard
+                                        verification = ComputerUseVerification(
+                                            passed=False,
+                                            status="screen_wake_requires_human_attention",
+                                            reason=str(visual_guard.get("reason")),
+                                            details={
+                                                "visualGuard": visual_guard,
+                                                "structuredVerification": verification.as_dict(),
+                                            },
+                                            level="review_required",
+                                        )
+                                    elif wake_result.get("attempted") and isinstance(wake_result.get("observation"), dict):
+                                        wake_visual_guard = self._collect_visual_guard(
+                                            run_handle=run_handle,
+                                            stage="post_action",
+                                            action=requested_action,
+                                            action_payload=guard_payload,
+                                            workspace_path=workspace_path,
+                                            observation=dict(wake_result.get("observation") or {}),
+                                        )
+                                        if isinstance(wake_visual_guard, dict):
+                                            wake_visual_guard = dict(wake_visual_guard)
+                                            wake_visual_guard["screenWakeRetried"] = True
+                                            wake_visual_guard["screenWakeRecovery"] = self._screen_wake_public_payload(wake_result)
+                                            wake_visual_guard["previousReason"] = visual_guard.get("reason")
+                                            visual_guard = wake_visual_guard
+                                            result.metadata["visualGuard"] = visual_guard
                                 suggested_selector = dict(visual_guard.get("suggestedSelector") or {})
                                 if suggested_selector:
                                     self._remember_selector_hint(
@@ -11079,6 +11303,7 @@ class ComputerUseRuntime:
         self.browser_automation.configure(self._computer_use_config())
         capability_matrix = self._runtime_capability_matrix()
         capability_truth = dict(capability_matrix.get("truth") or {})
+        capability_truth_payload = self._capability_truth_payload(capability_matrix=capability_matrix)
         current_matrix = dict(capability_matrix.get("current") or {})
         capabilities = dict(current_matrix.get("facets") or {})
         capabilities["execution"] = {
@@ -11089,25 +11314,33 @@ class ComputerUseRuntime:
             "platform": self.driver.platform,
             "backend": self.driver.backend,
             "available": self.driver.is_available(),
-                "details": {
-                    "driver": "pywinauto.uia+win32_fallback",
+            "details": {
+                "driver": "pywinauto.uia+win32_fallback",
                 "backends": {
                     "primary": "uia",
                     "fallback": "win32",
                 },
                 "requires": ["pywinauto", "pywin32", "mss", "Pillow"],
-                    "capabilities": capabilities,
-                    "capabilityMatrix": capability_matrix,
-                    "routePolicy": capabilities.get("execution"),
-                    "visionFallback": vision_state,
-                    "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
-                    "onlineVisualLocator": self._online_visual_locator_descriptor(),
-                    "browserLane": self.browser_automation.availability_summary(),
-                    "appAdapter": self._app_adapter_summary(),
-                    "selectorStats": self.driver.selector_metrics(),
-                    "appCatalog": self.app_catalog.summary(include_running=True),
-                },
-            }
+                "capabilities": capabilities,
+                "capabilityMatrix": capability_matrix,
+                "capabilityTruth": capability_truth_payload,
+                "evidenceRefs": list(capability_truth_payload.get("evidenceRefs") or []),
+                "knownGaps": list(capability_truth_payload.get("knownGaps") or []),
+                "portableChecklist": list(capability_truth_payload.get("portableChecklist") or []),
+                "browserLaneTruth": dict(capability_truth_payload.get("browserLaneTruth") or {}),
+                "screenWakePolicy": dict(capability_truth_payload.get("screenWakePolicy") or {}),
+                "experienceAssets": dict(capability_truth_payload.get("experienceAssets") or {}),
+                "builtInPlaybookSeeds": list(capability_truth_payload.get("builtInPlaybookSeeds") or []),
+                "routePolicy": capabilities.get("execution"),
+                "visionFallback": vision_state,
+                "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
+                "onlineVisualLocator": self._online_visual_locator_descriptor(),
+                "browserLane": self.browser_automation.availability_summary(),
+                "appAdapter": self._app_adapter_summary(),
+                "selectorStats": self.driver.selector_metrics(),
+                "appCatalog": self.app_catalog.summary(include_running=True),
+            },
+        }
 
 
 computer_use_runtime = runtime_registry.register(ComputerUseRuntime())

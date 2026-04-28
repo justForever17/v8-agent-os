@@ -59,11 +59,42 @@ type RuntimeCapabilityEntry = {
     };
 };
 
+type CapabilityFacet = {
+    key: string;
+    status?: string;
+    available?: boolean;
+    validationLevel?: string;
+};
+
+type CapabilityPlatform = {
+    displayPlatform?: string;
+    platform?: string;
+    currentHost?: boolean;
+    facets?: CapabilityFacet[];
+};
+
+type ComputerUseAvailability = {
+    platform?: string;
+    backend?: string;
+    available?: boolean;
+    details?: {
+        capabilityTruth?: {
+            currentPlatform?: string;
+            platforms?: Record<string, CapabilityPlatform>;
+            browserLaneTruth?: Record<string, unknown>;
+            knownGaps?: Array<{ code?: string; summary?: string; impact?: string }>;
+            portableChecklist?: string[];
+            screenWakePolicy?: Record<string, unknown>;
+        };
+    };
+};
+
 export default function DesktopAutomationPage() {
     const t = useT();
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<ComputerUseData> | null>(null);
     const [models, setModels] = useState<ModelOption[]>([]);
     const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(null);
+    const [availability, setAvailability] = useState<ComputerUseAvailability | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -72,13 +103,15 @@ export default function DesktopAutomationPage() {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [config, modelsResponse, capabilitySnapshot] = await Promise.all([
+            const [config, modelsResponse, capabilitySnapshot, computerAvailability] = await Promise.all([
                 fetchConfigDomain<ComputerUseData>("computer-use"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
                 fetch("/api/runtime-capabilities", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
+                fetch("/api/computer-use/availability", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelsResponse) ? modelsResponse : []);
+            setAvailability(computerAvailability || null);
             const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
             setRuntimeCapability(runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "computer_use") || null);
         } finally {
@@ -99,6 +132,27 @@ export default function DesktopAutomationPage() {
         () => models.filter((model) => ["RERANK", "RERANKER"].includes((model.type || "").toUpperCase())),
         [models]
     );
+    const capabilityTruth = availability?.details?.capabilityTruth || null;
+    const truthPlatforms = useMemo(
+        () => Object.entries(capabilityTruth?.platforms || {}).map(([key, value]) => ({ key, ...value })),
+        [capabilityTruth]
+    );
+    const currentPlatformTruth = truthPlatforms.find((item) => item.currentHost) || truthPlatforms[0];
+    const statusLabel = (status?: string) => {
+        const normalized = String(status || "unknown");
+        return t(`app.admin.dashboard.desktop.automation.capabilityTruth.status.${normalized}`);
+    };
+    const facetLabel = (key?: string) => {
+        const normalized = String(key || "unknown");
+        return t(`app.admin.dashboard.desktop.automation.capabilityTruth.facet.${normalized}`);
+    };
+    const statusClassName = (status?: string) => {
+        const normalized = String(status || "");
+        if (normalized === "real_host_passed") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+        if (normalized === "blocked_by_permission" || normalized.startsWith("blocked_by")) return "border-amber-200 bg-amber-50 text-amber-700";
+        if (normalized === "unsupported") return "border-slate-200 bg-slate-100 text-slate-500";
+        return "border-sky-200 bg-sky-50 text-sky-700";
+    };
 
     const updateBinding = (key: keyof ComputerUseData["modelBindings"], value: string) => {
         if (!envelope) return;
@@ -202,6 +256,94 @@ export default function DesktopAutomationPage() {
                             {runtimeSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             {t("app.admin.dashboard.desktop.automation.page.k415e3223")}
                         </Button>
+                    </div>
+                </div>
+            </ConfigCard>
+
+            <ConfigCard
+                title={"app.admin.dashboard.desktop.automation.capabilityTruth.title"}
+                description={"app.admin.dashboard.desktop.automation.capabilityTruth.description"}
+            >
+                <div className="space-y-4">
+                    <div className="grid gap-3 lg:grid-cols-[1.5fr_1fr]">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.currentPlatform")}</div>
+                                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                                        {currentPlatformTruth?.displayPlatform || availability?.platform || t("app.admin.dashboard.desktop.automation.capabilityTruth.unknown")}
+                                    </div>
+                                </div>
+                                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                                    {availability?.backend || t("app.admin.dashboard.desktop.automation.capabilityTruth.unknown")}
+                                </span>
+                            </div>
+                            <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                {(currentPlatformTruth?.facets || []).map((facet) => (
+                                    <div key={facet.key} className="rounded-xl border border-white bg-white px-3 py-2 shadow-sm">
+                                        <div className="text-xs font-medium text-slate-900">{facetLabel(facet.key)}</div>
+                                        <div className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClassName(facet.status)}`}>
+                                            {statusLabel(facet.status)}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="space-y-3">
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.browserLane")}</div>
+                                <div className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClassName(String(capabilityTruth?.browserLaneTruth?.status || ""))}`}>
+                                    {statusLabel(String(capabilityTruth?.browserLaneTruth?.status || "unknown"))}
+                                </div>
+                                {capabilityTruth?.browserLaneTruth?.reason ? (
+                                    <p className="mt-2 text-xs leading-5 text-slate-500">{String(capabilityTruth.browserLaneTruth.reason)}</p>
+                                ) : null}
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWake")}</div>
+                                <div className="mt-2 text-sm font-semibold text-slate-900">
+                                    {t("app.admin.dashboard.desktop.automation.capabilityTruth.spaceWake")}
+                                </div>
+                                <p className="mt-1 text-xs leading-5 text-slate-500">
+                                    {t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWakeDetail")}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.portableChecklist")}</div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {(capabilityTruth?.portableChecklist || []).slice(0, 12).map((item) => (
+                                    <span key={item} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+                                        {item}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.knownGaps")}</div>
+                            <div className="mt-2 space-y-2">
+                                {(capabilityTruth?.knownGaps || []).length ? (
+                                    (capabilityTruth?.knownGaps || []).map((gap) => (
+                                        <div key={gap.code || gap.summary} className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                                            <span className="font-semibold text-slate-900">{gap.code}</span>
+                                            {gap.summary ? ` · ${gap.summary}` : ""}
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noKnownGaps")}</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="grid gap-2 text-xs text-slate-500 sm:grid-cols-2 lg:grid-cols-4">
+                        {truthPlatforms.map((platform) => (
+                            <div key={platform.key} className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2">
+                                <div className="font-semibold text-slate-800">{platform.displayPlatform || platform.key}</div>
+                                <div>{platform.currentHost ? t("app.admin.dashboard.desktop.automation.capabilityTruth.realHost") : t("app.admin.dashboard.desktop.automation.capabilityTruth.portableOnly")}</div>
+                            </div>
+                        ))}
                     </div>
                 </div>
             </ConfigCard>

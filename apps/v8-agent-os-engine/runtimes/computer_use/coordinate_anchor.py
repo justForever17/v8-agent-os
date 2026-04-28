@@ -57,6 +57,23 @@ def _absolute_point(relative_point: List[float], container: List[int]) -> List[i
     ]
 
 
+def _bounds_size(bounds: List[int]) -> tuple[int, int]:
+    if not bounds:
+        return (0, 0)
+    left, top, right, bottom = bounds
+    return (max(1, int(right) - int(left)), max(1, int(bottom) - int(top)))
+
+
+def _relative_size_delta(previous: List[int], current: List[int]) -> float:
+    previous_width, previous_height = _bounds_size(previous)
+    current_width, current_height = _bounds_size(current)
+    if previous_width <= 0 or previous_height <= 0:
+        return 0.0
+    width_delta = abs(current_width - previous_width) / float(previous_width)
+    height_delta = abs(current_height - previous_height) / float(previous_height)
+    return max(width_delta, height_delta)
+
+
 def _normalize_relative_point(value: Any) -> List[float] | None:
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         return None
@@ -175,8 +192,10 @@ def build_spatial_anchor(
     anchor: Dict[str, Any] = {}
     if window_bounds:
         anchor["windowRelativeRect"] = _relative_rect(target_bounds, window_bounds)
+        anchor["windowBounds"] = list(window_bounds)
     if display_bounds:
         anchor["screenRelativePoint"] = _relative_point(_center(target_bounds), display_bounds)
+        anchor["displayBounds"] = list(display_bounds)
     display_id = str(metadata.get("displayId") or "").strip()
     if display_id:
         anchor["displayId"] = display_id
@@ -188,6 +207,58 @@ def build_spatial_anchor(
             pass
     anchor["anchorSource"] = "uia_observation" if observation else "action_target"
     return anchor
+
+
+def spatial_anchor_compatibility(
+    *,
+    spatial_anchor: Dict[str, Any] | None,
+    observation: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    anchor = dict(spatial_anchor or {})
+    metadata = dict((observation or {}).get("metadata") or {}) if isinstance(observation, dict) else {}
+    current_display_bounds = _normalize_bounds(metadata.get("displayBounds"))
+    current_window_bounds = _normalize_bounds(metadata.get("windowBounds"))
+    anchor_display_bounds = _normalize_bounds(anchor.get("displayBounds"))
+    anchor_window_bounds = _normalize_bounds(anchor.get("windowBounds"))
+    reasons: List[str] = []
+    warnings: List[str] = []
+    penalty = 0
+
+    if anchor_display_bounds and current_display_bounds and anchor_display_bounds != current_display_bounds:
+        reasons.append("display_bounds_changed")
+        penalty += 40
+    if anchor_window_bounds and current_window_bounds:
+        delta = _relative_size_delta(anchor_window_bounds, current_window_bounds)
+        if delta > 0.10:
+            warnings.append("window_bounds_size_changed")
+            penalty += 20
+    anchor_dpi = anchor.get("dpiScale")
+    current_dpi = metadata.get("dpiScale")
+    if anchor_dpi not in (None, "") and current_dpi not in (None, ""):
+        try:
+            if abs(float(anchor_dpi) - float(current_dpi)) > 0.05:
+                reasons.append("dpi_scale_changed")
+                penalty += 35
+        except Exception:
+            warnings.append("dpi_scale_unparseable")
+            penalty += 10
+
+    return {
+        "compatible": not reasons,
+        "penalty": penalty,
+        "reasons": reasons,
+        "warnings": warnings,
+        "current": {
+            "displayBounds": current_display_bounds or None,
+            "windowBounds": current_window_bounds or None,
+            "dpiScale": current_dpi if current_dpi not in (None, "") else None,
+        },
+        "anchor": {
+            "displayBounds": anchor_display_bounds or None,
+            "windowBounds": anchor_window_bounds or None,
+            "dpiScale": anchor_dpi if anchor_dpi not in (None, "") else None,
+        },
+    }
 
 
 def resolve_absolute_click_point(
@@ -211,13 +282,15 @@ def resolve_absolute_click_point(
     if normalized_point and display_bounds:
         return _absolute_point(normalized_point, display_bounds)
     relative_rect = anchor.get("windowRelativeRect")
-    if isinstance(relative_rect, (list, tuple)) and len(relative_rect) == 4 and window_bounds:
+    compatibility = spatial_anchor_compatibility(spatial_anchor=anchor, observation=observation)
+    incompatible = not bool(compatibility.get("compatible"))
+    if isinstance(relative_rect, (list, tuple)) and len(relative_rect) == 4 and window_bounds and not incompatible:
         try:
             return _center_from_relative_rect([float(item) for item in relative_rect], window_bounds)
         except Exception:
             pass
     screen_relative_point = anchor.get("screenRelativePoint")
-    if isinstance(screen_relative_point, (list, tuple)) and len(screen_relative_point) == 2 and display_bounds:
+    if isinstance(screen_relative_point, (list, tuple)) and len(screen_relative_point) == 2 and display_bounds and not incompatible:
         try:
             return _absolute_point([float(screen_relative_point[0]), float(screen_relative_point[1])], display_bounds)
         except Exception:

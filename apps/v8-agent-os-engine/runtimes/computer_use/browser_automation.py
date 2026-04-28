@@ -863,8 +863,26 @@ class BrowserAutomationProvider:
             "targetId": target_id,
             "family": decision.family,
             "provider": decision.provider,
+            "targetPort": decision.target_port,
             "url": url,
         }
+
+    def close_tab(
+        self,
+        *,
+        target_id: str,
+        decision: BrowserLaneDecision | None = None,
+        target_port: int | None = None,
+    ) -> Dict[str, Any]:
+        normalized_target = str(target_id or "").strip()
+        if not normalized_target:
+            return {"closed": False, "reason": "missing_target_id"}
+        self._ensure_proxy(target_port=target_port or (decision.target_port if decision else None))
+        try:
+            response = self._request_json("POST", "/close", params={"target": normalized_target})
+            return dict(response or {})
+        except Exception as exc:
+            return {"closed": False, "targetId": normalized_target, "error": str(exc)}
 
     def _evaluate(self, *, target_id: str, expression: str) -> Dict[str, Any]:
         return self._request_json("POST", "/eval", params={"target": target_id}, body=expression)

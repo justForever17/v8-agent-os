@@ -270,6 +270,7 @@ class ComputerUseRuntime:
                 "browserLane": self.browser_automation.availability_summary(),
                 "environmentProbes": environment_probe_capabilities(),
                 "screenWakePolicy": screen_wake_policy(),
+                **self._resolution_policy_payload(include_current_display=False),
                 "builtInPlaybookSeeds": built_in_playbook_seeds(),
             },
         }
@@ -289,6 +290,8 @@ class ComputerUseRuntime:
         self.trace_store = trace_store
         self._recent_visual_locator_hits: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
         self._screen_wake_attempts: Dict[str, float] = {}
+        self._resource_leases: Dict[str, Dict[str, Any]] = {}
+        self._resource_lease_lock = threading.Lock()
         self._runtime_ready = False
         self._runtime_ready_lock = threading.Lock()
 
@@ -315,6 +318,238 @@ class ComputerUseRuntime:
             self.app_catalog.warm_start()
             self.browser_automation.configure(self._computer_use_config())
             self._runtime_ready = True
+
+    def _resource_lease_key(self, *, run_handle) -> str:
+        return str(getattr(run_handle, "run_id", "") or "default")
+
+    def _resource_lease_for(self, *, run_handle) -> Dict[str, Any]:
+        key = self._resource_lease_key(run_handle=run_handle)
+        with self._resource_lease_lock:
+            lease = self._resource_leases.get(key)
+            if not isinstance(lease, dict):
+                lease = {
+                    "runId": key,
+                    "resources": [],
+                    "createdAt": utc_now_iso(),
+                    "lastCleanup": None,
+                }
+                self._resource_leases[key] = lease
+            return lease
+
+    def _record_resource_lease(
+        self,
+        *,
+        run_handle,
+        kind: str,
+        resource: Dict[str, Any] | None,
+        cleanup_on_complete: bool = True,
+        preserve_on_human_input: bool = False,
+        reason: str | None = None,
+    ) -> Dict[str, Any]:
+        lease = self._resource_lease_for(run_handle=run_handle)
+        entry = {
+            "id": f"lease_{uuid.uuid4().hex[:10]}",
+            "kind": str(kind or "resource").strip() or "resource",
+            "resource": dict(resource or {}),
+            "cleanupOnComplete": bool(cleanup_on_complete),
+            "preserveOnHumanInput": bool(preserve_on_human_input),
+            "reason": str(reason or "").strip() or None,
+            "createdAt": utc_now_iso(),
+            "cleanupStatus": "pending" if cleanup_on_complete else "not_owned_for_cleanup",
+        }
+        with self._resource_lease_lock:
+            resources = list(lease.get("resources") or [])
+            resources.append(entry)
+            lease["resources"] = resources
+            lease["updatedAt"] = utc_now_iso()
+        try:
+            run_handle.emit("computer_use.resource_lease.created", entry)
+        except Exception:
+            pass
+        return entry
+
+    def _resource_lease_summary(self, *, run_handle) -> Dict[str, Any]:
+        lease = self._resource_lease_for(run_handle=run_handle)
+        resources = [dict(item) for item in list(lease.get("resources") or []) if isinstance(item, dict)]
+        cleanup_counts: Dict[str, int] = {}
+        for item in resources:
+            status = str(item.get("cleanupStatus") or "unknown")
+            cleanup_counts[status] = cleanup_counts.get(status, 0) + 1
+        return {
+            "runId": lease.get("runId"),
+            "resourceCount": len(resources),
+            "cleanupCounts": cleanup_counts,
+            "resources": resources,
+            "lastCleanup": dict(lease.get("lastCleanup") or {}) or None,
+        }
+
+    def _cleanup_resource_lease(
+        self,
+        *,
+        run_handle,
+        status: str,
+        reason: str | None = None,
+    ) -> Dict[str, Any]:
+        normalized_status = str(status or "").strip().lower()
+        preserve_statuses = {
+            "needs_human_login",
+            "needs_human_attention",
+            "waiting_input",
+            "waiting_approval",
+            "screen_wake_requires_human_attention",
+            "credential_boundary",
+            "failed",
+            "review_required",
+        }
+        lease = self._resource_lease_for(run_handle=run_handle)
+        resources = [dict(item) for item in list(lease.get("resources") or []) if isinstance(item, dict)]
+        cleanup_report = {
+            "status": "skipped" if normalized_status in preserve_statuses else "completed",
+            "reason": str(reason or normalized_status or "").strip() or None,
+            "runStatus": normalized_status,
+            "closed": [],
+            "skipped": [],
+            "errors": [],
+            "completedAt": utc_now_iso(),
+        }
+        if normalized_status in preserve_statuses:
+            for item in resources:
+                if str(item.get("cleanupStatus") or "") == "pending":
+                    item["cleanupStatus"] = "skipped_preserved_for_human_attention"
+                cleanup_report["skipped"].append(
+                    {
+                        "id": item.get("id"),
+                        "kind": item.get("kind"),
+                        "reason": "preserve_for_human_or_debug",
+                    }
+                )
+            topic = "computer_use.resource_lease.cleanup_skipped"
+        else:
+            topic = "computer_use.resource_lease.cleanup_completed"
+            for item in resources:
+                if not bool(item.get("cleanupOnComplete")):
+                    cleanup_report["skipped"].append(
+                        {"id": item.get("id"), "kind": item.get("kind"), "reason": "cleanup_not_owned"}
+                    )
+                    continue
+                resource = dict(item.get("resource") or {})
+                kind = str(item.get("kind") or "").strip().lower()
+                try:
+                    if kind == "browser_tab":
+                        target_id = str(resource.get("targetId") or resource.get("target_id") or "").strip()
+                        if not target_id:
+                            item["cleanupStatus"] = "skipped_missing_target"
+                            cleanup_report["skipped"].append(
+                                {"id": item.get("id"), "kind": item.get("kind"), "reason": "missing_target_id"}
+                            )
+                            continue
+                        target_port = None
+                        try:
+                            target_port = int(resource.get("targetPort")) if resource.get("targetPort") not in (None, "") else None
+                        except Exception:
+                            target_port = None
+                        close_result = self.browser_automation.close_tab(target_id=target_id, target_port=target_port)
+                        if close_result.get("closed"):
+                            item["cleanupStatus"] = "closed"
+                            cleanup_report["closed"].append(
+                                {"id": item.get("id"), "kind": item.get("kind"), "targetId": target_id}
+                            )
+                        else:
+                            item["cleanupStatus"] = "close_failed"
+                            cleanup_report["errors"].append(
+                                {
+                                    "id": item.get("id"),
+                                    "kind": item.get("kind"),
+                                    "targetId": target_id,
+                                    "error": close_result.get("error") or close_result.get("reason"),
+                                }
+                            )
+                    else:
+                        item["cleanupStatus"] = "skipped_unsupported_cleanup"
+                        cleanup_report["skipped"].append(
+                            {"id": item.get("id"), "kind": item.get("kind"), "reason": "unsupported_cleanup"}
+                        )
+                except Exception as exc:
+                    item["cleanupStatus"] = "cleanup_error"
+                    cleanup_report["errors"].append(
+                        {"id": item.get("id"), "kind": item.get("kind"), "error": str(exc)}
+                    )
+        with self._resource_lease_lock:
+            lease["resources"] = resources
+            lease["lastCleanup"] = cleanup_report
+            lease["updatedAt"] = utc_now_iso()
+        try:
+            run_handle.emit(topic, cleanup_report)
+        except Exception:
+            pass
+        summary = self._resource_lease_summary(run_handle=run_handle)
+        summary["cleanup"] = cleanup_report
+        return summary
+
+    def _human_input_request_payload(
+        self,
+        *,
+        reason: str,
+        target_url: str | None = None,
+        browser_target: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        normalized_reason = str(reason or "needs_human_attention").strip() or "needs_human_attention"
+        question = (
+            "Computer Use 需要你在 V8 专用浏览器窗口里手动完成登录或确认，然后回复“已完成”。"
+        )
+        return {
+            "interactionKind": "ask_user",
+            "reason": normalized_reason,
+            "question": question,
+            "prompt": question,
+            "instructions": [
+                "请在已打开的 V8 专用浏览器窗口中完成登录/验证。",
+                "不要把密码发给 agent；除非是你明确提供的临时测试账号。",
+                "完成后回复“已完成”，Computer Use 会继续观察并验证目标状态。",
+            ],
+            "targetUrl": str(target_url or "").strip() or None,
+            "browserTarget": dict(browser_target or {}) or None,
+        }
+
+    def _resolution_policy_payload(self, *, include_current_display: bool = True) -> Dict[str, Any]:
+        current_display: Dict[str, Any] = {"status": "unknown"}
+        if include_current_display:
+            try:
+                observation = self.driver.observe_desktop(depth_limit=0, element_limit=0, use_cache=True).as_dict()
+                metadata = dict(observation.get("metadata") or {})
+                current_display = {
+                    "status": "observed" if metadata else "unknown",
+                    "displayId": metadata.get("displayId"),
+                    "displayBounds": metadata.get("displayBounds"),
+                    "windowBounds": metadata.get("windowBounds"),
+                    "dpiScale": metadata.get("dpiScale"),
+                }
+            except Exception as exc:
+                current_display = {"status": "unavailable", "reason": str(exc)}
+        return {
+            "resolutionPolicy": {
+                "coordinatePriority": [
+                    "browser_dom_or_accessibility",
+                    "selector_memory_with_anchor",
+                    "coordinate_anchor",
+                    "visual_fallback",
+                ],
+                "rawAbsoluteCoordinates": "fallback_only",
+                "mismatchBehavior": "downgrade_or_block_coordinate_anchor",
+            },
+            "currentDisplay": current_display,
+            "coordinateAnchorPolicy": {
+                "requiredContext": ["displayBounds", "windowBounds", "dpiScale", "screenRelativePoint"],
+                "displayOrDpiMismatch": "do_not_reuse_anchor",
+                "windowSizeMismatchThreshold": 0.10,
+            },
+            "resourceCleanupPolicy": {
+                "closeRunOwnedBrowserTabsOnSuccess": True,
+                "preserveDedicatedBrowserProfile": True,
+                "preserveHumanInputWindows": True,
+                "cleanupUnsupportedResources": "audit_only",
+            },
+        }
 
     def _classify_invocation(self, invocation_metadata: Optional[Dict[str, Any]] = None, *, default_trigger_source: str) -> Any:
         return classify_computer_use_invocation(invocation_metadata, default_trigger_source=default_trigger_source)
@@ -1686,16 +1921,18 @@ class ComputerUseRuntime:
         expected_titles: List[str],
         expected_classes: List[str],
         expected_process_names: List[str],
+        wait_timeout_ms: int | None = None,
     ) -> Dict[str, Any]:
         current_window = dict(window or {})
-        ready, _visual_guard = self._confirm_window_ready(
+        readiness = self._wait_for_startup_readiness(
             run_handle=run_handle,
             app_id=app_id,
-            window_title=current_window.get("title") or current_window.get("windowTitle"),
-            window_handle=current_window.get("handle") or current_window.get("windowHandle"),
+            window=current_window,
             workspace_path=workspace_path,
+            wait_timeout_ms=wait_timeout_ms,
         )
-        if ready:
+        current_window["startupReadiness"] = readiness
+        if readiness.get("ready"):
             return current_window
         transitioned = self._apply_app_startup_transition(
             run_handle=run_handle,
@@ -1708,13 +1945,171 @@ class ComputerUseRuntime:
             expected_process_names=expected_process_names,
         )
         if transitioned is not None:
+            transition_readiness = self._wait_for_startup_readiness(
+                run_handle=run_handle,
+                app_id=app_id,
+                window=transitioned,
+                workspace_path=workspace_path,
+                wait_timeout_ms=wait_timeout_ms,
+            )
+            transitioned["startupReadiness"] = transition_readiness
+            if not transition_readiness.get("ready") and transition_readiness.get("status") != "not_enforced":
+                raise DesktopDriverError(
+                    str(transition_readiness.get("reason") or "应用启动后尚未进入可操作稳定态。")
+                )
             return transitioned
         profile = self.app_profiles.get(app_id)
-        if profile and str(profile.startup_transition_selector_key or "").strip():
+        if profile and (
+            str(profile.startup_transition_selector_key or "").strip()
+            or self.app_profiles.window_probe_selector_keys_for(app_id)
+            or self._visual_expectation(app_id=app_id, action_name="open_app")
+        ):
             raise DesktopDriverError(
                 str(profile.startup_transition_error_message or "当前窗口尚未进入可交互状态。")
             )
         return current_window
+
+    def _startup_readiness_policy(self, wait_timeout_ms: int | None = None) -> Dict[str, int]:
+        if wait_timeout_ms not in (None, ""):
+            try:
+                max_wait = min(30000, max(1200, int(wait_timeout_ms)))
+            except Exception:
+                max_wait = 12000
+        else:
+            max_wait = 12000
+        return {
+            "maxWaitMs": max_wait,
+            "pollMs": 250,
+            "stableRounds": 2,
+        }
+
+    def _startup_readiness_signature(self, observation: Dict[str, Any] | None) -> str:
+        if not isinstance(observation, dict):
+            return "no_observation"
+        metadata = dict(observation.get("metadata") or {})
+        return "|".join(
+            [
+                str(observation.get("windowTitle") or ""),
+                str(metadata.get("windowHandle") or ""),
+                str(metadata.get("windowBounds") or ""),
+                str(metadata.get("elementCount") or len(list(observation.get("elements") or []))),
+                str(metadata.get("treeHash") or observation.get("treeHash") or ""),
+                str(metadata.get("screenHash") or observation.get("screenHash") or ""),
+            ]
+        )
+
+    def _wait_for_startup_readiness(
+        self,
+        *,
+        run_handle,
+        app_id: str | None,
+        window: Dict[str, Any],
+        workspace_path: str | None,
+        wait_timeout_ms: int | None = None,
+    ) -> Dict[str, Any]:
+        profile = self.app_profiles.get(app_id)
+        probe_keys = self.app_profiles.window_probe_selector_keys_for(app_id)
+        expected_result = self._visual_expectation(app_id=app_id, action_name="open_app")
+        if not probe_keys and not expected_result:
+            return {
+                "ready": True,
+                "status": "not_enforced",
+                "reason": "no_profile_or_visual_readiness_signal",
+                "policy": self._startup_readiness_policy(wait_timeout_ms),
+            }
+        policy = self._startup_readiness_policy(wait_timeout_ms)
+        window_title = window.get("title") or window.get("windowTitle")
+        window_handle = window.get("handle") or window.get("windowHandle")
+        started_at = time.time()
+        deadline = started_at + (policy["maxWaitMs"] / 1000.0)
+        stable_rounds = 0
+        last_signature = ""
+        last_visual_guard: Dict[str, Any] | None = None
+        last_observation: Dict[str, Any] | None = None
+        try:
+            run_handle.emit(
+                "computer_use.startup_readiness.started",
+                {
+                    "appId": app_id,
+                    "windowTitle": window_title,
+                    "windowHandle": window_handle,
+                    "policy": dict(policy),
+                    "probeKeys": list(probe_keys),
+                    "hasVisualExpectation": bool(expected_result),
+                },
+            )
+        except Exception:
+            pass
+        while time.time() < deadline:
+            ready, visual_guard = self._confirm_window_ready(
+                run_handle=run_handle,
+                app_id=app_id,
+                window_title=window_title,
+                window_handle=window_handle,
+                workspace_path=workspace_path,
+                timeout_ms=min(650, policy["pollMs"] * 2),
+                poll_ms=max(80, min(policy["pollMs"], 250)),
+            )
+            if isinstance(visual_guard, dict):
+                last_visual_guard = dict(visual_guard)
+                if str(visual_guard.get("status") or "").strip() == "screen_wake_requires_human_attention":
+                    result = {
+                        "ready": False,
+                        "status": "screen_wake_requires_human_attention",
+                        "reason": visual_guard.get("reason") or "screen_wake_requires_human_attention",
+                        "policy": dict(policy),
+                        "stableRoundsObserved": stable_rounds,
+                        "visualGuard": last_visual_guard,
+                    }
+                    try:
+                        run_handle.emit("computer_use.startup_readiness.timeout", result)
+                    except Exception:
+                        pass
+                    return result
+            try:
+                last_observation = self.driver.observe_desktop(
+                    window_title=window_title,
+                    window_handle=window_handle,
+                    depth_limit=2,
+                    element_limit=30,
+                    use_cache=False,
+                ).as_dict()
+            except Exception:
+                last_observation = None
+            signature = self._startup_readiness_signature(last_observation)
+            if ready:
+                stable_rounds = stable_rounds + 1 if signature == last_signature else 1
+                if stable_rounds >= policy["stableRounds"]:
+                    result = {
+                        "ready": True,
+                        "status": "ready",
+                        "policy": dict(policy),
+                        "stableRoundsObserved": stable_rounds,
+                        "elapsedMs": int((time.time() - started_at) * 1000),
+                    }
+                    try:
+                        run_handle.emit("computer_use.startup_readiness.completed", result)
+                    except Exception:
+                        pass
+                    return result
+            else:
+                stable_rounds = 0
+            last_signature = signature
+            time.sleep(policy["pollMs"] / 1000.0)
+        result = {
+            "ready": False,
+            "status": "app_not_ready",
+            "reason": "应用窗口出现后未进入可操作稳定态。",
+            "policy": dict(policy),
+            "stableRoundsObserved": stable_rounds,
+            "elapsedMs": int((time.time() - started_at) * 1000),
+            "visualGuard": last_visual_guard,
+        }
+        try:
+            run_handle.emit("computer_use.startup_readiness.timeout", result)
+        except Exception:
+            pass
+        return result
 
     def _navigate_explorer_to_target_path(
         self,
@@ -7686,6 +8081,116 @@ class ComputerUseRuntime:
             },
         )
 
+    def _runtime_action_safety_target(
+        self,
+        *,
+        action_type: str,
+        action_payload: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        payload = dict(action_payload or {})
+        target = {
+            "app_id": payload.get("app_id") or payload.get("resolved_app_id"),
+            "selector_key": payload.get("selector_key"),
+            "profile_action": payload.get("profile_action"),
+            "element_id": payload.get("element_id"),
+            "name": payload.get("name"),
+            "name_contains": payload.get("name_contains"),
+            "target_text": payload.get("target_text"),
+            "automation_id": payload.get("automation_id"),
+            "control_type": payload.get("control_type"),
+            "class_name": payload.get("class_name"),
+            "window_title": payload.get("window_title"),
+            "window_handle": payload.get("window_handle"),
+            "point": payload.get("point"),
+            "spatial_anchor": payload.get("spatial_anchor") or payload.get("spatialAnchor"),
+            "sequence": payload.get("sequence"),
+            "amount": payload.get("amount"),
+        }
+        if str(action_type or "").strip().lower() == "type_text":
+            target["text_preview"] = str(payload.get("text") or "")[:80]
+        return {key: value for key, value in target.items() if value not in (None, "", [])}
+
+    def _assess_runtime_action_safety(
+        self,
+        *,
+        run_handle,
+        action_type: str,
+        action_payload: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        normalized_action = str(action_type or "").strip().lower()
+        guarded_actions = {
+            "click",
+            "double_click",
+            "right_click",
+            "type_text",
+            "hotkey",
+            "scroll",
+            "page_scroll",
+            "drag",
+            "hover",
+            "find_and_type",
+            "scroll_list",
+            "click_toolbar_action",
+        }
+        if normalized_action not in guarded_actions:
+            return {"applied": False, "reason": "non_mutating_or_untracked_action"}
+        effective_action = {
+            "find_and_type": "type_text",
+            "scroll_list": "scroll",
+            "page_scroll": "scroll",
+            "click_toolbar_action": "click",
+        }.get(normalized_action, normalized_action)
+        target = self._runtime_action_safety_target(
+            action_type=effective_action,
+            action_payload=action_payload,
+        )
+        runtime_context = {
+            **self._run_context(run_handle=run_handle),
+            "runtime_kind": "computer_use",
+            "trigger_source": "computer_use_runtime",
+        }
+        decision = safety_guardian.assess_computer_use_action(
+            action_type=effective_action,
+            target=target,
+            runtime_context=runtime_context,
+        )
+        safety_guardian.log_decision_event(
+            action="computer_use_runtime_action",
+            decision=decision,
+            subject=effective_action,
+            metadata={
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+                "target": target,
+            },
+        )
+        payload = {
+            "applied": True,
+            "actionType": effective_action,
+            "target": target,
+            "decision": decision.to_payload(),
+        }
+        try:
+            run_handle.emit("computer_use.safety.action_checked", payload)
+        except Exception:
+            pass
+        if decision.is_block():
+            raise DesktopDriverError(decision.reason or "Safety Guardian blocked computer use action.")
+        if decision.is_review():
+            request = safety_guardian.build_runtime_preflight_request(
+                runtime_kind="computer_use",
+                trigger_source="computer_use_runtime_action",
+                decision=decision,
+                subject=json.dumps(target, ensure_ascii=False),
+            )
+            approval = run_handle.request_approval(
+                approval_kind=str(request.get("approvalKind") or "safety_review"),
+                request=request,
+            )
+            if str(approval.get("status") or "").strip().lower() == "pending":
+                raise DesktopDriverError(decision.reason or "Safety review required for computer use action.")
+        return payload
+
     def observe(
         self,
         *,
@@ -8229,6 +8734,21 @@ class ComputerUseRuntime:
                     launch_target_path=launch_target_path,
                     environment=effective_launch_environment,
                 )
+                if process is not None:
+                    self._record_resource_lease(
+                        run_handle=_run_handle,
+                        kind="process",
+                        resource={
+                            "pid": int(getattr(process, "pid", 0) or 0),
+                            "appId": resolved_app_id,
+                            "command": effective_launch_command
+                            if isinstance(effective_launch_command, list)
+                            else [effective_launch_command],
+                        },
+                        cleanup_on_complete=False,
+                        preserve_on_human_input=True,
+                        reason="open_app_spawned_process",
+                    )
                 process_ids = (
                     [int(process.pid)]
                     if process is not None and (profile is None or profile.bind_process_ids)
@@ -8271,6 +8791,7 @@ class ComputerUseRuntime:
                 expected_titles=expected_titles,
                 expected_classes=expected_classes,
                 expected_process_names=expected_process_names,
+                wait_timeout_ms=wait_timeout_ms,
             )
             if resolved_app_id == "explorer" and str(launch_target_path or "").strip():
                 resolved_window = self._navigate_explorer_to_target_path(
@@ -8298,6 +8819,19 @@ class ComputerUseRuntime:
             resolved_window["appAdapterId"] = (catalog_entry or {}).get("appAdapterId")
             if visual_expectation:
                 resolved_window["visualExpectation"] = visual_expectation
+            self._record_resource_lease(
+                run_handle=_run_handle,
+                kind="window",
+                resource={
+                    "windowHandle": resolved_window.get("handle") or resolved_window.get("windowHandle"),
+                    "windowTitle": resolved_window.get("title") or resolved_window.get("windowTitle"),
+                    "appId": resolved_app_id,
+                    "processId": resolved_window.get("processId"),
+                },
+                cleanup_on_complete=False,
+                preserve_on_human_input=True,
+                reason="open_app_window",
+            )
             if browser_window_preferences:
                 effective_browser_lane.setdefault("family", browser_window_preferences.get("family"))
                 effective_browser_lane.setdefault("preferredExistingBrowserWindow", True)
@@ -8515,6 +9049,7 @@ class ComputerUseRuntime:
                 expected_titles=expected_titles,
                 expected_classes=expected_classes,
                 expected_process_names=expected_process_names,
+                wait_timeout_ms=max(1200, min(post_action_settle_timeout_ms or 4500, 6000)),
             )
             if resolved_app_id == "explorer" and str(target_path or "").strip():
                 focused = self._navigate_explorer_to_target_path(
@@ -8914,6 +9449,11 @@ class ComputerUseRuntime:
                 "primitiveLiveBaseline": primitive_live_feedback,
                 "budget": step_budget,
             },
+        )
+        runtime_action_safety = self._assess_runtime_action_safety(
+            run_handle=run_handle,
+            action_type=action_type,
+            action_payload=normalized_payload,
         )
         with bind_runtime_context(**self._run_context(run_handle=run_handle)):
             window_binding_block = normalized_payload.pop("_window_binding_block", None)
@@ -9719,6 +10259,13 @@ class ComputerUseRuntime:
             verification=normalized_verification,
             update_request=normalized_update_request,
         )
+        if normalized_verification.status in {"screen_wake_requires_human_attention", "credential_boundary"}:
+            result.metadata["recommendedNextAction"] = "ask_user"
+            result.metadata["humanInputRequest"] = self._human_input_request_payload(
+                reason=normalized_verification.status,
+                target_url=normalized_payload.get("url") or normalized_payload.get("window_title"),
+                browser_target=None,
+            )
         if isinstance(result.metadata.get("observationBundle"), dict):
             result.metadata["observationBundle"]["route"] = result.metadata["executionRoute"].get("route")
         result_contract = build_result_contract(
@@ -9730,11 +10277,17 @@ class ComputerUseRuntime:
             primitive_live_baseline=primitive_live_feedback,
         )
         result.metadata["blockedReason"] = result_contract["blockedReason"]
-        result.metadata["recommendedNextAction"] = result_contract["recommendedNextAction"]
+        result.metadata["recommendedNextAction"] = (
+            "ask_user"
+            if normalized_verification.status in {"screen_wake_requires_human_attention", "credential_boundary"}
+            else result_contract["recommendedNextAction"]
+        )
         result.metadata["evidenceSummary"] = result_contract["evidenceSummary"]
         result.metadata["runtimeControl"] = result_contract["runtimeControl"]
         result.metadata["learningLoop"] = result_contract["learningLoop"]
         result.metadata["invocation"] = invocation.as_dict()
+        if runtime_action_safety.get("applied"):
+            result.metadata["safetyDecision"] = dict(runtime_action_safety.get("decision") or {})
         result.metadata.update(build_action_policy_metadata(binding_decision=binding_decision, invocation=None))
         result.metadata["recoveryPolicy"] = build_recovery_policy_metadata(
             high_risk=high_risk_action,
@@ -11189,12 +11742,18 @@ class ComputerUseRuntime:
 
         run_handle.transition("completed", reason="computer_use_plan_complete", node="computer_use_runtime")
         run_service.transition_run(run_handle.run_id, status="completed")
+        resource_lease = self._cleanup_resource_lease(
+            run_handle=run_handle,
+            status="succeeded",
+            reason="computer_use_plan_complete",
+        )
         return {
             "sessionId": run_handle.session_id,
             "runId": run_handle.run_id,
             "stepCount": len(step_results),
             "continueOnError": continue_on_error,
             "steps": step_results,
+            "resourceLease": resource_lease,
         }
 
     def plan(
@@ -11345,6 +11904,7 @@ class ComputerUseRuntime:
         capability_matrix = self._runtime_capability_matrix()
         capability_truth = dict(capability_matrix.get("truth") or {})
         capability_truth_payload = self._capability_truth_payload(capability_matrix=capability_matrix)
+        resolution_payload = self._resolution_policy_payload()
         current_matrix = dict(capability_matrix.get("current") or {})
         capabilities = dict(current_matrix.get("facets") or {})
         capabilities["execution"] = {
@@ -11370,6 +11930,10 @@ class ComputerUseRuntime:
                 "portableChecklist": list(capability_truth_payload.get("portableChecklist") or []),
                 "browserLaneTruth": dict(capability_truth_payload.get("browserLaneTruth") or {}),
                 "screenWakePolicy": dict(capability_truth_payload.get("screenWakePolicy") or {}),
+                "resolutionPolicy": dict(resolution_payload.get("resolutionPolicy") or {}),
+                "currentDisplay": dict(resolution_payload.get("currentDisplay") or {}),
+                "coordinateAnchorPolicy": dict(resolution_payload.get("coordinateAnchorPolicy") or {}),
+                "resourceCleanupPolicy": dict(resolution_payload.get("resourceCleanupPolicy") or {}),
                 "experienceAssets": dict(capability_truth_payload.get("experienceAssets") or {}),
                 "builtInPlaybookSeeds": list(capability_truth_payload.get("builtInPlaybookSeeds") or []),
                 "routePolicy": capabilities.get("execution"),
@@ -11507,6 +12071,20 @@ class ComputerUseRuntime:
 
         opened = self.browser_automation.open_tab(url=target_url, decision=decision)
         target_id = str(opened.get("targetId") or "").strip()
+        self._record_resource_lease(
+            run_handle=run_handle,
+            kind="browser_tab",
+            resource={
+                "targetId": target_id,
+                "url": target_url,
+                "provider": opened.get("provider"),
+                "family": opened.get("family"),
+                "targetPort": opened.get("targetPort"),
+            },
+            cleanup_on_complete=True,
+            preserve_on_human_input=True,
+            reason="github_star_playbook_opened_tab",
+        )
         run_handle.emit("computer_use.github_star.opened", {"targetUrl": target_url, "targetId": target_id})
         pre_state = dict(
             (self.browser_automation._evaluate(target_id=target_id, expression=github_star_dom_probe_script()).get("value"))
@@ -11515,15 +12093,28 @@ class ComputerUseRuntime:
         run_handle.emit("computer_use.github_star.pre_state", pre_state)
         if pre_state.get("loggedOut") or pre_state.get("needsLoginForStar"):
             run_handle.emit("computer_use.task_loop.human_attention", {"reason": "needs_human_login", "preState": pre_state})
+            human_input_request = self._human_input_request_payload(
+                reason="needs_human_login",
+                target_url=target_url,
+                browser_target=opened,
+            )
             run_handle.transition("completed", reason="computer_use_needs_human_login", node="computer_use_runtime")
             run_service.transition_run(run_handle.run_id, status="completed")
+            resource_lease = self._cleanup_resource_lease(
+                run_handle=run_handle,
+                status="needs_human_login",
+                reason="needs_human_login",
+            )
             return {
                 "status": "needs_human_login",
+                "recommendedNextAction": "ask_user",
+                "humanInputRequest": human_input_request,
                 "canonicalUrl": target_url,
                 "selectedPlaybook": selected,
                 "browserTarget": opened,
                 "preState": pre_state,
                 "taskLoop": task_loop,
+                "resourceLease": resource_lease,
                 "runId": run_handle.run_id,
                 "sessionId": run_handle.session_id,
             }
@@ -11531,6 +12122,11 @@ class ComputerUseRuntime:
             run_handle.emit("computer_use.github_star.verified", {"state": "already_starred", "preState": pre_state})
             run_handle.transition("completed", reason="computer_use_github_star_already_done", node="computer_use_runtime")
             run_service.transition_run(run_handle.run_id, status="completed")
+            resource_lease = self._cleanup_resource_lease(
+                run_handle=run_handle,
+                status="succeeded",
+                reason="already_starred",
+            )
             return {
                 "status": "succeeded",
                 "canonicalUrl": target_url,
@@ -11540,6 +12136,7 @@ class ComputerUseRuntime:
                 "postState": pre_state,
                 "action": "already_starred",
                 "taskLoop": task_loop,
+                "resourceLease": resource_lease,
                 "runId": run_handle.run_id,
                 "sessionId": run_handle.session_id,
             }
@@ -11547,18 +12144,36 @@ class ComputerUseRuntime:
             run_handle.emit("computer_use.task_loop.human_attention", {"reason": "real_click_not_allowed", "preState": pre_state})
             run_handle.transition("completed", reason="computer_use_real_click_not_allowed", node="computer_use_runtime")
             run_service.transition_run(run_handle.run_id, status="completed")
+            resource_lease = self._cleanup_resource_lease(
+                run_handle=run_handle,
+                status="needs_human_attention",
+                reason="real_click_not_allowed",
+            )
             return {
                 "status": "needs_human_attention",
                 "reason": "real_click_not_allowed",
+                "recommendedNextAction": "ask_user",
                 "canonicalUrl": target_url,
                 "selectedPlaybook": selected,
                 "browserTarget": opened,
                 "preState": pre_state,
                 "taskLoop": task_loop,
+                "resourceLease": resource_lease,
                 "runId": run_handle.run_id,
                 "sessionId": run_handle.session_id,
             }
 
+        self._assess_runtime_action_safety(
+            run_handle=run_handle,
+            action_type="click",
+            action_payload={
+                "app_id": "browser_checkout",
+                "target_text": "GitHub Star",
+                "window_title": target_url,
+                "profile_action": "github.star_repository",
+                "url": target_url,
+            },
+        )
         click_result = dict(
             (self.browser_automation._evaluate(target_id=target_id, expression=github_star_click_script()).get("value"))
             or {}
@@ -11573,6 +12188,11 @@ class ComputerUseRuntime:
         if post_state.get("isStarred"):
             run_handle.transition("completed", reason="computer_use_github_star_completed", node="computer_use_runtime")
             run_service.transition_run(run_handle.run_id, status="completed")
+            resource_lease = self._cleanup_resource_lease(
+                run_handle=run_handle,
+                status="succeeded",
+                reason="github_star_completed",
+            )
             return {
                 "status": "succeeded",
                 "canonicalUrl": target_url,
@@ -11583,10 +12203,16 @@ class ComputerUseRuntime:
                 "postState": post_state,
                 "action": "clicked_star",
                 "taskLoop": task_loop,
+                "resourceLease": resource_lease,
                 "runId": run_handle.run_id,
                 "sessionId": run_handle.session_id,
             }
         run_handle.fail("GitHub Star 状态未进入 Starred。", node="computer_use_runtime")
+        resource_lease = self._cleanup_resource_lease(
+            run_handle=run_handle,
+            status="failed",
+            reason="post_state_not_starred",
+        )
         return {
             "status": "failed",
             "reason": "post_state_not_starred",
@@ -11597,6 +12223,7 @@ class ComputerUseRuntime:
             "clickAction": click_result,
             "postState": post_state,
             "taskLoop": task_loop,
+            "resourceLease": resource_lease,
             "runId": run_handle.run_id,
             "sessionId": run_handle.session_id,
         }

@@ -2087,6 +2087,19 @@ def _computer_use_execute_task_compact_computer_use_result(
     success_criteria: str | None,
 ) -> dict[str, Any]:
     execution_summary = dict(payload.get("executionSummary") or {})
+    execution_payload = dict(payload.get("execution") or {})
+    startup_readiness = execution_payload.get("startupReadiness")
+    if startup_readiness is None:
+        for step in list(execution_payload.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            result_payload = dict(step.get("result") or {})
+            action_result = dict(result_payload.get("result") or result_payload)
+            target = dict(action_result.get("target") or {})
+            metadata = dict(action_result.get("metadata") or {})
+            startup_readiness = target.get("startupReadiness") or metadata.get("startupReadiness")
+            if startup_readiness:
+                break
     contract_summary = dict(payload.get("contractSummary") or {})
     step_contracts = [
         dict(item)
@@ -2131,6 +2144,9 @@ def _computer_use_execute_task_compact_computer_use_result(
             requires_human_attention=requires_human_attention,
             step_contracts=step_contracts,
         ),
+        "startupReadiness": startup_readiness,
+        "resourceLease": execution_payload.get("resourceLease"),
+        "humanInputRequest": execution_payload.get("humanInputRequest"),
         "requiresRetry": requires_retry,
         "requiresHumanAttention": requires_human_attention,
     }
@@ -2464,6 +2480,10 @@ def _computer_use_compact_driver_capabilities() -> str:
             "knownGaps": list(availability_details.get("knownGaps") or []),
             "portableChecklist": list(availability_details.get("portableChecklist") or []),
             "screenWakePolicy": dict(availability_details.get("screenWakePolicy") or {}),
+            "resolutionPolicy": dict(availability_details.get("resolutionPolicy") or {}),
+            "currentDisplay": dict(availability_details.get("currentDisplay") or {}),
+            "coordinateAnchorPolicy": dict(availability_details.get("coordinateAnchorPolicy") or {}),
+            "resourceCleanupPolicy": dict(availability_details.get("resourceCleanupPolicy") or {}),
             "builtInPlaybookSeeds": list(availability_details.get("builtInPlaybookSeeds") or []),
             "experienceAssets": {
                 "policy": experience_assets.get("policy"),
@@ -8665,6 +8685,8 @@ def computer_use_execute_task(
                         if str(raw_result.get("status") or "").startswith("needs_human")
                         else "none"
                     ),
+                    "humanInputRequest": raw_result.get("humanInputRequest"),
+                    "resourceLease": raw_result.get("resourceLease"),
                 }
                 return _desktop_route_merge_into_response(
                     json.dumps(payload, ensure_ascii=False, indent=2),

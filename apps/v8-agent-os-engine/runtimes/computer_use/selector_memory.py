@@ -127,6 +127,11 @@ class ComputerUseSelectorMemory:
                     normalized[target_key] = int(value)
                 except Exception:
                     continue
+        spatial_anchor = self._normalize_spatial_anchor(
+            selector.get("spatial_anchor") or selector.get("spatialAnchor")
+        )
+        if spatial_anchor:
+            normalized["spatial_anchor"] = spatial_anchor
         return normalized
 
     def _normalize_governance_event(self, event: Dict[str, Any] | None) -> Dict[str, Any]:

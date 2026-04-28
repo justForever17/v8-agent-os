@@ -194,6 +194,15 @@ async function route(req, res) {
       return sendJson(res, 200, await pageInfo(page));
     }
 
+    if (url.pathname === "/close" && req.method === "POST") {
+      const targetId = String(url.searchParams.get("target") || "").trim();
+      if (!targetId || !pages.has(targetId)) return sendJson(res, 404, { error: "target_not_found", targetId });
+      const page = pages.get(targetId);
+      await page.close({ runBeforeUnload: false });
+      pages.delete(targetId);
+      return sendJson(res, 200, { targetId, closed: true });
+    }
+
     if (url.pathname === "/navigate" && req.method === "GET") {
       const page = await getPage(url.searchParams.get("target"));
       const nextUrl = String(url.searchParams.get("url") || "").trim();

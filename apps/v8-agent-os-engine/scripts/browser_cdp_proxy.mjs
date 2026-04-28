@@ -113,13 +113,38 @@ async function getPage(targetId) {
 async function createPage(url) {
   const connected = await ensureBrowser();
   const context = connected.contexts()[0] || await connected.newContext();
-  const page = await context.newPage();
-  const id = pageId(page);
   const nextUrl = String(url || "about:blank").trim() || "about:blank";
+  let page = null;
+  if (nextUrl !== "about:blank") {
+    const blank = context.pages().find((candidate) => {
+      const current = String(candidate.url() || "").trim();
+      return current === "" || current === "about:blank";
+    });
+    if (blank) page = blank;
+  }
+  if (!page) page = await context.newPage();
+  const id = pageId(page);
   if (nextUrl !== "about:blank") {
     await page.goto(nextUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
   }
   return page;
+}
+
+async function maximizePageWindow(page) {
+  await page.bringToFront().catch(() => {});
+  try {
+    const session = await page.context().newCDPSession(page);
+    const info = await session.send("Browser.getWindowForTarget").catch(() => null);
+    if (info?.windowId !== undefined) {
+      await session.send("Browser.setWindowBounds", {
+        windowId: info.windowId,
+        bounds: { windowState: "maximized" },
+      });
+      return { maximized: true, method: "Browser.setWindowBounds", windowId: info.windowId };
+    }
+  } catch {}
+  await page.setViewportSize({ width: 1600, height: 1000 }).catch(() => {});
+  return { maximized: false, method: "viewport_fallback", viewport: { width: 1600, height: 1000 } };
 }
 
 function summarizeElement(element, index) {
@@ -201,6 +226,18 @@ async function route(req, res) {
       await page.close({ runBeforeUnload: false });
       pages.delete(targetId);
       return sendJson(res, 200, { targetId, closed: true });
+    }
+
+    if (url.pathname === "/bringToFront" && req.method === "POST") {
+      const page = await getPage(url.searchParams.get("target"));
+      await page.bringToFront();
+      return sendJson(res, 200, { targetId: pageId(page), broughtToFront: true, url: page.url() });
+    }
+
+    if (url.pathname === "/maximize" && req.method === "POST") {
+      const page = await getPage(url.searchParams.get("target"));
+      const result = await maximizePageWindow(page);
+      return sendJson(res, 200, { targetId: pageId(page), ...result, url: page.url() });
     }
 
     if (url.pathname === "/navigate" && req.method === "GET") {

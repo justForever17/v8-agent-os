@@ -203,6 +203,16 @@
           "resolutionField": "resolution",
           "sizeFormat": "RATIO_AND_RESOLUTION"
         },
+        "capabilityProfile": {
+          "nativeAudio": true,
+          "audioModes": ["native_generation", "silent"],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": ["text", "image"],
+          "outputStreams": ["video", "audio"]
+        },
         "polling": {"mode": "task", "statusPath": "/contents/generations/tasks/{task_id}", "recommendedIntervalSeconds": 10},
         "result": {"paths": ["content.video_url"]},
         "statusMap": {"ordered": "queued", "running": "running", "succeeded": "succeeded", "failed": "failed"},
@@ -268,6 +278,33 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "openai_sora_video",
+        "displayName": "OpenAI Sora Video",
+        "logoAsset": "/model-assets/lobe/openai.svg",
+        "modelIds": ["sora-2", "sora-2-pro"],
+        "apiStandard": "openai_video",
+        "adapter": "catalog_only",
+        "operationKinds": ["video.text_to_video", "video.image_to_video"],
+        "baseUrlDefault": "https://api.openai.com/v1",
+        "credentialHelp": {"label": "Get OpenAI API key", "url": "https://platform.openai.com/api-keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {"method": "POST", "submitPath": "/videos", "bodyFields": ["model", "prompt", "image", "seconds", "size"], "sizeFormat": "WIDTHxHEIGHT"},
+        "polling": {"mode": "video", "statusPath": "/videos/{id}", "recommendedIntervalSeconds": 10},
+        "result": {"paths": ["data[].url", "video.url", "output.video_url"]},
+        "capabilityProfile": {
+          "nativeAudio": true,
+          "audioModes": ["native_generation"],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": ["text", "image"],
+          "outputStreams": ["video", "audio"]
+        },
+        "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
+        "confidence": "verified_official"
+      },
+      {
         "id": "google_veo",
         "displayName": "Google Veo",
         "modelIds": ["veo-3.1-generate-preview"],
@@ -279,6 +316,16 @@
         "request": {"method": "POST", "submitPath": "/models/{model}:predictLongRunning", "bodyFields": ["prompt", "image", "video", "config"], "sizeFormat": "ASPECT_RATIO_FIELD"},
         "polling": {"mode": "operation", "statusPath": "/{operation_name}"},
         "result": {"paths": ["response.generatedVideos[].video.uri"]},
+        "capabilityProfile": {
+          "nativeAudio": true,
+          "audioModes": ["native_generation"],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": ["text", "image", "video"],
+          "outputStreams": ["video", "audio"]
+        },
         "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
         "confidence": "verified_official"
       },
@@ -343,7 +390,46 @@
         "request": {"method": "POST", "submitPath": "/v1/videos/text2video", "bodyFields": ["model_name", "prompt", "aspect_ratio", "duration"], "sizeFormat": "RATIO_COLON"},
         "polling": {"mode": "task", "statusPath": "/v1/videos/text2video/{id}"},
         "result": {"paths": ["data.task_result.videos[].url"]},
+        "capabilityProfile": {
+          "nativeAudio": true,
+          "audioModes": ["native_generation"],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": ["text", "image"],
+          "outputStreams": ["video", "audio"],
+          "confidence": "community_or_inferred"
+        },
         "sourceUrl": "https://docs.qingque.cn/d/home/eZQFcwKVbJYERy6_zJcDf8B7m",
+        "confidence": "community_or_inferred"
+      },
+      {
+        "id": "happyhorse_video",
+        "displayName": "HappyHorse Video",
+        "logoAsset": "/model-assets/providers/happyhorse.svg",
+        "modelIds": ["happyhorse-native-audio-video"],
+        "apiStandard": "video_generation",
+        "adapter": "catalog_only",
+        "operationKinds": ["video.text_to_video", "video.image_to_video"],
+        "baseUrlDefault": "",
+        "credentialHelp": {"label": "Open provider", "url": "https://happyhorse.ai/"},
+        "auth": {"type": "provider_specific"},
+        "request": {"method": "PROVIDER_SPECIFIC", "submitPath": "", "bodyFields": ["prompt", "image", "duration", "aspect_ratio"], "sizeFormat": "MODEL_SPECIFIC"},
+        "polling": {"mode": "provider_specific"},
+        "result": {"paths": ["provider_specific"]},
+        "capabilityProfile": {
+          "nativeAudio": true,
+          "audioModes": ["native_generation"],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": ["text", "image"],
+          "outputStreams": ["video", "audio"],
+          "confidence": "community_or_inferred"
+        },
+        "sourceUrl": "https://happyhorse.ai/",
         "confidence": "community_or_inferred"
       }
     ],
@@ -377,6 +463,29 @@
         "result": {"paths": ["binary_body"]},
         "sourceUrl": "https://platform.openai.com/docs/guides/text-to-speech",
         "confidence": "verified_official"
+      },
+      {
+        "id": "xiaomi_mimo_tts",
+        "displayName": "Xiaomi MiMo TTS",
+        "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+        "modelIds": ["mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign", "mimo-v2-tts"],
+        "apiStandard": "xiaomi_mimo_tts",
+        "adapter": "catalog_only",
+        "probeStrategy": "openai_models",
+        "operationKinds": ["voice.tts", "voice.clone", "voice.design"],
+        "baseUrlDefault": "https://api.xiaomimimo.com/v1",
+        "credentialHelp": {"label": "Get MiMo API key", "url": "https://platform.xiaomimimo.com/console/api-keys"},
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "request": {
+          "method": "POST",
+          "submitPath": "/audio/speech",
+          "bodyFields": ["model", "input", "voice", "response_format", "voice_sample", "voice_description"],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {"mode": "none"},
+        "result": {"paths": ["binary_body", "audio.url", "data.audio"]},
+        "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5",
+        "confidence": "provider_docs"
       },
       {
         "id": "zhipu_bigmodel_voice",

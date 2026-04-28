@@ -30,6 +30,7 @@ _ELECTRON_PROCESS_NAMES = {"electron.exe"}
 _WEBVIEW_HINTS = ("webview2", "webview", "msedgewebview2")
 _DEFAULT_TARGET_PORT = 9222
 _DEFAULT_PROXY_PORT = 3456
+_DEFAULT_WINDOW_SIZE = "1600,1000"
 _GENERIC_BROWSER_APP_IDS = {"browser_checkout", "browser", "chromium"}
 _CHROME_APP_IDS = {"chrome", "google_chrome", "google-chrome"}
 _EDGE_APP_IDS = {"edge", "msedge", "microsoft_edge", "microsoft-edge"}
@@ -532,6 +533,14 @@ class BrowserAutomationProvider:
             if debug_flag not in updated_command:
                 updated_command = [*updated_command, debug_flag]
                 injected_args.append(debug_flag)
+            if family == "chromium":
+                if "--start-maximized" not in updated_command:
+                    updated_command = [*updated_command, "--start-maximized"]
+                    injected_args.append("--start-maximized")
+                if not any(str(arg).startswith("--window-size=") for arg in updated_command):
+                    size_arg = f"--window-size={_DEFAULT_WINDOW_SIZE}"
+                    updated_command = [*updated_command, size_arg]
+                    injected_args.append(size_arg)
             if family == "chromium" and self._profile_mode == _DEDICATED_PROFILE_MODE:
                 profile_dir = self._dedicated_user_data_dir(browser_kind)
                 profile_dir.mkdir(parents=True, exist_ok=True)
@@ -859,6 +868,14 @@ class BrowserAutomationProvider:
         target_id = str(created.get("targetId") or "").strip()
         if not target_id:
             raise RuntimeError("browser automation 未能创建目标页面。")
+        try:
+            self._request_json("POST", "/bringToFront", params={"target": target_id})
+        except Exception:
+            pass
+        try:
+            self._request_json("POST", "/maximize", params={"target": target_id})
+        except Exception:
+            pass
         return {
             "targetId": target_id,
             "family": decision.family,
@@ -886,6 +903,14 @@ class BrowserAutomationProvider:
 
     def _evaluate(self, *, target_id: str, expression: str) -> Dict[str, Any]:
         return self._request_json("POST", "/eval", params={"target": target_id}, body=expression)
+
+    def bring_to_front(self, *, target_id: str, target_port: int | None = None) -> Dict[str, Any]:
+        self._ensure_proxy(target_port=target_port)
+        return dict(self._request_json("POST", "/bringToFront", params={"target": str(target_id or "")}) or {})
+
+    def maximize_tab_window(self, *, target_id: str, target_port: int | None = None) -> Dict[str, Any]:
+        self._ensure_proxy(target_port=target_port)
+        return dict(self._request_json("POST", "/maximize", params={"target": str(target_id or "")}) or {})
 
     def _browser_input_script(self, *, text: str, payload: Dict[str, Any]) -> str:
         selector = str(

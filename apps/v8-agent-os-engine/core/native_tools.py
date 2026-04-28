@@ -713,6 +713,62 @@ def _desktop_route_executable_draft_id(desktop_route: dict[str, Any] | None) -> 
     return source_draft_id or None
 
 
+def _computer_use_build_desktop_route(
+    *,
+    goal: str,
+    app_query: str | None,
+    target_hint: str | None,
+    resolved_app: dict[str, Any] | None,
+    variables: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+    limit: int = 5,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    runtime_context = get_runtime_context()
+    route = _get_rpa_runtime().recommend_execution_route(
+        goal=goal,
+        app_id=(resolved_app or {}).get("appId") or app_query,
+        variables=variables,
+        session_id=runtime_context.get("session_id"),
+        run_id=runtime_context.get("run_id"),
+        limit=max(1, min(limit, 10)),
+        allow_materialization=True,
+    )
+    payload = build_compact_execution_route(
+        action="resolve_execution_route",
+        goal=goal,
+        app_hint=app_query,
+        target_hint=target_hint,
+        resolved_app=resolved_app,
+        route=route,
+    )
+    latest_human_id, _ = _desktop_route_latest_bound_human_message(state if isinstance(state, dict) else {})
+    desktop_route = {
+        "goal": goal,
+        "appId": payload.get("app", {}).get("appId") or route.get("appId"),
+        "requestedApp": app_query,
+        "target": target_hint,
+        "recommendedMode": payload.get("recommendedMode"),
+        "executionReadyMode": payload.get("executionReadyMode") or determine_execution_ready_mode(route),
+        "recommendedRuntime": payload.get("recommendedRuntime"),
+        "recommendedTool": payload.get("recommendedTool"),
+        "recommendedDraftId": payload.get("recommendedDraftId"),
+        "recommendedTemplateId": payload.get("recommendedTemplateId"),
+        "recommendedMatch": payload.get("recommendedMatch"),
+        "routeAction": payload.get("recommendedAction"),
+        "boundHumanMessageId": latest_human_id,
+        "source": "computer_use_execute_task" if not isinstance(state, dict) else _DESKTOP_ROUTE_SOURCE,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    payload.update(
+        _desktop_route_compact_metadata(
+            desktop_route,
+            route_gate_applied=False,
+            runtime_governed=True,
+        )
+    )
+    return payload, desktop_route
+
+
 def _desktop_route_gate(
     *,
     state: dict[str, Any] | None,
@@ -8517,47 +8573,14 @@ def computer_use_resolve_execution_route(
     resolved_app = _computer_use_resolve_app(app_query)
     try:
         variables = _computer_use_parse_variables_json(variables_json)
-        runtime_context = get_runtime_context()
-        route = _get_rpa_runtime().recommend_execution_route(
+        payload, desktop_route = _computer_use_build_desktop_route(
             goal=normalized_goal,
-            app_id=(resolved_app or {}).get("appId") or app_query,
-            variables=variables,
-            session_id=runtime_context.get("session_id"),
-            run_id=runtime_context.get("run_id"),
-            limit=max(1, min(limit, 10)),
-            allow_materialization=True,
-        )
-        payload = build_compact_execution_route(
-            action="resolve_execution_route",
-            goal=normalized_goal,
-            app_hint=app_query,
+            app_query=app_query,
             target_hint=target_hint,
             resolved_app=resolved_app,
-            route=route,
-        )
-        latest_human_id, _ = _desktop_route_latest_bound_human_message(state if isinstance(state, dict) else {})
-        desktop_route = {
-            "goal": normalized_goal,
-            "appId": payload.get("app", {}).get("appId") or route.get("appId"),
-            "requestedApp": app_query,
-            "target": target_hint,
-            "recommendedMode": payload.get("recommendedMode"),
-            "executionReadyMode": payload.get("executionReadyMode") or determine_execution_ready_mode(route),
-            "recommendedRuntime": payload.get("recommendedRuntime"),
-            "recommendedTool": payload.get("recommendedTool"),
-            "recommendedDraftId": payload.get("recommendedDraftId"),
-            "recommendedTemplateId": payload.get("recommendedTemplateId"),
-            "routeAction": payload.get("recommendedAction"),
-            "boundHumanMessageId": latest_human_id,
-            "source": _DESKTOP_ROUTE_SOURCE,
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-        }
-        payload.update(
-            _desktop_route_compact_metadata(
-                desktop_route,
-                route_gate_applied=False,
-                runtime_governed=True,
-            )
+            variables=variables,
+            state=state,
+            limit=limit,
         )
         payload_str = json.dumps(payload, ensure_ascii=False, indent=2)
         if not isinstance(state, dict):
@@ -8591,16 +8614,48 @@ def computer_use_execute_task(
     target_hint = str(target or "").strip() or None
     route_goal = str(goal or "").strip()
     resolved_app = _computer_use_resolve_app(app_query)
-    gate_allowed, gate_failure, desktop_route = _desktop_route_gate(
+    try:
+        variables = _computer_use_parse_variables_json(variablesJson)
+    except Exception as e:
+        return f"Error parsing variablesJson: {e}"
+
+    desktop_route: dict[str, Any] = {}
+    gate_allowed, gate_failure, gated_desktop_route = _desktop_route_gate(
         state=state,
         tool_name="computer_use_execute_task",
         app_query=app_query,
         resolved_app=resolved_app,
     )
-    if not gate_allowed:
+    if gate_allowed:
+        desktop_route = dict(gated_desktop_route or {})
+    elif route_goal:
+        try:
+            _, desktop_route = _computer_use_build_desktop_route(
+                goal=route_goal,
+                app_query=app_query,
+                target_hint=target_hint,
+                resolved_app=resolved_app,
+                variables=variables,
+                state=state,
+            )
+        except Exception as e:
+            return f"Error resolving desktop execution route inside computer_use_execute_task: {e}"
+    else:
         return gate_failure or "Error: 桌面执行路由校验失败。"
 
-    desktop_route = dict(desktop_route or {})
+    if not desktop_route and route_goal:
+        try:
+            _, desktop_route = _computer_use_build_desktop_route(
+                goal=route_goal,
+                app_query=app_query,
+                target_hint=target_hint,
+                resolved_app=resolved_app,
+                variables=variables,
+                state=state,
+            )
+        except Exception as e:
+            return f"Error resolving desktop execution route inside computer_use_execute_task: {e}"
+
     mismatch_reason = _desktop_route_task_mismatch_reason(
         desktop_route=desktop_route,
         goal=route_goal,
@@ -8629,7 +8684,6 @@ def computer_use_execute_task(
     success_criteria = str(successCriteria or "").strip() or None
 
     try:
-        variables = _computer_use_parse_variables_json(variablesJson)
         runtime_context = get_runtime_context()
         if execution_ready_mode in {"reuse_mode", "hybrid_mode"}:
             draft_id = _desktop_route_executable_draft_id(desktop_route)
@@ -8695,6 +8749,12 @@ def computer_use_execute_task(
                     "result": raw_result,
                     "selectedPlaybook": (task_loop.get("domain") or {}).get("selectedPlaybook"),
                     "selectedPlaybookExecutor": raw_result.get("selectedPlaybookExecutor"),
+                    "factResolution": {
+                        "status": "resolved" if list(task_loop.get("factEvidence") or []) else task_loop.get("status"),
+                        "evidence": list(task_loop.get("factEvidence") or []),
+                    },
+                    "laneDecision": raw_result.get("laneDecision") or task_loop.get("laneDecision"),
+                    "verification": raw_result.get("verification") or task_loop.get("verifier"),
                     "recommendedNextAction": (
                         "ask_user"
                         if str(raw_result.get("status") or "").startswith("needs_human")

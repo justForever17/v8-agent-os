@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "defaults": {
+    "autoAttachToMessage": false,
+    "surfaceVisible": false,
+    "supportsInlinePreview": false,
+    "previewKind": "file",
+    "maxBytes": 26214400
+  },
+  "rules": [
+    {
+      "id": "computer_use_screenshot",
+      "origin": "computer_use_screenshot",
+      "kind": "image",
+      "pathPlane": "workspace_artifact",
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": true,
+      "previewKind": "image",
+      "ephemeral": true,
+      "maxBytes": 5242880,
+      "maxPerRun": 6
+    },
+    {
+      "id": "image_preview",
+      "kind": "image",
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": true,
+      "previewKind": "image",
+      "maxBytes": 52428800,
+      "maxPerRun": 20
+    },
+    {
+      "id": "video_preview",
+      "kind": "video",
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": true,
+      "previewKind": "video",
+      "maxBytes": 209715200,
+      "maxPerRun": 10
+    },
+    {
+      "id": "audio_preview",
+      "kind": "audio",
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": true,
+      "previewKind": "audio",
+      "maxBytes": 83886080,
+      "maxPerRun": 20
+    },
+    {
+      "id": "pdf_document",
+      "mimeTypes": ["application/pdf"],
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": false,
+      "previewKind": "document",
+      "maxBytes": 52428800,
+      "maxPerRun": 12
+    },
+    {
+      "id": "markdown_text_report",
+      "extensions": [".md", ".markdown", ".txt", ".log", ".json", ".csv"],
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": false,
+      "previewKind": "document",
+      "maxBytes": 10485760,
+      "maxPerRun": 20
+    }
+  ]
+}

@@ -17,6 +17,7 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "computer_use_hotkey",
     "computer_use_input_text",
     "computer_use_launch_app",
+    "computer_use_list_apps",
     "computer_use_list_muscle_memories",
     "computer_use_list_primitives",
     "computer_use_list_windows",
@@ -26,6 +27,7 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "computer_use_paste_files",
     "computer_use_paste_text",
     "computer_use_right_click_target",
+    "computer_use_resolve_execution_route",
     "computer_use_scroll",
     "computer_use_scroll_view",
     "computer_use_send_hotkey",
@@ -59,9 +61,7 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
 }
 
 SUPERVISOR_HIGH_LEVEL_COMPUTER_USE_TOOLS = {
-    "computer_use_list_apps",
     "computer_use_desktop_capabilities",
-    "computer_use_resolve_execution_route",
     "computer_use_observe_scene",
     "computer_use_execute_task",
 }
@@ -101,9 +101,13 @@ def normalize_supervisor_native_allowlist(
     allow_low_level = SUPERVISOR_ALLOW_LOW_LEVEL_COMPUTER_USE_MARKER in normalized
     if low_level_requested:
         normalized.update(SUPERVISOR_HIGH_LEVEL_COMPUTER_USE_TOOLS)
-        if not allow_low_level:
-            normalized.difference_update(SUPERVISOR_LOW_LEVEL_COMPUTER_USE_TOOLS)
+        normalized.difference_update(SUPERVISOR_LOW_LEVEL_COMPUTER_USE_TOOLS)
     normalized.discard(SUPERVISOR_ALLOW_LOW_LEVEL_COMPUTER_USE_MARKER)
+    normalized = {
+        name
+        for name in normalized
+        if not name.startswith("computer_use_") or name in SUPERVISOR_HIGH_LEVEL_COMPUTER_USE_TOOLS
+    }
     return normalized, allow_low_level
 
 
@@ -127,7 +131,7 @@ def select_supervisor_native_tools(
         if is_baseline_system_tool_name(tool_name):
             selected.append(tool_ref)
             continue
-        if tool_name in SUPERVISOR_LOW_LEVEL_COMPUTER_USE_TOOLS and not allow_low_level:
+        if tool_name.startswith("computer_use_") and tool_name not in SUPERVISOR_HIGH_LEVEL_COMPUTER_USE_TOOLS:
             continue
         if tool_name in DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES and tool_name not in explicit_allowlist:
             continue

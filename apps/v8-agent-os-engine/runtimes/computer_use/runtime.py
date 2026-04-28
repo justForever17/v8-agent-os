@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -458,6 +459,7 @@ class ComputerUseRuntime:
         resource: Dict[str, Any] | None,
         cleanup_on_complete: bool = True,
         preserve_on_human_input: bool = False,
+        delayed_cleanup_seconds: int | None = None,
         reason: str | None = None,
     ) -> Dict[str, Any]:
         lease = self._resource_lease_for(run_handle=run_handle)
@@ -467,6 +469,7 @@ class ComputerUseRuntime:
             "resource": dict(resource or {}),
             "cleanupOnComplete": bool(cleanup_on_complete),
             "preserveOnHumanInput": bool(preserve_on_human_input),
+            "delayedCleanupSeconds": max(int(delayed_cleanup_seconds or 0), 0),
             "reason": str(reason or "").strip() or None,
             "createdAt": utc_now_iso(),
             "cleanupStatus": "pending" if cleanup_on_complete else "not_owned_for_cleanup",
@@ -548,6 +551,37 @@ class ComputerUseRuntime:
                     continue
                 resource = dict(item.get("resource") or {})
                 kind = str(item.get("kind") or "").strip().lower()
+                delay_seconds = 0
+                try:
+                    delay_seconds = max(int(item.get("delayedCleanupSeconds") or 0), 0)
+                except Exception:
+                    delay_seconds = 0
+                if delay_seconds > 0:
+                    item["cleanupStatus"] = "scheduled_delayed"
+                    item["scheduledCleanupAt"] = (
+                        datetime.fromtimestamp(time.time() + delay_seconds, timezone.utc)
+                        .replace(microsecond=0)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                    )
+                    cleanup_report["skipped"].append(
+                        {
+                            "id": item.get("id"),
+                            "kind": item.get("kind"),
+                            "reason": "delayed_cleanup_scheduled",
+                            "scheduledCleanupAt": item.get("scheduledCleanupAt"),
+                        }
+                    )
+                    if not item.get("delayedCleanupScheduled"):
+                        item["delayedCleanupScheduled"] = True
+                        self._schedule_delayed_resource_cleanup(
+                            run_id=str(run_handle.run_id),
+                            lease_id=str(item.get("id") or ""),
+                            kind=kind,
+                            resource=resource,
+                            delay_seconds=delay_seconds,
+                        )
+                    continue
                 try:
                     if kind == "browser_tab":
                         target_id = str(resource.get("targetId") or resource.get("target_id") or "").strip()
@@ -599,6 +633,53 @@ class ComputerUseRuntime:
         summary = self._resource_lease_summary(run_handle=run_handle)
         summary["cleanup"] = cleanup_report
         return summary
+
+    def _schedule_delayed_resource_cleanup(
+        self,
+        *,
+        run_id: str,
+        lease_id: str,
+        kind: str,
+        resource: Dict[str, Any],
+        delay_seconds: int,
+    ) -> None:
+        if delay_seconds <= 0 or not run_id or not lease_id:
+            return
+
+        def _cleanup_later() -> None:
+            threading.Event().wait(delay_seconds)
+            result: Dict[str, Any] = {"closed": False, "reason": "unsupported_delayed_cleanup"}
+            try:
+                if kind == "browser_tab":
+                    target_id = str(resource.get("targetId") or resource.get("target_id") or "").strip()
+                    target_port = None
+                    try:
+                        target_port = int(resource.get("targetPort")) if resource.get("targetPort") not in (None, "") else None
+                    except Exception:
+                        target_port = None
+                    if target_id:
+                        result = self.browser_automation.close_tab(target_id=target_id, target_port=target_port)
+                    else:
+                        result = {"closed": False, "reason": "missing_target_id"}
+            except Exception as exc:
+                result = {"closed": False, "error": str(exc)}
+            with self._resource_lease_lock:
+                lease = self._resource_leases.get(run_id)
+                if not lease:
+                    return
+                for item in list(lease.get("resources") or []):
+                    if str(item.get("id") or "") != lease_id:
+                        continue
+                    if str(item.get("cleanupStatus") or "") != "scheduled_delayed":
+                        return
+                    item["cleanupStatus"] = "closed_delayed" if result.get("closed") else "delayed_close_failed"
+                    item["delayedCleanupResult"] = dict(result or {})
+                    item["updatedAt"] = utc_now_iso()
+                    lease["updatedAt"] = utc_now_iso()
+                    return
+
+        thread = threading.Thread(target=_cleanup_later, name=f"v8-computer-use-delayed-cleanup-{lease_id}", daemon=True)
+        thread.start()
 
     def _human_input_request_payload(
         self,
@@ -3507,8 +3588,10 @@ class ComputerUseRuntime:
             preview_url=preview_url,
             metadata={
                 "runtime": "computer_use",
+                "origin": "computer_use_screenshot",
                 "capture": capture,
                 "capturedAt": utc_now_iso(),
+                "ephemeral": True,
                 "projectId": str(runtime_context.get("project_id") or "") or None,
                 "workspaceId": str(runtime_context.get("workspace_id") or "") or None,
                 "workspaceRoot": str(workspace_root),
@@ -10824,8 +10907,10 @@ class ComputerUseRuntime:
                 preview_url=preview_url,
                 metadata={
                     "runtime": "computer_use",
+                    "origin": "computer_use_screenshot",
                     "capture": capture,
                     "capturedAt": utc_now_iso(),
+                    "ephemeral": True,
                     "projectId": str(runtime_context.get("project_id") or "") or None,
                     "workspaceId": str(runtime_context.get("workspace_id") or "") or None,
                     "workspaceRoot": str(workspace_root),
@@ -10928,6 +11013,34 @@ class ComputerUseRuntime:
                 **selector,
                 **dict(step),
             }
+
+        if action == "computer_use_playbook":
+            selected_playbook = str(step.get("selectedPlaybook") or step.get("selected_playbook") or "").strip()
+            if selected_playbook == "github.star_repository":
+                desired = str(step.get("desiredState") or step.get("desired_state") or "starred")
+                repo_goal_target = str(step.get("repoUrl") or step.get("repo_url") or step.get("repoOwner") or step.get("repo_owner") or "").strip()
+                default_goal = (
+                    f"去 GitHub 给 {repo_goal_target or '目标仓库'} 取消星标"
+                    if self._normalize_github_star_desired_state(desired) == "not_starred"
+                    else f"去 GitHub 给 {repo_goal_target or '目标仓库'} 点星标"
+                )
+                return self.execute_github_star_playbook(
+                    goal=step.get("goal") or default_goal,
+                    allow_real_click=bool(step.get("allowRealClick") if step.get("allowRealClick") is not None else step.get("allow_real_click")),
+                    desired_state=desired,
+                    session_id=base_context.get("session_id"),
+                    run_id=base_context.get("run_id"),
+                    user_id=str(base_context.get("user_id") or "anonymous"),
+                    project_id=base_context.get("project_id"),
+                    workspace_id=base_context.get("workspace_id"),
+                    workspace_path=base_context.get("workspace_path"),
+                    invocation_metadata={
+                        "source": "computer_use_execute_plan",
+                        "stepIndex": index,
+                        "selectedPlaybook": selected_playbook,
+                    },
+                )
+            raise DesktopDriverError(f"不支持的 ComputerUse playbook: {selected_playbook or '<missing>'}")
 
         if action == "observe":
             return self.observe(
@@ -12196,11 +12309,65 @@ class ComputerUseRuntime:
                 "source": "computer_use_task_loop_web_search",
             }
 
+    def _github_star_strict_dom_state(self, state: Dict[str, Any], *, target_url: str) -> Dict[str, Any]:
+        payload = dict(state or {})
+        current_url = str(payload.get("url") or "").strip().lower().rstrip("/")
+        expected_url = str(target_url or "").strip().lower().rstrip("/")
+        expected_path = "/".join(str(target_url or "").strip().rstrip("/").split("/")[-2:])
+        repo_path = str(payload.get("repoPath") or "").strip()
+        strict_state = str(payload.get("strictDomState") or "").strip().lower()
+        has_target = bool(payload.get("hasStarTarget"))
+        url_matches = bool(expected_url and (current_url == expected_url or current_url.startswith(expected_url + "/")))
+        repo_matches = bool(expected_path and repo_path.lower() == expected_path.lower())
+        accepted = bool(has_target and strict_state in {"starred", "not_starred"} and (url_matches or repo_matches))
+        return {
+            "accepted": accepted,
+            "state": strict_state if accepted else "ambiguous",
+            "urlMatches": url_matches,
+            "repoMatches": repo_matches,
+            "hasStarTarget": has_target,
+            "reason": None if accepted else "strict_dom_state_not_accepted",
+        }
+
+    def _read_github_star_dom_state(self, *, target_id: str, target_url: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        state = dict(
+            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_dom_probe_script()).get("value"))
+            or {}
+        )
+        return state, self._github_star_strict_dom_state(state, target_url=target_url)
+
+    def _wait_for_github_star_dom_state(
+        self,
+        *,
+        target_id: str,
+        target_url: str,
+        desired_state: str | None = None,
+        timeout_s: float = 8.0,
+        poll_s: float = 0.5,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        deadline = time.time() + max(float(timeout_s or 0.0), 0.1)
+        last_state: Dict[str, Any] = {}
+        last_dom: Dict[str, Any] = {"accepted": False, "state": "ambiguous", "reason": "not_polled"}
+        while True:
+            last_state, last_dom = self._read_github_star_dom_state(target_id=target_id, target_url=target_url)
+            if last_dom.get("accepted") and (not desired_state or last_dom.get("state") == desired_state):
+                return last_state, last_dom
+            if time.time() >= deadline:
+                return last_state, last_dom
+            time.sleep(max(float(poll_s or 0.1), 0.1))
+
+    def _normalize_github_star_desired_state(self, value: str | None) -> str:
+        lowered = str(value or "").strip().lower()
+        if lowered in {"unstarred", "unstar", "remove_star", "remove-star", "not_starred", "not-starred", "消星", "取消星标", "取消收藏"}:
+            return "not_starred"
+        return "starred"
+
     def execute_github_star_playbook(
         self,
         *,
         goal: str,
         allow_real_click: bool = False,
+        desired_state: str = "starred",
         session_id: str | None = None,
         run_id: str | None = None,
         user_id: str = "anonymous",
@@ -12217,6 +12384,10 @@ class ComputerUseRuntime:
                 "status": "not_applicable",
                 "taskLoop": task_loop,
             }
+        plan_payload = dict(task_loop.get("plan") or {})
+        normalized_desired_state = self._normalize_github_star_desired_state(
+            desired_state or str(plan_payload.get("desiredState") or "") or str((task_loop.get("intent") or {}).get("desiredState") or "")
+        )
         run_handle = self.begin_or_attach_run(
             session_id=session_id,
             run_id=run_id,
@@ -12231,12 +12402,12 @@ class ComputerUseRuntime:
                 "taskLoop": {
                     "selectedPlaybook": selected,
                     "status": task_loop.get("status"),
+                    "desiredState": normalized_desired_state,
                 },
                 "invocation": dict(invocation_metadata or {}),
             },
         )
         run_handle.emit("computer_use.task_loop.prepared", task_loop)
-        plan_payload = dict(task_loop.get("plan") or {})
         target_url = str(plan_payload.get("targetUrl") or "").strip()
         if not target_url:
             run_handle.emit(
@@ -12275,6 +12446,7 @@ class ComputerUseRuntime:
                 "status": "needs_human_attention",
                 "reason": decision.reason or "browser_lane_unavailable",
                 "canonicalUrl": target_url,
+                "desiredState": normalized_desired_state,
                 "selectedPlaybook": selected,
                 "taskLoop": task_loop,
                 "runId": run_handle.run_id,
@@ -12295,12 +12467,16 @@ class ComputerUseRuntime:
             },
             cleanup_on_complete=True,
             preserve_on_human_input=True,
+            delayed_cleanup_seconds=60,
             reason="github_star_playbook_opened_tab",
         )
         run_handle.emit("computer_use.github_star.opened", {"targetUrl": target_url, "targetId": target_id})
-        pre_state = dict(
-            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_dom_probe_script()).get("value"))
-            or {}
+        pre_state, pre_dom = self._wait_for_github_star_dom_state(
+            target_id=target_id,
+            target_url=target_url,
+            desired_state=None,
+            timeout_s=10.0,
+            poll_s=0.4,
         )
         run_handle.emit("computer_use.github_star.pre_state", pre_state)
         if pre_state.get("loggedOut") or pre_state.get("needsLoginForStar"):
@@ -12322,6 +12498,7 @@ class ComputerUseRuntime:
                 "recommendedNextAction": "ask_user",
                 "humanInputRequest": human_input_request,
                 "canonicalUrl": target_url,
+                "desiredState": normalized_desired_state,
                 "selectedPlaybook": selected,
                 "browserTarget": opened,
                 "preState": pre_state,
@@ -12330,23 +12507,51 @@ class ComputerUseRuntime:
                 "runId": run_handle.run_id,
                 "sessionId": run_handle.session_id,
             }
-        if pre_state.get("isStarred"):
-            run_handle.emit("computer_use.github_star.verified", {"state": "already_starred", "preState": pre_state})
-            run_handle.transition("completed", reason="computer_use_github_star_already_done", node="computer_use_runtime")
+        if pre_dom.get("state") == normalized_desired_state:
+            already_reason = "already_starred" if normalized_desired_state == "starred" else "already_unstarred"
+            run_handle.emit("computer_use.github_star.verified", {"state": already_reason, "preState": pre_state, "strictDom": pre_dom, "desiredState": normalized_desired_state})
+            run_handle.transition("completed", reason=f"computer_use_github_star_{already_reason}", node="computer_use_runtime")
             run_service.transition_run(run_handle.run_id, status="completed")
             resource_lease = self._cleanup_resource_lease(
                 run_handle=run_handle,
                 status="succeeded",
-                reason="already_starred",
+                reason=already_reason,
             )
             return {
                 "status": "succeeded",
                 "canonicalUrl": target_url,
+                "desiredState": normalized_desired_state,
                 "selectedPlaybook": selected,
                 "browserTarget": opened,
                 "preState": pre_state,
                 "postState": pre_state,
-                "action": "already_starred",
+                "strictDom": pre_dom,
+                "action": already_reason,
+                "taskLoop": task_loop,
+                "resourceLease": resource_lease,
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+            }
+        opposite_state = "not_starred" if normalized_desired_state == "starred" else "starred"
+        if pre_dom.get("state") != opposite_state:
+            run_handle.emit("computer_use.task_loop.human_attention", {"reason": pre_dom.get("reason") or "strict_dom_state_ambiguous", "preState": pre_state, "strictDom": pre_dom})
+            run_handle.transition("completed", reason="computer_use_github_star_strict_dom_ambiguous", node="computer_use_runtime")
+            run_service.transition_run(run_handle.run_id, status="completed")
+            resource_lease = self._cleanup_resource_lease(
+                run_handle=run_handle,
+                status="needs_human_attention",
+                reason="strict_dom_state_ambiguous",
+            )
+            return {
+                "status": "needs_human_attention",
+                "reason": "strict_dom_state_ambiguous",
+                "recommendedNextAction": "ask_user",
+                "canonicalUrl": target_url,
+                "desiredState": normalized_desired_state,
+                "selectedPlaybook": selected,
+                "browserTarget": opened,
+                "preState": pre_state,
+                "strictDom": pre_dom,
                 "taskLoop": task_loop,
                 "resourceLease": resource_lease,
                 "runId": run_handle.run_id,
@@ -12366,6 +12571,7 @@ class ComputerUseRuntime:
                 "reason": "real_click_not_allowed",
                 "recommendedNextAction": "ask_user",
                 "canonicalUrl": target_url,
+                "desiredState": normalized_desired_state,
                 "selectedPlaybook": selected,
                 "browserTarget": opened,
                 "preState": pre_state,
@@ -12380,24 +12586,26 @@ class ComputerUseRuntime:
             action_type="click",
             action_payload={
                 "app_id": "browser_checkout",
-                "target_text": "GitHub Star",
+                "target_text": "GitHub Star" if normalized_desired_state == "starred" else "GitHub Unstar",
                 "window_title": target_url,
-                "profile_action": "github.star_repository",
+                "profile_action": "github.star_repository" if normalized_desired_state == "starred" else "github.unstar_repository",
                 "url": target_url,
             },
         )
         click_result = dict(
-            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_click_script()).get("value"))
+            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_click_script(desired_state=normalized_desired_state)).get("value"))
             or {}
         )
         run_handle.emit("computer_use.github_star.click", click_result)
-        time.sleep(1.5)
-        post_state = dict(
-            (self.browser_automation._evaluate(target_id=target_id, expression=github_star_dom_probe_script()).get("value"))
-            or {}
+        post_state, post_dom = self._wait_for_github_star_dom_state(
+            target_id=target_id,
+            target_url=target_url,
+            desired_state=normalized_desired_state,
+            timeout_s=8.0,
+            poll_s=0.5,
         )
         run_handle.emit("computer_use.github_star.post_state", post_state)
-        if post_state.get("isStarred"):
+        if post_dom.get("state") == normalized_desired_state:
             run_handle.transition("completed", reason="computer_use_github_star_completed", node="computer_use_runtime")
             run_service.transition_run(run_handle.run_id, status="completed")
             resource_lease = self._cleanup_resource_lease(
@@ -12408,32 +12616,38 @@ class ComputerUseRuntime:
             return {
                 "status": "succeeded",
                 "canonicalUrl": target_url,
+                "desiredState": normalized_desired_state,
                 "selectedPlaybook": selected,
                 "browserTarget": opened,
                 "preState": pre_state,
                 "clickAction": click_result,
                 "postState": post_state,
-                "action": "clicked_star",
+                "strictDom": post_dom,
+                "action": "clicked_star" if normalized_desired_state == "starred" else "clicked_unstar",
                 "taskLoop": task_loop,
                 "resourceLease": resource_lease,
                 "runId": run_handle.run_id,
                 "sessionId": run_handle.session_id,
             }
-        run_handle.fail("GitHub Star 状态未进入 Starred。", node="computer_use_runtime")
+        run_handle.emit("computer_use.task_loop.human_attention", {"reason": "post_state_not_strictly_starred", "postState": post_state, "strictDom": post_dom})
+        run_handle.fail("GitHub Star 状态未进入严格 Starred DOM 状态。", node="computer_use_runtime")
         resource_lease = self._cleanup_resource_lease(
             run_handle=run_handle,
-            status="failed",
+            status="needs_human_attention",
             reason="post_state_not_starred",
         )
         return {
-            "status": "failed",
-            "reason": "post_state_not_starred",
+            "status": "needs_human_attention",
+            "reason": "post_state_not_starred" if normalized_desired_state == "starred" else "post_state_not_unstarred",
+            "recommendedNextAction": "ask_user",
             "canonicalUrl": target_url,
+            "desiredState": normalized_desired_state,
             "selectedPlaybook": selected,
             "browserTarget": opened,
             "preState": pre_state,
             "clickAction": click_result,
             "postState": post_state,
+            "strictDom": post_dom,
             "taskLoop": task_loop,
             "resourceLease": resource_lease,
             "runId": run_handle.run_id,

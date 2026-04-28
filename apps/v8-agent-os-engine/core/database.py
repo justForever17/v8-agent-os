@@ -809,6 +809,27 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_cache_segments_event_id ON prompt_cache_segments (event_id, ordinal)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_llm_response_cache_expires_at ON llm_response_cache (expires_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_llm_response_cache_prefix_key ON llm_response_cache (static_prefix_key)')
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS computer_use_fact_ledger (
+                    id TEXT PRIMARY KEY,
+                    query_hash TEXT NOT NULL UNIQUE,
+                    target_kind TEXT,
+                    canonical_target_json TEXT NOT NULL,
+                    evidence_json TEXT,
+                    source TEXT,
+                    confidence REAL DEFAULT 0,
+                    ttl_seconds INTEGER DEFAULT 900,
+                    verified_at REAL,
+                    expires_at REAL,
+                    use_count INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_computer_use_fact_ledger_expires ON computer_use_fact_ledger (expires_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_computer_use_fact_ledger_target ON computer_use_fact_ledger (target_kind, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_session_id ON runtime_artifacts (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_run_id ON runtime_artifacts (run_id, created_at DESC)')
             

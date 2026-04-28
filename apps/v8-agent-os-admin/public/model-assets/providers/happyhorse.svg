@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HappyHorse">
+  <rect width="64" height="64" rx="16" fill="#171717"/>
+  <path fill="#F7D358" d="M17 42c7-14 16-22 30-22-4 4-6 9-5 15 1 5 4 9 7 12H35c-2-5-5-7-10-7-3 0-5 1-8 2Z"/>
+  <path fill="#fff" d="M30 17h6l-3 7-3-7Zm13 7 5-3-1 7-4-4ZM18 46h32v4H18z"/>
+</svg>

@@ -137,6 +137,17 @@
       "notes": "OpenRouter passes provider cache hints through where supported. V8 does not enable OpenRouter response caching headers by default."
     },
     {
+      "id": "xiaomi_mimo_implicit_prompt_cache",
+      "providerIds": ["xiaomi-mimo", "xiaomimimo", "mimo"],
+      "strategy": "implicit",
+      "requestStyle": "implicit_observe_only",
+      "minInputTokens": 1024,
+      "supportsResponseUsage": false,
+      "usageFields": [],
+      "notes": "Xiaomi MiMo pricing documents cache-hit billing. V8 records stable prefix diagnostics but does not inject unverified request fields until response usage shape is confirmed.",
+      "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/pricing"
+    },
+    {
       "id": "implicit_or_unknown",
       "providerIds": ["together", "huggingface-router", "siliconflow", "modelscope", "groq", "tencent-hunyuan"],
       "strategy": "implicit_or_unknown",

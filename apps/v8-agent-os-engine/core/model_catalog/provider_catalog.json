@@ -701,6 +701,72 @@
       "providerKind": "chat"
     },
     {
+      "id": "xiaomi-mimo",
+      "name": "Xiaomi MiMo",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.xiaomimimo.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/welcome",
+      "credentialHelp": {
+        "label": "获取 MiMo API Key",
+        "kind": "api_key",
+        "url": "https://platform.xiaomimimo.com/console/api-keys"
+      },
+      "confidence": "official",
+      "promptCachingProfileId": "xiaomi_mimo_implicit_prompt_cache",
+      "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+      "anthropicCompatible": {
+        "apiStandard": "anthropic",
+        "baseUrl": "https://api.xiaomimimo.com/anthropic",
+        "messagesPath": "/v1/messages",
+        "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/api/chat/anthropic-api"
+      },
+      "models": [
+        {
+          "id": "mimo-v2.5-pro",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search"]
+        },
+        {
+          "id": "mimo-v2-pro",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search"]
+        },
+        {
+          "id": "mimo-v2.5",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search", "vision", "multimodal"]
+        },
+        {
+          "id": "mimo-v2-omni",
+          "contextWindow": 256000,
+          "maxOutputTokens": 128000,
+          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search", "vision", "multimodal"]
+        },
+        {
+          "id": "mimo-v2.5-flash",
+          "contextWindow": 256000,
+          "maxOutputTokens": 64000,
+          "capabilities": ["chat", "tools", "streaming", "structured_output", "web_search"]
+        },
+        {
+          "id": "mimo-v2-flash",
+          "contextWindow": 256000,
+          "maxOutputTokens": 64000,
+          "capabilities": ["chat", "tools", "streaming", "structured_output", "web_search"]
+        }
+      ],
+      "providerKind": "chat"
+    },
+    {
       "id": "volcengine-ark",
       "name": "Volcengine Ark / Doubao",
       "apiStandard": "openai",

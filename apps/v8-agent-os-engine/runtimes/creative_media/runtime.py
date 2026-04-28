@@ -183,6 +183,12 @@ def _modality_for_operation(operation_kind: str) -> str:
     return "voice" if prefix == "audio" else prefix
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
+
+
 def _build_openai_image_payload(*, model: str, prompt: str, size: str, response_format: str = "b64_json") -> dict[str, Any]:
     return {
         "model": model,
@@ -451,6 +457,7 @@ class CreativeMediaRuntime:
             provider_logo_asset = str(provider_meta.get("logoAsset") or provider_meta.get("logo_asset") or provider_meta.get("icon") or "").strip()
             for model_id, model_data_raw in dict((provider_data or {}).get("models") or {}).items():
                 model_data = dict(model_data_raw or {})
+                media_limits = dict(model_data.get("mediaLimits") or {})
                 model_type = str(model_data.get("type") or "").strip().upper()
                 modality = MEDIA_MODEL_TYPE_TO_MODALITY.get(model_type)
                 capabilities = dict(model_data.get("capabilities") or {})
@@ -470,6 +477,12 @@ class CreativeMediaRuntime:
                     provider_id=str(provider_id),
                     provider_meta=provider_meta,
                     model_data=model_data,
+                )
+                capability_profile = dict(
+                    media_limits.get("capabilityProfile")
+                    or model_data.get("capabilityProfile")
+                    or provider_meta.get("capabilityProfile")
+                    or {}
                 )
                 model_id_str = str(model_id)
                 for operation_kind in self._operation_kinds_for_candidate(
@@ -497,6 +510,8 @@ class CreativeMediaRuntime:
                             "providerLogoAsset": provider_logo_asset,
                             "modelLogoAsset": str(model_data.get("logoAsset") or model_data.get("logo_asset") or "").strip(),
                             "adapter": adapter,
+                            "capabilityProfile": capability_profile,
+                            "nativeAudio": bool(capability_profile.get("nativeAudio")),
                             "source": "model_control_plane",
                             "available": self._is_operation_executable(adapter=adapter, operation_kind=operation_kind),
                         }
@@ -542,6 +557,17 @@ class CreativeMediaRuntime:
                         "modelId": volc["videoModel"],
                         "modelRef": f"volcengine_seedance::{volc['videoModel']}",
                         "adapter": "volcengine_ark",
+                        "capabilityProfile": {
+                            "nativeAudio": True,
+                            "audioModes": ["native_generation", "silent"],
+                            "audioPreservationPolicy": "preserve_native_audio_by_default",
+                            "supportsDialogue": True,
+                            "supportsSfx": True,
+                            "supportsMusicBed": True,
+                            "outputStreams": ["video", "audio"],
+                            "inputModalities": ["text", "image"],
+                        },
+                        "nativeAudio": True,
                         "source": "mcp_or_env",
                         "available": bool(volc.get("apiKey")),
                     }
@@ -570,6 +596,13 @@ class CreativeMediaRuntime:
                         "available": bool(dashscope.get("apiKey")),
                         "liveReady": bool(dashscope.get("apiKey")),
                         "inputAssetTypes": self._input_asset_types_for_operation(operation_kind),
+                        "capabilityProfile": {
+                            "nativeAudio": operation_kind in {"video.lipsync", "video.avatar"},
+                            "audioModes": ["input_audio_synchronization"] if operation_kind in {"video.lipsync", "video.avatar"} else [],
+                            "audioPreservationPolicy": "preserve_native_audio_by_default" if operation_kind in {"video.lipsync", "video.avatar"} else "silent_or_external_audio",
+                            "outputStreams": ["video", "audio"] if operation_kind in {"video.lipsync", "video.avatar"} else ["video"],
+                        },
+                        "nativeAudio": operation_kind in {"video.lipsync", "video.avatar"},
                     }
                 )
         candidates.append(
@@ -1004,6 +1037,39 @@ class CreativeMediaRuntime:
                 audio_refs.append(enriched)
         return video_refs[:12], audio_refs[:6]
 
+    def _asset_declares_native_audio(self, asset: dict[str, Any]) -> bool:
+        metadata = dict(asset.get("metadata") or {})
+        return _truthy(asset.get("nativeAudio")) or _truthy(metadata.get("nativeAudio"))
+
+    def _native_audio_policy_for_plan(
+        self,
+        request: dict[str, Any],
+        *,
+        video_refs: list[dict[str, Any]],
+        audio_refs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        explicit = request.get("preserveNativeAudio")
+        if explicit is None:
+            explicit = request.get("preserve_native_audio")
+        has_native_video_audio = any(self._asset_declares_native_audio(asset) for asset in video_refs)
+        has_external_audio = bool(audio_refs)
+        if explicit is not None:
+            preserve_native = _truthy(explicit)
+            reason = "explicit_request"
+        elif has_native_video_audio and not has_external_audio:
+            preserve_native = True
+            reason = "native_audio_video_asset"
+        else:
+            preserve_native = False
+            reason = "external_audio_requested" if has_external_audio else "no_native_audio_evidence"
+        return {
+            "preserveNativeAudio": preserve_native,
+            "hasNativeVideoAudio": has_native_video_audio,
+            "hasExternalAudioRefs": has_external_audio,
+            "audioPreservationPolicy": "preserve_native_audio_by_default" if preserve_native else "use_external_or_silent_track",
+            "reason": reason,
+        }
+
     def _plan_subtitle_segments(self, request: dict[str, Any], *, total_duration: float) -> list[dict[str, Any]]:
         raw_segments = request.get("subtitles") or request.get("subtitleSegments") or request.get("subtitle_segments")
         segments: list[dict[str, Any]] = []
@@ -1061,6 +1127,7 @@ class CreativeMediaRuntime:
             "videoCodec": "libx264",
             "audioCodec": "aac",
         }
+        audio_policy = self._native_audio_policy_for_plan(payload, video_refs=video_refs, audio_refs=audio_refs)
         now = utc_now_iso()
         plan = {
             "planId": plan_id,
@@ -1087,6 +1154,7 @@ class CreativeMediaRuntime:
                 "subtitles": self._plan_subtitle_segments(payload, total_duration=target_duration or cursor),
             },
             "renderProfile": render_profile,
+            "audioPolicy": audio_policy,
             "lineage": {
                 "recipeId": recipe_id,
                 "assetIds": [str(asset.get("assetId") or "") for asset in [*video_refs, *audio_refs] if asset.get("assetId")],
@@ -1097,6 +1165,7 @@ class CreativeMediaRuntime:
                 "missingVideoFiles": [clip for clip in timeline if not clip.get("pathExists")],
                 "missingAudioFiles": [item for item in audio_refs if not item.get("pathExists")],
                 "musicBoundary": "Creative Media audio/music tracks must be artifact or asset ledger refs; legacy MusicTrack is not used.",
+                "nativeAudioPolicy": audio_policy,
                 "estimatedDurationSeconds": round(cursor, 3),
                 "targetDurationSeconds": round(target_duration, 3),
             },
@@ -1203,6 +1272,7 @@ class CreativeMediaRuntime:
         audio_paths: list[str],
         output_path: Path,
         profile: dict[str, Any],
+        preserve_native_audio: bool = False,
     ) -> list[str]:
         width = max(64, int(profile.get("width") or 1280))
         height = max(64, int(profile.get("height") or 720))
@@ -1243,12 +1313,16 @@ class CreativeMediaRuntime:
                 filters.append(f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:duration=shortest:dropout_transition=0{audio_out}")
 
         command.extend(["-filter_complex", ";".join(filters), "-map", video_out])
+        native_audio_mapped = False
         if audio_out:
             command.extend(["-map", audio_out, "-shortest"])
+        elif preserve_native_audio and len(video_paths) == 1:
+            command.extend(["-map", "0:a?", "-shortest"])
+            native_audio_mapped = True
         else:
             command.append("-an")
         command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart"])
-        if audio_out:
+        if audio_out or native_audio_mapped:
             command.extend(["-c:a", "aac", "-b:a", "192k"])
         command.append(str(output_path))
         return command
@@ -1298,6 +1372,8 @@ class CreativeMediaRuntime:
             audio_paths = [path for path in audio_paths if Path(path).exists()]
             if not video_paths:
                 raise ValueError("creative media render requires at least one existing video file")
+            audio_policy = dict(plan.get("audioPolicy") or {})
+            preserve_native_audio = bool(audio_policy.get("preserveNativeAudio")) and not audio_paths
 
             output_path = self._output_path(job, "final-video", ".mp4")
             command = self._build_ffmpeg_render_command(
@@ -1306,6 +1382,7 @@ class CreativeMediaRuntime:
                 audio_paths=audio_paths,
                 output_path=output_path,
                 profile=dict(plan.get("renderProfile") or {}),
+                preserve_native_audio=preserve_native_audio,
             )
             result = subprocess.run(command, capture_output=True, text=True, timeout=int(payload.get("timeoutSeconds") or 900), check=False)
             job["diagnostics"] = {
@@ -1315,6 +1392,8 @@ class CreativeMediaRuntime:
                 "stderrTail": (result.stderr or "")[-4000:],
                 "videoInputs": video_paths,
                 "audioInputs": audio_paths,
+                "audioPolicy": audio_policy,
+                "preserveNativeAudio": preserve_native_audio,
             }
             if result.returncode != 0 or not output_path.exists():
                 raise RuntimeError(f"ffmpeg render failed with code {result.returncode}")
@@ -2326,7 +2405,21 @@ class CreativeMediaRuntime:
                 job["status"] = "failed"
                 job["error"] = "Volcengine video task succeeded without content.video_url"
             else:
-                artifact = await self._artifact_from_url(video_url, job=job, kind="video", provider="volcengine_seedance", mime_hint="video/mp4")
+                request = dict(job.get("request") or {})
+                native_audio = _truthy(request.get("generateAudio", request.get("generate_audio", True)))
+                artifact = await self._artifact_from_url(
+                    video_url,
+                    job=job,
+                    kind="video",
+                    provider="volcengine_seedance",
+                    mime_hint="video/mp4",
+                    metadata={
+                        "model": (job.get("providerResponse") or {}).get("model"),
+                        "nativeAudio": native_audio,
+                        "audioMode": "native_generation" if native_audio else "silent",
+                        "audioPreservationPolicy": "preserve_native_audio_by_default" if native_audio else "silent_or_external_audio",
+                    },
+                )
                 job["artifacts"] = [artifact]
                 job["completedAt"] = utc_now_iso()
         elif status == "failed":
@@ -2440,7 +2533,21 @@ class CreativeMediaRuntime:
                 job["status"] = "failed"
                 job["error"] = "DashScope task succeeded without result URL"
             else:
-                artifact = await self._artifact_from_url(result_url, job=job, kind="video", provider="aliyun_bailian_dashscope", mime_hint="video/mp4", metadata={"model": job["providerResponse"].get("model")})
+                operation_kind = str((job.get("providerResponse") or {}).get("operationKind") or job.get("operationKind") or "")
+                native_audio = operation_kind in {"video.lipsync", "video.avatar"}
+                artifact = await self._artifact_from_url(
+                    result_url,
+                    job=job,
+                    kind="video",
+                    provider="aliyun_bailian_dashscope",
+                    mime_hint="video/mp4",
+                    metadata={
+                        "model": job["providerResponse"].get("model"),
+                        "nativeAudio": native_audio,
+                        "audioMode": "input_audio_synchronization" if native_audio else "silent_or_external_audio",
+                        "audioPreservationPolicy": "preserve_native_audio_by_default" if native_audio else "silent_or_external_audio",
+                    },
+                )
                 job["artifacts"] = [artifact]
                 job["completedAt"] = utc_now_iso()
         elif status == "failed":

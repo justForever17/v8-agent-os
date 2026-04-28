@@ -83,6 +83,7 @@ class GitHubStarExecutor:
         return context.runtime.execute_github_star_playbook(
             goal=context.goal,
             allow_real_click=context.allow_real_click,
+            desired_state=str(context.playbook_inputs.get("desired_state") or context.playbook_inputs.get("desiredState") or "starred"),
             session_id=context.session_id,
             run_id=context.run_id,
             user_id=context.user_id,

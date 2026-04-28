@@ -18,6 +18,7 @@ from erc.side_effect_idempotency import side_effect_idempotency_service
 from erc.workflow_ledger import workflow_ledger_service
 from runtimes.computer_use.runtime import computer_use_runtime
 from runtimes.rpa.compiler import RPATraceCompiler, rpa_trace_compiler
+from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
 from runtimes.rpa.execution_semantics import normalize_script_assessment_status, outcome_family_for_execution_state
 from runtimes.rpa.robot_adapter import RobotFrameworkAdapter, robot_framework_adapter
 from runtimes.rpa.store import RPAScriptStore, rpa_script_store
@@ -111,6 +112,7 @@ class RPARuntime:
         self.adapter = adapter
         self.script_store = script_store
         self.template_service = template_service
+        ensure_system_rpa_seed_templates(self.script_store)
 
     def list_drafts(self, *, limit: int = 100) -> list[Dict[str, Any]]:
         return self.script_store.list_drafts(limit=limit)
@@ -690,7 +692,8 @@ class RPARuntime:
         has_template_governance = bool(governance) or bool(source.get("templateId") or source.get("templateStage") or source.get("templateStatus"))
         stage = str(governance.get("stage") or source.get("templateStage") or "").strip() or ("candidate" if has_template_governance else "unmanaged")
         status = str(metadata.get("templateStatus") or governance.get("templateStatus") or source.get("templateStatus") or "").strip() or ("candidate" if has_template_governance else "unmanaged")
-        rollout_mode = str(governance.get("rolloutMode") or "").strip() or ("candidate_shadow" if has_template_governance else "robot_default")
+        metadata_rollout = str(metadata.get("templateRolloutMode") or "").strip()
+        rollout_mode = str(governance.get("rolloutMode") or metadata_rollout or "").strip() or ("candidate_shadow" if has_template_governance else "robot_default")
         allow_computer_use_fallback = bool(governance.get("allowComputerUseFallback", True))
         prefer_template_execution = bool(governance.get("preferTemplateExecution"))
         approval_required = bool(governance.get("approvalRequired", True))
@@ -736,6 +739,8 @@ class RPARuntime:
         source = script.get("source") if isinstance(script.get("source"), dict) else {}
         source_type = str(source.get("type") or "").strip()
         if source_type in {"computer_use_trace", "computer_use_trace_merge", "rpa_template_candidate"}:
+            return True
+        if any(str(step.get("use") or "").strip() == "computer_use_playbook" for step in list(script.get("steps") or []) if isinstance(step, dict)):
             return True
         if str(source.get("traceRunId") or "").strip():
             return True

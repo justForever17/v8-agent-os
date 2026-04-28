@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.artifact_policy import apply_artifact_surface_policy
 from core.database import db
 from core.multimodal_payload_adapter import build_artifact_descriptor, normalize_artifact_record, utc_now_iso
 from core.workspace_share import resolve_workspace_file_to_share
@@ -81,6 +82,11 @@ class ArtifactStore:
                 "previewKind": artifact_kind if artifact_kind in {"image", "video", "audio"} else "metadata",
             }
         )
+        descriptor = apply_artifact_surface_policy(
+            descriptor,
+            session_id=session_id,
+            run_id=run_id,
+        )
         db.add_runtime_artifact(
             artifact_id=artifact_id,
             artifact_kind=descriptor["kind"],
@@ -143,6 +149,11 @@ class ArtifactStore:
                 "supportsInlinePreview": descriptor.get("kind") in {"image", "video", "audio"},
                 "previewKind": descriptor.get("kind") if descriptor.get("kind") in {"image", "video", "audio"} else "metadata",
             }
+        )
+        descriptor = apply_artifact_surface_policy(
+            descriptor,
+            session_id=session_id,
+            run_id=run_id,
         )
         db.add_runtime_artifact(
             artifact_id=descriptor["artifactId"],

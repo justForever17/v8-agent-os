@@ -138,12 +138,13 @@ def build_plan(
         "status": "ready",
         "selectedPlaybook": playbook.get("id"),
         "targetUrl": repo.get("url"),
+        "desiredState": intent.get("desiredState") or "starred",
         "failureBudget": 2,
         "steps": [
             {"stage": "open", "lane": lane.get("lane"), "url": repo.get("url")},
             {"stage": "precheck", "assert": "repo page canonical owner/name and current star state"},
-            {"stage": "act", "if": "not starred and authenticated", "action": "click Star button"},
-            {"stage": "verify", "assert": "button state becomes Starred"},
+            {"stage": "act", "if": "state differs from desired_state and authenticated", "action": "click strict Star/Unstar button"},
+            {"stage": "verify", "assert": "strict DOM button state equals desired_state"},
         ],
     }
 
@@ -188,9 +189,11 @@ def prepare_task_loop(
     else:
         status = "generic_planner"
         human_attention = None
+    desired_state = str(intent.get("desiredState") or "starred")
     verifier = {
         "type": "dom_or_visible_state",
-        "successCondition": "Starred",
+        "successCondition": "Starred" if desired_state == "starred" else "Not Starred",
+        "desiredState": desired_state,
         "notEnough": ["opened_github_home", "opened_repo_without_starred_state"],
     } if intent.get("operation") == "star_repository" else {"type": "generic_post_action_verify"}
     return ComputerUseTaskLoop(
@@ -210,36 +213,79 @@ def prepare_task_loop(
 def github_star_dom_probe_script() -> str:
     return (
         "(() => {\n"
-        "  const text = document.body ? document.body.innerText : '';\n"
         "  const normalized = (value) => String(value || '').trim();\n"
-        "  const buttonLike = Array.from(document.querySelectorAll('button, a, [role=\"button\"]'));\n"
-        "  const star = buttonLike.find((el) => {\n"
-        "    const hay = [el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'), el.value].map(normalized).join(' ');\n"
-        "    return /\\bStarred\\b|\\bUnstar\\b|\\bStar\\b/i.test(hay);\n"
-        "  }) || null;\n"
-        "  const starLabel = star ? [star.textContent, star.getAttribute('aria-label'), star.getAttribute('title'), star.value].map(normalized).filter(Boolean).join(' ') : '';\n"
+        "  const ownText = (el) => [el.getAttribute('aria-label'), el.getAttribute('title'), el.value, el.textContent].map(normalized).filter(Boolean).join(' ');\n"
+        "  const visible = (el) => { const rect = el.getBoundingClientRect(); const style = getComputedStyle(el); return rect.width > 1 && rect.height > 1 && style.visibility !== 'hidden' && style.display !== 'none' && !el.closest('[hidden],[aria-hidden=\"true\"]'); };\n"
+        "  const controlLike = Array.from(document.querySelectorAll('button, a, [role=\"button\"], input[type=\"submit\"], input[type=\"button\"]'));\n"
+        "  const controls = controlLike.map((el) => {\n"
+        "    const form = el.closest('form');\n"
+        "    const action = form ? normalized(form.getAttribute('action')) : '';\n"
+        "    const label = ownText(el);\n"
+        "    const lower = `${label} ${action}`.toLowerCase();\n"
+        "    const isRepoStar = /\\bstar\\b|\\bstarred\\b|\\bunstar\\b/.test(lower) && !/fork|watch|sponsor|starred by|stargazer/.test(lower);\n"
+        "    return { el, tag: el.tagName, role: el.getAttribute('role'), label, action, isRepoStar, visible: visible(el) };\n"
+        "  }).filter((item) => item.isRepoStar);\n"
+        "  const visibleControls = controls.filter((item) => item.visible);\n"
+        "  const pool = visibleControls.length ? visibleControls : controls;\n"
+        "  const star = pool.find((item) => /\\bunstar\\b|\\bstarred\\b/i.test(item.label + ' ' + item.action)) || pool.find((item) => /\\bstar\\b/i.test(item.label + ' ' + item.action)) || null;\n"
+        "  const text = document.body ? document.body.innerText : '';\n"
         "  const signedInHints = !!document.querySelector('summary[aria-label*=\"View profile\"], meta[name=\"user-login\"], [aria-label*=\"Signed in\"]');\n"
-        "  const needsLoginForStar = /must be signed in|sign in to star|sign in to your account/i.test(starLabel + ' ' + text) || /\\/login\\b/i.test(location.pathname);\n"
+        "  const starLabel = star ? star.label : '';\n"
+        "  const starAction = star ? star.action : '';\n"
+        "  const controlHay = `${starLabel} ${starAction}`;\n"
+        "  const needsLoginForStar = /must be signed in|sign in to star|sign in to your account/i.test(controlHay + ' ' + text) || /\\/login\\b/i.test(location.pathname);\n"
         "  const loggedOut = needsLoginForStar || (!signedInHints && /Sign in|Sign up|Join GitHub/i.test(text));\n"
-        "  const isStarred = /\\bStarred\\b|\\bUnstar\\b/i.test(starLabel);\n"
-        "  return { url: location.href, title: document.title, loggedOut, needsLoginForStar, starLabel, isStarred, hasStarTarget: !!star };\n"
+        "  let strictDomState = 'unknown';\n"
+        "  if (star) {\n"
+        "    if (/\\bunstar\\b|\\bstarred\\b/i.test(controlHay)) strictDomState = 'starred';\n"
+        "    else if (/\\bstar\\b/i.test(controlHay)) strictDomState = 'not_starred';\n"
+        "  }\n"
+        "  const isStarred = strictDomState === 'starred';\n"
+        "  const repoPath = location.pathname.split('/').filter(Boolean).slice(0, 2).join('/');\n"
+        "  return {\n"
+        "    url: location.href,\n"
+        "    title: document.title,\n"
+        "    repoPath,\n"
+        "    loggedOut,\n"
+        "    needsLoginForStar,\n"
+        "    starLabel,\n"
+        "    starAction,\n"
+        "    strictDomState,\n"
+        "    isStarred,\n"
+        "    hasStarTarget: !!star,\n"
+        "    starControlVisible: star ? !!star.visible : false,\n"
+        "    starControlTag: star ? star.tag : null,\n"
+        "    starControlRole: star ? star.role : null,\n"
+        "    starControlEvidence: star ? { label: star.label, action: star.action } : null\n"
+        "  };\n"
         "})()"
     )
 
 
-def github_star_click_script() -> str:
+def github_star_click_script(*, desired_state: str = "starred") -> str:
+    target_state = "unstarred" if str(desired_state or "").strip().lower() in {"unstarred", "not_starred", "not-starred", "unstar", "remove_star", "remove-star"} else "starred"
+    mode_json = "unstarred" if target_state == "unstarred" else "starred"
     return (
         "(() => {\n"
+        f"  const desiredState = {mode_json!r};\n"
         "  const normalized = (value) => String(value || '').trim();\n"
-        "  const buttonLike = Array.from(document.querySelectorAll('button, a, [role=\"button\"]'));\n"
-        "  const target = buttonLike.find((el) => {\n"
-        "    const hay = [el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'), el.value].map(normalized).join(' ');\n"
-        "    return /\\bStar\\b/i.test(hay) && !/\\bStarred\\b|\\bUnstar\\b|must be signed in|sign in to star/i.test(hay);\n"
-        "  }) || null;\n"
-        "  if (!target) return { ok: false, reason: 'star_button_not_found_or_already_starred' };\n"
-        "  target.scrollIntoView({ block: 'center', inline: 'center' });\n"
-        "  const rect = target.getBoundingClientRect();\n"
-        "  target.click();\n"
-        "  return { ok: true, text: normalized(target.textContent || target.getAttribute('aria-label') || target.getAttribute('title')), x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };\n"
+        "  const ownText = (el) => [el.getAttribute('aria-label'), el.getAttribute('title'), el.value, el.textContent].map(normalized).filter(Boolean).join(' ');\n"
+        "  const visible = (el) => { const rect = el.getBoundingClientRect(); const style = getComputedStyle(el); return rect.width > 1 && rect.height > 1 && style.visibility !== 'hidden' && style.display !== 'none' && !el.closest('[hidden],[aria-hidden=\"true\"]'); };\n"
+        "  const controlLike = Array.from(document.querySelectorAll('button, a, [role=\"button\"], input[type=\"submit\"], input[type=\"button\"]'));\n"
+        "  const candidates = controlLike.map((el) => {\n"
+        "    const form = el.closest('form');\n"
+        "    const action = form ? normalized(form.getAttribute('action')) : '';\n"
+        "    const label = ownText(el);\n"
+        "    return { el, form, label, action, hay: `${label} ${action}`, visible: visible(el) };\n"
+        "  }).filter((item) => item.visible);\n"
+        "  const target = desiredState === 'unstarred'\n"
+        "    ? candidates.find((item) => /\\bunstar\\b|\\bstarred\\b/i.test(item.hay) && !/must be signed in|sign in to star|fork|watch|sponsor|stargazer/i.test(item.hay)) || null\n"
+        "    : candidates.find((item) => /\\bstar\\b/i.test(item.hay) && !/\\bstarred\\b|\\bunstar\\b|must be signed in|sign in to star|fork|watch|sponsor|stargazer/i.test(item.hay)) || null;\n"
+        "  if (!target) return { ok: false, reason: desiredState === 'unstarred' ? 'unstar_button_not_found_or_not_strictly_clickable' : 'star_button_not_found_or_not_strictly_clickable' };\n"
+        "  target.el.scrollIntoView({ block: 'center', inline: 'center' });\n"
+        "  const rect = target.el.getBoundingClientRect();\n"
+        "  target.el.click();\n"
+        "  if (target.form && typeof target.form.requestSubmit === 'function') setTimeout(() => { try { target.form.requestSubmit(target.el); } catch (_) {} }, 0);\n"
+        "  return { ok: true, desiredState, text: target.label, action: target.action, visible: target.visible, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };\n"
         "})()"
     )

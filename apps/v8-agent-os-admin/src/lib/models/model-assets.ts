@@ -13,12 +13,18 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     openrouter: "/model-assets/providers/openrouter.ico",
     siliconflow: "/model-assets/providers/siliconflow.png",
     xai: "/model-assets/providers/xai.ico",
+    "xiaomi-mimo": "/model-assets/providers/xiaomi-mimo.svg",
+    xiaomimimo: "/model-assets/providers/xiaomi-mimo.svg",
+    mimo: "/model-assets/providers/xiaomi-mimo.svg",
+    happyhorse: "/model-assets/providers/happyhorse.svg",
 };
 
 const LOCAL_MODEL_LOGOS: Record<string, string> = {
     hitem3d: "/model-assets/providers/hitem3d.svg",
     hyper3d: "/model-assets/providers/hyper3d.svg",
     mureka: "/model-assets/providers/mureka.svg",
+    mimo: "/model-assets/providers/xiaomi-mimo.svg",
+    happyhorse: "/model-assets/providers/happyhorse.svg",
 };
 
 type LobeSlug = keyof typeof LOBE_ICON_ASSETS;
@@ -71,6 +77,7 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("bailian") || haystack.includes("aliyun")) candidates.push("alibabacloud-color", "alibabacloud", "alibaba-color", "alibaba", "qwen-color", "qwen");
     if (haystack.includes("doubao")) candidates.push("doubao-color", "doubao");
     if (haystack.includes("volcengine") || haystack.includes("volcano")) candidates.push("volcengine-color", "volcengine");
+    if (haystack.includes("xiaomi") || haystack.includes("mimo")) candidates.push("mimo", "xiaomi-mimo");
     if (haystack.includes("moonshot")) candidates.push("moonshot");
     if (haystack.includes("kimi")) candidates.push("kimi-color", "kimi", "moonshot");
     if (haystack.includes("modelscope")) candidates.push("modelscope-color", "modelscope");
@@ -84,6 +91,7 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("runway")) candidates.push("runway");
     if (haystack.includes("luma")) candidates.push("luma-color", "luma");
     if (haystack.includes("kling")) candidates.push("kling-color", "kling");
+    if (haystack.includes("happyhorse") || haystack.includes("happy-horse")) candidates.push("happyhorse");
     if (haystack.includes("mureka")) candidates.push("mureka");
     if (haystack.includes("hitem3d") || haystack.includes("hitem-3d")) candidates.push("hitem3d");
     if (haystack.includes("hyper3d") || haystack.includes("hyper-3d")) candidates.push("hyper3d");
@@ -114,6 +122,9 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("deepseek")) candidates.push("deepseek-color", "deepseek");
     if (id.includes("qwen") || id.includes("qwq")) candidates.push("qwen-color", "qwen");
     if (id.includes("doubao") || id.includes("seedance") || id.includes("seedream") || id.includes("seed3d")) candidates.push("doubao-color", "doubao", "volcengine-color", "volcengine");
+    if (id.includes("mimo")) candidates.push("mimo", "xiaomi-mimo");
+    if (id.includes("sora")) candidates.push("openai");
+    if (id.includes("veo")) candidates.push("gemini-color", "gemini", "google-color", "google");
     if (id.includes("kimi")) candidates.push("kimi-color", "kimi", "moonshot");
     if (id.includes("moonshot")) candidates.push("moonshot", "kimi-color", "kimi");
     if (id.includes("grok")) candidates.push("grok", "xai");
@@ -137,6 +148,7 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("runway") || id.includes("gen4")) candidates.push("runway");
     if (id.includes("luma") || id.includes("ray-")) candidates.push("luma-color", "luma");
     if (id.includes("kling")) candidates.push("kling-color", "kling");
+    if (id.includes("happyhorse") || id.includes("happy-horse")) candidates.push("happyhorse");
     if (id.includes("mureka")) candidates.push("mureka");
     if (id.includes("hitem3d") || id.includes("hitem-3d")) candidates.push("hitem3d");
     if (id.includes("hyper3d") || id.includes("hyper-3d")) candidates.push("hyper3d");

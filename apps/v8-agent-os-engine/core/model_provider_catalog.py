@@ -140,6 +140,7 @@ class ModelProviderCatalog:
         request = dict(provider_entry.get("request") or {})
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
+        capability_profile = dict(provider_entry.get("capabilityProfile") or {})
         operation_kinds = self._media_operation_kinds(provider_entry, modality)
         model_logo_assets = provider_entry.get("modelLogoAssets")
         model_logo_asset = ""
@@ -163,6 +164,7 @@ class ModelProviderCatalog:
                 "pollingMode": polling.get("mode") or "none",
                 "resultPaths": _as_list(result.get("paths")),
                 "sizeFormat": request.get("sizeFormat") or "",
+                "capabilityProfile": capability_profile,
             },
         }
 
@@ -200,6 +202,7 @@ class ModelProviderCatalog:
             "polling": entry.get("polling") or {},
             "result": entry.get("result") or {},
             "statusMap": entry.get("statusMap") or {},
+            "capabilityProfile": entry.get("capabilityProfile") or {},
             "models": [self._media_catalog_model(entry, normalized_modality, model_id) for model_id in model_ids],
         }
 

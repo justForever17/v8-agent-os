@@ -32,6 +32,7 @@ from runtimes.memory.prompts import render_memory_admin_chat_prompt
 from runtimes.memory.project_registry import project_registry_service
 from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.workflow_service import WORKFLOW_MEMORY_DEFAULTS
+from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
 
 
 router = APIRouter()
@@ -810,6 +811,7 @@ async def list_projects():
 async def create_project(payload: ProjectDescriptorPayload):
     try:
         project = project_registry_service.save_project(payload.model_dump(by_alias=True, exclude_none=True))
+        ensure_system_rpa_seed_templates()
         return project.model_dump(by_alias=True, exclude_none=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -864,6 +866,7 @@ async def bind_project_workspace(project_id: str, payload: WorkspaceBindingPaylo
             source=payload.source or "admin_selected",
             confidence=payload.confidence or 1.0,
         )
+        ensure_system_rpa_seed_templates()
         if project is None:
             raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
         return project.model_dump(by_alias=True, exclude_none=True)

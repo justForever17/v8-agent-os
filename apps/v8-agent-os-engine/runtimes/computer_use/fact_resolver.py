@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlparse
+
+from core.database import db
+from core.multimodal_payload_adapter import utc_now_iso
 
 
 FactSearch = Callable[[str], Any]
@@ -69,7 +74,8 @@ def classify_goal(goal: str) -> dict[str, Any]:
     lowered = normalized_goal.lower()
     explicit_url = _first_url(normalized_goal)
     githubish = "github" in lowered or "git hub" in lowered or bool(explicit_url and "github.com" in explicit_url.lower())
-    starish = _contains_any(lowered, ["star", "星标", "点星", "收藏", "加星"])
+    unstarish = _contains_any(lowered, ["unstar", "消星", "取消星标", "取消 star", "取消star", "取消收藏", "移除星标"])
+    starish = _contains_any(lowered, ["star", "星标", "点星", "收藏", "加星", "消星", "取消星标", "取消收藏"])
     loginish = _contains_any(lowered, ["login", "sign in", "登录", "登入"])
     uploadish = _contains_any(lowered, ["upload", "上传", "choose file", "选择文件"])
     formish = _contains_any(lowered, ["form", "submit", "填写", "表单", "提交"])
@@ -84,7 +90,7 @@ def classify_goal(goal: str) -> dict[str, Any]:
     if repo_match:
         owner_repo = f"{repo_match.group(1)}/{repo_match.group(2)}"
     else:
-        owner_repo_match = re.search(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b", normalized_goal)
+        owner_repo_match = re.search(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]*[A-Za-z0-9_])(?=$|[\s/?#，。；;、]|[\u4e00-\u9fff])", normalized_goal)
         if owner_repo_match and githubish:
             owner_repo = owner_repo_match.group(1)
     if not owner_repo and "turix" in lowered:
@@ -139,6 +145,7 @@ def classify_goal(goal: str) -> dict[str, Any]:
         "operation": operation,
         "domain": domain,
         "targetType": target_type,
+        "desiredState": "unstarred" if (githubish and starish and unstarish) else "starred",
         "entity": owner_repo or ("TuriX-CUA" if "turix" in lowered else None),
         "explicitUrl": explicit_url,
         "requiresFactResolution": bool(
@@ -386,6 +393,7 @@ def _cache_key(goal: str, intent: dict[str, Any]) -> str:
             "goal": str(goal or "").strip().lower(),
             "operation": intent.get("operation"),
             "targetType": intent.get("targetType"),
+            "desiredState": intent.get("desiredState"),
             "entity": intent.get("entity"),
             "explicitUrl": intent.get("explicitUrl"),
         },
@@ -394,27 +402,129 @@ def _cache_key(goal: str, intent: dict[str, Any]) -> str:
     )
 
 
+def _query_hash(key: str) -> str:
+    return hashlib.sha256(str(key or "").encode("utf-8")).hexdigest()
+
+
 def _cache_get(key: str) -> dict[str, Any] | None:
     item = _FACT_CACHE.get(key)
-    if not isinstance(item, dict):
-        return None
-    ts = float(item.get("cachedAt") or 0)
-    if time.time() - ts > _FACT_CACHE_TTL_SECONDS:
-        _FACT_CACHE.pop(key, None)
-        return None
-    payload = dict(item.get("result") or {})
+    payload: dict[str, Any] = {}
+    if isinstance(item, dict):
+        ts = float(item.get("cachedAt") or 0)
+        if time.time() - ts <= _FACT_CACHE_TTL_SECONDS:
+            payload = dict(item.get("result") or {})
+        else:
+            _FACT_CACHE.pop(key, None)
+    if not payload:
+        payload = _ledger_get(key) or {}
     if payload:
         payload["cache"] = {"hit": True, "ttlSeconds": _FACT_CACHE_TTL_SECONDS}
     return payload
 
 
 def _cache_put(key: str, result: FactResolutionResult) -> None:
-    if result.status not in {"resolved", "not_required"}:
+    if result.status != "resolved" or not isinstance(result.canonicalTarget, dict) or not result.canonicalTarget:
         return
     _FACT_CACHE[key] = {
         "cachedAt": time.time(),
         "result": result.as_dict(),
     }
+    _ledger_put(key, result)
+
+
+def _ledger_get(key: str) -> dict[str, Any] | None:
+    now = time.time()
+    try:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM computer_use_fact_ledger WHERE query_hash = ?",
+                (_query_hash(key),),
+            ).fetchone()
+            if row is None:
+                return None
+            expires_at = float(row["expires_at"] or 0)
+            if expires_at and expires_at < now:
+                return None
+            conn.execute(
+                "UPDATE computer_use_fact_ledger SET use_count = use_count + 1, updated_at = ? WHERE query_hash = ?",
+                (utc_now_iso(), _query_hash(key)),
+            )
+            conn.commit()
+            return {
+                "status": "resolved",
+                "targetKind": row["target_kind"],
+                "canonicalTarget": json.loads(row["canonical_target_json"] or "{}"),
+                "evidence": json.loads(row["evidence_json"] or "[]"),
+                "reason": "persistent_fact_ledger",
+                "ledger": {
+                    "hit": True,
+                    "source": row["source"],
+                    "confidence": float(row["confidence"] or 0),
+                    "useCount": int(row["use_count"] or 0) + 1,
+                },
+            }
+    except Exception:
+        return None
+
+
+def _ledger_put(key: str, result: FactResolutionResult) -> None:
+    target = dict(result.canonicalTarget or {})
+    if not _is_public_fact_target(target):
+        return
+    evidence = [dict(item) for item in list(result.evidence or []) if isinstance(item, dict)]
+    confidence = max([float(item.get("confidence") or 0) for item in evidence] or [0.0])
+    first_evidence = evidence[0] if evidence else {}
+    source = str(first_evidence.get("source") or result.reason or "computer_use_fact_resolver")
+    now = time.time()
+    try:
+        with db.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO computer_use_fact_ledger (
+                    id, query_hash, target_kind, canonical_target_json, evidence_json,
+                    source, confidence, ttl_seconds, verified_at, expires_at, use_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(query_hash) DO UPDATE SET
+                    target_kind = excluded.target_kind,
+                    canonical_target_json = excluded.canonical_target_json,
+                    evidence_json = excluded.evidence_json,
+                    source = excluded.source,
+                    confidence = excluded.confidence,
+                    ttl_seconds = excluded.ttl_seconds,
+                    verified_at = excluded.verified_at,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    f"fact_{uuid.uuid4().hex[:16]}",
+                    _query_hash(key),
+                    result.targetKind,
+                    json.dumps(target, ensure_ascii=False, sort_keys=True),
+                    json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+                    source,
+                    confidence,
+                    _FACT_CACHE_TTL_SECONDS,
+                    now,
+                    now + _FACT_CACHE_TTL_SECONDS,
+                    utc_now_iso(),
+                    utc_now_iso(),
+                ),
+            )
+            conn.commit()
+    except Exception:
+        return
+
+
+def _is_public_fact_target(target: dict[str, Any]) -> bool:
+    target_type = str(target.get("type") or "").strip()
+    if target_type not in {"github_repo", "website_url", "download_page", "form_page", "upload_target"}:
+        return False
+    value = str(target.get("url") or "").strip().lower()
+    if not value.startswith(("http://", "https://")):
+        return False
+    private_markers = ("localhost", "127.0.0.1", "file://", "token=", "password=", "apikey=", "api_key=")
+    return not any(marker in value for marker in private_markers)
 
 
 def _result_from_dict(payload: dict[str, Any]) -> FactResolutionResult:

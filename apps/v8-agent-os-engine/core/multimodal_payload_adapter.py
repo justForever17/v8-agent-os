@@ -176,9 +176,20 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
     supports_inline_preview = bool(
         record.get("supportsInlinePreview")
         if record.get("supportsInlinePreview") is not None
-        else record.get("supports_inline_preview")
+        else (
+            record.get("supports_inline_preview")
+            if record.get("supports_inline_preview") is not None
+            else metadata.get("supportsInlinePreview")
+            if metadata.get("supportsInlinePreview") is not None
+            else metadata.get("supports_inline_preview")
+        )
     )
-    preview_kind = record.get("previewKind") or record.get("preview_kind")
+    preview_kind = (
+        record.get("previewKind")
+        or record.get("preview_kind")
+        or metadata.get("previewKind")
+        or metadata.get("preview_kind")
+    )
     origin = record.get("origin") or record.get("artifactOrigin") or metadata.get("origin") or metadata.get("artifactOrigin")
 
     normalized = dict(record)
@@ -236,6 +247,17 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             "surface_visible": metadata.get("surfaceVisible")
                 if metadata.get("surfaceVisible") is not None
                 else metadata.get("surface_visible"),
+            "autoAttachToMessage": metadata.get("autoAttachToMessage")
+                if metadata.get("autoAttachToMessage") is not None
+                else metadata.get("auto_attach_to_message"),
+            "auto_attach_to_message": metadata.get("autoAttachToMessage")
+                if metadata.get("autoAttachToMessage") is not None
+                else metadata.get("auto_attach_to_message"),
+            "ephemeral": metadata.get("ephemeral"),
+            "artifactSurfacePolicyRuleId": metadata.get("artifactSurfacePolicyRuleId")
+                or metadata.get("artifact_surface_policy_rule_id"),
+            "artifact_surface_policy_rule_id": metadata.get("artifactSurfacePolicyRuleId")
+                or metadata.get("artifact_surface_policy_rule_id"),
             "pathPlane": metadata.get("pathPlane") or metadata.get("path_plane"),
             "path_plane": metadata.get("pathPlane") or metadata.get("path_plane"),
             "canonicalPath": metadata.get("canonicalPath") or metadata.get("canonical_path") or workspace_path,

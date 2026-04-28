@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import base64
+import json
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from langchain_core.messages import HumanMessage
+
+from core.models.factory import llm_factory
 from core.model_control_plane import model_control_plane
+from core.multimodal_payload_adapter import build_multimodal_content
 
 from runtimes.computer_use.candidate_board import CandidateBoard, CandidateBoardCandidate
 
@@ -120,13 +128,20 @@ class VisualActorProvider:
             "modelId": state.get("modelId"),
             "providerIdForModel": state.get("providerId"),
             "fallbackRoles": list(state.get("fallbackRoles") or []),
-            "mode": "proposal_only_candidate_board_first",
+            "mode": "multimodal_model_proposal_with_candidate_board_fallback",
             "executionPolicy": "proposal_only_then_safety_guard_and_post_action_verification",
             "reason": state.get("reason"),
         }
 
     def propose(self, request: VisualActorRequest) -> VisualActorProposal:
         state = self._role_state()
+        candidates = _board_candidates(request.candidateBoard)
+        if state.get("available"):
+            model_proposal, model_error = self._propose_with_model(request, candidates, state=state)
+            if model_proposal is not None:
+                return model_proposal
+        else:
+            model_error = state.get("reason")
         candidate = _top_safe_candidate(request.candidateBoard)
         if candidate is None:
             return VisualActorProposal(
@@ -157,9 +172,58 @@ class VisualActorProvider:
                 "candidateSource": candidate.source,
                 "candidateRole": candidate.role,
                 "modelAvailable": bool(state.get("available")),
+                "fallbackReason": model_error,
                 "proposalPolicy": "no_direct_execution",
             },
         )
+
+    def _propose_with_model(
+        self,
+        request: VisualActorRequest,
+        candidates: list[CandidateBoardCandidate],
+        *,
+        state: dict[str, Any],
+    ) -> tuple[VisualActorProposal | None, str | None]:
+        if not candidates:
+            return None, "candidate_board_empty"
+        screenshot_ref = _screenshot_data_url(request.screenshotPath)
+        if not screenshot_ref:
+            return None, "screenshot_unavailable_for_multimodal_actor"
+        candidate_payload = [item.as_dict() for item in candidates[:12]]
+        prompt = (
+            "You are V8OS Computer Use Visual Actor. Propose exactly one next UI action.\n"
+            "Return strict JSON only, no markdown. Schema:\n"
+            "{\"status\":\"proposed|no_action\",\"actionType\":\"click|focus_or_type|toggle|hover\","
+            "\"candidateId\":\"...\",\"confidence\":0.0,\"expectedStateChange\":\"...\","
+            "\"reason\":\"...\",\"pureVisual\":{\"x\":0.0,\"y\":0.0}|null}.\n"
+            "Prefer a candidateId from the candidate board. Use pureVisual only if no candidate matches.\n"
+            "Never propose destructive or high-risk actions. Goal and candidate board follow.\n"
+            f"Goal: {request.goal}\n"
+            f"Previous frame: {request.previousFrameSummary or ''}\n"
+            f"Display bounds: {json.dumps(request.displayBounds or {}, ensure_ascii=False)}\n"
+            f"Candidates: {json.dumps(candidate_payload, ensure_ascii=False)}"
+        )
+        try:
+            model = llm_factory.create_for_role(str(state.get("role") or "computer_use_visual_actor"), temperature=0, streaming=False)
+            content = build_multimodal_content(
+                prompt=prompt,
+                media_url=screenshot_ref,
+                mime_type="image/png",
+                transport_mode="inline_base64_image",
+            )
+            response = model.invoke([HumanMessage(content=content)])
+            payload = _parse_json_response(getattr(response, "content", response))
+            proposal = _proposal_from_model_payload(
+                payload,
+                request=request,
+                candidates=candidates,
+                state=state,
+            )
+            if proposal is None:
+                return None, "model_payload_failed_validation"
+            return proposal, None
+        except Exception as exc:
+            return None, f"model_invoke_failed:{type(exc).__name__}:{str(exc)[:180]}"
 
 
 def _board_candidates(board: CandidateBoard | dict[str, Any] | None) -> list[CandidateBoardCandidate]:
@@ -186,6 +250,118 @@ def _board_candidates(board: CandidateBoard | dict[str, Any] | None) -> list[Can
             )
         )
     return candidates
+
+
+def _screenshot_data_url(path: str | None) -> str | None:
+    raw = str(path or "").strip()
+    if not raw:
+        return None
+    target = Path(raw)
+    if not target.exists() or not target.is_file():
+        return None
+    try:
+        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    except Exception:
+        return None
+    return f"data:image/png;base64,{encoded}"
+
+
+def _parse_json_response(value: Any) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, flags=re.I).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if not match:
+            return {}
+        try:
+            payload = json.loads(match.group(0))
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+
+def _proposal_from_model_payload(
+    payload: dict[str, Any],
+    *,
+    request: VisualActorRequest,
+    candidates: list[CandidateBoardCandidate],
+    state: dict[str, Any],
+) -> VisualActorProposal | None:
+    status = str(payload.get("status") or "proposed").strip().lower()
+    if status not in {"proposed", "no_action"}:
+        return None
+    if status == "no_action":
+        return VisualActorProposal(
+            status="no_action",
+            reason=str(payload.get("reason") or "model_declined_action"),
+            source="visual_actor_model",
+            modelRole=str(state.get("role") or "computer_use_visual_actor"),
+            modelId=state.get("modelId"),
+            providerId=state.get("providerId"),
+            metadata={"modelAvailable": True, "proposalPolicy": "no_direct_execution"},
+        )
+    by_id = {item.candidateId: item for item in candidates}
+    candidate_id = str(payload.get("candidateId") or "").strip()
+    candidate = by_id.get(candidate_id)
+    pure_visual = payload.get("pureVisual") if isinstance(payload.get("pureVisual"), dict) else None
+    if candidate is None and not pure_visual:
+        return None
+    if candidate is not None and candidate.risk == "high":
+        return None
+    action_type = str(payload.get("actionType") or (_action_type_for(candidate) if candidate else "click")).strip() or "click"
+    if action_type not in {"click", "focus_or_type", "toggle", "hover"}:
+        return None
+    absolute = dict(candidate.center or {}) if candidate is not None else _absolute_from_normalized(pure_visual, request.displayBounds)
+    normalized = _normalized_point(absolute, request.displayBounds)
+    try:
+        confidence = float(payload.get("confidence") or (candidate.score if candidate else 0.45))
+    except Exception:
+        confidence = 0.45
+    return VisualActorProposal(
+        status="proposed",
+        actionType=action_type,
+        candidateId=candidate.candidateId if candidate else None,
+        normalizedPoint=normalized,
+        absolutePoint=absolute or None,
+        confidence=min(max(confidence, 0.0), 0.99),
+        expectedStateChange=str(payload.get("expectedStateChange") or (_expected_state_change(request.goal, candidate) if candidate else "UI should show measurable progress")),
+        source="visual_actor_model",
+        risk=candidate.risk if candidate else "medium",
+        reason=str(payload.get("reason") or "model_selected_candidate"),
+        modelRole=str(state.get("role") or "computer_use_visual_actor"),
+        modelId=state.get("modelId"),
+        providerId=state.get("providerId"),
+        metadata={
+            "candidateSource": candidate.source if candidate else "pure_visual",
+            "candidateRole": candidate.role if candidate else "pure_visual",
+            "modelAvailable": True,
+            "proposalPolicy": "no_direct_execution",
+            "pureVisual": dict(pure_visual or {}) or None,
+        },
+    )
+
+
+def _absolute_from_normalized(point: dict[str, Any] | None, display_bounds: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(point, dict):
+        return None
+    bounds = dict(display_bounds or {})
+    width = float(bounds.get("width") or bounds.get("right") or 0)
+    height = float(bounds.get("height") or bounds.get("bottom") or 0)
+    if width <= 0 or height <= 0:
+        return None
+    try:
+        x = max(min(float(point.get("x") or 0), 1.0), 0.0) * width
+        y = max(min(float(point.get("y") or 0), 1.0), 0.0) * height
+    except Exception:
+        return None
+    return {"x": x, "y": y}
 
 
 def _top_safe_candidate(board: CandidateBoard | dict[str, Any] | None) -> CandidateBoardCandidate | None:

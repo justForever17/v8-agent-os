@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from typing import Any
+
+from fastapi import APIRouter, Body, HTTPException
 
 from .models import (
     ComputerUseAppQueryPayload,
@@ -34,10 +36,39 @@ def _compat_invocation_metadata(endpoint: str) -> dict:
     }
 
 
+def _real_host_matrix_service():
+    from runtimes.computer_use.real_host_matrix import (
+        ingest_real_host_matrix,
+        read_latest_real_host_matrix,
+    )
+
+    return read_latest_real_host_matrix, ingest_real_host_matrix
+
+
 @router.get("/computer-use/availability")
 async def get_computer_use_availability():
     try:
         return _computer_use_runtime().availability()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/computer-use/real-host-matrix")
+async def get_computer_use_real_host_matrix():
+    try:
+        read_latest, _ingest = _real_host_matrix_service()
+        return read_latest()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/computer-use/real-host-matrix/ingest")
+async def ingest_computer_use_real_host_matrix(payload: dict[str, Any] = Body(...)):
+    try:
+        _read_latest, ingest = _real_host_matrix_service()
+        return ingest(dict(payload or {}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

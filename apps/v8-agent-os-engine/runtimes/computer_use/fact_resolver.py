@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -29,6 +30,9 @@ GITHUB_REPO_ALIASES: dict[str, dict[str, str]] = {
         "source": "built_in_alias",
     },
 }
+
+_FACT_CACHE: dict[str, dict[str, Any]] = {}
+_FACT_CACHE_TTL_SECONDS = 900
 
 
 @dataclass(slots=True)
@@ -67,6 +71,13 @@ def classify_goal(goal: str) -> dict[str, Any]:
     githubish = "github" in lowered or "git hub" in lowered or bool(explicit_url and "github.com" in explicit_url.lower())
     starish = _contains_any(lowered, ["star", "星标", "点星", "收藏", "加星"])
     loginish = _contains_any(lowered, ["login", "sign in", "登录", "登入"])
+    uploadish = _contains_any(lowered, ["upload", "上传", "choose file", "选择文件"])
+    formish = _contains_any(lowered, ["form", "submit", "填写", "表单", "提交"])
+    settingish = _contains_any(lowered, ["toggle", "setting", "settings", "开启", "关闭", "启用", "禁用", "设置"])
+    search_openish = (
+        _contains_any(lowered, ["search", "搜索", "查找", "找一下", "官网", "文档", "documentation"])
+        and _contains_any(lowered, ["open", "打开", "进入", "访问", "看看", "找到"])
+    )
     downloadish = _contains_any(lowered, ["download", "下载", "install", "安装"])
     repo_match = re.search(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", normalized_goal)
     owner_repo = None
@@ -83,19 +94,39 @@ def classify_goal(goal: str) -> dict[str, Any]:
         domain = "github"
         target_type = "github_repo"
         risk = "external_account_state_mutation"
+    elif uploadish:
+        operation = "file_upload"
+        domain = "web"
+        target_type = "upload_target"
+        risk = "file_upload_side_effect"
+    elif formish:
+        operation = "form_submit"
+        domain = "web"
+        target_type = "form_page"
+        risk = "form_submit_side_effect"
+    elif settingish:
+        operation = "toggle_option"
+        domain = "settings"
+        target_type = "setting_target"
+        risk = "settings_mutation"
+    elif search_openish:
+        operation = "search_and_open_result"
+        domain = "web"
+        target_type = "website_url"
+        risk = "navigation"
     elif loginish:
-        operation = "login_boundary"
-        domain = _domain_from_url(explicit_url) or "web"
+        operation = "login_gate"
+        domain = "browser"
         target_type = "login_boundary"
         risk = "credential_boundary"
     elif downloadish:
-        operation = "download_or_install"
-        domain = _domain_from_url(explicit_url) or "web"
+        operation = "download_and_open"
+        domain = "web"
         target_type = "download_page"
         risk = "download_side_effect"
     elif explicit_url:
-        operation = "open_url"
-        domain = _domain_from_url(explicit_url) or "web"
+        operation = "search_and_open_result"
+        domain = "web"
         target_type = "website_url"
         risk = "navigation"
     else:
@@ -110,7 +141,13 @@ def classify_goal(goal: str) -> dict[str, Any]:
         "targetType": target_type,
         "entity": owner_repo or ("TuriX-CUA" if "turix" in lowered else None),
         "explicitUrl": explicit_url,
-        "requiresFactResolution": bool((githubish and starish) or (operation in {"download_or_install", "unknown"} and not explicit_url)),
+        "requiresFactResolution": bool(
+            (githubish and starish)
+            or (
+                operation in {"download_and_open", "search_and_open_result", "file_upload", "form_submit", "unknown"}
+                and not explicit_url
+            )
+        ),
         "risk": risk,
     }
 
@@ -122,43 +159,77 @@ def resolve_goal_facts(
     web_searcher: FactSearch | None = None,
 ) -> FactResolutionResult:
     resolved_intent = dict(intent or classify_goal(goal))
+    cache_key = _cache_key(goal, resolved_intent)
+    cached = _cache_get(cache_key)
+    if cached:
+        return _result_from_dict(cached)
     explicit_url = str(resolved_intent.get("explicitUrl") or _first_url(goal) or "").strip()
     if explicit_url:
-        return _resolve_explicit_url(explicit_url, resolved_intent)
+        result = _resolve_explicit_url(explicit_url, resolved_intent)
+        _cache_put(cache_key, result)
+        return result
     if resolved_intent.get("operation") == "star_repository":
-        return _resolve_github_star(resolved_intent, web_searcher=web_searcher)
-    if resolved_intent.get("operation") == "login_boundary":
+        result = _resolve_github_star(resolved_intent, web_searcher=web_searcher)
+        _cache_put(cache_key, result)
+        return result
+    if resolved_intent.get("operation") in {"login_gate", "login_boundary"}:
         evidence = [{
             "kind": "login_boundary",
             "confidence": 0.72,
             "source": "goal_language",
             "reason": "login_or_sign_in_intent_detected",
         }]
-        return FactResolutionResult(
+        result = FactResolutionResult(
             status="resolved",
             targetKind="login_boundary",
             canonicalTarget={"type": "login_boundary"},
             evidence=evidence,
             reason="login_boundary_detected",
         )
-    if resolved_intent.get("operation") == "download_or_install":
+        _cache_put(cache_key, result)
+        return result
+    if resolved_intent.get("operation") in {"download_and_open", "download_or_install"}:
         query = f"{resolved_intent.get('rawGoal') or goal} official download"
         candidate = _first_url_from_search_payload(web_searcher(query)) if web_searcher else None
         if candidate:
-            return _resolve_explicit_url(candidate, {**resolved_intent, "operation": "download_or_install"})
-        return FactResolutionResult(
+            result = _resolve_explicit_url(candidate, {**resolved_intent, "operation": "download_and_open"})
+            _cache_put(cache_key, result)
+            return result
+        result = FactResolutionResult(
             status="needs_fact_resolution",
             targetKind="download_page",
             evidence=[],
             query=query,
             reason="download_target_url_not_resolved",
         )
-    return FactResolutionResult(
+        _cache_put(cache_key, result)
+        return result
+    if resolved_intent.get("operation") in {"search_and_open_result", "form_submit", "file_upload"}:
+        query = _query_for_intent(goal, resolved_intent)
+        candidate = _first_url_from_search_payload(web_searcher(query)) if web_searcher and query else None
+        if candidate:
+            result = _resolve_explicit_url(candidate, resolved_intent)
+            result.query = query
+            result.reason = "web_search"
+            _cache_put(cache_key, result)
+            return result
+        result = FactResolutionResult(
+            status="needs_fact_resolution" if resolved_intent.get("requiresFactResolution") else "not_required",
+            targetKind=resolved_intent.get("targetType"),
+            evidence=[],
+            query=query,
+            reason="canonical_target_not_resolved",
+        )
+        _cache_put(cache_key, result)
+        return result
+    result = FactResolutionResult(
         status="not_required" if not resolved_intent.get("requiresFactResolution") else "needs_fact_resolution",
         targetKind=resolved_intent.get("targetType"),
         evidence=[],
         reason="no_canonical_target_required" if not resolved_intent.get("requiresFactResolution") else "canonical_target_not_resolved",
     )
+    _cache_put(cache_key, result)
+    return result
 
 
 def _first_url(value: str | None) -> str | None:
@@ -192,7 +263,7 @@ def _resolve_explicit_url(url: str, intent: dict[str, Any]) -> FactResolutionRes
         evidence = [{"kind": "canonical_github_repo", "confidence": 0.96, "source": "explicit_url", **target}]
         return FactResolutionResult(status="resolved", targetKind="github_repo", canonicalTarget=target, evidence=evidence)
     target = {
-        "type": intent.get("targetType") or "website_url",
+        "type": _target_type_from_operation(intent) or intent.get("targetType") or "website_url",
         "url": url,
         "domain": _domain_from_url(url),
     }
@@ -286,3 +357,72 @@ def _first_url_from_search_payload(payload: Any) -> str | None:
             return url
     raw = str(data.get("raw") or "")
     return _first_url(raw)
+
+
+def _query_for_intent(goal: str, intent: dict[str, Any]) -> str:
+    raw = str(intent.get("rawGoal") or goal or "").strip()
+    operation = str(intent.get("operation") or "").strip()
+    if operation == "file_upload":
+        return f"{raw} upload page"
+    if operation == "form_submit":
+        return f"{raw} form page"
+    return f"{raw} official site documentation"
+
+
+def _target_type_from_operation(intent: dict[str, Any]) -> str | None:
+    operation = str(intent.get("operation") or "").strip()
+    return {
+        "download_or_install": "download_page",
+        "download_and_open": "download_page",
+        "search_and_open_result": "website_url",
+        "file_upload": "upload_target",
+        "form_submit": "form_page",
+    }.get(operation)
+
+
+def _cache_key(goal: str, intent: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "goal": str(goal or "").strip().lower(),
+            "operation": intent.get("operation"),
+            "targetType": intent.get("targetType"),
+            "entity": intent.get("entity"),
+            "explicitUrl": intent.get("explicitUrl"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _cache_get(key: str) -> dict[str, Any] | None:
+    item = _FACT_CACHE.get(key)
+    if not isinstance(item, dict):
+        return None
+    ts = float(item.get("cachedAt") or 0)
+    if time.time() - ts > _FACT_CACHE_TTL_SECONDS:
+        _FACT_CACHE.pop(key, None)
+        return None
+    payload = dict(item.get("result") or {})
+    if payload:
+        payload["cache"] = {"hit": True, "ttlSeconds": _FACT_CACHE_TTL_SECONDS}
+    return payload
+
+
+def _cache_put(key: str, result: FactResolutionResult) -> None:
+    if result.status not in {"resolved", "not_required"}:
+        return
+    _FACT_CACHE[key] = {
+        "cachedAt": time.time(),
+        "result": result.as_dict(),
+    }
+
+
+def _result_from_dict(payload: dict[str, Any]) -> FactResolutionResult:
+    return FactResolutionResult(
+        status=str(payload.get("status") or ""),
+        targetKind=payload.get("targetKind"),
+        canonicalTarget=dict(payload.get("canonicalTarget") or {}) or None,
+        evidence=[dict(item) for item in list(payload.get("evidence") or []) if isinstance(item, dict)],
+        query=payload.get("query"),
+        reason=payload.get("reason"),
+    )

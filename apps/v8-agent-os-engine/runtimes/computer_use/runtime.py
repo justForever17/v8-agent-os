@@ -84,6 +84,10 @@ from runtimes.computer_use.live_matrix_feedback import primitive_live_feedback_f
 from runtimes.computer_use.observation_bundle import build_observation_bundle
 from runtimes.computer_use.platform_adapters import create_platform_discovery_providers
 from runtimes.computer_use.playbooks import built_in_playbook_seeds, experience_asset_inventory
+from runtimes.computer_use.playbook_executors import (
+    PlaybookExecutionContext,
+    create_default_playbook_executor_registry,
+)
 from runtimes.computer_use.platform_probe_runner import build_platform_probe_matrix
 from runtimes.computer_use.preflight_policy import build_preflight_context
 from runtimes.computer_use.post_action_visual_check import (
@@ -100,6 +104,7 @@ from runtimes.computer_use.primitives import resolve_computer_use_primitive
 from runtimes.computer_use.pure_visual_center_click import resolve_pure_visual_click_point
 from runtimes.computer_use.scene_models import build_scene_assessment
 from runtimes.computer_use.selector_memory import ComputerUseSelectorMemory
+from runtimes.computer_use.short_sequence_verifier import build_short_sequence_verification
 from runtimes.computer_use.semantic_targets import (
     generic_input_visual_hint,
     generic_result_visual_hint,
@@ -119,6 +124,7 @@ from runtimes.computer_use.target_strategy import (
     result_region_from_point,
 )
 from runtimes.computer_use.trace_store import trace_store
+from runtimes.computer_use.real_host_matrix import merge_latest_real_host_matrix
 from runtimes.computer_use.recovery_policy import build_recovery_policy_metadata
 from runtimes.computer_use.route_policy import build_platform_route_policy, decide_execution_route
 from runtimes.computer_use.verification_contract import build_result_contract
@@ -256,7 +262,7 @@ class ComputerUseRuntime:
         }
 
     def _platform_probe_matrix_payload(self, *, browser_lane: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        return build_platform_probe_matrix(
+        matrix = build_platform_probe_matrix(
             current_platform=str(getattr(self.driver, "platform", "") or ""),
             driver_summary={
                 "available": self.driver.is_available(),
@@ -265,6 +271,7 @@ class ComputerUseRuntime:
             },
             browser_summary=dict(browser_lane or self.browser_automation.availability_summary() or {}),
         )
+        return merge_latest_real_host_matrix(matrix)
 
     def build_candidate_board(
         self,
@@ -385,6 +392,7 @@ class ComputerUseRuntime:
         self.visual_locator_runtime: VisualLocatorProvider = create_visual_locator_provider()
         self.visual_actor_provider = create_visual_actor_provider()
         self.browser_automation = BrowserAutomationProvider()
+        self.playbook_executor_registry = create_default_playbook_executor_registry()
         self.app_adapters = ComputerUseAppAdapterRegistry()
         self.app_profiles = ComputerUseAppProfiles()
         self.app_catalog = ComputerUseAppCatalog(
@@ -9616,6 +9624,12 @@ class ComputerUseRuntime:
                 or (visual_guard_requested and requested_action not in {"open_app"})
                 else 1
             )
+            if action_type in {"click", "double_click", "right_click", "hover"} and (
+                self._has_explicit_visual_locator(normalized_payload)
+                or normalized_payload.get("point_candidates")
+                or normalized_payload.get("pointCandidates")
+            ):
+                max_attempts = max(max_attempts, 3)
             pre_action_guard_requested = self._should_run_pre_action_visual_guard(
                 action_type=action_type,
                 action_payload=normalized_payload,
@@ -10292,6 +10306,43 @@ class ComputerUseRuntime:
                         )
                     if verification.passed or update_request is not None or attempt_index >= max_attempts:
                         break
+                    retry_points = []
+                    try:
+                        retry_points = list((result.metadata or {}).get("resolvedPointCandidates") or [])
+                    except Exception:
+                        retry_points = []
+                    if action_type in {"click", "double_click", "right_click", "hover"} and retry_points:
+                        result.metadata["shortSequenceVerification"] = build_short_sequence_verification(
+                            goal=str(normalized_payload.get("goal") or normalized_payload.get("target_text") or action_type),
+                            candidate={"candidateId": f"candidate_{attempt_index}", "point": retry_points[min(attempt_index - 1, len(retry_points) - 1)]},
+                            pre_state={"verification": "before_action"},
+                            action={"actionType": action_type, "attempt": attempt_index},
+                            post_state={"verificationStatus": verification.status, "passed": verification.passed},
+                            expected_state_change=str(normalized_payload.get("post_action_expect_text") or normalized_payload.get("visual_expectation") or ""),
+                        )
+                        next_index = attempt_index
+                        if next_index < len(retry_points):
+                            next_point = retry_points[next_index]
+                            if isinstance(next_point, list) and len(next_point) == 2:
+                                normalized_payload["point"] = list(next_point)
+                                for key in (
+                                    "visual_locator",
+                                    "VisualLocator",
+                                    "visual_locator_scope",
+                                    "VisualLocatorScope",
+                                    "visual_locator_role_hint",
+                                    "VisualLocatorRoleHint",
+                                ):
+                                    normalized_payload.pop(key, None)
+                                run_handle.emit(
+                                    "computer_use.visual_short_sequence.retry_next_candidate",
+                                    {
+                                        "attempt": attempt_index + 1,
+                                        "previousStatus": verification.status,
+                                        "nextPoint": list(next_point),
+                                        "maxAttempts": max_attempts,
+                                    },
+                                )
                     self.driver.invalidate_window_cache(
                         normalized_payload.get("window_handle")
                         or result.target.get("windowHandle")
@@ -11895,7 +11946,7 @@ class ComputerUseRuntime:
             raise DesktopDriverError("planner 目标不能为空。")
 
         task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
-        if (task_loop.get("domain") or {}).get("selectedPlaybook") == "github.star_repository":
+        if self.playbook_executor_registry.can_handle(task_loop):
             return {
                 "sessionId": session_id,
                 "runId": run_id,
@@ -11905,6 +11956,7 @@ class ComputerUseRuntime:
                 "planner": {
                     "role": "computer_use_task_loop",
                     "plannerOutput": "runtime_native_playbook_selected",
+                    "selectedPlaybookExecutor": str((task_loop.get("domain") or {}).get("selectedPlaybook") or ""),
                     "stepCount": len(((task_loop.get("plan") or {}).get("steps") or [])),
                     "steps": [],
                 },
@@ -11963,12 +12015,15 @@ class ComputerUseRuntime:
         continue_on_error: bool = False,
         max_steps: int = 5,
         include_screenshot: bool = False,
+        playbook_inputs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
-        if (task_loop.get("domain") or {}).get("selectedPlaybook") == "github.star_repository":
-            execution = self.execute_github_star_playbook(
+        if self.playbook_executor_registry.can_handle(task_loop):
+            execution = self.execute_selected_playbook(
                 goal=goal,
+                task_loop=task_loop,
                 allow_real_click=True,
+                playbook_inputs=playbook_inputs,
                 session_id=session_id,
                 run_id=run_id,
                 user_id=user_id,
@@ -12016,6 +12071,39 @@ class ComputerUseRuntime:
             "runId": execution.get("runId") or planning.get("runId"),
             "execution": execution,
         }
+
+    def execute_selected_playbook(
+        self,
+        *,
+        goal: str,
+        task_loop: Dict[str, Any] | None = None,
+        allow_real_click: bool = False,
+        playbook_inputs: Optional[Dict[str, Any]] = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        user_id: str = "anonymous",
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        workspace_path: str | None = None,
+        invocation_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self._ensure_runtime_ready()
+        prepared = dict(task_loop or self.prepare_task_loop(goal=goal, app_id="browser_checkout"))
+        context = PlaybookExecutionContext(
+            runtime=self,
+            task_loop=prepared,
+            goal=goal,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=user_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            playbook_inputs=dict(playbook_inputs or {}),
+            allow_real_click=allow_real_click,
+            invocation_metadata=dict(invocation_metadata or {}),
+        )
+        return self.playbook_executor_registry.execute(context)
 
     def availability(self) -> Dict[str, Any]:
         vision_state = self._vision_fallback_state()

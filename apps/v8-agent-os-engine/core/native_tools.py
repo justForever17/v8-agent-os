@@ -8670,10 +8670,17 @@ def computer_use_execute_task(
                 goal=planner_goal,
                 app_id=effective_app_id or "browser_checkout",
             )
-            if (task_loop.get("domain") or {}).get("selectedPlaybook") == "github.star_repository":
-                raw_result = _get_computer_use_runtime().execute_github_star_playbook(
-                    **_computer_use_runtime_kwargs(planner_goal),
+            computer_runtime = _get_computer_use_runtime()
+            playbook_registry = getattr(computer_runtime, "playbook_executor_registry", None)
+            if playbook_registry is not None and playbook_registry.can_handle(task_loop) is True:
+                runtime_kwargs = _computer_use_runtime_kwargs(planner_goal)
+                runtime_kwargs.pop("goal", None)
+                raw_result = computer_runtime.execute_selected_playbook(
+                    goal=planner_goal,
+                    task_loop=task_loop,
                     allow_real_click=True,
+                    playbook_inputs=variables,
+                    **runtime_kwargs,
                 )
                 payload = {
                     "mode": "runtime_native_playbook",
@@ -8686,6 +8693,8 @@ def computer_use_execute_task(
                     "target": effective_target,
                     "successCriteria": success_criteria,
                     "result": raw_result,
+                    "selectedPlaybook": (task_loop.get("domain") or {}).get("selectedPlaybook"),
+                    "selectedPlaybookExecutor": raw_result.get("selectedPlaybookExecutor"),
                     "recommendedNextAction": (
                         "ask_user"
                         if str(raw_result.get("status") or "").startswith("needs_human")
@@ -8699,7 +8708,7 @@ def computer_use_execute_task(
                     desktop_route=desktop_route,
                     route_gate_applied=isinstance(state, dict),
                 )
-            planning = _get_computer_use_runtime().plan(
+            planning = computer_runtime.plan(
                 **_computer_use_runtime_kwargs(planner_goal),
                 app_id=effective_app_id,
                 max_steps=effective_max_steps,
@@ -8714,7 +8723,7 @@ def computer_use_execute_task(
             )
             if not allowed:
                 return error_message or "Safety Guardian 已阻止 planner 生成的桌面动作。"
-            execution = _get_computer_use_runtime().execute_plan(
+            execution = computer_runtime.execute_plan(
                 **_computer_use_runtime_kwargs(planner_goal),
                 steps=planned_steps,
                 continue_on_error=False,

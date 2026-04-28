@@ -93,6 +93,8 @@ def route_lane(
             "browserDecision": browser_payload,
             "fallbackLane": (playbook or {}).get("fallbackLane"),
         }
+    if preferred_lane:
+        return {"lane": preferred_lane, "status": "selected", "reason": "playbook_preferred_lane"}
     return {"lane": "visual_locator", "status": "selected", "reason": "no_browser_playbook"}
 
 
@@ -104,7 +106,27 @@ def build_plan(
     lane: dict[str, Any],
 ) -> dict[str, Any]:
     if intent.get("operation") != "star_repository" or not playbook:
-        return {"status": "not_applicable", "steps": []}
+        if not playbook:
+            return {"status": "not_applicable", "steps": []}
+        required = bool((playbook.get("factResolution") or {}).get("required"))
+        target = next((item for item in facts if item.get("url") or item.get("kind") == "login_boundary"), None)
+        if required and not target:
+            return {
+                "status": "blocked_before_gui",
+                "reason": "canonical_target_not_resolved",
+                "steps": [],
+            }
+        return {
+            "status": "ready",
+            "selectedPlaybook": playbook.get("id"),
+            "targetUrl": (target or {}).get("url"),
+            "failureBudget": 2,
+            "steps": [
+                {"stage": "resolve", "lane": lane.get("lane"), "target": target or {}},
+                {"stage": "act", "action": intent.get("operation")},
+                {"stage": "verify", "assert": "playbook specific success state"},
+            ],
+        }
     repo = next((item for item in facts if item.get("kind") == "canonical_github_repo"), None)
     if not repo:
         return {
@@ -151,9 +173,9 @@ def prepare_task_loop(
     playbook = select_playbook(intent)
     lane = route_lane(intent=intent, playbook=playbook, browser_decision=browser_decision)
     plan = build_plan(intent=intent, playbook=playbook, facts=facts, lane=lane)
-    if intent.get("operation") == "star_repository" and not facts:
+    if playbook and plan.get("status") == "blocked_before_gui":
         status = "needs_fact_resolution"
-        human_attention = "canonical_repo_url_not_resolved"
+        human_attention = str(plan.get("reason") or "canonical_target_not_resolved")
     elif playbook and plan.get("status") == "ready" and lane.get("status") == "selected":
         status = "ready"
         human_attention = None

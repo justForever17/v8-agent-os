@@ -7,6 +7,7 @@ from core.extensions_runtime import extensions_runtime_service
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
 from core.model_provider_catalog import model_provider_catalog
+from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
@@ -139,6 +140,80 @@ async def reload_system():
 async def get_skills_list():
     try:
         return {"skills": list(extensions_runtime_service.list_skills(force_refresh=False))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/safety/reviews")
+async def list_skill_safety_reviews(status: str | None = None, limit: int = 100):
+    try:
+        from erc.safety_guardian import safety_guardian
+
+        return {"items": safety_guardian.list_skill_safety_reviews(status=status, limit=limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/safety/reviews/{review_id}/approve")
+async def approve_skill_safety_review(review_id: str):
+    try:
+        from erc.safety_guardian import safety_guardian
+
+        review = safety_guardian.approve_skill_safety_review(review_id)
+        if not review:
+            raise HTTPException(status_code=404, detail="skill safety review not found")
+        extensions_runtime_service.request_skill_inventory_refresh(reason="skill_safety_approved")
+        return {"status": "success", "review": review}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/safety/reviews/{review_id}/disable")
+async def disable_skill_safety_review(review_id: str):
+    try:
+        from erc.safety_guardian import safety_guardian
+
+        review = safety_guardian.disable_skill_safety_review(review_id)
+        if not review:
+            raise HTTPException(status_code=404, detail="skill safety review not found")
+        extensions_runtime_service.request_skill_inventory_refresh(reason="skill_safety_disabled")
+        return {"status": "success", "review": review}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/safety/reviews/{review_id}/revoke")
+async def revoke_skill_safety_review(review_id: str):
+    try:
+        from erc.safety_guardian import safety_guardian
+
+        review = safety_guardian.revoke_skill_safety_review(review_id)
+        if not review:
+            raise HTTPException(status_code=404, detail="skill safety review not found")
+        extensions_runtime_service.request_skill_inventory_refresh(reason="skill_safety_revoked")
+        return {"status": "success", "review": review}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/safety/reviews/{review_id}/rescan")
+async def rescan_skill_safety_review(review_id: str):
+    try:
+        from erc.safety_guardian import safety_guardian
+
+        review = safety_guardian.rescan_skill_safety_review(review_id)
+        if not review:
+            raise HTTPException(status_code=404, detail="skill safety review not found")
+        extensions_runtime_service.request_skill_inventory_refresh(reason="skill_safety_rescan")
+        return {"status": "success", "review": review}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -386,6 +461,9 @@ async def connect_model_provider(data: dict = Body(...)):
             "credential_mode": credential_mode,
             "oauth_preset": auth.get("preset") or existing_provider.get("oauth_preset") or "",
             "logoAsset": provider.get("logoAsset") or existing_provider.get("logoAsset") or "",
+            "promptCachingProfileId": provider.get("promptCachingProfileId")
+            or existing_provider.get("promptCachingProfileId")
+            or prompt_cache_profile_id_for_provider(provider_id),
             "is_enabled": True,
         }
         is_custom_provider = bool(provider.get("isCustom"))
@@ -406,6 +484,9 @@ async def connect_model_provider(data: dict = Body(...)):
             "parameterProfile": model.get("parameterProfile") or ("media_generation" if is_media_provider else "chat"),
             "mediaLimits": model.get("mediaLimits") or {},
             "logoAsset": model.get("logoAsset") or "",
+            "promptCachingProfileId": model.get("promptCachingProfileId")
+            or next_provider.get("promptCachingProfileId")
+            or prompt_cache_profile_id_for_provider(provider_id),
             "isEnabled": True,
         }
         current_models = dict(existing.get("models") or {})

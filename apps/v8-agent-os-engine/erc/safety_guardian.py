@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
+import base64
+import binascii
+import hashlib
 import json
 import re
 import shlex
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +18,7 @@ from uuid import uuid4
 import psutil
 
 from core.storage import storage
+from core.database import db
 from core.v8_agent_os_paths import WORKSPACE_HOME, protected_runtime_paths
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
@@ -469,6 +474,60 @@ _SKILL_SCAN_RULES: tuple[dict[str, Any], ...] = (
     },
 )
 
+_DOWNLOAD_EXECUTABLE_SUFFIXES = {
+    ".bat",
+    ".cmd",
+    ".command",
+    ".com",
+    ".exe",
+    ".jar",
+    ".js",
+    ".msi",
+    ".ps1",
+    ".py",
+    ".sh",
+}
+_RECENT_DOWNLOAD_TTL_SECONDS = 10 * 60
+
+
+@dataclass(slots=True)
+class _RecentDownload:
+    path: Path
+    host: str | None
+    recorded_at: float
+    runtime_kind: str | None = None
+
+
+@dataclass(slots=True)
+class _CommandAnalysis:
+    original: str
+    decoded_commands: list[str] = field(default_factory=list)
+    ambiguous_encoded_execution: bool = False
+    encoded_indicators: list[str] = field(default_factory=list)
+    download_execute_detected: bool = False
+    download_execute_reason: str = ""
+    download_output_paths: list[Path] = field(default_factory=list)
+    download_hosts: list[str] = field(default_factory=list)
+
+    @property
+    def policy_commands(self) -> list[str]:
+        commands = [self.original]
+        for command in self.decoded_commands:
+            if command and command not in commands:
+                commands.append(command)
+        return commands
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "decodedCommands": self.decoded_commands[:4],
+            "ambiguousEncodedExecution": self.ambiguous_encoded_execution,
+            "encodedIndicators": self.encoded_indicators[:8],
+            "downloadExecuteDetected": self.download_execute_detected,
+            "downloadExecuteReason": self.download_execute_reason,
+            "downloadOutputPaths": [str(path) for path in self.download_output_paths[:8]],
+            "downloadHosts": self.download_hosts[:8],
+        }
+
 
 @dataclass(slots=True)
 class SafetyDecision:
@@ -520,6 +579,9 @@ class SafetyDecision:
 
 
 class SafetyGuardian:
+    def __init__(self) -> None:
+        self._recent_downloads: list[_RecentDownload] = []
+
     def _flatten_text_values(self, value: Any) -> str:
         parts: list[str] = []
 
@@ -1047,64 +1109,123 @@ class SafetyGuardian:
         if not normalized:
             return SafetyDecision()
 
-        if self._is_workspace_read_only_enumeration_command(command, runtime_context):
+        analysis = self._analyze_system_command(command, runtime_context=runtime_context)
+        analysis_payload = analysis.to_payload()
+        policy_commands = analysis.policy_commands
+        self._remember_recent_downloads(analysis, runtime_context)
+
+        if any(self._is_workspace_read_only_enumeration_command(candidate, runtime_context) for candidate in policy_commands):
             return self._decision(
                 verdict="allow",
                 reason="workspace_read_allowed",
                 risk_code="workspace_read_allowed",
                 governance_target="system_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context},
+                details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
 
-        if self._looks_like_read_only_enumeration_command(command) and self._targets_sensitive_system_path_in_command(command):
+        sensitive_read_command = next(
+            (
+                candidate
+                for candidate in policy_commands
+                if self._looks_like_read_only_enumeration_command(candidate)
+                and self._targets_sensitive_system_path_in_command(candidate)
+            ),
+            None,
+        )
+        if sensitive_read_command:
             return self._decision(
                 verdict="review",
                 reason="当前命令会枚举或访问系统敏感路径，需要人工确认。",
                 risk_code="sensitive_system_read_command",
                 governance_target="system_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context},
+                details={"command": command, "matched_command": sensitive_read_command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
 
-        if self._touches_protected_path_in_command(command):
+        protected_path_command = next((candidate for candidate in policy_commands if self._touches_protected_path_in_command(candidate)), None)
+        if protected_path_command:
             return self._decision(
                 verdict=config["systemIntegrityRules"]["destructiveCommandVerdict"],
                 reason="命令试图删除、覆盖或移动 v8chat 核心目录/受保护路径。",
                 risk_code="protected_path_command",
                 governance_target="v8_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context},
+                details={"command": command, "matched_command": protected_path_command, "runtime_context": runtime_context, "analysis": analysis_payload},
                 allow_override=False,
             )
 
-        if self._targets_protected_process(command):
+        protected_process_command = next((candidate for candidate in policy_commands if self._targets_protected_process(candidate)), None)
+        if protected_process_command:
             return self._decision(
                 verdict=config["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
                 reason="命令疑似试图结束 v8chat 主程序或关键守护进程。",
                 risk_code="protected_process_command",
                 governance_target="v8_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context},
+                details={"command": command, "matched_command": protected_process_command, "runtime_context": runtime_context, "analysis": analysis_payload},
                 allow_override=False,
             )
 
-        if self._is_process_control_command(command):
+        process_control_command = next((candidate for candidate in policy_commands if self._is_process_control_command(candidate)), None)
+        if process_control_command:
             return self._decision(
                 verdict="review",
                 reason="当前命令涉及进程控制，需要人工确认。",
                 risk_code="process_control_command",
                 governance_target="system_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context},
+                details={"command": command, "matched_command": process_control_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+            )
+
+        if analysis.download_execute_detected:
+            return self._decision(
+                verdict="review",
+                reason="检测到下载后执行链路，需要人工确认。",
+                risk_code="download_execute_command",
+                governance_target="system_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
+            )
+
+        recent_download = self._matches_recent_download_execution(command, runtime_context)
+        if recent_download is not None:
+            return self._decision(
+                verdict="review",
+                reason="当前命令正在执行近期下载的脚本或可执行文件，需要人工确认。",
+                risk_code="recent_download_execution",
+                governance_target="system_integrity",
+                posture=posture,
+                details={
+                    "command": command,
+                    "runtime_context": runtime_context,
+                    "recentDownload": {
+                        "path": str(recent_download.path),
+                        "host": recent_download.host,
+                        "recordedAt": recent_download.recorded_at,
+                        "runtimeKind": recent_download.runtime_kind,
+                    },
+                    "analysis": analysis_payload,
+                },
+            )
+
+        if analysis.ambiguous_encoded_execution:
+            return self._decision(
+                verdict="review",
+                reason="检测到疑似编码/混淆执行，但无法安全还原完整意图，需要人工确认。",
+                risk_code="encoded_command_review",
+                governance_target="system_integrity",
+                posture=posture,
+                details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
 
         for rule in config["commandRules"]:
             for pattern in rule["patterns"]:
-                if self._matches_command_pattern(command, pattern):
+                matched_command = next((candidate for candidate in policy_commands if self._matches_command_pattern(candidate, pattern)), None)
+                if matched_command:
                     verdict = "block" if rule["verdict"] == "block" else "review"
                     governance_target = "system_integrity" if verdict == "block" else "external_mutation"
-                    if verdict == "review" and self._is_package_install_command(command):
+                    if verdict == "review" and any(self._is_package_install_command(candidate) for candidate in policy_commands):
                         verdict = self._posture_verdict(
                             config["systemIntegrityRules"]["packageInstallVerdict"],
                             posture=posture,
@@ -1116,11 +1237,11 @@ class SafetyGuardian:
                         risk_code="blocked_command_pattern" if verdict == "block" else "review_command_pattern",
                         governance_target=governance_target,
                         posture=posture,
-                        details={"command": command, "pattern": pattern, "rule": rule, "runtime_context": runtime_context},
+                        details={"command": command, "matched_command": matched_command, "pattern": pattern, "rule": rule, "runtime_context": runtime_context, "analysis": analysis_payload},
                         allow_override=verdict != "block",
                     )
 
-        if self._is_package_install_command(command):
+        if any(self._is_package_install_command(candidate) for candidate in policy_commands):
             verdict = self._posture_verdict(
                 config["systemIntegrityRules"]["packageInstallVerdict"],
                 posture=posture,
@@ -1132,7 +1253,7 @@ class SafetyGuardian:
                 risk_code="package_install_command",
                 governance_target="system_integrity",
                 posture=posture,
-                details={"command": command, "runtime_context": runtime_context},
+                details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
 
         return self._decision(
@@ -1141,7 +1262,7 @@ class SafetyGuardian:
             risk_code="command_allowed",
             governance_target="system_integrity",
             posture=posture,
-            details={"command": command, "runtime_context": runtime_context},
+            details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
         )
 
     def assess_background_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
@@ -1591,6 +1712,205 @@ class SafetyGuardian:
             },
         )
 
+    def build_skill_safety_identity(
+        self,
+        *,
+        skill_id: str | None = None,
+        skill_name: str | None = None,
+        skill_root: str,
+        instruction_path: str | None = None,
+    ) -> Dict[str, Any]:
+        root = self._normalize_path(skill_root)
+        instruction = self._normalize_path(instruction_path)
+        normalized_root = str(root or skill_root or "").strip()
+        normalized_instruction = str(instruction or instruction_path or "").strip()
+        identity_key = str(skill_id or normalized_root or skill_name or "").strip().lower()
+        manifest_hash = self._hash_file(instruction) if instruction and instruction.exists() else None
+        content_hash = self._hash_skill_content(root, instruction)
+        return {
+            "skillId": str(skill_id or "").strip(),
+            "skillName": str(skill_name or "").strip(),
+            "skillPath": normalized_root,
+            "instructionPath": normalized_instruction,
+            "identityKey": identity_key,
+            "contentHash": content_hash,
+            "manifestHash": manifest_hash,
+        }
+
+    def get_skill_safety_review(
+        self,
+        *,
+        skill_id: str | None = None,
+        skill_name: str | None = None,
+        skill_root: str,
+        instruction_path: str | None = None,
+    ) -> Dict[str, Any] | None:
+        identity = self.build_skill_safety_identity(
+            skill_id=skill_id,
+            skill_name=skill_name,
+            skill_root=skill_root,
+            instruction_path=instruction_path,
+        )
+        review = db.get_skill_safety_review(
+            identity_key=identity["identityKey"],
+            content_hash=identity["contentHash"],
+        )
+        if not review:
+            return None
+        review["identity"] = identity
+        return review
+
+    def record_skill_safety_review(
+        self,
+        *,
+        skill_id: str | None = None,
+        skill_name: str | None = None,
+        skill_root: str,
+        instruction_path: str | None = None,
+        scan_payload: Dict[str, Any],
+        llm_review: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        identity = self.build_skill_safety_identity(
+            skill_id=skill_id,
+            skill_name=skill_name,
+            skill_root=skill_root,
+            instruction_path=instruction_path,
+        )
+        static_verdict = str(scan_payload.get("staticVerdict") or scan_payload.get("verdict") or "review").strip().lower()
+        effective_verdict = self._skill_effective_verdict(static_verdict=static_verdict, llm_review=llm_review, user_override=None)
+        disabled = effective_verdict == "block"
+        review = db.upsert_skill_safety_review(
+            review_id=f"skillreview_{uuid4().hex[:16]}",
+            skill_id=identity["skillId"],
+            skill_name=identity["skillName"],
+            skill_path=identity["skillPath"],
+            instruction_path=identity["instructionPath"],
+            identity_key=identity["identityKey"],
+            content_hash=identity["contentHash"],
+            manifest_hash=identity["manifestHash"],
+            static_verdict=static_verdict,
+            effective_verdict=effective_verdict,
+            disabled=disabled,
+            scan_payload=scan_payload,
+            llm_review=llm_review,
+            reasons=list(scan_payload.get("reasons") or []),
+            flagged_files=list(scan_payload.get("flaggedFiles") or []),
+            finding_categories=list(scan_payload.get("findingCategories") or []),
+        )
+        review["identity"] = identity
+        return review
+
+    def list_skill_safety_reviews(self, *, status: str | None = None, limit: int = 100) -> list[Dict[str, Any]]:
+        return db.list_skill_safety_reviews(status=status, limit=limit)
+
+    def approve_skill_safety_review(self, review_id: str) -> Dict[str, Any] | None:
+        return db.update_skill_safety_review_override(
+            review_id=review_id,
+            user_override="approved",
+            disabled=False,
+            effective_verdict="audit",
+        )
+
+    def disable_skill_safety_review(self, review_id: str) -> Dict[str, Any] | None:
+        return db.update_skill_safety_review_override(
+            review_id=review_id,
+            user_override="disabled",
+            disabled=True,
+            effective_verdict="block",
+        )
+
+    def revoke_skill_safety_review(self, review_id: str) -> Dict[str, Any] | None:
+        current = db.get_skill_safety_review_by_id(review_id)
+        if not current:
+            return None
+        effective = self._skill_effective_verdict(
+            static_verdict=str(current.get("static_verdict") or "review"),
+            llm_review=current.get("llmReview") if isinstance(current.get("llmReview"), dict) else None,
+            user_override=None,
+        )
+        return db.update_skill_safety_review_override(
+            review_id=review_id,
+            user_override=None,
+            disabled=effective == "block",
+            effective_verdict=effective,
+        )
+
+    def rescan_skill_safety_review(self, review_id: str) -> Dict[str, Any] | None:
+        current = db.get_skill_safety_review_by_id(review_id)
+        if not current:
+            return None
+        skill_root = str(current.get("skill_path") or "")
+        instruction_path = str(current.get("instruction_path") or "") or None
+        skill_name = str(current.get("skill_name") or "")
+        skill_id = str(current.get("skill_id") or "")
+        scan_payload = self.assess_skill_directory(
+            skill_name=skill_name or skill_id or skill_root,
+            skill_root=skill_root,
+            instruction_path=instruction_path,
+        )
+        static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
+        llm_review = None
+        if static_verdict == "review" and bool(scan_payload.get("llmReviewRecommended")):
+            llm_review = self.review_skill_scan_with_llm(
+                skill_name=skill_name or skill_id or skill_root,
+                skill_root=skill_root,
+                scan_payload=scan_payload,
+            )
+        scan_payload = self.apply_skill_llm_review(scan_payload, llm_review)
+        return self.record_skill_safety_review(
+            skill_id=skill_id,
+            skill_name=skill_name,
+            skill_root=skill_root,
+            instruction_path=instruction_path,
+            scan_payload=scan_payload,
+            llm_review=llm_review,
+        )
+
+    def apply_skill_llm_review(self, scan_payload: Dict[str, Any], review_payload: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not review_payload:
+            scan_payload.setdefault("reviewMode", "rules_only")
+            return scan_payload
+        scan_payload["llmReview"] = review_payload
+        scan_payload["reviewMode"] = "llm_assisted"
+        static_verdict = str(scan_payload.get("staticVerdict") or scan_payload.get("verdict") or "").strip().lower()
+        if review_payload.get("status") == "completed":
+            review_summary = str(review_payload.get("summary") or "").strip()
+            if review_payload.get("decision") == "allow":
+                scan_payload["staticVerdict"] = static_verdict
+                scan_payload["verdict"] = "audit"
+                reasons = list(scan_payload.get("reasons") or [])
+                reasons.append(f"安全复审模型认为该 skill 可放行：{review_summary or '证据不足以支持阻断。'}")
+                scan_payload["reasons"] = reasons[:10]
+            elif review_payload.get("decision") == "block":
+                scan_payload["staticVerdict"] = static_verdict
+                scan_payload["verdict"] = "block"
+                reasons = list(scan_payload.get("reasons") or [])
+                reasons.append(f"安全复审模型维持阻断：{review_summary or '疑点仍然足够高风险。'}")
+                scan_payload["reasons"] = reasons[:10]
+        else:
+            scan_payload["reviewMode"] = "rules_only_fallback"
+        return scan_payload
+
+    def skill_review_to_scan_payload(self, review: Dict[str, Any]) -> Dict[str, Any]:
+        scan_payload = dict(review.get("scanPayload") or {})
+        static_verdict = str(review.get("static_verdict") or scan_payload.get("staticVerdict") or scan_payload.get("verdict") or "review").strip().lower()
+        effective_verdict = str(review.get("effective_verdict") or static_verdict or "review").strip().lower()
+        if bool(review.get("disabled")):
+            effective_verdict = "block"
+        scan_payload.setdefault("auditId", review.get("id") or "")
+        scan_payload["staticVerdict"] = static_verdict
+        scan_payload["verdict"] = effective_verdict
+        scan_payload["effectiveVerdict"] = effective_verdict
+        scan_payload["ledgerId"] = review.get("id")
+        scan_payload["ledgerStatus"] = self._skill_review_status(review)
+        scan_payload["fromLedger"] = True
+        scan_payload["userOverride"] = review.get("user_override")
+        scan_payload["disabled"] = bool(review.get("disabled"))
+        scan_payload["contentHash"] = review.get("content_hash")
+        if review.get("llmReview"):
+            scan_payload["llmReview"] = review.get("llmReview")
+        return scan_payload
+
     def assess_skill_directory(
         self,
         *,
@@ -1810,6 +2130,83 @@ class SafetyGuardian:
         if not isinstance(parsed, dict):
             raise ValueError("review response must be a JSON object")
         return parsed
+
+    def _hash_file(self, path: Path | None) -> str | None:
+        if path is None:
+            return None
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as file:
+                while chunk := file.read(1024 * 1024):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    def _hash_skill_content(self, root: Path | None, instruction_path: Path | None) -> str:
+        digest = hashlib.sha256()
+        if root is None or not root.exists() or not root.is_dir():
+            digest.update(f"missing:{root}".encode("utf-8", errors="ignore"))
+            return digest.hexdigest()
+        included: list[Path] = []
+        if instruction_path is not None and instruction_path.exists():
+            included.append(instruction_path)
+        excluded_paths = {instruction_path} if instruction_path is not None else set()
+        included.extend(self._collect_skill_scan_candidates(root, excluded_paths={item for item in excluded_paths if item is not None}))
+        seen: set[str] = set()
+        for path in sorted(included, key=lambda item: str(item).lower()):
+            normalized = self._normalize_path(str(path))
+            if normalized is None:
+                continue
+            key = str(normalized).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                relative = normalized.relative_to(root).as_posix()
+            except ValueError:
+                relative = normalized.name
+            digest.update(relative.encode("utf-8", errors="ignore"))
+            digest.update(b"\0")
+            digest.update(str(self._hash_file(normalized) or "unreadable").encode("ascii", errors="ignore"))
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _skill_effective_verdict(
+        self,
+        *,
+        static_verdict: str,
+        llm_review: Dict[str, Any] | None,
+        user_override: str | None,
+    ) -> str:
+        override = str(user_override or "").strip().lower()
+        if override == "approved":
+            return "audit"
+        if override == "disabled":
+            return "block"
+        if isinstance(llm_review, dict) and llm_review.get("status") == "completed":
+            decision = str(llm_review.get("decision") or "").strip().lower()
+            if decision == "allow":
+                return "audit"
+            if decision == "block":
+                return "block"
+        normalized = str(static_verdict or "review").strip().lower()
+        return normalized if normalized in {"allow", "audit", "review", "block"} else "review"
+
+    def _skill_review_status(self, review: Dict[str, Any]) -> str:
+        if bool(review.get("disabled")):
+            return "disabled"
+        override = str(review.get("user_override") or "").strip().lower()
+        if override == "approved":
+            return "approved"
+        verdict = str(review.get("effective_verdict") or "").strip().lower()
+        if verdict == "block":
+            return "blocked"
+        if verdict == "review":
+            return "review"
+        if verdict in {"allow", "audit"}:
+            return verdict
+        return "unknown"
 
     def _is_package_install_command(self, command: str) -> bool:
         normalized = (command or "").strip().lower()
@@ -2133,6 +2530,266 @@ class SafetyGuardian:
             except Exception:
                 continue
         return False
+
+    def _analyze_system_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]]) -> _CommandAnalysis:
+        analysis = _CommandAnalysis(original=str(command or ""))
+        decoded_commands = self._decode_command_payloads(command)
+        analysis.decoded_commands = decoded_commands
+        lower = str(command or "").lower()
+        if self._has_encoded_or_reflective_indicator(lower):
+            analysis.encoded_indicators = self._encoded_indicators(lower)
+            if not decoded_commands and self._has_execution_context(lower):
+                analysis.ambiguous_encoded_execution = True
+        analysis.download_output_paths = self._extract_download_output_paths(command)
+        analysis.download_hosts = self._extract_download_hosts(command)
+        download_reason = self._download_execute_reason(command)
+        if download_reason:
+            analysis.download_execute_detected = True
+            analysis.download_execute_reason = download_reason
+        return analysis
+
+    def _decode_command_payloads(self, command: str) -> list[str]:
+        decoded: list[str] = []
+        for candidate in self._extract_powershell_encoded_candidates(command):
+            decoded.extend(self._decode_base64_text(candidate, prefer_utf16=True))
+        lower = str(command or "").lower()
+        if self._has_execution_context(lower) and self._has_encoded_or_reflective_indicator(lower):
+            for candidate in self._extract_generic_base64_candidates(command):
+                decoded.extend(self._decode_base64_text(candidate, prefer_utf16=False))
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in decoded:
+            text = self._clean_decoded_command(item)
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(text)
+        return cleaned[:6]
+
+    def _extract_powershell_encoded_candidates(self, command: str) -> list[str]:
+        try:
+            tokens = [token for token in shlex.split(str(command or "").strip(), posix=False) if token]
+        except Exception:
+            tokens = [token for token in re.split(r"\s+", str(command or "").strip()) if token]
+        candidates: list[str] = []
+        for index, token in enumerate(tokens):
+            normalized = token.strip("\"'").lower()
+            if normalized in {"-enc", "-encodedcommand", "/enc", "/encodedcommand"} and index + 1 < len(tokens):
+                candidates.append(tokens[index + 1].strip("\"'"))
+                continue
+            match = re.match(r"(?i)^-(?:enc|encodedcommand):?(.+)$", token.strip("\"'"))
+            if match:
+                candidates.append(match.group(1).strip("\"'"))
+        return candidates
+
+    def _extract_generic_base64_candidates(self, command: str) -> list[str]:
+        raw = str(command or "")
+        candidates = re.findall(r"(?<![a-zA-Z0-9+/=_-])([a-zA-Z0-9+/]{24,}={0,2})(?![a-zA-Z0-9+/=_-])", raw)
+        return [candidate for candidate in candidates if len(candidate.strip("=")) >= 24][:8]
+
+    def _decode_base64_text(self, candidate: str, *, prefer_utf16: bool) -> list[str]:
+        clean = re.sub(r"\s+", "", str(candidate or "").strip().strip("\"'"))
+        if not clean or len(clean) < 8:
+            return []
+        padding = "=" * ((4 - len(clean) % 4) % 4)
+        try:
+            raw = base64.b64decode(clean + padding, validate=True)
+        except (binascii.Error, ValueError):
+            return []
+        encodings = ["utf-16le", "utf-8", "utf-16"] if prefer_utf16 else ["utf-8", "utf-16le", "utf-16"]
+        decoded: list[str] = []
+        for encoding in encodings:
+            try:
+                text = raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            if self._looks_like_decoded_text(text):
+                decoded.append(text)
+        return decoded
+
+    def _clean_decoded_command(self, value: str) -> str:
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", str(value or ""))
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _looks_like_decoded_text(self, value: str) -> bool:
+        text = self._clean_decoded_command(value)
+        if len(text) < 2:
+            return False
+        printable = sum(1 for char in text if char.isprintable() or char.isspace())
+        return printable / max(1, len(text)) > 0.85
+
+    def _has_encoded_or_reflective_indicator(self, lower_command: str) -> bool:
+        return any(
+            token in lower_command
+            for token in [
+                "-enc",
+                "-encodedcommand",
+                "frombase64string",
+                "base64 -d",
+                "base64 --decode",
+                "eval(",
+                "exec(",
+                "iex",
+                "invoke-expression",
+                "downloadstring",
+                "reflection.assembly",
+                "add-type",
+                "mshta",
+                "rundll32",
+                "regsvr32",
+            ]
+        )
+
+    def _encoded_indicators(self, lower_command: str) -> list[str]:
+        indicators = []
+        for token in [
+            "-enc",
+            "-encodedcommand",
+            "frombase64string",
+            "base64 -d",
+            "base64 --decode",
+            "eval(",
+            "exec(",
+            "iex",
+            "invoke-expression",
+            "downloadstring",
+            "reflection.assembly",
+            "add-type",
+            "mshta",
+            "rundll32",
+            "regsvr32",
+        ]:
+            if token in lower_command:
+                indicators.append(token)
+        return indicators
+
+    def _has_execution_context(self, lower_command: str) -> bool:
+        return any(
+            token in lower_command
+            for token in [
+                "powershell",
+                "pwsh",
+                "cmd /c",
+                "bash -c",
+                "sh -c",
+                "python -c",
+                "node -e",
+                "start-process",
+                "invoke-expression",
+                " iex",
+                "eval(",
+                "exec(",
+                "| bash",
+                "| sh",
+                "chmod +x",
+                "mshta",
+                "rundll32",
+                "regsvr32",
+            ]
+        )
+
+    def _extract_download_hosts(self, command: str) -> list[str]:
+        hosts: list[str] = []
+        for match in re.finditer(r"https?://[^\s\"'`<>]+", str(command or ""), flags=re.IGNORECASE):
+            parsed = urlparse(match.group(0))
+            if parsed.hostname and parsed.hostname not in hosts:
+                hosts.append(parsed.hostname.lower())
+        return hosts
+
+    def _extract_download_output_paths(self, command: str) -> list[Path]:
+        raw = str(command or "")
+        patterns = [
+            r"(?i)\b(?:curl|curl\.exe)\b.*?(?:-o|--output)\s+([^\s;&|]+)",
+            r"(?i)\b(?:wget|wget\.exe)\b.*?(?:-o|-O|--output-document=?)\s*([^\s;&|]+)",
+            r"(?i)\b(?:invoke-webrequest|invoke-restmethod|iwr|irm)\b.*?-outfile\s+([^\s;&|]+)",
+            r"(?i)\bcertutil\b.*?-urlcache.*?-f\s+https?://[^\s\"']+\s+([^\s;&|]+)",
+            r"(?i)\bbitsadmin\b.*?/transfer.*?https?://[^\s\"']+\s+([^\s;&|]+)",
+        ]
+        paths: list[Path] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, raw):
+                candidate = match.group(1).strip().strip("\"'")
+                normalized = self._normalize_path(candidate)
+                if normalized is None:
+                    continue
+                key = str(normalized).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(normalized)
+        return paths
+
+    def _download_execute_reason(self, command: str) -> str:
+        lower = str(command or "").lower()
+        if re.search(r"\b(?:curl|wget|irm|iwr|invoke-webrequest|invoke-restmethod)\b.*\|\s*(?:bash|sh|powershell|pwsh|cmd|python|node)\b", lower):
+            return "download_pipe_to_interpreter"
+        if "downloadstring" in lower and (" iex" in lower or "invoke-expression" in lower):
+            return "downloadstring_invoke_expression"
+        if re.search(r"\b(?:invoke-webrequest|invoke-restmethod|iwr|irm|curl|wget|certutil|bitsadmin)\b", lower):
+            if re.search(r"(?:;|&&|\|).*\b(?:start-process|powershell(?:\.exe)?\s+-file|pwsh(?:\.exe)?\s+-file|cmd\s+/c|bash\s+|sh\s+|python\s+|node\s+)", lower):
+                return "download_then_execute_in_command"
+            if "chmod +x" in lower and re.search(r"(?:;|&&).*(?:\./|/tmp/|temp|\.sh|\.py|\.js)", lower):
+                return "download_chmod_execute"
+        if re.search(r"\b(?:urlretrieve|requests\.get|httpx\.get)\b", lower) and re.search(r"\b(?:subprocess\.|os\.system|start-process|exec\()", lower):
+            return "programmatic_download_then_execute"
+        return ""
+
+    def _remember_recent_downloads(self, analysis: _CommandAnalysis, runtime_context: Optional[Dict[str, Any]]) -> None:
+        now = time.monotonic()
+        self._recent_downloads = [
+            item
+            for item in self._recent_downloads
+            if now - item.recorded_at <= _RECENT_DOWNLOAD_TTL_SECONDS
+        ]
+        if not analysis.download_output_paths:
+            return
+        runtime_kind = None
+        if isinstance(runtime_context, dict):
+            runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "") or None
+        host = analysis.download_hosts[0] if analysis.download_hosts else None
+        existing = {str(item.path).lower() for item in self._recent_downloads}
+        for path in analysis.download_output_paths:
+            key = str(path).lower()
+            if key in existing:
+                continue
+            self._recent_downloads.append(_RecentDownload(path=path, host=host, recorded_at=now, runtime_kind=runtime_kind))
+
+    def _matches_recent_download_execution(self, command: str, runtime_context: Optional[Dict[str, Any]]) -> _RecentDownload | None:
+        now = time.monotonic()
+        self._recent_downloads = [
+            item
+            for item in self._recent_downloads
+            if now - item.recorded_at <= _RECENT_DOWNLOAD_TTL_SECONDS
+        ]
+        if not self._recent_downloads:
+            return None
+        lower = str(command or "").lower()
+        target_paths = self._extract_explicit_paths_from_command(command)
+        for token in self._command_tokens(command):
+            normalized = self._normalize_path(token.strip("\"'"))
+            if normalized is not None:
+                target_paths.append(normalized)
+        for download in self._recent_downloads:
+            if download.path.suffix.lower() not in _DOWNLOAD_EXECUTABLE_SUFFIXES:
+                continue
+            for target in target_paths:
+                if str(target).lower() == str(download.path).lower():
+                    if self._has_execution_context(lower) or self._looks_like_direct_executable_command(command, target):
+                        return download
+        return None
+
+    def _looks_like_direct_executable_command(self, command: str, target: Path) -> bool:
+        tokens = self._command_tokens(command)
+        if not tokens:
+            return False
+        first = self._normalize_path(tokens[0].strip("\"'"))
+        return first is not None and str(first).lower() == str(target).lower()
 
     def _touches_protected_path_in_command(self, command: str) -> bool:
         lower = (command or "").lower()

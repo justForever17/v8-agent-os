@@ -8,6 +8,7 @@ from core.model_budget_service import model_budget_service
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
+from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.storage import storage
 
 
@@ -576,6 +577,9 @@ class ModelControlPlane:
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
                     "mediaLimits": model_meta.get("mediaLimits") or {},
+                    "promptCachingProfileId": model_meta.get("promptCachingProfileId")
+                    or meta.get("promptCachingProfileId")
+                    or prompt_cache_profile_id_for_provider(str(provider_id)),
                 }
 
             providers[str(provider_id)] = {
@@ -590,6 +594,9 @@ class ModelControlPlane:
                     "type": meta.get("type") or "API",
                     "icon": meta.get("icon") or None,
                     "logoAsset": meta.get("logoAsset") or None,
+                    "promptCachingProfileId": meta.get("promptCachingProfileId")
+                    or meta.get("prompt_caching_profile_id")
+                    or prompt_cache_profile_id_for_provider(str(provider_id)),
                     "is_enabled": bool(meta.get("is_enabled", meta.get("isEnabled", True))),
                 },
                 "models": normalized_models,
@@ -931,6 +938,9 @@ class ModelControlPlane:
                         "capabilitySource": model_meta.get("capabilitySource") or "manual",
                         "parameterProfile": model_meta.get("parameterProfile") or "chat",
                         "mediaLimits": model_meta.get("mediaLimits") or {},
+                        "promptCachingProfileId": model_meta.get("promptCachingProfileId")
+                        or provider_meta.get("promptCachingProfileId")
+                        or prompt_cache_profile_id_for_provider(str(provider_id)),
                         "priority": model_meta.get("priority"),
                         "stabilityTier": model_meta.get("stabilityTier"),
                         "isEnabled": bool(model_meta.get("isEnabled", True)),

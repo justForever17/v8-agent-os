@@ -12,6 +12,7 @@ from core.context.delegation import build_delegation_context, latest_delegation_
 from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
+from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
@@ -325,6 +326,60 @@ _INTERACTIVE_CLI_RULE = (
 )
 
 
+def _agent_prompt_part(source: str, segment_type: str, text: str, *, scope: str = "") -> dict[str, str]:
+    return {"source": source, "type": segment_type, "text": text or "", "scope": scope}
+
+
+def _split_agent_env_context_parts(env_context: str) -> list[dict[str, str]]:
+    text = str(env_context or "")
+    if not text:
+        return []
+    marker = "Current Time:"
+    marker_index = text.find(marker)
+    if marker_index < 0:
+        return [_agent_prompt_part("subagent.environment.static", "scoped_static", text, scope="environment")]
+    line_start = text.rfind("\n", 0, marker_index) + 1
+    line_end = text.find("\n", marker_index)
+    if line_end < 0:
+        line_end = len(text)
+    else:
+        line_end += 1
+    return [
+        _agent_prompt_part("subagent.environment.before_time", "scoped_static", text[:line_start], scope="environment"),
+        _agent_prompt_part("subagent.environment.current_time", "dynamic", text[line_start:line_end], scope="environment"),
+        _agent_prompt_part("subagent.environment.after_time", "scoped_static", text[line_end:], scope="environment"),
+    ]
+
+
+def _build_agent_system_bundle(
+    *,
+    agent_name: str,
+    agent_system_prompt: str,
+    env_context: str,
+    active_plan_context: str = "",
+    delegated_plan_context: str = "",
+    route_prompt_addition: str = "",
+) -> dict[str, object]:
+    parts: list[dict[str, str]] = [
+        _agent_prompt_part(
+            "subagent.persona_mission_contracts",
+            "stable_static",
+            f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n",
+            scope="persona",
+        ),
+        *_split_agent_env_context_parts(env_context),
+        _agent_prompt_part("subagent.active_plan", "dynamic", active_plan_context, scope="planner"),
+        _agent_prompt_part("subagent.delegated_task_brief", "dynamic", delegated_plan_context, scope="task_brief"),
+        _agent_prompt_part("subagent.route_additions", "dynamic", route_prompt_addition, scope="extensions"),
+        _agent_prompt_part("subagent.separator", "dynamic", "\n\n", scope="separator"),
+        _agent_prompt_part("subagent.interactive_cli_rule", "stable_static", _INTERACTIVE_CLI_RULE, scope="execution_hints"),
+    ]
+    return {
+        "content": "".join(part.get("text") or "" for part in parts),
+        "segments": build_prompt_segments_from_parts(parts),
+    }
+
+
 def _build_agent_system_content(
     *,
     agent_name: str,
@@ -334,10 +389,15 @@ def _build_agent_system_content(
     delegated_plan_context: str = "",
     route_prompt_addition: str = "",
 ) -> str:
-    return (
-        f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n"
-        f"{env_context}{active_plan_context}{delegated_plan_context}{route_prompt_addition}\n\n"
-        f"{_INTERACTIVE_CLI_RULE}"
+    return str(
+        _build_agent_system_bundle(
+            agent_name=agent_name,
+            agent_system_prompt=agent_system_prompt,
+            env_context=env_context,
+            active_plan_context=active_plan_context,
+            delegated_plan_context=delegated_plan_context,
+            route_prompt_addition=route_prompt_addition,
+        )["content"]
     )
 
 
@@ -548,15 +608,17 @@ def build_agent_node(
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
+            system_bundle = _build_agent_system_bundle(
+                agent_name=agent_name,
+                agent_system_prompt=agent_system_prompt,
+                env_context=env_context,
+                active_plan_context=active_plan_context,
+                delegated_plan_context=delegated_plan_context,
+                route_prompt_addition=route_bundle.prompt_addition,
+            )
             sys_msg = SystemMessage(
-                content=_build_agent_system_content(
-                    agent_name=agent_name,
-                    agent_system_prompt=agent_system_prompt,
-                    env_context=env_context,
-                    active_plan_context=active_plan_context,
-                    delegated_plan_context=delegated_plan_context,
-                    route_prompt_addition=route_bundle.prompt_addition,
-                )
+                content=str(system_bundle["content"]),
+                additional_kwargs={"v8_prompt_segments": list(system_bundle.get("segments") or [])},
             )
 
             run_messages = [sys_msg] + task_messages

@@ -3248,43 +3248,39 @@ def fetch_skill_instructions(skill_name: str) -> str:
         from core.audit_logger import audit_logger
         from erc.safety_guardian import safety_guardian
 
-        scan_payload = safety_guardian.assess_skill_directory(
+        ledger_review = safety_guardian.get_skill_safety_review(
+            skill_id=str(skill.get("skillId") or ""),
             skill_name=skill.get("name") or skill_name,
             skill_root=skill.get("path") or "",
             instruction_path=skill.get("instructionPath") or "",
         )
-        static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
-        if static_verdict == "review" and bool(scan_payload.get("llmReviewRecommended")):
-            review_payload = safety_guardian.review_skill_scan_with_llm(
+        if ledger_review:
+            scan_payload = safety_guardian.skill_review_to_scan_payload(ledger_review)
+        else:
+            scan_payload = safety_guardian.assess_skill_directory(
                 skill_name=skill.get("name") or skill_name,
                 skill_root=skill.get("path") or "",
-                scan_payload=scan_payload,
+                instruction_path=skill.get("instructionPath") or "",
             )
-            if review_payload:
-                scan_payload["llmReview"] = review_payload
-                scan_payload["reviewMode"] = "llm_assisted"
-                if review_payload.get("status") == "completed":
-                    review_summary = str(review_payload.get("summary") or "").strip()
-                    if review_payload.get("decision") == "allow":
-                        scan_payload["staticVerdict"] = static_verdict
-                        scan_payload["verdict"] = "audit"
-                        reasons = list(scan_payload.get("reasons") or [])
-                        reasons.append(
-                            f"安全复审模型认为该 skill 可放行：{review_summary or '证据不足以支持阻断。'}"
-                        )
-                        scan_payload["reasons"] = reasons[:10]
-                    elif review_payload.get("decision") == "block":
-                        scan_payload["staticVerdict"] = static_verdict
-                        scan_payload["verdict"] = "block"
-                        reasons = list(scan_payload.get("reasons") or [])
-                        reasons.append(
-                            f"安全复审模型维持阻断：{review_summary or '疑点仍然足够高风险。'}"
-                        )
-                        scan_payload["reasons"] = reasons[:10]
-                else:
-                    scan_payload["reviewMode"] = "rules_only_fallback"
-        else:
-            scan_payload["reviewMode"] = "rules_only"
+            static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
+            if static_verdict == "review" and bool(scan_payload.get("llmReviewRecommended")):
+                review_payload = safety_guardian.review_skill_scan_with_llm(
+                    skill_name=skill.get("name") or skill_name,
+                    skill_root=skill.get("path") or "",
+                    scan_payload=scan_payload,
+                )
+                scan_payload = safety_guardian.apply_skill_llm_review(scan_payload, review_payload)
+            else:
+                scan_payload["reviewMode"] = "rules_only"
+            ledger_review = safety_guardian.record_skill_safety_review(
+                skill_id=str(skill.get("skillId") or ""),
+                skill_name=skill.get("name") or skill_name,
+                skill_root=skill.get("path") or "",
+                instruction_path=skill.get("instructionPath") or "",
+                scan_payload=scan_payload,
+                llm_review=review_payload,
+            )
+            scan_payload = safety_guardian.skill_review_to_scan_payload(ledger_review)
         audit_logger.log(
             source_type="SAFETY",
             action="skill_scan",

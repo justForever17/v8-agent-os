@@ -227,6 +227,37 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS skill_safety_reviews (
+                    id TEXT PRIMARY KEY,
+                    skill_id TEXT,
+                    skill_name TEXT,
+                    skill_path TEXT NOT NULL,
+                    instruction_path TEXT,
+                    identity_key TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    manifest_hash TEXT,
+                    static_verdict TEXT,
+                    effective_verdict TEXT NOT NULL,
+                    user_override TEXT,
+                    disabled INTEGER DEFAULT 0,
+                    scan_payload_json TEXT,
+                    llm_review_json TEXT,
+                    reasons_json TEXT,
+                    flagged_files_json TEXT,
+                    finding_categories_json TEXT,
+                    reviewed_at TIMESTAMP,
+                    approved_at TIMESTAMP,
+                    disabled_at TIMESTAMP,
+                    revoked_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_safety_identity_hash ON skill_safety_reviews (identity_key, content_hash)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_skill_safety_disabled ON skill_safety_reviews (disabled, updated_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_skill_safety_skill_id ON skill_safety_reviews (skill_id)')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS ask_user_interactions (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -616,6 +647,57 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS prompt_cache_events (
+                    id TEXT PRIMARY KEY,
+                    provider_id TEXT,
+                    model_id TEXT,
+                    model_ref TEXT,
+                    role TEXT,
+                    profile_id TEXT,
+                    static_prefix_key TEXT,
+                    response_cache_key TEXT,
+                    decision TEXT NOT NULL,
+                    skip_reason TEXT,
+                    provider_patch_json TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS prompt_cache_segments (
+                    id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    segment_type TEXT NOT NULL,
+                    source TEXT,
+                    content_hash TEXT NOT NULL,
+                    char_count INTEGER DEFAULT 0,
+                    estimated_tokens INTEGER DEFAULT 0,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (event_id) REFERENCES prompt_cache_events (id) ON DELETE CASCADE
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS llm_response_cache (
+                    response_cache_key TEXT PRIMARY KEY,
+                    static_prefix_key TEXT,
+                    provider_id TEXT,
+                    model_id TEXT,
+                    model_ref TEXT,
+                    role TEXT,
+                    response_body_json TEXT NOT NULL,
+                    metadata_json TEXT,
+                    hit_count INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS runtime_artifacts (
                     id TEXT PRIMARY KEY,
                     session_id TEXT,
@@ -687,6 +769,12 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_started_at ON model_invocation_logs (started_at DESC)')
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_ledger_scope_bucket ON usage_ledger (bucket_date, scope_type, scope_id, model_id, role)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_provider_health_logs_provider_id ON provider_health_logs (provider_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_cache_events_created_at ON prompt_cache_events (created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_cache_events_prefix_key ON prompt_cache_events (static_prefix_key)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_cache_events_decision ON prompt_cache_events (decision)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_cache_segments_event_id ON prompt_cache_segments (event_id, ordinal)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_llm_response_cache_expires_at ON llm_response_cache (expires_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_llm_response_cache_prefix_key ON llm_response_cache (static_prefix_key)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_session_id ON runtime_artifacts (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_run_id ON runtime_artifacts (run_id, created_at DESC)')
             
@@ -2200,6 +2288,215 @@ class DatabaseManager:
                 rows.append(data)
             return rows
 
+    def _skill_safety_review_from_row(self, row: sqlite3.Row | Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        for column, output_key, fallback in [
+            ("scan_payload_json", "scanPayload", {}),
+            ("llm_review_json", "llmReview", None),
+            ("reasons_json", "reasons", []),
+            ("flagged_files_json", "flaggedFiles", []),
+            ("finding_categories_json", "findingCategories", []),
+        ]:
+            raw = data.pop(column, None)
+            if raw:
+                try:
+                    data[output_key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    data[output_key] = fallback
+            else:
+                data[output_key] = fallback
+        data["disabled"] = bool(data.get("disabled"))
+        return data
+
+    def upsert_skill_safety_review(
+        self,
+        *,
+        review_id: str,
+        skill_id: str | None,
+        skill_name: str | None,
+        skill_path: str,
+        instruction_path: str | None,
+        identity_key: str,
+        content_hash: str,
+        manifest_hash: str | None,
+        static_verdict: str,
+        effective_verdict: str,
+        user_override: str | None = None,
+        disabled: bool = False,
+        scan_payload: Dict[str, Any] | None = None,
+        llm_review: Dict[str, Any] | None = None,
+        reasons: list[Any] | None = None,
+        flagged_files: list[Any] | None = None,
+        finding_categories: list[Any] | None = None,
+    ) -> Dict[str, Any]:
+        now = latest_utc_iso()
+        scan_payload_json = json.dumps(to_jsonable(scan_payload or {}), ensure_ascii=False)
+        llm_review_json = json.dumps(to_jsonable(llm_review), ensure_ascii=False) if llm_review is not None else None
+        reasons_json = json.dumps(to_jsonable(list(reasons or [])), ensure_ascii=False)
+        flagged_files_json = json.dumps(to_jsonable(list(flagged_files or [])), ensure_ascii=False)
+        finding_categories_json = json.dumps(to_jsonable(list(finding_categories or [])), ensure_ascii=False)
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM skill_safety_reviews WHERE identity_key = ? AND content_hash = ?",
+                (identity_key, content_hash),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                existing_data = dict(existing)
+                preserved_override = existing_data.get("user_override") if user_override is None else user_override
+                preserved_disabled = bool(existing_data.get("disabled")) if user_override is None else bool(disabled)
+                effective = "block" if preserved_disabled else effective_verdict
+                cursor.execute(
+                    '''
+                    UPDATE skill_safety_reviews
+                    SET skill_id = ?, skill_name = ?, skill_path = ?, instruction_path = ?,
+                        manifest_hash = ?, static_verdict = ?, effective_verdict = ?,
+                        user_override = ?, disabled = ?, scan_payload_json = ?, llm_review_json = ?,
+                        reasons_json = ?, flagged_files_json = ?, finding_categories_json = ?,
+                        reviewed_at = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE identity_key = ? AND content_hash = ?
+                    ''',
+                    (
+                        skill_id,
+                        skill_name,
+                        skill_path,
+                        instruction_path,
+                        manifest_hash,
+                        static_verdict,
+                        effective,
+                        preserved_override,
+                        1 if preserved_disabled else 0,
+                        scan_payload_json,
+                        llm_review_json,
+                        reasons_json,
+                        flagged_files_json,
+                        finding_categories_json,
+                        now,
+                        identity_key,
+                        content_hash,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    INSERT INTO skill_safety_reviews
+                    (id, skill_id, skill_name, skill_path, instruction_path, identity_key, content_hash,
+                     manifest_hash, static_verdict, effective_verdict, user_override, disabled,
+                     scan_payload_json, llm_review_json, reasons_json, flagged_files_json,
+                     finding_categories_json, reviewed_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ''',
+                    (
+                        review_id,
+                        skill_id,
+                        skill_name,
+                        skill_path,
+                        instruction_path,
+                        identity_key,
+                        content_hash,
+                        manifest_hash,
+                        static_verdict,
+                        effective_verdict,
+                        user_override,
+                        1 if disabled else 0,
+                        scan_payload_json,
+                        llm_review_json,
+                        reasons_json,
+                        flagged_files_json,
+                        finding_categories_json,
+                        now,
+                    ),
+                )
+            conn.commit()
+            cursor.execute(
+                "SELECT * FROM skill_safety_reviews WHERE identity_key = ? AND content_hash = ?",
+                (identity_key, content_hash),
+            )
+            row = cursor.fetchone()
+            return self._skill_safety_review_from_row(row) if row else {}
+
+    def get_skill_safety_review(self, *, identity_key: str, content_hash: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM skill_safety_reviews WHERE identity_key = ? AND content_hash = ?",
+                (identity_key, content_hash),
+            )
+            row = cursor.fetchone()
+            return self._skill_safety_review_from_row(row) if row else None
+
+    def get_skill_safety_review_by_id(self, review_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM skill_safety_reviews WHERE id = ?", (review_id,))
+            row = cursor.fetchone()
+            return self._skill_safety_review_from_row(row) if row else None
+
+    def list_skill_safety_reviews(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM skill_safety_reviews WHERE 1=1"
+        params: list[Any] = []
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status == "disabled":
+            query += " AND disabled = 1"
+        elif normalized_status == "approved":
+            query += " AND user_override = 'approved' AND disabled = 0"
+        elif normalized_status == "review":
+            query += " AND effective_verdict = 'review' AND disabled = 0"
+        elif normalized_status == "blocked":
+            query += " AND effective_verdict = 'block'"
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(500, int(limit or 100))))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._skill_safety_review_from_row(row) for row in cursor.fetchall()]
+
+    def update_skill_safety_review_override(
+        self,
+        *,
+        review_id: str,
+        user_override: str | None,
+        disabled: bool,
+        effective_verdict: str,
+    ) -> Optional[Dict[str, Any]]:
+        now = latest_utc_iso()
+        approved_at = now if user_override == "approved" else None
+        disabled_at = now if disabled else None
+        revoked_at = now if user_override is None else None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE skill_safety_reviews
+                SET user_override = ?, disabled = ?, effective_verdict = ?,
+                    approved_at = COALESCE(?, approved_at),
+                    disabled_at = COALESCE(?, disabled_at),
+                    revoked_at = COALESCE(?, revoked_at),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (
+                    user_override,
+                    1 if disabled else 0,
+                    effective_verdict,
+                    approved_at,
+                    disabled_at,
+                    revoked_at,
+                    review_id,
+                ),
+            )
+            conn.commit()
+            cursor.execute("SELECT * FROM skill_safety_reviews WHERE id = ?", (review_id,))
+            row = cursor.fetchone()
+            return self._skill_safety_review_from_row(row) if row else None
+
     def add_ask_user_interaction(
         self,
         *,
@@ -2731,6 +3028,208 @@ class DatabaseManager:
                 ),
             )
             conn.commit()
+
+    def add_prompt_cache_event(self, record: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                INSERT OR REPLACE INTO prompt_cache_events (
+                    id, provider_id, model_id, model_ref, role, profile_id,
+                    static_prefix_key, response_cache_key, decision, skip_reason,
+                    provider_patch_json, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    record.get("id"),
+                    record.get("provider_id"),
+                    record.get("model_id"),
+                    record.get("model_ref"),
+                    record.get("role"),
+                    record.get("profile_id"),
+                    record.get("static_prefix_key"),
+                    record.get("response_cache_key"),
+                    record.get("decision"),
+                    record.get("skip_reason"),
+                    json.dumps(record.get("provider_patch") or {}, ensure_ascii=False),
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    record.get("created_at") or utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def add_prompt_cache_segments(self, event_id: str, segments: List[Dict[str, Any]]) -> None:
+        if not event_id:
+            return
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM prompt_cache_segments WHERE event_id = ?", (event_id,))
+            for index, segment in enumerate(segments or []):
+                conn.execute(
+                    '''
+                    INSERT INTO prompt_cache_segments (
+                        id, event_id, ordinal, segment_type, source, content_hash,
+                        char_count, estimated_tokens, metadata_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        str(uuid.uuid4()),
+                        event_id,
+                        index,
+                        segment.get("type") or segment.get("segment_type") or "",
+                        segment.get("source"),
+                        segment.get("hash") or segment.get("content_hash") or "",
+                        int(segment.get("charCount") or segment.get("char_count") or 0),
+                        int(segment.get("estimatedTokens") or segment.get("estimated_tokens") or 0),
+                        json.dumps(segment.get("metadata") or {}, ensure_ascii=False),
+                        utc_now_iso(),
+                    ),
+                )
+            conn.commit()
+
+    def get_llm_response_cache(self, response_cache_key: str) -> Optional[Dict[str, Any]]:
+        if not response_cache_key:
+            return None
+        now = utc_now_iso()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT * FROM llm_response_cache
+                WHERE response_cache_key = ?
+                  AND (expires_at IS NULL OR expires_at > ?)
+                ''',
+                (response_cache_key, now),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["response"] = json.loads(item["response_body_json"]) if item.get("response_body_json") else {}
+            item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+            return item
+
+    def upsert_llm_response_cache(self, record: Dict[str, Any]) -> None:
+        key = str(record.get("response_cache_key") or "")
+        if not key:
+            return
+        ttl_seconds = int(record.get("ttl_seconds") or 600)
+        now_epoch = time.time()
+        created_at = record.get("created_at") or datetime.fromtimestamp(now_epoch, timezone.utc).isoformat()
+        expires_at = datetime.fromtimestamp(now_epoch + max(ttl_seconds, 1), timezone.utc).isoformat()
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                INSERT INTO llm_response_cache (
+                    response_cache_key, static_prefix_key, provider_id, model_id, model_ref,
+                    role, response_body_json, metadata_json, hit_count, created_at,
+                    updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                ON CONFLICT(response_cache_key) DO UPDATE SET
+                    response_body_json=excluded.response_body_json,
+                    metadata_json=excluded.metadata_json,
+                    static_prefix_key=excluded.static_prefix_key,
+                    provider_id=excluded.provider_id,
+                    model_id=excluded.model_id,
+                    model_ref=excluded.model_ref,
+                    role=excluded.role,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                ''',
+                (
+                    key,
+                    record.get("static_prefix_key"),
+                    record.get("provider_id"),
+                    record.get("model_id"),
+                    record.get("model_ref"),
+                    record.get("role"),
+                    json.dumps(record.get("response") or {}, ensure_ascii=False),
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    created_at,
+                    utc_now_iso(),
+                    expires_at,
+                ),
+            )
+            conn.commit()
+
+    def increment_llm_response_cache_hit(self, response_cache_key: str) -> None:
+        if not response_cache_key:
+            return
+        with self.get_connection() as conn:
+            conn.execute(
+                '''
+                UPDATE llm_response_cache
+                SET hit_count = hit_count + 1, updated_at = ?
+                WHERE response_cache_key = ?
+                ''',
+                (utc_now_iso(), response_cache_key),
+            )
+            conn.commit()
+
+    def get_prompt_cache_stats(self, limit: int = 50) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT decision, COUNT(*) AS count
+                FROM prompt_cache_events
+                GROUP BY decision
+                ORDER BY count DESC
+                '''
+            )
+            by_decision = [dict(row) for row in cursor.fetchall()]
+            cursor.execute(
+                '''
+                SELECT skip_reason, COUNT(*) AS count
+                FROM prompt_cache_events
+                WHERE COALESCE(skip_reason, '') != ''
+                GROUP BY skip_reason
+                ORDER BY count DESC
+                '''
+            )
+            by_skip_reason = [dict(row) for row in cursor.fetchall()]
+            cursor.execute(
+                '''
+                SELECT COUNT(*) AS count, COALESCE(SUM(hit_count), 0) AS hits
+                FROM llm_response_cache
+                WHERE expires_at IS NULL OR expires_at > ?
+                ''',
+                (utc_now_iso(),),
+            )
+            cache_row = cursor.fetchone()
+            cursor.execute(
+                '''
+                SELECT * FROM prompt_cache_events
+                ORDER BY created_at DESC
+                LIMIT ?
+                ''',
+                (max(1, min(int(limit or 50), 200)),),
+            )
+            recent = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                item["providerPatch"] = json.loads(item["provider_patch_json"]) if item.get("provider_patch_json") else {}
+                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                recent.append(item)
+            return {
+                "eventsByDecision": by_decision,
+                "eventsBySkipReason": by_skip_reason,
+                "responseCache": {
+                    "entries": int(cache_row["count"] or 0) if cache_row else 0,
+                    "hits": int(cache_row["hits"] or 0) if cache_row else 0,
+                },
+                "recentEvents": recent,
+            }
+
+    def purge_prompt_cache(self) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            counts: Dict[str, int] = {}
+            for table in ("prompt_cache_segments", "prompt_cache_events", "llm_response_cache"):
+                cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")
+                row = cursor.fetchone()
+                counts[table] = int(row["count"] or 0) if row else 0
+                cursor.execute(f"DELETE FROM {table}")
+            conn.commit()
+            return {"deleted": counts}
 
     def get_counts_snapshot(self) -> Dict[str, int]:
         with self.get_connection() as conn:

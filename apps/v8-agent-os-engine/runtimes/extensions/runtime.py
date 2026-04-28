@@ -2359,12 +2359,28 @@ class ExtensionsRuntimeService:
             for item in self._recent_blocked_skill_records()
             if str(item.get("skillId") or item.get("skillPath") or item.get("rootPath") or item.get("skillName") or "").strip()
         }
+        try:
+            from erc.safety_guardian import safety_guardian
+
+            for review in safety_guardian.list_skill_safety_reviews(status="disabled", limit=500):
+                for key in (
+                    review.get("skill_id"),
+                    review.get("skill_path"),
+                    review.get("skill_name"),
+                ):
+                    normalized = str(key or "").strip()
+                    if normalized:
+                        blocked_keys.add(normalized)
+        except Exception:
+            pass
         if not blocked_keys:
             return skills
         return [
             item
             for item in skills
             if str(item.get("skillId") or item.get("skillRoot") or item.get("skillName") or "").strip() not in blocked_keys
+            and str(item.get("path") or "").strip() not in blocked_keys
+            and str(item.get("name") or "").strip() not in blocked_keys
         ]
 
     def get_skill_startup_status(self) -> dict[str, Any]:

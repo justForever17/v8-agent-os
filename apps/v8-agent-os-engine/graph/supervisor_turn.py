@@ -221,6 +221,7 @@ def execute_supervisor_turn(
         prepared_messages = prepare_supervisor_messages(
             messages=prepared_messages,
             system_content=system_content,
+            prompt_segments=context_bundle.get("v8_prompt_segments") or [],
             ensure_reasoning_content=ensure_reasoning_content,
             sanitize_message_chain=sanitize_message_chain,
             context_orchestrator=context_orchestrator,

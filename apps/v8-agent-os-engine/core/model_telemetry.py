@@ -93,33 +93,111 @@ def extract_token_usage(response: Any) -> Dict[str, int]:
     return usage
 
 
+def _collapse_repeated_string(value: Any) -> Any:
+    if not isinstance(value, str) or len(value) < 2:
+        return value
+    length = len(value)
+    for unit_size in range(1, (length // 2) + 1):
+        if length % unit_size != 0:
+            continue
+        unit = value[:unit_size]
+        if unit and unit * (length // unit_size) == value:
+            return unit
+    return value
+
+
+def _normalize_prompt_cache_payload(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    return {str(key): _collapse_repeated_string(item) for key, item in dict(value).items()}
+
+
+def _runtime_diagnostics_from_mapping(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    diagnostics: Dict[str, Any] = {}
+    if payload.get("v8_provider_adapter"):
+        diagnostics["providerAdapter"] = payload.get("v8_provider_adapter")
+    if payload.get("v8_provider_adapter_label"):
+        diagnostics["providerAdapterLabel"] = payload.get("v8_provider_adapter_label")
+    if payload.get("v8_effective_capability_matrix"):
+        diagnostics["effectiveCapabilityMatrix"] = payload.get("v8_effective_capability_matrix")
+    if payload.get("v8_tool_calling_mode"):
+        diagnostics["toolCallingMode"] = payload.get("v8_tool_calling_mode")
+    if payload.get("v8_structured_output_mode"):
+        diagnostics["structuredOutputMode"] = payload.get("v8_structured_output_mode")
+    if payload.get("v8_stream_mode"):
+        diagnostics["streamMode"] = payload.get("v8_stream_mode")
+    if payload.get("v8_prompt_cache"):
+        diagnostics["promptCache"] = _normalize_prompt_cache_payload(payload.get("v8_prompt_cache"))
+    if payload.get("promptCache"):
+        diagnostics.setdefault("promptCache", _normalize_prompt_cache_payload(payload.get("promptCache")))
+    return diagnostics
+
+
+def _is_repeated_string_update(existing: Any, value: Any) -> bool:
+    if not isinstance(existing, str) or not isinstance(value, str):
+        return False
+    if not existing or value == existing:
+        return value == existing
+    return len(value) > len(existing) and len(value) % len(existing) == 0 and value == existing * (len(value) // len(existing))
+
+
+def _merge_runtime_diagnostics(base: Dict[str, Any], update: Mapping[str, Any] | None) -> Dict[str, Any]:
+    if not update:
+        return base
+    for key, value in update.items():
+        if value is None or value == "":
+            continue
+        if key == "promptCache" and isinstance(value, Mapping):
+            existing = dict(base.get("promptCache") or {})
+            for nested_key, nested_value in dict(_normalize_prompt_cache_payload(value)).items():
+                if nested_value is None or nested_value == "":
+                    continue
+                current_value = existing.get(nested_key)
+                if current_value not in (None, "") and _is_repeated_string_update(current_value, nested_value):
+                    continue
+                existing[nested_key] = nested_value
+            base["promptCache"] = existing
+        elif key not in base:
+            base[key] = value
+    return base
+
+
+def _extract_runtime_diagnostics_from_any(value: Any) -> Dict[str, Any]:
+    diagnostics: Dict[str, Any] = {}
+    if value is None:
+        return diagnostics
+    if isinstance(value, Mapping):
+        _merge_runtime_diagnostics(diagnostics, _runtime_diagnostics_from_mapping(value))
+        for key in ("response_metadata", "responseMetadata", "generation_info", "generationInfo", "llm_output", "llmOutput"):
+            nested = value.get(key)
+            if isinstance(nested, Mapping):
+                _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(nested))
+        return diagnostics
+    for attr in ("response_metadata", "additional_kwargs", "generation_info", "llm_output"):
+        candidate = getattr(value, attr, None)
+        if isinstance(candidate, Mapping):
+            _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(candidate))
+    message = getattr(value, "message", None)
+    if message is not None and message is not value:
+        _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(message))
+    return diagnostics
+
+
 def extract_runtime_diagnostics(response: Any) -> Dict[str, Any]:
     diagnostics: Dict[str, Any] = {}
+    llm_output = getattr(response, "llm_output", None)
+    if isinstance(llm_output, Mapping):
+        _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(llm_output))
     generations = getattr(response, "generations", None) or []
     for generation_group in generations:
         if not isinstance(generation_group, list):
             continue
         for generation in generation_group:
+            _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(generation))
             message = getattr(generation, "message", None)
-            response_metadata = dict(getattr(message, "response_metadata", {}) or {})
-            if not response_metadata:
-                continue
-            if response_metadata.get("v8_provider_adapter"):
-                diagnostics["providerAdapter"] = response_metadata.get("v8_provider_adapter")
-            if response_metadata.get("v8_provider_adapter_label"):
-                diagnostics["providerAdapterLabel"] = response_metadata.get("v8_provider_adapter_label")
-            if response_metadata.get("v8_effective_capability_matrix"):
-                diagnostics["effectiveCapabilityMatrix"] = response_metadata.get("v8_effective_capability_matrix")
-            if response_metadata.get("v8_tool_calling_mode"):
-                diagnostics["toolCallingMode"] = response_metadata.get("v8_tool_calling_mode")
-            if response_metadata.get("v8_structured_output_mode"):
-                diagnostics["structuredOutputMode"] = response_metadata.get("v8_structured_output_mode")
-            if response_metadata.get("v8_stream_mode"):
-                diagnostics["streamMode"] = response_metadata.get("v8_stream_mode")
             tool_calls = getattr(message, "tool_calls", None)
             if tool_calls:
                 diagnostics["toolCallCount"] = len(tool_calls)
-            return diagnostics
     return diagnostics
 
 
@@ -186,6 +264,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         self.structured_output_mode = structured_output_mode
         self.stream_mode = stream_mode
         self._starts: Dict[str, _InvocationStart] = {}
+        self._streaming_diagnostics: Dict[str, Dict[str, Any]] = {}
 
     @property
     def ignore_chat_model(self) -> bool:
@@ -222,6 +301,9 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         ctx = start.context if start else get_runtime_context()
         usage = extract_token_usage(response)
         runtime_diagnostics = extract_runtime_diagnostics(response)
+        stream_diagnostics = self._streaming_diagnostics.pop(str(run_id), {})
+        if stream_diagnostics:
+            _merge_runtime_diagnostics(runtime_diagnostics, stream_diagnostics)
         latency_ms = (time.perf_counter() - start.started_at) * 1000 if start else 0.0
         cost_input = _estimate_cost(usage["input_tokens"], self.cost_per_input)
         cost_output = _estimate_cost(usage["output_tokens"], self.cost_per_output)
@@ -247,6 +329,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "structuredOutputMode": runtime_diagnostics.get("structuredOutputMode") or self.structured_output_mode,
                 "streamMode": runtime_diagnostics.get("streamMode") or self.stream_mode,
                 "toolCallCount": runtime_diagnostics.get("toolCallCount", 0),
+                "promptCache": runtime_diagnostics.get("promptCache") or {},
             },
         )
 
@@ -260,6 +343,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         start = self._starts.pop(str(run_id), None)
+        self._streaming_diagnostics.pop(str(run_id), None)
         ctx = start.context if start else get_runtime_context()
         latency_ms = (time.perf_counter() - start.started_at) * 1000 if start else 0.0
         self._record_invocation(
@@ -283,6 +367,26 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "streamMode": self.stream_mode,
             },
         )
+
+    def on_llm_new_token(
+        self,
+        token: str,
+        *,
+        run_id,
+        parent_run_id=None,
+        chunk=None,
+        **kwargs: Any,
+    ) -> None:
+        diagnostics = _extract_runtime_diagnostics_from_any(chunk)
+        for candidate_key in ("generation_info", "generationInfo", "response_metadata", "responseMetadata", "llm_output", "llmOutput"):
+            candidate = kwargs.get(candidate_key)
+            if isinstance(candidate, Mapping):
+                _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(candidate))
+        if not diagnostics:
+            return
+        run_key = str(run_id)
+        existing = self._streaming_diagnostics.setdefault(run_key, {})
+        _merge_runtime_diagnostics(existing, diagnostics)
 
     def _record_invocation(
         self,

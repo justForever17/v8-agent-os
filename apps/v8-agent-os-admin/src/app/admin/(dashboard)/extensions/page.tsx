@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Terminal, Upload, Wrench } from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, ShieldAlert, Terminal, Upload, Wrench } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -154,6 +154,27 @@ type SkillInstallResult = {
         reason?: string;
     }>;
     warnings: string[];
+};
+type SkillSafetyReview = {
+    id: string;
+    skill_id?: string | null;
+    skill_name?: string | null;
+    skill_path?: string | null;
+    instruction_path?: string | null;
+    content_hash?: string | null;
+    static_verdict?: string | null;
+    effective_verdict?: string | null;
+    user_override?: string | null;
+    disabled?: boolean;
+    reasons?: string[];
+    flaggedFiles?: Array<{
+        path?: string;
+        severity?: string;
+        findings?: Array<{ id?: string; label?: string }>;
+    }>;
+    findingCategories?: string[];
+    updated_at?: string | null;
+    reviewed_at?: string | null;
 };
 type SysModel = {
     id: string;
@@ -554,6 +575,7 @@ export default function ExtensionsPage() {
     const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(null);
     const [models, setModels] = useState<SysModel[]>([]);
     const [projects, setProjects] = useState<ProjectRecord[]>([]);
+    const [skillSafetyReviews, setSkillSafetyReviews] = useState<SkillSafetyReview[]>([]);
     const [previewScope, setPreviewScope] = useState("default");
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -575,16 +597,18 @@ export default function ExtensionsPage() {
     const [previewError, setPreviewError] = useState("");
     const [previewedQuery, setPreviewedQuery] = useState("");
     const [previewResult, setPreviewResult] = useState<ExtensionPrefilterPreviewResponse | null>(null);
+    const [skillSafetyAction, setSkillSafetyAction] = useState("");
     const fileInputRef = useRef<HTMLInputElement>(null);
     const { toast } = useToast();
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const [healthResponse, config, modelList, projectsPayload] = await Promise.all([
+            const [healthResponse, config, modelList, projectsPayload, skillSafetyPayload] = await Promise.all([
                 fetch("/api/extensions/health", { cache: "no-store" }),
                 fetchConfigDomain<ExtensionsConfigData>("extensions"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
                 fetch("/api/projects", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
+                fetch("/api/skills/safety/reviews?limit=100", { cache: "no-store" }).then((response) => response.json().catch(() => ({ items: [] }))),
             ]);
             if (!healthResponse.ok) {
                 throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
@@ -616,6 +640,7 @@ export default function ExtensionsPage() {
             setConfigEnvelope(config);
             setModels(Array.isArray(modelList) ? modelList : []);
             setProjects(projectItems);
+            setSkillSafetyReviews(Array.isArray(skillSafetyPayload?.items) ? skillSafetyPayload.items : []);
         }
         finally {
             setLoading(false);
@@ -878,6 +903,31 @@ export default function ExtensionsPage() {
             setSavingMcp(false);
         }
     };
+    const handleSkillSafetyAction = async (reviewId: string, action: "approve" | "disable" | "revoke" | "rescan") => {
+        if (!reviewId)
+            return;
+        const actionKey = `${reviewId}:${action}`;
+        setSkillSafetyAction(actionKey);
+        try {
+            const res = await fetch(`/api/skills/safety/reviews/${encodeURIComponent(reviewId)}/${action}`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(String(data?.detail || data?.error || (isZh ? "Skill 安全状态更新失败。" : "Failed to update skill safety state.")));
+            }
+            toast({ title: isZh ? "Skill 安全状态已更新" : "Skill safety state updated" });
+            await loadData();
+        }
+        catch (error) {
+            toast({
+                title: isZh ? "Skill 安全状态更新失败" : "Skill safety update failed",
+                description: error instanceof Error ? error.message : (isZh ? "请稍后重试。" : "Please try again."),
+                variant: "destructive",
+            });
+        }
+        finally {
+            setSkillSafetyAction("");
+        }
+    };
     if (loading || !catalog || !health || !configEnvelope) {
         return (<div className="flex min-h-[320px] items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-slate-400"/>
@@ -899,6 +949,9 @@ export default function ExtensionsPage() {
     const previewCounts = previewResult?.counts;
     const previewSkillsStage1Enabled = Boolean(previewCounts?.stage1Enabled?.skills ?? true);
     const previewMcpStage1Enabled = Boolean(previewCounts?.stage1Enabled?.mcp ?? true);
+    const skillSafetyDisabledCount = skillSafetyReviews.filter((item) => item.disabled).length;
+    const skillSafetyReviewCount = skillSafetyReviews.filter((item) => String(item.effective_verdict || "").toLowerCase() === "review" && !item.disabled).length;
+    const skillSafetyApprovedCount = skillSafetyReviews.filter((item) => String(item.user_override || "").toLowerCase() === "approved" && !item.disabled).length;
     const runtimeStartupState = String(health.runtime?.startupState || catalog.startupState || "cold").trim().toLowerCase();
     const snapshotFreshness = String(health.runtime?.snapshotFreshness || catalog.snapshotFreshness || "cold").trim().toLowerCase();
     const silkAvailable = Boolean(health.silk?.available ?? health.runtime?.silk?.available);
@@ -1192,6 +1245,76 @@ export default function ExtensionsPage() {
             </ConfigCard>
 
             <SourceMetaRow source={configEnvelope.source} savePath={configEnvelope.savePath} reloadRequired={configEnvelope.reloadRequired}/>
+
+            <ConfigCard title={isZh ? "Skill Safety 治理" : "Skill Safety Governance"} description={isZh ? "按内容 hash 复用审查结果；critical 默认禁用，high 保留复核提示。禁用项不进入模型候选。" : "Review results are reused by content hash. Critical skills are disabled by default; high-risk skills keep review banners. Disabled skills are hidden from model candidates."} variant="list" bodyHeight={360} bodyScroll="auto">
+                <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <StatPill label={isZh ? "已禁用" : "Disabled"} value={skillSafetyDisabledCount}/>
+                        <StatPill label={isZh ? "需复核" : "Review"} value={skillSafetyReviewCount}/>
+                        <StatPill label={isZh ? "人工批准" : "Approved"} value={skillSafetyApprovedCount}/>
+                    </div>
+                    {skillSafetyReviews.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm leading-6 text-slate-500">
+                            {isZh ? "暂无 Skill 安全审查记录。首次读取 Skill 后会自动写入 ledger。" : "No skill safety reviews yet. Reviews are recorded when a skill is first loaded."}
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {skillSafetyReviews.slice(0, 8).map((review) => {
+                                const verdict = String(review.effective_verdict || "").toLowerCase();
+                                const override = String(review.user_override || "").toLowerCase();
+                                const status = review.disabled ? "disabled" : override === "approved" ? "approved" : verdict || "unknown";
+                                const badgeVariant = status === "disabled" || status === "block" ? "destructive" : status === "review" ? "secondary" : "outline";
+                                const reasons = (review.reasons || []).slice(0, 2);
+                                const actionBusy = (action: string) => skillSafetyAction === `${review.id}:${action}`;
+                                return (
+                                    <div key={review.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div className="min-w-0 space-y-2">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <ShieldAlert className="h-4 w-4 text-amber-600"/>
+                                                    <div className="text-sm font-semibold text-slate-900">{review.skill_name || review.skill_id || (isZh ? "未知 Skill" : "Unknown skill")}</div>
+                                                    <Badge variant={badgeVariant as "default" | "secondary" | "destructive" | "outline"}>{status}</Badge>
+                                                    {review.static_verdict ? <Badge variant="outline">static: {review.static_verdict}</Badge> : null}
+                                                </div>
+                                                <div className="break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{review.skill_path || "—"}</div>
+                                                <div className="break-all text-[11px] text-slate-500">hash: {(review.content_hash || "").slice(0, 16) || "—"}</div>
+                                                {reasons.length ? (
+                                                    <div className="space-y-1 text-xs leading-5 text-slate-600">
+                                                        {reasons.map((reason, index) => <div key={`${review.id}:reason:${index}`}>- {reason}</div>)}
+                                                    </div>
+                                                ) : null}
+                                                {(review.flaggedFiles || []).length ? (
+                                                    <div className="text-[11px] leading-5 text-amber-700">
+                                                        {(review.flaggedFiles || []).slice(0, 2).map((file) => file.path).filter(Boolean).join(" / ")}
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                            <div className="flex shrink-0 flex-wrap gap-2">
+                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "approve")} disabled={Boolean(skillSafetyAction)}>
+                                                    {actionBusy("approve") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
+                                                    {isZh ? "批准" : "Approve"}
+                                                </Button>
+                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "disable")} disabled={Boolean(skillSafetyAction)}>
+                                                    {actionBusy("disable") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
+                                                    {isZh ? "禁用" : "Disable"}
+                                                </Button>
+                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "revoke")} disabled={Boolean(skillSafetyAction)}>
+                                                    {actionBusy("revoke") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
+                                                    {isZh ? "撤销" : "Revoke"}
+                                                </Button>
+                                                <Button size="sm" variant="outline" onClick={() => void handleSkillSafetyAction(review.id, "rescan")} disabled={Boolean(skillSafetyAction)}>
+                                                    {actionBusy("rescan") ? <Loader2 className="mr-1 h-3 w-3 animate-spin"/> : null}
+                                                    {isZh ? "重扫" : "Rescan"}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            </ConfigCard>
 
             <div className="grid auto-rows-fr gap-4 xl:grid-cols-2">
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kec74feaf"} description={"app.admin.dashboard.extensions.page.kcc79174f"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">

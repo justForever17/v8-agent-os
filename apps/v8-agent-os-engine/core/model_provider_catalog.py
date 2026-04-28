@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Set
 import requests
 
 from core.model_ref import make_model_ref
+from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "model_catalog" / "provider_catalog.json"
@@ -233,6 +234,7 @@ class ModelProviderCatalog:
                 continue
             item = deepcopy(entry)
             item["isCustom"] = True
+            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
             providers.append(item)
             seen_provider_ids.add(str(item.get("id") or ""))
         for entry in _as_list(builtin.get("providers")):
@@ -240,6 +242,7 @@ class ModelProviderCatalog:
                 continue
             item = deepcopy(entry)
             item.setdefault("isCustom", False)
+            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
             item.pop("modelsUrl", None)
             item.pop("models_url", None)
             providers.append(item)
@@ -250,6 +253,7 @@ class ModelProviderCatalog:
                 continue
             item = deepcopy(entry)
             item.setdefault("isCustom", False)
+            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(provider_id))
             providers.append(item)
             seen_provider_ids.add(provider_id)
         return {**builtin, "providers": providers}
@@ -302,6 +306,7 @@ class ModelProviderCatalog:
             "probeStrategy": "catalog_only" if is_media else "openai_models",
             "providerKind": "media_generation" if is_media else clean_provider_kind,
             "mediaModality": clean_modality if is_media else "",
+            "promptCachingProfileId": prompt_cache_profile_id_for_provider(custom_id),
             "confidence": "custom",
             "isCustom": True,
             "models": [],
@@ -659,6 +664,8 @@ class ModelProviderCatalog:
             "modelRef": make_model_ref(str(provider.get("id") or ""), model_id),
             "type": self._infer_model_type(capability_map),
             "logoAsset": model.get("logoAsset") or online_metadata.get("logoAsset") or "",
+            "promptCachingProfileId": provider.get("promptCachingProfileId")
+            or prompt_cache_profile_id_for_provider(str(provider.get("id") or "")),
             "contextWindow": context_window,
             "maxTokens": max_tokens,
             "capabilities": capability_map,

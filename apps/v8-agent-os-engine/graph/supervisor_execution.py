@@ -81,6 +81,7 @@ def prepare_supervisor_messages(
     *,
     messages,
     system_content: str,
+    prompt_segments=None,
     ensure_reasoning_content,
     sanitize_message_chain,
     context_orchestrator,
@@ -104,6 +105,19 @@ def prepare_supervisor_messages(
         keep_recent_override=5,
     )
     prepared = prepared_context.messages
+    if prompt_segments:
+        for index, message in enumerate(prepared):
+            if not isinstance(message, SystemMessage):
+                continue
+            additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+            additional_kwargs["v8_prompt_segments"] = list(prompt_segments or [])
+            prepared[index] = SystemMessage(
+                content=message.content,
+                additional_kwargs=additional_kwargs,
+                id=getattr(message, "id", None),
+                name=getattr(message, "name", None),
+            )
+            break
     emit_context_prepared_event(
         prepared_context.audit,
         component="graph",

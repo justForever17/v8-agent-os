@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "lastCheckedAt": "2026-04-27",
+  "profiles": [
+    {
+      "id": "openai_implicit_prompt_cache",
+      "providerIds": ["openai", "azure-openai", "codex"],
+      "strategy": "implicit",
+      "requestStyle": "prompt_cache_key",
+      "minInputTokens": 1024,
+      "incrementTokens": 128,
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens", "input_token_details.cached_tokens"],
+      "notes": "OpenAI-compatible implicit prefix cache. V8 injects prompt_cache_key only when a stable prefix key is available.",
+      "sourceUrl": "https://platform.openai.com/docs/guides/prompt-caching/overview"
+    },
+    {
+      "id": "anthropic_cache_control",
+      "providerIds": ["anthropic"],
+      "strategy": "explicit",
+      "requestStyle": "anthropic_content_blocks",
+      "maxBreakpoints": 4,
+      "ttlOptions": ["5m", "1h"],
+      "supportsResponseUsage": true,
+      "usageFields": ["cache_read_input_tokens", "cache_creation_input_tokens"],
+      "notes": "Explicit cache_control on reusable content blocks.",
+      "sourceUrl": "https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching"
+    },
+    {
+      "id": "gemini_implicit_or_context_cache",
+      "providerIds": ["gemini-api", "gemini"],
+      "strategy": "hybrid",
+      "requestStyle": "implicit_observe_only",
+      "minInputTokens": 1024,
+      "supportsExplicitResource": true,
+      "explicitResourceDefaultEnabled": false,
+      "supportsResponseUsage": true,
+      "usageFields": ["cachedContentTokenCount"],
+      "notes": "P1 observes implicit caching and does not create ContextCache resources automatically.",
+      "sourceUrl": "https://ai.google.dev/gemini-api/docs/caching/"
+    },
+    {
+      "id": "deepseek_implicit_disk_cache",
+      "providerIds": ["deepseek"],
+      "strategy": "implicit",
+      "requestStyle": "observe_only",
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+      "notes": "DeepSeek-compatible disk context cache is automatic; V8 does not alter request shape."
+    },
+    {
+      "id": "dashscope_anthropic_compatible_cache_control",
+      "providerIds": ["dashscope", "qwen", "aliyun", "aliyun-bailian"],
+      "strategy": "hybrid",
+      "requestStyle": "anthropic_content_blocks",
+      "maxBreakpoints": 4,
+      "ttlOptions": ["5m"],
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "DashScope/Bailian supports Anthropic-style cache_control for compatible chat models where accepted."
+    },
+    {
+      "id": "volcengine_prefix_cache",
+      "providerIds": ["volcengine-ark", "volcengine", "volcengine_ark", "volcengine-coding", "doubao"],
+      "strategy": "hybrid",
+      "requestStyle": "extra_body_caching",
+      "minInputTokens": 256,
+      "supportsSessionReference": true,
+      "sessionReferenceDefaultEnabled": false,
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "V8 enables prefix cache metadata but does not chain previous_response_id automatically."
+    },
+    {
+      "id": "minimax_cache_control",
+      "providerIds": ["minimax"],
+      "strategy": "hybrid",
+      "requestStyle": "anthropic_content_blocks",
+      "minInputTokens": 512,
+      "maxBreakpoints": 4,
+      "ttlOptions": ["5m"],
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "MiniMax active caching follows cache_control-style content blocks."
+    },
+    {
+      "id": "zhipu_implicit_prompt_cache",
+      "providerIds": ["zhipu", "bigmodel", "glm"],
+      "strategy": "implicit",
+      "requestStyle": "observe_only",
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "Zhipu/GLM cache is automatic; V8 keeps stable prefix keys for diagnostics only."
+    },
+    {
+      "id": "moonshot_kimi_auto_context_cache",
+      "providerIds": ["moonshot", "kimi", "kimi-api"],
+      "strategy": "implicit",
+      "requestStyle": "implicit_observe_only",
+      "legacyExplicitCaching": {
+        "enabledByDefault": false,
+        "endpoint": "/v1/caching",
+        "referenceRole": "cache",
+        "referenceContentFormat": "tag={tag};reset_ttl={ttlSeconds}"
+      },
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens", "Msh-Cache"],
+      "notes": "Current Kimi K2/K2.5/K2.6 APIs expose automatic context caching and cache-hit pricing. Legacy explicit caching exists but is not enabled unless separately probed.",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-k26"
+    },
+    {
+      "id": "xai_implicit_prompt_cache",
+      "providerIds": ["xai", "grok"],
+      "strategy": "implicit",
+      "requestStyle": "prompt_cache_key_and_header",
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "xAI supports automatic caching; V8 can add prompt_cache_key and x-grok-conv-id as routing hints.",
+      "sourceUrl": "https://docs.x.ai/developers/advanced-api-usage/prompt-caching"
+    },
+    {
+      "id": "mistral_implicit_prompt_cache",
+      "providerIds": ["mistral"],
+      "strategy": "implicit",
+      "requestStyle": "observe_only",
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "Mistral prompt cache is automatic; V8 does not mutate request body."
+    },
+    {
+      "id": "openrouter_passthrough_cache",
+      "providerIds": ["openrouter"],
+      "strategy": "gateway",
+      "requestStyle": "prompt_cache_key",
+      "supportsResponseUsage": true,
+      "usageFields": ["prompt_tokens_details.cached_tokens"],
+      "notes": "OpenRouter passes provider cache hints through where supported. V8 does not enable OpenRouter response caching headers by default."
+    },
+    {
+      "id": "implicit_or_unknown",
+      "providerIds": ["together", "huggingface-router", "siliconflow", "modelscope", "groq", "tencent-hunyuan"],
+      "strategy": "implicit_or_unknown",
+      "requestStyle": "observe_only",
+      "supportsResponseUsage": false,
+      "usageFields": [],
+      "notes": "No safe request mutation in P1; V8 records diagnostics only."
+    }
+  ]
+}

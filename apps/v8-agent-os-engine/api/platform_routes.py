@@ -519,8 +519,10 @@ async def connect_model_provider(data: dict = Body(...)):
         else:
             normalized_model_type = requested_model_type if requested_model_type in media_model_types | {"TEXT", "MULTIMODAL", "EMBEDDING", "RERANK"} else catalog_model_type
         is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or normalized_model_type in media_model_types
-        managed_context_window = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("contextWindow")
-        managed_max_tokens = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("maxTokens")
+        registry_known_chat_model = bool(model.get("capabilityRegistryMatched")) and not is_media_provider
+        clear_runtime_budget = is_media_provider or is_oauth_provider or (is_custom_provider and not registry_known_chat_model)
+        managed_context_window = None if clear_runtime_budget else model.get("contextWindow")
+        managed_max_tokens = None if clear_runtime_budget else model.get("maxTokens")
         next_model = {
             "type": normalized_model_type or "TEXT",
             "contextWindow": managed_context_window,
@@ -532,6 +534,9 @@ async def connect_model_provider(data: dict = Body(...)):
             "parameterProfile": model.get("parameterProfile") or ("media_generation" if is_media_provider else "chat"),
             "mediaLimits": model.get("mediaLimits") or {},
             "logoAsset": model.get("logoAsset") or "",
+            "capabilityRegistry": model.get("capabilityRegistry") or {},
+            "pricing": model.get("pricing") or {},
+            "driftWarnings": model.get("driftWarnings") or [],
             "promptCachingProfileId": model.get("promptCachingProfileId")
             or next_provider.get("promptCachingProfileId")
             or prompt_cache_profile_id_for_provider(provider_id),

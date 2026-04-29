@@ -42,6 +42,17 @@ interface ModelCardV2Props {
         isEnabled: boolean;
         contextWindow?: number | null;
         maxTokens?: number | null;
+        pricing?: {
+            inputPerMillionTokens?: number | null;
+            outputPerMillionTokens?: number | null;
+            source?: string | null;
+        } | null;
+        capabilityRegistry?: {
+            canonicalModelId?: string | null;
+            displayName?: string | null;
+            confidence?: string | null;
+            missingFields?: string[];
+        } | null;
     };
     controlMeta?: ControlPlaneModel | null;
     isDefault?: boolean;
@@ -123,6 +134,9 @@ export function ModelCardV2({
     const statusMessage = connectionStatus?.message || "";
     const modelRef = model.modelRef || model.id || model.modelId;
     const capabilityIconItems = buildCapabilityIconItems(model.type, capabilityTags, controlMeta?.capabilities);
+    const pricing = controlMeta?.pricing || model.pricing || null;
+    const registry = controlMeta?.capabilityRegistry || model.capabilityRegistry || null;
+    const missingFields = registry?.missingFields || [];
     const modelIcon = resolveModelIcon({
         modelId: model.modelId,
         providerId: model.provider?.id,
@@ -137,6 +151,11 @@ export function ModelCardV2({
         typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "",
         typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "",
         controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "",
+        registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "",
+        pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number")
+            ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M`
+            : "",
+        missingFields.length ? `Missing: ${missingFields.join(", ")}` : "",
         controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "",
         capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "",
         assignedRoles.length ? `Roles: ${assignedRoles.map((role) => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none",

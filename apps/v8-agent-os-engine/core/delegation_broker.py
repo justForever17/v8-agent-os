@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import shlex
 import sys
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Iterable
 
 
@@ -874,14 +876,18 @@ def choose_best_local_agent(task_brief: dict[str, Any], agents: Iterable[dict[st
 
 
 _CLAUDE_CODE_WORKER_ID = "claude-code-worker"
+_CLAUDE_CODE_RENDERER = "claude_code"
 _CLAUDE_CODE_COMMAND_TEMPLATE = (
     'claude -p --permission-mode acceptEdits --output-format text '
-    '"V8 external worker task. Decode this taskBrief base64 JSON: {task_brief_b64}. '
+    '"V8 external worker task. Read task brief JSON from file: '
+    ".v8-agent-os/external-workers/{task_brief_id}/task_brief.json. "
     "Obey writeSet, behaviorScope, requiredCapabilities, and acceptanceContract. "
     "Work only in the current workspace. "
     "When finished, print exactly one <V8_WORKER_RESULT> JSON object with keys "
-    "summary, localSelfCheck, artifactRefs, and acceptanceHint </V8_WORKER_RESULT> block.\""
+    "status, summary, changedFiles, commandsRun, verification, and notes </V8_WORKER_RESULT> block.\""
 )
+_LEGACY_CLAUDE_CODE_COMMAND_TEMPLATE_TOKEN = "Decode this taskBrief base64 JSON: {task_brief_b64}"
+_EXTERNAL_WORKER_RESULT_MARKERS = ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"]
 
 
 def _claude_code_external_worker_descriptor() -> dict[str, Any]:
@@ -902,15 +908,18 @@ def _claude_code_external_worker_descriptor() -> dict[str, Any]:
         },
         "launchProfile": {
             "commandTemplate": _CLAUDE_CODE_COMMAND_TEMPLATE,
+            "renderer": _CLAUDE_CODE_RENDERER,
+            "commandProfile": "chat_cli",
+            "permissionMode": "acceptEdits",
             "cwdPolicy": "inherit_workspace",
             "envPassThrough": [],
             "startupTimeoutSeconds": 10,
         },
-        "sessionMode": "interactive",
+        "sessionMode": "print",
         "allowedSideEffects": ["workspace_write", "tool_use", "long_running_cli"],
         "resultSchema": {
             "type": "v8_worker_result_v1",
-            "markers": ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"],
+            "markers": list(_EXTERNAL_WORKER_RESULT_MARKERS),
         },
     }
 
@@ -935,15 +944,18 @@ def normalize_external_worker_descriptor(value: Any) -> dict[str, Any]:
         "capabilitySnapshot": snapshot,
         "launchProfile": {
             "commandTemplate": str(launch_profile.get("commandTemplate") or "").strip(),
+            "renderer": str(launch_profile.get("renderer") or "").strip(),
+            "commandProfile": str(launch_profile.get("commandProfile") or "auto").strip() or "auto",
+            "permissionMode": str(launch_profile.get("permissionMode") or "acceptEdits").strip() or "acceptEdits",
             "cwdPolicy": str(launch_profile.get("cwdPolicy") or "inherit_workspace").strip() or "inherit_workspace",
             "envPassThrough": _as_string_list(launch_profile.get("envPassThrough")),
             "startupTimeoutSeconds": max(3, min(int(launch_profile.get("startupTimeoutSeconds") or 10), 120)),
         },
-        "sessionMode": str(payload.get("sessionMode") or "interactive").strip() or "interactive",
+        "sessionMode": str(payload.get("sessionMode") or "print").strip() or "print",
         "allowedSideEffects": _as_string_list(payload.get("allowedSideEffects")),
         "resultSchema": {
             "type": str(result_schema.get("type") or "v8_worker_result_v1").strip() or "v8_worker_result_v1",
-            "markers": _as_string_list(result_schema.get("markers") or ["<V8_WORKER_RESULT>", "</V8_WORKER_RESULT>"]),
+            "markers": _as_string_list(result_schema.get("markers") or _EXTERNAL_WORKER_RESULT_MARKERS),
         },
     }
 
@@ -972,6 +984,16 @@ def _prefix_external_worker_command_with_cwd(command: str, *, cwd_policy: str, w
         quoted = '"' + normalized_workspace.replace('"', '""') + '"'
         return f"cd /d {quoted} && {command}"
     return f"cd {shlex.quote(normalized_workspace)} && {command}"
+
+
+def external_worker_command_profile(descriptor: dict[str, Any]) -> str:
+    launch_profile = descriptor.get("launchProfile") if isinstance(descriptor.get("launchProfile"), dict) else {}
+    explicit = str(launch_profile.get("commandProfile") or "").strip().lower()
+    if explicit in {"auto", "chat_cli", "shell"}:
+        return explicit
+    if str(descriptor.get("workerType") or "").strip().lower() == "claude_code":
+        return "chat_cli"
+    return "auto"
 
 
 def choose_best_external_worker_with_diagnostics(task_brief: dict[str, Any], descriptors: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -1034,6 +1056,97 @@ def choose_best_external_worker(task_brief: dict[str, Any], descriptors: Iterabl
     return worker
 
 
+def _safe_external_worker_task_id(value: Any) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
+    return normalized[:80] or "task"
+
+
+def _shell_double_quoted_arg(value: str) -> str:
+    normalized = str(value or "")
+    if sys.platform == "win32":
+        return '"' + normalized.replace('"', r'\"') + '"'
+    return shlex.quote(normalized)
+
+
+def _write_external_worker_task_brief(
+    *,
+    task_brief: dict[str, Any],
+    workspace_path: str,
+) -> tuple[str, str]:
+    workspace = Path(str(workspace_path or "").strip() or os.getcwd()).resolve()
+    safe_task_id = _safe_external_worker_task_id(task_brief.get("taskBriefId"))
+    relative_path = Path(".v8-agent-os") / "external-workers" / safe_task_id / "task_brief.json"
+    brief_path = workspace / relative_path
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "v8.external_worker.task_brief.v1",
+        "taskBrief": task_brief,
+        "resultContract": {
+            "requiredMarkers": list(_EXTERNAL_WORKER_RESULT_MARKERS),
+            "requiredKeys": ["status", "summary", "changedFiles", "commandsRun", "verification", "notes"],
+            "successRule": "Only the JSON block between the V8 markers is accepted by V8OS.",
+        },
+        "executionRules": [
+            "Work only inside the current workspace unless the task brief explicitly allows otherwise.",
+            "Respect writeSet, behaviorScope, requiredCapabilities, and acceptanceContract.",
+            "Do not print secrets or provider API keys.",
+            "When done, print exactly one V8_WORKER_RESULT JSON block and no second result block.",
+            "Keep the result JSON compact: one line, short string values, no Markdown fence.",
+        ],
+    }
+    brief_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(brief_path), str(relative_path).replace("\\", "/")
+
+
+def _render_claude_code_worker_command(
+    *,
+    descriptor: dict[str, Any],
+    task_brief: dict[str, Any],
+    workspace_path: str,
+) -> str:
+    launch_profile = descriptor.get("launchProfile") if isinstance(descriptor.get("launchProfile"), dict) else {}
+    permission_mode = str(launch_profile.get("permissionMode") or "acceptEdits").strip() or "acceptEdits"
+    _brief_path, relative_brief_path = _write_external_worker_task_brief(
+        task_brief=task_brief,
+        workspace_path=workspace_path,
+    )
+    instruction = (
+        f"V8 external worker task. Read task brief JSON from file: {relative_brief_path}. "
+        "Use Claude Code tools as needed to inspect and edit files. "
+        "Respect writeSet, behaviorScope, requiredCapabilities, and acceptanceContract. "
+        "Do not leave the workspace unless the task brief explicitly allows it. "
+        "When finished, print exactly one <V8_WORKER_RESULT> JSON object with keys "
+        "status, summary, changedFiles, commandsRun, verification, and notes </V8_WORKER_RESULT> block. "
+        "The result JSON must be compact one-line JSON with short string values and no Markdown fence. "
+        "If blocked, still print the marker block with status blocked and explain why."
+    )
+    command = (
+        "claude -p "
+        f"--permission-mode {_shell_double_quoted_arg(permission_mode)} "
+        "--output-format text "
+        f"{_shell_double_quoted_arg(instruction)}"
+    )
+    return _prefix_external_worker_command_with_cwd(
+        command,
+        cwd_policy=str(launch_profile.get("cwdPolicy") or "").strip(),
+        workspace_path=workspace_path,
+    )
+
+
+def _uses_claude_code_dedicated_renderer(descriptor: dict[str, Any]) -> bool:
+    launch_profile = descriptor.get("launchProfile") if isinstance(descriptor.get("launchProfile"), dict) else {}
+    renderer = str(launch_profile.get("renderer") or "").strip().lower()
+    worker_type = str(descriptor.get("workerType") or "").strip().lower()
+    command_template = str(launch_profile.get("commandTemplate") or "").strip()
+    if renderer == _CLAUDE_CODE_RENDERER:
+        return True
+    if worker_type != "claude_code":
+        return False
+    if not command_template:
+        return True
+    return _LEGACY_CLAUDE_CODE_COMMAND_TEMPLATE_TOKEN in command_template
+
+
 def render_external_worker_command(
     *,
     descriptor: dict[str, Any],
@@ -1041,6 +1154,12 @@ def render_external_worker_command(
     workspace_path: str = "",
 ) -> str:
     launch_profile = descriptor.get("launchProfile") if isinstance(descriptor.get("launchProfile"), dict) else {}
+    if _uses_claude_code_dedicated_renderer(descriptor):
+        return _render_claude_code_worker_command(
+            descriptor=descriptor,
+            task_brief=task_brief,
+            workspace_path=workspace_path,
+        )
     command_template = str(launch_profile.get("commandTemplate") or "").strip()
     if not command_template:
         return ""
@@ -1087,18 +1206,23 @@ def parse_external_worker_result_block(
     marker_values = [str(item).strip() for item in list(markers or []) if str(item).strip()]
     start_marker = marker_values[0] if len(marker_values) >= 1 else "<V8_WORKER_RESULT>"
     end_marker = marker_values[1] if len(marker_values) >= 2 else "</V8_WORKER_RESULT>"
-    start = text.find(start_marker)
-    end = text.find(end_marker, start + len(start_marker)) if start >= 0 else -1
-    if start < 0 or end < 0:
-        return None
-    body = text[start + len(start_marker):end].strip()
-    if not body:
-        return None
-    try:
-        parsed = json.loads(body)
-    except Exception:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+
+    def _parse(candidate: str) -> dict[str, Any] | None:
+        end = candidate.rfind(end_marker)
+        start = candidate.rfind(start_marker, 0, end) if end >= 0 else -1
+        if start < 0 or end < 0:
+            return None
+        body = candidate[start + len(start_marker):end].strip()
+        if not body:
+            return None
+        try:
+            parsed_value = json.loads(body)
+        except Exception:
+            return None
+        return parsed_value if isinstance(parsed_value, dict) else None
+
+    compact_text = re.sub(r"[\r\n]+", "", text)
+    return _parse(compact_text) or _parse(text)
 
 
 def make_external_delegation_id(*, command_id: str, task_brief_id: str, worker_id: str) -> str:

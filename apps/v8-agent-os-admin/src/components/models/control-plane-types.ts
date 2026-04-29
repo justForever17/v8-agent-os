@@ -31,6 +31,18 @@ export type ControlPlaneModel = {
     contextWindow?: number | null;
     maxTokens?: number | null;
     capabilitySource?: string | null;
+    capabilityRegistry?: {
+        canonicalModelId?: string | null;
+        displayName?: string | null;
+        confidence?: string | null;
+        missingFields?: string[];
+    } | null;
+    pricing?: {
+        inputPerMillionTokens?: number | null;
+        outputPerMillionTokens?: number | null;
+        source?: string | null;
+    } | null;
+    driftWarnings?: Array<Record<string, unknown>>;
     parameterProfile?: string | null;
     mediaLimits?: Record<string, unknown>;
     isEnabled: boolean;

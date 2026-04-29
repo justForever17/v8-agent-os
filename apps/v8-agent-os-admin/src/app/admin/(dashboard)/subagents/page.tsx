@@ -182,6 +182,9 @@ type ExternalWorkerDescriptor = {
     capabilitySnapshot: Record<string, unknown>;
     launchProfile: {
         commandTemplate: string;
+        renderer?: string;
+        commandProfile?: string;
+        permissionMode?: string;
         cwdPolicy: string;
         envPassThrough: string[];
         startupTimeoutSeconds: number;
@@ -260,7 +263,7 @@ const DEFAULT_EXTERNAL_WORKER_FORM: ExternalWorkerFormState = {
     capabilitySnapshotJson: "{}",
 };
 
-const CLAUDE_CODE_COMMAND_TEMPLATE = 'claude -p --permission-mode acceptEdits --output-format text "V8 external worker task. Decode this taskBrief base64 JSON: {task_brief_b64}. Obey writeSet, behaviorScope, requiredCapabilities, and acceptanceContract. Work only in the current workspace. When finished, print exactly one <V8_WORKER_RESULT> JSON object with keys summary, localSelfCheck, artifactRefs, and acceptanceHint </V8_WORKER_RESULT> block."';
+const CLAUDE_CODE_COMMAND_TEMPLATE = 'claude -p --permission-mode acceptEdits --output-format text "V8 external worker task. Read task brief JSON from file: .v8-agent-os/external-workers/{task_brief_id}/task_brief.json. Obey writeSet, behaviorScope, requiredCapabilities, and acceptanceContract. Work only in the current workspace. When finished, print exactly one <V8_WORKER_RESULT> JSON object with keys status, summary, changedFiles, commandsRun, verification, and notes </V8_WORKER_RESULT> block. The result JSON must be compact one-line JSON with short string values and no Markdown fence."';
 const TEMPERATURE_PRESET = 0.7;
 const MIN_CONFIG_TEMPERATURE = 0.05;
 const MAX_SPECIALIST_FAMILY_MEMBERS = 50;
@@ -339,20 +342,25 @@ function normalizeExternalWorkerDescriptor(value: unknown): ExternalWorkerDescri
     const capabilitySnapshot = payload.capabilitySnapshot && typeof payload.capabilitySnapshot === "object" && !Array.isArray(payload.capabilitySnapshot)
         ? payload.capabilitySnapshot as Record<string, unknown>
         : {};
+    const workerType = String(payload.workerType || "").trim() || "custom";
+    const isClaudeWorker = workerType === "claude_code";
     return {
         id: String(payload.id || "").trim(),
         name: String(payload.name || "").trim(),
         description: String(payload.description || "").trim(),
         enabled: Boolean(payload.enabled),
-        workerType: String(payload.workerType || "").trim() || "custom",
+        workerType,
         capabilitySnapshot,
         launchProfile: {
             commandTemplate: String(launchProfile.commandTemplate || "").trim(),
+            renderer: String(launchProfile.renderer || (isClaudeWorker ? "claude_code" : "")).trim() || undefined,
+            commandProfile: String(launchProfile.commandProfile || (isClaudeWorker ? "chat_cli" : "auto")).trim() || "auto",
+            permissionMode: String(launchProfile.permissionMode || (isClaudeWorker ? "acceptEdits" : "")).trim() || undefined,
             cwdPolicy: String(launchProfile.cwdPolicy || "inherit_workspace").trim() || "inherit_workspace",
             envPassThrough: stringListFromSnapshot(launchProfile.envPassThrough),
             startupTimeoutSeconds: Math.max(3, Math.min(Number(launchProfile.startupTimeoutSeconds || 10) || 10, 120)),
         },
-        sessionMode: String(payload.sessionMode || "interactive").trim() || "interactive",
+        sessionMode: String(payload.sessionMode || (isClaudeWorker ? "print" : "interactive")).trim() || (isClaudeWorker ? "print" : "interactive"),
         allowedSideEffects: stringListFromSnapshot(payload.allowedSideEffects),
         resultSchema: {
             type: String(resultSchema.type || "v8_worker_result_v1").trim() || "v8_worker_result_v1",
@@ -430,6 +438,9 @@ function externalWorkerFormToDescriptor(form: ExternalWorkerFormState): External
         capabilitySnapshot,
         launchProfile: {
             commandTemplate: form.commandTemplate,
+            renderer: form.workerType === "claude_code" ? "claude_code" : undefined,
+            commandProfile: form.workerType === "claude_code" ? "chat_cli" : "auto",
+            permissionMode: form.workerType === "claude_code" ? "acceptEdits" : undefined,
             cwdPolicy: form.cwdPolicy,
             envPassThrough: splitListText(form.envPassThroughText),
             startupTimeoutSeconds: Number(form.startupTimeoutSeconds || 10) || 10,
@@ -925,6 +936,7 @@ export default function SubagentsPage() {
                 : "",
             workerType: template,
             commandTemplate: template === "claude_code" ? CLAUDE_CODE_COMMAND_TEMPLATE : "",
+            sessionMode: template === "claude_code" ? "print" : DEFAULT_EXTERNAL_WORKER_FORM.sessionMode,
             domainTagsText: template === "claude_code"
                 ? "software_engineering, implementation, debugging, code_review"
                 : "",

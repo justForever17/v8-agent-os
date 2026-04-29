@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Set
 
 import requests
 
+from core.model_capability_registry import model_capability_registry
 from core.model_ref import make_model_ref
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 
@@ -758,29 +759,99 @@ class ModelProviderCatalog:
             return "heuristic"
         return "manual"
 
+    def _capability_tags_from_registry(self, registry_entry: Dict[str, Any] | None) -> Set[str]:
+        if not registry_entry:
+            return set()
+        tags = set()
+        for item in registry_entry.get("capabilities") or []:
+            raw = str(item or "").strip()
+            normalized = raw.lower()
+            if not normalized:
+                continue
+            tags.add(normalized)
+            if normalized == "toolcalling":
+                tags.add("tools")
+            if normalized == "thinking":
+                tags.add("reasoning")
+            if normalized == "text":
+                tags.add("chat")
+        return tags
+
+    def _drift_warning(
+        self,
+        model: Dict[str, Any],
+        registry_entry: Dict[str, Any] | None,
+        field: str,
+        registry_field: str,
+    ) -> Dict[str, Any] | None:
+        if not registry_entry:
+            return None
+        provider_value = model.get(field)
+        registry_value = registry_entry.get(registry_field)
+        if provider_value in (None, "", 0) or registry_value in (None, "", 0):
+            return None
+        try:
+            if int(provider_value) == int(registry_value):
+                return None
+        except Exception:
+            if str(provider_value) == str(registry_value):
+                return None
+        return {
+            "field": field,
+            "providerValue": provider_value,
+            "registryValue": registry_value,
+            "policy": "online metadata and explicit provider override win; registry is preferred over legacy inline catalog",
+        }
+
     def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         online_metadata = dict(online_metadata or {})
         model = self._model_from_catalog(provider, model_id)
         provider_kind = str(provider.get("providerKind") or "chat")
+        registry_entry = model_capability_registry.find(model_id)
+        explicit_provider_override = bool(
+            model.get("capabilityOverride")
+            or model.get("capabilityFactsOverride")
+            or model.get("providerCapabilityOverride")
+            or model.get("explicitCapabilityOverride")
+        )
         catalog_caps = {str(item).strip().lower() for item in list(model.get("capabilities") or []) if str(item).strip()}
         online_caps = self._capabilities_from_online(online_metadata)
+        registry_caps = self._capability_tags_from_registry(registry_entry)
         family_caps = self._capabilities_from_family(provider, model_id, provider_kind)
-        capability_tags = catalog_caps | online_caps | family_caps
+        capability_tags = catalog_caps | online_caps | registry_caps | family_caps
         capability_map = self._normalize_capability_map(capability_tags, provider_kind)
+        provider_context_window = model.get("contextWindow")
+        provider_max_tokens = model.get("maxOutputTokens") or model.get("maxTokens")
+        registry_context_window = (registry_entry or {}).get("contextWindowTokens")
+        registry_max_tokens = (registry_entry or {}).get("maxOutputTokens")
         context_window = (
-            model.get("contextWindow")
-            or online_metadata.get("inputTokenLimit")
+            online_metadata.get("inputTokenLimit")
             or online_metadata.get("input_token_limit")
             or online_metadata.get("context_length")
+            or (provider_context_window if explicit_provider_override else None)
+            or registry_context_window
+            or provider_context_window
         )
         max_tokens = (
-            model.get("maxOutputTokens")
-            or model.get("maxTokens")
-            or online_metadata.get("outputTokenLimit")
+            online_metadata.get("outputTokenLimit")
             or online_metadata.get("output_token_limit")
             or online_metadata.get("max_output_tokens")
+            or (provider_max_tokens if explicit_provider_override else None)
+            or registry_max_tokens
+            or provider_max_tokens
         )
         capability_source = self._capability_source(model, online_metadata, family_caps)
+        if registry_entry and not explicit_provider_override and capability_source in {"heuristic", "manual"}:
+            capability_source = "model_capability_registry"
+        drift_warnings = [
+            warning
+            for warning in [
+                self._drift_warning(model, registry_entry, "contextWindow", "contextWindowTokens"),
+                self._drift_warning(model, registry_entry, "maxOutputTokens", "maxOutputTokens"),
+                self._drift_warning(model, registry_entry, "maxTokens", "maxOutputTokens"),
+            ]
+            if warning
+        ]
         return {
             "id": model_id,
             "modelId": model_id,
@@ -794,6 +865,24 @@ class ModelProviderCatalog:
             "capabilities": capability_map,
             "capabilityTags": sorted(capability_tags),
             "capabilitySource": capability_source,
+            "capabilityRegistryMatched": bool(registry_entry),
+            "capabilityRegistry": {
+                "canonicalModelId": (registry_entry or {}).get("canonicalModelId"),
+                "displayName": (registry_entry or {}).get("displayName"),
+                "confidence": (registry_entry or {}).get("confidence"),
+                "missingFields": (registry_entry or {}).get("missingFields") or [],
+                "sourceRefs": (registry_entry or {}).get("sourceRefs") or [],
+            }
+            if registry_entry
+            else {},
+            "pricing": {
+                "inputPerMillionTokens": (registry_entry or {}).get("inputPricePerMillionTokens"),
+                "outputPerMillionTokens": (registry_entry or {}).get("outputPricePerMillionTokens"),
+                "source": "benchlm",
+            }
+            if registry_entry
+            else {},
+            "driftWarnings": drift_warnings,
             "capabilityClass": (
                 "media_generation"
                 if capability_map.get("image")

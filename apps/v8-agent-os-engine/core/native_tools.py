@@ -107,6 +107,7 @@ from core.delegation_broker import (
     choose_best_local_agent_with_diagnostics,
     compact_external_worker_registry_entry,
     default_external_worker_descriptors,
+    external_worker_command_profile,
     make_external_delegation_id,
     make_local_delegation_id,
     normalize_external_worker_descriptors,
@@ -350,9 +351,28 @@ def is_binary(file_path: str) -> bool:
     return True
 
 
+def _strip_leading_shell_cwd(command: str) -> str:
+    stripped = str(command or "").strip()
+    if not stripped:
+        return ""
+    patterns = (
+        r'^\s*cd\s+/d\s+"[^"]+"\s*&&\s*(?P<rest>.+)$',
+        r"^\s*cd\s+/d\s+'[^']+'\s*&&\s*(?P<rest>.+)$",
+        r"^\s*cd\s+/d\s+\S+\s*&&\s*(?P<rest>.+)$",
+        r'^\s*cd\s+"[^"]+"\s*&&\s*(?P<rest>.+)$',
+        r"^\s*cd\s+'[^']+'\s*&&\s*(?P<rest>.+)$",
+        r"^\s*cd\s+\S+\s*&&\s*(?P<rest>.+)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, stripped, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return str(match.group("rest") or "").strip()
+    return stripped
+
+
 def _detect_interactive_command(command: str) -> str | None:
     """Detect obviously interactive/TTY-oriented commands that should never run in blocking mode."""
-    stripped = (command or "").strip()
+    stripped = _strip_leading_shell_cwd(command)
     if not stripped:
         return None
 
@@ -404,6 +424,9 @@ def _detect_interactive_command(command: str) -> str | None:
 
     if head == "cmd" and "/c" not in tokens:
         return "检测到 `cmd` 缺少 `/c`，很可能进入交互式终端。"
+
+    if head == "claude" and any(flag in tokens for flag in {"-p", "--print"}):
+        return None
 
     if head in {"qwen", "claude", "gemini", "codex", "aider"}:
         return f"检测到 `{head}` 可能需要 TTY 或交互输入。"
@@ -4475,6 +4498,8 @@ _CHAT_CLI_CHUNK_MIN = 200
 _CHAT_CLI_CHUNK_MAX = 500
 _CHAT_CLI_SENTENCE_BOUNDARIES = "。！？!?；;\n"
 _CHAT_CLI_SOFT_BOUNDARIES = "，,、:： "
+_V8_WORKER_RESULT_START_MARKER = "<V8_WORKER_RESULT>"
+_V8_WORKER_RESULT_END_MARKER = "</V8_WORKER_RESULT>"
 _CHAT_CLI_SHARED_NOISE_LINE_PATTERNS = (
     re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:connecting to mcp servers?|loading|spinning)\b.*$", re.IGNORECASE),
     re.compile(r"^\s*(?:[⠁-⣿]+\s+)?just a tick, i'm polishing my wit\b.*$", re.IGNORECASE),
@@ -4499,6 +4524,10 @@ _CHAT_CLI_VARIANT_NOISE_LINE_PATTERNS = {
         re.compile(r"^\s*(?:press\s+esc\s+to\s+interrupt|esc\s+to\s+cancel)\b.*$", re.IGNORECASE),
         re.compile(r"^\s*model\s*:\s*claude\b.*$", re.IGNORECASE),
         re.compile(r"^\s*[│|].*\bclaude(?:\s+code)?\b.*[│|]\s*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:tool|using|running|reading|writing|editing|calling)\b.{0,180}(?:…|\.\.\.)?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*[✻✶✷✸⏺●◦○]\s+.*(?:esc|interrupt|thinking|running|reading|writing|tool)\b.*$", re.IGNORECASE),
+        re.compile(r"^\s*⎿\s+.*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:tokens?|cost|session|context)\s*[:：].*$", re.IGNORECASE),
     ),
     "gemini": (
         re.compile(r"^\s*(?:[⠁-⣿]+\s+)?(?:thinking|loading|connecting|authorizing|switching models?)\b.*$", re.IGNORECASE),
@@ -4517,7 +4546,7 @@ _CHAT_CLI_VARIANT_NOISE_LINE_PATTERNS = {
 
 
 def _extract_chat_cli_command_head(command: str) -> str:
-    stripped = str(command or "").strip()
+    stripped = _strip_leading_shell_cwd(command)
     if not stripped:
         return ""
     try:
@@ -4596,9 +4625,39 @@ def _looks_like_chat_cli_border_line(line: str) -> bool:
     return len(unique_chars) <= 2
 
 
+def _contains_v8_worker_result_marker(text: str) -> bool:
+    value = str(text or "")
+    return _V8_WORKER_RESULT_START_MARKER in value or _V8_WORKER_RESULT_END_MARKER in value
+
+
+def _extract_v8_worker_result_block_text(text: str) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    for candidate in (re.sub(r"[\r\n]+", "", value), value):
+        end = candidate.rfind(_V8_WORKER_RESULT_END_MARKER)
+        start = candidate.rfind(_V8_WORKER_RESULT_START_MARKER, 0, end) if end >= 0 else -1
+        if start < 0 or end < 0:
+            continue
+        end += len(_V8_WORKER_RESULT_END_MARKER)
+        return candidate[start:end].strip()
+    return ""
+
+
+def _count_chat_cli_noise_lines(text: str, *, variant: str = "") -> int:
+    count = 0
+    for line in _normalize_chat_cli_text(text).splitlines():
+        stripped = line.strip()
+        if stripped and not _contains_v8_worker_result_marker(stripped) and _looks_like_chat_cli_noise_line(stripped, variant=variant):
+            count += 1
+    return count
+
+
 def _looks_like_chat_cli_noise_line(line: str, *, variant: str = "") -> bool:
     stripped = str(line or "").strip()
     if not stripped:
+        return False
+    if _contains_v8_worker_result_marker(stripped):
         return False
     if _looks_like_prompt_line(stripped):
         return True
@@ -4619,6 +4678,9 @@ def _sanitize_chat_cli_semantic_text(text: str, *, variant: str = "") -> str:
         if not stripped:
             if filtered and filtered[-1] != "":
                 filtered.append("")
+            continue
+        if _contains_v8_worker_result_marker(stripped):
+            filtered.append(line.rstrip())
             continue
         if _looks_like_chat_cli_noise_line(stripped, variant=variant):
             continue
@@ -5555,6 +5617,7 @@ class BackgroundProcess:
         self.last_semantic_digest = ""
         self.last_semantic_view = ""
         self.last_semantic_update_at: float | None = None
+        self.worker_result_raw_buffer = ""
         self.pending_input_echo = ""
         self.terminal_env_overrides = _build_terminal_env_overrides()
         self.command_diagnostics = _extend_command_diagnostics_for_terminal(
@@ -5823,6 +5886,7 @@ class BackgroundProcess:
         now = time.time()
         self.last_output_at = now
         self.output_history.append(data)
+        self.worker_result_raw_buffer = (self.worker_result_raw_buffer + data)[-50000:]
         self.raw_frame_version += 1
         self.raw_bytes += len(data.encode("utf-8", "replace"))
         self.last_raw_frame_at = now
@@ -6460,6 +6524,7 @@ def _delegation_compact_item(
     acceptance_hint: str | None = None,
     worker_type: str | None = None,
     command_session: dict[str, Any] | None = None,
+    worker_result: dict[str, Any] | None = None,
     result_schema_matched: bool | None = None,
     selection_reason: str | None = None,
     selection_confidence: float | None = None,
@@ -6526,11 +6591,58 @@ def _delegation_compact_item(
         item["workerType"] = worker_type
     if command_session:
         item["commandSession"] = command_session
+    if worker_result:
+        item["workerResult"] = {
+            key: value
+            for key, value in dict(worker_result).items()
+            if key in {"status", "summary", "changedFiles", "commandsRun", "verification", "notes"}
+            and value not in (None, "", [], {})
+        }
     if result_schema_matched is not None:
         item["resultSchemaMatched"] = bool(result_schema_matched)
     if error:
         item["error"] = error
     return {key: value for key, value in item.items() if value not in (None, "", [], {})}
+
+
+def _normalize_external_worker_result_paths(worker_result: dict[str, Any] | None, *, workspace_path: str = "") -> dict[str, Any] | None:
+    if not isinstance(worker_result, dict):
+        return None
+    normalized = dict(worker_result)
+    workspace = Path(str(workspace_path or "")).resolve() if str(workspace_path or "").strip() else None
+
+    def _relative_path(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if workspace:
+            try:
+                path = Path(text)
+                resolved = path.resolve() if path.is_absolute() else (workspace / path).resolve()
+                return str(resolved.relative_to(workspace)).replace("\\", "/")
+            except Exception:
+                pass
+        return text.replace("\\", "/")
+
+    for key in ("changedFiles", "artifactRefs"):
+        if isinstance(normalized.get(key), list):
+            normalized[key] = [
+                item if isinstance(item, dict) else _relative_path(item)
+                for item in list(normalized.get(key) or [])
+                if item not in (None, "")
+            ]
+    return normalized
+
+
+def _external_worker_status_from_result(worker_result: dict[str, Any] | None, *, fallback: str) -> str:
+    if not isinstance(worker_result, dict):
+        return fallback
+    status = str(worker_result.get("status") or "succeeded").strip().lower() or "succeeded"
+    if status in {"success", "ok", "done", "complete", "completed"}:
+        return "succeeded"
+    if status in {"fail", "error"}:
+        return "failed"
+    return status
 
 
 @tool
@@ -6671,6 +6783,7 @@ def command_session_broker(
             raw_changed = bool(bg_proc.has_unreported_raw_frame_change())
             delta_text = str(new_output or "").strip()
             has_more = False
+            semantic_state: dict[str, Any] = {}
             if bg_proc.profile == "chat_cli":
                 semantic_state = bg_proc._update_chat_cli_semantic_state(
                     status=status,
@@ -6690,6 +6803,25 @@ def command_session_broker(
             delta_preview, delta_truncated = _command_session_preview_text(delta_text)
             screen_preview = str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip()
             raw_frame_preview = str(status.get("last_raw_frame_preview") or "").strip()
+            semantic_text = str(bg_proc.current_turn_text or semantic_state.get("semantic_view") or "").strip()
+            semantic_tail, semantic_tail_truncated = _command_session_preview_text(semantic_text, limit=2000)
+            marker_source = "\n".join(
+                part
+                for part in [
+                    str(getattr(bg_proc, "worker_result_raw_buffer", "") or ""),
+                    semantic_text,
+                    delta_text,
+                    screen_preview,
+                    raw_frame_preview,
+                ]
+                if str(part or "").strip()
+            )
+            worker_result_block = _extract_v8_worker_result_block_text(marker_source)
+            worker_result_detected = bool(worker_result_block or _contains_v8_worker_result_marker(marker_source))
+            noise_filtered_count = _count_chat_cli_noise_lines(
+                str(semantic_state.get("semantic_view") or screen_preview or new_output or ""),
+                variant=bg_proc.chat_cli_variant,
+            ) if bg_proc.profile == "chat_cli" else 0
             debug_payload = None
             if debug:
                 debug_payload = _command_session_debug_payload(
@@ -6717,6 +6849,11 @@ def command_session_broker(
                 state=state,
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
+                semanticTextTail=semantic_tail or None,
+                semanticTextTailTruncated=semantic_tail_truncated if semantic_tail else None,
+                workerResultDetected=worker_result_detected or None,
+                workerResultBlock=worker_result_block or None,
+                noiseFilteredLineCount=noise_filtered_count or None,
                 awaitingInput=bool(status.get("awaiting_input")),
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
@@ -6761,6 +6898,7 @@ def command_session_broker(
             raw_changed = int(status.get("raw_frame_version") or 0) > previous_raw_frame_version
             delta_text = str(new_output or "").strip()
             has_more = False
+            semantic_state: dict[str, Any] = {}
             if bg_proc.profile == "chat_cli":
                 semantic_state = bg_proc._update_chat_cli_semantic_state(
                     status=status,
@@ -6779,6 +6917,25 @@ def command_session_broker(
             state = _command_session_state_from_status(status)
             delta_preview, delta_truncated = _command_session_preview_text(delta_text)
             input_preview, input_truncated = _command_session_preview_text(normalized_input, limit=200)
+            semantic_text = str(bg_proc.current_turn_text or semantic_state.get("semantic_view") or "").strip()
+            semantic_tail, semantic_tail_truncated = _command_session_preview_text(semantic_text, limit=2000)
+            marker_source = "\n".join(
+                part
+                for part in [
+                    str(getattr(bg_proc, "worker_result_raw_buffer", "") or ""),
+                    semantic_text,
+                    delta_text,
+                    str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
+                    str(status.get("last_raw_frame_preview") or "").strip(),
+                ]
+                if str(part or "").strip()
+            )
+            worker_result_block = _extract_v8_worker_result_block_text(marker_source)
+            worker_result_detected = bool(worker_result_block or _contains_v8_worker_result_marker(marker_source))
+            noise_filtered_count = _count_chat_cli_noise_lines(
+                str(semantic_state.get("semantic_view") or new_output or ""),
+                variant=bg_proc.chat_cli_variant,
+            ) if bg_proc.profile == "chat_cli" else 0
             debug_payload = None
             if debug:
                 debug_payload = _command_session_debug_payload(
@@ -6808,6 +6965,11 @@ def command_session_broker(
                 acceptedInputTruncated=input_truncated if input_preview else None,
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
+                semanticTextTail=semantic_tail or None,
+                semanticTextTailTruncated=semantic_tail_truncated if semantic_tail else None,
+                workerResultDetected=worker_result_detected or None,
+                workerResultBlock=worker_result_block or None,
+                noiseFilteredLineCount=noise_filtered_count or None,
                 awaitingInput=bool(status.get("awaiting_input")),
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
@@ -7114,15 +7276,24 @@ def delegation_broker(
                 raw_start_payload = command_session_broker.func(
                     mode="start",
                     command=rendered_command,
-                    profile="auto",
+                    profile=external_worker_command_profile(external_worker),
                     tool_call_id=tool_call_id,
                 )
                 start_payload = json.loads(str(raw_start_payload or "{}"))
                 command_id = str(start_payload.get("commandId") or start_payload.get("sessionId") or "").strip()
                 worker_result = parse_external_worker_result_block(
-                    start_payload.get("initialPreview"),
+                    start_payload.get("workerResultBlock") or start_payload.get("semanticTextTail") or start_payload.get("initialPreview"),
                     markers=((external_worker.get("resultSchema") or {}).get("markers") or []),
                 )
+                worker_result = _normalize_external_worker_result_paths(
+                    worker_result,
+                    workspace_path=str(base_state.get("workspace_path") or ""),
+                )
+                worker_status = str(start_payload.get("state") or "running").strip() or "running"
+                if worker_result:
+                    worker_status = _external_worker_status_from_result(worker_result, fallback="succeeded")
+                elif worker_status in {"completed", "failed"}:
+                    worker_status = "marker_missing"
                 delegation_id_value = make_external_delegation_id(
                     command_id=command_id or f"pending-{uuid.uuid4().hex[:8]}",
                     task_brief_id=str(task_brief.get("taskBriefId") or ""),
@@ -7134,7 +7305,7 @@ def delegation_broker(
                     lane="external_worker",
                     target_id=str(external_worker.get("id") or ""),
                     target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
-                    status=str(start_payload.get("state") or "running").strip() or "running",
+                    status=worker_status,
                     invocation_id=invocation_id,
                     branch_index=index,
                     worker_type=str(external_worker.get("workerType") or "").strip() or None,
@@ -7142,6 +7313,8 @@ def delegation_broker(
                         "commandId": command_id,
                         "sessionId": str(start_payload.get("sessionId") or command_id).strip() or command_id,
                         "runId": start_payload.get("runId"),
+                        "profile": start_payload.get("profile"),
+                        "workerResultDetected": bool(start_payload.get("workerResultDetected")),
                     },
                     trace_ref=_delegation_trace_ref(
                         run_id=start_payload.get("runId") or base_state.get("run_id"),
@@ -7152,6 +7325,7 @@ def delegation_broker(
                     local_self_check=str((worker_result or {}).get("localSelfCheck") or "").strip() or None,
                     artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
                     acceptance_hint=(worker_result or {}).get("acceptanceHint"),
+                    worker_result=worker_result,
                     result_schema_matched=bool(worker_result),
                     selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
                     selection_confidence=external_diagnostics.get("selectionConfidence"),
@@ -7296,21 +7470,36 @@ def delegation_broker(
     payload = json.loads(str(raw_payload or "{}"))
     markers = ((descriptor or {}).get("resultSchema") or {}).get("markers") or []
     worker_result = parse_external_worker_result_block(
-        payload.get("deltaText") or payload.get("finalPreview") or payload.get("initialPreview"),
+        payload.get("workerResultBlock")
+        or payload.get("semanticTextTail")
+        or payload.get("deltaText")
+        or payload.get("finalPreview")
+        or payload.get("initialPreview"),
         markers=markers,
     )
+    worker_result = _normalize_external_worker_result_paths(
+        worker_result,
+        workspace_path=str(base_state.get("workspace_path") or ""),
+    )
+    worker_status = str(payload.get("state") or ("terminated" if normalized_mode == "interrupt" else "running")).strip() or "running"
+    if worker_result:
+        worker_status = _external_worker_status_from_result(worker_result, fallback="succeeded")
+    elif worker_status in {"completed", "failed"}:
+        worker_status = "marker_missing"
     worker_item = _delegation_compact_item(
         delegation_id=delegation_id,
         task_brief=task_brief,
         lane="external_worker",
         target_id=str((descriptor or {}).get("id") or parsed.get("targetId") or "").strip(),
         target_label=str((descriptor or {}).get("name") or parsed.get("targetId") or "external-worker").strip(),
-        status=str(payload.get("state") or ("terminated" if normalized_mode == "interrupt" else "running")).strip() or "running",
+        status=worker_status,
         worker_type=str((descriptor or {}).get("workerType") or "").strip() or None,
         command_session={
             "commandId": command_id,
             "sessionId": str(payload.get("sessionId") or command_id).strip() or command_id,
             "runId": payload.get("runId"),
+            "profile": payload.get("profile"),
+            "workerResultDetected": bool(payload.get("workerResultDetected")),
         },
         trace_ref=_delegation_trace_ref(
             run_id=payload.get("runId") or base_state.get("run_id"),
@@ -7320,6 +7509,7 @@ def delegation_broker(
         local_self_check=str((worker_result or {}).get("localSelfCheck") or "").strip() or None,
         artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
         acceptance_hint=(worker_result or {}).get("acceptanceHint"),
+        worker_result=worker_result,
         result_schema_matched=bool(worker_result),
         error=None if bool(payload.get("ok", True)) else str(payload.get("error") or f"{normalized_mode}_failed"),
     )

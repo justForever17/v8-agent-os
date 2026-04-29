@@ -46,9 +46,9 @@ function normalizeFamilies(value: unknown): string[] {
 
 function defaultFamilies(profile: "minimal" | "desktop") {
     if (profile === "desktop") {
-        return ["chat", "memory", "extensions", "automation", "network_supervisor", "computer_use", "rpa", "desktop_live"];
+        return ["chat", "memory", "extensions", "automation", "network_supervisor", "creative_media", "computer_use", "rpa", "desktop_live"];
     }
-    return ["chat", "memory", "extensions", "automation", "network_supervisor"];
+    return ["chat", "memory", "extensions", "automation", "network_supervisor", "creative_media"];
 }
 
 async function readEngineInstallState(): Promise<Partial<RuntimeInstallState> & { engineAvailable: boolean }> {

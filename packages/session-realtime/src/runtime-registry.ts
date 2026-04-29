@@ -64,6 +64,15 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Handles skill and MCP exposure, loading, and execution.",
     },
   },
+  creative_media: {
+    id: "creative_media",
+    label: { zh: "创意媒体", en: "Creative media" },
+    shortLabel: { zh: "媒体", en: "Media" },
+    description: {
+      zh: "承接图片、视频、语音、音乐 recipe、任务、资产与交付状态。",
+      en: "Tracks creative media recipes, jobs, assets, and delivery state.",
+    },
+  },
   network_supervisor: {
     id: "network_supervisor",
     label: { zh: "网络监督", en: "Network supervisor" },
@@ -134,6 +143,7 @@ export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "planner_lane",
   "engineering_lane",
   "extensions",
+  "creative_media",
   "computer_use",
   "rpa",
   "network_supervisor",
@@ -199,6 +209,14 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
     || normalized.includes("parallel_delegate")
   ) {
     return "subagent_swarm";
+  }
+  if (
+    normalized === "creative_media"
+    || normalized.includes("creative_media")
+    || normalized.includes("creative_runtime")
+    || normalized.includes("media_runtime")
+  ) {
+    return "creative_media";
   }
   if (
     normalized === "plugin_host_channel"

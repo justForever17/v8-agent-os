@@ -181,6 +181,33 @@ def _all_operation_kinds() -> list[str]:
     return sorted(values)
 
 
+def _registry_operation_kinds_for_model(*, provider_id: str, model_id: str, modality: str) -> list[str]:
+    registry = load_media_model_capability_registry()
+    target_provider = str(provider_id or "").strip()
+    target_model = str(model_id or "").strip()
+    if not target_provider or not target_model:
+        return []
+    for item in list(registry.get("models") or []):
+        if not isinstance(item, dict):
+            continue
+        provider_ids = {str(value or "").strip() for value in list(item.get("providerIds") or [])}
+        aliases = {str(value or "").strip() for value in list(item.get("aliases") or [])}
+        aliases.add(str(item.get("canonicalModelId") or "").strip())
+        if target_provider not in provider_ids or target_model not in aliases:
+            continue
+        operations = [
+            str(value or "").strip()
+            for value in list(item.get("operationKinds") or [])
+            if str(value or "").strip()
+        ]
+        return [
+            operation
+            for operation in operations
+            if operation.startswith(f"{modality}.") or (modality == "voice" and operation.startswith("voice."))
+        ]
+    return []
+
+
 def _modality_for_operation(operation_kind: str) -> str:
     prefix = str(operation_kind or "").split(".", 1)[0].strip().lower()
     return "voice" if prefix == "audio" else prefix
@@ -371,6 +398,13 @@ class CreativeMediaRuntime:
         provider_meta: dict[str, Any],
         model_data: dict[str, Any],
     ) -> list[str]:
+        registry_operations = _registry_operation_kinds_for_model(
+            provider_id=provider_id,
+            model_id=str(model_data.get("id") or ""),
+            modality=modality,
+        )
+        if registry_operations:
+            return registry_operations
         media_limits = dict(model_data.get("mediaLimits") or {})
         explicit = _list_of_strings(
             model_data.get("operationKinds")
@@ -555,7 +589,12 @@ class CreativeMediaRuntime:
                 }
             )
         if volc.get("videoModel"):
-            for operation_kind in ("video.text_to_video", "video.image_to_video", "video.first_last_frame"):
+            env_video_operations = _registry_operation_kinds_for_model(
+                provider_id="volcengine_seedance",
+                model_id=volc["videoModel"],
+                modality="video",
+            ) or ["video.text_to_video", "video.image_to_video", "video.first_last_frame"]
+            for operation_kind in env_video_operations:
                 capability_profile = capability_profile_for_model(
                     provider_id="volcengine_seedance",
                     model_id=volc["videoModel"],
@@ -639,13 +678,28 @@ class CreativeMediaRuntime:
 
         by_id: dict[str, dict[str, Any]] = {}
         for candidate in candidates:
-            by_id[str(candidate["candidateId"])] = candidate
+            candidate_id = str(candidate["candidateId"])
+            existing = by_id.get(candidate_id)
+            if existing is None or self._candidate_source_rank(candidate) < self._candidate_source_rank(existing):
+                by_id[candidate_id] = candidate
         result = list(by_id.values())
         result.sort(key=lambda item: (str(item.get("modality") or ""), str(item.get("providerName") or ""), str(item.get("modelId") or "")))
         return result
 
     def _is_configured_model_candidate(self, candidate: dict[str, Any]) -> bool:
         return str(candidate.get("source") or "") in MODEL_PREFERENCE_CONFIG_SOURCES
+
+    def _candidate_source_rank(self, candidate: dict[str, Any]) -> int:
+        source = str(candidate.get("source") or "")
+        if source == "model_control_plane":
+            return 0
+        if source == "runtime_builtin":
+            return 1
+        if source in {"mcp_or_env", "env_builtin"}:
+            return 2
+        if source == "catalog_only":
+            return 3
+        return 4
 
     def _default_enabled_for_candidate(self, candidate: dict[str, Any], *, has_stored_preferences: bool) -> bool:
         if has_stored_preferences:
@@ -686,6 +740,11 @@ class CreativeMediaRuntime:
                 for item in connected_options
                 if str(item.get("operationKind") or "") == operation_kind
             ]
+            valid_option_refs = {
+                str(item.get("modelRef") or "").strip()
+                for item in options
+                if str(item.get("modelRef") or "").strip()
+            }
             enabled_candidates = [
                 item
                 for item in candidates
@@ -701,12 +760,16 @@ class CreativeMediaRuntime:
                     for item in enabled_candidates
                     if str(item.get("modelRef") or "").strip()
                 ]
-            selected_refs = _list_of_strings(selected_refs)[:3]
+            selected_refs = [
+                ref
+                for ref in _list_of_strings(selected_refs)
+                if ref in valid_option_refs
+            ][:3]
             rows.append(
                 {
                     "operationKind": operation_kind,
                     "modality": modality,
-                    "enabled": bool(stored_selection.get("enabled", bool(selected_refs))) if stored_selection else bool(selected_refs),
+                    "enabled": bool(selected_refs) and bool(stored_selection.get("enabled", True)) if stored_selection else bool(selected_refs),
                     "selectedModelRefs": selected_refs,
                     "priority": _safe_priority(stored_selection.get("priority") if stored_selection else (enabled_candidates[0].get("priority") if enabled_candidates else 100), 100),
                     "optionCount": len(options),
@@ -768,8 +831,16 @@ class CreativeMediaRuntime:
                 "fallbackEnabled": True,
                 "models": models,
             }
-        connected_options = [dict(item) for item in candidates if self._is_configured_model_candidate(item)]
-        diagnostic_candidates = [dict(item) for item in candidates if not self._is_configured_model_candidate(item)]
+        connected_options = [
+            dict(item)
+            for item in candidates
+            if self._is_configured_model_candidate(item) and bool(item.get("available", True))
+        ]
+        diagnostic_candidates = [
+            dict(item)
+            for item in candidates
+            if not self._is_configured_model_candidate(item) or not bool(item.get("available", True))
+        ]
         return {
             "version": 1,
             "updatedAt": (stored or {}).get("updatedAt") if isinstance(stored, dict) else "",

@@ -5,6 +5,7 @@ export const SESSION_RUNTIME_IDS = [
   "memory",
   "automation",
   "extensions",
+  "creative_media",
   "network_supervisor",
   "plugin_host_tool",
   "plugin_host_channel",

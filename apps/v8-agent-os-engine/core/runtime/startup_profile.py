@@ -22,19 +22,21 @@ KNOWN_RUNTIME_FAMILIES = (
     "extensions",
     "automation",
     "network_supervisor",
+    "creative_media",
     "plugin_host",
     "computer_use",
     "rpa",
     "desktop_live",
 )
 DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
-    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor"),
+    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor", "creative_media"),
     "desktop": (
         "chat",
         "memory",
         "extensions",
         "automation",
         "network_supervisor",
+        "creative_media",
         "plugin_host",
         "computer_use",
         "rpa",
@@ -50,6 +52,7 @@ _FEATURE_RUNTIME_FAMILY = {
     "cron": "automation",
     "knowledge": "memory",
     "ops": "automation",
+    "creative_media": "creative_media",
     "plugin_host": "plugin_host",
     "network_supervisor": "network_supervisor",
     "computer_use": "computer_use",
@@ -72,6 +75,7 @@ _RUNTIME_CLUSTER_COMPAT_ORDER = (
     ("extensionsruntime", "extensions"),
     ("autoruntime", "automation"),
     ("networksupervisorruntime", "network_supervisor"),
+    ("creativemediaruntime", "creative_media"),
     ("desktopcluster", "computer_use"),
 )
 _RUNTIME_REGISTRY_MIGRATION_LOCK = threading.Lock()
@@ -139,6 +143,9 @@ def _needs_runtime_registry_installation_migration(payload: Any) -> bool:
         return True
     install_profile = normalize_install_profile(payload.get("installProfile") or startup_profile or "minimal")
     configured_families = _normalize_runtime_families(payload.get("installedRuntimeFamilies"))
+    for family in _default_runtime_families_for_profile(install_profile):
+        if family not in configured_families:
+            return True
     if install_profile == "desktop" and _plugin_host_runtime_available() and "plugin_host" not in configured_families:
         return True
     return False

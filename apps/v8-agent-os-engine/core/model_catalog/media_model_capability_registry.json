@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-04-29T13:57:50.235572+00:00",
+  "generatedAt": "2026-04-29T15:39:58.990684+00:00",
   "notes": [
     "Media model facts are exact providerId + modelId records. Do not infer advanced capability from provider or family names.",
     "Provider/API wire format remains in media_provider_format_matrix.json.",
@@ -3332,7 +3332,9 @@
       ],
       "modality": "video",
       "operationKinds": [
-        "video.text_to_video"
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.reference_to_video"
       ],
       "inputModalities": [
         "text",
@@ -3355,6 +3357,48 @@
       "logoAsset": "/model-assets/lobe/google-color.svg",
       "operationCapabilityProfiles": {
         "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
+          "confidence": "verified_official"
+        },
+        "video.image_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
+          "confidence": "verified_official"
+        },
+        "video.reference_to_video": {
           "nativeAudio": true,
           "audioModes": [
             "native_generation"
@@ -3497,7 +3541,8 @@
       ],
       "modality": "video",
       "operationKinds": [
-        "video.text_to_video"
+        "video.text_to_video",
+        "video.image_to_video"
       ],
       "inputModalities": [
         "text",
@@ -3519,6 +3564,26 @@
       "logoAsset": "/model-assets/lobe/kling-color.svg",
       "operationCapabilityProfiles": {
         "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://klingai.com/",
+          "confidence": "community_or_inferred"
+        },
+        "video.image_to_video": {
           "nativeAudio": true,
           "audioModes": [
             "native_generation"
@@ -3880,31 +3945,84 @@
       "modality": "video",
       "operationKinds": [
         "video.text_to_video",
-        "video.image_to_video",
-        "video.first_last_frame",
-        "video.reference_to_video"
+        "video.image_to_video"
       ],
       "inputModalities": [
         "text",
-        "image",
-        "video"
+        "image"
       ],
       "outputStreams": [
         "video"
       ],
-      "referenceInputs": {},
+      "referenceInputs": {
+        "image": {
+          "maxCount": 1,
+          "roles": [
+            "first_frame"
+          ]
+        }
+      },
       "nativeAudio": false,
       "audioModes": [],
-      "audioPreservationPolicy": "",
+      "audioPreservationPolicy": "silent_or_external_audio",
       "resolution": {},
       "duration": {},
       "formats": {},
       "logoAsset": "/model-assets/lobe/volcengine-color.svg",
-      "operationCapabilityProfiles": {},
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": false,
+          "audioModes": [],
+          "audioPreservationPolicy": "silent_or_external_audio",
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 1,
+              "roles": [
+                "first_frame"
+              ]
+            }
+          },
+          "sourceUrl": "https://developer.volcengine.com/articles/7615547765435432996",
+          "confidence": "provider_docs"
+        },
+        "video.image_to_video": {
+          "nativeAudio": false,
+          "audioModes": [],
+          "audioPreservationPolicy": "silent_or_external_audio",
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 1,
+              "roles": [
+                "first_frame"
+              ]
+            }
+          },
+          "sourceUrl": "https://developer.volcengine.com/articles/7615547765435432996",
+          "confidence": "provider_docs"
+        }
+      },
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
           "url": "https://www.volcengine.com/docs/82379"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://developer.volcengine.com/articles/7615547765435432996"
         }
       ],
       "confidence": "provider_docs",

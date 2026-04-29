@@ -17,7 +17,7 @@ import {
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
 import { ContentDispatcher } from "./ContentDispatcher";
-import { Activity, AlertTriangle, Blocks, Bot, Box, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, TerminalSquare, Workflow, X } from "lucide-react";
+import { Activity, AlertTriangle, Blocks, Bot, Box, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, Sparkles, TerminalSquare, Workflow, X } from "lucide-react";
 
 interface RuntimeTimelinePanelProps {
     isOpen: boolean;
@@ -38,6 +38,7 @@ const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>>
     planner_lane: Route,
     engineering_lane: Code2,
     extensions: Blocks,
+    creative_media: Sparkles,
     automation: Workflow,
     memory: Database,
     context_governance: Shield,

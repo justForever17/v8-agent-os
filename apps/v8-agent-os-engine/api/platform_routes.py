@@ -11,6 +11,7 @@ from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
+from runtimes.extensions.mcp.client import mcp_manager
 
 
 router = APIRouter()
@@ -149,6 +150,42 @@ async def update_mcp_config(config: dict = Body(...)):
         return {"status": "success", "extensionsRuntime": runtime_health, "inventoryRefresh": inventory_refresh}
     except McpConfigValidationError as e:
         raise HTTPException(status_code=400, detail=e.to_payload())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/mcp/config/{server_name}")
+async def delete_mcp_config_server(server_name: str):
+    normalized_name = str(server_name or "").strip()
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail={"code": "empty_server_name", "message": "MCP server 名称不能为空。"})
+    try:
+        existing = storage.get_mcp_config() or {"mcpServers": {}}
+        existing_servers = existing.get("mcpServers", {})
+        if not isinstance(existing_servers, dict):
+            existing_servers = {}
+        if normalized_name not in existing_servers:
+            raise HTTPException(status_code=404, detail={"code": "server_not_found", "message": f"MCP server `{normalized_name}` 不存在。"})
+        next_servers = dict(existing_servers)
+        next_servers.pop(normalized_name, None)
+        storage.save_mcp_config({"mcpServers": next_servers})
+        reload_result = await mcp_manager.reload_if_changed()
+        if normalized_name not in set((reload_result.get("mcpChangedServers") or {}).get("removed") or []):
+            removal_result = await mcp_manager.remove_server(normalized_name)
+        else:
+            removal_result = {"changed": True, "server": normalized_name, "reason": "delta_reload_removed"}
+        inventory_refresh = await extensions_runtime_service.refresh_inventory_if_changed(reason="mcp_config_delete")
+        runtime_health = extensions_runtime_service.build_health()
+        return {
+            "status": "success",
+            "deletedServer": normalized_name,
+            "reloadResult": reload_result,
+            "removeResult": removal_result,
+            "extensionsRuntime": runtime_health,
+            "inventoryRefresh": inventory_refresh,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

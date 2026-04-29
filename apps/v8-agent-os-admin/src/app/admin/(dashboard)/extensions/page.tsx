@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Terminal, Upload, Wrench } from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Terminal, Trash2, Upload, Wrench } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -584,6 +584,7 @@ export default function ExtensionsPage() {
     const [installingCommand, setInstallingCommand] = useState(false);
     const [uploadingZip, setUploadingZip] = useState(false);
     const [savingMcp, setSavingMcp] = useState(false);
+    const [deletingMcpServer, setDeletingMcpServer] = useState("");
     const [commandInput, setCommandInput] = useState("");
     const [mcpConfigInput, setMcpConfigInput] = useState("");
     const [installResult, setInstallResult] = useState<SkillInstallResult | null>(null);
@@ -900,6 +901,40 @@ export default function ExtensionsPage() {
         }
         finally {
             setSavingMcp(false);
+        }
+    };
+    const deleteMcpServer = async (serverName: string) => {
+        const normalizedName = String(serverName || "").trim();
+        if (!normalizedName)
+            return;
+        const confirmed = window.confirm(isZh
+            ? `删除 MCP 服务「${normalizedName}」并热重载工具列表？`
+            : `Delete MCP server "${normalizedName}" and hot-reload tools?`);
+        if (!confirmed)
+            return;
+        setDeletingMcpServer(normalizedName);
+        try {
+            const res = await fetch(`/api/mcp/config/${encodeURIComponent(normalizedName)}`, { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                const validationError = extractValidationPayload(data);
+                throw new Error(localizeMcpValidationPayload(validationError, t) || String(data?.detail || data?.error || (isZh ? "删除 MCP 服务失败。" : "Failed to delete MCP server.")));
+            }
+            toast({
+                title: isZh ? "MCP 服务已删除" : "MCP server deleted",
+                description: isZh ? "配置已保存并触发热重载。" : "Configuration saved and hot reload requested.",
+            });
+            await loadData();
+        }
+        catch (error) {
+            toast({
+                title: isZh ? "删除 MCP 服务失败" : "Failed to delete MCP server",
+                description: error instanceof Error ? error.message : (isZh ? "请查看 Engine 日志。" : "Check Engine logs for details."),
+                variant: "destructive",
+            });
+        }
+        finally {
+            setDeletingMcpServer("");
         }
     };
     if (loading || !catalog || !health || !configEnvelope) {
@@ -1329,7 +1364,20 @@ export default function ExtensionsPage() {
                                                 {server.tools.length > 6 ? <Badge variant="secondary">+{server.tools.length - 6}</Badge> : null}
                                             </div>
                                         </div>
-                                        <Server className="mt-0.5 h-5 w-5 shrink-0 text-sky-600"/>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                                                title={isZh ? "删除 MCP 服务" : "Delete MCP server"}
+                                                onClick={() => void deleteMcpServer(server.name)}
+                                                disabled={deletingMcpServer === server.name}
+                                            >
+                                                {deletingMcpServer === server.name ? <Loader2 className="h-4 w-4 animate-spin"/> : <Trash2 className="h-4 w-4"/>}
+                                            </Button>
+                                            <Server className="mt-0.5 h-5 w-5 text-sky-600"/>
+                                        </div>
                                     </div>
                                 </div>)))}
                     </div>

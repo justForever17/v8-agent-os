@@ -41,6 +41,26 @@
       "confidence": "provider_docs"
     },
     {
+      "providerId": "volcengine_seedance",
+      "modelIds": ["doubao-seedance-1-0-pro-fast-251015"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "audioModes": [],
+        "audioPreservationPolicy": "silent_or_external_audio",
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "referenceInputs": {
+          "image": {
+            "maxCount": 1,
+            "roles": ["first_frame"]
+          }
+        }
+      },
+      "sourceUrl": "https://developer.volcengine.com/articles/7615547765435432996",
+      "confidence": "provider_docs"
+    },
+    {
       "providerId": "openai_sora_video",
       "modelIds": ["sora-2", "sora-2-pro"],
       "operationKinds": ["video.text_to_video", "video.image_to_video"],

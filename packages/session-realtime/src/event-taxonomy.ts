@@ -62,6 +62,7 @@ export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "memory.lifecycle", topicPattern: "memory.", runtimeId: "memory", scope: "active_run", visibility: "hidden", targets: ["runtime_card"], explicit: true },
   { key: "automation.lifecycle", topicPattern: "automation.", runtimeId: "automation", scope: "active_run", visibility: "visible", targets: ["runtime_card", "hud", "process"], explicit: true },
   { key: "extensions.lifecycle", topicPattern: "extension.", runtimeId: "extensions", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card", "artifact"], explicit: true },
+  { key: "creative_media.lifecycle", topicPattern: "creative_media.", runtimeId: "creative_media", scope: "active_run", visibility: "visible", targets: ["runtime_card", "artifact", "process"], explicit: true },
   { key: "network.lifecycle", topicPattern: "network_supervisor.", runtimeId: "network_supervisor", scope: "active_run", visibility: "visible", targets: ["runtime_card", "process"], explicit: true },
   { key: "plugin.tool.gateway", topicPattern: "gateway.", runtimeId: "plugin_host_tool", scope: "active_run", visibility: "visible", targets: ["runtime_card", "process"], explicit: true },
   { key: "plugin.tool.host", topicPattern: "plugin_tool.", runtimeId: "plugin_host_tool", scope: "active_run", visibility: "visible", targets: ["runtime_card", "process"], explicit: true },

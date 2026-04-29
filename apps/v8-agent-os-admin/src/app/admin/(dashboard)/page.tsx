@@ -185,36 +185,32 @@ export default function DashboardPage() {
                         <CardTitle>{t("app.admin.dashboard.page.kd35fe722")}</CardTitle>
                         <CardDescription>{t("app.admin.dashboard.page.k9eacfd89")}</CardDescription>
                     </CardHeader>
-                    <CardContent className="flex flex-1 min-h-0 flex-col">
+                    <CardContent className="flex min-h-0 flex-1 flex-col">
                         <div className="min-h-0 flex-1">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                                <Pie
-                                    data={data.charts.modelUsage}
-                                    cx="50%"
-                                    cy="50%"
-                                    innerRadius={60}
-                                    outerRadius={80}
-                                    paddingAngle={5}
-                                    dataKey="value"
-                                >
-                                    {data.charts.modelUsage.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                    ))}
-                                </Pie>
-                                <Tooltip />
-                            </PieChart>
-                        </ResponsiveContainer>
-                        </div>
-                        <div className="mt-4 max-h-24 overflow-y-auto pr-1">
-                        <div className="space-y-2">
-                            {data.charts.modelUsage.map((entry, index) => (
-                                <div key={index} className="flex min-w-0 items-center gap-2 text-sm">
-                                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                                    <span className="block min-w-0 flex-1 truncate" title={entry.name}>{entry.name}</span>
+                            {data.charts.modelUsage.length === 0 ? (
+                                <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 text-sm text-muted-foreground">
+                                    {t("app.admin.dashboard.page.k393204db")}
                                 </div>
-                            ))}
-                        </div>
+                            ) : (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={data.charts.modelUsage}
+                                            cx="50%"
+                                            cy="50%"
+                                            innerRadius={60}
+                                            outerRadius={80}
+                                            paddingAngle={5}
+                                            dataKey="value"
+                                        >
+                                            {data.charts.modelUsage.map((entry, index) => (
+                                                <Cell key={`${entry.provider}:${entry.name}:${index}`} fill={COLORS[index % COLORS.length]} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            )}
                         </div>
                     </CardContent>
                 </Card>

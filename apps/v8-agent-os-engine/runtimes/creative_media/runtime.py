@@ -28,6 +28,7 @@ from erc.runtime_registry import runtime_registry
 from .catalog import (
     capability_profile_for_model,
     load_audio_music_recipe_library,
+    load_media_model_capability_registry,
     load_media_model_capability_overrides,
     load_provider_matrix,
     load_resolution_presets,
@@ -314,6 +315,7 @@ class CreativeMediaRuntime:
         matrix = load_provider_matrix()
         return {
             **matrix,
+            "mediaModelCapabilityRegistry": load_media_model_capability_registry(),
             "modelCapabilityOverrides": load_media_model_capability_overrides(),
             "runtimeAdapters": [
                 {"id": "openai_images", "modalities": ["image"], "executable": True},

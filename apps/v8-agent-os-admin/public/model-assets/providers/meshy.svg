@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Meshy">
+  <rect width="64" height="64" rx="16" fill="#f8fafc"/>
+  <path d="M18 43 32 12l14 31H18Z" fill="#6366f1"/>
+  <path d="M18 43h28L32 55 18 43Z" fill="#a78bfa"/>
+  <path d="M32 12v43M18 43l28-31M46 43 18 12" stroke="#fff" stroke-width="2" opacity=".65"/>
+</svg>

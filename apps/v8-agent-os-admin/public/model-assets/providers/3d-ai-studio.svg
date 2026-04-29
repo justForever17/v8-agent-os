@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="3D AI Studio">
+  <rect width="64" height="64" rx="16" fill="#f1f5f9"/>
+  <path d="M18 22 32 14l14 8v16l-14 8-14-8V22Z" fill="#f97316"/>
+  <path d="m18 22 14 8 14-8M32 30v16" fill="none" stroke="#fff7ed" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="32" y="55" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="10" fill="#334155">3D AI</text>
+</svg>

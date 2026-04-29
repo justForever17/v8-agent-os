@@ -1,0 +1,5798 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-29T13:57:50.235572+00:00",
+  "notes": [
+    "Media model facts are exact providerId + modelId records. Do not infer advanced capability from provider or family names.",
+    "Provider/API wire format remains in media_provider_format_matrix.json.",
+    "Prices are intentionally omitted."
+  ],
+  "providers": [
+    {
+      "providerId": "3d_ai_studio",
+      "displayName": "3D AI Studio",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/providers/3d-ai-studio.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "aliyun_bailian_3d",
+      "displayName": "阿里云",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "aliyun_bailian_cosyvoice",
+      "displayName": "Alibaba Cloud Bailian CosyVoice",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "aliyun_bailian_image",
+      "displayName": "Alibaba Cloud Bailian Image",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "aliyun_bailian_video",
+      "displayName": "Alibaba Cloud Bailian Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "black_forest_labs_image",
+      "displayName": "Black Forest Labs",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/providers/black-forest-labs.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "csm_3d",
+      "displayName": "CSM（Common Sense Machines）",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/providers/csm.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "elevenlabs_music",
+      "displayName": "ElevenLabs",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "elevenlabs_tts",
+      "displayName": "ElevenLabs Text to Speech",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://elevenlabs.io/docs/api-reference/text-to-speech"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "fal_3d",
+      "displayName": "fal.ai 3D Models",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.fal.ai/model-apis/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "fal_image",
+      "displayName": "fal.ai Image Models",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.fal.ai/model-apis/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "fal_music",
+      "displayName": "fal.ai Music Models",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.fal.ai/model-apis/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "fal_tts",
+      "displayName": "开源界 / Fal.ai",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "fish_audio_tts",
+      "displayName": "Fish Audio",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/providers/fish-audio.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "google_gemini_image",
+      "displayName": "Google",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "google_lyria_music",
+      "displayName": "Google",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "google_veo",
+      "displayName": "Google Veo",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/video"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "happyhorse_video",
+      "displayName": "HappyHorse Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/providers/happyhorse.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://happyhorse.ai/"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "providerId": "hitem3d",
+      "displayName": "Hitem3D（Math Magic）",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/providers/hitem3d.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "hyper3d_rodin",
+      "displayName": "Deemos Technology（Hyper3D）",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/providers/hyper3d.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "kling_video",
+      "displayName": "Kling AI Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/kling-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.qingque.cn/d/home/eZQFcwKVbJYERy6_zJcDf8B7m"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "providerId": "luma_video",
+      "displayName": "Luma Dream Machine",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/luma-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.lumalabs.ai/docs/api-reference"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "meshy_3d",
+      "displayName": "Meshy AI",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/providers/meshy.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "minimax_music",
+      "displayName": "MiniMax",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "minimax_tts",
+      "displayName": "MiniMax Speech",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/document/speech-synthesis"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "minimax_video",
+      "displayName": "MiniMax Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/document/video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "mureka_music",
+      "displayName": "Mureka Music API",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/providers/mureka.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.mureka.ai/docs/en/quickstart.html"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "openai_audio_speech",
+      "displayName": "OpenAI Audio Speech",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/guides/text-to-speech"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "openai_images",
+      "displayName": "OpenAI-compatible Images",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/guides/images/image-generation"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "openai_sora_video",
+      "displayName": "OpenAI Sora Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/models/sora-2"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "replicate_image",
+      "displayName": "Replicate Image Predictions",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/replicate.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://replicate.com/docs/reference/http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "runway_video",
+      "displayName": "Runway Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/runway.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.dev.runwayml.com/"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "stability_3d",
+      "displayName": "Stability AI",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "stability_image",
+      "displayName": "Stability AI Image",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.stability.ai/docs/api-reference"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "stability_music",
+      "displayName": "Stability AI",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [],
+      "catalogOnly": true
+    },
+    {
+      "providerId": "suno_placeholder",
+      "displayName": "Suno",
+      "modalities": [
+        "music"
+      ],
+      "logoAsset": "/model-assets/lobe/suno.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://suno.com/"
+        }
+      ],
+      "confidence": "placeholder",
+      "missingFields": []
+    },
+    {
+      "providerId": "tencent_hunyuan_3d",
+      "displayName": "Tencent Hunyuan 3D",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "tripo3d_placeholder",
+      "displayName": "Tripo 3D",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/lobe/tripo-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.tripo3d.ai/"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "placeholder",
+      "missingFields": []
+    },
+    {
+      "providerId": "v8_audio_tts",
+      "displayName": "V8 Audio Runtime TTS",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/providers/v8-audio.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "internal"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "volcengine_3d_generation",
+      "displayName": "Volcengine Ark 3D Generation",
+      "modalities": [
+        "model3d"
+      ],
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379/1856268"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "providerId": "volcengine_doubao_voice",
+      "displayName": "Volcengine Ark Doubao Voice",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "providerId": "volcengine_seedance",
+      "displayName": "Volcengine Ark Seedance",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "volcengine_seedream",
+      "displayName": "Volcengine Ark Seedream",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "xiaomi_mimo_tts",
+      "displayName": "Xiaomi MiMo TTS",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "zhipu_bigmodel_image",
+      "displayName": "Zhipu BigModel Image",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/图像生成"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "zhipu_bigmodel_video",
+      "displayName": "Zhipu BigModel Video",
+      "modalities": [
+        "video"
+      ],
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/视频生成-异步"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "providerId": "zhipu_bigmodel_voice",
+      "displayName": "Zhipu BigModel Voice",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    }
+  ],
+  "models": [
+    {
+      "canonicalModelId": "qwen-image-2.0",
+      "displayName": "qwen-image-2.0",
+      "creator": "Alibaba Cloud Bailian Image",
+      "providerIds": [
+        "aliyun_bailian_image"
+      ],
+      "aliases": [
+        "qwen-image-2.0"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate",
+        "image.edit"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "qwen-image-2.0-pro",
+      "displayName": "Qwen-Image 2.0 Pro",
+      "creator": "Alibaba Cloud Bailian Image",
+      "providerIds": [
+        "aliyun_bailian_image"
+      ],
+      "aliases": [
+        "Qwen-Image 2.0 Pro",
+        "qwen-image-2.0-pro"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate",
+        "image.edit"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": [],
+      "docNotes": {
+        "input": "支持文本及图像上传；支持工业级的视觉OCR参考输入、复杂指令及版式布局参考；支持精确的元素替换与背景重构遮罩。",
+        "output": "最高2K分辨率；极强的高清细节渲染与中文排版能力。（可通过阿里云或Atlas Cloud API调用）"
+      }
+    },
+    {
+      "canonicalModelId": "wan2.6-image",
+      "displayName": "wan2.6-image",
+      "creator": "Alibaba Cloud Bailian Image",
+      "providerIds": [
+        "aliyun_bailian_image"
+      ],
+      "aliases": [
+        "wan2.6-image"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate",
+        "image.edit"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-image-pro",
+      "displayName": "wan2.7-image-pro",
+      "creator": "Alibaba Cloud Bailian Image",
+      "providerIds": [
+        "aliyun_bailian_image"
+      ],
+      "aliases": [
+        "wan2.7-image-pro"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate",
+        "image.edit"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "flux.2",
+      "displayName": "FLUX.2",
+      "creator": "Black Forest Labs",
+      "providerIds": [
+        "black_forest_labs_image"
+      ],
+      "aliases": [
+        "FLUX.2",
+        "flux.2"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/black-forest-labs.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "文本输入；行业最强的IP-Adapter插件参考支持；接受复杂的排版渲染修改参数与文字遮罩。",
+        "output": "最高2K分辨率；极强的字体情感语义匹配与空间逻辑表现。（广泛支持于各开源API平台及Atlas Cloud）"
+      }
+    },
+    {
+      "canonicalModelId": "fal-image-model",
+      "displayName": "fal-image-model",
+      "creator": "fal.ai Image Models",
+      "providerIds": [
+        "fal_image"
+      ],
+      "aliases": [
+        "fal-image-model"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.fal.ai/model-apis/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "nano-banana-pro",
+      "displayName": "Nano Banana Pro(Gemini 3 Pro Image)",
+      "creator": "Google",
+      "providerIds": [
+        "google_gemini_image"
+      ],
+      "aliases": [
+        "Nano Banana Pro(Gemini 3 Pro Image)",
+        "nano-banana-pro",
+        "nano-banana-pro-gemini-3-pro-image"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "毫秒级轻量输入；支持Omni Reference（全方位参考），可同时传入图像锁定人物身份、艺术风格和构图骨架；支持Inpaint（画内重绘）与Outpaint（画外扩展）遮罩参数。",
+        "output": "最高支持4K分辨率；极高的图内文本（OCR）生成准确率，超高并发支持。（通过Gemini API调用）"
+      }
+    },
+    {
+      "canonicalModelId": "gpt-image-1",
+      "displayName": "gpt-image-1",
+      "creator": "OpenAI-compatible Images",
+      "providerIds": [
+        "openai_images"
+      ],
+      "aliases": [
+        "gpt-image-1"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/guides/images/image-generation"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gpt-image-2",
+      "displayName": "gpt-image-2",
+      "creator": "OpenAI-compatible Images",
+      "providerIds": [
+        "openai_images"
+      ],
+      "aliases": [
+        "gpt-image-2"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/guides/images/image-generation"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "replicate-image-model",
+      "displayName": "replicate-image-model",
+      "creator": "Replicate Image Predictions",
+      "providerIds": [
+        "replicate_image"
+      ],
+      "aliases": [
+        "replicate-image-model"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/replicate.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://replicate.com/docs/reference/http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "stable-image-core",
+      "displayName": "stable-image-core",
+      "creator": "Stability AI Image",
+      "providerIds": [
+        "stability_image"
+      ],
+      "aliases": [
+        "stable-image-core"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.stability.ai/docs/api-reference"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "stable-image-ultra",
+      "displayName": "stable-image-ultra",
+      "creator": "Stability AI Image",
+      "providerIds": [
+        "stability_image"
+      ],
+      "aliases": [
+        "stable-image-ultra"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.stability.ai/docs/api-reference"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seedream-4-0",
+      "displayName": "doubao-seedream-4-0",
+      "creator": "Volcengine Ark Seedream",
+      "providerIds": [
+        "volcengine_seedream"
+      ],
+      "aliases": [
+        "doubao-seedream-4-0"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seedream-4-0-250828",
+      "displayName": "doubao-seedream-4-0-250828",
+      "creator": "Volcengine Ark Seedream",
+      "providerIds": [
+        "volcengine_seedream"
+      ],
+      "aliases": [
+        "doubao-seedream-4-0-250828"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seedream-4-5",
+      "displayName": "doubao-seedream-4-5",
+      "creator": "Volcengine Ark Seedream",
+      "providerIds": [
+        "volcengine_seedream"
+      ],
+      "aliases": [
+        "doubao-seedream-4-5"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seedream-5-0-lite",
+      "displayName": "Seedream 5.0",
+      "creator": "Volcengine Ark Seedream",
+      "providerIds": [
+        "volcengine_seedream"
+      ],
+      "aliases": [
+        "Seedream 5.0",
+        "doubao-seedream-5-0-lite",
+        "seedream-5.0"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": [],
+      "docNotes": {
+        "input": "支持文本与图像输入；支持精细化的风格参考（Sref）；支持复杂的空间逻辑指令与实时联网数据融合参考。",
+        "output": "4K超高清分辨率；极速渲染，擅长商业品牌级一致性视觉输出。（可通过Atlas Cloud API调用）"
+      }
+    },
+    {
+      "canonicalModelId": "cogview-3-flash",
+      "displayName": "cogview-3-flash",
+      "creator": "Zhipu BigModel Image",
+      "providerIds": [
+        "zhipu_bigmodel_image"
+      ],
+      "aliases": [
+        "cogview-3-flash"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/图像生成"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "cogview-4",
+      "displayName": "cogview-4",
+      "creator": "Zhipu BigModel Image",
+      "providerIds": [
+        "zhipu_bigmodel_image"
+      ],
+      "aliases": [
+        "cogview-4"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/图像生成"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "cogview-4-250304",
+      "displayName": "cogview-4-250304",
+      "creator": "Zhipu BigModel Image",
+      "providerIds": [
+        "zhipu_bigmodel_image"
+      ],
+      "aliases": [
+        "cogview-4-250304"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/图像生成"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "glm-image",
+      "displayName": "glm-image",
+      "creator": "Zhipu BigModel Image",
+      "providerIds": [
+        "zhipu_bigmodel_image"
+      ],
+      "aliases": [
+        "glm-image"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/图像生成"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "trellis.2",
+      "displayName": "TRELLIS.2（Microsoft）、Hunyuan 3D 全系列",
+      "creator": "3D AI Studio",
+      "providerIds": [
+        "3d_ai_studio"
+      ],
+      "aliases": [
+        "TRELLIS.2（Microsoft）、Hunyuan 3D 全系列",
+        "trellis.2",
+        "trellis.2-microsoft-hunyuan-3d"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/3d-ai-studio.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "TRELLIS.2（Microsoft）、Hunyuan 3D 全系列",
+        "output": "必选参数：model_type（TRELLIS.2/Hunyuan）、input（文本 prompt / 单张 / 多视角图片）<br><br>可选参数：resolution、pbr_enabled、polygon_count、generation_mode（Pro/Rapid）、output_format"
+      }
+    },
+    {
+      "canonicalModelId": "motionshop-gen3d",
+      "displayName": "motionshop-gen3d",
+      "creator": "阿里云",
+      "providerIds": [
+        "aliyun_bailian_3d"
+      ],
+      "aliases": [
+        "motionshop-gen3d"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "motionshop-gen3d",
+        "output": "Header 必选：Authorization（API Key）、X-DashScope-Async（固定为 enable）<br><br>Body 必选：model（固定为 motionshop-gen3d）、input.image_url（人物角色图片公网 URL）"
+      }
+    },
+    {
+      "canonicalModelId": "csm-3d-generation",
+      "displayName": "CSM 3D Generation",
+      "creator": "CSM（Common Sense Machines）",
+      "providerIds": [
+        "csm_3d"
+      ],
+      "aliases": [
+        "CSM 3D Generation",
+        "csm-3d-generation"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/csm.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "CSM 3D Generation",
+        "output": "文生 3D 必选：prompt（文本提示词）、mesh_format（glb/obj/fbx/usdz）<br><br>图生 3D 必选：image_path/image_url、mesh_format<br><br>可选参数：texture_resolution、face_count、生成精度等级"
+      }
+    },
+    {
+      "canonicalModelId": "fal-3d-model",
+      "displayName": "fal-3d-model",
+      "creator": "fal.ai 3D Models",
+      "providerIds": [
+        "fal_3d"
+      ],
+      "aliases": [
+        "fal-3d-model"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.fal.ai/model-apis/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "sparc3d-ultra3d",
+      "displayName": "Sparc3D / Ultra3D",
+      "creator": "Hitem3D（Math Magic）",
+      "providerIds": [
+        "hitem3d"
+      ],
+      "aliases": [
+        "Sparc3D / Ultra3D",
+        "sparc3d-ultra3d"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/hitem3d.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "Sparc3D / Ultra3D",
+        "output": "必选参数：input_image（单张 / 多视角图片）、model_version（v1.0/v1.5）<br><br>可选参数：resolution（512³/1024³/1536³/1536³ Pro）、generate_type（仅几何白模 / 带纹理全模型）、output_format（obj/glb/stl/fbx）"
+      }
+    },
+    {
+      "canonicalModelId": "rodin-gen-2",
+      "displayName": "Rodin Gen-2",
+      "creator": "Deemos Technology（Hyper3D）",
+      "providerIds": [
+        "hyper3d_rodin"
+      ],
+      "aliases": [
+        "Rodin Gen-2",
+        "rodin-gen-2"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/hyper3d.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "Rodin Gen-2",
+        "output": "必选参数：tier（固定为 Gen-2）<br><br>二选一必填：images（1-5 张图片，图生 3D）/prompt（文本提示词，文生 3D）<br><br>可选参数：seed、geometry_file_format（glb/usdz/fbx/obj/stl）、material（PBR/Shaded/All）、quality 等级、mesh_mode（Quad/Raw）、自定义面数、TAPose 角色姿态开关"
+      }
+    },
+    {
+      "canonicalModelId": "meshy-6",
+      "displayName": "Meshy-6",
+      "creator": "Meshy AI",
+      "providerIds": [
+        "meshy_3d"
+      ],
+      "aliases": [
+        "Meshy-6",
+        "meshy-6"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/meshy.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "Meshy-6",
+        "output": "文生 3D 必选：mode（preview/refine 双阶段）、prompt（文本提示词）<br><br>图生 3D 必选：image_file/image_url、mode<br><br>通用可选：negative_prompt、art_style、should_remesh、texture_resolution、topology、preview_task_id（refine 模式必填）"
+      }
+    },
+    {
+      "canonicalModelId": "stable-fast-3d",
+      "displayName": "Stable Fast 3D (SF3D)",
+      "creator": "Stability AI",
+      "providerIds": [
+        "stability_3d"
+      ],
+      "aliases": [
+        "Stable Fast 3D (SF3D)",
+        "stable-fast-3d",
+        "stable-fast-3d-sf3d"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "Stable Fast 3D (SF3D)",
+        "output": "必选参数：image（单张图片文件，支持 JPEG/PNG/WebP）<br><br>可选参数：texture_resolution（512/1024/2048）、foreground_ratio（0.1-1.0）、remesh（none/triangle）、seed（随机种子）"
+      }
+    },
+    {
+      "canonicalModelId": "hunyuan-3d",
+      "displayName": "混元 3D（Hunyuan 3D 3.0/3.1/3.5）",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "3d-hunyuan-3d-3.0-3.1-3.5",
+        "hunyuan-3d",
+        "混元 3D（Hunyuan 3D 3.0/3.1/3.5）"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": [],
+      "docNotes": {
+        "input": "混元 3D（Hunyuan 3D 3.0/3.1/3.5）",
+        "output": "必选三选一：<br><br>1. Prompt（文本提示词，≤1024 字符，文生 3D）<br><br>2. ImageBase64/ImageUrl（单张图片，支持 jpg/png/webp，≤8M，图生 3D）<br><br>可选参数：MultiViewImages（多视角图片，3.1 版本支持）、Model（模型版本）、EnablePBR（PBR 材质开关）、FaceCount（模型面数 3000-1500000）、GenerateType（生成模式：Normal/LowPoly/Geometry/Sketch）、ResultFormat（输出格式 STL/USDZ/FBX）"
+      }
+    },
+    {
+      "canonicalModelId": "hunyuan-3d-format-convert",
+      "displayName": "hunyuan-3d-format-convert",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hunyuan-3d-format-convert"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hunyuan-3d-part",
+      "displayName": "hunyuan-3d-part",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hunyuan-3d-part"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hunyuan-3d-pro",
+      "displayName": "hunyuan-3d-pro",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hunyuan-3d-pro"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hunyuan-3d-profile",
+      "displayName": "hunyuan-3d-profile",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hunyuan-3d-profile"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hunyuan-3d-rapid",
+      "displayName": "hunyuan-3d-rapid",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hunyuan-3d-rapid"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hunyuan-3d-texture",
+      "displayName": "hunyuan-3d-texture",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hunyuan-3d-texture"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate",
+        "model3d.texture",
+        "model3d.part",
+        "model3d.profile",
+        "model3d.convert"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "tripo-3d-v3",
+      "displayName": "Tripo 3D v3.0/v3.1",
+      "creator": "Tripo AI",
+      "providerIds": [
+        "tripo3d_placeholder"
+      ],
+      "aliases": [
+        "Tripo 3D v3.0/v3.1",
+        "tripo-3d-v3",
+        "tripo-3d-v3.0-v3.1"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/tripo-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "Tripo 3D v3.0/v3.1",
+        "output": "文生 3D 必选：prompt（文本提示词）<br><br>图生 3D 必选：image（本地路径 / 公网 URL / 上传 token）<br><br>多视图生成必选：images（多视角图片列表）<br><br>通用可选：negative_prompt、model_version、face_limit、texture/PBR 材质开关、多维度 seed 参数、风格预设、quad 四边面开关"
+      }
+    },
+    {
+      "canonicalModelId": "tripo3d-model",
+      "displayName": "tripo3d-model",
+      "creator": "Tripo 3D",
+      "providerIds": [
+        "tripo3d_placeholder"
+      ],
+      "aliases": [
+        "tripo3d-model"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/tripo-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.tripo3d.ai/"
+        }
+      ],
+      "confidence": "placeholder",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seed3d-1-0-250928",
+      "displayName": "Seed3D（doubao-seed3d-1-0-250928）",
+      "creator": "火山引擎（字节跳动）",
+      "providerIds": [
+        "volcengine_3d_generation"
+      ],
+      "aliases": [
+        "Seed3D（doubao-seed3d-1-0-250928）",
+        "doubao-seed3d-1-0-250928",
+        "seed3d-doubao-seed3d-1-0-250928"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "Seed3D（doubao-seed3d-1-0-250928）",
+        "output": "必选参数：<br><br>1. model（模型固定 ID）<br><br>2. content.image_url（单张图片 URL/Base64，≤10MB，支持 jpg/png/webp/bmp）<br><br>可选参数：text 控制指令（--subdivisionlevel：面数等级 high/medium/low；--fileformat：输出格式 glb/obj/usd/usdz）"
+      }
+    },
+    {
+      "canonicalModelId": "doubao-seed3d-2-0",
+      "displayName": "doubao-seed3d-2-0",
+      "creator": "Volcengine Ark 3D Generation",
+      "providerIds": [
+        "volcengine_3d_generation"
+      ],
+      "aliases": [
+        "doubao-seed3d-2-0"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379/1856268"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hitem3d-2-0",
+      "displayName": "hitem3d-2-0",
+      "creator": "Volcengine Ark 3D Generation",
+      "providerIds": [
+        "volcengine_3d_generation"
+      ],
+      "aliases": [
+        "hitem3d-2-0"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/hitem3d.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379/1856268"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hyper3d-gen2",
+      "displayName": "hyper3d-gen2",
+      "creator": "Volcengine Ark 3D Generation",
+      "providerIds": [
+        "volcengine_3d_generation"
+      ],
+      "aliases": [
+        "hyper3d-gen2"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/hyper3d.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379/1856268"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "elevenlabs-music",
+      "displayName": "ElevenLabs Music",
+      "creator": "ElevenLabs",
+      "providerIds": [
+        "elevenlabs_music"
+      ],
+      "aliases": [
+        "ElevenLabs Music",
+        "elevenlabs-music"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "文本提示词输入（描述流派、情绪等）；与声音API统一生态，可结合生成。",
+        "output": "44.1kHz / 192kbps高音质；包含人声与乐器的完整歌曲，最高长达5分钟；100%版权安全（无Content ID风险）。"
+      }
+    },
+    {
+      "canonicalModelId": "fal-music-model",
+      "displayName": "fal-music-model",
+      "creator": "fal.ai Music Models",
+      "providerIds": [
+        "fal_music"
+      ],
+      "aliases": [
+        "fal-music-model"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.fal.ai/model-apis/"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "lyria-realtime",
+      "displayName": "Lyria RealTime",
+      "creator": "Google",
+      "providerIds": [
+        "google_lyria_music"
+      ],
+      "aliases": [
+        "Lyria RealTime",
+        "lyria-realtime"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "提示词输入；支持通过WebSocket传入动态实时参数（如：BPM 60-200、音乐密度、音阶变化、实时静音贝斯/鼓组等）。",
+        "output": "48kHz立体声PCM实时流式音频；真正的动态互动BGM（Instrumental），完美适配游戏或互动应用。（通过Gemini API调用）"
+      }
+    },
+    {
+      "canonicalModelId": "minimax-music-2.5",
+      "displayName": "MiniMax Music 2.5",
+      "creator": "MiniMax",
+      "providerIds": [
+        "minimax_music"
+      ],
+      "aliases": [
+        "MiniMax Music 2.5",
+        "minimax-music-2.5"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "支持结构化的文本Prompt；接受精确的乐器增减参考指令；支持使用 `[Instrumental]` 等歌词标签进行段落控制。",
+        "output": "包含人声与乐器的高质量音乐；API单次支持最高5分钟连贯生成；开发者友好且极具性价比。"
+      }
+    },
+    {
+      "canonicalModelId": "mureka-o1",
+      "displayName": "mureka-o1",
+      "creator": "Mureka Music API",
+      "providerIds": [
+        "mureka_music"
+      ],
+      "aliases": [
+        "mureka-o1"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/mureka.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.mureka.ai/docs/en/quickstart.html"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "stable-audio-2.5",
+      "displayName": "Stable Audio 2.5",
+      "creator": "Stability AI",
+      "providerIds": [
+        "stability_music"
+      ],
+      "aliases": [
+        "Stable Audio 2.5",
+        "stable-audio-2.5"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/stability-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "文本提示词输入；支持音频参考输入，可针对特定的声学环境或采样进行风格迁移（Style Transfer）和音频局部重绘（Inpainting）。",
+        "output": "最长约3分钟的音频；输出包含纯乐器配乐（Instrumentals）及顶级的定制化音效（SFX）。"
+      }
+    },
+    {
+      "canonicalModelId": "suno-future-generation",
+      "displayName": "suno-future-generation",
+      "creator": "Suno",
+      "providerIds": [
+        "suno_placeholder"
+      ],
+      "aliases": [
+        "suno-future-generation"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/suno.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://suno.com/"
+        }
+      ],
+      "confidence": "placeholder",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.2-animate-mix",
+      "displayName": "wan2.2-animate-mix",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.2-animate-mix"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.2-animate-move",
+      "displayName": "wan2.2-animate-move",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.2-animate-move"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.2-s2v",
+      "displayName": "wan2.2-s2v",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.2-s2v"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-i2v",
+      "displayName": "wan2.7-i2v",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-i2v"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-i2v-2026-04-25",
+      "displayName": "wan2.7-i2v-2026-04-25",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-i2v-2026-04-25"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-r2v",
+      "displayName": "wan2.7-r2v",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-r2v"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-t2v",
+      "displayName": "wan2.7-t2v",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-t2v"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-t2v-2026-04-25",
+      "displayName": "wan2.7-t2v-2026-04-25",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-t2v-2026-04-25"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-videoedit",
+      "displayName": "wan2.7-videoedit",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-videoedit"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "veo-3.1-generate-preview",
+      "displayName": "Veo 3.1",
+      "creator": "Google Veo",
+      "providerIds": [
+        "google_veo"
+      ],
+      "aliases": [
+        "Veo 3.1",
+        "veo-3.1",
+        "veo-3.1-generate-preview"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
+          "confidence": "verified_official"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/video"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://ai.google.dev/gemini-api/docs/video"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": [],
+      "docNotes": {
+        "input": "支持文本输入与最多4张参考图像上传（用于角色一致性或风格引导）；支持分镜扩展（Scene extension）参数。",
+        "output": "原生4K分辨率；单次8秒（API支持拼接扩展至60秒以上）；顶级原生音效与精准唇形同步（Lip-sync）。（通过Gemini API/Vertex AI调用）"
+      }
+    },
+    {
+      "canonicalModelId": "happyhorse-native-audio-video",
+      "displayName": "happyhorse-native-audio-video",
+      "creator": "HappyHorse Video",
+      "providerIds": [
+        "happyhorse_video"
+      ],
+      "aliases": [
+        "happyhorse-native-audio-video"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/happyhorse.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://happyhorse.ai/",
+          "confidence": "community_or_inferred"
+        },
+        "video.image_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://happyhorse.ai/",
+          "confidence": "community_or_inferred"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://happyhorse.ai/"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://happyhorse.ai/"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "kling-v2-1",
+      "displayName": "kling-v2-1",
+      "creator": "Kling AI Video",
+      "providerIds": [
+        "kling_video"
+      ],
+      "aliases": [
+        "kling-v2-1"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/kling-color.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://klingai.com/",
+          "confidence": "community_or_inferred"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.qingque.cn/d/home/eZQFcwKVbJYERy6_zJcDf8B7m"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://klingai.com/"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "ray-2",
+      "displayName": "ray-2",
+      "creator": "Luma Dream Machine",
+      "providerIds": [
+        "luma_video"
+      ],
+      "aliases": [
+        "ray-2"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/luma-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.lumalabs.ai/docs/api-reference"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "video-01",
+      "displayName": "video-01",
+      "creator": "MiniMax Video",
+      "providerIds": [
+        "minimax_video"
+      ],
+      "aliases": [
+        "video-01"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/document/video-generation"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "sora-2",
+      "displayName": "Sora 2",
+      "creator": "OpenAI Sora Video",
+      "providerIds": [
+        "openai_sora_video"
+      ],
+      "aliases": [
+        "Sora 2",
+        "sora-2"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
+          "confidence": "verified_official"
+        },
+        "video.image_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
+          "confidence": "verified_official"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/models/sora-2"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://platform.openai.com/docs/models/sora-2"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": [],
+      "docNotes": {
+        "input": "支持文本、图像及视频参考输入；API支持开启 `storyboard: true`（分镜模式）及 `image_url` 尾帧/首帧参考参数以保持主体一致性。",
+        "output": "1080p/4K分辨率；单次生成10-15秒（API可拼接），最长支持60秒；包含物理引擎级原生音频。"
+      }
+    },
+    {
+      "canonicalModelId": "sora-2-pro",
+      "displayName": "sora-2-pro",
+      "creator": "OpenAI Sora Video",
+      "providerIds": [
+        "openai_sora_video"
+      ],
+      "aliases": [
+        "sora-2-pro"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
+          "confidence": "verified_official"
+        },
+        "video.image_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
+          "confidence": "verified_official"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/models/sora-2"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://platform.openai.com/docs/models/sora-2"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gen4_turbo",
+      "displayName": "Gen-4.5",
+      "creator": "Runway Video",
+      "providerIds": [
+        "runway_video"
+      ],
+      "aliases": [
+        "Gen-4.5",
+        "gen-4.5",
+        "gen4_turbo"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/runway.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.dev.runwayml.com/"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": [],
+      "docNotes": {
+        "input": "支持文本、图像及关键帧（Keyframes）输入；支持摄像机路径指令（如pan, tilt, dolly）；支持像素级运动笔刷（Motion Brush）控制参数。",
+        "output": "720p至4K分辨率；单次最长10秒；目前输出纯视觉视频（无原生音频）。"
+      }
+    },
+    {
+      "canonicalModelId": "doubao-seedance-1-0-pro-fast-251015",
+      "displayName": "doubao-seedance-1-0-pro-fast-251015",
+      "creator": "Volcengine Ark Seedance",
+      "providerIds": [
+        "volcengine_seedance"
+      ],
+      "aliases": [
+        "doubao-seedance-1-0-pro-fast-251015"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seedance-1-5-pro",
+      "displayName": "doubao-seedance-1-5-pro",
+      "creator": "Volcengine Ark Seedance",
+      "providerIds": [
+        "volcengine_seedance"
+      ],
+      "aliases": [
+        "doubao-seedance-1-5-pro"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-seedance-2-0",
+      "displayName": "Seedance 2.0",
+      "creator": "Volcengine Ark Seedance",
+      "providerIds": [
+        "volcengine_seedance"
+      ],
+      "aliases": [
+        "Seedance 2.0",
+        "doubao-seedance-2-0",
+        "seedance-2.0"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {
+        "image": {
+          "maxCount": 9,
+          "roles": [
+            "first_frame",
+            "last_frame",
+            "character",
+            "scene",
+            "style",
+            "product",
+            "text_style"
+          ]
+        },
+        "video": {
+          "maxCount": 3,
+          "roles": [
+            "camera_motion",
+            "action",
+            "visual_effect",
+            "transition",
+            "rhythm",
+            "voice_tone",
+            "sound_effect"
+          ]
+        },
+        "audio": {
+          "maxCount": 3,
+          "roles": [
+            "background_music",
+            "sound_effect",
+            "tempo",
+            "voice_tone"
+          ]
+        },
+        "totalFilesMax": 12
+      },
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation",
+        "audio_reference",
+        "silent"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        },
+        "video.image_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        },
+        "video.first_last_frame": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        },
+        "video.reference_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://seed.bytedance.com/zh/seedance2_0"
+        },
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": [],
+      "docNotes": {
+        "input": "支持多模态输入（文本、图像、视频、音频）；最大支持12个外部文件上传（用于风格、角色或场景参考）；支持精准的首尾帧控制与多镜头分镜参数。",
+        "output": "最高2K分辨率；单次生成5-15秒；包含原生同步音效与配音。（可通过Atlas Cloud API调用）"
+      }
+    },
+    {
+      "canonicalModelId": "doubao-seedance-2-0-fast",
+      "displayName": "doubao-seedance-2-0-fast",
+      "creator": "Volcengine Ark Seedance",
+      "providerIds": [
+        "volcengine_seedance"
+      ],
+      "aliases": [
+        "doubao-seedance-2-0-fast"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "outputStreams": [
+        "video",
+        "audio"
+      ],
+      "referenceInputs": {
+        "image": {
+          "maxCount": 9,
+          "roles": [
+            "first_frame",
+            "last_frame",
+            "character",
+            "scene",
+            "style",
+            "product",
+            "text_style"
+          ]
+        },
+        "video": {
+          "maxCount": 3,
+          "roles": [
+            "camera_motion",
+            "action",
+            "visual_effect",
+            "transition",
+            "rhythm",
+            "voice_tone",
+            "sound_effect"
+          ]
+        },
+        "audio": {
+          "maxCount": 3,
+          "roles": [
+            "background_music",
+            "sound_effect",
+            "tempo",
+            "voice_tone"
+          ]
+        },
+        "totalFilesMax": 12
+      },
+      "nativeAudio": true,
+      "audioModes": [
+        "native_generation",
+        "audio_reference",
+        "silent"
+      ],
+      "audioPreservationPolicy": "preserve_native_audio_by_default",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {
+        "video.text_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        },
+        "video.image_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        },
+        "video.first_last_frame": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        },
+        "video.reference_to_video": {
+          "nativeAudio": true,
+          "audioModes": [
+            "native_generation",
+            "audio_reference",
+            "silent"
+          ],
+          "audioPreservationPolicy": "preserve_native_audio_by_default",
+          "supportsDialogue": true,
+          "supportsSfx": true,
+          "supportsMusicBed": true,
+          "inputModalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "outputStreams": [
+            "video",
+            "audio"
+          ],
+          "referenceInputs": {
+            "image": {
+              "maxCount": 9,
+              "roles": [
+                "first_frame",
+                "last_frame",
+                "character",
+                "scene",
+                "style",
+                "product",
+                "text_style"
+              ]
+            },
+            "video": {
+              "maxCount": 3,
+              "roles": [
+                "camera_motion",
+                "action",
+                "visual_effect",
+                "transition",
+                "rhythm",
+                "voice_tone",
+                "sound_effect"
+              ]
+            },
+            "audio": {
+              "maxCount": 3,
+              "roles": [
+                "background_music",
+                "sound_effect",
+                "tempo",
+                "voice_tone"
+              ]
+            },
+            "totalFilesMax": 12
+          },
+          "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+          "confidence": "provider_docs"
+        }
+      },
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        },
+        {
+          "source": "media_model_capability_overrides",
+          "url": "https://seed.bytedance.com/zh/seedance2_0"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "cogvideox-3",
+      "displayName": "cogvideox-3",
+      "creator": "Zhipu BigModel Video",
+      "providerIds": [
+        "zhipu_bigmodel_video"
+      ],
+      "aliases": [
+        "cogvideox-3"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/视频生成-异步"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "cogvideox-flash",
+      "displayName": "cogvideox-flash",
+      "creator": "Zhipu BigModel Video",
+      "providerIds": [
+        "zhipu_bigmodel_video"
+      ],
+      "aliases": [
+        "cogvideox-flash"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/视频生成-异步"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "vidu-2.0",
+      "displayName": "vidu-2.0",
+      "creator": "Zhipu BigModel Video",
+      "providerIds": [
+        "zhipu_bigmodel_video"
+      ],
+      "aliases": [
+        "vidu-2.0"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/视频生成-异步"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "vidu-q1",
+      "displayName": "vidu-q1",
+      "creator": "Zhipu BigModel Video",
+      "providerIds": [
+        "zhipu_bigmodel_video"
+      ],
+      "aliases": [
+        "vidu-q1"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/视频生成-异步"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "cosyvoice-v3-flash",
+      "displayName": "cosyvoice-v3-flash",
+      "creator": "Alibaba Cloud Bailian CosyVoice",
+      "providerIds": [
+        "aliyun_bailian_cosyvoice"
+      ],
+      "aliases": [
+        "cosyvoice-v3-flash"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "eleven-v3",
+      "displayName": "Eleven v3",
+      "creator": "ElevenLabs",
+      "providerIds": [
+        "elevenlabs_tts"
+      ],
+      "aliases": [
+        "Eleven v3",
+        "eleven-v3"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "支持5秒短音频（IVC）至3小时素材（PVC）上传克隆；支持全维情感标签（如 `[laughs]`, `[sighs]`, `[rushed]`, `[pause]`）进行语速与情绪的毫秒级控制。",
+        "output": "48kHz高保真音频；支持70多种语言的无缝切换及原生共鸣保留。"
+      }
+    },
+    {
+      "canonicalModelId": "eleven_multilingual_v2",
+      "displayName": "eleven_multilingual_v2",
+      "creator": "ElevenLabs Text to Speech",
+      "providerIds": [
+        "elevenlabs_tts"
+      ],
+      "aliases": [
+        "eleven_multilingual_v2"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://elevenlabs.io/docs/api-reference/text-to-speech"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "f5-tts",
+      "displayName": "F5-TTS",
+      "creator": "开源界 / Fal.ai",
+      "providerIds": [
+        "fal_tts"
+      ],
+      "aliases": [
+        "F5-TTS",
+        "f5-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/fal-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "提供文本与单一参考音频URL（支持WAV, MP3等格式）即可实现零样本克隆；无需复杂的微调参数。",
+        "output": "WAV音频文件；高度自然的表达且无断句幻觉；API成本极低。（可通过fal.ai调用）"
+      }
+    },
+    {
+      "canonicalModelId": "fish-speech-s2",
+      "displayName": "Fish Speech S2",
+      "creator": "Fish Audio",
+      "providerIds": [
+        "fish_audio_tts"
+      ],
+      "aliases": [
+        "Fish Speech S2",
+        "fish-speech-s2"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/fish-audio.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "仅需上传10-15秒参考音频即可实现零样本克隆；支持自然语言Inline标签控制（如 `[whisper]`, `[angry]`, `[pitch up]`）；支持单次请求中传入多个Speaker ID进行多角色对话生成。",
+        "output": "极高韵律感的音频；支持80多种语言输出；极低延迟的流式输出（RTF < 0.2）。"
+      }
+    },
+    {
+      "canonicalModelId": "minimax-speech-2.6",
+      "displayName": "MiniMax Speech 2.6",
+      "creator": "MiniMax",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "MiniMax Speech 2.6",
+        "minimax-speech-2.6"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "multimedia_doc",
+          "url": "docs/creative-runtime/多媒体.md"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": [
+        "providerMatrixEntry"
+      ],
+      "catalogOnly": true,
+      "docNotes": {
+        "input": "轻量级高并发参考协议；支持文本及极短参考音频输入。",
+        "output": "HD级清晰度音频（48kHz）；商业级API稳定性，极强的口语化增强合成表现。"
+      }
+    },
+    {
+      "canonicalModelId": "speech-02-hd",
+      "displayName": "speech-02-hd",
+      "creator": "MiniMax Speech",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "speech-02-hd"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/document/speech-synthesis"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gpt-4o-mini-tts",
+      "displayName": "gpt-4o-mini-tts",
+      "creator": "OpenAI Audio Speech",
+      "providerIds": [
+        "openai_audio_speech"
+      ],
+      "aliases": [
+        "gpt-4o-mini-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.openai.com/docs/guides/text-to-speech"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "v8-audio-tts",
+      "displayName": "v8-audio-tts",
+      "creator": "V8 Audio Runtime TTS",
+      "providerIds": [
+        "v8_audio_tts"
+      ],
+      "aliases": [
+        "v8-audio-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/v8-audio.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "internal"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-audio-file-asr-2-0",
+      "displayName": "doubao-audio-file-asr-2-0",
+      "creator": "Volcengine Ark Doubao Voice",
+      "providerIds": [
+        "volcengine_doubao_voice"
+      ],
+      "aliases": [
+        "doubao-audio-file-asr-2-0"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-realtime-speech-interaction",
+      "displayName": "doubao-realtime-speech-interaction",
+      "creator": "Volcengine Ark Doubao Voice",
+      "providerIds": [
+        "volcengine_doubao_voice"
+      ],
+      "aliases": [
+        "doubao-realtime-speech-interaction"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-streaming-asr",
+      "displayName": "doubao-streaming-asr",
+      "creator": "Volcengine Ark Doubao Voice",
+      "providerIds": [
+        "volcengine_doubao_voice"
+      ],
+      "aliases": [
+        "doubao-streaming-asr"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-voice-design",
+      "displayName": "doubao-voice-design",
+      "creator": "Volcengine Ark Doubao Voice",
+      "providerIds": [
+        "volcengine_doubao_voice"
+      ],
+      "aliases": [
+        "doubao-voice-design"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-voice-podcast",
+      "displayName": "doubao-voice-podcast",
+      "creator": "Volcengine Ark Doubao Voice",
+      "providerIds": [
+        "volcengine_doubao_voice"
+      ],
+      "aliases": [
+        "doubao-voice-podcast"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "doubao-voice-synthesis-2-0",
+      "displayName": "doubao-voice-synthesis-2-0",
+      "creator": "Volcengine Ark Doubao Voice",
+      "providerIds": [
+        "volcengine_doubao_voice"
+      ],
+      "aliases": [
+        "doubao-voice-synthesis-2-0"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://www.volcengine.com/docs/82379"
+        }
+      ],
+      "confidence": "community_or_inferred",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "mimo-v2-tts",
+      "displayName": "mimo-v2-tts",
+      "creator": "Xiaomi MiMo TTS",
+      "providerIds": [
+        "xiaomi_mimo_tts"
+      ],
+      "aliases": [
+        "mimo-v2-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.design"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "mimo-v2.5-tts",
+      "displayName": "mimo-v2.5-tts",
+      "creator": "Xiaomi MiMo TTS",
+      "providerIds": [
+        "xiaomi_mimo_tts"
+      ],
+      "aliases": [
+        "mimo-v2.5-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.design"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "mimo-v2.5-tts-voiceclone",
+      "displayName": "mimo-v2.5-tts-voiceclone",
+      "creator": "Xiaomi MiMo TTS",
+      "providerIds": [
+        "xiaomi_mimo_tts"
+      ],
+      "aliases": [
+        "mimo-v2.5-tts-voiceclone"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.design"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "mimo-v2.5-tts-voicedesign",
+      "displayName": "mimo-v2.5-tts-voicedesign",
+      "creator": "Xiaomi MiMo TTS",
+      "providerIds": [
+        "xiaomi_mimo_tts"
+      ],
+      "aliases": [
+        "mimo-v2.5-tts-voicedesign"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.design"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/xiaomi-mimo.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "glm-4-voice",
+      "displayName": "glm-4-voice",
+      "creator": "Zhipu BigModel Voice",
+      "providerIds": [
+        "zhipu_bigmodel_voice"
+      ],
+      "aliases": [
+        "glm-4-voice"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "glm-asr-2512",
+      "displayName": "glm-asr-2512",
+      "creator": "Zhipu BigModel Voice",
+      "providerIds": [
+        "zhipu_bigmodel_voice"
+      ],
+      "aliases": [
+        "glm-asr-2512"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "glm-realtime",
+      "displayName": "glm-realtime",
+      "creator": "Zhipu BigModel Voice",
+      "providerIds": [
+        "zhipu_bigmodel_voice"
+      ],
+      "aliases": [
+        "glm-realtime"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "glm-tts",
+      "displayName": "glm-tts",
+      "creator": "Zhipu BigModel Voice",
+      "providerIds": [
+        "zhipu_bigmodel_voice"
+      ],
+      "aliases": [
+        "glm-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "glm-tts-clone",
+      "displayName": "glm-tts-clone",
+      "creator": "Zhipu BigModel Voice",
+      "providerIds": [
+        "zhipu_bigmodel_voice"
+      ],
+      "aliases": [
+        "glm-tts-clone"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts",
+        "voice.clone",
+        "voice.asr",
+        "voice.realtime"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://docs.bigmodel.cn/api-reference/模型-api/文本转语音"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    }
+  ]
+}

@@ -20,6 +20,12 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     tokenplan: "/model-assets/providers/xiaomi-mimo.svg",
     mimo: "/model-assets/providers/xiaomi-mimo.svg",
     happyhorse: "/model-assets/providers/happyhorse.svg",
+    "v8-audio": "/model-assets/providers/v8-audio.svg",
+    "fish-audio": "/model-assets/providers/fish-audio.svg",
+    "black-forest-labs": "/model-assets/providers/black-forest-labs.svg",
+    meshy: "/model-assets/providers/meshy.svg",
+    csm: "/model-assets/providers/csm.svg",
+    "3d-ai-studio": "/model-assets/providers/3d-ai-studio.svg",
 };
 
 const LOCAL_MODEL_LOGOS: Record<string, string> = {
@@ -28,6 +34,12 @@ const LOCAL_MODEL_LOGOS: Record<string, string> = {
     mureka: "/model-assets/providers/mureka.svg",
     mimo: "/model-assets/providers/xiaomi-mimo.svg",
     happyhorse: "/model-assets/providers/happyhorse.svg",
+    "v8-audio": "/model-assets/providers/v8-audio.svg",
+    fish: "/model-assets/providers/fish-audio.svg",
+    flux: "/model-assets/providers/black-forest-labs.svg",
+    meshy: "/model-assets/providers/meshy.svg",
+    csm: "/model-assets/providers/csm.svg",
+    "3d-ai-studio": "/model-assets/providers/3d-ai-studio.svg",
 };
 
 type LobeSlug = keyof typeof LOBE_ICON_ASSETS;
@@ -95,6 +107,12 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("luma")) candidates.push("luma-color", "luma");
     if (haystack.includes("kling")) candidates.push("kling-color", "kling");
     if (haystack.includes("happyhorse") || haystack.includes("happy-horse")) candidates.push("happyhorse");
+    if (haystack.includes("v8-audio") || haystack.includes("v8 audio")) candidates.push("v8-audio");
+    if (haystack.includes("fish-audio") || haystack.includes("fish audio")) candidates.push("fish-audio");
+    if (haystack.includes("black-forest") || haystack.includes("black forest") || haystack.includes("flux")) candidates.push("black-forest-labs");
+    if (haystack.includes("meshy")) candidates.push("meshy");
+    if (haystack.includes("csm") || haystack.includes("common-sense-machines") || haystack.includes("common sense machines")) candidates.push("csm");
+    if (haystack.includes("3d-ai-studio") || haystack.includes("3d ai studio")) candidates.push("3d-ai-studio");
     if (haystack.includes("mureka")) candidates.push("mureka");
     if (haystack.includes("hitem3d") || haystack.includes("hitem-3d")) candidates.push("hitem3d");
     if (haystack.includes("hyper3d") || haystack.includes("hyper-3d")) candidates.push("hyper3d");
@@ -152,6 +170,12 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("luma") || id.includes("ray-")) candidates.push("luma-color", "luma");
     if (id.includes("kling")) candidates.push("kling-color", "kling");
     if (id.includes("happyhorse") || id.includes("happy-horse")) candidates.push("happyhorse");
+    if (id.includes("v8-audio")) candidates.push("v8-audio");
+    if (id.includes("fish-speech") || id.includes("fish-audio")) candidates.push("fish-audio");
+    if (id.includes("flux")) candidates.push("black-forest-labs");
+    if (id.includes("meshy")) candidates.push("meshy");
+    if (id.includes("csm")) candidates.push("csm");
+    if (id.includes("trellis") || id.includes("3d-ai-studio")) candidates.push("3d-ai-studio");
     if (id.includes("mureka")) candidates.push("mureka");
     if (id.includes("hitem3d") || id.includes("hitem-3d")) candidates.push("hitem3d");
     if (id.includes("hyper3d") || id.includes("hyper-3d")) candidates.push("hyper3d");

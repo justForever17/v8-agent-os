@@ -5,14 +5,18 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
 
+from core.media_model_capability_registry import media_model_capability_registry
+
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
+CORE_MODEL_CATALOG_DIR = Path(__file__).resolve().parents[2] / "core" / "model_catalog"
 PROVIDER_MATRIX_PATH = ASSET_DIR / "media_provider_format_matrix.json"
 RESOLUTION_PRESETS_PATH = ASSET_DIR / "media_resolution_presets.json"
 VISUAL_RECIPE_LIBRARY_PATH = ASSET_DIR / "visual_recipe_library.json"
 VIDEO_RECIPE_LIBRARY_PATH = ASSET_DIR / "video_recipe_library.json"
 AUDIO_MUSIC_RECIPE_LIBRARY_PATH = ASSET_DIR / "audio_music_recipe_library.json"
 MEDIA_MODEL_CAPABILITY_OVERRIDES_PATH = ASSET_DIR / "media_model_capability_overrides.json"
+MEDIA_MODEL_CAPABILITY_REGISTRY_PATH = CORE_MODEL_CATALOG_DIR / "media_model_capability_registry.json"
 
 
 def _read_asset(path: Path) -> Dict[str, Any]:
@@ -43,6 +47,10 @@ def load_media_model_capability_overrides() -> Dict[str, Any]:
     return deepcopy(_read_asset(MEDIA_MODEL_CAPABILITY_OVERRIDES_PATH))
 
 
+def load_media_model_capability_registry() -> Dict[str, Any]:
+    return deepcopy(_read_asset(MEDIA_MODEL_CAPABILITY_REGISTRY_PATH))
+
+
 def capability_profile_for_model(
     *,
     provider_id: str | None,
@@ -59,6 +67,38 @@ def capability_profile_for_model(
     operation = str(operation_kind or "").strip()
     if not provider or not model:
         return {}
+    registry_entry = media_model_capability_registry.find(provider, model, operation or None)
+    if registry_entry:
+        operation_profiles = registry_entry.get("operationCapabilityProfiles") or {}
+        profile = deepcopy(dict(operation_profiles.get(operation) or {})) if operation else {}
+        if not profile:
+            has_advanced_profile = any(
+                [
+                    registry_entry.get("nativeAudio"),
+                    registry_entry.get("audioModes"),
+                    registry_entry.get("audioPreservationPolicy"),
+                    registry_entry.get("referenceInputs"),
+                    registry_entry.get("resolution"),
+                    registry_entry.get("duration"),
+                    registry_entry.get("formats"),
+                ]
+            )
+            if not has_advanced_profile:
+                return {}
+            profile = {
+                "nativeAudio": bool(registry_entry.get("nativeAudio")),
+                "audioModes": registry_entry.get("audioModes") or [],
+                "audioPreservationPolicy": registry_entry.get("audioPreservationPolicy") or "",
+                "inputModalities": registry_entry.get("inputModalities") or [],
+                "outputStreams": registry_entry.get("outputStreams") or [],
+                "referenceInputs": registry_entry.get("referenceInputs") or {},
+                "resolution": registry_entry.get("resolution") or {},
+                "duration": registry_entry.get("duration") or {},
+                "formats": registry_entry.get("formats") or {},
+            }
+        profile.setdefault("confidence", registry_entry.get("confidence"))
+        profile.setdefault("sourceRefs", registry_entry.get("sourceRefs") or [])
+        return profile
     payload = load_media_model_capability_overrides()
     for item in payload.get("capabilityProfiles") or []:
         if not isinstance(item, dict):

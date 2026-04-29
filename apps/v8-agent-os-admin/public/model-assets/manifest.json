@@ -61,6 +61,36 @@
       "asset": "/model-assets/providers/xai.ico",
       "source": "official-or-whitelisted-static",
       "sha256": "59FBABD76920F7170CFD1B75C610253DD06B0C45C4C58BF03BDF3F439392F2EE"
+    },
+    "v8-audio": {
+      "asset": "/model-assets/providers/v8-audio.svg",
+      "source": "local-textmark",
+      "sha256": "9DBDB66247BC09A0746D13608E1543918BF4E058A5B653319D49B93CB801F80B"
+    },
+    "fish-audio": {
+      "asset": "/model-assets/providers/fish-audio.svg",
+      "source": "local-textmark",
+      "sha256": "C7BCD5571FD01D8335E7D5B73A8A9687ABB91C0F5F7D03670AE49504ED927D44"
+    },
+    "black-forest-labs": {
+      "asset": "/model-assets/providers/black-forest-labs.svg",
+      "source": "local-textmark",
+      "sha256": "7AE44010E77611F2261E593F07079E3768D6370D581B43502605CBE0640853E0"
+    },
+    "meshy": {
+      "asset": "/model-assets/providers/meshy.svg",
+      "source": "local-textmark",
+      "sha256": "2B2A26807EE660F11F62CD37EDB8FE79435BBD84E5F359D1B9EAAED59BD958FB"
+    },
+    "csm": {
+      "asset": "/model-assets/providers/csm.svg",
+      "source": "local-textmark",
+      "sha256": "EF19BC06C66954E84D4D71698D3CD295CEC2C9021AD2211D497B4876A41EA0E2"
+    },
+    "3d-ai-studio": {
+      "asset": "/model-assets/providers/3d-ai-studio.svg",
+      "source": "local-textmark",
+      "sha256": "4C61F23290507CAEB38E0EF1AFD98A52C5006843EC45263FDD1DAA1A66D75146"
     }
   },
   "models": {}

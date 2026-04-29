@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Set
 import requests
 
 from core.model_capability_registry import model_capability_registry
+from core.media_model_capability_registry import media_model_capability_registry
 from core.model_ref import make_model_ref
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 
@@ -110,6 +111,41 @@ def _media_capability_profile(provider_id: str, model_id: str, operation_kind: s
     operation = str(operation_kind or "").strip()
     if not provider or not model:
         return {}
+    registry_entry = media_model_capability_registry.find(provider, model, operation or None)
+    if registry_entry:
+        operation_profiles = registry_entry.get("operationCapabilityProfiles") or {}
+        profile = deepcopy(dict(operation_profiles.get(operation) or {})) if operation else {}
+        if not profile:
+            has_advanced_profile = any(
+                [
+                    registry_entry.get("nativeAudio"),
+                    registry_entry.get("audioModes"),
+                    registry_entry.get("audioPreservationPolicy"),
+                    registry_entry.get("referenceInputs"),
+                    registry_entry.get("resolution"),
+                    registry_entry.get("duration"),
+                    registry_entry.get("formats"),
+                ]
+            )
+            if not has_advanced_profile:
+                return {}
+            profile = {
+                "nativeAudio": bool(registry_entry.get("nativeAudio")),
+                "audioModes": registry_entry.get("audioModes") or [],
+                "audioPreservationPolicy": registry_entry.get("audioPreservationPolicy") or "",
+                "inputModalities": registry_entry.get("inputModalities") or [],
+                "outputStreams": registry_entry.get("outputStreams") or [],
+                "referenceInputs": registry_entry.get("referenceInputs") or {},
+                "resolution": registry_entry.get("resolution") or {},
+                "duration": registry_entry.get("duration") or {},
+                "formats": registry_entry.get("formats") or {},
+            }
+        profile.setdefault("confidence", registry_entry.get("confidence"))
+        source_refs = registry_entry.get("sourceRefs") or []
+        if source_refs:
+            profile.setdefault("sourceRefs", source_refs)
+            profile.setdefault("sourceUrl", source_refs[0].get("url") if isinstance(source_refs[0], dict) else "")
+        return profile
     for item in _load_media_capability_overrides():
         if str(item.get("providerId") or "").strip() != provider:
             continue
@@ -196,12 +232,14 @@ class ModelProviderCatalog:
         return []
 
     def _media_catalog_model(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> Dict[str, Any]:
+        provider_id = str(provider_entry.get("id") or "")
+        registry_entry = media_model_capability_registry.find(provider_id, model_id)
         request = dict(provider_entry.get("request") or {})
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
         operation_kinds = self._media_operation_kinds(provider_entry, modality)
         operation_capability_profiles = {
-            operation_kind: _media_capability_profile(str(provider_entry.get("id") or ""), model_id, operation_kind)
+            operation_kind: _media_capability_profile(provider_id, model_id, operation_kind)
             for operation_kind in operation_kinds
         }
         operation_capability_profiles = {key: value for key, value in operation_capability_profiles.items() if value}
@@ -210,6 +248,8 @@ class ModelProviderCatalog:
         model_logo_asset = ""
         if isinstance(model_logo_assets, dict):
             model_logo_asset = str(model_logo_assets.get(model_id) or "").strip()
+        if not model_logo_asset and registry_entry:
+            model_logo_asset = str(registry_entry.get("logoAsset") or "").strip()
         return {
             "id": model_id,
             "type": self._media_model_type(modality),
@@ -219,6 +259,15 @@ class ModelProviderCatalog:
             "capabilities": self._media_capabilities(modality),
             "operationKinds": operation_kinds,
             "parameterProfile": provider_entry.get("apiStandard") or provider_entry.get("adapter") or "media_generation",
+            "capabilitySource": "media_model_capability_registry" if registry_entry else "provider_matrix",
+            "mediaCapabilityRegistry": {
+                "canonicalModelId": (registry_entry or {}).get("canonicalModelId"),
+                "confidence": (registry_entry or {}).get("confidence"),
+                "missingFields": (registry_entry or {}).get("missingFields") or [],
+                "sourceRefs": (registry_entry or {}).get("sourceRefs") or [],
+            }
+            if registry_entry
+            else {},
             "mediaLimits": {
                 "modality": _normalized_modality(modality),
                 "adapter": provider_entry.get("adapter") or "catalog_only",
@@ -230,6 +279,14 @@ class ModelProviderCatalog:
                 "resultPaths": _as_list(result.get("paths")),
                 "sizeFormat": request.get("sizeFormat") or "",
                 "capabilityProfile": capability_profile,
+                "mediaCapabilityRegistry": {
+                    "canonicalModelId": (registry_entry or {}).get("canonicalModelId"),
+                    "confidence": (registry_entry or {}).get("confidence"),
+                    "missingFields": (registry_entry or {}).get("missingFields") or [],
+                    "sourceRefs": (registry_entry or {}).get("sourceRefs") or [],
+                }
+                if registry_entry
+                else {},
             },
         }
 
@@ -248,6 +305,8 @@ class ModelProviderCatalog:
         auth = dict(entry.get("auth") or {})
         adapter = str(entry.get("adapter") or "catalog_only")
         api_standard = str(entry.get("apiStandard") or adapter or "media_generation")
+        registry_provider = media_model_capability_registry.provider(provider_id) or {}
+        logo_asset = entry.get("logoAsset") or registry_provider.get("logoAsset") or ""
         return {
             "id": provider_id,
             "name": entry.get("displayName") or provider_id,
@@ -256,7 +315,7 @@ class ModelProviderCatalog:
             "mediaModality": normalized_modality,
             "adapter": adapter,
             "baseUrl": entry.get("baseUrlDefault") or "",
-            "logoAsset": entry.get("logoAsset") or "",
+            "logoAsset": logo_asset,
             "auth": auth,
             "probeStrategy": entry.get("probeStrategy") or "catalog_only",
             "sourceUrl": entry.get("sourceUrl") or "",
@@ -270,6 +329,51 @@ class ModelProviderCatalog:
             "statusMap": entry.get("statusMap") or {},
             "capabilityProfile": entry.get("capabilityProfile") or {},
             "models": [self._media_catalog_model(entry, normalized_modality, model_id) for model_id in model_ids],
+        }
+
+    def _provider_from_media_registry_entry(self, entry: Dict[str, Any]) -> Dict[str, Any] | None:
+        provider_id = str(entry.get("providerId") or "").strip()
+        if not provider_id:
+            return None
+        models = media_model_capability_registry.models_for_provider(provider_id)
+        if not models:
+            return None
+        primary_modality = _normalized_modality((entry.get("modalities") or [""])[0])
+        provider_entry = {
+            "id": provider_id,
+            "displayName": entry.get("displayName") or provider_id,
+            "adapter": "catalog_only",
+            "apiStandard": "catalog_only",
+            "operationKinds": sorted({operation for model in models for operation in (model.get("operationKinds") or [])}),
+            "modelIds": [str(model.get("canonicalModelId") or "") for model in models if model.get("canonicalModelId")],
+            "logoAsset": entry.get("logoAsset") or "",
+            "sourceUrl": ((entry.get("sourceRefs") or [{}])[0] or {}).get("url") if isinstance((entry.get("sourceRefs") or [{}])[0], dict) else "",
+            "confidence": entry.get("confidence") or "community_or_inferred",
+            "probeStrategy": "catalog_only",
+        }
+        return {
+            "id": provider_id,
+            "name": entry.get("displayName") or provider_id,
+            "apiStandard": "catalog_only",
+            "providerKind": "media_generation",
+            "mediaModality": primary_modality,
+            "adapter": "catalog_only",
+            "baseUrl": "",
+            "logoAsset": entry.get("logoAsset") or "",
+            "auth": {},
+            "probeStrategy": "catalog_only",
+            "sourceUrl": provider_entry.get("sourceUrl") or "",
+            "credentialHelp": {},
+            "confidence": entry.get("confidence") or "community_or_inferred",
+            "models": [
+                self._media_catalog_model(
+                    {**provider_entry, "modelIds": [str(model.get("canonicalModelId") or "")], "operationKinds": model.get("operationKinds") or []},
+                    str(model.get("modality") or primary_modality),
+                    str(model.get("canonicalModelId") or ""),
+                )
+                for model in models
+                if model.get("canonicalModelId")
+            ],
         }
 
     def _creative_media_matrix_providers(self) -> List[Dict[str, Any]]:
@@ -291,6 +395,17 @@ class ModelProviderCatalog:
                 provider = self._provider_from_media_matrix_entry(str(modality), entry)
                 if provider:
                     providers.append(provider)
+        seen = {str(provider.get("id") or "") for provider in providers}
+        for entry in _as_list(media_model_capability_registry.load().get("providers")):
+            if not isinstance(entry, dict):
+                continue
+            provider_id = str(entry.get("providerId") or "")
+            if provider_id in seen:
+                continue
+            provider = self._provider_from_media_registry_entry(entry)
+            if provider:
+                providers.append(provider)
+                seen.add(provider_id)
         return providers
 
     def load(self) -> Dict[str, Any]:
@@ -753,6 +868,8 @@ class ModelProviderCatalog:
     def _capability_source(self, catalog_model: Dict[str, Any], online_metadata: Dict[str, Any], family_caps: Set[str]) -> str:
         if online_metadata and self._capabilities_from_online(online_metadata):
             return "online"
+        if catalog_model.get("capabilitySource"):
+            return str(catalog_model.get("capabilitySource"))
         if catalog_model.get("capabilities"):
             return "catalog"
         if family_caps:
@@ -852,6 +969,20 @@ class ModelProviderCatalog:
             ]
             if warning
         ]
+        media_registry = model.get("mediaCapabilityRegistry") or (model.get("mediaLimits") or {}).get("mediaCapabilityRegistry") or {}
+        capability_registry_payload = (
+            {
+                "canonicalModelId": (registry_entry or {}).get("canonicalModelId"),
+                "displayName": (registry_entry or {}).get("displayName"),
+                "confidence": (registry_entry or {}).get("confidence"),
+                "missingFields": (registry_entry or {}).get("missingFields") or [],
+                "sourceRefs": (registry_entry or {}).get("sourceRefs") or [],
+            }
+            if registry_entry
+            else dict(media_registry)
+            if media_registry
+            else {}
+        )
         return {
             "id": model_id,
             "modelId": model_id,
@@ -865,16 +996,8 @@ class ModelProviderCatalog:
             "capabilities": capability_map,
             "capabilityTags": sorted(capability_tags),
             "capabilitySource": capability_source,
-            "capabilityRegistryMatched": bool(registry_entry),
-            "capabilityRegistry": {
-                "canonicalModelId": (registry_entry or {}).get("canonicalModelId"),
-                "displayName": (registry_entry or {}).get("displayName"),
-                "confidence": (registry_entry or {}).get("confidence"),
-                "missingFields": (registry_entry or {}).get("missingFields") or [],
-                "sourceRefs": (registry_entry or {}).get("sourceRefs") or [],
-            }
-            if registry_entry
-            else {},
+            "capabilityRegistryMatched": bool(registry_entry or media_registry),
+            "capabilityRegistry": capability_registry_payload,
             "pricing": {
                 "inputPerMillionTokens": (registry_entry or {}).get("inputPricePerMillionTokens"),
                 "outputPerMillionTokens": (registry_entry or {}).get("outputPricePerMillionTokens"),

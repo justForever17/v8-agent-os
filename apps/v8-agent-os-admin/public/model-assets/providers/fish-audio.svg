@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fish Audio">
+  <rect width="64" height="64" rx="16" fill="#eef2ff"/>
+  <path d="M13 33c10-13 27-14 38-2-11 13-28 14-38 2Z" fill="#4f46e5"/>
+  <path d="M48 31l8-8v18l-8-8v-2Z" fill="#818cf8"/>
+  <circle cx="25" cy="30" r="3" fill="#fff"/>
+  <path d="M20 44c9 5 18 5 27 0" fill="none" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+</svg>

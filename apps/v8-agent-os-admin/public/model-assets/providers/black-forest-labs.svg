@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Black Forest Labs">
+  <rect width="64" height="64" rx="16" fill="#020617"/>
+  <path d="M18 49 32 12l14 37H36l-4-12-4 12H18Z" fill="#f8fafc"/>
+  <path d="M23 49 32 27l9 22H23Z" fill="#22c55e"/>
+</svg>

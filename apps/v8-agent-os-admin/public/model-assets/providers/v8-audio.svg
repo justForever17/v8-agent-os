@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="V8 Audio">
+  <rect width="64" height="64" rx="16" fill="#0f172a"/>
+  <path d="M16 39V25h6v14h-6Zm9 6V19h6v26h-6Zm9-4V23h6v18h-6Zm9 7V16h6v32h-6Z" fill="#38bdf8"/>
+  <path d="M13 46c9 8 29 8 38 0" fill="none" stroke="#a7f3d0" stroke-width="4" stroke-linecap="round"/>
+</svg>

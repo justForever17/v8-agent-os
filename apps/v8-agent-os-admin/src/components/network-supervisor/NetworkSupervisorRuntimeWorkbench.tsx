@@ -3,6 +3,7 @@ import * as React from "react";
 import Link from "next/link";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
@@ -67,6 +68,7 @@ type RuntimeConfig = {
     };
     openaiCompat: {
         enabled: boolean;
+        modelAliases: string[];
         adminRelayOnly: boolean;
         allowWorkspaceHeaders: boolean;
         allowRawWorkspacePath: boolean;
@@ -107,8 +109,10 @@ type RuntimeStatus = {
         adminRelayOnly: boolean;
         available: boolean;
         tokenCount: number;
+        modelAliases: string[];
         baseUrlHint: string;
         chatCompletionsPath: string;
+        modelsPath: string;
         maxExternalTools: number;
         allowWorkspaceHeaders: boolean;
         allowRawWorkspacePath: boolean;
@@ -167,6 +171,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
     delegation: { enabled: true, maxConcurrent: 2, defaultTimeoutSeconds: 120 },
     openaiCompat: {
         enabled: false,
+        modelAliases: ["v8os"],
         adminRelayOnly: true,
         allowWorkspaceHeaders: true,
         allowRawWorkspacePath: false,
@@ -192,8 +197,10 @@ const EMPTY_STATUS: RuntimeStatus = {
         adminRelayOnly: true,
         available: false,
         tokenCount: 0,
+        modelAliases: ["v8os"],
         baseUrlHint: "http://localhost:9528/api/network-supervisor/openai/v1",
         chatCompletionsPath: "/chat/completions",
+        modelsPath: "/models",
         maxExternalTools: 8,
         allowWorkspaceHeaders: true,
         allowRawWorkspacePath: false,
@@ -254,8 +261,10 @@ function normalizeStatus(value: unknown): RuntimeStatus {
             adminRelayOnly: openaiCompat.adminRelayOnly !== false,
             available: Boolean(openaiCompat.available),
             tokenCount: Number(openaiCompat.tokenCount || 0),
+            modelAliases: Array.isArray(openaiCompat.modelAliases) && openaiCompat.modelAliases.length ? openaiCompat.modelAliases.map((item) => String(item)).filter(Boolean) : ["v8os"],
             baseUrlHint: String(openaiCompat.baseUrlHint || EMPTY_STATUS.openaiCompat?.baseUrlHint || ""),
             chatCompletionsPath: String(openaiCompat.chatCompletionsPath || EMPTY_STATUS.openaiCompat?.chatCompletionsPath || ""),
+            modelsPath: String(openaiCompat.modelsPath || EMPTY_STATUS.openaiCompat?.modelsPath || "/models"),
             maxExternalTools: Number(openaiCompat.maxExternalTools || EMPTY_STATUS.openaiCompat?.maxExternalTools || 0),
             allowWorkspaceHeaders: openaiCompat.allowWorkspaceHeaders !== false,
             allowRawWorkspacePath: Boolean(openaiCompat.allowRawWorkspacePath),
@@ -301,11 +310,13 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const availability = status.toolAvailability?.delegate_network_task || status.delegationAvailability;
     const compatBaseUrl = `${adminOrigin}/api/network-supervisor/openai/v1`;
     const compatChatUrl = `${compatBaseUrl}/chat/completions`;
+    const compatModelsUrl = `${compatBaseUrl}/models`;
+    const primaryModelAlias = (config.openaiCompat.modelAliases || ["v8os"]).find((item) => String(item || "").trim()) || "v8os";
     const primaryToken = tokens[0]?.token || "";
     const curlExample = `curl ${compatChatUrl} \\
   -H "Authorization: Bearer ${primaryToken || "<API_KEY>"}" \\
   -H "Content-Type: application/json" \\
-  -d "{\\"model\\":\\"gpt-4o\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
+  -d "{\\"model\\":\\"${primaryModelAlias}\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
     const sdkExample = `from openai import OpenAI
 
 client = OpenAI(
@@ -314,7 +325,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="gpt-4o",
+    model="${primaryModelAlias}",
     messages=[{"role": "user", "content": "ping"}],
 )`;
     const portNotices = bridgeDiagnostics?.notices || [];
@@ -723,13 +734,33 @@ response = client.chat.completions.create(
                                     <Button type="button" variant="outline" onClick={() => void copyText(compatChatUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatChatUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
                                 </div>
                             </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="openai-compat-models-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelsUrl")}</Label>
+                                <div className="flex gap-2">
+                                    <Input id="openai-compat-models-url" readOnly value={compatModelsUrl}/>
+                                    <Button type="button" variant="outline" onClick={() => void copyText(compatModelsUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelsUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
+                                </div>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="openai-compat-model-aliases">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelAliases")}</Label>
+                                <Input
+                                    id="openai-compat-model-aliases"
+                                    value={(config.openaiCompat.modelAliases || ["v8os"]).join(", ")}
+                                    onChange={(event) => setOpenAICompat({
+                                        modelAliases: event.target.value.split(",").map((item) => item.trim()).filter(Boolean).length
+                                            ? event.target.value.split(",").map((item) => item.trim()).filter(Boolean)
+                                            : ["v8os"],
+                                    })}
+                                />
+                            </div>
                         </div>
 
                         <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                                 <div>
-                                    <div className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeys")}</div>
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeysDescription")}</div>
+                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeysDescription")} panelClassName="text-xs leading-5">
+                                        <span className="cursor-help text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeys")}</span>
+                                    </AdminHoverInfo>
                                 </div>
                                 <div className="flex gap-2">
                                     <Input className="w-48" value={tokenLabel} onChange={(event) => setTokenLabel(event.target.value)} placeholder={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokenLabelPlaceholder")}/>
@@ -762,22 +793,25 @@ response = client.chat.completions.create(
                         <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4">
                             <div className="flex items-center justify-between gap-4">
                                 <div>
-                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnable")}</div>
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnableDescription")}</div>
+                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnableDescription")} panelClassName="text-xs leading-5">
+                                        <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnable")}</span>
+                                    </AdminHoverInfo>
                                 </div>
                                 <Switch checked={config.openaiCompat.enabled} onCheckedChange={(checked) => setOpenAICompat({ enabled: checked })} aria-label="openai-compat-enabled"/>
                             </div>
                             <div className="flex items-center justify-between gap-4">
                                 <div>
-                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</div>
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")}</div>
+                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")} panelClassName="text-xs leading-5">
+                                        <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</span>
+                                    </AdminHoverInfo>
                                 </div>
                                 <Switch checked={config.openaiCompat.allowWorkspaceHeaders} onCheckedChange={(checked) => setOpenAICompat({ allowWorkspaceHeaders: checked })} aria-label="openai-compat-workspace-headers"/>
                             </div>
                             <div className="flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
                                 <div>
-                                    <div className="text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</div>
-                                    <div className="text-xs text-amber-800">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")}</div>
+                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")} panelClassName="text-xs leading-5">
+                                        <span className="cursor-help text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</span>
+                                    </AdminHoverInfo>
                                 </div>
                                 <Switch checked={config.openaiCompat.allowRawWorkspacePath} onCheckedChange={(checked) => setOpenAICompat({ allowRawWorkspacePath: checked })} aria-label="openai-compat-raw-workspace-path"/>
                             </div>

@@ -17,10 +17,13 @@ from runtimes.network_supervisor.models import (
     NetworkPeerMutationPayload,
 )
 from runtimes.network_supervisor.openai_compat import (
+    build_openai_compat_models_response,
     build_engine_chat_request_from_openai,
     build_external_tool_alias_maps,
     build_openai_completion_response,
     extract_bearer_token,
+    normalize_openai_compat_model_aliases,
+    resolve_openai_compat_model_alias,
     wire_tool_call_id,
 )
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
@@ -78,6 +81,7 @@ async def _stream_openai_chat_completion(
     request_payload: dict[str, object],
     *,
     chat_request,
+    response_model_name: str,
     project_id: str | None,
     workspace_id: str | None,
     scope_hint: str | None,
@@ -122,7 +126,7 @@ async def _stream_openai_chat_completion(
                             "id": response_id,
                             "object": "chat.completion.chunk",
                             "created": created,
-                            "model": chat_request.config.model_name,
+                            "model": response_model_name,
                             "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                         }
                     )
@@ -135,7 +139,7 @@ async def _stream_openai_chat_completion(
                                 "id": response_id,
                                 "object": "chat.completion.chunk",
                                 "created": created,
-                                "model": chat_request.config.model_name,
+                                "model": response_model_name,
                                 "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
                             }
                         )
@@ -163,7 +167,7 @@ async def _stream_openai_chat_completion(
                             "id": response_id,
                             "object": "chat.completion.chunk",
                             "created": created,
-                            "model": chat_request.config.model_name,
+                            "model": response_model_name,
                             "choices": [
                                 {
                                     "index": 0,
@@ -204,7 +208,7 @@ async def _stream_openai_chat_completion(
                             "id": response_id,
                             "object": "chat.completion.chunk",
                             "created": created,
-                            "model": chat_request.config.model_name,
+                            "model": response_model_name,
                             "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                         }
                     )
@@ -227,12 +231,12 @@ async def _stream_openai_chat_completion(
             _record_openai_memory_adapter_status(result)
             yield _sse_frame(
                 {
-                    "id": response_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": chat_request.config.model_name,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                }
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": response_model_name,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+            }
             )
             yield _sse_frame("[DONE]")
         except Exception as exc:
@@ -387,6 +391,18 @@ async def network_supervisor_peer_ws(websocket: WebSocket):
     await network_supervisor_service.websocket_handshake(websocket)
 
 
+@router.get("/network-supervisor/openai/models")
+async def get_network_supervisor_openai_models(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
+):
+    _verify_admin_relay_secret(x_v8_agent_os_secret)
+    bearer_token = extract_bearer_token(authorization)
+    network_supervisor_service.verify_openai_compat_token(bearer_token)
+    compat_config = network_supervisor_service.get_config_model().openai_compat
+    return build_openai_compat_models_response(compat_config.model_aliases)
+
+
 @router.post("/network-supervisor/openai/chat/completions")
 async def post_network_supervisor_openai_chat_completions(
     request: Request,
@@ -402,13 +418,16 @@ async def post_network_supervisor_openai_chat_completions(
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
     compat_config = network_supervisor_service.get_config_model().openai_compat
+    aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
+        response_model_name = resolve_openai_compat_model_alias(payload.get("model"), aliases)
         chat_request = build_engine_chat_request_from_openai(
             payload,
             project_id=project_id,
             workspace_id=workspace_id,
             scope_hint=scope_hint,
             scope_mode=scope_mode,
+            model_name_override="gpt-4o",
             max_external_tools=int(compat_config.max_external_tools or 8),
             max_external_system_tokens=int(compat_config.max_external_system_tokens or 1200),
             max_external_message_tokens=int(compat_config.max_external_message_tokens or 16000),
@@ -417,12 +436,14 @@ async def post_network_supervisor_openai_chat_completions(
             max_external_tools_payload_tokens=int(compat_config.max_external_tools_payload_tokens or 6000),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     if bool(payload.get("stream")):
         return await _stream_openai_chat_completion(
             payload,
             chat_request=chat_request,
+            response_model_name=response_model_name,
             project_id=project_id,
             workspace_id=workspace_id,
             scope_hint=scope_hint,
@@ -439,7 +460,7 @@ async def post_network_supervisor_openai_chat_completions(
             events.append(event)
     response_payload = build_openai_completion_response(
         response_id=f"chatcmpl-{uuid.uuid4().hex}",
-        model_name=chat_request.config.model_name,
+        model_name=response_model_name,
         events=events,
         external_tools=chat_request.config.external_tools,
     )

@@ -12,6 +12,7 @@ from core.context.delegation import build_delegation_context, latest_delegation_
 from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
+from core.host_load import render_host_load_line
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
@@ -334,21 +335,36 @@ def _split_agent_env_context_parts(env_context: str) -> list[dict[str, str]]:
     text = str(env_context or "")
     if not text:
         return []
-    marker = "Current Time:"
-    marker_index = text.find(marker)
-    if marker_index < 0:
-        return [_agent_prompt_part("subagent.environment.static", "scoped_static", text, scope="environment")]
-    line_start = text.rfind("\n", 0, marker_index) + 1
-    line_end = text.find("\n", marker_index)
-    if line_end < 0:
-        line_end = len(text)
-    else:
-        line_end += 1
-    return [
-        _agent_prompt_part("subagent.environment.before_time", "scoped_static", text[:line_start], scope="environment"),
-        _agent_prompt_part("subagent.environment.current_time", "dynamic", text[line_start:line_end], scope="environment"),
-        _agent_prompt_part("subagent.environment.after_time", "scoped_static", text[line_end:], scope="environment"),
-    ]
+    dynamic_prefixes = {
+        "Current Time:": "current_time",
+        "Host Load:": "host_load",
+    }
+    parts: list[dict[str, str]] = []
+    static_buffer: list[str] = []
+
+    def _flush_static() -> None:
+        if not static_buffer:
+            return
+        parts.append(
+            _agent_prompt_part(
+                "subagent.environment.static",
+                "scoped_static",
+                "".join(static_buffer),
+                scope="environment",
+            )
+        )
+        static_buffer.clear()
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        dynamic_name = next((name for prefix, name in dynamic_prefixes.items() if stripped.startswith(prefix)), "")
+        if dynamic_name:
+            _flush_static()
+            parts.append(_agent_prompt_part(f"subagent.environment.{dynamic_name}", "dynamic", line, scope="environment"))
+        else:
+            static_buffer.append(line)
+    _flush_static()
+    return parts
 
 
 def _build_agent_system_bundle(
@@ -501,6 +517,7 @@ def build_agent_node(
                 f"<environment>\n"
                 f"OS: {os_name}\n"
                 f"Current Time: {current_time}\n"
+                f"{render_host_load_line()}\n"
                 f"Local Workspace Absolute Path: {workspace_path}\n"
                 f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them to the Local Workspace above.\n"
                 "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "

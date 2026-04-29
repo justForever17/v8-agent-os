@@ -164,21 +164,32 @@ async def delete_mcp_config_server(server_name: str):
         existing_servers = existing.get("mcpServers", {})
         if not isinstance(existing_servers, dict):
             existing_servers = {}
-        if normalized_name not in existing_servers:
-            raise HTTPException(status_code=404, detail={"code": "server_not_found", "message": f"MCP server `{normalized_name}` 不存在。"})
-        next_servers = dict(existing_servers)
-        next_servers.pop(normalized_name, None)
-        storage.save_mcp_config({"mcpServers": next_servers})
+        already_removed_from_config = normalized_name not in existing_servers
+        if already_removed_from_config:
+            next_servers = dict(existing_servers)
+        else:
+            next_servers = dict(existing_servers)
+            next_servers.pop(normalized_name, None)
+            storage.save_mcp_config({"mcpServers": next_servers})
         reload_result = await mcp_manager.reload_if_changed()
         if normalized_name not in set((reload_result.get("mcpChangedServers") or {}).get("removed") or []):
             removal_result = await mcp_manager.remove_server(normalized_name)
         else:
             removal_result = {"changed": True, "server": normalized_name, "reason": "delta_reload_removed"}
-        inventory_refresh = await extensions_runtime_service.refresh_inventory_if_changed(reason="mcp_config_delete")
+        inventory_refresh = await extensions_runtime_service.force_refresh_after_mcp_config_change(
+            reason="mcp_config_delete",
+            mcp_change={
+                "reloadResult": reload_result,
+                "removeResult": removal_result,
+                "deletedServer": normalized_name,
+                "alreadyRemovedFromConfig": already_removed_from_config,
+            },
+        )
         runtime_health = extensions_runtime_service.build_health()
         return {
             "status": "success",
             "deletedServer": normalized_name,
+            "alreadyRemovedFromConfig": already_removed_from_config,
             "reloadResult": reload_result,
             "removeResult": removal_result,
             "extensionsRuntime": runtime_health,

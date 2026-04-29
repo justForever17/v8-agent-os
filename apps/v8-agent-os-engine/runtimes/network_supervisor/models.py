@@ -92,6 +92,7 @@ class NetworkOpenAICompatConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     enabled: bool = Field(default=False)
+    model_aliases: List[str] = Field(default_factory=lambda: ["v8os"], alias="modelAliases")
     admin_relay_only: bool = Field(default=True, alias="adminRelayOnly")
     allow_workspace_headers: bool = Field(default=True, alias="allowWorkspaceHeaders")
     allow_raw_workspace_path: bool = Field(default=False, alias="allowRawWorkspacePath")

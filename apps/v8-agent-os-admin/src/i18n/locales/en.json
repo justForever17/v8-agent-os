@@ -1830,6 +1830,8 @@
   "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatAdminRelayOnly": "Admin Relay",
   "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatBaseUrl": "Base URL",
   "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatChatUrl": "Chat Completions URL",
+  "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelsUrl": "Models URL",
+  "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelAliases": "Model names (comma-separated)",
   "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy": "Copy",
   "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopied": "Copied",
   "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopyFailed": "Copy failed",

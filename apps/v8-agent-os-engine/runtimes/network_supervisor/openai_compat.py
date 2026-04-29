@@ -18,6 +18,7 @@ _ALIAS_SANITIZE_RE = re.compile(r"[^a-z0-9_]+")
 _TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _MAX_ALIAS_STEM = 36
 _MAX_SCHEMA_DEPTH = 12
+DEFAULT_COMPAT_MODEL_ALIASES = ["v8os"]
 
 
 class _CompatToolEmptyArgs(BaseModel):
@@ -31,6 +32,39 @@ def extract_bearer_token(header_value: str | None) -> str:
     if not raw.lower().startswith("bearer "):
         return ""
     return raw[7:].strip()
+
+
+def normalize_openai_compat_model_aliases(value: Any) -> list[str]:
+    aliases: list[str] = []
+    for item in list(value or []):
+        alias = str(item or "").strip()
+        if alias and alias not in aliases:
+            aliases.append(alias)
+    return aliases or list(DEFAULT_COMPAT_MODEL_ALIASES)
+
+
+def resolve_openai_compat_model_alias(requested_model: Any, aliases: list[str] | None = None) -> str:
+    available = normalize_openai_compat_model_aliases(aliases)
+    requested = str(requested_model or "").strip() or available[0]
+    if requested not in available:
+        raise ValueError(f"Unknown V8OS OpenAI-compatible model alias: {requested}")
+    return requested
+
+
+def build_openai_compat_models_response(aliases: list[str] | None = None) -> dict[str, Any]:
+    created = int(time.time())
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": alias,
+                "object": "model",
+                "created": created,
+                "owned_by": "v8-agent-os",
+            }
+            for alias in normalize_openai_compat_model_aliases(aliases)
+        ],
+    }
 
 
 def flatten_openai_message_content(content: Any) -> str:
@@ -400,6 +434,7 @@ def build_engine_chat_request_from_openai(
     workspace_id: str | None = None,
     scope_hint: str | None = None,
     scope_mode: str = "explicit",
+    model_name_override: str | None = None,
     max_external_tools: int = 8,
     max_external_system_tokens: int = 1200,
     max_external_message_tokens: int = 16000,
@@ -424,7 +459,7 @@ def build_engine_chat_request_from_openai(
     )
     if not messages:
         raise ValueError("OpenAI compat request must include at least one valid message")
-    model_name = str(payload.get("model") or "gpt-4o").strip() or "gpt-4o"
+    model_name = str(model_name_override or payload.get("model") or "gpt-4o").strip() or "gpt-4o"
     return ChatRequest(
         messages=messages,
         config=EngineConfig(

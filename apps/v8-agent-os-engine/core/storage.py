@@ -513,6 +513,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         },
         "openaiCompat": {
             "enabled": False,
+            "modelAliases": ["v8os"],
             "adminRelayOnly": True,
             "allowWorkspaceHeaders": True,
             "allowRawWorkspacePath": False,

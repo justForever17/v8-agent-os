@@ -15,6 +15,7 @@ from core.prompt_budget import (
 )
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.storage import storage
+from core.host_load import render_host_load_line
 from core.system_base import get_engine_origin
 from core.time_truth import utc_now_iso
 from core.v8_agent_os_identity import render_system_identity_line
@@ -55,21 +56,36 @@ def _split_env_context_prompt_parts(env_context: str, *, source_prefix: str = "e
     text = str(env_context or "")
     if not text:
         return []
-    marker = "Current Time:"
-    marker_index = text.find(marker)
-    if marker_index < 0:
-        return [_prompt_part(f"{source_prefix}.static", "scoped_static", text, scope="environment")]
-    line_start = text.rfind("\n", 0, marker_index) + 1
-    line_end = text.find("\n", marker_index)
-    if line_end < 0:
-        line_end = len(text)
-    else:
-        line_end += 1
-    return [
-        _prompt_part(f"{source_prefix}.before_time", "scoped_static", text[:line_start], scope="environment"),
-        _prompt_part(f"{source_prefix}.current_time", "dynamic", text[line_start:line_end], scope="environment"),
-        _prompt_part(f"{source_prefix}.after_time", "scoped_static", text[line_end:], scope="environment"),
-    ]
+    dynamic_prefixes = {
+        "Current Time:": "current_time",
+        "Host Load:": "host_load",
+    }
+    parts: list[dict[str, str]] = []
+    static_buffer: list[str] = []
+
+    def _flush_static() -> None:
+        if not static_buffer:
+            return
+        parts.append(
+            _prompt_part(
+                f"{source_prefix}.static",
+                "scoped_static",
+                "".join(static_buffer),
+                scope="environment",
+            )
+        )
+        static_buffer.clear()
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        dynamic_name = next((name for prefix, name in dynamic_prefixes.items() if stripped.startswith(prefix)), "")
+        if dynamic_name:
+            _flush_static()
+            parts.append(_prompt_part(f"{source_prefix}.{dynamic_name}", "dynamic", line, scope="environment"))
+        else:
+            static_buffer.append(line)
+    _flush_static()
+    return parts
 
 
 def _split_runtime_registry_prompt_parts(runtime_registry_context: str) -> list[dict[str, str]]:
@@ -919,6 +935,7 @@ def build_supervisor_system_content(
     env_context = (
         "<environment>\n"
         f"Current Time: {current_time}\n"
+        f"{render_host_load_line()}\n"
         f"{cached_stable['envStaticContext']}"
         "</environment>\n"
     )

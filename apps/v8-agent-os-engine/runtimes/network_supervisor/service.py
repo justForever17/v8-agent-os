@@ -405,7 +405,7 @@ class NetworkSupervisorService:
     def verify_openai_compat_token(self, token: str | None) -> None:
         config = self.get_config_model()
         if not config.enabled or not config.openai_compat.enabled:
-            raise HTTPException(status_code=404, detail="OpenAI compat branch is disabled")
+            raise HTTPException(status_code=403, detail="OpenAI compat branch is disabled")
         provided = str(token or "").strip()
         if not provided:
             raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -793,8 +793,10 @@ class NetworkSupervisorService:
                 "adminRelayOnly": bool(config.openai_compat.admin_relay_only),
                 "available": bool(config.enabled and config.openai_compat.enabled and openai_compat_tokens),
                 "tokenCount": len(openai_compat_tokens),
+                "modelAliases": list(config.openai_compat.model_aliases or ["v8os"]),
                 "baseUrlHint": "http://localhost:9528/api/network-supervisor/openai/v1",
                 "chatCompletionsPath": "/chat/completions",
+                "modelsPath": "/models",
                 "maxExternalTools": int(config.openai_compat.max_external_tools or 0),
                 "maxExternalSystemTokens": int(config.openai_compat.max_external_system_tokens or 0),
                 "maxExternalMessageTokens": int(config.openai_compat.max_external_message_tokens or 0),

@@ -3044,6 +3044,27 @@ class ExtensionsRuntimeService:
             "revision": self._inventory_revision_key(),
         }
 
+    async def force_refresh_after_mcp_config_change(
+        self,
+        *,
+        reason: str = "mcp_config_change",
+        mcp_change: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        change = dict(mcp_change or {})
+        self._last_mcp_inventory_change = {
+            **change,
+            "changed": True,
+            "changedAt": self._now_iso(),
+            "reason": reason,
+        }
+        await self._refresh_runtime_snapshot(clear_route_cache=False)
+        self._clear_dynamic_family_profile_caches()
+        return {
+            "changed": True,
+            "mcp": self._last_mcp_inventory_change,
+            "revision": self._inventory_revision_key(),
+        }
+
     def request_mcp_inventory_refresh(self, *, reason: str = "manual") -> None:
         loop = self._loop
         if loop and loop.is_running():

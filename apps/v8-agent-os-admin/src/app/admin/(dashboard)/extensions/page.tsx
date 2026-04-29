@@ -6,6 +6,7 @@ import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { EmptyState } from "@/components/admin-shell/EmptyState";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
@@ -920,9 +921,18 @@ export default function ExtensionsPage() {
                 const validationError = extractValidationPayload(data);
                 throw new Error(localizeMcpValidationPayload(validationError, t) || String(data?.detail || data?.error || (isZh ? "删除 MCP 服务失败。" : "Failed to delete MCP server.")));
             }
+            setCatalog((previous) => previous ? {
+                ...previous,
+                mcp: {
+                    ...previous.mcp,
+                    servers: (previous.mcp?.servers || []).filter((server) => server.name !== normalizedName),
+                },
+            } : previous);
             toast({
-                title: isZh ? "MCP 服务已删除" : "MCP server deleted",
-                description: isZh ? "配置已保存并触发热重载。" : "Configuration saved and hot reload requested.",
+                title: data?.alreadyRemovedFromConfig
+                    ? (isZh ? "MCP 残留已清理" : "MCP residue cleaned")
+                    : (isZh ? "MCP 服务已删除" : "MCP server deleted"),
+                description: isZh ? "配置和运行时快照已刷新。" : "Configuration and runtime snapshot refreshed.",
             });
             await loadData();
         }
@@ -1388,11 +1398,19 @@ export default function ExtensionsPage() {
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kf6bbc138"} description={"app.admin.dashboard.extensions.page.kde458108"} variant="editor" bodyHeight="clamp" bodyScroll="auto" className="h-full">
                     <div className="space-y-4">
                         <div className="space-y-2">
-                            <Label>{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
+                            <AdminHoverInfo
+                                panelClassName="text-xs leading-6"
+                                content={(
+                                    <>
+                                        {t("app.admin.dashboard.extensions.page.k8d26505b")}<span className="font-mono text-white">npx skills add &lt;source&gt; [--skill &lt;name&gt;] [--overwrite]</span>。
+                                        {t("app.admin.dashboard.extensions.page.k684bddc4")}<span className="font-mono text-white">~/.agents/skills</span>。
+                                        {t("app.admin.dashboard.extensions.page.k0cd07ab9")}<span className="font-mono text-white">workspace/.agents/skills</span>{t("app.admin.dashboard.extensions.page.k9181443f")}
+                                    </>
+                                )}
+                            >
+                                <Label className="cursor-help">{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
+                            </AdminHoverInfo>
                             <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx skills add https://github.com/vercel-labs/skills --skill find-skills"/>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-6 text-slate-600">
-                                {t("app.admin.dashboard.extensions.page.k8d26505b")}<span className="font-mono text-slate-900">npx skills add &lt;source&gt; [--skill &lt;name&gt;] [--overwrite]</span>。{t("app.admin.dashboard.extensions.page.k684bddc4")}<span className="font-mono text-slate-900">~/.agents/skills</span>。{t("app.admin.dashboard.extensions.page.k0cd07ab9")}<span className="font-mono text-slate-900">workspace/.agents/skills</span>{t("app.admin.dashboard.extensions.page.k9181443f")}
-                            </div>
                             <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-xs leading-6 text-amber-900">
                                 <div className="font-medium">
                                     {t("app.admin.dashboard.extensions.page.k2aa71b7e")}

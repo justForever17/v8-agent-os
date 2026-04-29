@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
@@ -770,15 +771,17 @@ export default function ModelHubPage() {
                                 <div key={provider.id} className="relative flex h-[158px] flex-col rounded-2xl border bg-card p-4">
                                     <div className="flex items-center justify-between gap-2">
                                         <div className="truncate text-sm font-semibold" title={provider.name}>{provider.name}</div>
-                                        <span className="group/info relative shrink-0">
+                                        <AdminHoverInfo
+                                            align="right"
+                                            lines={[
+                                                provider.name,
+                                                "Credential: live OAuth",
+                                                provider.auth?.path ? `Path: ${provider.auth.path}` : "",
+                                                `Models: ${(provider.models || []).map((model) => model.id).join(", ")}`,
+                                            ].filter(Boolean)}
+                                        >
                                             <Badge variant="secondary" className="h-5 px-2 text-[10px]">OAuth</Badge>
-                                            <span className="pointer-events-none absolute right-0 top-7 z-30 w-72 rounded-xl bg-slate-950 p-3 text-left text-[11px] leading-5 text-white opacity-0 shadow-2xl transition-opacity group-hover/info:opacity-100">
-                                                <span className="block truncate">{provider.name}</span>
-                                                <span className="block truncate">Credential: live OAuth</span>
-                                                {provider.auth?.path ? <span className="block truncate">Path: {provider.auth.path}</span> : null}
-                                                <span className="block truncate">Models: {(provider.models || []).map((model) => model.id).join(", ")}</span>
-                                            </span>
-                                        </span>
+                                        </AdminHoverInfo>
                                     </div>
                                     <Select
                                         defaultValue={firstModel?.id || ""}
@@ -1312,8 +1315,15 @@ export default function ModelHubPage() {
                                 </div>
                             </div>
                         ) : MEDIA_MODEL_TYPES.has(modelType) ? (
-                            <div className="rounded-xl border bg-muted/30 p-3 text-sm text-muted-foreground">
-                                {t("app.admin.dashboard.model.hub.catalog.mediaModelNotice")}
+                            <div>
+                                <AdminHoverInfo
+                                    content={t("app.admin.dashboard.model.hub.catalog.mediaModelNotice")}
+                                    panelClassName="text-xs leading-5"
+                                >
+                                    <Badge variant="secondary">
+                                        {t("app.admin.dashboard.model.hub.catalog.mediaModelNoticeTitle")}
+                                    </Badge>
+                                </AdminHoverInfo>
                             </div>
                         ) : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button>

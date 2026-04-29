@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Settings, Power, Trash2 } from "lucide-react";
 import type { ProviderOverview } from "@/components/models/control-plane-types";
@@ -71,18 +72,16 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex items-start justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
-                        <span className="group/info relative flex h-7 w-7 shrink-0 items-center justify-center overflow-visible rounded-lg bg-slate-100 text-xs font-semibold text-slate-600">
+                        <AdminHoverInfo
+                            lines={details}
+                            triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600"
+                        >
                             {providerLogo ? (
                                 <img src={providerLogo} alt="" className="h-5 w-5 rounded object-contain" />
                             ) : (
                                 providerMark
                             )}
-                            <span className="pointer-events-none absolute left-0 top-9 z-50 w-80 rounded-xl bg-slate-950 p-3 text-left text-[11px] font-normal leading-5 text-white opacity-0 shadow-2xl transition-opacity group-hover/info:opacity-100">
-                                {details.map((item) => (
-                                    <span key={item} className="block truncate">{item}</span>
-                                ))}
-                            </span>
-                        </span>
+                        </AdminHoverInfo>
                         <div className="min-w-0">
                             <div className="truncate text-sm font-semibold" title={provider.name}>{provider.name}</div>
                             <div className="truncate text-[11px] text-muted-foreground" title={provider.code}>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Clapperboard, RefreshCw, Save, Sparkles, UserRound } from "lucide-react";
 
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,6 +42,7 @@ type CreativeModelCandidate = {
     adapter: string;
     source?: string;
     available?: boolean;
+    briefOnly?: boolean;
     enabled?: boolean;
     priority?: number;
 };
@@ -269,14 +271,21 @@ export default function CreativeMediaPage() {
                 <div>
                     <div className="flex items-center gap-2">
                         <Sparkles className="h-7 w-7 text-violet-600" />
-                        <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.creativeMedia.title")}</h1>
+                        <h1 className="text-3xl font-bold tracking-tight">
+                            <AdminHoverInfo
+                                content={
+                                    <span>
+                                        {t("app.admin.dashboard.creativeMedia.description")}
+                                        <br />
+                                        {t("app.admin.dashboard.creativeMedia.musicBoundaryInline")}
+                                    </span>
+                                }
+                                panelClassName="text-sm leading-6"
+                            >
+                                <span>{t("app.admin.dashboard.creativeMedia.title")}</span>
+                            </AdminHoverInfo>
+                        </h1>
                     </div>
-                    <p className="mt-2 text-muted-foreground">
-                        {t("app.admin.dashboard.creativeMedia.description")}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                        {t("app.admin.dashboard.creativeMedia.musicBoundaryInline")}
-                    </p>
                 </div>
                 <Button variant="outline" onClick={() => void fetchData()} disabled={loading}>
                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -315,8 +324,20 @@ export default function CreativeMediaPage() {
                 <CardHeader>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                            <CardTitle>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</CardTitle>
-                            <CardDescription>{t("app.admin.dashboard.creativeMedia.modelPreferencesDescription")}</CardDescription>
+                            <CardTitle>
+                                <AdminHoverInfo
+                                    content={
+                                        <span>
+                                            {t("app.admin.dashboard.creativeMedia.modelPreferencesDescription")}
+                                            <br />
+                                            {t("app.admin.dashboard.creativeMedia.modelPreferencesConnectedHint")}
+                                        </span>
+                                    }
+                                    panelClassName="text-sm leading-6"
+                                >
+                                    <span>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</span>
+                                </AdminHoverInfo>
+                            </CardTitle>
                         </div>
                         <Button onClick={() => void saveModelPreferences()} disabled={savingModels || loading}>
                             <Save className="mr-2 h-4 w-4" />
@@ -325,9 +346,6 @@ export default function CreativeMediaPage() {
                     </div>
                 </CardHeader>
                 <CardContent>
-                    <div className="mb-4 rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
-                        {t("app.admin.dashboard.creativeMedia.modelPreferencesConnectedHint")}
-                    </div>
                     <Table>
                         <TableHeader>
                             <TableRow>
@@ -342,9 +360,11 @@ export default function CreativeMediaPage() {
                         </TableHeader>
                         <TableBody>
                             {operationRows.length ? operationRows.map((row) => {
-                                const options = connectedModelOptions
-                                    .filter((candidate) => candidate.operationKind === row.operationKind)
+                                const rowCandidates = connectedModelOptions
+                                    .filter((candidate) => candidate.operationKind === row.operationKind);
+                                const options = rowCandidates
                                     .map(asModelSelectOption);
+                                const hasBriefOnlyOption = rowCandidates.some((candidate) => candidate.briefOnly);
                                 const selected = row.selectedModelRefs || [];
                                 return (
                                     <TableRow key={row.operationKind}>
@@ -361,14 +381,21 @@ export default function CreativeMediaPage() {
                                         <TableCell className="font-mono text-xs">{text(row.operationKind)}</TableCell>
                                         <TableCell className="min-w-72">
                                             {options.length ? (
-                                                <ModelSelect
-                                                    models={options}
-                                                    value={selected[0] || ""}
-                                                    emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
-                                                    placeholder={t("app.admin.dashboard.creativeMedia.selectPrimaryModel")}
-                                                    onValueChange={(value) => setOperationModelRef(row.operationKind, 0, value)}
-                                                    showCompatibilityHint={false}
-                                                />
+                                                <div className="space-y-2">
+                                                    <ModelSelect
+                                                        models={options}
+                                                        value={selected[0] || ""}
+                                                        emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
+                                                        placeholder={t("app.admin.dashboard.creativeMedia.selectPrimaryModel")}
+                                                        onValueChange={(value) => setOperationModelRef(row.operationKind, 0, value)}
+                                                        showCompatibilityHint={false}
+                                                    />
+                                                    {hasBriefOnlyOption ? (
+                                                        <div className="text-xs leading-5 text-muted-foreground">
+                                                            {t("app.admin.dashboard.creativeMedia.briefOnlyHint")}
+                                                        </div>
+                                                    ) : null}
+                                                </div>
                                             ) : (
                                                 <div className="space-y-2">
                                                     <div className="text-sm text-muted-foreground">
@@ -407,7 +434,11 @@ export default function CreativeMediaPage() {
                                         </TableCell>
                                         <TableCell>
                                             <Badge variant={options.length ? "default" : "secondary"}>
-                                                {options.length ? `${options.length}` : t("app.admin.dashboard.creativeMedia.unavailable")}
+                                                {options.length
+                                                    ? hasBriefOnlyOption
+                                                        ? t("app.admin.dashboard.creativeMedia.briefOnly")
+                                                        : `${options.length}`
+                                                    : t("app.admin.dashboard.creativeMedia.unavailable")}
                                             </Badge>
                                         </TableCell>
                                     </TableRow>

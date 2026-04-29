@@ -27,6 +27,7 @@ import {
 import type { ControlPlaneModel } from "@/components/models/control-plane-types";
 import { useT } from "@/components/providers/LocaleProvider";
 import { resolveModelIcon } from "@/lib/models/model-assets";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -166,18 +167,16 @@ export function ModelCardV2({
         <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${isDefault ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
-                    <div className="group/info relative flex h-7 w-7 shrink-0 items-center justify-center overflow-visible rounded-lg bg-slate-100 text-xs font-semibold text-slate-600">
+                    <AdminHoverInfo
+                        lines={details}
+                        triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600"
+                    >
                         {modelIcon ? (
                             <img src={modelIcon} alt="" className="h-5 w-5 rounded object-contain" />
                         ) : (
                             model.provider?.icon || providerMark
                         )}
-                        <div className="pointer-events-none absolute left-0 top-9 z-50 w-80 rounded-xl bg-slate-950 p-3 text-left text-[11px] font-normal leading-5 text-white opacity-0 shadow-2xl transition-opacity group-hover/info:opacity-100">
-                            {details.map((item) => (
-                                <div key={item} className="truncate">{item}</div>
-                            ))}
-                        </div>
-                    </div>
+                    </AdminHoverInfo>
                     <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">
                             <span className="truncate text-sm font-semibold leading-5" title={`${model.modelId} · ${model.provider?.name || ""}`}>

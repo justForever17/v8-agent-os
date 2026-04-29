@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -479,15 +480,12 @@ function StatusCardTitle({
     tooltip: ReactNode;
 }) {
     return (
-        <div className="group/status-title relative inline-flex max-w-full items-center gap-2">
-            <CardTitle className="flex max-w-full cursor-help items-center gap-2 truncate text-sm font-bold text-slate-950">
+        <AdminHoverInfo content={tooltip} panelClassName="text-sm leading-7">
+            <CardTitle className="flex max-w-full items-center gap-2 truncate text-sm font-bold text-slate-950">
                 {icon}
                 <span className="truncate">{title}</span>
             </CardTitle>
-            <div className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden w-80 rounded-2xl bg-slate-950 p-4 text-sm leading-7 text-white shadow-2xl ring-1 ring-white/10 group-hover/status-title:block">
-                {tooltip}
-            </div>
-        </div>
+        </AdminHoverInfo>
     );
 }
 
@@ -499,12 +497,9 @@ function HoverHelpLabel({
     tooltip: ReactNode;
 }) {
     return (
-        <div className="group/help-label relative inline-flex w-fit items-center">
-            <Label className="cursor-help font-medium text-slate-950">{label}</Label>
-            <div className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden w-80 rounded-2xl bg-slate-950 p-4 text-sm leading-7 text-white shadow-2xl ring-1 ring-white/10 group-hover/help-label:block">
-                {tooltip}
-            </div>
-        </div>
+        <AdminHoverInfo content={tooltip} panelClassName="text-sm leading-7">
+            <Label className="font-medium text-slate-950">{label}</Label>
+        </AdminHoverInfo>
     );
 }
 

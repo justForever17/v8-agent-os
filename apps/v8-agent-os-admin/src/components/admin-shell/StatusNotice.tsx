@@ -1,5 +1,6 @@
 import { AlertCircle, CheckCircle2, Info } from "lucide-react";
 
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useResolveText } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
 
@@ -34,10 +35,9 @@ export function StatusNotice({
         <div className={cn("rounded-2xl border px-4 py-3", toneMap[tone].box)}>
             <div className="flex items-start gap-3">
                 <Icon className="mt-0.5 h-4 w-4 shrink-0" />
-                <div className="space-y-1">
-                    <div className="text-sm font-medium">{resolveText(title)}</div>
-                    {description ? <div className="text-xs leading-5 opacity-90">{resolveText(description)}</div> : null}
-                </div>
+                <AdminHoverInfo content={description ? resolveText(description) : undefined} panelClassName="text-xs leading-5">
+                    <span className="text-sm font-medium">{resolveText(title)}</span>
+                </AdminHoverInfo>
             </div>
         </div>
     );

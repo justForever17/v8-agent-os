@@ -486,6 +486,9 @@ class CreativeMediaRuntime:
             return True
         return False
 
+    def _is_brief_only_operation(self, *, adapter: str, operation_kind: str) -> bool:
+        return operation_kind == "music.brief" and adapter == "catalog_only"
+
     def list_model_candidates(self) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         config = model_control_plane.get_config()
@@ -563,6 +566,7 @@ class CreativeMediaRuntime:
                             "nativeAudio": bool(capability_profile.get("nativeAudio")),
                             "source": "model_control_plane",
                             "available": self._is_operation_executable(adapter=adapter, operation_kind=operation_kind),
+                            "briefOnly": self._is_brief_only_operation(adapter=adapter, operation_kind=operation_kind),
                         }
                     )
 
@@ -834,12 +838,12 @@ class CreativeMediaRuntime:
         connected_options = [
             dict(item)
             for item in candidates
-            if self._is_configured_model_candidate(item) and bool(item.get("available", True))
+            if self._is_configured_model_candidate(item) and (bool(item.get("available", True)) or bool(item.get("briefOnly", False)))
         ]
         diagnostic_candidates = [
             dict(item)
             for item in candidates
-            if not self._is_configured_model_candidate(item) or not bool(item.get("available", True))
+            if not self._is_configured_model_candidate(item) or (not bool(item.get("available", True)) and not bool(item.get("briefOnly", False)))
         ]
         return {
             "version": 1,

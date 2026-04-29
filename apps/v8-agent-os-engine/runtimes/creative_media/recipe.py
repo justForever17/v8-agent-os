@@ -384,6 +384,12 @@ def _asset_summary(assets: list[dict[str, Any]]) -> list[str]:
     return result
 
 
+def _seedance_reference_text(value: Any) -> str:
+    text = str(value)
+    text = re.sub(r"@(?:voice|music)(\d+)", r"@audio\1", text, flags=re.IGNORECASE)
+    return text
+
+
 def _character_bible_summary(character_bibles: list[dict[str, Any]]) -> list[str]:
     result: list[str] = []
     for bible in character_bibles:
@@ -864,7 +870,10 @@ class CreativeRecipeCompiler:
         lines: list[str] = []
         assets = list(provider_neutral.get("assets") or [])
         if assets:
-            lines.append("Asset references: " + "; ".join(str(item) for item in assets))
+            lines.append("Asset references: " + "; ".join(_seedance_reference_text(item) for item in assets))
+            lines.append(
+                "Seedance 2.0 reference discipline: explicitly assign each @image, @video, and @audio reference a role such as first frame, last frame, character, scene, camera motion, action, rhythm, BGM, sound effect, or voice tone."
+            )
         characters = list(provider_neutral.get("characters") or [])
         if characters:
             lines.append("Character continuity: " + "; ".join(str(item) for item in characters))

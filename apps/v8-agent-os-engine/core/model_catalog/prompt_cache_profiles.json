@@ -148,6 +148,16 @@
       "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/pricing"
     },
     {
+      "id": "xiaomi_mimo_tokenplan_anthropic_observe_cache",
+      "providerIds": ["xiaomi-mimo-tokenplan-anthropic", "xiaomi-tokenplan", "mimo-tokenplan"],
+      "strategy": "implicit_or_unknown",
+      "requestStyle": "observe_only",
+      "supportsResponseUsage": false,
+      "usageFields": [],
+      "notes": "TokenPlan Anthropic-compatible MiMo endpoint is registered for interface testing. V8 does not inject Anthropic cache_control until live probing confirms support.",
+      "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/api/chat/anthropic-api"
+    },
+    {
       "id": "implicit_or_unknown",
       "providerIds": ["together", "huggingface-router", "siliconflow", "modelscope", "groq", "tencent-hunyuan"],
       "strategy": "implicit_or_unknown",

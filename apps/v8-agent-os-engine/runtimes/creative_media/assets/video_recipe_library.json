@@ -9,7 +9,29 @@
     "Video recipes keep timing, references, camera motion, and edit intent separate.",
     "P2a compiles local edit intent only; it does not call a real edit provider."
   ],
-  "referenceRoles": ["first_frame", "last_frame", "character", "scene", "camera_motion", "action", "style", "audio_tempo"],
+  "referenceRoles": ["first_frame", "last_frame", "character", "scene", "camera_motion", "action", "style", "audio_tempo", "background_music", "sound_effect", "voice_tone"],
+  "seedance2": {
+    "providerIds": ["volcengine_seedance"],
+    "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast"],
+    "promptLanguage": "provider-facing English by default; preserve required on-screen text or subtitles in the original language",
+    "referenceSyntax": {
+      "image": "@imageN / @图片N",
+      "video": "@videoN / @视频N",
+      "audio": "@audioN / @音频N"
+    },
+    "inputLimits": {
+      "imagesMax": 9,
+      "videosMax": 3,
+      "audioMax": 3,
+      "totalFilesMax": 12
+    },
+    "referencePolicies": [
+      "Every referenced asset must have a role: first frame, last frame, character, scene, camera motion, action, effect, rhythm, BGM, sound effect, or voice tone.",
+      "Use first-frame and last-frame references for precise start/end control instead of packing too many actions into one prompt.",
+      "Use video references for camera motion, action choreography, effects, transitions, and rhythm; do not describe them as generic style references.",
+      "Use audio references for BGM, tempo, sound effects, or voice/tone; preserve native audio output by default when the exact model capability profile says nativeAudio=true."
+    ]
+  },
   "durationPolicy": {
     "shortMaxSeconds": 5,
     "timedSegmentsRecommendedAboveSeconds": 8,

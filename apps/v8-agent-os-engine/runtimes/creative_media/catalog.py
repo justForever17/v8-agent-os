@@ -12,6 +12,7 @@ RESOLUTION_PRESETS_PATH = ASSET_DIR / "media_resolution_presets.json"
 VISUAL_RECIPE_LIBRARY_PATH = ASSET_DIR / "visual_recipe_library.json"
 VIDEO_RECIPE_LIBRARY_PATH = ASSET_DIR / "video_recipe_library.json"
 AUDIO_MUSIC_RECIPE_LIBRARY_PATH = ASSET_DIR / "audio_music_recipe_library.json"
+MEDIA_MODEL_CAPABILITY_OVERRIDES_PATH = ASSET_DIR / "media_model_capability_overrides.json"
 
 
 def _read_asset(path: Path) -> Dict[str, Any]:
@@ -36,6 +37,53 @@ def load_video_recipe_library() -> Dict[str, Any]:
 
 def load_audio_music_recipe_library() -> Dict[str, Any]:
     return deepcopy(_read_asset(AUDIO_MUSIC_RECIPE_LIBRARY_PATH))
+
+
+def load_media_model_capability_overrides() -> Dict[str, Any]:
+    return deepcopy(_read_asset(MEDIA_MODEL_CAPABILITY_OVERRIDES_PATH))
+
+
+def capability_profile_for_model(
+    *,
+    provider_id: str | None,
+    model_id: str | None,
+    operation_kind: str | None = None,
+) -> Dict[str, Any]:
+    """Return exact model capability metadata.
+
+    Capability overrides are intentionally keyed by exact provider/model/version
+    so newer native-audio models do not accidentally upgrade older video models.
+    """
+    provider = str(provider_id or "").strip()
+    model = str(model_id or "").strip()
+    operation = str(operation_kind or "").strip()
+    if not provider or not model:
+        return {}
+    payload = load_media_model_capability_overrides()
+    for item in payload.get("capabilityProfiles") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("providerId") or "").strip() != provider:
+            continue
+        model_ids = item.get("modelIds")
+        if isinstance(model_ids, list):
+            normalized_model_ids = {str(value).strip() for value in model_ids}
+        else:
+            normalized_model_ids = {str(item.get("modelId") or "").strip()}
+        if model not in normalized_model_ids:
+            continue
+        operation_kinds = item.get("operationKinds")
+        if operation and isinstance(operation_kinds, list):
+            normalized_operations = {str(value).strip() for value in operation_kinds}
+            if operation not in normalized_operations:
+                continue
+        profile = deepcopy(dict(item.get("capabilityProfile") or {}))
+        if item.get("sourceUrl"):
+            profile.setdefault("sourceUrl", item.get("sourceUrl"))
+        if item.get("confidence"):
+            profile.setdefault("confidence", item.get("confidence"))
+        return profile
+    return {}
 
 
 def _normalize_ratio(value: str | None, default: str = "1:1") -> str:

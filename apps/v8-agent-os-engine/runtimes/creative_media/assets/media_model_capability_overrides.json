@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-29",
+  "matchPolicy": "exact providerId + exact modelId + operationKind; no provider-level inheritance",
+  "notes": [
+    "This file stores model-version media capability overlays that are too specific for provider-level metadata.",
+    "Only exact model/version matches should receive nativeAudio or advanced reference-input capabilities.",
+    "Do not infer native audio from provider names such as Seedance, Kling, Sora, Veo, or HappyHorse without an exact entry here."
+  ],
+  "capabilityProfiles": [
+    {
+      "providerId": "volcengine_seedance",
+      "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": true,
+        "audioModes": ["native_generation", "audio_reference", "silent"],
+        "audioPreservationPolicy": "preserve_native_audio_by_default",
+        "supportsDialogue": true,
+        "supportsSfx": true,
+        "supportsMusicBed": true,
+        "inputModalities": ["text", "image", "video", "audio"],
+        "outputStreams": ["video", "audio"],
+        "referenceInputs": {
+          "image": {
+            "maxCount": 9,
+            "roles": ["first_frame", "last_frame", "character", "scene", "style", "product", "text_style"]
+          },
+          "video": {
+            "maxCount": 3,
+            "roles": ["camera_motion", "action", "visual_effect", "transition", "rhythm", "voice_tone", "sound_effect"]
+          },
+          "audio": {
+            "maxCount": 3,
+            "roles": ["background_music", "sound_effect", "tempo", "voice_tone"]
+          },
+          "totalFilesMax": 12
+        }
+      },
+      "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+      "confidence": "provider_docs"
+    },
+    {
+      "providerId": "openai_sora_video",
+      "modelIds": ["sora-2", "sora-2-pro"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": true,
+        "audioModes": ["native_generation"],
+        "audioPreservationPolicy": "preserve_native_audio_by_default",
+        "supportsDialogue": true,
+        "supportsSfx": true,
+        "supportsMusicBed": true,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video", "audio"]
+      },
+      "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "google_veo",
+      "modelId": "veo-3.1-generate-preview",
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.reference_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": true,
+        "audioModes": ["native_generation"],
+        "audioPreservationPolicy": "preserve_native_audio_by_default",
+        "supportsDialogue": true,
+        "supportsSfx": true,
+        "supportsMusicBed": true,
+        "inputModalities": ["text", "image", "video"],
+        "outputStreams": ["video", "audio"]
+      },
+      "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "kling_video",
+      "modelId": "kling-v2-1",
+      "operationKinds": ["video.text_to_video", "video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": true,
+        "audioModes": ["native_generation"],
+        "audioPreservationPolicy": "preserve_native_audio_by_default",
+        "supportsDialogue": true,
+        "supportsSfx": true,
+        "supportsMusicBed": true,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video", "audio"]
+      },
+      "sourceUrl": "https://klingai.com/",
+      "confidence": "community_or_inferred"
+    },
+    {
+      "providerId": "happyhorse_video",
+      "modelId": "happyhorse-native-audio-video",
+      "operationKinds": ["video.text_to_video", "video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": true,
+        "audioModes": ["native_generation"],
+        "audioPreservationPolicy": "preserve_native_audio_by_default",
+        "supportsDialogue": true,
+        "supportsSfx": true,
+        "supportsMusicBed": true,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video", "audio"]
+      },
+      "sourceUrl": "https://happyhorse.ai/",
+      "confidence": "community_or_inferred"
+    }
+  ]
+}

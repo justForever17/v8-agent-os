@@ -2,7 +2,7 @@ import yaml
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-04-22"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-04-29"
 DEFAULT_SUBAGENT_IDS = {
     "project-planner",
     "implementation-engineer",
@@ -188,6 +188,12 @@ CREATIVE_MEDIA_PROMPT_SOURCE_REFS = [
     "reference:libtv-skills-agent-im-patterns",
 ]
 
+CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE = """Creative Media provider discipline:
+- Provider-facing image/video/music prompts default to English; preserve original-language text only for on-canvas text, subtitles, brand copy, or user-intent evidence.
+- For Seedance 2.0 exact models, plan first frame, last frame, multi-image references, video references, and audio references as separate roles instead of stuffing every constraint into one paragraph.
+- Treat native audiovisual video models as audio-bearing outputs: preserve their generated dialogue, sound effects, ambience, and music bed by default; add separate TTS/music only when the brief explicitly asks for post audio or the selected model is silent.
+- Do not generalize Seedance 2.0 capabilities to older Seedance versions or unrelated providers without exact model capability evidence."""
+
 
 DEFAULT_AGENT_DISCIPLINE = """Shared V8 subagent discipline:
 - Start from the delegated task brief, not the whole supervisor conversation. Restate only the assumptions that affect your slice.
@@ -212,6 +218,7 @@ def _default_agent(
     boundaries: str,
     verification: str,
     prompt_source_refs: List[str] | None = None,
+    extra_guidance: str = "",
 ) -> AgentConfig:
     system_prompt = f"""You are {name}, a V8 Agent OS specialist subagent.
 
@@ -232,6 +239,7 @@ Output contract:
 Verification contract:
 {verification}
 
+{extra_guidance.strip() + chr(10) if extra_guidance.strip() else ""}
 Boundaries and refusal rules:
 {boundaries}
 
@@ -499,6 +507,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             verification="- Check that every requested constraint survived the rewrite and that each generated artifact has a planned use, owner, and acceptance criterion.",
             boundaries="- Do not call media providers directly unless the supervisor explicitly delegates generation.\n- Do not invent rights, licensed music, brand permissions, or reference assets.\n- Do not replace the user's explicit demand with a prettier but different concept.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
+            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="visual-recipe-engineer",
@@ -526,6 +535,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             verification="- Confirm no hard text, product detail, character identity, aspect ratio, or duration requirement was dropped during polishing.",
             boundaries="- Do not copy long external prompt templates into the answer.\n- Do not imply a model can guarantee readable text, perfect continuity, or exact edits without verification.\n- Do not use discarded trial video skills as a source or precedent.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
+            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="character-continuity-designer",
@@ -553,6 +563,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             verification="- Check identity anchors, costume/prop continuity, shot-to-shot lighting/style drift, and whether regenerated clips can be stitched without visible jumps.",
             boundaries="- Do not promise perfect identity preservation from a provider that lacks identity controls.\n- Do not infer consent or rights for real people.\n- Do not hide continuity drift; mark it as a risk or repair item.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
+            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="motion-shot-director",
@@ -580,6 +591,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             verification="- Check total duration math, shot order, continuity handoffs, camera feasibility, and whether each clip can be accepted independently.",
             boundaries="- Do not require impossible continuous identity or camera physics from a provider.\n- Do not overpack a shot with too many simultaneous actions.\n- Do not treat raw generated clips as final edit without review and artifact handoff.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
+            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="audio-post-producer",
@@ -607,5 +619,6 @@ def default_subagent_configs() -> List[AgentConfig]:
             verification="- Check duration alignment, subtitle readability, audio rights assumptions, artifact previewability, and whether final media can be traced to source assets.",
             boundaries="- Do not replace the existing TTS/STT runtime; treat it as a reusable provider surface.\n- Do not claim final rendered video exists unless an artifact was actually produced.\n- Do not use copyrighted music or cloned voices without explicit permission.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
+            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
     ]

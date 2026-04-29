@@ -187,7 +187,7 @@
         "apiStandard": "volcengine_ark_video",
         "adapter": "volcengine_ark",
         "probeStrategy": "openai_models",
-        "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame"],
+        "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
         "baseUrlDefault": "https://ark.cn-beijing.volces.com/api/v3",
         "credentialHelp": {
           "label": "Get Ark API key",
@@ -202,16 +202,6 @@
           "durationField": "duration",
           "resolutionField": "resolution",
           "sizeFormat": "RATIO_AND_RESOLUTION"
-        },
-        "capabilityProfile": {
-          "nativeAudio": true,
-          "audioModes": ["native_generation", "silent"],
-          "audioPreservationPolicy": "preserve_native_audio_by_default",
-          "supportsDialogue": true,
-          "supportsSfx": true,
-          "supportsMusicBed": true,
-          "inputModalities": ["text", "image"],
-          "outputStreams": ["video", "audio"]
         },
         "polling": {"mode": "task", "statusPath": "/contents/generations/tasks/{task_id}", "recommendedIntervalSeconds": 10},
         "result": {"paths": ["content.video_url"]},
@@ -291,16 +281,6 @@
         "request": {"method": "POST", "submitPath": "/videos", "bodyFields": ["model", "prompt", "image", "seconds", "size"], "sizeFormat": "WIDTHxHEIGHT"},
         "polling": {"mode": "video", "statusPath": "/videos/{id}", "recommendedIntervalSeconds": 10},
         "result": {"paths": ["data[].url", "video.url", "output.video_url"]},
-        "capabilityProfile": {
-          "nativeAudio": true,
-          "audioModes": ["native_generation"],
-          "audioPreservationPolicy": "preserve_native_audio_by_default",
-          "supportsDialogue": true,
-          "supportsSfx": true,
-          "supportsMusicBed": true,
-          "inputModalities": ["text", "image"],
-          "outputStreams": ["video", "audio"]
-        },
         "sourceUrl": "https://platform.openai.com/docs/models/sora-2",
         "confidence": "verified_official"
       },
@@ -316,16 +296,6 @@
         "request": {"method": "POST", "submitPath": "/models/{model}:predictLongRunning", "bodyFields": ["prompt", "image", "video", "config"], "sizeFormat": "ASPECT_RATIO_FIELD"},
         "polling": {"mode": "operation", "statusPath": "/{operation_name}"},
         "result": {"paths": ["response.generatedVideos[].video.uri"]},
-        "capabilityProfile": {
-          "nativeAudio": true,
-          "audioModes": ["native_generation"],
-          "audioPreservationPolicy": "preserve_native_audio_by_default",
-          "supportsDialogue": true,
-          "supportsSfx": true,
-          "supportsMusicBed": true,
-          "inputModalities": ["text", "image", "video"],
-          "outputStreams": ["video", "audio"]
-        },
         "sourceUrl": "https://ai.google.dev/gemini-api/docs/video",
         "confidence": "verified_official"
       },
@@ -390,17 +360,6 @@
         "request": {"method": "POST", "submitPath": "/v1/videos/text2video", "bodyFields": ["model_name", "prompt", "aspect_ratio", "duration"], "sizeFormat": "RATIO_COLON"},
         "polling": {"mode": "task", "statusPath": "/v1/videos/text2video/{id}"},
         "result": {"paths": ["data.task_result.videos[].url"]},
-        "capabilityProfile": {
-          "nativeAudio": true,
-          "audioModes": ["native_generation"],
-          "audioPreservationPolicy": "preserve_native_audio_by_default",
-          "supportsDialogue": true,
-          "supportsSfx": true,
-          "supportsMusicBed": true,
-          "inputModalities": ["text", "image"],
-          "outputStreams": ["video", "audio"],
-          "confidence": "community_or_inferred"
-        },
         "sourceUrl": "https://docs.qingque.cn/d/home/eZQFcwKVbJYERy6_zJcDf8B7m",
         "confidence": "community_or_inferred"
       },
@@ -418,17 +377,6 @@
         "request": {"method": "PROVIDER_SPECIFIC", "submitPath": "", "bodyFields": ["prompt", "image", "duration", "aspect_ratio"], "sizeFormat": "MODEL_SPECIFIC"},
         "polling": {"mode": "provider_specific"},
         "result": {"paths": ["provider_specific"]},
-        "capabilityProfile": {
-          "nativeAudio": true,
-          "audioModes": ["native_generation"],
-          "audioPreservationPolicy": "preserve_native_audio_by_default",
-          "supportsDialogue": true,
-          "supportsSfx": true,
-          "supportsMusicBed": true,
-          "inputModalities": ["text", "image"],
-          "outputStreams": ["video", "audio"],
-          "confidence": "community_or_inferred"
-        },
         "sourceUrl": "https://happyhorse.ai/",
         "confidence": "community_or_inferred"
       }

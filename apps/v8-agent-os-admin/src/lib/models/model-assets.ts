@@ -14,7 +14,9 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     siliconflow: "/model-assets/providers/siliconflow.png",
     xai: "/model-assets/providers/xai.ico",
     "xiaomi-mimo": "/model-assets/providers/xiaomi-mimo.svg",
+    "xiaomi-mimo-tokenplan-anthropic": "/model-assets/providers/xiaomi-mimo.svg",
     xiaomimimo: "/model-assets/providers/xiaomi-mimo.svg",
+    tokenplan: "/model-assets/providers/xiaomi-mimo.svg",
     mimo: "/model-assets/providers/xiaomi-mimo.svg",
     happyhorse: "/model-assets/providers/happyhorse.svg",
 };
@@ -77,7 +79,7 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("bailian") || haystack.includes("aliyun")) candidates.push("alibabacloud-color", "alibabacloud", "alibaba-color", "alibaba", "qwen-color", "qwen");
     if (haystack.includes("doubao")) candidates.push("doubao-color", "doubao");
     if (haystack.includes("volcengine") || haystack.includes("volcano")) candidates.push("volcengine-color", "volcengine");
-    if (haystack.includes("xiaomi") || haystack.includes("mimo")) candidates.push("mimo", "xiaomi-mimo");
+    if (haystack.includes("xiaomi") || haystack.includes("mimo") || haystack.includes("tokenplan")) candidates.push("mimo", "xiaomi-mimo", "tokenplan");
     if (haystack.includes("moonshot")) candidates.push("moonshot");
     if (haystack.includes("kimi")) candidates.push("kimi-color", "kimi", "moonshot");
     if (haystack.includes("modelscope")) candidates.push("modelscope-color", "modelscope");

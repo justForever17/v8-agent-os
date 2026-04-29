@@ -22,6 +22,13 @@ _CREATIVE_MEDIA_MATRIX_PATH = (
     / "assets"
     / "media_provider_format_matrix.json"
 )
+_CREATIVE_MEDIA_CAPABILITY_OVERRIDES_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "runtimes"
+    / "creative_media"
+    / "assets"
+    / "media_model_capability_overrides.json"
+)
 
 
 _MEDIA_MODEL_TYPES = {
@@ -71,6 +78,46 @@ def _normalized_modality(value: Any) -> str:
     if raw in {"3d", "model_3d", "model-3d"}:
         return "model3d"
     return raw
+
+
+def _load_media_capability_overrides() -> List[Dict[str, Any]]:
+    if not _CREATIVE_MEDIA_CAPABILITY_OVERRIDES_PATH.exists():
+        return []
+    try:
+        with _CREATIVE_MEDIA_CAPABILITY_OVERRIDES_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return []
+    entries = payload.get("capabilityProfiles") if isinstance(payload, dict) else []
+    return [dict(item) for item in _as_list(entries) if isinstance(item, dict)]
+
+
+def _media_capability_profile(provider_id: str, model_id: str, operation_kind: str | None = None) -> Dict[str, Any]:
+    provider = str(provider_id or "").strip()
+    model = str(model_id or "").strip()
+    operation = str(operation_kind or "").strip()
+    if not provider or not model:
+        return {}
+    for item in _load_media_capability_overrides():
+        if str(item.get("providerId") or "").strip() != provider:
+            continue
+        model_ids = item.get("modelIds")
+        if isinstance(model_ids, list):
+            normalized_model_ids = {str(value).strip() for value in model_ids}
+        else:
+            normalized_model_ids = {str(item.get("modelId") or "").strip()}
+        if model not in normalized_model_ids:
+            continue
+        operation_kinds = item.get("operationKinds")
+        if operation and isinstance(operation_kinds, list) and operation not in {str(value).strip() for value in operation_kinds}:
+            continue
+        profile = deepcopy(dict(item.get("capabilityProfile") or {}))
+        if item.get("sourceUrl"):
+            profile.setdefault("sourceUrl", item.get("sourceUrl"))
+        if item.get("confidence"):
+            profile.setdefault("confidence", item.get("confidence"))
+        return profile
+    return {}
 
 
 class ModelProviderCatalog:
@@ -140,8 +187,13 @@ class ModelProviderCatalog:
         request = dict(provider_entry.get("request") or {})
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
-        capability_profile = dict(provider_entry.get("capabilityProfile") or {})
         operation_kinds = self._media_operation_kinds(provider_entry, modality)
+        operation_capability_profiles = {
+            operation_kind: _media_capability_profile(str(provider_entry.get("id") or ""), model_id, operation_kind)
+            for operation_kind in operation_kinds
+        }
+        operation_capability_profiles = {key: value for key, value in operation_capability_profiles.items() if value}
+        capability_profile = next(iter(operation_capability_profiles.values()), {})
         model_logo_assets = provider_entry.get("modelLogoAssets")
         model_logo_asset = ""
         if isinstance(model_logo_assets, dict):
@@ -160,6 +212,7 @@ class ModelProviderCatalog:
                 "adapter": provider_entry.get("adapter") or "catalog_only",
                 "apiStandard": provider_entry.get("apiStandard") or "",
                 "operationKinds": operation_kinds,
+                "operationCapabilityProfiles": operation_capability_profiles,
                 "submitPath": request.get("submitPath") or "",
                 "pollingMode": polling.get("mode") or "none",
                 "resultPaths": _as_list(result.get("paths")),

@@ -26,7 +26,9 @@ from core.storage import storage
 from erc.runtime_registry import runtime_registry
 
 from .catalog import (
+    capability_profile_for_model,
     load_audio_music_recipe_library,
+    load_media_model_capability_overrides,
     load_provider_matrix,
     load_resolution_presets,
     load_video_recipe_library,
@@ -312,6 +314,7 @@ class CreativeMediaRuntime:
         matrix = load_provider_matrix()
         return {
             **matrix,
+            "modelCapabilityOverrides": load_media_model_capability_overrides(),
             "runtimeAdapters": [
                 {"id": "openai_images", "modalities": ["image"], "executable": True},
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
@@ -478,10 +481,9 @@ class CreativeMediaRuntime:
                     provider_meta=provider_meta,
                     model_data=model_data,
                 )
-                capability_profile = dict(
-                    media_limits.get("capabilityProfile")
-                    or model_data.get("capabilityProfile")
-                    or provider_meta.get("capabilityProfile")
+                operation_capability_profiles = dict(
+                    media_limits.get("operationCapabilityProfiles")
+                    or model_data.get("operationCapabilityProfiles")
                     or {}
                 )
                 model_id_str = str(model_id)
@@ -492,6 +494,17 @@ class CreativeMediaRuntime:
                     provider_meta=provider_meta,
                     model_data={**model_data, "id": model_id_str},
                 ):
+                    capability_profile = dict(
+                        operation_capability_profiles.get(operation_kind)
+                        or capability_profile_for_model(
+                            provider_id=str(provider_id),
+                            model_id=model_id_str,
+                            operation_kind=operation_kind,
+                        )
+                        or media_limits.get("capabilityProfile")
+                        or model_data.get("capabilityProfile")
+                        or {}
+                    )
                     candidates.append(
                         {
                             "candidateId": _candidate_id(
@@ -541,6 +554,11 @@ class CreativeMediaRuntime:
             )
         if volc.get("videoModel"):
             for operation_kind in ("video.text_to_video", "video.image_to_video", "video.first_last_frame"):
+                capability_profile = capability_profile_for_model(
+                    provider_id="volcengine_seedance",
+                    model_id=volc["videoModel"],
+                    operation_kind=operation_kind,
+                )
                 candidates.append(
                     {
                         "candidateId": _candidate_id(
@@ -557,17 +575,8 @@ class CreativeMediaRuntime:
                         "modelId": volc["videoModel"],
                         "modelRef": f"volcengine_seedance::{volc['videoModel']}",
                         "adapter": "volcengine_ark",
-                        "capabilityProfile": {
-                            "nativeAudio": True,
-                            "audioModes": ["native_generation", "silent"],
-                            "audioPreservationPolicy": "preserve_native_audio_by_default",
-                            "supportsDialogue": True,
-                            "supportsSfx": True,
-                            "supportsMusicBed": True,
-                            "outputStreams": ["video", "audio"],
-                            "inputModalities": ["text", "image"],
-                        },
-                        "nativeAudio": True,
+                        "capabilityProfile": capability_profile,
+                        "nativeAudio": bool(capability_profile.get("nativeAudio")),
                         "source": "mcp_or_env",
                         "available": bool(volc.get("apiKey")),
                     }
@@ -2356,15 +2365,24 @@ class CreativeMediaRuntime:
         if not prompt and not (request.get("imageUrls") or request.get("image_urls")):
             raise ValueError("video job requires prompt or imageUrls")
         duration = max(1, min(int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5), 30))
+        model = str(request.get("model") or creds["videoModel"])
+        operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
+        capability_profile = capability_profile_for_model(
+            provider_id="volcengine_seedance",
+            model_id=model,
+            operation_kind=operation_kind,
+        )
+        supports_native_audio = bool(capability_profile.get("nativeAudio"))
+        generate_audio = bool(request.get("generateAudio", request.get("generate_audio", supports_native_audio))) and supports_native_audio
         payload = _build_volcengine_video_payload(
-            model=str(request.get("model") or creds["videoModel"]),
+            model=model,
             prompt=prompt,
             ratio=str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio") or "16:9"),
             resolution=resolve_video_resolution(preset=request.get("resolutionPreset"), explicit_resolution=request.get("resolution") or "720p"),
             duration=duration,
             seed=int(request.get("seed", -1)),
             image_urls=request.get("imageUrls") or request.get("image_urls"),
-            generate_audio=bool(request.get("generateAudio", request.get("generate_audio", True))),
+            generate_audio=generate_audio,
             watermark=bool(request.get("watermark", False)),
         )
         job["providerRequestHash"] = self._provider_request_hash(payload)
@@ -2380,7 +2398,13 @@ class CreativeMediaRuntime:
             raise RuntimeError(f"Volcengine video response did not include a task id: {response}")
         job["status"] = "running"
         job["providerTaskId"] = task_id
-        job["providerResponse"] = {"providerId": "volcengine_seedance", "taskId": task_id, "model": payload["model"]}
+        job["providerResponse"] = {
+            "providerId": "volcengine_seedance",
+            "taskId": task_id,
+            "model": payload["model"],
+            "operationKind": operation_kind,
+            "capabilityProfile": capability_profile,
+        }
         return self._save_job(job)
 
     async def _poll_volcengine_video_job(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -2406,7 +2430,9 @@ class CreativeMediaRuntime:
                 job["error"] = "Volcengine video task succeeded without content.video_url"
             else:
                 request = dict(job.get("request") or {})
-                native_audio = _truthy(request.get("generateAudio", request.get("generate_audio", True)))
+                provider_response = dict(job.get("providerResponse") or {})
+                capability_profile = dict(provider_response.get("capabilityProfile") or {})
+                native_audio = bool(capability_profile.get("nativeAudio")) and _truthy(request.get("generateAudio", request.get("generate_audio", True)))
                 artifact = await self._artifact_from_url(
                     video_url,
                     job=job,

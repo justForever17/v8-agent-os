@@ -66,6 +66,17 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "tripo3d_placeholder": ["tripo3d-model"],
 }
 
+_VOICE_MODEL_TOKENS = {
+    "tts",
+    "speech",
+    "voice",
+    "voiceclone",
+    "voice-clone",
+    "voicedesign",
+    "voice-design",
+}
+_MUSIC_MODEL_TOKENS = {"music", "song", "mureka", "suno"}
+
 
 def _as_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
@@ -251,6 +262,7 @@ class ModelProviderCatalog:
             "credentialHelp": entry.get("credentialHelp") or {},
             "lastCheckedAt": entry.get("lastCheckedAt") or "",
             "confidence": entry.get("confidence") or "provider_docs",
+            "credentialRealm": entry.get("credentialRealm") or "",
             "request": entry.get("request") or {},
             "polling": entry.get("polling") or {},
             "result": entry.get("result") or {},
@@ -299,8 +311,6 @@ class ModelProviderCatalog:
             item = deepcopy(entry)
             item.setdefault("isCustom", False)
             item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
-            item.pop("modelsUrl", None)
-            item.pop("models_url", None)
             providers.append(item)
             seen_provider_ids.add(str(item.get("id") or ""))
         for entry in self._creative_media_matrix_providers():
@@ -408,6 +418,29 @@ class ModelProviderCatalog:
             headers.setdefault("anthropic-version", "2023-06-01")
         return headers
 
+    def _models_url_for_probe(self, provider: Dict[str, Any], effective_base_url: str) -> str:
+        explicit_url = str(provider.get("modelsUrl") or provider.get("models_url") or "").strip()
+        if explicit_url:
+            return explicit_url
+        path = str(provider.get("modelsPath") or provider.get("models_path") or "/models").strip() or "/models"
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{effective_base_url}{path}"
+
+    def _classify_probe_exception(self, exc: Exception) -> str:
+        message = str(exc).lower()
+        if isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return "tls_or_network_error"
+        if "ssl" in message or "tls" in message or "eof" in message or "connection" in message or "timeout" in message:
+            return "tls_or_network_error"
+        return "online_probe_failed"
+
+    def _safe_models_url_preview(self, provider: Dict[str, Any], effective_base_url: str) -> str:
+        try:
+            return self._models_url_for_probe(provider, effective_base_url)
+        except Exception:
+            return f"{effective_base_url}/models"
+
     def probe_provider(
         self,
         provider_id: str,
@@ -447,6 +480,7 @@ class ModelProviderCatalog:
 
         auth = dict(provider.get("auth") or {})
         if auth.get("type") == "api_key" and not credential:
+            resolved_url = self._safe_models_url_preview(provider, effective_base_url)
             return {
                 "ok": False,
                 "source": "online",
@@ -454,23 +488,34 @@ class ModelProviderCatalog:
                 "models": [],
                 "reason": "credential_required",
                 "error": "API key is required before probing online models.",
-                "resolvedModelsUrl": f"{effective_base_url}/models",
+                "resolvedModelsUrl": resolved_url,
             }
 
         if strategy == "comfyui":
             return self._probe_comfyui(provider, effective_base_url=effective_base_url, timeout=timeout)
 
+        url = self._models_url_for_probe(provider, effective_base_url)
         try:
-            url = f"{effective_base_url}/models"
             params = {}
             if credential and auth.get("query"):
                 params[str(auth["query"])] = credential
-            response = requests.get(
-                url,
-                headers=self._headers_for_probe(provider, credential),
-                params=params,
-                timeout=timeout,
-            )
+            response = None
+            last_exc: Exception | None = None
+            for attempt in range(2):
+                try:
+                    response = requests.get(
+                        url,
+                        headers=self._headers_for_probe(provider, credential),
+                        params=params,
+                        timeout=timeout,
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if self._classify_probe_exception(exc) != "tls_or_network_error" or attempt > 0:
+                        raise
+            if response is None:
+                raise last_exc or RuntimeError("online probe did not return a response")
             if not response.ok:
                 reason = "online_probe_failed"
                 if response.status_code in (401, 403):
@@ -524,13 +569,14 @@ class ModelProviderCatalog:
                 "resolvedModelsUrl": url,
             }
         except Exception as exc:
+            reason = self._classify_probe_exception(exc)
             return {
                 "ok": False,
                 "source": "online",
                 "provider": provider,
                 "models": [],
-                "reason": "online_probe_failed",
-                "resolvedModelsUrl": f"{effective_base_url}/models",
+                "reason": reason,
+                "resolvedModelsUrl": url,
                 "error": str(exc),
             }
 
@@ -618,6 +664,12 @@ class ModelProviderCatalog:
         if any(token in ident for token in ("rerank", "reranker", "bge-reranker")):
             caps.add("rerank")
             return caps
+        if any(token in ident for token in _VOICE_MODEL_TOKENS):
+            caps.update({"audio", "voice"})
+            return caps
+        if any(token in ident for token in _MUSIC_MODEL_TOKENS):
+            caps.add("music")
+            return caps
         caps.add("chat")
         if any(token in ident for token in ("gpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "gemini", "claude-3", "claude-sonnet", "claude-opus", "doubao-seed", "qwen-vl", "vl", "vision")):
             caps.update({"vision", "multimodal"})
@@ -639,7 +691,7 @@ class ModelProviderCatalog:
         media = provider_kind == "media_generation" or bool(tags.intersection({"image", "video", "audio", "voice", "music", "workflow", "model3d"}))
         embedding = "embedding" in tags
         rerank = "rerank" in tags or "reranker" in tags
-        chat = "chat" in tags or (not media and not embedding and not rerank)
+        chat = ("chat" in tags and not media) or (not media and not embedding and not rerank)
         tools = bool(tags.intersection({"tools", "tool", "function", "function_calling"}))
         streaming = "streaming" in tags or (chat and not media)
         return {
@@ -659,6 +711,21 @@ class ModelProviderCatalog:
             "workflow": "workflow" in tags,
             "model3d": "model3d" in tags,
         }
+
+    def _parameter_profile_for_model(self, model: Dict[str, Any], capability_map: Dict[str, bool], provider_kind: str) -> str:
+        explicit = str(model.get("parameterProfile") or "").strip()
+        if explicit:
+            return explicit
+        model_id = str(model.get("id") or "").strip().lower()
+        if capability_map.get("music"):
+            return "music_brief"
+        if capability_map.get("voice"):
+            if "voiceclone" in model_id or "voice-clone" in model_id:
+                return "voice_clone"
+            if "voicedesign" in model_id or "voice-design" in model_id:
+                return "voice_design"
+            return "voice_tts"
+        return provider_kind
 
     def _infer_model_type(self, capability_map: Dict[str, bool]) -> str:
         if capability_map.get("embedding"):
@@ -748,7 +815,7 @@ class ModelProviderCatalog:
                 if capability_map.get("toolCalling")
                 else "chat_general"
             ),
-            "parameterProfile": model.get("parameterProfile") or provider_kind,
+            "parameterProfile": self._parameter_profile_for_model(model, capability_map, provider_kind),
             "mediaLimits": model.get("mediaLimits") or {},
         }
 

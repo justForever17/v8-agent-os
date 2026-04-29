@@ -98,6 +98,15 @@ type CatalogProvider = {
     mediaModality?: string;
     adapter?: string;
     baseUrl?: string;
+    modelsUrl?: string;
+    modelsPath?: string;
+    credentialRealm?: string;
+    anthropicCompatible?: {
+        apiStandard?: string;
+        baseUrl?: string;
+        messagesPath?: string;
+        sourceUrl?: string;
+    };
     auth?: { type?: string; path?: string };
     probeStrategy?: string;
     confidence?: string;
@@ -115,6 +124,7 @@ type CatalogProvider = {
 };
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
 type MediaModelType = "MEDIA" | "IMAGE" | "VIDEO" | "AUDIO" | "VOICE" | "MUSIC" | "WORKFLOW" | "MODEL3D";
+type CatalogRuntimeProtocol = "default" | "anthropic";
 
 const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string; modelType: string; modality?: string }[] = [
     { id: "chat", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.chat", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.chatHint", modelType: "TEXT" },
@@ -127,6 +137,18 @@ const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string;
 ];
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
+
+function previewModelsUrl(provider?: CatalogProvider | null): string {
+    if (!provider?.baseUrl) return "";
+    if (provider.modelsUrl) return provider.modelsUrl;
+    const path = provider.modelsPath || "/models";
+    return `${provider.baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function isXiaomiAnthropicBaseUrl(value: string | null | undefined) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/\/+$/, "");
+    return normalized.includes("xiaomimimo.com/anthropic") || normalized.includes("token-plan-cn.xiaomimimo.com/anthropic");
+}
 
 function getCatalogPurposeConfig(purpose: CatalogPurpose) {
     return CATALOG_PURPOSES.find((item) => item.id === purpose) || CATALOG_PURPOSES[0];
@@ -237,6 +259,7 @@ export default function ModelHubPage() {
     const [defaultModelRef, setDefaultModelRef] = useState<string | null>(null);
     const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>([]);
     const [catalogPurpose, setCatalogPurpose] = useState<CatalogPurpose>("chat");
+    const [catalogRuntimeProtocol, setCatalogRuntimeProtocol] = useState<CatalogRuntimeProtocol>("default");
     const [selectedCatalogProviderId, setSelectedCatalogProviderId] = useState("openai");
     const [catalogApiKey, setCatalogApiKey] = useState("");
     const [catalogProbeModels, setCatalogProbeModels] = useState<CatalogModel[]>([]);
@@ -250,6 +273,8 @@ export default function ModelHubPage() {
         message?: string;
         resolvedModelsUrl?: string;
         source?: string;
+        credentialSource?: string;
+        usedStoredCredential?: boolean;
     } | null>(null);
     const [manualModelEntryEnabled, setManualModelEntryEnabled] = useState(false);
     const [isCatalogBusy, setIsCatalogBusy] = useState(false);
@@ -286,6 +311,20 @@ export default function ModelHubPage() {
     const providerOverviewById = useMemo(() => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])), [hubEnvelope]);
     const selectedCatalogProvider = useMemo(() => catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null, [catalogProviders, selectedCatalogProviderId]);
     const catalogPurposeConfig = useMemo(() => getCatalogPurposeConfig(catalogPurpose), [catalogPurpose]);
+    const selectedCatalogRuntime = useMemo(() => {
+        if (catalogPurpose === "chat" && catalogRuntimeProtocol === "anthropic" && selectedCatalogProvider?.anthropicCompatible?.baseUrl) {
+            return {
+                apiStandard: "anthropic",
+                baseUrl: selectedCatalogProvider.anthropicCompatible.baseUrl,
+                label: "Anthropic-compatible",
+            };
+        }
+        return {
+            apiStandard: selectedCatalogProvider?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai"),
+            baseUrl: selectedCatalogProvider?.baseUrl || "",
+            label: selectedCatalogProvider?.apiStandard || "default",
+        };
+    }, [catalogPurpose, catalogRuntimeProtocol, selectedCatalogProvider]);
     const catalogPurposeLabel = t(catalogPurposeConfig.labelKey);
     const catalogPurposeHint = t(catalogPurposeConfig.hintKey);
     const selectedCredentialHelpUrl = useMemo(() => {
@@ -312,6 +351,7 @@ export default function ModelHubPage() {
         setProbedCatalogProviderId("");
         setCatalogProbeStatus(null);
         setManualModelEntryEnabled(false);
+        setCatalogRuntimeProtocol("default");
     }, [apiCatalogProviders, selectedCatalogProviderId]);
     const filteredModels = models.filter((model) => modelMatchesTab(model, activeTab));
     const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -472,6 +512,7 @@ export default function ModelHubPage() {
         const isCustomProvider = selectedCatalogProviderId === "__custom__";
         const isMediaPurpose = catalogPurpose !== "chat";
         const baseUrl = isCustomProvider ? customProviderBaseUrl.trim() : (selectedCatalogProvider?.baseUrl || "");
+        const customAnthropicRuntime = isCustomProvider && catalogPurpose === "chat" && isXiaomiAnthropicBaseUrl(baseUrl);
         if (isCustomProvider && (!customProviderName.trim() || !baseUrl)) {
             toast({
                 variant: "destructive",
@@ -488,6 +529,18 @@ export default function ModelHubPage() {
             setCatalogProbeStatus({
                 ok: true,
                 message: t("app.admin.dashboard.model.hub.catalog.customMediaManual", { purpose: catalogPurposeLabel }),
+                source: "manual",
+            });
+            return;
+        }
+        if (customAnthropicRuntime) {
+            setCatalogProbeModels([]);
+            setSelectedCatalogModelId(catalogModelFilter.trim());
+            setProbedCatalogProviderId("__custom__");
+            setManualModelEntryEnabled(true);
+            setCatalogProbeStatus({
+                ok: true,
+                message: t("app.admin.dashboard.model.hub.catalog.manualAnthropicBaseUrlHint"),
                 source: "manual",
             });
             return;
@@ -524,6 +577,8 @@ export default function ModelHubPage() {
                     message: catalogOnly ? t("app.admin.dashboard.model.hub.catalog.catalogOnlyManual") : requiresCredential ? t("app.admin.dashboard.model.hub.catalog.credentialRequired") : reason,
                     resolvedModelsUrl: data.resolvedModelsUrl,
                     source: data.source,
+                    credentialSource: data.credentialSource,
+                    usedStoredCredential: Boolean(data.usedStoredCredential),
                 });
                 if (!catalogOnly) {
                     toast({
@@ -544,9 +599,13 @@ export default function ModelHubPage() {
                 ok: true,
                 message: data.source === "catalog"
                     ? t("app.admin.dashboard.model.hub.catalog.catalogLoaded", { count: nextModels.length })
-                    : t("app.admin.dashboard.model.hub.catalog.onlineLoaded", { count: nextModels.length }),
+                    : data.usedStoredCredential
+                        ? t("app.admin.dashboard.model.hub.catalog.onlineLoadedStoredCredential", { count: nextModels.length })
+                        : t("app.admin.dashboard.model.hub.catalog.onlineLoaded", { count: nextModels.length }),
                 resolvedModelsUrl: data.resolvedModelsUrl,
                 source: data.source,
+                credentialSource: data.credentialSource,
+                usedStoredCredential: Boolean(data.usedStoredCredential),
             });
             if (isCustomProvider) {
                 setSelectedCatalogProviderId(providerId);
@@ -563,8 +622,9 @@ export default function ModelHubPage() {
         try {
             const provider = catalogProviders.find((item) => item.id === providerId);
             const isCustomProvider = providerId === "__custom__" || selectedCatalogProviderId === "__custom__";
-            const baseUrl = provider?.baseUrl || (isCustomProvider ? customProviderBaseUrl.trim() : "");
+            const baseUrl = isCustomProvider ? customProviderBaseUrl.trim() : selectedCatalogRuntime.baseUrl || provider?.baseUrl || "";
             const isMediaPurpose = catalogPurpose !== "chat";
+            const customAnthropicRuntime = isCustomProvider && catalogPurpose === "chat" && isXiaomiAnthropicBaseUrl(baseUrl);
             const response = await fetch("/api/models/connect", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -576,7 +636,9 @@ export default function ModelHubPage() {
                     customProviderName: isCustomProvider ? customProviderName : "",
                     providerKind: isMediaPurpose ? "media_generation" : (provider?.providerKind || "chat"),
                     mediaModality: isMediaPurpose ? catalogPurposeConfig.modality : (provider?.mediaModality || ""),
-                    apiStandard: provider?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai"),
+                    apiStandard: isCustomProvider
+                        ? (customAnthropicRuntime ? "anthropic" : catalogPurpose === "workflow" ? "comfyui" : "openai")
+                        : selectedCatalogRuntime.apiStandard,
                     modelType: getModelTypeForPurpose(catalogPurpose),
                 }),
             });
@@ -766,6 +828,7 @@ export default function ModelHubPage() {
                                         setProbedCatalogProviderId("");
                                         setCatalogProbeStatus(null);
                                         setManualModelEntryEnabled(false);
+                                        setCatalogRuntimeProtocol("default");
                                     }}
                                 >
                                     <span className="block text-sm font-semibold">{t(purpose.labelKey)}</span>
@@ -782,6 +845,7 @@ export default function ModelHubPage() {
                                 setProbedCatalogProviderId("");
                                 setCatalogProbeStatus(null);
                                 setManualModelEntryEnabled(false);
+                                setCatalogRuntimeProtocol("default");
                             }}>
                                 <SelectTrigger>
                                     <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectProvider")}/>
@@ -820,6 +884,25 @@ export default function ModelHubPage() {
                         <div className="mt-2 text-xs text-muted-foreground">
                             {t("app.admin.dashboard.model.hub.catalog.currentPurpose", { purpose: catalogPurposeLabel, hint: catalogPurposeHint })}
                         </div>
+                        {catalogPurpose === "chat" && selectedCatalogProvider?.anthropicCompatible?.baseUrl ? (
+                            <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
+                                <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocol")}</Label>
+                                <Select value={catalogRuntimeProtocol} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
+                                    <SelectTrigger className="h-9">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="default">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</SelectItem>
+                                        <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic")}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <div className="text-xs text-muted-foreground">
+                                    {catalogRuntimeProtocol === "anthropic"
+                                        ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropicHint", { baseUrl: selectedCatalogProvider.anthropicCompatible.baseUrl })
+                                        : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolProbeHint", { url: previewModelsUrl(selectedCatalogProvider) })}
+                                </div>
+                            </div>
+                        ) : null}
                         {selectedCatalogProviderId === "__custom__" ? (
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
                                 <Input value={customProviderName} onChange={(event) => setCustomProviderName(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customNamePlaceholder")}/>
@@ -841,13 +924,19 @@ export default function ModelHubPage() {
                             <div className="mt-3 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
                                 {selectedCatalogProvider.probeStrategy === "catalog_only"
                                     ? t("app.admin.dashboard.model.hub.catalog.presetBaseUrl", { baseUrl: selectedCatalogProvider.baseUrl || t("app.admin.dashboard.model.hub.catalog.providerDefault"), help: selectedCatalogProvider.credentialHelp?.label || t("app.admin.dashboard.model.hub.catalog.openProvider") })
-                                    : t("app.admin.dashboard.model.hub.catalog.probeUrl", { url: `${selectedCatalogProvider.baseUrl}/models` })}
+                                    : t("app.admin.dashboard.model.hub.catalog.probeUrl", { url: previewModelsUrl(selectedCatalogProvider) })}
+                                {selectedCatalogProvider.anthropicCompatible?.baseUrl ? (
+                                    <div className="mt-1">
+                                        {t("app.admin.dashboard.model.hub.catalog.anthropicCompatibleHint", { baseUrl: selectedCatalogProvider.anthropicCompatible.baseUrl })}
+                                    </div>
+                                ) : null}
                             </div>
                         ) : null}
                         {catalogProbeStatus ? (
                             <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${catalogProbeStatus.ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
                                 <div>{catalogProbeStatus.message}</div>
                                 {catalogProbeStatus.resolvedModelsUrl ? <div className="mt-1 opacity-80">URL: {catalogProbeStatus.resolvedModelsUrl}</div> : null}
+                                {catalogProbeStatus.usedStoredCredential ? <div className="mt-1 opacity-80">{t("app.admin.dashboard.model.hub.catalog.usedStoredCredential")}</div> : null}
                             </div>
                         ) : null}
                         {(catalogProbeModels.length > 0 || manualModelEntryEnabled) && (
@@ -1109,7 +1198,23 @@ export default function ModelHubPage() {
                             </div>)}
                         <div className="space-y-2">
                             <Label htmlFor="provider-base-url">{t("app.admin.dashboard.model.hub.page.k8331921c")}</Label>
-                            <Input id="provider-base-url" name="baseUrl" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)}/>
+                            <Input
+                                id="provider-base-url"
+                                name="baseUrl"
+                                value={providerBaseUrl}
+                                onChange={(event) => {
+                                    const nextValue = event.target.value;
+                                    setProviderBaseUrl(nextValue);
+                                    if (isXiaomiAnthropicBaseUrl(nextValue) && providerApiStandard !== "anthropic") {
+                                        setProviderApiStandard("anthropic");
+                                    }
+                                }}
+                            />
+                            {isXiaomiAnthropicBaseUrl(providerBaseUrl) ? (
+                                <p className="text-xs text-amber-600">
+                                    {t("app.admin.dashboard.model.hub.catalog.manualAnthropicBaseUrlHint")}
+                                </p>
+                            ) : null}
                         </div>
                         {!platformProviderSelected ? (<div className="space-y-2">
                                 <Label htmlFor="provider-credential-mode">{t("app.admin.dashboard.model.hub.page.k1947a36f")}</Label>

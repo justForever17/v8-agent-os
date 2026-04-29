@@ -477,11 +477,13 @@ class ModelConnectionTester:
         provider_record = dict(meta.get("provider_record") or {})
         api_standard = str(meta.get("api_standard") or provider_record.get("apiStandard") or provider_record.get("api_standard") or "").strip().lower()
         provider_kind = str(provider_record.get("providerKind") or provider_record.get("provider_kind") or "").strip().lower()
+        model_record = dict(meta.get("model_record") or {})
+        model_type = str(model_record.get("type") or "").strip().upper()
         base_url = str(meta.get("base_url") or provider_record.get("baseUrl") or provider_record.get("base_url") or "").strip().rstrip("/")
         if not base_url:
             raise RuntimeError("媒体 Provider 缺少 baseURL，无法执行健康探测。")
         started = time.perf_counter()
-        if api_standard == "comfyui" or provider_kind == "media_generation":
+        if api_standard == "comfyui":
             endpoint = f"{base_url}/object_info"
             response = requests.get(endpoint, timeout=15)
             response.raise_for_status()
@@ -505,7 +507,22 @@ class ModelConnectionTester:
                 "nodeCount": node_count,
                 "checkpointCount": checkpoint_count,
             }
-        raise RuntimeError(f"暂不支持该媒体 Provider 的连接测试：{api_standard or provider_kind or model_id}")
+        if model_type in {"VOICE", "AUDIO"}:
+            raise RuntimeError(
+                "not_supported_by_adapter: 该语音模型已可由模型列表发现，但 V8 尚未确认可用音频生成 endpoint；"
+                "需要接入专用 voice/TTS adapter 后再执行连接测试。"
+            )
+        if model_type == "MUSIC":
+            raise RuntimeError(
+                "not_supported_by_adapter: 该音乐模型已登记为 Creative Media music/cue 能力，"
+                "当前不走旧 MusicTrack，也未接真实音乐生成 adapter。"
+            )
+        if model_type in {"IMAGE", "VIDEO", "WORKFLOW", "MODEL3D", "MEDIA"} or provider_kind == "media_generation":
+            raise RuntimeError(
+                f"not_supported_by_adapter: {model_type or 'MEDIA'} 模型需要对应 Creative Media adapter/live smoke；"
+                "通用连接测试不会伪装成生成成功。"
+            )
+        raise RuntimeError(f"not_supported_by_adapter: 暂无该模型类型的连接测试：{api_standard or provider_kind or model_id}")
 
     def test_model_connection(self, *, model_id: str, provider_id: str = "", model_ref: str = "") -> Dict[str, Any]:
         runtime_model_id = str(model_ref or (make_model_ref(provider_id, model_id) if provider_id else model_id) or "").strip()
@@ -535,7 +552,7 @@ class ModelConnectionTester:
                 result = self._test_embedding_model(model_id=wire_model_id, meta=meta)
             elif capability_class == "reranker" or model_type in {"RERANK", "RERANKER"}:
                 result = self._test_reranker_model(model_id=wire_model_id, meta=meta)
-            elif capability_class == "media_generation" or model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO"}:
+            elif capability_class == "media_generation" or model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}:
                 result = self._test_media_generation_provider(model_id=wire_model_id, meta=meta)
                 capability_checks = self._skipped_runtime_capability_checks("media_generation_provider_probe_only")
             else:

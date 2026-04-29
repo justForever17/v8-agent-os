@@ -31,6 +31,49 @@ class McpConfigValidationError(ValueError):
         }
 
 
+def _credential_realm(provider_id: str, provider_meta: dict[str, Any] | None = None) -> str:
+    meta = provider_meta or {}
+    explicit = str(meta.get("credentialRealm") or meta.get("credential_realm") or "").strip()
+    if explicit:
+        return explicit
+    probe = " ".join(
+        [
+            str(provider_id or ""),
+            str(meta.get("id") or ""),
+            str(meta.get("name") or ""),
+            str(meta.get("base_url") or meta.get("baseUrl") or ""),
+            str(meta.get("api_standard") or meta.get("apiStandard") or ""),
+        ]
+    ).lower()
+    if "volces.com" in probe or "volcengine" in probe or "doubao" in probe or "ark.cn-" in probe:
+        return "volcengine_ark"
+    if "xiaomimimo" in probe or "mimo" in probe:
+        return "xiaomi_mimo"
+    if "deepseek" in probe:
+        return "deepseek"
+    return ""
+
+
+def _stored_provider_credential(provider_id: str, catalog_provider: dict[str, Any] | None) -> tuple[str, str]:
+    config = model_control_plane.get_config()
+    providers = config.get("providers") or {}
+    exact_provider = ((providers.get(provider_id) or {}).get("provider") or {}) if isinstance(providers, dict) else {}
+    exact_key = str(exact_provider.get("api_key") or "").strip()
+    if exact_key and not exact_key.startswith("oauth:"):
+        return exact_key, "stored_provider"
+    target_realm = _credential_realm(provider_id, catalog_provider)
+    if not target_realm or not isinstance(providers, dict):
+        return "", ""
+    for saved_id, payload in providers.items():
+        saved_provider = ((payload or {}).get("provider") or {}) if isinstance(payload, dict) else {}
+        stored_key = str(saved_provider.get("api_key") or "").strip()
+        if not stored_key or stored_key.startswith("oauth:"):
+            continue
+        if _credential_realm(str(saved_id), saved_provider) == target_realm:
+            return stored_key, f"stored_provider_realm:{saved_id}"
+    return "", ""
+
+
 def _validate_mcp_server_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if not isinstance(config, dict):
         raise McpConfigValidationError("invalid_payload", "MCP 配置必须是 JSON 对象。")
@@ -361,14 +404,11 @@ async def probe_model_provider(data: dict = Body(...)):
             )
             provider_id = str(provider.get("id") or "")
         elif not credential:
-            config = model_control_plane.get_config()
-            existing_provider = (
-                ((config.get("providers") or {}).get(provider_id) or {}).get("provider") or {}
-            )
-            stored_key = str(existing_provider.get("api_key") or "").strip()
-            if stored_key and not stored_key.startswith("oauth:"):
+            catalog_provider = model_provider_catalog.get_provider(provider_id)
+            stored_key, stored_source = _stored_provider_credential(provider_id, catalog_provider)
+            if stored_key:
                 credential = stored_key
-                credential_source = "stored_provider"
+                credential_source = stored_source
         result = (
             model_provider_catalog.probe_provider_entry(provider, credential=credential, base_url=base_url)
             if provider
@@ -382,7 +422,7 @@ async def probe_model_provider(data: dict = Body(...)):
         else:
             result["providerId"] = provider_id
         result["credentialSource"] = credential_source or "none"
-        result["usedStoredCredential"] = credential_source == "stored_provider"
+        result["usedStoredCredential"] = credential_source.startswith("stored_provider")
         return result
     except HTTPException:
         raise
@@ -461,6 +501,9 @@ async def connect_model_provider(data: dict = Body(...)):
             "credential_mode": credential_mode,
             "oauth_preset": auth.get("preset") or existing_provider.get("oauth_preset") or "",
             "logoAsset": provider.get("logoAsset") or existing_provider.get("logoAsset") or "",
+            "credentialRealm": provider.get("credentialRealm")
+            or existing_provider.get("credentialRealm")
+            or _credential_realm(provider_id, provider),
             "promptCachingProfileId": provider.get("promptCachingProfileId")
             or existing_provider.get("promptCachingProfileId")
             or prompt_cache_profile_id_for_provider(provider_id),
@@ -469,7 +512,12 @@ async def connect_model_provider(data: dict = Body(...)):
         is_custom_provider = bool(provider.get("isCustom"))
         is_oauth_provider = auth.get("type") == "oauth_file"
         media_model_types = {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
-        normalized_model_type = requested_model_type if requested_model_type in media_model_types | {"TEXT", "MULTIMODAL", "EMBEDDING", "RERANK"} else str(model.get("type") or "TEXT").upper()
+        catalog_model_type = str(model.get("type") or "TEXT").upper()
+        catalog_capability_class = str(model.get("capabilityClass") or "")
+        if catalog_capability_class == "media_generation" and requested_model_type in {"", "TEXT", "MULTIMODAL"}:
+            normalized_model_type = catalog_model_type
+        else:
+            normalized_model_type = requested_model_type if requested_model_type in media_model_types | {"TEXT", "MULTIMODAL", "EMBEDDING", "RERANK"} else catalog_model_type
         is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or normalized_model_type in media_model_types
         managed_context_window = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("contextWindow")
         managed_max_tokens = None if (is_custom_provider or is_oauth_provider or is_media_provider) else model.get("maxTokens")

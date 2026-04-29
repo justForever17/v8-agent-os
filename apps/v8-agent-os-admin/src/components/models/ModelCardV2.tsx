@@ -12,6 +12,8 @@ import {
     ListOrdered,
     LoaderCircle,
     MessageCircle,
+    Mic2,
+    Music,
     PlugZap,
     Radio,
     Star,
@@ -78,19 +80,23 @@ function buildCapabilityIconItems(modelType: string, capabilityTags: string[], c
     const source = `${modelType} ${capabilityTags.join(" ")}`.toLowerCase();
     const has = (...needles: string[]) => needles.some((needle) => source.includes(needle.toLowerCase()));
     const cap = (key: keyof ControlPlaneModel["capabilities"]) => Boolean(capabilities?.[key]);
+    const normalizedType = String(modelType || "").toUpperCase();
+    const mediaType = new Set(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]).has(normalizedType);
     const items: CapabilityIconItem[] = [];
     const add = (key: string, label: string, Icon: LucideIcon) => {
         if (!items.some((item) => item.key === key)) items.push({ key, label, Icon });
     };
 
-    if (cap("chat") || has("chat", "text", "对话", "文本") || !capabilityTags.length) add("chat", "Chat / 对话", MessageCircle);
+    if (cap("chat") || has("chat", "text", "对话", "文本") || (!capabilityTags.length && !mediaType)) add("chat", "Chat / 对话", MessageCircle);
     if (cap("toolCalling") || has("tool", "function", "工具")) add("tools", "Tools / 工具", Wrench);
     if (cap("streaming") || has("stream", "流式")) add("streaming", "Streaming / 流式", Radio);
     if (cap("vision") || has("vision", "视觉")) add("vision", "Vision / 视觉", Eye);
     if (cap("multimodal") || has("multimodal", "多模态")) add("multimodal", "Multimodal / 多模态", Eye);
     if (cap("image") || has("image", "图片", "图像")) add("image", "Image / 图片", ImageIcon);
     if (cap("video") || has("video", "视频")) add("video", "Video / 视频", Video);
-    if (cap("audio") || has("audio", "音频", "voice", "语音")) add("audio", "Audio / 音频", Volume2);
+    if (cap("voice") || has("voice", "语音", "tts", "speech")) add("voice", "Voice / 语音", Mic2);
+    if (cap("music") || has("music", "song", "音乐")) add("music", "Music / 音乐", Music);
+    if ((cap("audio") || has("audio", "音频")) && !items.some((item) => item.key === "voice" || item.key === "music")) add("audio", "Audio / 音频", Volume2);
     if (cap("embedding") || has("embedding", "vector", "向量")) add("embedding", "Embedding / 向量", Database);
     if (cap("rerank") || has("rerank", "重排")) add("rerank", "Rerank / 重排", ListOrdered);
     if (cap("reasoning") || has("reasoning", "推理")) add("reasoning", "Reasoning / 推理", Brain);

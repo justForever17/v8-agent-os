@@ -8,9 +8,12 @@ export type ModelCapabilities = {
     image: boolean;
     video: boolean;
     audio: boolean;
+    voice: boolean;
+    music: boolean;
     embedding: boolean;
     rerank: boolean;
     workflow: boolean;
+    model3d: boolean;
     computerUse: boolean;
 };
 

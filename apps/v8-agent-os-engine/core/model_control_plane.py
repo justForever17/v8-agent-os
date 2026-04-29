@@ -357,10 +357,13 @@ CAPABILITY_TAG_ORDER = [
     ("streaming", "流式"),
     ("image", "图片"),
     ("video", "视频"),
+    ("voice", "语音"),
     ("audio", "音频"),
+    ("music", "音乐"),
     ("embedding", "向量"),
     ("rerank", "重排"),
     ("workflow", "工作流"),
+    ("model3d", "3D"),
     ("computerUse", "桌面"),
 ]
 
@@ -476,8 +479,11 @@ class ModelControlPlane:
         rerank = model_type in {"RERANK", "RERANKER"}
 
         base_url = str(model_meta.get("base_url") or model_meta.get("baseUrl") or "").strip().lower()
+        raw_chat = bool(raw_caps.get("chat", chat_like))
+        if media_like:
+            raw_chat = False
         normalized = {
-            "chat": bool(raw_caps.get("chat", chat_like)),
+            "chat": raw_chat,
             "reasoning": bool(raw_caps.get("reasoning", _infer_reasoning(model_id, display_name))),
             "toolCalling": bool(raw_caps.get("toolCalling", chat_like)),
             "vision": bool(raw_caps.get("vision", multimodal)),

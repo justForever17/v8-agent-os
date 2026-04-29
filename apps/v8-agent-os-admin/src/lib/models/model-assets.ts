@@ -14,6 +14,7 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     siliconflow: "/model-assets/providers/siliconflow.png",
     xai: "/model-assets/providers/xai.ico",
     "xiaomi-mimo": "/model-assets/providers/xiaomi-mimo.svg",
+    "xiaomi-mimo-tokenplan": "/model-assets/providers/xiaomi-mimo.svg",
     "xiaomi-mimo-tokenplan-anthropic": "/model-assets/providers/xiaomi-mimo.svg",
     xiaomimimo: "/model-assets/providers/xiaomi-mimo.svg",
     tokenplan: "/model-assets/providers/xiaomi-mimo.svg",

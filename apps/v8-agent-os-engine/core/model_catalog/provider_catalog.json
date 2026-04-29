@@ -333,7 +333,8 @@
         }
       ],
       "logoAsset": "/model-assets/providers/deepseek.ico",
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "credentialRealm": "deepseek"
     },
     {
       "id": "dashscope",
@@ -731,51 +732,141 @@
           "id": "mimo-v2.5-pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
-          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search"]
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search"
+          ]
         },
         {
           "id": "mimo-v2-pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
-          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search"]
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search"
+          ]
         },
         {
           "id": "mimo-v2.5",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
-          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search", "vision", "multimodal"]
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search",
+            "vision",
+            "multimodal"
+          ]
         },
         {
           "id": "mimo-v2-omni",
           "contextWindow": 256000,
           "maxOutputTokens": 128000,
-          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search", "vision", "multimodal"]
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search",
+            "vision",
+            "multimodal"
+          ]
         },
         {
           "id": "mimo-v2.5-flash",
           "contextWindow": 256000,
           "maxOutputTokens": 64000,
-          "capabilities": ["chat", "tools", "streaming", "structured_output", "web_search"]
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search"
+          ]
         },
         {
           "id": "mimo-v2-flash",
           "contextWindow": 256000,
           "maxOutputTokens": 64000,
-          "capabilities": ["chat", "tools", "streaming", "structured_output", "web_search"]
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search"
+          ]
+        },
+        {
+          "id": "mimo-v2-tts",
+          "type": "VOICE",
+          "contextWindow": null,
+          "maxTokens": null,
+          "capabilities": [
+            "voice",
+            "audio"
+          ],
+          "parameterProfile": "voice_tts"
+        },
+        {
+          "id": "mimo-v2.5-tts",
+          "type": "VOICE",
+          "contextWindow": null,
+          "maxTokens": null,
+          "capabilities": [
+            "voice",
+            "audio"
+          ],
+          "parameterProfile": "voice_tts"
+        },
+        {
+          "id": "mimo-v2.5-tts-voiceclone",
+          "type": "VOICE",
+          "contextWindow": null,
+          "maxTokens": null,
+          "capabilities": [
+            "voice",
+            "audio"
+          ],
+          "parameterProfile": "voice_clone"
+        },
+        {
+          "id": "mimo-v2.5-tts-voicedesign",
+          "type": "VOICE",
+          "contextWindow": null,
+          "maxTokens": null,
+          "capabilities": [
+            "voice",
+            "audio"
+          ],
+          "parameterProfile": "voice_design"
         }
       ],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "credentialRealm": "xiaomi_mimo"
     },
     {
-      "id": "xiaomi-mimo-tokenplan-anthropic",
-      "name": "Xiaomi MiMo TokenPlan Anthropic",
-      "apiStandard": "anthropic",
-      "baseUrl": "https://token-plan-cn.xiaomimimo.com/anthropic",
+      "id": "xiaomi-mimo-tokenplan",
+      "name": "Xiaomi MiMo TokenPlan",
+      "apiStandard": "openai",
+      "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1",
       "auth": {
         "type": "api_key",
-        "header": "x-api-key"
+        "header": "Authorization",
+        "scheme": "Bearer"
       },
-      "probeStrategy": "anthropic_models",
+      "probeStrategy": "openai_models",
       "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/api/chat/anthropic-api",
       "credentialHelp": {
         "label": "获取 TokenPlan API Key",
@@ -790,16 +881,38 @@
           "id": "mimo-v2.5-pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
-          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search"]
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search"
+          ]
         },
         {
           "id": "mimo-v2-pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
-          "capabilities": ["chat", "reasoning", "tools", "streaming", "structured_output", "web_search"]
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "web_search"
+          ]
         }
       ],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "modelsPath": "/models",
+      "anthropicCompatible": {
+        "apiStandard": "anthropic",
+        "baseUrl": "https://token-plan-cn.xiaomimimo.com/anthropic",
+        "messagesPath": "/v1/messages",
+        "sourceUrl": "https://platform.xiaomimimo.com/docs/zh-CN/api/chat/anthropic-api"
+      },
+      "credentialRealm": "xiaomi_mimo_tokenplan"
     },
     {
       "id": "volcengine-ark",
@@ -820,7 +933,8 @@
       },
       "confidence": "provider_docs",
       "models": [],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "credentialRealm": "volcengine_ark"
     },
     {
       "id": "tencent-hunyuan",

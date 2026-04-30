@@ -28,11 +28,13 @@ STATE_LOG_TABLES = (
     "prompt_cache_events",
     "prompt_cache_segments",
     "llm_response_cache",
+    "tool_observation_records",
     "system_audit_log",
 )
 STATE_LOG_DELETE_TABLES = (
     "prompt_cache_segments",
     "prompt_cache_events",
+    "tool_observation_records",
     "model_invocation_logs",
     "provider_health_logs",
     "llm_response_cache",
@@ -288,6 +290,7 @@ class StorageRetentionService:
         with observability_db.get_connection() as conn:
             for table, order_col in (
                 ("prompt_cache_events", "created_at"),
+                ("tool_observation_records", "created_at"),
                 ("provider_health_logs", "created_at"),
                 ("model_invocation_logs", "started_at"),
                 ("system_audit_log", "timestamp"),

@@ -193,6 +193,25 @@ class ObservabilityDatabaseManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tool_observation_records (
+                    id TEXT PRIMARY KEY,
+                    raw_ref TEXT UNIQUE NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    tool_call_id TEXT,
+                    runtime_kind TEXT,
+                    surface TEXT,
+                    raw_chars INTEGER DEFAULT 0,
+                    visible_chars INTEGER DEFAULT 0,
+                    raw_sha256 TEXT,
+                    raw_body_text TEXT,
+                    budget_json TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_run_id ON model_invocation_logs (run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_model_id ON model_invocation_logs (model_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_started_at ON model_invocation_logs (started_at DESC)")
@@ -205,7 +224,53 @@ class ObservabilityDatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_source ON system_audit_log (source_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_logs_started_at ON execution_logs (started_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_retention_events_created_at ON retention_events (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_created_at ON tool_observation_records (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_tool ON tool_observation_records (tool_name, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_call ON tool_observation_records (tool_call_id)")
             conn.commit()
+
+    def add_tool_observation_record(self, record: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO tool_observation_records (
+                    id, raw_ref, tool_name, tool_call_id, runtime_kind, surface,
+                    raw_chars, visible_chars, raw_sha256, raw_body_text,
+                    budget_json, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.get("id"),
+                    record.get("raw_ref"),
+                    record.get("tool_name"),
+                    record.get("tool_call_id"),
+                    record.get("runtime_kind"),
+                    record.get("surface"),
+                    int(record.get("raw_chars") or 0),
+                    int(record.get("visible_chars") or 0),
+                    record.get("raw_sha256"),
+                    record.get("raw_body"),
+                    json.dumps(record.get("budget") or {}, ensure_ascii=False),
+                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    record.get("created_at") or utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def get_tool_observation_record(self, raw_ref: str) -> Optional[Dict[str, Any]]:
+        if not raw_ref:
+            return None
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM tool_observation_records WHERE raw_ref = ? OR id = ?",
+                (raw_ref, raw_ref.removeprefix("toolobs://")),
+            ).fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["budget"] = json.loads(item["budget_json"]) if item.get("budget_json") else {}
+            item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+            return item
 
     def add_model_invocation_log(self, record: Dict[str, Any]) -> None:
         with self.get_connection() as conn:

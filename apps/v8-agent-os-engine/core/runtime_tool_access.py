@@ -28,6 +28,17 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "rpa_run_existing_flow",
         ],
     },
+    "automation.ops": {
+        "runtimeKind": "automation",
+        "label": "Automation ops",
+        "summary": "按需观察进程、审计日志，并管理 AutomationRuntime 的 cron/hooks。默认不常驻暴露。",
+        "toolNames": [
+            "list_processes",
+            "read_audit_log",
+            "manage_cron",
+            "manage_hook",
+        ],
+    },
     "memory.read": {
         "runtimeKind": "memory",
         "label": "Memory read",

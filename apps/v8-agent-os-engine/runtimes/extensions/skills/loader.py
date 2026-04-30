@@ -3494,10 +3494,74 @@ class SkillLoader:
         return _match(list(refreshed.get("items") or []))
 
 
+def _skill_instruction_headings(markdown: str, *, limit: int = 24) -> list[str]:
+    headings: list[str] = []
+    for line in str(markdown or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        title = stripped.lstrip("#").strip()
+        if title:
+            headings.append(title)
+        if len(headings) >= limit:
+            break
+    return headings
+
+
+def _skill_instruction_intro(markdown: str, *, limit: int = 1200) -> str:
+    lines: list[str] = []
+    for line in str(markdown or "").splitlines():
+        stripped = line.rstrip()
+        if stripped.startswith("## ") and lines:
+            break
+        lines.append(stripped)
+        if sum(len(item) for item in lines) >= limit:
+            break
+    text = "\n".join(lines).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}\n...[summary truncated]"
+
+
+def _skill_instruction_section(markdown: str, section: str | None, *, limit: int = 5000) -> str:
+    target = str(section or "").strip().lower()
+    if not target:
+        return _skill_instruction_intro(markdown, limit=limit)
+    lines = str(markdown or "").splitlines()
+    start = -1
+    start_level = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        title = stripped.lstrip("#").strip().lower()
+        if target in title:
+            start = idx
+            start_level = len(stripped) - len(stripped.lstrip("#"))
+            break
+    if start < 0:
+        return f"Section not found: {section}\nAvailable sections:\n" + "\n".join(f"- {item}" for item in _skill_instruction_headings(markdown))
+    end = len(lines)
+    for idx in range(start + 1, len(lines)):
+        stripped = lines[idx].strip()
+        if not stripped.startswith("#"):
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if level <= start_level:
+            end = idx
+            break
+    text = "\n".join(lines[start:end]).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}\n...[section truncated; request detail_level='full' only when explicitly needed]"
+
+
 @tool
-def fetch_skill_instructions(skill_name: str) -> str:
-    """Fetches the detailed markdown workflow instructions for a specific given skill name.
-    Use this tool whenever you want to learn HOW to perform a specific workflow that is listed in your Available Custom Skills.
+def fetch_skill_instructions(skill_name: str, detail_level: str = "summary", section: str | None = None) -> str:
+    """Fetch workflow guidance for a listed Skill.
+
+    Default detail_level='summary' returns entrypoints, safety state, directory hints, and an outline.
+    Use detail_level='section' with section='...' for a specific heading. Use detail_level='full' only when the task truly requires the complete SKILL.md.
     """
 
     runtime_kind = "chat"
@@ -3702,6 +3766,34 @@ def fetch_skill_instructions(skill_name: str) -> str:
 
     available_files = list(skill.get("availableFiles") or [])
     structure = "\n".join(f"- {item}" for item in available_files[:64]) if available_files else "- (no extra references/scripts/assets/templates/examples found)"
+    normalized_detail = str(detail_level or "summary").strip().lower()
+    if normalized_detail not in {"summary", "section", "full"}:
+        normalized_detail = "summary"
+    headings = _skill_instruction_headings(skill.get("instructions") or "")
+    outline = "\n".join(f"- {item}" for item in headings[:24]) if headings else "- (no markdown headings found)"
+    intro = _skill_instruction_intro(skill.get("instructions") or "")
+    section_text = _skill_instruction_section(skill.get("instructions") or "", section)
+    instructions_block = ""
+    if normalized_detail == "full":
+        instructions_block = (
+            "=== INSTRUCTIONS (FULL) ===\n"
+            f"{skill['instructions']}"
+        )
+    elif normalized_detail == "section":
+        instructions_block = (
+            f"=== INSTRUCTIONS SECTION ===\n"
+            f"Requested Section: {section or '(intro)'}\n"
+            f"{section_text}"
+        )
+    else:
+        instructions_block = (
+            "=== INSTRUCTIONS SUMMARY ===\n"
+            f"{intro}\n\n"
+            "=== SECTION OUTLINE ===\n"
+            f"{outline}\n\n"
+            "Need more detail? Call fetch_skill_instructions(skill_name, detail_level='section', section='<heading>'). "
+            "Use detail_level='full' only when the current task truly needs the complete SKILL.md."
+        )
     return (
         f"{safety_banner}"
         f"=== SKILL ENTRYPOINTS ===\n"
@@ -3721,5 +3813,5 @@ def fetch_skill_instructions(skill_name: str) -> str:
         f"Examples Dir: {skill.get('examplesDir') or ''}\n"
         f"Directory Structure:\n{structure}\n\n"
         f"按当前 skill 的要求去做。\n\n"
-        f"=== INSTRUCTIONS ===\n{skill['instructions']}"
+        f"{instructions_block}"
     )

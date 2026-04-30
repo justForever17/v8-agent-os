@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -25,6 +26,21 @@ def _rate(numerator: int | float, denominator: int | float) -> float | None:
     if not denominator:
         return None
     return round(float(numerator) / float(denominator), 4)
+
+
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*([^\s,;\"']{8,})"),
+    re.compile(r"(?i)(bearer)\s+([A-Za-z0-9._~+/=-]{12,})"),
+    re.compile(r"(?i)(sk-[A-Za-z0-9._-]{12,})"),
+    re.compile(r"(?i)(v8o[a-zA-Z0-9._-]{12,})"),
+]
+
+
+def redact_observability_text(text: str) -> str:
+    redacted = str(text or "")
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(lambda match: f"{match.group(1)}=<redacted>" if match.groups() and len(match.groups()) > 1 else "<redacted>", redacted)
+    return redacted
 
 
 class ObservabilityDatabaseManager:
@@ -200,6 +216,8 @@ class ObservabilityDatabaseManager:
                     raw_ref TEXT UNIQUE NOT NULL,
                     tool_name TEXT NOT NULL,
                     tool_call_id TEXT,
+                    run_id TEXT,
+                    session_id TEXT,
                     runtime_kind TEXT,
                     surface TEXT,
                     raw_chars INTEGER DEFAULT 0,
@@ -207,6 +225,40 @@ class ObservabilityDatabaseManager:
                     raw_sha256 TEXT,
                     raw_body_text TEXT,
                     budget_json TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._ensure_columns(
+                conn,
+                "tool_observation_records",
+                {
+                    "run_id": "TEXT",
+                    "session_id": "TEXT",
+                },
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_compaction_records (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    run_id TEXT,
+                    target_role TEXT NOT NULL,
+                    runtime_kind TEXT,
+                    resolved_model_id TEXT,
+                    trigger_reason TEXT,
+                    compaction_mode TEXT,
+                    summary_method TEXT,
+                    baseline_reused INTEGER DEFAULT 0,
+                    baseline_refreshed INTEGER DEFAULT 0,
+                    baseline_snapshot_ref TEXT,
+                    covered_message_count INTEGER DEFAULT 0,
+                    covered_messages_hash TEXT,
+                    summary_chars INTEGER DEFAULT 0,
+                    summary_tokens INTEGER DEFAULT 0,
+                    estimated_saved_tokens INTEGER DEFAULT 0,
+                    context_window_tokens INTEGER DEFAULT 0,
                     metadata_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
@@ -227,23 +279,38 @@ class ObservabilityDatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_created_at ON tool_observation_records (created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_tool ON tool_observation_records (tool_name, created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_call ON tool_observation_records (tool_call_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_run ON tool_observation_records (run_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_observation_records_session ON tool_observation_records (session_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_compaction_records_created_at ON conversation_compaction_records (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_compaction_records_session ON conversation_compaction_records (session_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_compaction_records_run ON conversation_compaction_records (run_id, created_at DESC)")
             conn.commit()
 
+    @staticmethod
+    def _ensure_columns(conn: sqlite3.Connection, table: str, columns: Dict[str, str]) -> None:
+        existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
     def add_tool_observation_record(self, record: Dict[str, Any]) -> None:
+        metadata = dict(record.get("metadata") or {})
         with self.get_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tool_observation_records (
-                    id, raw_ref, tool_name, tool_call_id, runtime_kind, surface,
+                    id, raw_ref, tool_name, tool_call_id, run_id, session_id, runtime_kind, surface,
                     raw_chars, visible_chars, raw_sha256, raw_body_text,
                     budget_json, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.get("id"),
                     record.get("raw_ref"),
                     record.get("tool_name"),
                     record.get("tool_call_id"),
+                    metadata.get("runId") or metadata.get("run_id"),
+                    metadata.get("sessionId") or metadata.get("session_id"),
                     record.get("runtime_kind"),
                     record.get("surface"),
                     int(record.get("raw_chars") or 0),
@@ -251,7 +318,7 @@ class ObservabilityDatabaseManager:
                     record.get("raw_sha256"),
                     record.get("raw_body"),
                     json.dumps(record.get("budget") or {}, ensure_ascii=False),
-                    json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+                    json.dumps(metadata, ensure_ascii=False),
                     record.get("created_at") or utc_now_iso(),
                 ),
             )
@@ -271,6 +338,152 @@ class ObservabilityDatabaseManager:
             item["budget"] = json.loads(item["budget_json"]) if item.get("budget_json") else {}
             item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
             return item
+
+    def list_tool_observation_records(self, **filters: Any) -> Dict[str, Any]:
+        limit = max(1, min(int(filters.get("limit") or 50), 200))
+        cursor = str(filters.get("cursor") or "").strip()
+        query = "SELECT * FROM tool_observation_records WHERE 1=1"
+        params: list[Any] = []
+        for key, column in (
+            ("run_id", "run_id"),
+            ("session_id", "session_id"),
+            ("tool_name", "tool_name"),
+            ("runtime_kind", "runtime_kind"),
+            ("surface", "surface"),
+        ):
+            value = str(filters.get(key) or "").strip()
+            if value:
+                query += f" AND {column} = ?"
+                params.append(value)
+        if cursor:
+            query += " AND datetime(created_at) < datetime(?)"
+            params.append(cursor)
+        query += " ORDER BY datetime(created_at) DESC LIMIT ?"
+        params.append(limit + 1)
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                item = self._decode_tool_observation_row(dict(row), preview_chars=int(filters.get("preview_chars") or 700))
+                items.append(item)
+            next_cursor = items[-1]["created_at"] if has_more and items else None
+            return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
+
+    def reveal_tool_observation_record(self, raw_ref_or_id: str, *, max_chars: int = 12000) -> Optional[Dict[str, Any]]:
+        record = self.get_tool_observation_record(str(raw_ref_or_id or ""))
+        if not record:
+            return None
+        return self._decode_tool_observation_row(record, preview_chars=max(500, min(int(max_chars or 12000), 50000)))
+
+    def _decode_tool_observation_row(self, row: Dict[str, Any], *, preview_chars: int) -> Dict[str, Any]:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else json.loads(row.get("metadata_json") or "{}")
+        budget = row.get("budget") if isinstance(row.get("budget"), dict) else json.loads(row.get("budget_json") or "{}")
+        raw_body = str(row.get("raw_body_text") or "")
+        raw_preview = raw_body[: max(0, int(preview_chars or 0))]
+        preview = redact_observability_text(raw_preview)
+        return {
+            "id": row.get("id"),
+            "rawRef": row.get("raw_ref"),
+            "toolName": row.get("tool_name"),
+            "toolCallId": row.get("tool_call_id"),
+            "runId": row.get("run_id") or metadata.get("runId") or metadata.get("run_id"),
+            "sessionId": row.get("session_id") or metadata.get("sessionId") or metadata.get("session_id"),
+            "runtimeKind": row.get("runtime_kind"),
+            "surface": row.get("surface"),
+            "rawChars": int(row.get("raw_chars") or 0),
+            "visibleChars": int(row.get("visible_chars") or 0),
+            "rawSha256": row.get("raw_sha256"),
+            "created_at": row.get("created_at"),
+            "createdAt": row.get("created_at"),
+            "budget": budget,
+            "metadata": metadata,
+            "preview": preview,
+            "previewChars": len(preview),
+            "omittedChars": max(0, len(raw_body) - len(raw_preview)),
+            "redacted": preview != raw_preview,
+        }
+
+    def add_conversation_compaction_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        record_id = str(record.get("id") or f"cmp_{uuid.uuid4().hex}")
+        payload = {
+            "id": record_id,
+            "session_id": record.get("session_id"),
+            "run_id": record.get("run_id"),
+            "target_role": record.get("target_role") or "supervisor",
+            "runtime_kind": record.get("runtime_kind"),
+            "resolved_model_id": record.get("resolved_model_id"),
+            "trigger_reason": record.get("trigger_reason"),
+            "compaction_mode": record.get("compaction_mode"),
+            "summary_method": record.get("summary_method"),
+            "baseline_reused": 1 if record.get("baseline_reused") else 0,
+            "baseline_refreshed": 1 if record.get("baseline_refreshed") else 0,
+            "baseline_snapshot_ref": record.get("baseline_snapshot_ref"),
+            "covered_message_count": int(record.get("covered_message_count") or 0),
+            "covered_messages_hash": record.get("covered_messages_hash"),
+            "summary_chars": int(record.get("summary_chars") or 0),
+            "summary_tokens": int(record.get("summary_tokens") or 0),
+            "estimated_saved_tokens": int(record.get("estimated_saved_tokens") or 0),
+            "context_window_tokens": int(record.get("context_window_tokens") or 0),
+            "metadata_json": json.dumps(record.get("metadata") or {}, ensure_ascii=False),
+            "created_at": record.get("created_at") or utc_now_iso(),
+        }
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO conversation_compaction_records (
+                    id, session_id, run_id, target_role, runtime_kind, resolved_model_id,
+                    trigger_reason, compaction_mode, summary_method, baseline_reused,
+                    baseline_refreshed, baseline_snapshot_ref, covered_message_count,
+                    covered_messages_hash, summary_chars, summary_tokens,
+                    estimated_saved_tokens, context_window_tokens, metadata_json, created_at
+                ) VALUES (
+                    :id, :session_id, :run_id, :target_role, :runtime_kind, :resolved_model_id,
+                    :trigger_reason, :compaction_mode, :summary_method, :baseline_reused,
+                    :baseline_refreshed, :baseline_snapshot_ref, :covered_message_count,
+                    :covered_messages_hash, :summary_chars, :summary_tokens,
+                    :estimated_saved_tokens, :context_window_tokens, :metadata_json, :created_at
+                )
+                """,
+                payload,
+            )
+            conn.commit()
+        return {**payload, "metadata": json.loads(payload["metadata_json"])}
+
+    def list_conversation_compaction_records(self, **filters: Any) -> Dict[str, Any]:
+        limit = max(1, min(int(filters.get("limit") or 50), 200))
+        cursor = str(filters.get("cursor") or "").strip()
+        query = "SELECT * FROM conversation_compaction_records WHERE 1=1"
+        params: list[Any] = []
+        for key, column in (
+            ("session_id", "session_id"),
+            ("run_id", "run_id"),
+            ("target_role", "target_role"),
+        ):
+            value = str(filters.get(key) or "").strip()
+            if value:
+                query += f" AND {column} = ?"
+                params.append(value)
+        if cursor:
+            query += " AND datetime(created_at) < datetime(?)"
+            params.append(cursor)
+        query += " ORDER BY datetime(created_at) DESC LIMIT ?"
+        params.append(limit + 1)
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["metadata"] = json.loads(item.get("metadata_json") or "{}")
+                item["baselineReused"] = bool(item.pop("baseline_reused", 0))
+                item["baselineRefreshed"] = bool(item.pop("baseline_refreshed", 0))
+                item["createdAt"] = item.get("created_at")
+                items.append(item)
+            next_cursor = items[-1]["created_at"] if has_more and items else None
+            return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
 
     def add_model_invocation_log(self, record: Dict[str, Any]) -> None:
         with self.get_connection() as conn:

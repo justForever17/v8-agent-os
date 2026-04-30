@@ -11,11 +11,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from core.context_compaction_baseline import (
     baseline_matches_messages,
+    digest_messages,
     load_compaction_baseline,
     persist_compaction_baseline,
 )
 from core.context_durable_flush import flush_before_context_compaction
 from core.llm_factory import llm_factory
+from core.observability_db import observability_db
 from core.storage import storage
 from erc.runtime_context import get_runtime_context
 
@@ -322,6 +324,49 @@ class ContextOrchestrator:
             "scope_chain": scope_chain,
             "recall_audit": recall_audit,
         }
+        if history_block is not None:
+            covered_messages = list(old_prefix[:baseline_message_count]) if baseline_message_count > 0 else []
+            covered_hash = digest_messages(covered_messages) if covered_messages else str((baseline_snapshot or {}).get("coveredMessagesHash") or "")
+            baseline_snapshot_ref = str((baseline_snapshot or {}).get("snapshotId") or "").strip()
+            if not baseline_snapshot_ref and covered_hash:
+                baseline_snapshot_ref = f"{session_id}:{target_role}:{covered_hash}"
+            try:
+                compaction_record = observability_db.add_conversation_compaction_record(
+                    {
+                        "session_id": session_id or None,
+                        "run_id": str(runtime_ctx.get("run_id") or "").strip() or None,
+                        "target_role": target_role,
+                        "runtime_kind": runtime_kind,
+                        "resolved_model_id": str(resolved_model_id or "").strip(),
+                        "trigger_reason": trigger_reason,
+                        "compaction_mode": compaction_mode,
+                        "summary_method": method,
+                        "baseline_reused": baseline_used,
+                        "baseline_refreshed": baseline_refreshed,
+                        "baseline_snapshot_ref": baseline_snapshot_ref or None,
+                        "covered_message_count": baseline_message_count,
+                        "covered_messages_hash": covered_hash or None,
+                        "summary_chars": len(history_block.content or ""),
+                        "summary_tokens": self._estimate_text_tokens(history_block.content or ""),
+                        "estimated_saved_tokens": audit["estimated_saved_tokens"],
+                        "context_window_tokens": context_window,
+                        "metadata": {
+                            "blockType": history_block.type,
+                            "blockTitle": history_block.title,
+                            "durableFlush": durable_flush or {"ok": True, "skipped": True, "reason": "compaction_not_needed"},
+                            "recentRawMessageCount": recent_raw_count,
+                            "recentRawTurnCount": recent_raw_turn_count,
+                            "noticeableLatency": audit["noticeable_latency"],
+                        },
+                    }
+                )
+                audit["compactionRecordId"] = compaction_record.get("id")
+                audit["coveredMessageHash"] = covered_hash
+                audit["summaryChars"] = len(history_block.content or "")
+                audit["summaryTokens"] = self._estimate_text_tokens(history_block.content or "")
+                audit["baselineSnapshotRef"] = baseline_snapshot_ref or None
+            except Exception as exc:
+                audit["compactionRecordError"] = str(exc)
         if blocks:
             print(f"[ContextOrchestrator] {json.dumps(audit, ensure_ascii=False)}")
 
@@ -735,14 +780,24 @@ class ContextOrchestrator:
 
     def _render_block_message(self, block: ContextBlock) -> SystemMessage:
         label = block.type.upper()
+        content = f"[CONTEXT BLOCK: {label}]\n{block.title}\n{block.content}\n[/CONTEXT BLOCK]"
         return SystemMessage(
-            content=f"[CONTEXT BLOCK: {label}]\n{block.title}\n{block.content}\n[/CONTEXT BLOCK]",
+            content=content,
             additional_kwargs={
                 "context_block": {
                     "type": block.type,
                     "title": block.title,
                     "metadata": dict(block.metadata or {}),
-                }
+                },
+                "v8_prompt_segments": [
+                    {
+                        "type": "dynamic",
+                        "source": f"context_block:{block.type}",
+                        "hash": hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest(),
+                        "charCount": len(content),
+                        "scope": "context_block",
+                    }
+                ],
             },
         )
 

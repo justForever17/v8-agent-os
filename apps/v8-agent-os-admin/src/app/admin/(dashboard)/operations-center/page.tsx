@@ -5,6 +5,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdvancedSection } from "@/components/admin-shell/AdvancedSection";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
 import AuditLogsPanel from "@/components/memory/AuditLogsPanel";
@@ -13,6 +14,7 @@ import { RecentRunsPanel } from "@/components/runtime/RecentRunsPanel";
 import { useRuntimeOpsData } from "@/components/runtime/use-runtime-ops";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 type SummaryPayload = {
     pendingApprovals: number;
@@ -78,7 +80,7 @@ type StorageRetentionPayload = {
         actions?: unknown[];
     }>;
 };
-const VALID_TABS = new Set(["overview", "approvals", "runs", "advanced"]);
+const VALID_TABS = new Set(["overview", "approvals", "runs", "evidence", "advanced"]);
 
 function formatBytes(value?: number) {
     const bytes = Number(value || 0);
@@ -171,6 +173,247 @@ function StorageRetentionPanel() {
                     Result: {lastResult.status || "unknown"} · actions {actionCount} · before {formatBytes(lastResult.beforeBytes)} · after {formatBytes(lastResult.afterBytes)}
                 </div>
             ) : null}
+        </div>
+    );
+}
+
+type ToolObservation = {
+    id?: string;
+    rawRef?: string;
+    toolName?: string;
+    toolCallId?: string;
+    runtimeKind?: string;
+    surface?: string;
+    rawChars?: number;
+    visibleChars?: number;
+    rawSha256?: string;
+    created_at?: string;
+    createdAt?: string;
+    preview?: string;
+    previewChars?: number;
+    omittedChars?: number;
+    redacted?: boolean;
+    budget?: Record<string, any>;
+    metadata?: Record<string, any>;
+};
+
+type CompactionRecord = {
+    id?: string;
+    run_id?: string;
+    session_id?: string;
+    target_role?: string;
+    trigger_reason?: string;
+    summary_method?: string;
+    estimated_saved_tokens?: number;
+    covered_message_count?: number;
+    created_at?: string;
+};
+
+function compactId(value?: string) {
+    const text = String(value || "");
+    if (text.length <= 18) return text || "-";
+    return `${text.slice(0, 9)}...${text.slice(-6)}`;
+}
+
+function EvidencePanel() {
+    const t = useT();
+    const [items, setItems] = useState<ToolObservation[]>([]);
+    const [compactions, setCompactions] = useState<CompactionRecord[]>([]);
+    const [selected, setSelected] = useState<ToolObservation | null>(null);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [filters, setFilters] = useState({ runId: "", sessionId: "", toolName: "", runtimeKind: "" });
+    const [loading, setLoading] = useState(false);
+    const [revealing, setRevealing] = useState(false);
+
+    const buildQuery = (cursor?: string | null) => {
+        const params = new URLSearchParams();
+        Object.entries(filters).forEach(([key, value]) => {
+            if (value.trim()) params.set(key, value.trim());
+        });
+        params.set("limit", "50");
+        if (cursor) params.set("cursor", cursor);
+        return params.toString();
+    };
+
+    const load = async (mode: "replace" | "append" = "replace") => {
+        setLoading(true);
+        try {
+            const query = buildQuery(mode === "append" ? nextCursor : null);
+            const [observationsResponse, compactionsResponse] = await Promise.all([
+                fetch(`/api/observability/tool-observations?${query}`, { cache: "no-store" }),
+                fetch("/api/observability/compactions?limit=12", { cache: "no-store" }),
+            ]);
+            const observations = await observationsResponse.json().catch(() => ({}));
+            const compactionPayload = await compactionsResponse.json().catch(() => ({}));
+            if (observationsResponse.ok) {
+                const nextItems = Array.isArray(observations.items) ? observations.items : [];
+                setItems((current) => mode === "append" ? [...current, ...nextItems] : nextItems);
+                setNextCursor(observations.nextCursor || null);
+                if (mode === "replace") setSelected(nextItems[0] || null);
+            }
+            if (compactionsResponse.ok) {
+                setCompactions(Array.isArray(compactionPayload.items) ? compactionPayload.items : []);
+            }
+        }
+        finally {
+            setLoading(false);
+        }
+    };
+
+    const reveal = async () => {
+        if (!selected?.id) return;
+        setRevealing(true);
+        try {
+            const response = await fetch(`/api/observability/tool-observations/${encodeURIComponent(selected.id)}/reveal`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ maxChars: 12000 }),
+            });
+            const payload = await response.json().catch(() => null);
+            if (response.ok && payload) setSelected(payload);
+        }
+        finally {
+            setRevealing(false);
+        }
+    };
+
+    useEffect(() => {
+        void load();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const selectedRunId = String(selected?.metadata?.runId || selected?.metadata?.run_id || "");
+    const selectedSessionId = String(selected?.metadata?.sessionId || selected?.metadata?.session_id || "");
+    const relatedCompactions = compactions.filter((item) => (
+        (selectedRunId && item.run_id === selectedRunId) || (selectedSessionId && item.session_id === selectedSessionId)
+    ));
+
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <AdminHoverInfo
+                    content={t("app.admin.dashboard.operations.center.evidence.description")}
+                    panelClassName="text-sm leading-6"
+                >
+                    <h2 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.title")}</h2>
+                </AdminHoverInfo>
+                <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+                        {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                        {t("app.admin.dashboard.operations.center.page.kd4db8d84")}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => selected?.rawRef && navigator.clipboard?.writeText(selected.rawRef)} disabled={!selected?.rawRef}>
+                        {t("app.admin.dashboard.operations.center.evidence.copyRawRef")}
+                    </Button>
+                </div>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-4">
+                <Input value={filters.runId} onChange={(event) => setFilters({ ...filters, runId: event.target.value })} placeholder={t("app.admin.dashboard.operations.center.evidence.runId")} />
+                <Input value={filters.sessionId} onChange={(event) => setFilters({ ...filters, sessionId: event.target.value })} placeholder={t("app.admin.dashboard.operations.center.evidence.sessionId")} />
+                <Input value={filters.toolName} onChange={(event) => setFilters({ ...filters, toolName: event.target.value })} placeholder={t("app.admin.dashboard.operations.center.evidence.toolName")} />
+                <Input value={filters.runtimeKind} onChange={(event) => setFilters({ ...filters, runtimeKind: event.target.value })} placeholder={t("app.admin.dashboard.operations.center.evidence.runtimeKind")} />
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+                <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                    {items.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.empty")}</div>
+                    ) : items.map((item) => (
+                        <button
+                            key={item.id || item.rawRef}
+                            type="button"
+                            onClick={() => setSelected(item)}
+                            className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition ${selected?.id === item.id ? "border-slate-900 bg-slate-950 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300"}`}
+                        >
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="truncate font-semibold">{item.toolName || "unknown"}</span>
+                                <span className="shrink-0 opacity-70">{compactId(item.runtimeKind)}</span>
+                            </div>
+                            <div className="mt-1 truncate opacity-70">{item.createdAt || item.created_at || "-"}</div>
+                            <div className="mt-1 truncate font-mono opacity-70">{compactId(item.rawRef)}</div>
+                        </button>
+                    ))}
+                    {nextCursor ? (
+                        <Button className="w-full" variant="outline" size="sm" onClick={() => void load("append")} disabled={loading}>
+                            {t("app.admin.dashboard.operations.center.evidence.loadMore")}
+                        </Button>
+                    ) : null}
+                </div>
+
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    {selected ? (
+                        <>
+                            <div className="grid gap-2 text-xs md:grid-cols-3">
+                                <div className="rounded-xl border border-slate-200 p-3">
+                                    <div className="text-slate-500">{t("app.admin.dashboard.operations.center.evidence.rawRef")}</div>
+                                    <div className="mt-1 break-all font-mono text-slate-900">{selected.rawRef || "-"}</div>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 p-3">
+                                    <div className="text-slate-500">{t("app.admin.dashboard.operations.center.evidence.size")}</div>
+                                    <div className="mt-1 font-semibold text-slate-900">{selected.rawChars || 0} / {selected.visibleChars || 0}</div>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 p-3">
+                                    <div className="text-slate-500">{t("app.admin.dashboard.operations.center.evidence.hash")}</div>
+                                    <div className="mt-1 truncate font-mono text-slate-900">{selected.rawSha256 || "-"}</div>
+                                </div>
+                            </div>
+                            <div className="grid gap-2 text-xs md:grid-cols-2">
+                                <pre className="max-h-44 overflow-auto rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
+                                <pre className="max-h-44 overflow-auto rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 p-3 text-xs">
+                                <div className="font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.relatedCompactions")}</div>
+                                <div className="mt-2 space-y-1 text-slate-600">
+                                    {relatedCompactions.length ? relatedCompactions.slice(0, 3).map((item) => (
+                                        <div key={item.id} className="flex flex-wrap items-center justify-between gap-2">
+                                            <span className="font-mono">{compactId(item.id)}</span>
+                                            <span>{item.summary_method || "-"}</span>
+                                            <span>{t("app.admin.dashboard.operations.center.evidence.savedTokens", { tokens: item.estimated_saved_tokens || 0 })}</span>
+                                        </div>
+                                    )) : t("app.admin.dashboard.operations.center.evidence.noRelatedCompactions")}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.preview")}</div>
+                                    <div className="flex gap-2">
+                                        <Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(selected.preview || "")}>
+                                            {t("app.admin.dashboard.operations.center.evidence.copyPreview")}
+                                        </Button>
+                                        <Button size="sm" onClick={() => void reveal()} disabled={revealing}>
+                                            {revealing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                            {t("app.admin.dashboard.operations.center.evidence.reveal")}
+                                        </Button>
+                                    </div>
+                                </div>
+                                <pre className="max-h-[440px] overflow-auto whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-800">{selected.preview || ""}</pre>
+                                <div className="mt-2 text-xs text-slate-500">
+                                    {t("app.admin.dashboard.operations.center.evidence.omitted", { omitted_chars: selected.omittedChars || 0, redacted: selected.redacted ? "yes" : "no" })}
+                                </div>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.select")}</div>
+                    )}
+                </div>
+            </div>
+
+            <AdvancedSection title={t("app.admin.dashboard.operations.center.evidence.compactions")} defaultOpen={false}>
+                <div className="space-y-2">
+                    {compactions.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.noCompactions")}</div>
+                    ) : compactions.map((item) => (
+                        <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-3 text-xs md:grid-cols-5">
+                            <div className="font-mono text-slate-600">{compactId(item.id)}</div>
+                            <div>{item.target_role || "-"}</div>
+                            <div>{item.summary_method || "-"}</div>
+                            <div>{t("app.admin.dashboard.operations.center.evidence.savedTokens", { tokens: item.estimated_saved_tokens || 0 })}</div>
+                            <div className="truncate text-slate-500">{item.trigger_reason || "-"}</div>
+                        </div>
+                    ))}
+                </div>
+            </AdvancedSection>
         </div>
     );
 }
@@ -325,10 +568,11 @@ export default function OperationsCenterPage() {
             </div>
 
             <Tabs value={activeTab} onValueChange={(value) => router.replace(`/admin/operations-center?tab=${encodeURIComponent(value)}`, { scroll: false })} className="space-y-4">
-                <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-white shadow-sm">
+                <TabsList className="grid w-full grid-cols-5 rounded-2xl bg-white shadow-sm">
                     <TabsTrigger value="overview">{t("app.admin.dashboard.operations.center.page.kbd84d331")}</TabsTrigger>
                     <TabsTrigger value="approvals">{t("app.admin.dashboard.operations.center.page.k61dba659")}</TabsTrigger>
                     <TabsTrigger value="runs">{t("app.admin.dashboard.operations.center.page.k1a586b06")}</TabsTrigger>
+                    <TabsTrigger value="evidence">{t("app.admin.dashboard.operations.center.evidence.tab")}</TabsTrigger>
                     <TabsTrigger value="advanced">{t("app.admin.dashboard.operations.center.page.kdce17454")}</TabsTrigger>
                 </TabsList>
 
@@ -351,6 +595,10 @@ export default function OperationsCenterPage() {
                 <TabsContent value="runs" className="space-y-4">
                     {runtime.runs.some((run) => ["paused", "failed", "waiting_input"].includes(run.status || "")) ? (<StatusNotice title={"app.admin.dashboard.operations.center.page.k9eb5cbb2"} description={"app.admin.dashboard.operations.center.page.ke692c9ed"} tone="success"/>) : null}
                     <RecentRunsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId}/>
+                </TabsContent>
+
+                <TabsContent value="evidence">
+                    <EvidencePanel />
                 </TabsContent>
 
                 <TabsContent value="advanced">

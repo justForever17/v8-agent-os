@@ -67,10 +67,12 @@ def persist_compaction_baseline(
 ) -> Dict[str, Any]:
     runtime_ctx = get_runtime_context()
     run_id = str(runtime_ctx.get("run_id") or "").strip() or None
+    covered_hash = digest_messages(covered_messages)
+    snapshot_id = f"ctxb_{hashlib.md5(f'{session_id}:{target_role}:{covered_hash}'.encode('utf-8')).hexdigest()}"
     snapshot = {
         "targetRole": target_role,
         "coveredMessageCount": len(covered_messages),
-        "coveredMessagesHash": digest_messages(covered_messages),
+        "coveredMessagesHash": covered_hash,
         "baselineText": str(baseline_text or "").strip(),
         "estimatedTokens": int(estimated_tokens or 0),
         "summaryMethod": str(summary_method or "rule_summary"),
@@ -79,9 +81,10 @@ def persist_compaction_baseline(
         "triggerRatio": float(trigger_ratio or 0.0),
         "resolvedModelId": str(resolved_model_id or "").strip(),
         "updatedAt": runtime_ctx.get("event_ts") or None,
+        "snapshotId": snapshot_id,
     }
     db.add_runtime_snapshot(
-        snapshot_id=f"ctxb_{hashlib.md5(f'{session_id}:{target_role}:{snapshot['coveredMessagesHash']}'.encode('utf-8')).hexdigest()}",
+        snapshot_id=snapshot_id,
         session_id=session_id,
         run_id=run_id,
         latest_seq=int(runtime_ctx.get("latest_seq") or 0),

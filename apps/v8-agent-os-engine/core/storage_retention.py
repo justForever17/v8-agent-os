@@ -29,12 +29,14 @@ STATE_LOG_TABLES = (
     "prompt_cache_segments",
     "llm_response_cache",
     "tool_observation_records",
+    "conversation_compaction_records",
     "system_audit_log",
 )
 STATE_LOG_DELETE_TABLES = (
     "prompt_cache_segments",
     "prompt_cache_events",
     "tool_observation_records",
+    "conversation_compaction_records",
     "model_invocation_logs",
     "provider_health_logs",
     "llm_response_cache",
@@ -167,7 +169,12 @@ class StorageRetentionService:
                         continue
                     actions.append({"action": "migrate_state_table", "table": table, "rows": count, "dryRun": dry_run})
                     if not dry_run:
-                        obs_conn.execute(f"INSERT OR IGNORE INTO main.{table} SELECT * FROM state_db.{table}")
+                        main_cols = [row["name"] for row in obs_conn.execute(f"PRAGMA main.table_info({table})").fetchall()]
+                        state_cols = [row["name"] for row in obs_conn.execute(f"PRAGMA state_db.table_info({table})").fetchall()]
+                        common_cols = [col for col in main_cols if col in state_cols]
+                        if common_cols:
+                            column_sql = ", ".join(f'"{col}"' for col in common_cols)
+                            obs_conn.execute(f"INSERT OR IGNORE INTO main.{table} ({column_sql}) SELECT {column_sql} FROM state_db.{table}")
                 if not dry_run:
                     obs_conn.commit()
             finally:
@@ -291,6 +298,7 @@ class StorageRetentionService:
             for table, order_col in (
                 ("prompt_cache_events", "created_at"),
                 ("tool_observation_records", "created_at"),
+                ("conversation_compaction_records", "created_at"),
                 ("provider_health_logs", "created_at"),
                 ("model_invocation_logs", "started_at"),
                 ("system_audit_log", "timestamp"),

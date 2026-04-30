@@ -8,8 +8,44 @@ import { Badge } from "@/components/ui/badge";
 import { formatLocalDateTime } from "@/lib/time";
 import { useT } from "@/components/providers/LocaleProvider";
 import { RuntimeDashboardCards } from "@/components/runtime/RuntimeDashboardCards";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 
 const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#7C3AED", "#F43F5E", "#14B8A6", "#F97316"];
+
+type PromptCacheInvocationSummary = {
+    profileId?: string;
+    responseCacheDecision?: string;
+    skipReason?: string;
+    providerPatchKind?: string;
+    staticPrefixKeyShort?: string;
+    staticPrefixReused?: boolean;
+    staticPrefixUseCount?: number;
+    providerCachedTokensReported?: boolean;
+    providerCachedInputTokens?: number | null;
+    cachedInputTokenRate?: number | null;
+    segments?: {
+        staticTokens?: number;
+        dynamicTokens?: number;
+        unsafeTokens?: number;
+        totalTokens?: number;
+    };
+};
+
+type PromptCacheDashboardStats = {
+    rates?: {
+        providerPatchRate?: number | null;
+        staticPrefixReuseRate?: number | null;
+        v8ExactResponseHitRate?: number | null;
+        responseCacheSkipRate?: number | null;
+    };
+    totals?: {
+        events?: number;
+        providerPatchEvents?: number;
+        responseHits?: number;
+        responseMisses?: number;
+        responseSkipped?: number;
+    };
+};
 
 type DashboardData = {
     stats: {
@@ -19,6 +55,8 @@ type DashboardData = {
         totalInvocations: number;
         pendingApprovals: number;
         activeRuns: number;
+        recentWindowDays?: number;
+        recentWindowInvocations?: number;
         recentWindowTokens: number;
         recentWindowEstimatedCost: number;
     };
@@ -56,7 +94,9 @@ type DashboardData = {
         latency_ms: number;
         started_at?: string;
         role?: string;
+        promptCache?: PromptCacheInvocationSummary;
     }>;
+    promptCache?: PromptCacheDashboardStats;
 };
 
 const EMPTY_DATA: DashboardData = {
@@ -76,10 +116,56 @@ const EMPTY_DATA: DashboardData = {
         providerHealth: [],
     },
     recentInvocations: [],
+    promptCache: { rates: {}, totals: {} },
 };
 
 function formatWhen(value: string | undefined, fallback: string) {
     return formatLocalDateTime(value, { includeYear: false, includeSeconds: true, fallback });
+}
+
+function formatPercent(value: number | null | undefined) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return "n/a";
+    }
+    return `${Math.round(Number(value) * 1000) / 10}%`;
+}
+
+function promptCacheHoverLines(
+    t: (key: string, params?: Record<string, string | number>) => string,
+    item: DashboardData["recentInvocations"][number],
+    dashboardPromptCache?: PromptCacheDashboardStats,
+) {
+    const cache = item.promptCache;
+    if (!cache) {
+        return [t("app.admin.dashboard.page.promptCache.noDiagnostics")];
+    }
+    const segments = cache.segments || {};
+    const cachedLine = cache.providerCachedTokensReported
+        ? t("app.admin.dashboard.page.promptCache.providerCached", {
+            tokens: cache.providerCachedInputTokens ?? 0,
+            rate: formatPercent(cache.cachedInputTokenRate),
+        })
+        : t("app.admin.dashboard.page.promptCache.providerCachedUnavailable");
+    return [
+        t("app.admin.dashboard.page.promptCache.profile", { value: cache.profileId || "n/a" }),
+        t("app.admin.dashboard.page.promptCache.decision", { value: cache.responseCacheDecision || "n/a" }),
+        cache.skipReason ? t("app.admin.dashboard.page.promptCache.skip", { value: cache.skipReason }) : "",
+        t("app.admin.dashboard.page.promptCache.patch", { value: cache.providerPatchKind || "none" }),
+        t("app.admin.dashboard.page.promptCache.prefix", {
+            value: cache.staticPrefixReused
+                ? t("app.admin.dashboard.page.promptCache.prefixReused", { count: cache.staticPrefixUseCount || 0 })
+                : t("app.admin.dashboard.page.promptCache.prefixNotReused"),
+        }),
+        t("app.admin.dashboard.page.promptCache.tokens", {
+            staticTokens: segments.staticTokens || 0,
+            dynamicTokens: segments.dynamicTokens || 0,
+        }),
+        cachedLine,
+        t("app.admin.dashboard.page.promptCache.windowRates", {
+            providerPatchRate: formatPercent(dashboardPromptCache?.rates?.providerPatchRate),
+            exactHitRate: formatPercent(dashboardPromptCache?.rates?.v8ExactResponseHitRate),
+        }),
+    ].filter(Boolean);
 }
 
 export default function DashboardPage() {
@@ -88,7 +174,7 @@ export default function DashboardPage() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch("/api/stats", { cache: "no-store" })
+        fetch("/api/stats?days=1", { cache: "no-store" })
             .then(res => res.json())
             .then((payload: DashboardData) => {
                 setData(payload || EMPTY_DATA);
@@ -255,11 +341,11 @@ export default function DashboardPage() {
                     <CardContent className="flex flex-1 min-h-0 flex-col space-y-3">
                         <div className="grid grid-cols-2 gap-3">
                             <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
-                                <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">{t("app.admin.dashboard.page.k4ad04328")}</div>
+                                <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">{t("app.admin.dashboard.page.recentWindowTokens24h")}</div>
                                 <div className="mt-2 text-2xl font-semibold">{data.stats.recentWindowTokens}</div>
                             </div>
                             <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
-                                <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">{t("app.admin.dashboard.page.k8d68c49c")}</div>
+                                <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">{t("app.admin.dashboard.page.recentWindowCost24h")}</div>
                                 <div className="mt-2 text-2xl font-semibold">{data.stats.recentWindowEstimatedCost.toFixed(4)}</div>
                             </div>
                         </div>
@@ -278,9 +364,15 @@ export default function DashboardPage() {
                                             </div>
                                         </div>
                                         <div className="text-right">
-                                            <Badge variant={item.status === "completed" ? "default" : "secondary"}>
-                                                {item.status}
-                                            </Badge>
+                                            <AdminHoverInfo
+                                                lines={promptCacheHoverLines(t, item, data.promptCache)}
+                                                align="right"
+                                                panelClassName="text-xs leading-5"
+                                            >
+                                                <Badge variant={item.status === "completed" ? "default" : "secondary"}>
+                                                    {item.status}
+                                                </Badge>
+                                            </AdminHoverInfo>
                                             <div className="mt-1 text-xs text-muted-foreground">
                                                 {item.total_tokens} Tokens · {Math.round(item.latency_ms)} ms
                                             </div>

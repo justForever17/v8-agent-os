@@ -613,7 +613,7 @@ async def connect_model_provider(data: dict = Body(...)):
 
 
 @router.get("/telemetry/overview")
-async def get_telemetry_overview(days: int = 7):
+async def get_telemetry_overview(days: int = 1):
     try:
         return model_telemetry_service.build_dashboard_overview(days=max(1, min(days, 30)))
     except Exception as e:

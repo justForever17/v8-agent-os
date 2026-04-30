@@ -24,7 +24,11 @@ from core.plugin_host.tool_exposure import _family_prefix_for_tool, expand_tool_
 from core.plugin_host.silk_codec import silk_toolchain_status
 from core.skills_install_service import get_skill_dependency_policy
 from core.storage import storage
-from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+from core.extensions_capability_index import (
+    extensions_runtime_cache_path,
+    legacy_extensions_runtime_cache_path,
+    write_capability_index,
+)
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
 from erc.runtime_context import get_runtime_context
@@ -789,6 +793,10 @@ def _skill_recall_hints(skill: dict[str, Any]) -> list[str]:
     hints: list[str] = []
     for key in ("aliases", "triggers", "keywords", "tags"):
         hints.extend(_normalize_hint_items(skill.get(key)))
+    capability_tags = dict(skill.get("capabilityTags") or {})
+    hints.extend(_normalize_hint_items(capability_tags.get("languageAliases")))
+    prefilter_payload = dict(skill.get("prefilter") or {})
+    hints.extend(_normalize_hint_items(prefilter_payload.get("aliases")))
     return hints
 
 
@@ -927,17 +935,17 @@ def _score_skill_entry(
     normalized_query = str(query_text or "").strip().lower()
     score = _score_text(query_tokens=query_tokens, title=name or folder, description=cleaned_description)
     has_query_signal = score > 0
-    for candidate in (name, folder):
+    for candidate in (name, folder, str(skill.get("skillId") or ""), str(skill.get("skillName") or "")):
         normalized_candidate = str(candidate or "").strip().lower()
         if normalized_candidate and normalized_candidate in normalized_query:
-            score += 36
+            score += 48 if normalized_candidate in {str(skill.get("skillId") or "").strip().lower(), str(skill.get("skillName") or "").strip().lower()} else 36
             has_query_signal = True
     for hint in _skill_recall_hints(skill):
         normalized_hint = str(hint or "").strip().lower()
         if not normalized_hint:
             continue
         if normalized_hint in normalized_query:
-            score += 32
+            score += 42
             has_query_signal = True
         hint_score = _score_text(query_tokens=query_tokens, title=normalized_hint, description="")
         score += hint_score
@@ -1725,6 +1733,8 @@ def _skill_entry_payload(skill: dict[str, Any]) -> dict[str, Any]:
         "canonicalFamilies": canonical_families,
         "capabilityProfile": dict(skill.get("capabilityProfile") or {}),
         "themeProfile": dict(skill.get("themeProfile") or {}),
+        "capabilityTags": dict(skill.get("capabilityTags") or {}),
+        "safety": dict(skill.get("safety") or {}),
     }
 
 
@@ -2178,7 +2188,10 @@ class ExtensionsRuntimeService:
         configured = str(os.getenv("V8_AGENT_OS_EXTENSIONS_CACHE_FILE") or "").strip()
         if configured:
             return Path(configured).expanduser()
-        return V8_AGENT_OS_HOME / "extensions_runtime_cache.json"
+        return extensions_runtime_cache_path()
+
+    def _legacy_cache_path(self) -> Path:
+        return legacy_extensions_runtime_cache_path()
 
     def _controls_payload(self) -> list[dict[str, str]]:
         return [
@@ -2741,6 +2754,10 @@ class ExtensionsRuntimeService:
     def _load_cache(self) -> bool:
         cache_path = self._cache_path()
         if not cache_path.exists():
+            legacy_cache_path = self._legacy_cache_path()
+            if legacy_cache_path.exists():
+                cache_path = legacy_cache_path
+        if not cache_path.exists():
             return False
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -2756,6 +2773,11 @@ class ExtensionsRuntimeService:
         self._snapshot_freshness = "cached"
         self._last_refresh_at = str(payload.get("updatedAt") or "").strip() or None
         self._last_refresh_error = None
+        if cache_path == self._legacy_cache_path():
+            try:
+                self._persist_cache()
+            except Exception:
+                pass
         return True
 
     def _build_catalog_live(
@@ -2824,7 +2846,7 @@ class ExtensionsRuntimeService:
             or skills_state.get("lastRefreshAt")
             or "",
         ).strip() or None
-        return {
+        catalog = {
             "fingerprint": skills_fingerprint,
             "revision": skills_revision,
             "visibleRootSignature": visible_root_signature,
@@ -2881,6 +2903,16 @@ class ExtensionsRuntimeService:
                 "lastInventoryChange": self._last_mcp_inventory_change,
             },
         }
+        try:
+            write_capability_index(
+                skills=skills_sorted,
+                mcp_servers=servers,
+                lexicon_state=_ensure_extension_lexicon_state(),
+                source="extensions_runtime_catalog",
+            )
+        except Exception as exc:
+            print(f"[ExtensionsRuntime] Failed to write capability index: {exc}")
+        return catalog
 
     def _build_health_live(self, catalog: dict[str, Any]) -> dict[str, Any]:
         status_breakdown = Counter()
@@ -3445,7 +3477,13 @@ class ExtensionsRuntimeService:
             runtime_kind=str((inventory_freshness.get("skillContext") or {}).get("runtime_kind") or "").strip() or None,
             exclude_root_paths=set(inventory_freshness.get("excludeRootPaths") or set()),
         )
-        skill_entries = list(skill_inventory.get("items") or [])
+        raw_skill_entries = list(skill_inventory.get("items") or [])
+        skill_entries = [
+            item
+            for item in raw_skill_entries
+            if not bool((item.get("safety") or {}).get("disabled"))
+            and str(((item.get("safety") or {}).get("effectiveVerdict") or (item.get("safety") or {}).get("verdict") or "")).strip().lower() != "block"
+        ]
         skill_root_descriptors = list(skill_inventory.get("rootDescriptors") or [])
         skill_inventory_revision = str(
             skill_inventory.get("revision")

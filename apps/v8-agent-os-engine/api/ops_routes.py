@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Reque
 from pydantic import BaseModel
 
 from core.storage import storage
+from core.safety_active_defense import safety_active_defense_monitor
 from erc.safety_guardian import safety_guardian
 
 
@@ -28,6 +29,10 @@ class TerminalInputRequest(BaseModel):
 class SafetyDryRunRequest(BaseModel):
     command: str
     runtime_context: dict | None = None
+
+
+class ActiveDefenseIncidentActionRequest(BaseModel):
+    note: str | None = None
 
 
 @router.get("/settings/safety-guardian")
@@ -81,6 +86,32 @@ async def revoke_safety_allowlist(entry_id: str):
 async def explain_safety_command(request: SafetyDryRunRequest):
     try:
         return safety_guardian.explain_system_command(request.command, runtime_context=request.runtime_context or {})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/safety/active-defense/incidents/{incident_id}/ignore")
+async def ignore_active_defense_incident(incident_id: str, request: ActiveDefenseIncidentActionRequest | None = None):
+    try:
+        incident = safety_active_defense_monitor.ignore_incident(incident_id)
+        if not incident:
+            raise HTTPException(status_code=404, detail="active defense incident not found")
+        return {"status": "success", "incident": incident, "dashboard": safety_active_defense_monitor.dashboard(sample=False)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/safety/active-defense/incidents/{incident_id}/confirm")
+async def confirm_active_defense_incident(incident_id: str, request: ActiveDefenseIncidentActionRequest | None = None):
+    try:
+        incident = safety_active_defense_monitor.confirm_incident(incident_id)
+        if not incident:
+            raise HTTPException(status_code=404, detail="active defense incident not found")
+        return {"status": "success", "incident": incident, "dashboard": safety_active_defense_monitor.dashboard(sample=False)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

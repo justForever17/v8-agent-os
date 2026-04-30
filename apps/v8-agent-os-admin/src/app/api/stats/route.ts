@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const days = req.nextUrl.searchParams.get("days") || "7";
+        const days = req.nextUrl.searchParams.get("days") || "1";
         const response = await fetch(`${resolveEngineBaseUrl()}/telemetry/overview?days=${encodeURIComponent(days)}`, {
             cache: "no-store",
         });

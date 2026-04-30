@@ -86,11 +86,61 @@ type SafetyDecisionEvent = {
     downloadHosts?: string[];
 };
 
+type ActiveDefenseIncident = {
+    id: string;
+    riskCode?: string;
+    severity?: string;
+    summary?: string;
+    status?: string;
+    firstSeenAt?: number;
+    lastSeenAt?: number;
+    seenCount?: number;
+    networkToolKey?: string;
+    process?: {
+        pid?: number;
+        name?: string;
+        cpuPercent?: number;
+        memoryPercent?: number;
+        rssMb?: number;
+    };
+};
+
+type ActiveDefenseConfig = {
+    enabled?: boolean;
+    sampleIntervalSeconds?: number;
+    injectHostAlerts?: boolean;
+    maxInjectedProcesses?: number;
+    highCpuPercent?: number;
+    highMemoryPercent?: number;
+    highMemoryRssMb?: number;
+    networkTunnelPolicy?: string;
+    knownNetworkTools?: string[];
+    knownListeningPorts?: string[];
+};
+
+type ActiveDefenseDashboard = {
+    enabled?: boolean;
+    config?: ActiveDefenseConfig;
+    status?: string;
+    lastSampleAt?: number | null;
+    lastError?: string | null;
+    incidents?: ActiveDefenseIncident[];
+    knownNetworkTools?: string[];
+    knownListeningPorts?: string[];
+    summary?: {
+        activeIncidents?: number;
+        highLoad?: number;
+        networkTunnels?: number;
+        unknownListeningPorts?: number;
+    };
+};
+
 type SafetyDashboard = {
     pendingSafetyApprovals?: SafetyApproval[];
     skillSafetyReviews?: SkillSafetyReview[];
     allowlistEntries?: SafetyAllowlistEntry[];
     recentDecisions?: SafetyDecisionEvent[];
+    activeDefense?: ActiveDefenseDashboard;
     summary?: {
         pendingSafetyApprovals?: number;
         skillReviews?: number;
@@ -98,6 +148,7 @@ type SafetyDashboard = {
         recentDecisions?: number;
         verdictCounts?: Record<string, number>;
         riskCounts?: Record<string, number>;
+        activeDefenseIncidents?: number;
     };
 };
 
@@ -164,6 +215,7 @@ type SafetyData = {
             reasons?: string[];
         }>;
     };
+    activeDefense?: ActiveDefenseConfig;
 };
 
 const PRESET_OPTIONS = [
@@ -244,6 +296,18 @@ function normalizeSafetyData(input: SafetyData): SafetyData {
             enabled: Boolean(input.skillScanSummary?.enabled),
             verdictDistribution: input.skillScanSummary?.verdictDistribution || {},
             recentSkillScans: Array.isArray(input.skillScanSummary?.recentSkillScans) ? input.skillScanSummary?.recentSkillScans : [],
+        },
+        activeDefense: {
+            enabled: Boolean(input.activeDefense?.enabled),
+            sampleIntervalSeconds: Number(input.activeDefense?.sampleIntervalSeconds || 20),
+            injectHostAlerts: input.activeDefense?.injectHostAlerts !== false,
+            maxInjectedProcesses: Number(input.activeDefense?.maxInjectedProcesses || 3),
+            highCpuPercent: Number(input.activeDefense?.highCpuPercent || 85),
+            highMemoryPercent: Number(input.activeDefense?.highMemoryPercent || 25),
+            highMemoryRssMb: Number(input.activeDefense?.highMemoryRssMb || 2048),
+            networkTunnelPolicy: input.activeDefense?.networkTunnelPolicy || "confirm_first",
+            knownNetworkTools: Array.isArray(input.activeDefense?.knownNetworkTools) ? input.activeDefense?.knownNetworkTools : [],
+            knownListeningPorts: Array.isArray(input.activeDefense?.knownListeningPorts) ? input.activeDefense?.knownListeningPorts : ["tcp:9527", "tcp:9528", "tcp:9530"],
         },
     };
 }
@@ -403,6 +467,24 @@ export default function SafetyControlPage() {
             const response = await fetch(`/api/safety/allowlist/${encodeURIComponent(entryId)}/revoke`, { method: "POST" });
             if (!response.ok) {
                 throw new Error(`Allowlist revoke failed: ${response.status}`);
+            }
+            await loadConfig();
+        } finally {
+            setGovernanceBusy(null);
+        }
+    };
+
+    const handleActiveDefenseIncidentAction = async (incidentId: string, action: "confirm" | "ignore") => {
+        const busyKey = `active-defense:${action}:${incidentId}`;
+        setGovernanceBusy(busyKey);
+        try {
+            const response = await fetch(`/api/safety/active-defense/incidents/${encodeURIComponent(incidentId)}/${action}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ note: `Admin ${action}` }),
+            });
+            if (!response.ok) {
+                throw new Error(`Active defense ${action} failed: ${response.status}`);
             }
             await loadConfig();
         } finally {
@@ -672,6 +754,118 @@ export default function SafetyControlPage() {
                                 <div className="text-xs text-slate-500">Recent decisions</div>
                             </div>
                         </div>
+
+                        <Card className="rounded-2xl border-slate-200 shadow-sm">
+                            <CardHeader>
+                                <CardTitle className="text-base">主动防御哨兵</CardTitle>
+                                <CardDescription>默认关闭；开启后只做轻量采样、记录和短提示，不会自动杀进程、断网或唤醒 Supervisor。</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 p-4">
+                                    <div className="space-y-1">
+                                        <div className="text-sm font-medium text-slate-900">
+                                            {data.activeDefense?.enabled ? "已开启哨兵采样" : "哨兵未开启"}
+                                        </div>
+                                        <div className="text-xs leading-5 text-slate-500">
+                                            采样间隔 {data.activeDefense?.sampleIntervalSeconds || 20}s；Host Alerts 最多注入 {data.activeDefense?.maxInjectedProcesses || 3} 个高占用进程。
+                                        </div>
+                                    </div>
+                                    <Switch
+                                        checked={Boolean(data.activeDefense?.enabled)}
+                                        onCheckedChange={(checked) =>
+                                            setEnvelope((previous) =>
+                                                previous
+                                                    ? {
+                                                          ...previous,
+                                                          data: normalizeSafetyData({
+                                                              ...previous.data,
+                                                              activeDefense: {
+                                                                  ...(previous.data.activeDefense || {}),
+                                                                  enabled: checked,
+                                                              },
+                                                          }),
+                                                      }
+                                                    : previous,
+                                            )
+                                        }
+                                    />
+                                </div>
+
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <div className="rounded-2xl border border-slate-200 p-4">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">status</div>
+                                        <div className="mt-2 text-sm font-medium text-slate-900">{dashboard?.activeDefense?.status || "disabled"}</div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                            last sample: {dashboard?.activeDefense?.lastSampleAt ? new Date(Number(dashboard.activeDefense.lastSampleAt) * 1000).toLocaleString() : "-"}
+                                        </div>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 p-4">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">incidents</div>
+                                        <div className="mt-2 text-sm font-medium text-slate-900">{dashboard?.activeDefense?.summary?.activeIncidents ?? 0} active</div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                            high load {dashboard?.activeDefense?.summary?.highLoad ?? 0} · tunnel {dashboard?.activeDefense?.summary?.networkTunnels ?? 0} · ports {dashboard?.activeDefense?.summary?.unknownListeningPorts ?? 0}
+                                        </div>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 p-4">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">known tunnels</div>
+                                        <div className="mt-2 text-sm font-medium text-slate-900">{(dashboard?.activeDefense?.knownNetworkTools || []).length}</div>
+                                        <div className="mt-1 line-clamp-2 text-xs text-slate-500">
+                                            {(dashboard?.activeDefense?.knownNetworkTools || []).join(", ") || "尚未确认 VPN / proxy 基线"}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {dashboard?.activeDefense?.lastError ? (
+                                    <StatusNotice tone="warning" title="哨兵采样异常" description={dashboard.activeDefense.lastError} />
+                                ) : null}
+
+                                {(dashboard?.activeDefense?.incidents || []).length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                                        暂无未确认主动防御 incident。开启后，未知 VPN / tunnel 首次出现和高占用进程会记录在这里。
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {(dashboard?.activeDefense?.incidents || []).slice(0, 8).map((incident) => (
+                                            <div key={incident.id} className="rounded-2xl border border-slate-200 p-4">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Badge variant={incident.riskCode === "high_resource_process" ? "secondary" : "outline"}>
+                                                        {incident.riskCode || "active_defense"}
+                                                    </Badge>
+                                                    {incident.severity ? <Badge variant="outline">{incident.severity}</Badge> : null}
+                                                    <span className="text-xs text-slate-500">seen {incident.seenCount || 1}</span>
+                                                </div>
+                                                <div className="mt-2 text-sm text-slate-700">{incident.summary || incident.id}</div>
+                                                {incident.process ? (
+                                                    <div className="mt-2 text-xs text-slate-500">
+                                                        {incident.process.name || "process"}({incident.process.pid || "-"}) CPU {incident.process.cpuPercent ?? "-"}% · Mem {incident.process.rssMb ?? "-"}MB
+                                                    </div>
+                                                ) : null}
+                                                <div className="mt-3 flex justify-end gap-2">
+                                                    {incident.riskCode === "network_tunnel_first_seen" || incident.riskCode === "unknown_listening_port" ? (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            disabled={governanceBusy === `active-defense:confirm:${incident.id}`}
+                                                            onClick={() => void handleActiveDefenseIncidentAction(incident.id, "confirm")}
+                                                        >
+                                                            确认为本机基线
+                                                        </Button>
+                                                    ) : null}
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        disabled={governanceBusy === `active-defense:ignore:${incident.id}`}
+                                                        onClick={() => void handleActiveDefenseIncidentAction(incident.id, "ignore")}
+                                                    >
+                                                        忽略
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>

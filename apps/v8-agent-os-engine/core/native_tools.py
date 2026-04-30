@@ -3084,14 +3084,14 @@ def write_native_file(
 
 @tool
 def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = True) -> str:
-    """Search for a specific string pattern within a file or directory recursively.
+    """Search file contents for a text or regex pattern under a known file/directory path. Not for finding file names or paths.
     
     This operates completely natively in Python without requiring the GNU `grep` utility, 
     making it fully compatible with Windows.
     
     Arguments:
-        query (str): The string or regex pattern to search for.
-        path (str): The absolute path to a file or directory to search in.
+        query (str): The content string or regex pattern to search for inside files.
+        path (str): The known absolute file or directory path whose contents should be searched.
         regex (bool): Whether the query should be treated as a Regular Expression.
         ignore_case (bool): Whether the search is case-insensitive.
     """

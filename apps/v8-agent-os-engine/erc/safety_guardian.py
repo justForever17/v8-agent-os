@@ -19,6 +19,7 @@ import psutil
 
 from core.storage import storage
 from core.database import db
+from core.safety_active_defense import DEFAULT_ACTIVE_DEFENSE_CONFIG, normalize_active_defense_config, safety_active_defense_monitor
 from core.v8_agent_os_paths import WORKSPACE_HOME, protected_runtime_paths
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
@@ -208,6 +209,7 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
         ],
         "mutatingHttpMethods": ["POST", "PUT", "PATCH", "DELETE"],
     },
+    "activeDefense": DEFAULT_ACTIVE_DEFENSE_CONFIG,
 }
 
 _SKILL_SCAN_TEXT_SUFFIXES = {
@@ -824,11 +826,26 @@ class SafetyGuardian:
             verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
             risk_code = str(item.get("riskCode") or "unknown")
             risk_counts[risk_code] = risk_counts.get(risk_code, 0) + 1
+        active_defense = dict(safety_active_defense_monitor.dashboard(sample=True))
+        active_defense_summary = dict(active_defense.get("summary") or {})
+        active_defense_summary.update(
+            {
+                "recentSafetyReviewEvents": verdict_counts.get("review", 0),
+                "recentSafetyBlockEvents": verdict_counts.get("block", 0),
+                "recentHighRiskEvents": sum(
+                    count
+                    for risk_code, count in risk_counts.items()
+                    if str(risk_code).startswith(("protected_", "destructive_", "encoded_", "download_execute"))
+                ),
+            }
+        )
+        active_defense["summary"] = active_defense_summary
         return {
             "pendingSafetyApprovals": safety_approvals[:limit],
             "skillSafetyReviews": skill_reviews[:limit],
             "allowlistEntries": allowlist[:limit],
             "recentDecisions": decisions,
+            "activeDefense": active_defense,
             "summary": {
                 "pendingSafetyApprovals": len(safety_approvals),
                 "skillReviews": len(skill_reviews),
@@ -836,6 +853,7 @@ class SafetyGuardian:
                 "recentDecisions": len(decisions),
                 "verdictCounts": verdict_counts,
                 "riskCounts": risk_counts,
+                "activeDefenseIncidents": int((active_defense.get("summary") or {}).get("activeIncidents") or 0),
             },
         }
 
@@ -1269,6 +1287,9 @@ class SafetyGuardian:
             "mutatingHttpMethods": [str(item).strip().upper() for item in post_action_rules.get("mutatingHttpMethods", []) if str(item).strip()]
             or list(DEFAULT_SAFETY_GUARDIAN_CONFIG["postActionRules"]["mutatingHttpMethods"]),
         }
+        merged["activeDefense"] = normalize_active_defense_config(
+            raw.get("activeDefense") if isinstance(raw.get("activeDefense"), dict) else {}
+        )
 
         merged["protectedPaths"] = list(merged["fileRules"]["protectedPaths"])
         merged["blockedCommandPatterns"] = self._command_patterns(merged["commandRules"], verdict="block")

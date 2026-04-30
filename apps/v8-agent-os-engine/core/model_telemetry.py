@@ -112,6 +112,132 @@ def _normalize_prompt_cache_payload(value: Any) -> Any:
     return {str(key): _collapse_repeated_string(item) for key, item in dict(value).items()}
 
 
+def _short_hash(value: Any, length: int = 10) -> str:
+    text = str(value or "")
+    return text[:length] if text else ""
+
+
+def _provider_patch_kind(patch: Any) -> str:
+    if not isinstance(patch, Mapping) or not patch:
+        return "none"
+    if patch.get("prompt_cache_key") and patch.get("extra_headers"):
+        return "prompt_cache_key+header"
+    if patch.get("prompt_cache_key"):
+        return "prompt_cache_key"
+    if patch.get("cache_control"):
+        return "cache_control"
+    extra_body = patch.get("extra_body")
+    if isinstance(extra_body, Mapping) and extra_body.get("caching"):
+        return "extra_body.caching"
+    if patch.get("observeOnly"):
+        return "observe_only"
+    return "provider_patch"
+
+
+def _segment_token_summary(segments: Any) -> Dict[str, Any]:
+    summary: Dict[str, Dict[str, int]] = {}
+    if not isinstance(segments, list):
+        segments = []
+    for segment in segments:
+        if not isinstance(segment, Mapping):
+            continue
+        segment_type = str(segment.get("type") or segment.get("segment_type") or "unknown")
+        bucket = summary.setdefault(segment_type, {"segments": 0, "estimatedTokens": 0})
+        bucket["segments"] += 1
+        bucket["estimatedTokens"] += _safe_int(segment.get("estimatedTokens") or segment.get("estimated_tokens"))
+    static_tokens = sum(
+        int(summary.get(key, {}).get("estimatedTokens") or 0)
+        for key in ("stable_static", "scoped_static")
+    )
+    dynamic_tokens = int(summary.get("dynamic", {}).get("estimatedTokens") or 0)
+    unsafe_tokens = int(summary.get("unsafe", {}).get("estimatedTokens") or 0)
+    return {
+        "byType": summary,
+        "staticTokens": static_tokens,
+        "dynamicTokens": dynamic_tokens,
+        "unsafeTokens": unsafe_tokens,
+        "totalTokens": static_tokens + dynamic_tokens + unsafe_tokens,
+    }
+
+
+_CACHED_TOKEN_KEYS = {
+    "cached_tokens",
+    "cachedTokens",
+    "cached_input_tokens",
+    "cachedInputTokens",
+    "cache_read_input_tokens",
+    "cacheReadInputTokens",
+    "prompt_cache_hit_tokens",
+    "promptCacheHitTokens",
+}
+
+
+def _find_cached_input_tokens(value: Any, *, depth: int = 0) -> int | None:
+    if depth > 4:
+        return None
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key) in _CACHED_TOKEN_KEYS:
+                return _safe_int(item)
+            found = _find_cached_input_tokens(item, depth=depth + 1)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_cached_input_tokens(item, depth=depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _public_prompt_cache_summary(metadata: Mapping[str, Any] | None, *, prefix_use_counts: Mapping[str, int], input_tokens: int) -> Dict[str, Any] | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    prompt_cache = metadata.get("promptCache")
+    if not isinstance(prompt_cache, Mapping):
+        return None
+    prefix_key = str(prompt_cache.get("staticPrefixKey") or "")
+    cached_tokens = _find_cached_input_tokens(metadata)
+    return {
+        "eventId": str(prompt_cache.get("eventId") or ""),
+        "profileId": str(prompt_cache.get("profileId") or ""),
+        "responseCacheDecision": str(prompt_cache.get("responseCacheDecision") or ""),
+        "skipReason": str(prompt_cache.get("skipReason") or ""),
+        "providerPatchKind": _provider_patch_kind(prompt_cache.get("providerRequestPatch")),
+        "staticPrefixKeyShort": _short_hash(prefix_key),
+        "staticPrefixReused": bool(prefix_key and int(prefix_use_counts.get(prefix_key) or 0) > 1),
+        "staticPrefixUseCount": int(prefix_use_counts.get(prefix_key) or 0) if prefix_key else 0,
+        "segments": _segment_token_summary(prompt_cache.get("segments")),
+        "providerCachedTokensReported": cached_tokens is not None,
+        "providerCachedInputTokens": cached_tokens,
+        "cachedInputTokenRate": round(float(cached_tokens) / float(input_tokens), 4) if cached_tokens is not None and input_tokens > 0 else None,
+    }
+
+
+def _public_invocation_record(item: Mapping[str, Any], *, prefix_use_counts: Mapping[str, int]) -> Dict[str, Any]:
+    input_tokens = _safe_int(item.get("input_tokens"))
+    public = {
+        "id": item.get("id"),
+        "model_id": item.get("model_id"),
+        "provider_name": item.get("provider_name"),
+        "status": item.get("status"),
+        "input_tokens": input_tokens,
+        "output_tokens": _safe_int(item.get("output_tokens")),
+        "total_tokens": _safe_int(item.get("total_tokens")),
+        "latency_ms": _safe_float(item.get("latency_ms")),
+        "started_at": item.get("started_at"),
+        "role": item.get("role"),
+    }
+    prompt_cache = _public_prompt_cache_summary(
+        item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {},
+        prefix_use_counts=prefix_use_counts,
+        input_tokens=input_tokens,
+    )
+    if prompt_cache:
+        public["promptCache"] = prompt_cache
+    return public
+
+
 def _runtime_diagnostics_from_mapping(payload: Mapping[str, Any]) -> Dict[str, Any]:
     diagnostics: Dict[str, Any] = {}
     if payload.get("v8_provider_adapter"):
@@ -590,15 +716,19 @@ class ModelTelemetryService:
             }
         )
 
-    def build_dashboard_overview(self, days: int = 7) -> Dict[str, Any]:
+    def build_dashboard_overview(self, days: int = 1) -> Dict[str, Any]:
+        days = max(1, min(int(days or 1), 30))
         counts = db.get_counts_snapshot()
         daily = db.get_daily_telemetry_activity(days=days)
         usage_distribution = db.get_model_usage_distribution(days=days, limit=10)
         provider_health = db.get_provider_health_summary(days=days)
-        recent_invocations = db.get_recent_model_invocations(limit=12)
+        recent_invocations = db.get_recent_model_invocations(limit=50, days=days)
+        prompt_cache_stats = db.get_prompt_cache_stats(limit=20, days=days)
+        prompt_prefix_counts = db.get_prompt_cache_prefix_use_counts(days=days)
+        window_totals = db.get_model_invocation_window_totals(days=days)
 
-        total_tokens = sum(int(item.get("total_tokens") or 0) for item in usage_distribution)
-        estimated_cost = sum(float(item.get("cost_total") or 0.0) for item in usage_distribution)
+        total_tokens = int(window_totals.get("total_tokens") or 0)
+        estimated_cost = float(window_totals.get("cost_total") or 0.0)
 
         charts = {
             "dailyActivity": [
@@ -643,11 +773,17 @@ class ModelTelemetryService:
                 "totalInvocations": counts.get("invocations", 0),
                 "pendingApprovals": counts.get("pending_approvals", 0),
                 "activeRuns": counts.get("active_runs", 0),
+                "recentWindowDays": days,
                 "recentWindowTokens": total_tokens,
                 "recentWindowEstimatedCost": round(estimated_cost, 6),
+                "recentWindowInvocations": int(window_totals.get("invocations") or 0),
             },
             "charts": charts,
-            "recentInvocations": recent_invocations,
+            "promptCache": prompt_cache_stats,
+            "recentInvocations": [
+                _public_invocation_record(item, prefix_use_counts=prompt_prefix_counts)
+                for item in recent_invocations
+            ],
         }
 
 

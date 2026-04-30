@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -14,6 +14,17 @@ from core.v8_agent_os_paths import OBSERVABILITY_DB_PATH
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _window_threshold(days: int) -> str:
+    safe_days = max(1, min(int(days or 1), 30))
+    return (datetime.now(timezone.utc) - timedelta(days=safe_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _rate(numerator: int | float, denominator: int | float) -> float | None:
+    if not denominator:
+        return None
+    return round(float(numerator) / float(denominator), 4)
 
 
 class ObservabilityDatabaseManager:
@@ -388,19 +399,70 @@ class ObservabilityDatabaseManager:
             )
             conn.commit()
 
-    def get_prompt_cache_stats(self, limit: int = 50) -> Dict[str, Any]:
+    def get_prompt_cache_stats(self, limit: int = 50, days: int = 1) -> Dict[str, Any]:
+        threshold = _window_threshold(days)
         with self.get_connection() as conn:
             by_decision = [dict(row) for row in conn.execute(
-                "SELECT decision, COUNT(*) AS count FROM prompt_cache_events GROUP BY decision ORDER BY count DESC"
+                """
+                SELECT decision, COUNT(*) AS count
+                FROM prompt_cache_events
+                WHERE datetime(created_at) >= datetime(?)
+                GROUP BY decision
+                ORDER BY count DESC
+                """,
+                (threshold,),
             ).fetchall()]
             by_skip_reason = [dict(row) for row in conn.execute(
                 """
                 SELECT skip_reason, COUNT(*) AS count
                 FROM prompt_cache_events
                 WHERE COALESCE(skip_reason, '') != ''
+                  AND datetime(created_at) >= datetime(?)
                 GROUP BY skip_reason
                 ORDER BY count DESC
+                """,
+                (threshold,),
+            ).fetchall()]
+            totals_row = conn.execute(
                 """
+                SELECT
+                    COUNT(*) AS total_events,
+                    SUM(CASE WHEN COALESCE(provider_patch_json, '') NOT IN ('', '{}', 'null') THEN 1 ELSE 0 END) AS provider_patch_events,
+                    SUM(CASE WHEN decision = 'hit' THEN 1 ELSE 0 END) AS response_hits,
+                    SUM(CASE WHEN decision = 'miss' THEN 1 ELSE 0 END) AS response_misses,
+                    SUM(CASE WHEN decision = 'skipped' THEN 1 ELSE 0 END) AS response_skipped
+                FROM prompt_cache_events
+                WHERE datetime(created_at) >= datetime(?)
+                """,
+                (threshold,),
+            ).fetchone()
+            total_events = int(totals_row["total_events"] or 0) if totals_row else 0
+            provider_patch_events = int(totals_row["provider_patch_events"] or 0) if totals_row else 0
+            response_hits = int(totals_row["response_hits"] or 0) if totals_row else 0
+            response_misses = int(totals_row["response_misses"] or 0) if totals_row else 0
+            response_skipped = int(totals_row["response_skipped"] or 0) if totals_row else 0
+            prefix_rows = [dict(row) for row in conn.execute(
+                """
+                SELECT static_prefix_key, COUNT(*) AS count
+                FROM prompt_cache_events
+                WHERE datetime(created_at) >= datetime(?)
+                  AND COALESCE(static_prefix_key, '') != ''
+                GROUP BY static_prefix_key
+                """,
+                (threshold,),
+            ).fetchall()]
+            reused_prefixes = [row for row in prefix_rows if int(row.get("count") or 0) > 1]
+            reused_prefix_event_count = sum(int(row.get("count") or 0) for row in reused_prefixes)
+            segment_rows = [dict(row) for row in conn.execute(
+                """
+                SELECT s.segment_type, COUNT(*) AS segments, COALESCE(SUM(s.estimated_tokens), 0) AS estimated_tokens
+                FROM prompt_cache_segments s
+                JOIN prompt_cache_events e ON e.id = s.event_id
+                WHERE datetime(e.created_at) >= datetime(?)
+                GROUP BY s.segment_type
+                ORDER BY s.segment_type
+                """,
+                (threshold,),
             ).fetchall()]
             cache_row = conn.execute(
                 """
@@ -412,14 +474,47 @@ class ObservabilityDatabaseManager:
             ).fetchone()
             recent: list[dict[str, Any]] = []
             for row in conn.execute(
-                "SELECT * FROM prompt_cache_events ORDER BY created_at DESC LIMIT ?",
-                (max(1, min(int(limit or 50), 200)),),
+                """
+                SELECT * FROM prompt_cache_events
+                WHERE datetime(created_at) >= datetime(?)
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (threshold, max(1, min(int(limit or 50), 200))),
             ).fetchall():
                 item = dict(row)
                 item["providerPatch"] = json.loads(item["provider_patch_json"]) if item.get("provider_patch_json") else {}
                 item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
                 recent.append(item)
             return {
+                "window": {"days": max(1, min(int(days or 1), 30)), "since": threshold},
+                "totals": {
+                    "events": total_events,
+                    "providerPatchEvents": provider_patch_events,
+                    "responseHits": response_hits,
+                    "responseMisses": response_misses,
+                    "responseSkipped": response_skipped,
+                    "reusedPrefixKeys": len(reused_prefixes),
+                    "reusedPrefixEvents": reused_prefix_event_count,
+                },
+                "rates": {
+                    "providerPatchRate": _rate(provider_patch_events, total_events),
+                    "staticPrefixReuseRate": _rate(reused_prefix_event_count, total_events),
+                    "v8ExactResponseHitRate": _rate(response_hits, response_hits + response_misses),
+                    "responseCacheSkipRate": _rate(response_skipped, total_events),
+                },
+                "segmentTokenEstimate": {
+                    str(row.get("segment_type") or "unknown"): {
+                        "segments": int(row.get("segments") or 0),
+                        "estimatedTokens": int(row.get("estimated_tokens") or 0),
+                    }
+                    for row in segment_rows
+                },
+                "providerUsage": {
+                    "cachedInputTokensReported": False,
+                    "cachedInputTokenRate": None,
+                    "note": "provider usage did not report cached input token fields",
+                },
                 "eventsByDecision": by_decision,
                 "eventsBySkipReason": by_skip_reason,
                 "responseCache": {
@@ -427,6 +522,23 @@ class ObservabilityDatabaseManager:
                     "hits": int(cache_row["hits"] or 0) if cache_row else 0,
                 },
                 "recentEvents": recent,
+            }
+
+    def get_prompt_cache_prefix_use_counts(self, days: int = 1) -> Dict[str, int]:
+        threshold = _window_threshold(days)
+        with self.get_connection() as conn:
+            return {
+                str(row["static_prefix_key"]): int(row["count"] or 0)
+                for row in conn.execute(
+                    """
+                    SELECT static_prefix_key, COUNT(*) AS count
+                    FROM prompt_cache_events
+                    WHERE datetime(created_at) >= datetime(?)
+                      AND COALESCE(static_prefix_key, '') != ''
+                    GROUP BY static_prefix_key
+                    """,
+                    (threshold,),
+                ).fetchall()
             }
 
     def purge_prompt_cache(self) -> Dict[str, Any]:
@@ -516,17 +628,39 @@ class ObservabilityDatabaseManager:
                 rows.append(item)
             return rows
 
-    def get_recent_model_invocations(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_recent_model_invocations(self, limit: int = 20, days: int | None = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows: list[dict[str, Any]] = []
-            for row in conn.execute(
-                "SELECT * FROM model_invocation_logs ORDER BY started_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall():
+            if days is not None:
+                query = """
+                    SELECT * FROM model_invocation_logs
+                    WHERE datetime(started_at) >= datetime(?)
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                """
+                params: tuple[Any, ...] = (_window_threshold(days), limit)
+            else:
+                query = "SELECT * FROM model_invocation_logs ORDER BY started_at DESC LIMIT ?"
+                params = (limit,)
+            for row in conn.execute(query, params).fetchall():
                 item = dict(row)
                 item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
                 rows.append(item)
             return rows
+
+    def get_model_invocation_window_totals(self, days: int = 1) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS invocations,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cost_total), 0) AS cost_total
+                FROM model_invocation_logs
+                WHERE datetime(started_at) >= datetime(?)
+                """,
+                (_window_threshold(days),),
+            ).fetchone()
+            return dict(row) if row else {"invocations": 0, "total_tokens": 0, "cost_total": 0.0}
 
     def list_model_invocations(self, **filters: Any) -> List[Dict[str, Any]]:
         query = "SELECT * FROM model_invocation_logs WHERE 1=1"

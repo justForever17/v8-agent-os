@@ -17,7 +17,11 @@ from langchain_core.tools import tool
 from core.llm_factory import llm_factory
 from core.model_control_plane import model_control_plane
 from core.storage import storage
-from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+from core.extensions_capability_index import (
+    annotate_skill_entries,
+    legacy_skill_inventory_cache_path,
+    skill_inventory_cache_path,
+)
 from core.workspace_resolution import workspace_resolution_service
 from runtimes.memory.project_registry import project_registry_service
 
@@ -1500,7 +1504,11 @@ class SkillLoader:
 
     @classmethod
     def _cache_file(cls) -> Path:
-        return V8_AGENT_OS_HOME / "skills_inventory_cache.json"
+        return skill_inventory_cache_path()
+
+    @classmethod
+    def _legacy_cache_file(cls) -> Path:
+        return legacy_skill_inventory_cache_path()
 
     @classmethod
     def _resolve_repo_root(cls) -> Path:
@@ -1843,6 +1851,7 @@ class SkillLoader:
             "capabilityProfile": dict(item.get("capabilityProfile") or {}),
             "themeProfile": dict(item.get("themeProfile") or {}),
             "capabilityTags": dict(item.get("capabilityTags") or {}),
+            "safety": dict(item.get("safety") or {}),
             "sourceType": source_type,
             "visibility": str(item.get("visibility") or "global").strip() or "global",
             "workspacePath": cls._normalize_path(item.get("workspacePath")),
@@ -1854,6 +1863,10 @@ class SkillLoader:
     @classmethod
     def _load_cached_registry(cls) -> bool:
         cache_file = cls._cache_file()
+        if not cache_file.exists():
+            legacy_cache_file = cls._legacy_cache_file()
+            if legacy_cache_file.exists():
+                cache_file = legacy_cache_file
         if not cache_file.exists():
             return False
         try:
@@ -1919,6 +1932,11 @@ class SkillLoader:
         cls._last_refresh_error = None
         cls._last_check_at = time.monotonic()
         cls._rebuild_root_inventory_states_from_registry()
+        if cache_file == cls._legacy_cache_file():
+            try:
+                cls._persist_cache()
+            except Exception:
+                pass
         return True
 
     @classmethod
@@ -2502,7 +2520,11 @@ class SkillLoader:
                     f"[SkillLoader] Successfully loaded Skill: {entry.get('skillName')} "
                     f"({entry.get('sourceType')})"
                 )
-        return registry
+        try:
+            return annotate_skill_entries(registry, record_reviews=True)  # type: ignore[return-value]
+        except Exception as exc:
+            print(f"[SkillLoader] Safety capability index annotation failed: {exc}")
+            return registry
 
     @classmethod
     def ensure_fresh(cls, force: bool = False) -> None:
@@ -3343,6 +3365,30 @@ def fetch_skill_instructions(skill_name: str) -> str:
             f"Flagged Files:\n{flagged_files}\n\n"
             f"Safety Guardian 已阻断该 skill 的说明读取。不要继续使用这个 skill，"
             f"请改用其他 skill、MCP、插件工具或系统工具继续完成当前任务。"
+        )
+
+    if (
+        scan_payload
+        and str(scan_payload.get("verdict") or "").strip().lower() == "review"
+        and str(scan_payload.get("userOverride") or "").strip().lower() != "approved"
+    ):
+        reasons = "\n".join(f"- {item}" for item in list(scan_payload.get("reasons") or [])[:8]) or "- Safety Guardian 未提供具体原因。"
+        flagged_files = "\n".join(
+            f"- {item.get('path')}: {', '.join(str(entry.get('label') or '') for entry in list(item.get('findings') or [])[:4] if str(entry.get('label') or '').strip()) or '需要人工复核'}"
+            for item in list(scan_payload.get("flaggedFiles") or [])[:12]
+        ) or "- 未返回命中文件详情。"
+        return (
+            f"=== SKILL APPROVAL REQUIRED BY SAFETY GUARDIAN ===\n"
+            f"Skill ID: {skill.get('skillId') or ''}\n"
+            f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
+            f"Skill Root: {skill.get('skillRoot') or skill.get('path') or ''}\n"
+            f"Verdict: review\n"
+            f"Ledger ID: {scan_payload.get('ledgerId') or scan_payload.get('auditId') or ''}\n"
+            f"Skill Trust Score: {scan_payload.get('skillTrustScore')}\n"
+            f"Reasons:\n{reasons}\n"
+            f"Flagged Files:\n{flagged_files}\n\n"
+            "Safety Guardian 已允许该 skill 出现在候选列表中，但在用户批准前不会暴露完整 SKILL.md。"
+            "请请求用户在 Admin / Safety Runtime 中 approve 该 skill，或改用其他已批准能力。"
         )
 
     safety_banner = ""

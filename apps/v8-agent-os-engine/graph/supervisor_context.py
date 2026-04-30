@@ -16,6 +16,7 @@ from core.prompt_budget import (
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.storage import storage
 from core.host_load import render_host_load_line
+from core.safety_active_defense import render_host_alerts_line
 from core.system_base import get_engine_origin
 from core.time_truth import utc_now_iso
 from core.v8_agent_os_identity import render_system_identity_line
@@ -59,6 +60,7 @@ def _split_env_context_prompt_parts(env_context: str, *, source_prefix: str = "e
     dynamic_prefixes = {
         "Current Time:": "current_time",
         "Host Load:": "host_load",
+        "Host Alerts:": "host_alerts",
     }
     parts: list[dict[str, str]] = []
     static_buffer: list[str] = []
@@ -932,10 +934,13 @@ def build_supervisor_system_content(
             for key in list(_STABLE_SYSTEM_CONTEXT_CACHE.keys())[: len(_STABLE_SYSTEM_CONTEXT_CACHE) - _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT]:
                 _STABLE_SYSTEM_CONTEXT_CACHE.pop(key, None)
 
+    host_alerts_line = render_host_alerts_line()
+    host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
     env_context = (
         "<environment>\n"
         f"Current Time: {current_time}\n"
         f"{render_host_load_line()}\n"
+        f"{host_alerts_context}"
         f"{cached_stable['envStaticContext']}"
         "</environment>\n"
     )

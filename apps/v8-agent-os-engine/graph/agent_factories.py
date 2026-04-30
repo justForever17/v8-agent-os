@@ -13,6 +13,7 @@ from core.delegation_broker import infer_engineering_task_role, task_brief_query
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
 from core.host_load import render_host_load_line
+from core.safety_active_defense import render_host_alerts_line
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
@@ -338,6 +339,7 @@ def _split_agent_env_context_parts(env_context: str) -> list[dict[str, str]]:
     dynamic_prefixes = {
         "Current Time:": "current_time",
         "Host Load:": "host_load",
+        "Host Alerts:": "host_alerts",
     }
     parts: list[dict[str, str]] = []
     static_buffer: list[str] = []
@@ -513,11 +515,14 @@ def build_agent_node(
             workspace_path = _resolved_workspace_prompt_path()
             os_name = platform.system()
             current_time = utc_now_iso()
+            host_alerts_line = render_host_alerts_line()
+            host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
             env_context = (
                 f"<environment>\n"
                 f"OS: {os_name}\n"
                 f"Current Time: {current_time}\n"
                 f"{render_host_load_line()}\n"
+                f"{host_alerts_context}"
                 f"Local Workspace Absolute Path: {workspace_path}\n"
                 f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them to the Local Workspace above.\n"
                 "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "

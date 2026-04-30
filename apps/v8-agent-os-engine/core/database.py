@@ -3180,8 +3180,11 @@ class DatabaseManager:
     def increment_llm_response_cache_hit(self, response_cache_key: str) -> None:
         self.observability_db.increment_llm_response_cache_hit(response_cache_key)
 
-    def get_prompt_cache_stats(self, limit: int = 50) -> Dict[str, Any]:
-        return self.observability_db.get_prompt_cache_stats(limit=limit)
+    def get_prompt_cache_stats(self, limit: int = 50, days: int = 1) -> Dict[str, Any]:
+        return self.observability_db.get_prompt_cache_stats(limit=limit, days=days)
+
+    def get_prompt_cache_prefix_use_counts(self, days: int = 1) -> Dict[str, int]:
+        return self.observability_db.get_prompt_cache_prefix_use_counts(days=days)
 
     def purge_prompt_cache(self) -> Dict[str, Any]:
         return self.observability_db.purge_prompt_cache()
@@ -3214,8 +3217,8 @@ class DatabaseManager:
                 counts["invocations"] = 0
             return counts
 
-    def get_recent_model_invocations(self, limit: int = 20) -> List[Dict[str, Any]]:
-        return self.observability_db.get_recent_model_invocations(limit=limit)
+    def get_recent_model_invocations(self, limit: int = 20, days: Optional[int] = None) -> List[Dict[str, Any]]:
+        return self.observability_db.get_recent_model_invocations(limit=limit, days=days)
 
     def list_model_invocations(
         self,
@@ -3238,6 +3241,9 @@ class DatabaseManager:
 
     def get_model_usage_distribution(self, days: int = 7, limit: int = 12) -> List[Dict[str, Any]]:
         return self.observability_db.get_model_usage_distribution(days=days, limit=limit)
+
+    def get_model_invocation_window_totals(self, days: int = 1) -> Dict[str, Any]:
+        return self.observability_db.get_model_invocation_window_totals(days=days)
 
     def get_daily_telemetry_activity(self, days: int = 7) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:

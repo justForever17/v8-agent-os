@@ -48,8 +48,11 @@ async def get_model_cache_profiles():
 
 
 @router.get("/stats")
-async def get_model_cache_stats(limit: int = Query(50, ge=1, le=200)):
-    return db.get_prompt_cache_stats(limit=limit)
+async def get_model_cache_stats(
+    limit: int = Query(50, ge=1, le=200),
+    days: int = Query(1, ge=1, le=30),
+):
+    return db.get_prompt_cache_stats(limit=limit, days=days)
 
 
 @router.post("/purge")

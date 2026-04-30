@@ -238,10 +238,14 @@ def _skill_index_entry(skill: dict[str, Any]) -> dict[str, Any]:
     return {
         "skillId": str(skill.get("skillId") or "").strip(),
         "name": str(skill.get("name") or skill.get("skillName") or "").strip(),
+        "manifestKey": str(skill.get("manifestKey") or skill.get("instructionPath") or "").strip(),
+        "contentHash": str(skill.get("contentHash") or (skill.get("safety") or {}).get("contentHash") or "").strip(),
+        "manifestHash": str(skill.get("manifestHash") or "").strip(),
         "sourceType": str(skill.get("sourceType") or "").strip(),
         "visibility": str(skill.get("visibility") or "").strip(),
         "rootPath": str(skill.get("rootPath") or skill.get("path") or "").strip(),
         "instructionPath": str(skill.get("instructionPath") or "").strip(),
+        "aliasSnapshot": dict(skill.get("aliasSnapshot") or {}),
         "aliases": aliases,
         "prefilter": {
             "skillClass": capability_profile.get("skillClass"),
@@ -251,6 +255,7 @@ def _skill_index_entry(skill: dict[str, Any]) -> dict[str, Any]:
             "runtimeAffinity": list(capability_tags.get("runtimeAffinity") or [])[:6],
         },
         "safety": dict(skill.get("safety") or {}),
+        "approvalRequired": bool((skill.get("safety") or {}).get("approvalRequired")),
     }
 
 
@@ -294,6 +299,12 @@ def _mcp_index_entry(server: dict[str, Any]) -> dict[str, Any]:
             ]
         ),
         "toolCount": len(tools),
+        "prefilterFields": {
+            "serverName": server_name,
+            "toolNames": [str(tool.get("name") or "").strip() for tool in tools if str(tool.get("name") or "").strip()],
+            "descriptions": [str(tool.get("description") or "").strip() for tool in tools if str(tool.get("description") or "").strip()][:8],
+            "riskCodes": risk_codes,
+        },
         "tools": [
             {
                 "name": str(tool.get("name") or "").strip(),

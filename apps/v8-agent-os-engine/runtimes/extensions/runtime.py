@@ -3283,6 +3283,46 @@ class ExtensionsRuntimeService:
         payload = dict(self._cached_health or self._build_health_live(self._cached_catalog or self._build_catalog_live()))
         return self._decorate_health(payload)
 
+    def delete_skill(
+        self,
+        skill_id: str,
+        *,
+        scope: str | None = None,
+        workspace_id: str | None = None,
+        workspace_path: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        result = SkillLoader.delete_skill(
+            skill_id,
+            scope=scope,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            project_id=project_id,
+        )
+        self._cached_catalog = None
+        self._cached_health = None
+        self._route_cache.clear()
+        self._last_skill_inventory_change = {
+            **dict(result.get("refresh") or {}),
+            "changedAt": self._now_iso(),
+            "reason": "skill_delete",
+        }
+        catalog = self._build_catalog_live(
+            workspace_path=workspace_path,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        health = self._build_health_live(catalog)
+        if not (workspace_path or workspace_id or project_id):
+            self._cached_catalog = catalog
+            self._cached_health = health
+        return {
+            "status": "success",
+            **result,
+            "catalogSummary": dict(catalog.get("summary") or {}),
+            "healthSummary": dict(health.get("summary") or {}),
+        }
+
     async def reload(self) -> dict[str, Any]:
         return await self._refresh_runtime_snapshot(force_skill_reload=True, force_mcp_reload=True)
 

@@ -89,6 +89,8 @@ type ExtensionCatalogResponse = {
             name: string;
             description: string;
             path: string;
+            skillRoot?: string;
+            instructionPath?: string;
             sourceType?: "global" | "main_workspace" | "scoped_workspace" | string;
             visibility?: "global" | "scoped" | string;
             workspacePath?: string;
@@ -142,6 +144,7 @@ type ExtensionHealthResponse = {
         toolRoot?: string;
     };
 };
+type ExtensionSkillItem = NonNullable<ExtensionCatalogResponse["skills"]>["items"][number];
 type SkillInstallResult = {
     source: string;
     targetRoot: string;
@@ -586,6 +589,7 @@ export default function ExtensionsPage() {
     const [uploadingZip, setUploadingZip] = useState(false);
     const [savingMcp, setSavingMcp] = useState(false);
     const [deletingMcpServer, setDeletingMcpServer] = useState("");
+    const [deletingSkillId, setDeletingSkillId] = useState("");
     const [commandInput, setCommandInput] = useState("");
     const [mcpConfigInput, setMcpConfigInput] = useState("");
     const [installResult, setInstallResult] = useState<SkillInstallResult | null>(null);
@@ -945,6 +949,49 @@ export default function ExtensionsPage() {
         }
         finally {
             setDeletingMcpServer("");
+        }
+    };
+    const deleteSkill = async (skill: ExtensionSkillItem) => {
+        const skillId = String(skill.skillId || "").trim();
+        if (!skillId)
+            return;
+        const skillName = String(skill.name || skillId);
+        const isGlobal = String(skill.visibility || "global") !== "scoped";
+        const confirmed = window.confirm(isZh
+            ? `删除 Skill「${skillName}」及其目录？${isGlobal ? "这是全局 Skill，请确认没有其他工作区依赖它。" : "这只会删除当前工作区作用域的 Skill。"}`
+            : `Delete Skill "${skillName}" and its directory? ${isGlobal ? "This is a global Skill; confirm no workspace depends on it." : "Only the scoped workspace Skill will be deleted."}`);
+        if (!confirmed)
+            return;
+        setDeletingSkillId(skillId);
+        try {
+            const params = new URLSearchParams();
+            params.set("scope", isGlobal ? "global" : "workspace");
+            if (skill.workspaceId)
+                params.set("workspaceId", skill.workspaceId);
+            if (skill.workspacePath)
+                params.set("workspacePath", skill.workspacePath);
+            if (skill.projectId)
+                params.set("projectId", skill.projectId);
+            const res = await fetch(`/api/extensions/skills/${encodeURIComponent(skillId)}?${params.toString()}`, { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(String(data?.detail || data?.error || (isZh ? "删除 Skill 失败。" : "Failed to delete Skill.")));
+            }
+            toast({
+                title: isZh ? "Skill 已删除" : "Skill deleted",
+                description: isZh ? "缓存、索引和 catalog 已刷新。" : "Cache, index and catalog were refreshed.",
+            });
+            await loadData();
+        }
+        catch (error) {
+            toast({
+                title: isZh ? "删除 Skill 失败" : "Failed to delete Skill",
+                description: error instanceof Error ? error.message : (isZh ? "请查看 Engine 日志。" : "Check Engine logs for details."),
+                variant: "destructive",
+            });
+        }
+        finally {
+            setDeletingSkillId("");
         }
     };
     if (loading || !catalog || !health || !configEnvelope) {
@@ -1351,7 +1398,20 @@ export default function ExtensionsPage() {
                                             {skill.projectId ? <div className="rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
                                             <div className="break-all rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500">{skill.path}</div>
                                         </div>
-                                        <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500"/>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                                                title={isZh ? "删除 Skill" : "Delete Skill"}
+                                                onClick={() => void deleteSkill(skill)}
+                                                disabled={!skill.skillId || deletingSkillId === skill.skillId}
+                                            >
+                                                {deletingSkillId === skill.skillId ? <Loader2 className="h-4 w-4 animate-spin"/> : <Trash2 className="h-4 w-4"/>}
+                                            </Button>
+                                            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500"/>
+                                        </div>
                                     </div>
                                 </div>)))}
                     </div>

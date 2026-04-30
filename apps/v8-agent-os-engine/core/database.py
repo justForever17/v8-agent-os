@@ -256,6 +256,8 @@ class DatabaseManager:
                     approved_at TIMESTAMP,
                     disabled_at TIMESTAMP,
                     revoked_at TIMESTAMP,
+                    active INTEGER DEFAULT 1,
+                    orphaned_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -848,6 +850,12 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE messages ADD COLUMN agent_avatar TEXT")
                 if 'agent_role_label' not in columns:
                     conn.execute("ALTER TABLE messages ADD COLUMN agent_role_label TEXT")
+                cursor.execute("PRAGMA table_info(skill_safety_reviews)")
+                skill_review_columns = [row['name'] for row in cursor.fetchall()]
+                if 'active' not in skill_review_columns:
+                    conn.execute("ALTER TABLE skill_safety_reviews ADD COLUMN active INTEGER DEFAULT 1")
+                if 'orphaned_at' not in skill_review_columns:
+                    conn.execute("ALTER TABLE skill_safety_reviews ADD COLUMN orphaned_at TIMESTAMP")
                 if 'images' not in columns:
                     conn.execute("ALTER TABLE messages ADD COLUMN images TEXT")
                 if 'metadata_json' not in columns:
@@ -2361,6 +2369,8 @@ class DatabaseManager:
             else:
                 data[output_key] = fallback
         data["disabled"] = bool(data.get("disabled"))
+        if "active" in data:
+            data["active"] = bool(data.get("active"))
         return data
 
     def upsert_skill_safety_review(
@@ -2410,7 +2420,7 @@ class DatabaseManager:
                         manifest_hash = ?, static_verdict = ?, effective_verdict = ?,
                         user_override = ?, disabled = ?, scan_payload_json = ?, llm_review_json = ?,
                         reasons_json = ?, flagged_files_json = ?, finding_categories_json = ?,
-                        reviewed_at = ?, updated_at = CURRENT_TIMESTAMP
+                        reviewed_at = ?, active = 1, orphaned_at = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE identity_key = ? AND content_hash = ?
                     ''',
                     (
@@ -2440,8 +2450,8 @@ class DatabaseManager:
                     (id, skill_id, skill_name, skill_path, instruction_path, identity_key, content_hash,
                      manifest_hash, static_verdict, effective_verdict, user_override, disabled,
                      scan_payload_json, llm_review_json, reasons_json, flagged_files_json,
-                     finding_categories_json, reviewed_at, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                     finding_categories_json, reviewed_at, active, orphaned_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     ''',
                     (
                         review_id,
@@ -2512,6 +2522,36 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return [self._skill_safety_review_from_row(row) for row in cursor.fetchall()]
+
+    def mark_skill_safety_reviews_inactive(
+        self,
+        *,
+        skill_path: str,
+        instruction_path: str | None = None,
+    ) -> int:
+        now = latest_utc_iso()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if instruction_path:
+                cursor.execute(
+                    '''
+                    UPDATE skill_safety_reviews
+                    SET active = 0, orphaned_at = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE skill_path = ? OR instruction_path = ?
+                    ''',
+                    (now, skill_path, instruction_path),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    UPDATE skill_safety_reviews
+                    SET active = 0, orphaned_at = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE skill_path = ?
+                    ''',
+                    (now, skill_path),
+                )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def update_skill_safety_review_override(
         self,

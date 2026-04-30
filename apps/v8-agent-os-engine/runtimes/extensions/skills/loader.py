@@ -27,7 +27,7 @@ from runtimes.memory.project_registry import project_registry_service
 
 
 _PROFILE_LLM_TIMEOUT_SECONDS = 6.0
-_SKILLS_CACHE_SCHEMA_VERSION = 10
+_SKILLS_CACHE_SCHEMA_VERSION = 11
 _PRIMARY_ARTIFACT_LIMIT = 2
 _PRIMARY_OPERATION_LIMIT = 3
 _SECONDARY_HINT_LIMIT = 4
@@ -1613,8 +1613,11 @@ class SkillLoader:
                 instruction_path = cls._normalize_path(skill_file)
                 skill_root = cls._normalize_path(skill_file.parent)
                 key = instruction_path
+                content_hash = cls._file_sha1(skill_file)
+                manifest_hash = cls._skill_directory_manifest_hash(skill_file.parent, skill_file)
                 manifest[key] = {
                     "key": key,
+                    "manifestKey": key,
                     "instructionPath": instruction_path,
                     "skillRoot": skill_root,
                     "folder": skill_file.parent.name,
@@ -1626,6 +1629,8 @@ class SkillLoader:
                     "projectId": str(descriptor.get("projectId") or "").strip() or None,
                     "mtimeNs": int(stat.st_mtime_ns),
                     "size": int(stat.st_size),
+                    "contentHash": content_hash,
+                    "manifestHash": manifest_hash,
                 }
         return manifest
 
@@ -1641,6 +1646,42 @@ class SkillLoader:
             digest.update(str(item.get("rootPath") or "").encode("utf-8"))
             digest.update(str(item.get("mtimeNs") or "").encode("utf-8"))
             digest.update(str(item.get("size") or "").encode("utf-8"))
+            digest.update(str(item.get("contentHash") or "").encode("utf-8"))
+            digest.update(str(item.get("manifestHash") or "").encode("utf-8"))
+        return digest.hexdigest()
+
+    @classmethod
+    def _file_sha1(cls, path: Path) -> str:
+        try:
+            return hashlib.sha1(path.read_bytes()).hexdigest()
+        except Exception:
+            return ""
+
+    @classmethod
+    def _skill_directory_manifest_hash(cls, skill_root: Path, instruction_path: Path) -> str:
+        digest = hashlib.sha1()
+        tracked_paths: list[Path] = [instruction_path]
+        for subdir_name in ("references", "scripts", "assets", "templates", "examples"):
+            subdir = skill_root / subdir_name
+            if not subdir.exists() or not subdir.is_dir():
+                continue
+            tracked_paths.extend(path for path in sorted(subdir.rglob("*")) if path.is_file())
+        seen: set[str] = set()
+        for path in tracked_paths:
+            normalized = cls._normalize_path(path)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            try:
+                stat = path.stat()
+                relative = path.relative_to(skill_root).as_posix()
+            except Exception:
+                continue
+            digest.update(relative.encode("utf-8"))
+            digest.update(str(int(stat.st_mtime_ns)).encode("utf-8"))
+            digest.update(str(int(stat.st_size)).encode("utf-8"))
+            if path == instruction_path:
+                digest.update(cls._file_sha1(path).encode("utf-8"))
         return digest.hexdigest()
 
     @classmethod
@@ -1656,7 +1697,7 @@ class SkillLoader:
 
     @classmethod
     def _entry_manifest_key(cls, entry: dict[str, Any]) -> str:
-        return cls._normalize_path(entry.get("instructionPath"))
+        return cls._normalize_path(entry.get("manifestKey") or entry.get("instructionPath"))
 
     @classmethod
     def _remember_recent_skill_discovery(
@@ -1700,6 +1741,58 @@ class SkillLoader:
             {key: value for key, value in item.items() if key != "_observedTs"}
             for item in cls._recent_skill_discovery
         ]
+
+    @classmethod
+    def _build_alias_snapshot(cls, entry: dict[str, Any]) -> dict[str, Any]:
+        capability_profile = dict(entry.get("capabilityProfile") or {})
+        theme_profile = dict(entry.get("themeProfile") or {})
+        capability_tags = dict(entry.get("capabilityTags") or {})
+        language_aliases = cls._normalize_hint_items(capability_tags.get("languageAliases"))
+        aliases = cls._normalize_hint_items(
+            [
+                str(entry.get("name") or entry.get("skillName") or ""),
+                str(entry.get("folder") or ""),
+                *list(entry.get("aliases") or []),
+                *list(entry.get("triggers") or []),
+                *list(entry.get("keywords") or []),
+                *list(entry.get("tags") or []),
+                *language_aliases,
+            ]
+        )
+        operation_tags = cls._normalize_hint_items(
+            [
+                *list(capability_profile.get("primaryOperations") or []),
+                *list(capability_profile.get("secondaryOperationHints") or []),
+                *list(capability_tags.get("operationTags") or []),
+            ]
+        )
+        artifact_types = cls._normalize_hint_items(
+            [
+                *list(capability_profile.get("primaryArtifactTypes") or []),
+                *list(capability_profile.get("secondaryArtifactHints") or []),
+                *list(capability_tags.get("artifactTypes") or []),
+            ]
+        )
+        theme_tags = cls._normalize_hint_items(
+            [
+                *list(theme_profile.get("primaryThemes") or []),
+                *list(theme_profile.get("secondaryThemeTags") or []),
+                *list(capability_tags.get("topicThemes") or []),
+            ]
+        )
+        snapshot = {
+            "skillName": str(entry.get("name") or entry.get("skillName") or "").strip(),
+            "wakeWords": aliases[:32],
+            "aliases": aliases[:64],
+            "languageAliases": language_aliases[:32],
+            "operationTags": operation_tags[:32],
+            "artifactTypes": artifact_types[:24],
+            "themeTags": theme_tags[:32],
+        }
+        snapshot["signature"] = hashlib.sha1(
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        return snapshot
 
     @classmethod
     def _is_valid_capability_profile(cls, profile: Any) -> bool:
@@ -1852,6 +1945,10 @@ class SkillLoader:
             "themeProfile": dict(item.get("themeProfile") or {}),
             "capabilityTags": dict(item.get("capabilityTags") or {}),
             "safety": dict(item.get("safety") or {}),
+            "manifestKey": str(item.get("manifestKey") or item.get("instructionPath") or "").strip(),
+            "contentHash": str(item.get("contentHash") or "").strip(),
+            "manifestHash": str(item.get("manifestHash") or "").strip(),
+            "aliasSnapshot": dict(item.get("aliasSnapshot") or {}),
             "sourceType": source_type,
             "visibility": str(item.get("visibility") or "global").strip() or "global",
             "workspacePath": cls._normalize_path(item.get("workspacePath")),
@@ -2143,8 +2240,11 @@ class SkillLoader:
                 continue
             instruction_path = cls._normalize_path(skill_file)
             skill_root = cls._normalize_path(skill_file.parent)
+            content_hash = cls._file_sha1(skill_file)
+            manifest_hash = cls._skill_directory_manifest_hash(skill_file.parent, skill_file)
             manifest[instruction_path] = {
                 "key": instruction_path,
+                "manifestKey": instruction_path,
                 "instructionPath": instruction_path,
                 "skillRoot": skill_root,
                 "folder": skill_file.parent.name,
@@ -2156,12 +2256,101 @@ class SkillLoader:
                 "projectId": str(root_descriptor.get("projectId") or "").strip() or None,
                 "mtimeNs": int(stat.st_mtime_ns),
                 "size": int(stat.st_size),
+                "contentHash": content_hash,
+                "manifestHash": manifest_hash,
             }
         return manifest
 
     @classmethod
-    def _scan_single_root_descriptor(cls, descriptor: dict[str, Any]) -> dict[str, dict]:
-        return cls._scan_root_descriptors([descriptor])
+    def _refresh_alias_snapshot(cls, entry: dict[str, Any]) -> dict[str, Any]:
+        next_entry = dict(entry)
+        next_entry["aliasSnapshot"] = cls._build_alias_snapshot(next_entry)
+        return next_entry
+
+    @classmethod
+    def _scan_single_skill_descriptor(
+        cls,
+        *,
+        descriptor: dict[str, Any],
+        manifest_item: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        instruction_path = Path(str(manifest_item.get("instructionPath") or ""))
+        if not instruction_path.exists() or not instruction_path.is_file():
+            return None
+        try:
+            content = instruction_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            print(f"[SkillLoader] Error reading {instruction_path}: {exc}")
+            return None
+        entry = cls._build_skill_entry(
+            folder_name=str(manifest_item.get("folder") or instruction_path.parent.name),
+            file_path=instruction_path,
+            descriptor=descriptor,
+            content=content,
+        )
+        if entry is None:
+            return None
+        entry["manifestKey"] = str(manifest_item.get("manifestKey") or manifest_item.get("key") or entry.get("instructionPath") or "")
+        entry["contentHash"] = str(manifest_item.get("contentHash") or "")
+        entry["manifestHash"] = str(manifest_item.get("manifestHash") or "")
+        entry["aliasSnapshot"] = cls._build_alias_snapshot(entry)
+        try:
+            annotated = annotate_skill_entries([entry], record_reviews=True)
+            if isinstance(annotated, list) and annotated:
+                entry = dict(annotated[0])
+        except Exception as exc:
+            print(f"[SkillLoader] Safety single-skill annotation failed for {entry.get('name')}: {exc}")
+        print(
+            f"[SkillLoader] Refreshed Skill: {entry.get('skillName') or entry.get('name')} "
+            f"({entry.get('sourceType')})"
+        )
+        return entry
+
+    @classmethod
+    def _scan_single_root_descriptor(
+        cls,
+        descriptor: dict[str, Any],
+        *,
+        manifest: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, dict]:
+        current_manifest = manifest if manifest is not None else cls._compute_root_manifest(descriptor)
+        root_path = cls._descriptor_cache_key(descriptor)
+        previous_state = cls._root_inventory_states.get(root_path) or {}
+        previous_manifest = {
+            str(key): dict(value)
+            for key, value in dict(previous_state.get("manifest") or {}).items()
+            if isinstance(value, dict)
+        }
+        previous_registry_by_manifest_key = {
+            cls._entry_manifest_key(item): dict(item)
+            for item in dict(previous_state.get("registry") or {}).values()
+            if cls._entry_manifest_key(item)
+        }
+        registry: dict[str, dict] = {}
+        for manifest_key in sorted(current_manifest):
+            manifest_item = dict(current_manifest.get(manifest_key) or {})
+            previous_item = previous_manifest.get(manifest_key) or {}
+            previous_entry = previous_registry_by_manifest_key.get(manifest_key)
+            unchanged = (
+                previous_entry is not None
+                and str(previous_item.get("contentHash") or "") == str(manifest_item.get("contentHash") or "")
+                and str(previous_item.get("manifestHash") or "") == str(manifest_item.get("manifestHash") or "")
+                and str(previous_item.get("mtimeNs") or "") == str(manifest_item.get("mtimeNs") or "")
+                and str(previous_item.get("size") or "") == str(manifest_item.get("size") or "")
+            )
+            if unchanged:
+                reused = dict(previous_entry)
+                reused["manifestKey"] = manifest_key
+                reused["contentHash"] = str(manifest_item.get("contentHash") or reused.get("contentHash") or "")
+                reused["manifestHash"] = str(manifest_item.get("manifestHash") or reused.get("manifestHash") or "")
+                if not isinstance(reused.get("aliasSnapshot"), dict) or not reused.get("aliasSnapshot"):
+                    reused = cls._refresh_alias_snapshot(reused)
+                registry[str(reused.get("skillId"))] = reused
+                continue
+            entry = cls._scan_single_skill_descriptor(descriptor=descriptor, manifest_item=manifest_item)
+            if entry is not None:
+                registry[str(entry.get("skillId"))] = entry
+        return registry
 
     @classmethod
     def _visible_root_revision_key(cls, descriptors: list[dict[str, Any]]) -> str:
@@ -2458,7 +2647,10 @@ class SkillLoader:
             has_examples=bool(examples_dir),
             has_assets=bool(assets_dir),
         )
-        return {
+        manifest_key = normalized_instruction_path
+        content_hash = hashlib.sha1(content.encode("utf-8")).hexdigest()
+        manifest_hash = cls._skill_directory_manifest_hash(skill_root, file_path)
+        entry = {
             "skillId": cls._stable_skill_id(
                 source_type=source_type,
                 root_path=normalized_skill_root,
@@ -2485,6 +2677,9 @@ class SkillLoader:
             "capabilityProfile": capability_profile,
             "themeProfile": theme_profile,
             "capabilityTags": capability_tags,
+            "manifestKey": manifest_key,
+            "contentHash": content_hash,
+            "manifestHash": manifest_hash,
             "sourceType": source_type,
             "visibility": str(descriptor.get("visibility") or "global").strip() or "global",
             "workspacePath": cls._normalize_path(descriptor.get("workspacePath")),
@@ -2492,6 +2687,8 @@ class SkillLoader:
             "projectId": str(descriptor.get("projectId") or "").strip() or None,
             "rootPath": cls._normalize_path(descriptor.get("rootPath") or normalized_skill_root),
         }
+        entry["aliasSnapshot"] = cls._build_alias_snapshot(entry)
+        return entry
 
     @classmethod
     def _scan_root_descriptors(cls, descriptors: list[dict[str, Any]]) -> dict[str, dict]:
@@ -2520,6 +2717,7 @@ class SkillLoader:
                 )
                 if entry is None:
                     continue
+                entry["aliasSnapshot"] = cls._build_alias_snapshot(entry)
                 registry[str(entry.get("skillId"))] = entry
                 print(
                     f"[SkillLoader] Successfully loaded Skill: {entry.get('skillName')} "
@@ -2887,16 +3085,14 @@ class SkillLoader:
             root_path = cls._descriptor_cache_key(descriptor)
             if not root_path or root_path in excluded_root_paths:
                 continue
+            descriptor_manifest = cls._compute_root_manifest(descriptor)
             live_registry = cls._scan_single_root_descriptor(descriptor)
             merged_registry.update(live_registry)
             missing_root_paths.append(root_path)
             fingerprint_payload.append(
                 {
                     "rootPath": root_path,
-                    "rootRevision": cls._root_manifest_fingerprint(
-                        descriptor,
-                        cls._compute_root_manifest(descriptor),
-                    ),
+                    "rootRevision": cls._root_manifest_fingerprint(descriptor, descriptor_manifest),
                 }
             )
         snapshot = cls._inventory_snapshot(
@@ -2941,6 +3137,91 @@ class SkillLoader:
         return dict(cls._skills_registry)
 
     @classmethod
+    def delete_skill(
+        cls,
+        skill_id: str,
+        *,
+        scope: str | None = None,
+        workspace_id: str | None = None,
+        workspace_path: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_skill_id = str(skill_id or "").strip()
+        if not normalized_skill_id:
+            raise ValueError("skillId is required")
+        inventory = cls.get_inventory(
+            force_refresh=True,
+            include_scoped=True,
+            explicit_workspace_id=workspace_id,
+            explicit_workspace_path=workspace_path,
+            explicit_project_id=project_id,
+        )
+        registry = dict(inventory.get("registry") or {})
+        skill = dict(registry.get(normalized_skill_id) or {})
+        if not skill:
+            raise FileNotFoundError(f"Skill '{normalized_skill_id}' was not found in the visible inventory")
+        normalized_scope = str(scope or "").strip().lower()
+        if normalized_scope == "global" and str(skill.get("visibility") or "").strip().lower() == "scoped":
+            raise PermissionError("Skill is scoped; pass scope=workspace to delete it")
+        if normalized_scope == "workspace" and str(skill.get("visibility") or "").strip().lower() != "scoped":
+            raise PermissionError("Skill is global; pass scope=global or omit scope to delete it")
+
+        skill_root = Path(cls._normalize_path(skill.get("skillRoot") or skill.get("path")))
+        instruction_path_text = cls._normalize_path(skill.get("instructionPath"))
+        instruction_path = Path(instruction_path_text) if instruction_path_text else None
+        if not skill_root.exists() or not skill_root.is_dir() or not (skill_root / "SKILL.md").exists():
+            raise FileNotFoundError(f"Skill directory for '{normalized_skill_id}' does not exist")
+        if instruction_path is not None and instruction_path.exists() and instruction_path.parent != skill_root:
+            raise PermissionError("Skill instruction path is outside the skill root")
+
+        root_descriptors = cls._dedupe_root_descriptors(list(inventory.get("rootDescriptors") or []))
+        owner_descriptor: dict[str, Any] | None = None
+        for descriptor in root_descriptors:
+            descriptor_root = Path(cls._descriptor_cache_key(descriptor))
+            try:
+                if skill_root.parent.resolve(strict=False) == descriptor_root.resolve(strict=False):
+                    owner_descriptor = descriptor
+                    break
+            except Exception:
+                if cls._normalize_path(skill_root.parent) == cls._normalize_path(descriptor_root):
+                    owner_descriptor = descriptor
+                    break
+        if owner_descriptor is None:
+            raise PermissionError("Skill is not under a V8-managed skill root")
+
+        removed = {
+            "skillId": normalized_skill_id,
+            "skillName": skill.get("name") or skill.get("skillName"),
+            "skillRoot": cls._normalize_path(skill_root),
+            "instructionPath": cls._normalize_path(skill_root / "SKILL.md"),
+            "sourceType": skill.get("sourceType"),
+            "visibility": skill.get("visibility"),
+        }
+        inactive_review_count = 0
+        try:
+            from erc.safety_guardian import safety_guardian
+
+            inactive_review_count = safety_guardian.mark_skill_safety_reviews_inactive(
+                skill_root=str(removed["skillRoot"] or ""),
+                instruction_path=str(removed["instructionPath"] or ""),
+            )
+        except Exception:
+            inactive_review_count = 0
+        shutil.rmtree(skill_root)
+        refresh_result = cls.refresh_root_descriptors_if_changed(
+            [owner_descriptor],
+            compare_existing=False,
+            timeout_ms=None,
+        )
+        return {
+            "removed": removed,
+            "refresh": refresh_result,
+            "ledgerRetained": True,
+            "ledgerState": "inactive_orphan_by_missing_path",
+            "inactiveReviewCount": inactive_review_count,
+        }
+
+    @classmethod
     def _skill_registry_signature(cls, item: dict[str, Any]) -> str:
         instruction_path = Path(str(item.get("instructionPath") or item.get("path") or "").strip())
         parts = [
@@ -2950,6 +3231,9 @@ class SkillLoader:
             str(instruction_path),
             str(item.get("sourceType") or ""),
             str(item.get("rootPath") or ""),
+            str(item.get("contentHash") or ""),
+            str(item.get("manifestHash") or ""),
+            str((item.get("aliasSnapshot") or {}).get("signature") if isinstance(item.get("aliasSnapshot"), dict) else ""),
         ]
         if instruction_path.exists() and instruction_path.is_file():
             try:
@@ -3289,16 +3573,7 @@ def fetch_skill_instructions(skill_name: str) -> str:
                 skill_root=skill.get("path") or "",
                 instruction_path=skill.get("instructionPath") or "",
             )
-            static_verdict = str(scan_payload.get("verdict") or "").strip().lower()
-            if static_verdict == "review" and bool(scan_payload.get("llmReviewRecommended")):
-                review_payload = safety_guardian.review_skill_scan_with_llm(
-                    skill_name=skill.get("name") or skill_name,
-                    skill_root=skill.get("path") or "",
-                    scan_payload=scan_payload,
-                )
-                scan_payload = safety_guardian.apply_skill_llm_review(scan_payload, review_payload)
-            else:
-                scan_payload["reviewMode"] = "rules_only"
+            scan_payload["reviewMode"] = "rules_only_fetch_fallback"
             ledger_review = safety_guardian.record_skill_safety_review(
                 skill_id=str(skill.get("skillId") or ""),
                 skill_name=skill.get("name") or skill_name,

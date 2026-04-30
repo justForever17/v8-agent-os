@@ -2179,6 +2179,17 @@ class SafetyGuardian:
     def list_skill_safety_reviews(self, *, status: str | None = None, limit: int = 100) -> list[Dict[str, Any]]:
         return db.list_skill_safety_reviews(status=status, limit=limit)
 
+    def mark_skill_safety_reviews_inactive(
+        self,
+        *,
+        skill_root: str,
+        instruction_path: str | None = None,
+    ) -> int:
+        return db.mark_skill_safety_reviews_inactive(
+            skill_path=str(skill_root or ""),
+            instruction_path=str(instruction_path or "") or None,
+        )
+
     def approve_skill_safety_review(self, review_id: str) -> Dict[str, Any] | None:
         return db.update_skill_safety_review_override(
             review_id=review_id,
@@ -2529,6 +2540,11 @@ class SafetyGuardian:
             included.append(instruction_path)
         excluded_paths = {instruction_path} if instruction_path is not None else set()
         included.extend(self._collect_skill_scan_candidates(root, excluded_paths={item for item in excluded_paths if item is not None}))
+        for subdir_name in ("references", "scripts", "assets", "templates", "examples"):
+            subdir = root / subdir_name
+            if not subdir.exists() or not subdir.is_dir():
+                continue
+            included.extend(path for path in subdir.rglob("*") if path.is_file())
         seen: set[str] = set()
         for path in sorted(included, key=lambda item: str(item).lower()):
             normalized = self._normalize_path(str(path))

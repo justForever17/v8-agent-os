@@ -70,3 +70,29 @@ async def reload_extensions():
         return {"status": "success", **payload}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/extensions/skills/{skill_id}")
+async def delete_extension_skill(
+    skill_id: str,
+    scope: str | None = None,
+    workspaceId: str | None = None,
+    workspacePath: str | None = None,
+    projectId: str | None = None,
+):
+    try:
+        return extensions_runtime_service.delete_skill(
+            skill_id,
+            scope=scope,
+            workspace_id=workspaceId,
+            workspace_path=workspacePath,
+            project_id=projectId,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

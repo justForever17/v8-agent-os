@@ -1892,6 +1892,11 @@ class SkillLoader:
             registry[str(normalized.get("skillId"))] = normalized
         if not registry:
             return False
+        if any(not isinstance(item.get("safety"), dict) or not item.get("safety") for item in registry.values()):
+            try:
+                registry = annotate_skill_entries(registry, record_reviews=True)  # type: ignore[assignment]
+            except Exception:
+                pass
 
         cls._skills_registry = registry
         cls._skills_fingerprint = str(payload.get("fingerprint") or "").strip()

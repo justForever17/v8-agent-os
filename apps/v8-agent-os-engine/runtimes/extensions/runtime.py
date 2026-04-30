@@ -2258,6 +2258,8 @@ class ExtensionsRuntimeService:
                     "templatesDir": str(entry.get("templatesDir") or "").strip(),
                     "examplesDir": str(entry.get("examplesDir") or "").strip(),
                     "availableFiles": list(entry.get("availableFiles") or []),
+                    "capabilityTags": dict(entry.get("capabilityTags") or item.get("capabilityTags") or {}),
+                    "safety": dict(entry.get("safety") or item.get("safety") or {}),
                 }
             )
         return normalized

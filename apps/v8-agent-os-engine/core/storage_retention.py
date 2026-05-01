@@ -19,7 +19,7 @@ from core.v8_agent_os_paths import (
 )
 
 
-ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "paused"}
+ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 LOG_FILE_SUFFIXES = {".log", ".jsonl", ".html", ".txt"}
 STATE_LOG_TABLES = (
@@ -396,7 +396,7 @@ class StorageRetentionService:
             return protected
         with _connect(STATE_DB_PATH) as conn:
             for row in conn.execute(
-                "SELECT id, session_id, thread_id FROM run_records WHERE status IN ('queued','running','waiting_approval','waiting_input','paused')"
+                "SELECT id, session_id, thread_id FROM run_records WHERE status IN ('queued','running','waiting_approval','waiting_input','waiting_external_tool','paused')"
             ).fetchall():
                 for key in ("id", "session_id", "thread_id"):
                     value = row[key]

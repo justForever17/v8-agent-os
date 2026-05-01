@@ -52,8 +52,9 @@ def build_liveness_view(
 
     stalled = latest_topic in {"run.watchdog.stream_idle_timeout", "run.liveness.stalled"}
     blocked = bool(lane_view.get("state") == "queued")
-    waiting = run_status in {"waiting_approval", "waiting_input", "paused"} or workflow_status in {
+    waiting = run_status in {"waiting_approval", "waiting_input", "waiting_external_tool", "paused"} or workflow_status in {
         "waiting_approval",
+        "waiting_external_tool",
         "paused",
     }
 

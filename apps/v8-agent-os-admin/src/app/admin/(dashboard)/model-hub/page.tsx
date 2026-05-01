@@ -138,6 +138,7 @@ const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string;
 ];
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
+const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
 
 function previewModelsUrl(provider?: CatalogProvider | null): string {
     if (!provider?.baseUrl) return "";
@@ -1313,6 +1314,20 @@ export default function ModelHubPage() {
                                     <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
                                     <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.maxTokensPlaceholder")}/>
                                 </div>
+                            </div>
+                        ) : RETRIEVAL_MODEL_TYPES.has(modelType) ? (
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <div className="space-y-2">
+                                    <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.retrievalInputWindow")}</Label>
+                                    <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.retrievalInputWindowPlaceholder")}/>
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.retrievalMaxTokens")}</Label>
+                                    <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.retrievalMaxTokensPlaceholder")}/>
+                                </div>
+                                <p className="md:col-span-2 text-xs text-muted-foreground">
+                                    {t("app.admin.dashboard.model.hub.page.retrievalInputWindowHelp")}
+                                </p>
                             </div>
                         ) : MEDIA_MODEL_TYPES.has(modelType) ? (
                             <div>

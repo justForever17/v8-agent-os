@@ -29,6 +29,7 @@ class ExternalToolFunctionSpec(BaseModel):
     preconditions: List[str] = Field(default_factory=list, description="Important client-owned tool preconditions")
     recovery_hints: List[str] = Field(default_factory=list, alias="recoveryHints", description="Failure recovery hints for the supervisor")
     client_owned_workspace: bool = Field(default=False, alias="clientOwnedWorkspace", description="Whether the tool operates in the external client's workspace")
+    raw_schema_ref: Optional[str] = Field(default=None, alias="rawSchemaRef", description="Raw evidence ref for the original external tool schema")
 
 
 class ExternalToolSpec(BaseModel):
@@ -125,6 +126,8 @@ class ChatRequestData(BaseModel):
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
+    disable_extensions_prefilter: Optional[bool] = Field(default=None, alias="disableExtensionsPrefilter")
+    compat_ingress_diagnostics: Optional[Dict[str, Any]] = Field(default=None, alias="compatIngressDiagnostics")
 
 
 class ChatRequest(BaseModel):

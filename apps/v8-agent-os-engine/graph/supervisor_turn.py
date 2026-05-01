@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 from .supervisor_context import (
     apply_passive_rag_injection,
@@ -48,6 +49,28 @@ def _estimate_memory_context_chars(diagnostics: dict) -> int:
         if isinstance(value, list):
             total += sum(len(str(item)) for item in value[:20])
     return total
+
+
+def _is_network_supervisor_compat_transport(state) -> bool:
+    transport = str((state or {}).get("transport") or "").strip()
+    return transport in {"network_supervisor_openai", "network_supervisor_anthropic"}
+
+
+def _build_neutral_extensions_route(visible_supervisor_tools):
+    return SimpleNamespace(
+        filtered_tools=list(visible_supervisor_tools or []),
+        prompt_addition="",
+        selected_skill_ids=[],
+        selected_skill_names=[],
+        exposed_mcp_tool_names=[],
+        skill_root_descriptors=[],
+        candidate_summary={
+            "skillEntries": [],
+            "pluginHostTools": [],
+            "compatIngressFiltering": True,
+            "reason": "network_supervisor_compat_disables_v8_extensions_prefilter",
+        },
+    )
 
 
 def _attach_route_context_to_response(response, *, user_query: str, route_bundle, selected_tools) -> None:
@@ -120,14 +143,19 @@ def execute_supervisor_turn(
             route_context=dict(state.get("current_route_context") or {}),
         )
         route_started_at = time.perf_counter()
-        route_bundle = extensions_runtime_service.build_supervisor_route(
-            user_query=user_query,
-            supervisor_tools=visible_supervisor_tools,
-            loaded_agents=loaded_agents,
-        )
-        route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
+        if _is_network_supervisor_compat_transport(state):
+            route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
+            route_duration_ms = 0.0
+        else:
+            route_bundle = extensions_runtime_service.build_supervisor_route(
+                user_query=user_query,
+                supervisor_tools=visible_supervisor_tools,
+                loaded_agents=loaded_agents,
+            )
+            route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
         filtered_supervisor_tools = route_bundle.filtered_tools
-        extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
+        if not _is_network_supervisor_compat_transport(state):
+            extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
 
         reflex_decision = runtime_reflex_service.evaluate(
             user_query=user_query,

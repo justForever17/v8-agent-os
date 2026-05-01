@@ -29,7 +29,7 @@ def derive_recovery_class(
 
     if run_type == "chat":
         recovery_class = "resume_supported"
-        reason = "聊天运行支持在等待输入、暂停或人工确认后继续。"
+        reason = "聊天运行支持在等待输入、等待外部工具、暂停或人工确认后继续。"
     elif run_type == "automation_agent" or (run_type == "automation" and action_type == "agent"):
         recovery_class = "resume_supported"
         reason = "基于 Agent 的自动化任务支持继续执行。"
@@ -49,7 +49,10 @@ def derive_recovery_class(
         recovery_class = "retry_only"
         reason = "当前运行支持重试，但不保证从原中断点继续。"
 
-    can_resume = recovery_class == "resume_supported" and (run_status in {"paused", "waiting_approval", "waiting_input"} or workflow_status in {"paused", "waiting_approval"})
+    can_resume = recovery_class == "resume_supported" and (
+        run_status in {"paused", "waiting_approval", "waiting_input", "waiting_external_tool"}
+        or workflow_status in {"paused", "waiting_approval", "waiting_external_tool"}
+    )
     can_retry = recovery_class in {"resume_supported", "retry_only"} and run_status in {
         "failed",
         "recoverable_failed",
@@ -58,6 +61,7 @@ def derive_recovery_class(
         "paused",
         "waiting_input",
         "waiting_approval",
+        "waiting_external_tool",
     }
     can_resubmit = recovery_class == "resubmit_only" or not (can_resume or can_retry)
 

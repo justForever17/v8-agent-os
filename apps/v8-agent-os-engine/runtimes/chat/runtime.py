@@ -4855,11 +4855,15 @@ class ChatRuntime:
             if stream_state is not None:
                 stream_state.active_tool_call_ids.clear()
                 self.persist_final_assistant_message(chat_run, stream_state)
-            chat_run.run_handle.complete(reason="external_tool_requested", node="run_manager")
+            chat_run.run_handle.transition(
+                "waiting_external_tool",
+                reason="external_tool_requested",
+                node="run_manager",
+            )
             return [
                 {
                     "type": "done",
-                    "status": "tool_calls_requested",
+                    "status": "waiting_external_tool",
                     "run_id": chat_run.active_run_id,
                     "payload": dict(interrupted_signal.get("payload") or {}),
                 }

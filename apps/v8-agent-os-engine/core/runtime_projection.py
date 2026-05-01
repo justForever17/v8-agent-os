@@ -26,6 +26,7 @@ STATUS_LABELS = {
     "running": "进行中",
     "waiting_approval": "等待审批",
     "waiting_input": "等待继续",
+    "waiting_external_tool": "等待外部工具",
     "paused": "已暂停",
     "recoverable_failed": "可恢复失败",
     "failed": "失败",
@@ -1430,9 +1431,9 @@ def build_projection_controls(
     has_pending_approval = any(item.get("status") == "pending" for item in approvals)
     run_id = workflow.get("rootRunId")
 
-    can_resume = recoverable and workflow_status in {"paused", "waiting_input"}
+    can_resume = recoverable and workflow_status in {"paused", "waiting_input", "waiting_external_tool"}
     can_retry = recoverable and workflow_status in {"recoverable_failed", "failed", "cancelled"}
-    can_interrupt = workflow_status in {"running", "waiting_approval", "paused"}
+    can_interrupt = workflow_status in {"running", "waiting_approval", "waiting_external_tool", "paused"}
     can_open_approval = has_pending_approval
 
     return {

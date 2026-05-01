@@ -138,6 +138,7 @@ class WorkflowLedgerService:
             "running": "running",
             "waiting_approval": "waiting_approval",
             "waiting_input": "recoverable_failed",
+            "waiting_external_tool": "waiting_external_tool",
             "paused": "paused",
             "interrupted": "recoverable_failed",
             "completed": "completed",
@@ -148,6 +149,7 @@ class WorkflowLedgerService:
         recoverable = workflow_status not in {"completed", "cancelled"}
         step_status = {
             "waiting_approval": "waiting_approval",
+            "waiting_external_tool": "waiting_external_tool",
             "paused": "paused",
             "completed": "completed",
             "failed": "failed",
@@ -566,7 +568,7 @@ class WorkflowLedgerService:
             run_id = run_record["id"]
             status = run_record.get("status") or "queued"
             session_id = run_record["session_id"]
-            if status in {"waiting_approval", "paused", "waiting_input"}:
+            if status in {"waiting_approval", "paused", "waiting_input", "waiting_external_tool"}:
                 workflow = db.get_workflow_ledger_for_run(run_id)
                 if workflow:
                     db.update_workflow_ledger(

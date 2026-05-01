@@ -312,7 +312,10 @@ def build_engine_chat_request_from_anthropic(
         workspaceId=workspace_id,
         scopeHint=scope_hint,
         scopeMode=scope_mode or "explicit",
-        data=ChatRequestData(),
+        data=ChatRequestData(
+            disableExtensionsPrefilter=True,
+            compatIngressDiagnostics=ingress.diagnostics,
+        ),
     )
 
 

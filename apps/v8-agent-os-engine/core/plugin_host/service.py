@@ -6849,7 +6849,7 @@ Get-CimInstance Win32_Process |
         elif run_status in {"failed", "cancelled"}:
             stage = "execution_failed"
             reason = error_message or "最近一次真实入站已经进入 V8，但执行链在回复前失败。"
-        elif run_status in {"queued", "running", "waiting_input", "waiting_approval", "paused"}:
+        elif run_status in {"queued", "running", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"}:
             stage = "run_in_progress"
             reason = "最近一次真实入站已经进入 V8，当前仍在执行或等待进一步处理。"
         elif manual_push_run_id:

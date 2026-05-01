@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional, Type, List
 import time
 import re
+from datetime import datetime, timezone
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -36,6 +37,7 @@ from erc.runtime_context import get_runtime_context
 from langchain_core.embeddings import Embeddings
 
 _EMBEDDING_OBSERVED_LIMITS: Dict[str, int] = {}
+_RERANK_OBSERVED_QUERY_LIMITS: Dict[str, int] = {}
 _TOKEN_LIMIT_RE = re.compile(r"(?:maximum token length|max(?:imum)?(?: input)? tokens?|token limit)[^\d]{0,40}(\d{3,7})", re.IGNORECASE)
 
 
@@ -45,6 +47,53 @@ def _extract_observed_token_limit(error_text: str) -> int | None:
     if not matches:
         return None
     return min(matches)
+
+
+def _classify_embedding_provider_error(status_code: int, error_text: str) -> str:
+    text = str(error_text or "").lower()
+    if _extract_observed_token_limit(error_text) or "input at index" in text or "maximum token length" in text:
+        return "input_limit_exceeded"
+    if int(status_code or 0) == 429 or "rate limit" in text or "too many requests" in text:
+        return "rate_limited"
+    if int(status_code or 0) == 401 or "invalid api key" in text or "unauthorized" in text:
+        return "auth_failed"
+    if int(status_code or 0) == 403:
+        return "quota_exceeded" if "quota" in text or "billing" in text else "auth_failed"
+    if "quota" in text or "insufficient" in text or "billing" in text:
+        return "quota_exceeded"
+    if int(status_code or 0) >= 500:
+        return "network_error"
+    return "provider_error"
+
+
+def _classify_rerank_provider_error(status_code: int, error_text: str) -> str:
+    text = str(error_text or "").lower()
+    if _extract_observed_token_limit(error_text) or "query is too long" in text or "document is too long" in text or "maximum token length" in text:
+        return "input_limit_exceeded"
+    if int(status_code or 0) == 429 or "rate limit" in text or "too many requests" in text:
+        return "rate_limited"
+    if int(status_code or 0) == 401 or "invalid api key" in text or "unauthorized" in text:
+        return "auth_failed"
+    if int(status_code or 0) == 403:
+        return "quota_exceeded" if "quota" in text or "billing" in text else "auth_failed"
+    if "quota" in text or "insufficient" in text or "billing" in text:
+        return "quota_exceeded"
+    if int(status_code or 0) >= 500:
+        return "network_error"
+    return "provider_error"
+
+
+def _truncate_text_for_token_limit(text: str, token_limit: int | None, *, label: str = "Text") -> str:
+    limit = int(token_limit or 0)
+    if not limit or not text:
+        return text
+    cjk_heavy = bool(re.search(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", str(text)[:4000]))
+    chars_per_token = 1.0 if cjk_heavy else 2.5
+    max_chars = int(limit * chars_per_token * 0.9)
+    if len(text) <= max_chars:
+        return text
+    print(f"[{label}] ⚠️ Truncating text from {len(text)} to {max_chars} chars (model limit: {limit} tokens)")
+    return text[:max_chars]
 
 # Re-implementing the embedding and reranker wrappers cleanly
 try:
@@ -159,8 +208,56 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
     def _observed_limit_key(self) -> str:
         return "|".join([str(self.provider_id or ""), str(self.endpoint or ""), str(self.model_name or ""), str(self.role or "embedding")])
 
+    def _load_persisted_observed_limit(self) -> int | None:
+        provider_id = str(self.provider_id or "").strip()
+        model_name = str(self.model_name or "").strip()
+        if not provider_id or not model_name:
+            return None
+        try:
+            config = model_control_plane.get_config()
+            provider = dict((config.get("providers") or {}).get(provider_id) or {})
+            models = dict(provider.get("models") or {})
+            meta = dict(models.get(model_name) or {})
+            observed = meta.get("observedInputTokenLimit")
+            if observed:
+                observed_int = int(observed)
+                if observed_int > 0:
+                    _EMBEDDING_OBSERVED_LIMITS[self._observed_limit_key()] = observed_int
+                    return observed_int
+        except Exception:
+            return None
+        return None
+
+    def _persist_observed_limit(self, observed_limit: int) -> None:
+        provider_id = str(self.provider_id or "").strip()
+        model_name = str(self.model_name or "").strip()
+        if not provider_id or not model_name or int(observed_limit or 0) <= 0:
+            return
+        try:
+            config = model_control_plane.get_config()
+            providers = dict(config.get("providers") or {})
+            provider = dict(providers.get(provider_id) or {})
+            models = dict(provider.get("models") or {})
+            if model_name not in models:
+                return
+            meta = dict(models.get(model_name) or {})
+            current = meta.get("observedInputTokenLimit")
+            if current and int(current) > 0 and int(current) <= int(observed_limit):
+                return
+            meta["observedInputTokenLimit"] = int(observed_limit)
+            meta["observedInputTokenLimitSource"] = "provider_error"
+            meta["observedInputTokenLimitAt"] = datetime.now(timezone.utc).isoformat()
+            meta["observedInputTokenLimitEndpoint"] = self.endpoint
+            models[model_name] = meta
+            provider["models"] = models
+            providers[provider_id] = provider
+            config["providers"] = providers
+            model_control_plane.save_config(config)
+        except Exception as exc:
+            print(f"[Embedding] ⚠️ Failed to persist observed input token limit: {exc}")
+
     def _effective_max_tokens(self) -> int | None:
-        observed = _EMBEDDING_OBSERVED_LIMITS.get(self._observed_limit_key())
+        observed = _EMBEDDING_OBSERVED_LIMITS.get(self._observed_limit_key()) or self._load_persisted_observed_limit()
         if observed and observed > 0:
             if self.max_tokens:
                 return min(int(self.max_tokens), int(observed))
@@ -172,7 +269,9 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         limit = int(token_limit or self._effective_max_tokens() or 0)
         if not limit or not text:
             return text
-        max_chars = int(limit * 2.5 * 0.9)
+        cjk_heavy = bool(re.search(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", text[:4000]))
+        chars_per_token = 1.0 if cjk_heavy else 2.5
+        max_chars = int(limit * chars_per_token * 0.9)
         if len(text) > max_chars:
             print(f"[Embedding] ⚠️ Truncating text from {len(text)} to {max_chars} chars (model limit: {limit} tokens)")
             return text[:max_chars]
@@ -211,6 +310,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             current_limit = self._effective_max_tokens()
             if observed_limit and observed_limit > 0 and (not current_limit or observed_limit < int(current_limit)):
                 _EMBEDDING_OBSERVED_LIMITS[self._observed_limit_key()] = int(observed_limit)
+                self._persist_observed_limit(int(observed_limit))
                 print(f"[Embedding] ℹ️ Observed provider input token limit {observed_limit}; retrying with smaller truncation.")
                 retry_texts = [self._truncate_text(t, token_limit=int(observed_limit)) for t in original_texts]
                 retry_payload = dict(payload)
@@ -227,6 +327,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
                 pass
             else:
                 print(f"[Embedding Error] {res.status_code}: {res.text}")
+                error_kind = _classify_embedding_provider_error(int(res.status_code or 0), res.text)
                 model_telemetry_service.record_aux_model_invocation(
                     model_id=self.model_name,
                     provider_id=self.provider_id,
@@ -241,6 +342,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
                     metadata={
                         "documents": len(texts),
                         "observedInputTokenLimit": observed_limit,
+                        "errorKind": error_kind,
                     },
                 )
         if res.status_code != 200:
@@ -283,7 +385,86 @@ class RestReranker(BaseReranker):
         self.provider_name = provider_name or provider_id
         self.role = role
         self.capability_class = capability_class
-        
+
+    def _observed_query_limit_key(self) -> str:
+        return "|".join([str(self.provider_id or ""), str(self.model_name or ""), str(self.role or "reranker")])
+
+    def _load_persisted_observed_query_limit(self) -> int | None:
+        provider_id = str(self.provider_id or "").strip()
+        model_name = str(self.model_name or "").strip()
+        if not provider_id or not model_name:
+            return None
+        try:
+            config = model_control_plane.get_config()
+            provider = dict((config.get("providers") or {}).get(provider_id) or {})
+            models = dict(provider.get("models") or {})
+            meta = dict(models.get(model_name) or {})
+            observed = meta.get("observedRerankQueryTokenLimit")
+            if observed:
+                observed_int = int(observed)
+                if observed_int > 0:
+                    _RERANK_OBSERVED_QUERY_LIMITS[self._observed_query_limit_key()] = observed_int
+                    return observed_int
+        except Exception:
+            return None
+        return None
+
+    def _persist_observed_query_limit(self, observed_limit: int, *, endpoint: str = "") -> None:
+        provider_id = str(self.provider_id or "").strip()
+        model_name = str(self.model_name or "").strip()
+        if not provider_id or not model_name or int(observed_limit or 0) <= 0:
+            return
+        try:
+            config = model_control_plane.get_config()
+            providers = dict(config.get("providers") or {})
+            provider = dict(providers.get(provider_id) or {})
+            models = dict(provider.get("models") or {})
+            if model_name not in models:
+                return
+            meta = dict(models.get(model_name) or {})
+            current = meta.get("observedRerankQueryTokenLimit")
+            if current and int(current) > 0 and int(current) <= int(observed_limit):
+                return
+            meta["observedRerankQueryTokenLimit"] = int(observed_limit)
+            meta["observedRerankQueryTokenLimitSource"] = "provider_error"
+            meta["observedRerankQueryTokenLimitAt"] = datetime.now(timezone.utc).isoformat()
+            meta["observedRerankQueryTokenLimitEndpoint"] = endpoint or (self.endpoints[0] if self.endpoints else "")
+            models[model_name] = meta
+            provider["models"] = models
+            providers[provider_id] = provider
+            config["providers"] = providers
+            model_control_plane.save_config(config)
+        except Exception as exc:
+            print(f"[Reranker] ⚠️ Failed to persist observed query token limit: {exc}")
+
+    def _effective_query_token_limit(self) -> int:
+        observed = _RERANK_OBSERVED_QUERY_LIMITS.get(self._observed_query_limit_key()) or self._load_persisted_observed_query_limit()
+        configured = int(self.max_tokens) if self.max_tokens else 8192
+        default_query = min(max(256, configured // 8), 2048)
+        if observed and observed > 0:
+            return min(default_query, int(observed))
+        return default_query
+
+    def _prepare_payload_documents(self, query: str, documents: list[str], *, query_limit: int | None = None) -> tuple[str, list[str], dict[str, Any]]:
+        total_budget = int(self.max_tokens or 8192)
+        effective_query_limit = int(query_limit or self._effective_query_token_limit())
+        trimmed_query = _truncate_text_for_token_limit(str(query or ""), effective_query_limit, label="Reranker")
+        remaining = max(1024, total_budget - effective_query_limit)
+        per_doc_limit = max(128, min(1024, remaining // max(1, min(len(documents), 20))))
+        trimmed_docs = [
+            _truncate_text_for_token_limit(str(doc or ""), per_doc_limit, label="Reranker")
+            for doc in list(documents or [])
+        ]
+        return trimmed_query, trimmed_docs, {
+            "queryTokenLimit": effective_query_limit,
+            "documentTokenLimit": per_doc_limit,
+            "configuredInputTokenLimit": total_budget,
+        }
+
+    def _post_rerank(self, endpoint: str, payload: dict[str, Any], headers: dict[str, str]):
+        import requests
+        return requests.post(endpoint, json=payload, headers=headers, timeout=30)
+
     def rerank(self, query: str, documents: list[str], top_k: int = 3) -> list[Dict[str, Any]]:
         import requests
         started = time.perf_counter()
@@ -303,10 +484,11 @@ class RestReranker(BaseReranker):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+        trimmed_query, trimmed_documents, limit_meta = self._prepare_payload_documents(query, documents)
         payload = {
             "model": self.model_name,
-            "query": query,
-            "documents": documents,
+            "query": trimmed_query,
+            "documents": trimmed_documents,
             "top_n": top_k,
             "return_documents": True
         }
@@ -316,7 +498,28 @@ class RestReranker(BaseReranker):
         last_error: tuple[int, str, str] | None = None
         for endpoint in self.endpoints:
             resolved_endpoint = endpoint
-            res = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+            res = self._post_rerank(endpoint, payload, headers)
+            if res.status_code != 200 and _classify_rerank_provider_error(res.status_code, res.text) == "input_limit_exceeded":
+                observed_limit = _extract_observed_token_limit(res.text)
+                if not observed_limit and "query is too long" in str(res.text or "").lower():
+                    observed_limit = 1024
+                if observed_limit and observed_limit > 0 and observed_limit < int(limit_meta.get("queryTokenLimit") or 0):
+                    _RERANK_OBSERVED_QUERY_LIMITS[self._observed_query_limit_key()] = int(observed_limit)
+                    self._persist_observed_query_limit(int(observed_limit), endpoint=endpoint)
+                    retry_query, retry_documents, retry_limit_meta = self._prepare_payload_documents(
+                        query,
+                        documents,
+                        query_limit=int(observed_limit),
+                    )
+                    retry_payload = dict(payload)
+                    retry_payload["query"] = retry_query
+                    retry_payload["documents"] = retry_documents
+                    print(f"[Reranker] ℹ️ Observed provider query token limit {observed_limit}; retrying with smaller query.")
+                    retry_res = self._post_rerank(endpoint, retry_payload, headers)
+                    if retry_res.status_code == 200:
+                        res = retry_res
+                        payload = retry_payload
+                        limit_meta = retry_limit_meta
             if res.status_code == 200:
                 out = parse_rerank_response_payload(res.json(), documents)
                 break
@@ -324,6 +527,7 @@ class RestReranker(BaseReranker):
         else:
             status_code, error_text, failed_endpoint = last_error or (500, "Unknown rerank error", resolved_endpoint)
             print(f"[Reranker Error] {status_code}: {error_text}")
+            error_kind = _classify_rerank_provider_error(int(status_code or 0), error_text)
             model_telemetry_service.record_aux_model_invocation(
                 model_id=self.model_name,
                 provider_id=self.provider_id,
@@ -335,7 +539,14 @@ class RestReranker(BaseReranker):
                 status="failed",
                 error_code=str(status_code),
                 error_message=error_text,
-                metadata={"documents": len(documents), "top_k": top_k, "endpoint": failed_endpoint, "apiFlavor": self.api_flavor},
+                metadata={
+                    "documents": len(documents),
+                    "top_k": top_k,
+                    "endpoint": failed_endpoint,
+                    "apiFlavor": self.api_flavor,
+                    "errorKind": error_kind,
+                    **limit_meta,
+                },
             )
             raise requests.HTTPError(f"Rerank request failed ({status_code}) on {failed_endpoint}: {error_text}")
         model_telemetry_service.record_aux_model_invocation(
@@ -347,7 +558,15 @@ class RestReranker(BaseReranker):
             request_kind="reranker",
             latency_ms=(time.perf_counter() - started) * 1000,
             status="completed",
-            metadata={"documents": len(documents), "top_k": top_k, "results": len(out), "endpoint": resolved_endpoint, "apiFlavor": self.api_flavor},
+            metadata={
+                "documents": len(documents),
+                "top_k": top_k,
+                "results": len(out),
+                "endpoint": resolved_endpoint,
+                "apiFlavor": self.api_flavor,
+                "observedRerankQueryTokenLimit": _RERANK_OBSERVED_QUERY_LIMITS.get(self._observed_query_limit_key()),
+                **limit_meta,
+            },
         )
         return out
 

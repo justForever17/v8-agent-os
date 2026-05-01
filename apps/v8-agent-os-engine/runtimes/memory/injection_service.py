@@ -19,6 +19,7 @@ class InjectionService:
         run_id: Optional[str] = None,
         suppress_daily_memory: bool = False,
         suppress_memory_map: bool = False,
+        target_role: str = "supervisor",
     ) -> str:
         return memory_store.build_session_context(
             user_query=user_query,
@@ -28,6 +29,7 @@ class InjectionService:
             run_id=run_id,
             suppress_daily_memory=suppress_daily_memory,
             suppress_memory_map=suppress_memory_map,
+            target_role=target_role,
         )
 
     def get_recent_logs(self, *, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:

@@ -3075,7 +3075,7 @@ class DatabaseManager:
                 FROM workflow_steps ws
                 JOIN workflow_ledgers wl ON wl.id = ws.workflow_id
                 WHERE ws.session_id = ?
-                  AND wl.status IN ('running', 'waiting_approval', 'paused', 'interrupted', 'recoverable_failed')
+                  AND wl.status IN ('running', 'waiting_approval', 'waiting_external_tool', 'paused', 'interrupted', 'recoverable_failed')
                   AND ws.projection_json IS NOT NULL
                 ORDER BY ws.updated_at DESC
                 LIMIT 1
@@ -3092,7 +3092,7 @@ class DatabaseManager:
             return data
 
     def list_active_run_records(self, statuses: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        active_statuses = statuses or ["queued", "running", "waiting_approval", "waiting_input", "paused"]
+        active_statuses = statuses or ["queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"]
         placeholders = ", ".join("?" for _ in active_statuses)
         query = f"SELECT * FROM run_records WHERE status IN ({placeholders}) ORDER BY started_at ASC"
         with self.get_connection() as conn:
@@ -3246,7 +3246,7 @@ class DatabaseManager:
             cursor.execute("SELECT COUNT(*) AS count FROM pending_approvals WHERE status = 'pending'")
             row = cursor.fetchone()
             counts["pending_approvals"] = int(row["count"]) if row else 0
-            cursor.execute("SELECT COUNT(*) AS count FROM run_records WHERE status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')")
+            cursor.execute("SELECT COUNT(*) AS count FROM run_records WHERE status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'waiting_external_tool', 'paused')")
             row = cursor.fetchone()
             counts["active_runs"] = int(row["count"]) if row else 0
             try:

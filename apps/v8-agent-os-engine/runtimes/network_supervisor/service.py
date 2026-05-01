@@ -138,8 +138,50 @@ class NetworkSupervisorService:
             encoding="utf-8",
         )
 
-    def _external_tool_pending_key(self, protocol: str, wire_tool_call_id: str) -> str:
-        return f"{str(protocol or '').strip().lower()}:{str(wire_tool_call_id or '').strip()}"
+    def _external_tool_pending_key(
+        self,
+        protocol: str,
+        wire_tool_call_id: str,
+        *,
+        compat_session_id: str | None = None,
+    ) -> str:
+        session = str(compat_session_id or "global").strip() or "global"
+        return f"{str(protocol or '').strip().lower()}:{session}:{str(wire_tool_call_id or '').strip()}"
+
+    def _complete_abandoned_external_tool_run(self, item: dict[str, Any]) -> None:
+        run_id = str(item.get("runId") or "").strip()
+        if not run_id:
+            return
+        try:
+            from erc.run_service import run_service
+            from erc.workflow_ledger import workflow_ledger_service
+
+            run_record = run_service.get_run(run_id)
+            if not run_record:
+                return
+            if str(run_record.get("status") or "").strip() != "waiting_external_tool":
+                return
+            run_service.transition_run(
+                run_id,
+                status="completed",
+                metadata={
+                    "external_tool_final_reason": "external_tool_abandoned",
+                    "abandonedExternalTool": {
+                        "protocol": item.get("protocol"),
+                        "wireToolCallId": item.get("wireToolCallId"),
+                        "externalWireName": item.get("externalWireName"),
+                    },
+                },
+            )
+            workflow_ledger_service.sync_run_status(
+                run_id,
+                run_status="completed",
+                reason="external_tool_abandoned",
+                metadata={"externalToolStatus": "external_tool_abandoned"},
+            )
+        except Exception:
+            # Network Supervisor diagnostics must not break request handling.
+            return
 
     def _prune_pending_external_tools(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         target_state = state if isinstance(state, dict) else self.read_state()
@@ -157,6 +199,7 @@ class NetworkSupervisorService:
                 item["status"] = "external_tool_abandoned"
                 item["abandonedAt"] = _utc_iso()
                 item["lastReason"] = "expired_waiting_for_client_tool_result"
+                self._complete_abandoned_external_tool_run(item)
                 pending[key] = item
                 changed = True
         target_state["pendingExternalTools"] = pending
@@ -172,6 +215,9 @@ class NetworkSupervisorService:
         wire_tool_call_id: str,
         internal_alias_name: str,
         external_wire_name: str,
+        compat_session_id: str | None = None,
+        external_thread_id: str | None = None,
+        external_user_id: str | None = None,
         ttl_seconds: int = 900,
     ) -> None:
         wire_id = str(wire_tool_call_id or "").strip()
@@ -179,11 +225,14 @@ class NetworkSupervisorService:
             return
         state = self.read_state()
         pending = self._prune_pending_external_tools(state)
-        key = self._external_tool_pending_key(protocol, wire_id)
+        key = self._external_tool_pending_key(protocol, wire_id, compat_session_id=compat_session_id)
         now = _utc_now()
         pending[key] = {
             "protocol": str(protocol or "").strip().lower(),
             "runId": str(run_id or "").strip(),
+            "compatSessionId": str(compat_session_id or "").strip(),
+            "externalThreadId": str(external_thread_id or "").strip(),
+            "externalUserId": str(external_user_id or "").strip(),
             "wireToolCallId": wire_id,
             "internalAliasName": str(internal_alias_name or "").strip(),
             "externalWireName": str(external_wire_name or "").strip(),
@@ -195,25 +244,127 @@ class NetworkSupervisorService:
         state["pendingExternalTools"] = pending
         self.write_state(state)
 
-    def mark_external_tool_results_seen(self, *, protocol: str, wire_tool_call_ids: list[str]) -> None:
+    @staticmethod
+    def _compact_tool_result_preview(value: Any, limit: int = 4000) -> str:
+        try:
+            if isinstance(value, str):
+                text = value
+            else:
+                text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            text = str(value or "")
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, int(limit) - 32)] + "\n...[truncated external tool result]"
+
+    def _find_pending_external_tool(
+        self,
+        pending: dict[str, dict[str, Any]],
+        *,
+        protocol: str,
+        wire_tool_call_id: str,
+        compat_session_id: str | None = None,
+        external_thread_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+        normalized_protocol = str(protocol or "").strip().lower()
+        wire_id = str(wire_tool_call_id or "").strip()
+        if not normalized_protocol or not wire_id:
+            return None, None
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        for key, item in pending.items():
+            if str(item.get("protocol") or "").strip().lower() != normalized_protocol:
+                continue
+            if str(item.get("wireToolCallId") or "").strip() != wire_id:
+                continue
+            if str(item.get("status") or "") != "waiting_external_tool":
+                continue
+            score = 0
+            if compat_session_id and str(item.get("compatSessionId") or "").strip() == str(compat_session_id).strip():
+                score += 4
+            if external_thread_id and str(item.get("externalThreadId") or "").strip() == str(external_thread_id).strip():
+                score += 2
+            candidates.append((score, key, item))
+        if not candidates:
+            return None, None
+        candidates.sort(key=lambda row: (row[0], str(row[2].get("createdAt") or "")), reverse=True)
+        _, key, item = candidates[0]
+        return key, item
+
+    def claim_external_tool_results(
+        self,
+        *,
+        protocol: str,
+        wire_tool_call_ids: list[str],
+        tool_results: list[dict[str, Any]] | None = None,
+        compat_session_id: str | None = None,
+        external_thread_id: str | None = None,
+    ) -> dict[str, Any]:
         ids = [str(item or "").strip() for item in list(wire_tool_call_ids or []) if str(item or "").strip()]
         if not ids:
-            return
+            return {"matched": [], "unmatchedIds": [], "resumeRunId": None, "resumeValue": None}
+        results_by_id = {
+            str(item.get("wireToolCallId") or item.get("tool_call_id") or item.get("toolUseId") or "").strip(): dict(item)
+            for item in list(tool_results or [])
+            if isinstance(item, dict)
+        }
         state = self.read_state()
         pending = self._prune_pending_external_tools(state)
+        matched: list[dict[str, Any]] = []
+        unmatched: list[str] = []
         changed = False
+        now = _utc_iso()
         for wire_id in ids:
-            key = self._external_tool_pending_key(protocol, wire_id)
-            item = dict(pending.get(key) or {})
-            if not item:
+            key, item = self._find_pending_external_tool(
+                pending,
+                protocol=protocol,
+                wire_tool_call_id=wire_id,
+                compat_session_id=compat_session_id,
+                external_thread_id=external_thread_id,
+            )
+            if not key or not item:
+                unmatched.append(wire_id)
                 continue
+            result = dict(results_by_id.get(wire_id) or {"wireToolCallId": wire_id})
+            item = dict(item)
             item["status"] = "external_tool_result_received"
-            item["resolvedAt"] = _utc_iso()
-            pending[key] = item
+            item["resolvedAt"] = now
+            item["toolResultPreview"] = self._compact_tool_result_preview(result.get("content") or result)
+            pending[str(key)] = item
+            matched.append({**item, "toolResult": result})
             changed = True
         if changed:
             state["pendingExternalTools"] = pending
             self.write_state(state)
+
+        run_ids = [str(item.get("runId") or "").strip() for item in matched if str(item.get("runId") or "").strip()]
+        resume_run_id = run_ids[0] if run_ids and all(item == run_ids[0] for item in run_ids) else None
+        resume_value = None
+        if resume_run_id:
+            resume_value = {
+                "kind": "external_tool_result",
+                "protocol": str(protocol or "").strip().lower(),
+                "toolResults": [
+                    {
+                        "wireToolCallId": item.get("wireToolCallId"),
+                        "externalWireName": item.get("externalWireName"),
+                        "internalAliasName": item.get("internalAliasName"),
+                        "content": self._compact_tool_result_preview((item.get("toolResult") or {}).get("content") or item.get("toolResult")),
+                    }
+                    for item in matched
+                ],
+                "pendingIds": [f"{item.get('protocol')}:{item.get('wireToolCallId')}" for item in matched],
+            }
+        return {
+            "matched": matched,
+            "unmatchedIds": unmatched,
+            "resumeRunId": resume_run_id,
+            "resumeValue": resume_value,
+            "pendingMissReason": "no_pending_external_tool" if unmatched and not matched else None,
+        }
+
+    def mark_external_tool_results_seen(self, *, protocol: str, wire_tool_call_ids: list[str]) -> None:
+        self.claim_external_tool_results(protocol=protocol, wire_tool_call_ids=wire_tool_call_ids)
 
     def pending_external_tools_summary(self, limit: int = 10) -> dict[str, Any]:
         state = self.read_state()

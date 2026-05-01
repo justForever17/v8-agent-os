@@ -1106,6 +1106,7 @@ def build_supervisor_system_content(
         run_id=state.get("run_id") or state.get("runId"),
         suppress_daily_memory=bool(engineering_suppression.get("suppressDailyMemory")),
         suppress_memory_map=bool(engineering_suppression.get("suppressMemoryMap")),
+        target_role="supervisor",
     )
     network_supervisor_context = render_network_supervisor_context(state)
     memory_budget_diagnostics: list[dict[str, object]] = []

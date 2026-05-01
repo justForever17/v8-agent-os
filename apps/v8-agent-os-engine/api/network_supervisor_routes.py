@@ -114,6 +114,27 @@ def _openai_tool_result_ids(payload: dict[str, Any]) -> list[str]:
     return ids
 
 
+def _openai_tool_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for item in list(payload.get("messages") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() != "tool":
+            continue
+        wire_id = str(item.get("tool_call_id") or item.get("toolCallId") or "").strip()
+        if not wire_id:
+            continue
+        results.append(
+            {
+                "protocol": "openai",
+                "wireToolCallId": wire_id,
+                "name": str(item.get("name") or "").strip(),
+                "content": item.get("content"),
+            }
+        )
+    return results
+
+
 def _anthropic_tool_result_ids(payload: dict[str, Any]) -> list[str]:
     ids: list[str] = []
     for message in list(payload.get("messages") or []):
@@ -129,6 +150,50 @@ def _anthropic_tool_result_ids(payload: dict[str, Any]) -> list[str]:
             if wire_id:
                 ids.append(wire_id)
     return ids
+
+
+def _anthropic_tool_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for message in list(payload.get("messages") or []):
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() != "tool_result":
+                continue
+            wire_id = str(block.get("tool_use_id") or "").strip()
+            if not wire_id:
+                continue
+            results.append(
+                {
+                    "protocol": "anthropic",
+                    "wireToolCallId": wire_id,
+                    "toolUseId": wire_id,
+                    "content": block.get("content"),
+                    "isError": bool(block.get("is_error") or block.get("isError")),
+                }
+            )
+    return results
+
+
+def _apply_external_tool_resume_claim(chat_request, claim: dict[str, Any] | None) -> None:
+    claim = dict(claim or {})
+    resume_run_id = str(claim.get("resumeRunId") or "").strip()
+    resume_value = claim.get("resumeValue")
+    if resume_run_id and isinstance(resume_value, dict):
+        chat_request.resume_run_id = resume_run_id
+        chat_request.resume_value = resume_value
+    elif claim.get("pendingMissReason"):
+        try:
+            diagnostics = dict((chat_request.data.compat_ingress_diagnostics if chat_request.data else {}) or {})
+            diagnostics["pendingMissReason"] = claim.get("pendingMissReason")
+            diagnostics["unmatchedExternalToolIds"] = list(claim.get("unmatchedIds") or [])
+            if chat_request.data:
+                chat_request.data.compat_ingress_diagnostics = diagnostics
+        except Exception:
+            pass
 
 
 async def _stream_openai_chat_completion(
@@ -147,7 +212,7 @@ async def _stream_openai_chat_completion(
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
 
     async def _generator():
-        run_id = f"run_{uuid.uuid4().hex}"
+        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
         events: list[dict[str, Any]] = []
         emitted_role = False
         emitted_tool_call_ids: set[str] = set()
@@ -227,6 +292,9 @@ async def _stream_openai_chat_completion(
                         wire_tool_call_id=wire_id,
                         internal_alias_name=internal_name,
                         external_wire_name=wire_name,
+                        compat_session_id=chat_request.session_id,
+                        external_thread_id=external_thread_id,
+                        external_user_id=external_user_id,
                     )
                     tool_index = len(emitted_tool_call_ids)
                     emitted_tool_call_ids.add(wire_id)
@@ -262,7 +330,7 @@ async def _stream_openai_chat_completion(
                     )
                     continue
                 if event_type == "done":
-                    finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() == "tool_calls_requested" else "stop"
+                    finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "stop"
                     response_payload = {"choices": [{"finish_reason": finish_reason}]}
                     result = network_supervisor_memory_adapter.record_openai_compat_delta(
                         payload=request_payload,
@@ -338,12 +406,14 @@ async def _stream_anthropic_message(
     chat_request,
     response_model_name: str,
     include_thinking: bool,
+    external_thread_id: str | None = None,
+    external_user_id: str | None = None,
 ) -> StreamingResponse:
     response_id = f"msg_{uuid.uuid4().hex}"
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
 
     async def _generator():
-        run_id = f"run_{uuid.uuid4().hex}"
+        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
         next_block_index = 0
         open_blocks: set[int] = set()
         active_block_index: int | None = None
@@ -461,6 +531,9 @@ async def _stream_anthropic_message(
                         wire_tool_call_id=wire_id,
                         internal_alias_name=internal_name,
                         external_wire_name=wire_name,
+                        compat_session_id=chat_request.session_id,
+                        external_thread_id=external_thread_id,
+                        external_user_id=external_user_id,
                     )
                     yield _anthropic_sse_frame(
                         "content_block_start",
@@ -486,7 +559,7 @@ async def _stream_anthropic_message(
                     for block_index in sorted(open_blocks):
                         yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
                     open_blocks.clear()
-                    stop_reason = "tool_use" if tool_uses_seen or str(event.get("status") or "").strip() == "tool_calls_requested" else "end_turn"
+                    stop_reason = "tool_use" if tool_uses_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "end_turn"
                     yield _anthropic_sse_frame(
                         "message_delta",
                         {
@@ -686,12 +759,14 @@ async def post_network_supervisor_openai_chat_completions(
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-    network_supervisor_service.mark_external_tool_results_seen(
-        protocol="openai",
-        wire_tool_call_ids=_openai_tool_result_ids(payload),
-    )
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
+    external_tool_claim = network_supervisor_service.claim_external_tool_results(
+        protocol="openai",
+        wire_tool_call_ids=_openai_tool_result_ids(payload),
+        tool_results=_openai_tool_results(payload),
+        external_thread_id=external_thread_id,
+    )
     compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
@@ -725,6 +800,7 @@ async def post_network_supervisor_openai_chat_completions(
                 COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
             ),
         )
+        _apply_external_tool_resume_claim(chat_request, external_tool_claim)
     except ValueError as exc:
         status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -741,7 +817,7 @@ async def post_network_supervisor_openai_chat_completions(
             external_user_id=external_user_id,
         )
 
-    run_id = f"run_{uuid.uuid4().hex}"
+    run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
     events: list[dict[str, Any]] = []
     async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
         if isinstance(event, dict) and str(event.get("type") or "").strip() == "error":
@@ -758,6 +834,9 @@ async def post_network_supervisor_openai_chat_completions(
             wire_tool_call_id=str(tool_call.get("id") or "").strip(),
             internal_alias_name=wire_to_internal.get(external_wire_name, external_wire_name),
             external_wire_name=external_wire_name,
+            compat_session_id=chat_request.session_id,
+            external_thread_id=external_thread_id,
+            external_user_id=external_user_id,
         )
     response_payload = build_openai_completion_response(
         response_id=f"chatcmpl-{uuid.uuid4().hex}",
@@ -794,11 +873,14 @@ async def post_network_supervisor_anthropic_messages(
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-    network_supervisor_service.mark_external_tool_results_seen(
+    project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
+    external_thread_id, external_user_id = _resolve_openai_external_headers(request)
+    external_tool_claim = network_supervisor_service.claim_external_tool_results(
         protocol="anthropic",
         wire_tool_call_ids=_anthropic_tool_result_ids(payload),
+        tool_results=_anthropic_tool_results(payload),
+        external_thread_id=external_thread_id,
     )
-    project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
@@ -835,6 +917,7 @@ async def post_network_supervisor_anthropic_messages(
                 ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS_PAYLOAD_TOKENS,
             ),
         )
+        _apply_external_tool_resume_claim(chat_request, external_tool_claim)
     except ValueError as exc:
         status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -846,9 +929,11 @@ async def post_network_supervisor_anthropic_messages(
             chat_request=chat_request,
             response_model_name=response_model_name,
             include_thinking=include_thinking,
+            external_thread_id=external_thread_id,
+            external_user_id=external_user_id,
         )
 
-    run_id = f"run_{uuid.uuid4().hex}"
+    run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
     events: list[dict[str, Any]] = []
     async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_anthropic", run_id=run_id):
         if isinstance(event, dict) and str(event.get("type") or "").strip() == "error":
@@ -864,6 +949,9 @@ async def post_network_supervisor_anthropic_messages(
             wire_tool_call_id=str(tool_use.get("id") or "").strip(),
             internal_alias_name=wire_to_internal.get(external_wire_name, external_wire_name),
             external_wire_name=external_wire_name,
+            compat_session_id=chat_request.session_id,
+            external_thread_id=external_thread_id,
+            external_user_id=external_user_id,
         )
     return JSONResponse(
         build_anthropic_message_response(

@@ -2543,12 +2543,18 @@ class MemoryStore:
         run_id: Optional[str] = None,
         suppress_daily_memory: bool = False,
         suppress_memory_map: bool = False,
+        target_role: str = "supervisor",
     ) -> str:
         """
         构建渐进式 Session 上下文注入文本，结合历史概要、用户偏好、近期详细日志和紧凑前序摘要。
         Returns: 注入到 System Prompt 的文本
         """
         from core.storage import storage
+
+        target_role_normalized = str(target_role or "supervisor").strip().lower()
+        if target_role_normalized != "supervisor":
+            suppress_daily_memory = True
+            suppress_memory_map = True
 
         memory_config = storage.get_memory_config() or {}
         try:

@@ -241,8 +241,12 @@ def _render_external_tool_description_for_internal_model(original_description: s
     # The external wire description is preserved on the spec. This internal-facing
     # description appends V8 interoperability notes without mutating wire metadata.
     lines: list[str] = []
+    wire_name = str(getattr(function_payload, "name", "") or "").strip()
+    if wire_name:
+        lines.append(f"External wire tool name: {wire_name}")
     original = str(original_description or "").strip()
     if original:
+        lines.append("Original external tool description:")
         lines.append(original)
     kind = str(getattr(function_payload, "tool_kind", "") or "other")
     side_effect = str(getattr(function_payload, "side_effect", "") or "none")
@@ -255,7 +259,26 @@ def _render_external_tool_description_for_internal_model(original_description: s
     recovery_hints = [str(item).strip() for item in list(getattr(function_payload, "recovery_hints", None) or []) if str(item).strip()]
     if recovery_hints:
         lines.append("Recovery: " + " ".join(recovery_hints))
+    raw_schema_ref = str(getattr(function_payload, "raw_schema_ref", "") or "").strip()
+    if raw_schema_ref:
+        lines.append(f"Raw schema ref: {raw_schema_ref}")
     return "\n".join(lines).strip()
+
+
+def _record_external_tool_schema_ref(wire_name: str, raw_tool: dict[str, Any]) -> str | None:
+    try:
+        from core.tool_surface import record_raw_observation
+
+        return record_raw_observation(
+            tool_name="external_client_tool_schema",
+            tool_call_id=None,
+            runtime_kind="network_supervisor",
+            surface="network_supervisor_compat",
+            raw_content=json.dumps(raw_tool, ensure_ascii=False, indent=2),
+            metadata={"wireToolName": wire_name},
+        )
+    except Exception:
+        return None
 
 
 def _build_args_schema(internal_alias_name: str, parameters: dict[str, Any] | None) -> type[BaseModel]:
@@ -338,6 +361,7 @@ def select_external_tools_for_request(
             max_schema_bytes=max_tool_schema_bytes,
         )
         semantics = _infer_external_tool_semantics(wire_name, description, parameters)
+        raw_schema_ref = _record_external_tool_schema_ref(wire_name, raw)
         seen_wire_names.add(wire_name)
         normalized.append(
             ExternalToolSpec.model_validate(
@@ -348,6 +372,7 @@ def select_external_tools_for_request(
                         "description": description or None,
                         "parameters": parameters,
                         "internalAliasName": _unique_internal_alias_name(wire_name, seen_aliases),
+                        "rawSchemaRef": raw_schema_ref,
                         **semantics,
                     },
                 }
@@ -562,7 +587,10 @@ def build_engine_chat_request_from_openai(
         workspaceId=workspace_id,
         scopeHint=scope_hint,
         scopeMode=scope_mode or "explicit",
-        data=ChatRequestData(),
+        data=ChatRequestData(
+            disableExtensionsPrefilter=True,
+            compatIngressDiagnostics=ingress.diagnostics,
+        ),
     )
 
 
@@ -647,7 +675,7 @@ def openai_finish_reason_from_events(
         if not isinstance(event, dict) or str(event.get("type") or "").strip() != "done":
             continue
         status = str(event.get("status") or "").strip().lower()
-        if status == "tool_calls_requested":
+        if status in {"tool_calls_requested", "waiting_external_tool"}:
             return "tool_calls"
         if status in {"cancelled", "failed"}:
             return "stop"

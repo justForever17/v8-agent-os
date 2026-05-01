@@ -44,6 +44,7 @@ type ModelConnectionStatus = {
     status: "idle" | "testing" | "success" | "error";
     message?: string;
 };
+const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
 function extractErrorText(value: unknown, fallback: string): string {
     if (typeof value === "string" && value.trim())
         return value;
@@ -562,6 +563,18 @@ export default function ProviderConfigPage({ params }: {
                                 <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.k317345b1")}</Label>
                                 <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="可选请求上限"/>
                             </div>
+                        </div>) : RETRIEVAL_MODEL_TYPES.has(modelType) ? (<div className="grid grid-cols-2 gap-4">
+                            <div className="grid gap-2">
+                                <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.retrievalInputWindow")}</Label>
+                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.models.providers.id.page.retrievalInputWindowPlaceholder")}/>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.retrievalMaxTokens")}</Label>
+                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.models.providers.id.page.retrievalMaxTokensPlaceholder")}/>
+                            </div>
+                            <p className="col-span-2 text-xs text-muted-foreground">
+                                {t("app.admin.dashboard.models.providers.id.page.retrievalInputWindowHelp")}
+                            </p>
                         </div>) : null}
                         {modelType === "MEDIA" ? (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-muted-foreground">
                             媒体生成模型使用工作流 / 分辨率 / 时长 / 采样等媒体参数，不使用聊天模型的上下文窗口、最大输出和温度三件套。

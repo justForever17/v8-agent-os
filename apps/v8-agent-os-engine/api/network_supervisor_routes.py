@@ -101,6 +101,32 @@ def _anthropic_sse_frame(event: str, payload: dict[str, object]) -> bytes:
     return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
 
 
+def _event_status(event: dict[str, Any]) -> str:
+    return str((event or {}).get("status") or "").strip().lower()
+
+
+def _is_waiting_approval_event(event: dict[str, Any]) -> bool:
+    return str((event or {}).get("type") or "").strip() == "done" and _event_status(event) == "waiting_approval"
+
+
+def _approval_notice_text(event: dict[str, Any], *, run_id: str) -> str:
+    payload = dict((event or {}).get("payload") or {})
+    approval_ref = str(
+        payload.get("approval_id")
+        or payload.get("approvalId")
+        or payload.get("approvalRef")
+        or ""
+    ).strip()
+    parts = [
+        "V8OS 需要在 Admin Operations Center 完成人工审批后继续。",
+        f"runId={str((event or {}).get('run_id') or run_id).strip() or run_id}",
+    ]
+    if approval_ref:
+        parts.append(f"approvalRef={approval_ref}")
+    parts.append("审批完成后，外部客户端可继续发送下一轮消息，V8OS 会尝试恢复该 run。")
+    return "\n".join(parts)
+
+
 def _openai_tool_result_ids(payload: dict[str, Any]) -> list[str]:
     ids: list[str] = []
     for item in list(payload.get("messages") or []):
@@ -330,6 +356,53 @@ async def _stream_openai_chat_completion(
                     )
                     continue
                 if event_type == "done":
+                    if _is_waiting_approval_event(event):
+                        notice = _approval_notice_text(event, run_id=run_id)
+                        if not emitted_role:
+                            yield _sse_frame(
+                                {
+                                    "id": response_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": response_model_name,
+                                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                                }
+                            )
+                            emitted_role = True
+                        yield _sse_frame(
+                            {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": response_model_name,
+                                "choices": [{"index": 0, "delta": {"content": notice}, "finish_reason": None}],
+                            }
+                        )
+                        response_payload = {"choices": [{"finish_reason": "stop"}], "v8os_status": "waiting_approval"}
+                        result = network_supervisor_memory_adapter.record_openai_compat_delta(
+                            payload=request_payload,
+                            chat_request=chat_request,
+                            run_id=run_id,
+                            events=events,
+                            response_payload=response_payload,
+                            project_id=project_id,
+                            workspace_id=workspace_id,
+                            scope_hint=scope_hint,
+                            external_thread_id=external_thread_id,
+                            external_user_id=external_user_id,
+                        )
+                        _record_openai_memory_adapter_status(result)
+                        yield _sse_frame(
+                            {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": response_model_name,
+                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                            }
+                        )
+                        yield _sse_frame("[DONE]")
+                        return
                     finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "stop"
                     response_payload = {"choices": [{"finish_reason": finish_reason}]}
                     result = network_supervisor_memory_adapter.record_openai_compat_delta(
@@ -559,6 +632,37 @@ async def _stream_anthropic_message(
                     for block_index in sorted(open_blocks):
                         yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
                     open_blocks.clear()
+                    if _is_waiting_approval_event(event):
+                        notice = _approval_notice_text(event, run_id=run_id)
+                        block_index = next_block_index
+                        next_block_index += 1
+                        yield _anthropic_sse_frame(
+                            "content_block_start",
+                            {
+                                "type": "content_block_start",
+                                "index": block_index,
+                                "content_block": {"type": "text", "text": ""},
+                            },
+                        )
+                        yield _anthropic_sse_frame(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": block_index,
+                                "delta": {"type": "text_delta", "text": notice},
+                            },
+                        )
+                        yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
+                        yield _anthropic_sse_frame(
+                            "message_delta",
+                            {
+                                "type": "message_delta",
+                                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                                "usage": {"output_tokens": 0},
+                            },
+                        )
+                        yield _anthropic_sse_frame("message_stop", {"type": "message_stop"})
+                        return
                     stop_reason = "tool_use" if tool_uses_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "end_turn"
                     yield _anthropic_sse_frame(
                         "message_delta",
@@ -838,12 +942,30 @@ async def post_network_supervisor_openai_chat_completions(
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
         )
-    response_payload = build_openai_completion_response(
-        response_id=f"chatcmpl-{uuid.uuid4().hex}",
-        model_name=response_model_name,
-        events=events,
-        external_tools=chat_request.config.external_tools,
-    )
+    approval_event = next((event for event in reversed(events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
+    if approval_event:
+        response_payload = {
+            "id": f"chatcmpl-{uuid.uuid4().hex}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": response_model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": _approval_notice_text(approval_event, run_id=run_id)},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "v8os_status": "waiting_approval",
+        }
+    else:
+        response_payload = build_openai_completion_response(
+            response_id=f"chatcmpl-{uuid.uuid4().hex}",
+            model_name=response_model_name,
+            events=events,
+            external_tools=chat_request.config.external_tools,
+        )
     adapter_result = network_supervisor_memory_adapter.record_openai_compat_delta(
         payload=payload,
         chat_request=chat_request,
@@ -952,6 +1074,21 @@ async def post_network_supervisor_anthropic_messages(
             compat_session_id=chat_request.session_id,
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
+        )
+    approval_event = next((event for event in reversed(events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
+    if approval_event:
+        return JSONResponse(
+            {
+                "id": f"msg_{uuid.uuid4().hex}",
+                "type": "message",
+                "role": "assistant",
+                "model": response_model_name,
+                "content": [{"type": "text", "text": _approval_notice_text(approval_event, run_id=run_id)}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "v8os_status": "waiting_approval",
+            }
         )
     return JSONResponse(
         build_anthropic_message_response(

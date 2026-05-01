@@ -87,6 +87,7 @@ async def delete_extension_skill(
             workspace_id=workspaceId,
             workspace_path=workspacePath,
             project_id=projectId,
+            initiated_by="admin_extensions_skill_list_delete",
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

@@ -4850,7 +4850,14 @@ class ChatRuntime:
             return [{"type": "done", "status": "waiting_input", "run_id": chat_run.active_run_id}]
         if interrupted_signal.get("command") == "approval_requested":
             status = "waiting_input" if str(interrupted_signal.get("reason") or "").strip().lower() == "ask_user" else "waiting_approval"
-            return [{"type": "done", "status": status, "run_id": chat_run.active_run_id}]
+            return [
+                {
+                    "type": "done",
+                    "status": status,
+                    "run_id": chat_run.active_run_id,
+                    "payload": dict(interrupted_signal.get("payload") or {}),
+                }
+            ]
         if interrupted_signal.get("command") == "external_tool_requested":
             if stream_state is not None:
                 stream_state.active_tool_call_ids.clear()

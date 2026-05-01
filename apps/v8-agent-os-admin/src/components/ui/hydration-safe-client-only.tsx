@@ -1,0 +1,18 @@
+"use client";
+
+import { useEffect, useState, type ReactNode } from "react";
+
+type HydrationSafeClientOnlyProps = {
+    children: ReactNode;
+    fallback?: ReactNode;
+};
+
+export function HydrationSafeClientOnly({ children, fallback = null }: HydrationSafeClientOnlyProps) {
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    return mounted ? <>{children}</> : <>{fallback}</>;
+}

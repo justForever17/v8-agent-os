@@ -3291,6 +3291,7 @@ class ExtensionsRuntimeService:
         workspace_id: str | None = None,
         workspace_path: str | None = None,
         project_id: str | None = None,
+        initiated_by: str | None = None,
     ) -> dict[str, Any]:
         result = SkillLoader.delete_skill(
             skill_id,
@@ -3298,6 +3299,7 @@ class ExtensionsRuntimeService:
             workspace_id=workspace_id,
             workspace_path=workspace_path,
             project_id=project_id,
+            initiated_by=initiated_by,
         )
         self._cached_catalog = None
         self._cached_health = None

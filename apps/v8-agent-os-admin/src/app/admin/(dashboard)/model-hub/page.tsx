@@ -15,6 +15,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { HydrationSafeClientOnly } from "@/components/ui/hydration-safe-client-only";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -784,22 +785,26 @@ export default function ModelHubPage() {
                                             <Badge variant="secondary" className="h-5 px-2 text-[10px]">OAuth</Badge>
                                         </AdminHoverInfo>
                                     </div>
-                                    <Select
-                                        defaultValue={firstModel?.id || ""}
-                                        onValueChange={(value) => {
-                                            const select = document.getElementById(`oauth-model-${provider.id}`) as HTMLInputElement | null;
-                                            if (select) select.value = value;
-                                        }}
+                                    <HydrationSafeClientOnly
+                                        fallback={<div className="mt-3 h-10 rounded-md border bg-background px-3 py-2 text-sm text-slate-700">{firstModel?.id || t("app.admin.dashboard.model.hub.catalog.selectModel")}</div>}
                                     >
-                                        <SelectTrigger className="mt-3 h-10">
-                                            <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectModel")}/>
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {(provider.models || []).map((model) => (
-                                                <SelectItem key={`${provider.id}:${model.id}`} value={model.id}>{model.id}</SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
+                                        <Select
+                                            defaultValue={firstModel?.id || ""}
+                                            onValueChange={(value) => {
+                                                const select = document.getElementById(`oauth-model-${provider.id}`) as HTMLInputElement | null;
+                                                if (select) select.value = value;
+                                            }}
+                                        >
+                                            <SelectTrigger className="mt-3 h-10">
+                                                <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectModel")}/>
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {(provider.models || []).map((model) => (
+                                                    <SelectItem key={`${provider.id}:${model.id}`} value={model.id}>{model.id}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </HydrationSafeClientOnly>
                                     <input id={`oauth-model-${provider.id}`} type="hidden" defaultValue={firstModel?.id || ""}/>
                                     <Button
                                         className="mt-auto w-full"
@@ -841,33 +846,35 @@ export default function ModelHubPage() {
                             ))}
                         </div>
                         <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.2fr_auto]">
-                            <Select value={selectedCatalogProviderId} onValueChange={(value) => {
-                                setSelectedCatalogProviderId(value);
-                                setCatalogProbeModels([]);
-                                setSelectedCatalogModelId("");
-                                setCatalogModelFilter("");
-                                setProbedCatalogProviderId("");
-                                setCatalogProbeStatus(null);
-                                setManualModelEntryEnabled(false);
-                                setCatalogRuntimeProtocol("default");
-                            }}>
-                                <SelectTrigger>
-                                    <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectProvider")}/>
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="__custom__">{t("app.admin.dashboard.model.hub.catalog.addCustomProvider")}</SelectItem>
-                                    {apiCatalogProviders.filter((item) => item.isCustom).map((provider) => (
-                                        <SelectItem key={provider.id} value={provider.id}>
-                                            <ProviderOptionLabel provider={provider} suffix={t("app.admin.dashboard.model.hub.catalog.customSuffix")} />
-                                        </SelectItem>
-                                    ))}
-                                    {apiCatalogProviders.filter((item) => !item.isCustom).map((provider) => (
-                                        <SelectItem key={provider.id} value={provider.id}>
-                                            <ProviderOptionLabel provider={provider} />
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            <HydrationSafeClientOnly fallback={<div className="h-10 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">{selectedCatalogProvider?.name || t("app.admin.dashboard.model.hub.catalog.selectProvider")}</div>}>
+                                <Select value={selectedCatalogProviderId} onValueChange={(value) => {
+                                    setSelectedCatalogProviderId(value);
+                                    setCatalogProbeModels([]);
+                                    setSelectedCatalogModelId("");
+                                    setCatalogModelFilter("");
+                                    setProbedCatalogProviderId("");
+                                    setCatalogProbeStatus(null);
+                                    setManualModelEntryEnabled(false);
+                                    setCatalogRuntimeProtocol("default");
+                                }}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectProvider")}/>
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="__custom__">{t("app.admin.dashboard.model.hub.catalog.addCustomProvider")}</SelectItem>
+                                        {apiCatalogProviders.filter((item) => item.isCustom).map((provider) => (
+                                            <SelectItem key={provider.id} value={provider.id}>
+                                                <ProviderOptionLabel provider={provider} suffix={t("app.admin.dashboard.model.hub.catalog.customSuffix")} />
+                                            </SelectItem>
+                                        ))}
+                                        {apiCatalogProviders.filter((item) => !item.isCustom).map((provider) => (
+                                            <SelectItem key={provider.id} value={provider.id}>
+                                                <ProviderOptionLabel provider={provider} />
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </HydrationSafeClientOnly>
                             <div className="flex min-w-0 items-center rounded-xl border border-input bg-background">
                                 {selectedCredentialHelpUrl ? (
                                     <Button
@@ -891,15 +898,17 @@ export default function ModelHubPage() {
                         {catalogPurpose === "chat" && selectedCatalogProvider?.anthropicCompatible?.baseUrl ? (
                             <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
                                 <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocol")}</Label>
-                                <Select value={catalogRuntimeProtocol} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
-                                    <SelectTrigger className="h-9">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="default">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</SelectItem>
-                                        <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic")}</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-slate-700">{catalogRuntimeProtocol === "anthropic" ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic") : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</div>}>
+                                    <Select value={catalogRuntimeProtocol} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
+                                        <SelectTrigger className="h-9">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="default">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</SelectItem>
+                                            <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic")}</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </HydrationSafeClientOnly>
                                 <div className="text-xs text-muted-foreground">
                                     {catalogRuntimeProtocol === "anthropic"
                                         ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropicHint", { baseUrl: selectedCatalogProvider.anthropicCompatible.baseUrl })
@@ -1044,21 +1053,31 @@ export default function ModelHubPage() {
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.k6a95644c")} description={t("app.admin.dashboard.model.hub.page.k933aeed1")} variant="list" allowOverflow>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm text-slate-500">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
-                    <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-5xl">
-                        <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-slate-100 md:grid-cols-6 xl:grid-cols-11">
-                            <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
-                            <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
-                            <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>
-                            <TabsTrigger value="image">{t("app.admin.dashboard.model.hub.catalog.tabImage")}</TabsTrigger>
-                            <TabsTrigger value="video">{t("app.admin.dashboard.model.hub.catalog.tabVideo")}</TabsTrigger>
-                            <TabsTrigger value="voice">{t("app.admin.dashboard.model.hub.catalog.tabVoice")}</TabsTrigger>
-                            <TabsTrigger value="music">{t("app.admin.dashboard.model.hub.catalog.tabMusic")}</TabsTrigger>
-                            <TabsTrigger value="workflow">{t("app.admin.dashboard.model.hub.catalog.tabWorkflow")}</TabsTrigger>
-                            <TabsTrigger value="model3d">{t("app.admin.dashboard.model.hub.catalog.tabModel3d")}</TabsTrigger>
-                            <TabsTrigger value="embedding">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</TabsTrigger>
-                            <TabsTrigger value="rerank">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</TabsTrigger>
-                        </TabsList>
-                    </Tabs>
+                    <HydrationSafeClientOnly
+                        fallback={
+                            <div className="grid w-full max-w-5xl grid-cols-4 rounded-2xl bg-slate-100 p-1 text-center text-sm md:grid-cols-6 xl:grid-cols-11">
+                                {[t("app.admin.dashboard.model.hub.page.ke8cc995b"), t("app.admin.dashboard.model.hub.page.kc4eaa582"), t("app.admin.dashboard.model.hub.page.k2d2f7b56"), t("app.admin.dashboard.model.hub.catalog.tabImage"), t("app.admin.dashboard.model.hub.catalog.tabVideo"), t("app.admin.dashboard.model.hub.catalog.tabVoice"), t("app.admin.dashboard.model.hub.catalog.tabMusic"), t("app.admin.dashboard.model.hub.catalog.tabWorkflow"), t("app.admin.dashboard.model.hub.catalog.tabModel3d"), t("app.admin.dashboard.model.hub.page.kc1798b61"), t("app.admin.dashboard.model.hub.page.k81ac6b74")].map((label, index) => (
+                                    <span key={`${label}-${index}`} className="rounded-md px-3 py-1 text-slate-600">{label}</span>
+                                ))}
+                            </div>
+                        }
+                    >
+                        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-5xl">
+                            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-slate-100 md:grid-cols-6 xl:grid-cols-11">
+                                <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
+                                <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
+                                <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>
+                                <TabsTrigger value="image">{t("app.admin.dashboard.model.hub.catalog.tabImage")}</TabsTrigger>
+                                <TabsTrigger value="video">{t("app.admin.dashboard.model.hub.catalog.tabVideo")}</TabsTrigger>
+                                <TabsTrigger value="voice">{t("app.admin.dashboard.model.hub.catalog.tabVoice")}</TabsTrigger>
+                                <TabsTrigger value="music">{t("app.admin.dashboard.model.hub.catalog.tabMusic")}</TabsTrigger>
+                                <TabsTrigger value="workflow">{t("app.admin.dashboard.model.hub.catalog.tabWorkflow")}</TabsTrigger>
+                                <TabsTrigger value="model3d">{t("app.admin.dashboard.model.hub.catalog.tabModel3d")}</TabsTrigger>
+                                <TabsTrigger value="embedding">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</TabsTrigger>
+                                <TabsTrigger value="rerank">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</TabsTrigger>
+                            </TabsList>
+                        </Tabs>
+                    </HydrationSafeClientOnly>
                 </div>
 
                 {filteredModels.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k14457a61")} description={t("app.admin.dashboard.model.hub.page.k8d6baa0f")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">

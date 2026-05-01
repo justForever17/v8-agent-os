@@ -1543,6 +1543,40 @@ class SafetyGuardian:
                 allow_override=False,
             )
 
+        skill_root_command = next((candidate for candidate in policy_commands if self._command_touches_skill_root(candidate, runtime_context)), None)
+        if skill_root_command:
+            mutation_level = self._skill_root_command_mutation_level(skill_root_command)
+            if mutation_level == "destructive":
+                return self._decision(
+                    verdict="block",
+                    reason="命令疑似会清空或删除 Skill 根目录。此类高危批量写删已被阻断。",
+                    risk_code="protected_skill_root_destructive_command",
+                    governance_target="extensions_integrity",
+                    posture=posture,
+                    details={"command": command, "matched_command": skill_root_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+                    allow_override=False,
+                )
+            if mutation_level == "mutation":
+                return self._decision(
+                    verdict="review",
+                    reason="命令疑似会写入或覆盖 Skill 根目录内容，需要人工确认。",
+                    risk_code="protected_skill_root_mutation_command",
+                    governance_target="extensions_integrity",
+                    posture=posture,
+                    details={"command": command, "matched_command": skill_root_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+                )
+
+        skills_overwrite_command = next((candidate for candidate in policy_commands if self._is_skills_overwrite_install_command(candidate)), None)
+        if skills_overwrite_command:
+            return self._decision(
+                verdict="review",
+                reason="命令会覆盖已有 Skill。Skill 删除只能通过 Admin Extensions 的手动删除按钮完成；覆盖更新需要人工确认。",
+                risk_code="skill_install_overwrite_command",
+                governance_target="extensions_integrity",
+                posture=posture,
+                details={"command": command, "matched_command": skills_overwrite_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+            )
+
         process_control_command = next((candidate for candidate in policy_commands if self._is_process_control_command(candidate)), None)
         if process_control_command:
             return self._decision(
@@ -1663,6 +1697,16 @@ class SafetyGuardian:
                 posture=posture,
                 details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
                 allow_override=False,
+            )
+
+        if self._is_under_skill_root(normalized, runtime_context):
+            return self._decision(
+                verdict="review",
+                reason="当前写入目标位于 Skill 根目录。Skill 扫描器只读，任何写入、清空或删除 Skill 文件都需要人工确认。",
+                risk_code="protected_skill_root_write",
+                governance_target="extensions_integrity",
+                posture=posture,
+                details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
             )
 
         if self._is_user_workspace_write_path(normalized, runtime_context):
@@ -2901,6 +2945,83 @@ class SafetyGuardian:
             except ValueError:
                 continue
         return False
+
+    def _skill_root_paths(self, runtime_context: Optional[Dict[str, Any]] = None) -> list[Path]:
+        roots: list[Path] = [
+            Path.home() / ".agents" / "skills",
+            WORKSPACE_HOME / ".agents" / "skills",
+        ]
+        context = runtime_context or {}
+        workspace_path = str(context.get("workspace_path") or context.get("workspacePath") or "").strip()
+        if workspace_path:
+            roots.append(Path(workspace_path).expanduser() / ".agents" / "skills")
+        normalized: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            candidate = self._normalize_path(str(root))
+            if candidate is None:
+                continue
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(candidate)
+        return normalized
+
+    def _is_under_skill_root(self, path: Path, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
+        normalized = self._normalize_path(str(path))
+        if normalized is None:
+            return False
+        for root in self._skill_root_paths(runtime_context):
+            try:
+                normalized.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _command_touches_skill_root(self, command: str, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
+        normalized_command = str(command or "").lower().replace("\\", "/")
+        if ".agents/skills" in normalized_command:
+            return True
+        for root in self._skill_root_paths(runtime_context):
+            root_text = str(root).lower().replace("\\", "/")
+            if root_text and root_text in normalized_command:
+                return True
+        return False
+
+    def _skill_root_command_mutation_level(self, command: str) -> str:
+        lowered = f" {str(command or '').lower()} "
+        destructive_markers = (
+            " remove-item ",
+            " rm -rf ",
+            " rmdir ",
+            " rd ",
+            " del ",
+            " erase ",
+            " clear-content ",
+            " shutil.rmtree",
+        )
+        mutation_markers = (
+            " set-content ",
+            " out-file ",
+            " new-item ",
+            " copy-item ",
+            " move-item ",
+            " write-output ",
+            " add-content ",
+            " >",
+            ">>",
+        )
+        if any(marker in lowered for marker in destructive_markers):
+            return "destructive"
+        if any(marker in lowered for marker in mutation_markers):
+            return "mutation"
+        return ""
+
+    def _is_skills_overwrite_install_command(self, command: str) -> bool:
+        lowered = f" {str(command or '').lower()} "
+        return " npx " in lowered and " skills " in lowered and " add " in lowered and " --overwrite" in lowered
 
     def _is_sensitive_system_path(self, path: Path) -> bool:
         normalized = self._normalize_path(str(path))

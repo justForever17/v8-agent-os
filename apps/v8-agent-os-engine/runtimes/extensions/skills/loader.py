@@ -2282,6 +2282,25 @@ class SkillLoader:
         except Exception as exc:
             print(f"[SkillLoader] Error reading {instruction_path}: {exc}")
             return None
+        if not content.strip():
+            try:
+                from core.audit_logger import audit_logger
+
+                audit_logger.log(
+                    source_type="SAFETY",
+                    action="skill_integrity_empty_instruction",
+                    status="WARNING",
+                    details=json.dumps(
+                        {
+                            "instructionPath": cls._normalize_path(instruction_path),
+                            "skillRoot": cls._normalize_path(instruction_path.parent),
+                            "reason": "SKILL.md is empty during read-only refresh; no V8 delete/install audit was observed in this scan path.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            except Exception:
+                pass
         entry = cls._build_skill_entry(
             folder_name=str(manifest_item.get("folder") or instruction_path.parent.name),
             file_path=instruction_path,
@@ -3145,6 +3164,7 @@ class SkillLoader:
         workspace_id: str | None = None,
         workspace_path: str | None = None,
         project_id: str | None = None,
+        initiated_by: str | None = None,
     ) -> dict[str, Any]:
         normalized_skill_id = str(skill_id or "").strip()
         if not normalized_skill_id:
@@ -3196,7 +3216,13 @@ class SkillLoader:
             "instructionPath": cls._normalize_path(skill_root / "SKILL.md"),
             "sourceType": skill.get("sourceType"),
             "visibility": skill.get("visibility"),
+            "initiatedBy": str(initiated_by or "admin_extensions_manual_delete").strip() or "admin_extensions_manual_delete",
         }
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(removed.get("skillName") or skill_root.name)).strip(".-_") or "skill"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_root = Path.home() / ".v8-agent-os" / "backups" / "skills" / f"{timestamp}-{safe_name}-{hashlib.sha1(str(skill_root).encode('utf-8')).hexdigest()[:8]}"
+        backup_root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_root, backup_root)
         inactive_review_count = 0
         try:
             from erc.safety_guardian import safety_guardian
@@ -3208,6 +3234,24 @@ class SkillLoader:
         except Exception:
             inactive_review_count = 0
         shutil.rmtree(skill_root)
+        try:
+            from core.audit_logger import audit_logger
+
+            audit_logger.log(
+                source_type="EXTENSIONS",
+                action="skill_delete",
+                status="WARNING",
+                details=json.dumps(
+                    {
+                        **removed,
+                        "backupPath": cls._normalize_path(backup_root),
+                        "inactiveReviewCount": inactive_review_count,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:
+            pass
         refresh_result = cls.refresh_root_descriptors_if_changed(
             [owner_descriptor],
             compare_existing=False,
@@ -3219,6 +3263,7 @@ class SkillLoader:
             "ledgerRetained": True,
             "ledgerState": "inactive_orphan_by_missing_path",
             "inactiveReviewCount": inactive_review_count,
+            "backupPath": cls._normalize_path(backup_root),
         }
 
     @classmethod

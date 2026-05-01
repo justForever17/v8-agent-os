@@ -56,6 +56,26 @@ def _is_network_supervisor_compat_transport(state) -> bool:
     return transport in {"network_supervisor_openai", "network_supervisor_anthropic"}
 
 
+_COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
+    "tool_observation_detail",
+}
+
+
+def _tool_ref_name(tool_ref) -> str:
+    return str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip()
+
+
+def _filter_network_supervisor_compat_tools(tools):
+    filtered = []
+    for tool_ref in list(tools or []):
+        name = _tool_ref_name(tool_ref)
+        if not name:
+            continue
+        if name.startswith("network_") or name in _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES:
+            filtered.append(tool_ref)
+    return filtered
+
+
 def _build_neutral_extensions_route(visible_supervisor_tools):
     return SimpleNamespace(
         filtered_tools=list(visible_supervisor_tools or []),
@@ -142,6 +162,8 @@ def execute_supervisor_turn(
             actor="supervisor",
             route_context=dict(state.get("current_route_context") or {}),
         )
+        if _is_network_supervisor_compat_transport(state):
+            visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()
         if _is_network_supervisor_compat_transport(state):
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)

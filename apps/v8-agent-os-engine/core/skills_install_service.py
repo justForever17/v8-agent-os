@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shlex
@@ -331,6 +332,7 @@ def _install_manifests(
 
     for manifest in manifests:
         target_dir = target_root / manifest.folder
+        backup_path: Path | None = None
         if target_dir.exists():
             if not overwrite:
                 conflicts.append(
@@ -342,15 +344,51 @@ def _install_manifests(
                     }
                 )
                 continue
-            shutil.rmtree(target_dir)
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", manifest.folder).strip(".-_") or "skill"
+            backup_path = Path.home() / ".v8-agent-os" / "backups" / "skills" / f"overwrite-{safe_name}"
+            suffix = 1
+            candidate_backup = backup_path
+            while candidate_backup.exists():
+                suffix += 1
+                candidate_backup = backup_path.with_name(f"{backup_path.name}-{suffix}")
+            backup_path = candidate_backup
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            target_dir.rename(backup_path)
 
-        shutil.copytree(manifest.source_dir, target_dir)
+        try:
+            shutil.copytree(manifest.source_dir, target_dir)
+        except Exception:
+            if backup_path and backup_path.exists() and not target_dir.exists():
+                backup_path.rename(target_dir)
+            raise
+        try:
+            from core.audit_logger import audit_logger
+
+            audit_logger.log(
+                source_type="EXTENSIONS",
+                action="skill_install_overwrite" if overwrite and backup_path else "skill_install",
+                status="WARNING" if overwrite and backup_path else "INFO",
+                details=json.dumps(
+                    {
+                        "name": manifest.name,
+                        "folder": manifest.folder,
+                        "source": source,
+                        "targetPath": str(target_dir),
+                        "backupPath": str(backup_path) if backup_path else None,
+                        "overwritten": bool(overwrite and backup_path),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:
+            pass
         installed.append(
             {
                 "name": manifest.name,
                 "folder": manifest.folder,
                 "path": str(target_dir),
                 "overwritten": overwrite,
+                "backupPath": str(backup_path) if backup_path else None,
             }
         )
 

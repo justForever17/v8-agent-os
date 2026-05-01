@@ -219,7 +219,7 @@ def _infer_external_tool_semantics(wire_name: str, description: str, parameters:
             "If the external client reports 'File has not been read yet', request the external Read tool for that path first, then retry Write/Edit/MultiEdit."
         )
         recovery_hints.append(
-            "For new files inside the V8 workspace, prefer V8 internal write_native_file unless the user explicitly wants the external client to perform the write."
+            "For new files inside the V8 workspace, prefer the external Write tool in this compat session; use V8 internal write_native_file only if the user explicitly asks V8OS to fall back to internal tools."
         )
     elif tool_kind == "shell":
         preconditions.append(
